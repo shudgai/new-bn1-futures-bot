@@ -191,7 +191,7 @@
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td :class="getPosUnrealizedPnl(pos) > 0 ? 'up' : getPosUnrealizedPnl(pos) < 0 ? 'down' : ''" style="font-weight:700;">
                                     {{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT
-                                    <span style="font-size:11px; margin-left:4px;">({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}%)</span>
+                                    <span style="font-size:11px; margin-left:4px;">({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}%/{{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)</span>
                                 </td>
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
@@ -355,6 +355,13 @@
                     if (!pos.margin || pos.margin === 0) return 0;
                     // ROE% = 未實現損益 / 保證金 (已含槓桿效果)
                     return (pnl / pos.margin) * 100;
+                },
+                getPosRoePctNoLeverage(pos) {
+                    const pnl = this.getPosUnrealizedPnl(pos);
+                    const leverage = pos.leverage || this.getLeverage(pos.symbol) || 1;
+                    if (!pos.margin || pos.margin === 0) return 0;
+                    // 現貨% = 未實現損益 / (保證金 x 槓桿)，等同去除槓桿效果的實際價格漲跌幅
+                    return (pnl / (pos.margin * leverage)) * 100;
                 },
                 async fetchStatus() {
                     try {
