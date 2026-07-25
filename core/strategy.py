@@ -1,16 +1,18 @@
 import pandas as pd
 import numpy as np
-from core.config import STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE
+from core.config import (
+    STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
+    KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS
+)
+from core.indicators import bars_since_supertrend_flip
 
 class SuperTrendKeltnerStrategy:
     """
-    High-Precision Scalping Engine (5m Timeframe):
-    - SuperTrend (ATR multiplier 2.0, period 10)
-    - Keltner Channel Breakout (EMA 20, ATR multiplier 1.5 for stronger boundary)
-    - Volume Surge Filter (Current Vol > 1.2x 50-SMA Volume to avoid fake breakouts)
-    - Strict RSI Filter (Long RSI >= 52, Short RSI <= 48)
-    - Entry Breakout Distance Filter (MAX_BREAKOUT_DISTANCE = 0.3%)
-    - Dynamic Risk Control: SL = 1.8x ATR, TP = 2.2x ATR
+    High-Precision Scalping Engine (5m Timeframe) with 4 Quality Filters:
+    1. 防插針價格: 優先選用 close_price_spike_filtered（無則退回 close）
+    2. 突破幅度緩衝: 超出 Keltner 通道邊界 KELTNER_BREAKOUT_MARGIN_PCT (5% 通道寬度) 才算真突破
+    3. 量能確認: 成交量須達 20 期均量 KELTNER_MIN_VOLUME_RATIO (0.5 倍)
+    4. SuperTrend 新鮮度: 方向須在最近 SUPERTREND_MAX_FLIP_AGE_BARS (5 根) 內剛轉向
     """
     def __init__(self, atr_period=10, atr_multiplier=2.0):
         self.atr_period = atr_period
@@ -20,7 +22,13 @@ class SuperTrendKeltnerStrategy:
         df = df.copy()
         high = df['high']
         low = df['low']
-        close = df['close']
+
+        # 防插針: 優先採用 SpikeFilter_L2 修正值 close_price_spike_filtered
+        if 'close_price_spike_filtered' in df.columns:
+            close = df['close_price_spike_filtered'].fillna(df['close'])
+        else:
+            close = df['close']
+
         volume = df['volume']
 
         # True Range & ATR
@@ -34,8 +42,8 @@ class SuperTrendKeltnerStrategy:
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
-        # Volume 50-period Simple Moving Average
-        df['vol_ma'] = volume.rolling(window=50).mean()
+        # 成交量 20 週期簡單移動平均 (20-period SMA Volume)
+        df['vol_ma_20'] = volume.rolling(window=20).mean()
 
         # RSI 14
         delta = close.diff()
@@ -44,9 +52,11 @@ class SuperTrendKeltnerStrategy:
         rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # Keltner Channels (Strengthened to 1.5 multiplier)
+        # Keltner Channels (1.5 multiplier)
         df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.5)
         df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.5)
+        # Keltner 通道寬度 (Channel Width)
+        df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
         # SuperTrend Calculation
         hl2 = (high + low) / 2
@@ -105,25 +115,44 @@ class SuperTrendKeltnerStrategy:
 
         df = self.compute_indicators(df)
         curr = df.iloc[-1]
-        price = curr['close']
+
+        # 防插針: 優先選用 SpikeFilter_L2 修正價格
+        price = curr['close_price_spike_filtered'] if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered'])) else curr['close']
         atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
         rsi = curr['rsi']
         vol = curr['volume']
-        vol_ma = curr['vol_ma'] if not np.isnan(curr['vol_ma']) else 0
+        vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
 
         kc_upper = curr['kc_upper']
         kc_lower = curr['kc_lower']
+        kc_width = curr['kc_width'] if not np.isnan(curr['kc_width']) else (price * 0.03)
 
-        # 1. 爆量確認：成交量需大於 50 週期均量的 1.15 倍 (防無效低量假突破)
-        has_volume_surge = (vol >= vol_ma * 1.15) if vol_ma > 0 else True
+        # 品質濾網 1: 量能確認 (當下量須達 20 期均量 0.5 倍)
+        has_min_volume = (vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO) if vol_ma_20 > 0 else True
 
-        # 2. 1h 大週期趨勢總指揮過濾 (多頭不逆勢做空，空頭不逆勢做多)
+        # 品質濾網 2: 突破幅度緩衝 (須超出通道邊界 5% 通道寬度才算真突破)
+        kc_breakout_buffer = kc_width * KELTNER_BREAKOUT_MARGIN_PCT
+        required_long_breakout = kc_upper + kc_breakout_buffer
+        required_short_breakout = kc_lower - kc_breakout_buffer
+
+        # 品質濾網 3: SuperTrend 新鮮度 (方向須在最近 5 根 K 棒內剛轉向)
+        st_flip_age = bars_since_supertrend_flip(df['st_direction'])
+        is_st_fresh = (st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS)
+
+        # 品質濾網 4: 1h 大週期趨勢保護
         is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
         is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
 
-        # Long: SuperTrend Bullish AND Price >= Keltner Upper AND EMA 20 >= EMA 50 AND RSI >= 52 AND Volume Surge AND 1h Bullish
-        if curr['st_direction'] == 1 and curr['close'] >= kc_upper and curr['ema_20'] >= curr['ema_50'] and rsi >= 52 and has_volume_surge and is_1h_bullish:
-            # 進場突破距離過濾 (避免追高 > 0.3%)
+        # LONG 條件
+        if (curr['st_direction'] == 1 and 
+            price >= required_long_breakout and 
+            curr['ema_20'] >= curr['ema_50'] and 
+            rsi >= 52 and 
+            has_min_volume and 
+            is_st_fresh and 
+            is_1h_bullish):
+
+            # 進場追高過濾 (偏離通道不超過 0.3%)
             long_distance_ratio = (price - kc_upper) / kc_upper
             if long_distance_ratio > MAX_BREAKOUT_DISTANCE:
                 return {"action": "HOLD", "reason": f"突破追高過大 ({long_distance_ratio:.2%} > Max {MAX_BREAKOUT_DISTANCE:.2%})"}
@@ -137,12 +166,19 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": f"5m Strong Bullish Breakout (VolSurge, 1h-Aligned, Dist: {long_distance_ratio:.2%})"
+                "reason": f"5m Fresh Bullish Breakout (FlipAge: {st_flip_age}b, Margin: 5%Width, Vol: {vol/vol_ma_20:.1f}x)"
             }
 
-        # Short: SuperTrend Bearish AND Price <= Keltner Lower AND EMA 20 <= EMA 50 AND RSI <= 48 AND Volume Surge AND 1h Bearish
-        if curr['st_direction'] == -1 and curr['close'] <= kc_lower and curr['ema_20'] <= curr['ema_50'] and rsi <= 48 and has_volume_surge and is_1h_bearish:
-            # 進場跌破距離過濾 (避免殺跌 > 0.3%)
+        # SHORT 條件
+        if (curr['st_direction'] == -1 and 
+            price <= required_short_breakout and 
+            curr['ema_20'] <= curr['ema_50'] and 
+            rsi <= 48 and 
+            has_min_volume and 
+            is_st_fresh and 
+            is_1h_bearish):
+
+            # 進場殺跌過濾 (偏離通道不超過 0.3%)
             short_distance_ratio = (kc_lower - price) / kc_lower
             if short_distance_ratio > MAX_BREAKOUT_DISTANCE:
                 return {"action": "HOLD", "reason": f"跌破殺跌過大 ({short_distance_ratio:.2%} > Max {MAX_BREAKOUT_DISTANCE:.2%})"}
@@ -156,7 +192,7 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": f"5m Strong Bearish Breakout (VolSurge, Dist: {short_distance_ratio:.2%})"
+                "reason": f"5m Fresh Bearish Breakout (FlipAge: {st_flip_age}b, Margin: 5%Width, Vol: {vol/vol_ma_20:.1f}x)"
             }
 
         return {"action": "HOLD", "reason": "No entry trigger"}

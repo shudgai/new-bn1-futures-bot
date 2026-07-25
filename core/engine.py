@@ -78,7 +78,12 @@ class TradingEngine:
                         if not df_1h.empty and len(df_1h) >= 50:
                             ema_200_1h = df_1h['close'].ewm(span=min(len(df_1h), 200), adjust=False).mean().iloc[-1]
 
-                        price = df.iloc[-1]['close']
+                        # 1. 防插針價格選擇 (SpikeFilter_L2 優先選用 close_price_spike_filtered)
+                        if 'close_price_spike_filtered' in df.columns and not pd.isna(df.iloc[-1]['close_price_spike_filtered']):
+                            price = float(df.iloc[-1]['close_price_spike_filtered'])
+                        else:
+                            price = float(df.iloc[-1]['close'])
+
                         self.tickers[symbol] = price
 
                         # 2. 防插針檢查 (Anti-Spike Filter)
