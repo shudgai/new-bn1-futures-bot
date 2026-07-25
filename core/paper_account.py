@@ -163,7 +163,6 @@ class PaperAccount:
         now_ts = time.time()
 
         for symbol, pos in list(self.positions.items()):
-            # 獲取當前價格（處理不同可能的 Key 格式）
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
             if curr_p is None:
                 continue
@@ -173,81 +172,48 @@ class PaperAccount:
             atr = pos.get("atr", entry_p * 0.015)
             open_ts = pos.get("open_timestamp", now_ts)
 
-            # --- 趨勢獵人動態追蹤止利模式 ---
-
-            # 確保有初始化最高/最低價 (若開倉時沒設，則以入場價為基礎)
+            # 初始化最高 / 最低價紀錄
             if "highest_price" not in pos: pos["highest_price"] = entry_p
             if "lowest_price" not in pos: pos["lowest_price"] = entry_p
 
-            # 階段一：保本鎖定 (當獲利達 0.8x ATR 時)
-            if not pos.get("is_breakeven_moved", False):
-                if side == "LONG" and (curr_p - entry_p) >= (0.8 * atr):
-                    pos["sl"] = entry_p
-                    pos["is_breakeven_moved"] = True
-                    pos["highest_price"] = max(pos.get("highest_price", entry_p), curr_p)
-                    self.log(f"🛡️ [保本觸發] {symbol} 獲利達 0.8x ATR，止損已鎖定保本價 ({entry_p:.4f})", "SUCCESS")
-                elif side == "SHORT" and (entry_p - curr_p) >= (0.8 * atr):
-                    pos["sl"] = entry_p
-                    pos["is_breakeven_moved"] = True
-                    pos["lowest_price"] = min(pos.get("lowest_price", entry_p), curr_p)
-                    self.log(f"🛡️ [保本觸發] {symbol} 獲利達 0.8x ATR，止損已鎖定保本價 ({entry_p:.4f})", "SUCCESS")
+            # 1. 追蹤最高/最低獲利價 (Trailing High/Low Tracking)
+            if side == "LONG":
+                if curr_p > pos["highest_price"]:
+                    pos["highest_price"] = curr_p
+                    max_profit = pos["highest_price"] - entry_p
+                    # 有獲利時：鎖定最高獲利的 75%（只吐回 25%），將平倉停利點向上墊高
+                    if max_profit > 0:
+                        trail_sl = entry_p + (max_profit * 0.75)
+                        if trail_sl > pos["sl"]:
+                            pos["sl"] = trail_sl
+                            pos["is_breakeven_moved"] = True
+                            self.log(f"📈 [獲利追蹤止利上推] {symbol} 創新高 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f})", "SUCCESS")
+            else: # SHORT
+                if curr_p < pos["lowest_price"]:
+                    pos["lowest_price"] = curr_p
+                    max_profit = entry_p - pos["lowest_price"]
+                    # 有獲利時：鎖定最高獲利的 75%
+                    if max_profit > 0:
+                        trail_sl = entry_p - (max_profit * 0.75)
+                        if trail_sl < pos["sl"]:
+                            pos["sl"] = trail_sl
+                            pos["is_breakeven_moved"] = True
+                            self.log(f"📉 [獲利追蹤止利下推] {symbol} 創新低 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f})", "SUCCESS")
 
-            # 階段二：動態追蹤與 TP 無上限推升 (當已進入保本狀態時)
-            if pos.get("is_breakeven_moved", False):
-                if side == "LONG":
-                    # 更新最高價
-                    if curr_p > pos["highest_price"]:
-                        pos["highest_price"] = curr_p
-                        
-                        # 1. 動態推升止損 (SL)：鎖定最高獲利的 75%
-                        # 公式：新止損 = 入場價 + (最高獲利 * 0.75)
-                        new_sl = entry_p + (pos["highest_price"] - entry_p) * 0.75
-                        if new_sl > pos["sl"]:
-                            pos["sl"] = new_sl
-                            # 2. 同步推升止利 (TP)：讓利潤繼續奔跑
-                            # 每創新高，TP 自動往上推 1.5x ATR
-                            pos["tp"] = pos["highest_price"] + (1.5 * atr)
-                            self.log(f"📈 [動態追蹤] {symbol} 突破新高 ({curr_p:.4f})，SL 推升至 ({pos['sl']:.4f})，TP 延展至 ({pos['tp']:.4f})", "SUCCESS")
-                
-                else: # SHORT 邏輯
-                    # 更新最低價
-                    if curr_p < pos["lowest_price"]:
-                        pos["lowest_price"] = curr_p
-                        
-                        # 1. 動態推升止損 (SL)：鎖定最高獲利（對空單是最低點）的 75%
-                        # 公式：新止損 = 入場價 - (最高獲利 * 0.75)
-                        new_sl = entry_p - (entry_p - pos["lowest_price"]) * 0.75
-                        if new_sl < pos["sl"]:
-                            pos["sl"] = new_sl
-                            # 2. 同步推升止利 (TP)：讓利潤繼續奔跑
-                            pos["tp"] = pos["lowest_price"] - (1.5 * atr)
-                            self.log(f"📉 [動態追蹤] {symbol} 突破新低 ({curr_p:.4f})，SL 推升至 ({pos['sl']:.4f})，TP 延展至 ({pos['tp']:.4f})", "SUCCESS")
-
-            # --- 階段三：最終平倉判定 ---
-            
-            # 24小時時間過濾 (自動離場)
+            # 2. 24小時時間過濾 (超時平倉)
             if (now_ts - open_ts) >= 86400:
                 self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 
-            # 正常 SL / TP 比對平倉
+            # 3. 觸發平倉比對 (原初始止損位完全不變，除非有獲利才上推)
             if side == "LONG":
-                # 判斷跌破動態止損 (SL)
                 if curr_p <= pos["sl"]:
-                    reason = "觸發保本止損" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    reason = "觸發追蹤止利 (75% 獲利鎖定)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     self.close_position(symbol, curr_p, reason)
-                # 判斷達到動態止利 (TP)
-                elif curr_p >= pos["tp"]:
-                    self.close_position(symbol, curr_p, "觸發動態止利 (Dynamic TP)")
-            
             else: # SHORT
-                # 判斷突破動態止損 (SL)
                 if curr_p >= pos["sl"]:
-                    reason = "觸發保本止損" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    reason = "觸發追蹤止利 (75% 獲利鎖定)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     self.close_position(symbol, curr_p, reason)
-                # 判斷跌破動態止利 (TP)
-                elif curr_p <= pos["tp"]:
-                    self.close_position(symbol, curr_p, "觸發動態止利 (Dynamic TP)")
 
             # 計算未實現損益
             if side == "LONG":
