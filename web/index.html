@@ -193,8 +193,8 @@
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
                                 <td style="color:var(--up)">{{ formatPrice(pos.tp) }}</td>
-                                <td>
-                                    <button class="btn btn-stop" style="padding:4px 10px; font-size:12px;" @click="closePos(pos.symbol)">平倉</button>
+                                <td style="white-space:nowrap;">
+                                    <button class="btn btn-stop" style="padding:4px 12px; font-size:12px; white-space:nowrap; display:inline-block;" @click="closePos(pos.symbol)">平倉</button>
                                 </td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
