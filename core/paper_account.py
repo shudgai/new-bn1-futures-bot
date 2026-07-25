@@ -80,6 +80,8 @@ class PaperAccount:
             "tp": tp,
             "atr": atr if atr > 0 else price * 0.015,
             "is_breakeven_moved": False,
+            "highest_price": price,
+            "lowest_price": price,
             "open_timestamp": time.time(),
             "open_time": get_taipei_now_str(),
             "reason": reason
