@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
-from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, BREAKEVEN_LOCK_ATR_MULT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage
+from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, BREAKEVEN_LOCK_ATR_MULT, BREAKEVEN_LOCK_PROFIT_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -203,12 +203,14 @@ class PaperAccount:
                         pos["is_breakeven_moved"] = True
                         self.log(f"📈 [獲利追蹤止利上推] {symbol} 創新高 ({pos['highest_price']:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f}) [保本線地板: {npg_floor:.4f}]", "SUCCESS")
                 elif max_profit >= atr * BREAKEVEN_LOCK_ATR_MULT:
-                    # 獲利還沒到全額移動止利門檻，先鎖保本，避免回吐成虧損
+                    # 獲利還沒到全額移動止利門檻，先鎖住已獲利的一部分（而非只鎖保本），避免回吐成虧損
                     npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
-                    if npg_floor > pos["sl"]:
-                        pos["sl"] = npg_floor
+                    partial_lock = entry_p + (max_profit * BREAKEVEN_LOCK_PROFIT_PCT)
+                    lock_sl = max(partial_lock, npg_floor)
+                    if lock_sl > pos["sl"]:
+                        pos["sl"] = lock_sl
                         pos["is_breakeven_moved"] = True
-                        self.log(f"🔒 [保本鎖利] {symbol} 獲利達 {BREAKEVEN_LOCK_ATR_MULT}x ATR，SL 上移至保本線 ({npg_floor:.4f})", "SUCCESS")
+                        self.log(f"🔒 [保本鎖利] {symbol} 獲利達 {BREAKEVEN_LOCK_ATR_MULT}x ATR，SL 上移至 {pos['sl']:.4f}（鎖住已獲利 {BREAKEVEN_LOCK_PROFIT_PCT:.0%}）", "SUCCESS")
             else: # SHORT
                 if curr_p < pos["lowest_price"]:
                     pos["lowest_price"] = curr_p
@@ -232,10 +234,12 @@ class PaperAccount:
                         self.log(f"📉 [獲利追蹤止利下推] {symbol} 創新低 ({pos['lowest_price']:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f}) [保本線上限: {npg_ceiling:.4f}]", "SUCCESS")
                 elif max_profit >= atr * BREAKEVEN_LOCK_ATR_MULT:
                     npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
-                    if npg_ceiling < pos["sl"]:
-                        pos["sl"] = npg_ceiling
+                    partial_lock = entry_p - (max_profit * BREAKEVEN_LOCK_PROFIT_PCT)
+                    lock_sl = min(partial_lock, npg_ceiling)
+                    if lock_sl < pos["sl"]:
+                        pos["sl"] = lock_sl
                         pos["is_breakeven_moved"] = True
-                        self.log(f"🔒 [保本鎖利] {symbol} 獲利達 {BREAKEVEN_LOCK_ATR_MULT}x ATR，SL 下移至保本線 ({npg_ceiling:.4f})", "SUCCESS")
+                        self.log(f"🔒 [保本鎖利] {symbol} 獲利達 {BREAKEVEN_LOCK_ATR_MULT}x ATR，SL 下移至 {pos['sl']:.4f}（鎖住已獲利 {BREAKEVEN_LOCK_PROFIT_PCT:.0%}）", "SUCCESS")
 
             # 2. 24小時時間過濾 (超時平倉)
             if (now_ts - open_ts) >= 86400:
