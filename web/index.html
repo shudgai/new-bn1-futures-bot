@@ -174,6 +174,7 @@
                                 <th>方向</th>
                                 <th>入場價</th>
                                 <th>現價</th>
+                                <th>未實現損益</th>
                                 <th>數量</th>
                                 <th>止損 (SL)</th>
                                 <th>止利 (TP)</th>
@@ -186,13 +187,16 @@
                                 <td :class="pos.side === 'LONG' ? 'up' : 'down'">{{ pos.side }}</td>
                                 <td>{{ formatPrice(pos.entry_price) }}</td>
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
+                                <td :class="getPosUnrealizedPnl(pos) > 0 ? 'up' : getPosUnrealizedPnl(pos) < 0 ? 'down' : ''" style="font-weight:700;">
+                                    {{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT
+                                </td>
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
                                 <td style="color:var(--up)">{{ formatPrice(pos.tp) }}</td>
                                 <td><span style="font-size:11px; font-weight:700; color:var(--primary)">🤖 自動風控託管</span></td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
-                                <td colspan="8" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                                <td colspan="9" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
                             </tr>
                         </tbody>
                     </table>
@@ -315,6 +319,15 @@
                 getCurrPrice(symbol) {
                     if (!this.bot || !this.bot.tickers) return null;
                     return this.bot.tickers[symbol] || this.bot.tickers[`${symbol}:USDT`] || this.bot.tickers[symbol.replace('/USDT', '')] || null;
+                },
+                getPosUnrealizedPnl(pos) {
+                    const curr = this.getCurrPrice(pos.symbol);
+                    if (!curr) return 0;
+                    if (pos.side === 'LONG') {
+                        return (curr - pos.entry_price) * pos.qty;
+                    } else {
+                        return (pos.entry_price - curr) * pos.qty;
+                    }
                 },
                 async fetchStatus() {
                     try {
