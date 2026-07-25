@@ -166,16 +166,16 @@ class PaperAccount:
             atr = pos.get("atr", entry_p * 0.015)
             open_ts = pos.get("open_timestamp", now_ts)
 
-            # 1. 移動止損至保本價 (Trailing Stop to Breakeven when gain >= 1.5x ATR)
+            # 1. 移動止損至保本價 (Trailing Stop to Breakeven when gain >= 0.8x ATR)
             if not pos.get("is_breakeven_moved", False):
-                if side == "LONG" and (curr_p - entry_p) >= (1.5 * atr):
+                if side == "LONG" and (curr_p - entry_p) >= (0.8 * atr):
                     pos["sl"] = entry_p # 上移止損至保本價
                     pos["is_breakeven_moved"] = True
-                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 1.5x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
-                elif side == "SHORT" and (entry_p - curr_p) >= (1.5 * atr):
+                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 0.8x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
+                elif side == "SHORT" and (entry_p - curr_p) >= (0.8 * atr):
                     pos["sl"] = entry_p # 下移止損至保本價
                     pos["is_breakeven_moved"] = True
-                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 1.5x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
+                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 0.8x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
 
             # 2. 時間過濾超時平倉 (24 小時無效震盪自動平倉)
             if (now_ts - open_ts) >= 86400: # 86400秒 = 24小時

@@ -13,8 +13,8 @@ TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.8"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.2"))
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.4"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "1.4"))
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.003")) # 0.3% max chase threshold
 
 # 品質濾網控制參數
