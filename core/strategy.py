@@ -140,18 +140,18 @@ class SuperTrendKeltnerStrategy:
         st_flip_age = bars_since_supertrend_flip(df['st_direction'])
         is_st_fresh = (st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS)
 
-        # 品質濾網 4: 1h 大週期趨勢保護
-        is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
-        is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
+        # 品質濾網 4: 1h 大週期趨勢保護（放寬：只在 price 明顯低於 EMA 超過 2% 才禁多，明顯高於才禁空）
+        TREND_FILTER_MARGIN = 0.02  # 2% 容忍帶，橫盤整理期間不阻擋開倉
+        is_1h_bullish = (price >= ema_200_1h * (1 - TREND_FILTER_MARGIN)) if ema_200_1h is not None else True
+        is_1h_bearish = (price <= ema_200_1h * (1 + TREND_FILTER_MARGIN)) if ema_200_1h is not None else True
 
         # LONG 條件：突破 Keltner 通道上軌 + 5m EMA20 >= EMA50 + RSI 強勢
-        #            + ✅ 1h 大週期做多保護 + ✅ SuperTrend 非剛翻空 + ✅ SuperTrend 新鮮度門檻
+        #            + ✅ 1h 大週期做多保護 + ✅ SuperTrend 新鮮度門檻
         if (price >= kc_upper and
             curr['ema_20'] >= curr['ema_50'] and
             rsi >= RSI_LONG_THRESHOLD and
             has_min_volume and
             is_1h_bullish and          # ✅ 1h 趨勢向上才做多，禁止逆勢開倉
-            curr['st_direction'] != -1 and # ✅ SuperTrend 不能是空頭方向（允許剛轉換中）
             is_st_fresh):              # ✅ SuperTrend 新鮮度門檻
 
             # 進場追高動態容忍度
@@ -175,13 +175,12 @@ class SuperTrendKeltnerStrategy:
             }
 
         # SHORT 條件：跌破 Keltner 通道下軌 + 5m EMA20 <= EMA50 + RSI 弱勢
-        #             + ✅ 1h 大週期做空保護 + ✅ SuperTrend 非剛翻多 + ✅ SuperTrend 新鮮度門檻
+        #             + ✅ 1h 大週期做空保護 + ✅ SuperTrend 新鮮度門檻
         if (price <= kc_lower and
             curr['ema_20'] <= curr['ema_50'] and
             rsi <= RSI_SHORT_THRESHOLD and
             has_min_volume and
             is_1h_bearish and          # ✅ 1h 趨勢向下才做空，禁止逆勢開倉
-            curr['st_direction'] != 1 and  # ✅ SuperTrend 不能是多頭方向（允許剛轉換中）
             is_st_fresh):              # ✅ SuperTrend 新鮮度門檻
 
             # 進場殺跌動態容忍度
