@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables (Sensitive API keys)
+.env
+.env.local
+
+# Logs and runtime data
+*.log
+data/paper_account.json
+nohup.out
+
+# IDE
+.idea/
+.vscode/

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Binance Futures Bot 2.0 (Port 8006)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        :root {
+            --bg: #f4f6f9;
+            --card: #ffffff;
+            --border: #e2e8f0;
+            --text: #0f172a;
+            --muted: #64748b;
+            --primary: #2563eb;
+            --primary-bg: rgba(37, 99, 235, 0.1);
+            --up: #10b981;
+            --up-bg: rgba(16, 185, 129, 0.12);
+            --down: #ef4444;
+            --down-bg: rgba(239, 68, 68, 0.12);
+            --accent: #f59e0b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); color: var(--text); font-family: 'Outfit', sans-serif; min-height: 100vh; }
+
+        /* Navbar */
+        .topbar {
+            background: #ffffff;
+            border-bottom: 1px solid var(--border);
+            padding: 14px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .logo { font-size: 20px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+        .logo span { color: var(--primary); }
+        .badge {
+            font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
+        }
+        .badge-port { background: #e0e7ff; color: #4338ca; }
+        .badge-status { cursor: pointer; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; transition: all 0.2s; }
+        .badge-status.running { background: var(--up-bg); color: var(--up); border: 1px solid var(--up); }
+        .badge-status.stopped { background: var(--down-bg); color: var(--down); border: 1px solid var(--down); }
+
+        /* Main Container */
+        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+
+        /* Cards */
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .card-title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+
+        /* Coins strip */
+        .coin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
+        .coin-card { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: all 0.2s; }
+        .coin-card:hover { border-color: var(--primary); transform: translateY(-1px); }
+        .coin-name { font-size: 12px; font-weight: 700; color: var(--muted); }
+        .coin-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; margin-top: 4px; }
+
+        /* Stats Grid */
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat-box { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+        .stat-label { font-size: 11px; color: var(--muted); font-weight: 600; }
+        .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; margin-top: 4px; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); }
+        td { padding: 12px; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; }
+
+        .up { color: var(--up); font-weight: 700; }
+        .down { color: var(--down); font-weight: 700; }
+
+        /* Console Log */
+        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-radius: 10px; padding: 14px; max-height: 220px; overflow-y: auto; }
+        .log-item { margin-bottom: 6px; opacity: 0.9; }
+        .log-time { color: var(--muted); margin-right: 8px; }
+
+        /* Buttons */
+        .btn { padding: 8px 16px; border-radius: 8px; border: none; font-weight: 700; cursor: pointer; transition: all 0.2s; font-size: 13px; width: 100%; }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-danger { background: var(--down); color: #fff; }
+        .btn-success { background: var(--up); color: #fff; }
+
+        .input-group { margin-bottom: 12px; }
+        .input-group label { display: block; font-size: 11px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+        .input-group input, .input-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- TOPBAR -->
+        <div class="topbar">
+            <div class="logo">
+                <span>🚀</span> Binance Bot 2.0
+                <span class="badge badge-port">PORT {{ bot.port }}</span>
+                <span class="badge" style="background:#fef3c7; color:#d97706;">SIMULATION</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:16px;">
+                <span style="font-size:12px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
+                <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
+                    {{ bot.is_running ? '🟢 策略運行中' : '🔴 已停止' }}
+                </div>
+            </div>
+        </div>
+
+        <!-- MAIN LAYOUT -->
+        <div class="container">
+            <!-- LEFT CONTENT -->
+            <div>
+                <!-- COIN STRIP -->
+                <div class="coin-grid">
+                    <div v-for="(price, sym) in bot.tickers" :key="sym" class="coin-card" @click="selectedSymbol = sym">
+                        <div class="coin-name">{{ sym.replace('/USDT','') }}</div>
+                        <div class="coin-price">{{ price.toFixed(4) }}</div>
+                    </div>
+                </div>
+
+                <!-- STATS OVERVIEW -->
+                <div class="stats-grid" style="grid-template-columns: repeat(6, 1fr);">
+                    <div class="stat-box">
+                        <div class="stat-label">帳戶餘額 (USDT)</div>
+                        <div class="stat-val">{{ bot.balance.toFixed(2) }}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">總累計損益</div>
+                        <div :class="['stat-val', (bot.realized_pnl + bot.unrealized_pnl) > 0 ? 'up' : (bot.realized_pnl + bot.unrealized_pnl) < 0 ? 'down' : '']">
+                            {{ (bot.realized_pnl + bot.unrealized_pnl) > 0 ? '+' : '' }}{{ (bot.realized_pnl + bot.unrealized_pnl).toFixed(2) }}
+                        </div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">未實現損益</div>
+                        <div :class="['stat-val', bot.unrealized_pnl > 0 ? 'up' : bot.unrealized_pnl < 0 ? 'down' : '']">
+                            {{ bot.unrealized_pnl > 0 ? '+' : '' }}{{ bot.unrealized_pnl.toFixed(2) }}
+                        </div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">已實現利潤</div>
+                        <div :class="['stat-val', bot.realized_pnl > 0 ? 'up' : bot.realized_pnl < 0 ? 'down' : '']">
+                            {{ bot.realized_pnl > 0 ? '+' : '' }}{{ bot.realized_pnl.toFixed(2) }}
+                        </div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">單次交易金額</div>
+                        <div class="stat-val" style="color:var(--primary)">{{ bot.trade_amount }} USDT</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">動態槓桿</div>
+                        <div class="stat-val" style="color:var(--accent)">{{ bot.leverage }}x</div>
+                    </div>
+                </div>
+
+                <!-- POSITIONS TABLE -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>📊 當前持倉 (Active Positions)</span>
+                        <span style="font-size:11px; color:var(--muted)">{{ bot.positions.length }} 個部位</span>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>幣種</th>
+                                <th>方向</th>
+                                <th>入場價</th>
+                                <th>數量</th>
+                                <th>止損 (SL)</th>
+                                <th>止利 (TP)</th>
+                                <th>狀態</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="pos in bot.positions" :key="pos.symbol">
+                                <td><b>{{ pos.symbol }}</b></td>
+                                <td :class="pos.side === 'LONG' ? 'up' : 'down'">{{ pos.side }}</td>
+                                <td>{{ pos.entry_price.toFixed(4) }}</td>
+                                <td>{{ pos.qty }}</td>
+                                <td style="color:var(--down)">{{ pos.sl.toFixed(4) }}</td>
+                                <td style="color:var(--up)">{{ pos.tp.toFixed(4) }}</td>
+                                <td><span style="font-size:11px; font-weight:700; color:var(--primary)">🤖 自動風控託管</span></td>
+                            </tr>
+                            <tr v-if="bot.positions.length === 0">
+                                <td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- TRADE HISTORY TABLE -->
+                <div class="card">
+                    <div class="card-title">📜 近期交易明細 (Trade History)</div>
+                    <div style="max-height:220px; overflow-y:auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>時間</th>
+                                    <th>幣種</th>
+                                    <th>動作</th>
+                                    <th>價格</th>
+                                    <th>金額 (USDT)</th>
+                                    <th>手續費 (USDT)</th>
+                                    <th>淨損益 (扣手續費)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="t in bot.trades" :key="t.id">
+                                    <td>{{ t.time }}</td>
+                                    <td><b>{{ t.symbol }}</b></td>
+                                    <td :class="t.side === 'LONG' ? 'up' : 'down'">{{ t.action }}</td>
+                                    <td>{{ t.price.toFixed(4) }}</td>
+                                    <td>{{ t.amount }}</td>
+                                    <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
+                                    <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
+                                        {{ t.status === 'CLOSED' ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(2) : '-' }}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT PANEL CONTROLS -->
+            <div>
+                <!-- BOT STRATEGY INFO CARD -->
+                <div class="card">
+                    <div class="card-title">🤖 全自動量化交易託管</div>
+                    <div style="font-size:12px; color:var(--muted); line-height:1.7; margin-bottom:14px;">
+                        <p style="margin-bottom:8px;">✅ 系統全自動監控 K 線與 ATR 波動。</p>
+                        <p style="margin-bottom:8px;">✅ 觸發 SuperTrend & Keltner 突破即自動開倉。</p>
+                        <p>✅ 止損止利 (SL/TP) 與平倉風控由機器人全權自動執行。</p>
+                    </div>
+
+                    <!-- 明確大啟動 / 停止按鈕 -->
+                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot">
+                        {{ bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人' }}
+                    </button>
+                </div>
+
+                <!-- SYSTEM LOG CONSOLE -->
+                <div class="card">
+                    <div class="card-title">💻 系統日誌 (System Logs)</div>
+                    <div class="console">
+                        <div v-for="(log, i) in bot.logs" :key="i" class="log-item">
+                            <span class="log-time">[{{ log.time }}]</span>
+                            <span>{{ log.text }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+        createApp({
+            data() {
+                return {
+                    bot: {
+                        is_running: false,
+                        strategy: '',
+                        port: 8006,
+                        balance: 0,
+                        realized_pnl: 0,
+                        unrealized_pnl: 0,
+                        leverage: 5,
+                        symbols: [],
+                        tickers: {},
+                        positions: [],
+                        trades: [],
+                        logs: []
+                    },
+                    manualOrder: {
+                        symbol: 'BTC/USDT',
+                        amount: 50.0
+                    }
+                }
+            },
+            methods: {
+                async fetchStatus() {
+                    try {
+                        const res = await fetch('/api/status');
+                        const data = await res.json();
+                        this.bot = data;
+                    } catch (e) {
+                        console.error('Failed to fetch status', e);
+                    }
+                },
+                async toggleBot() {
+                    await fetch('/api/toggle', { method: 'POST' });
+                    await this.fetchStatus();
+                },
+                async placeOrder(side) {
+                    await fetch('/api/manual_order', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            symbol: this.manualOrder.symbol,
+                            side: side,
+                            amount: this.manualOrder.amount
+                        })
+                    });
+                    await this.fetchStatus();
+                },
+                async closePos(symbol) {
+                    await fetch('/api/manual_close', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ symbol })
+                    });
+                    await this.fetchStatus();
+                }
+            },
+            mounted() {
+                this.fetchStatus();
+                setInterval(this.fetchStatus, 2000);
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
