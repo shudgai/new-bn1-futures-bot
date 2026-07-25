@@ -69,26 +69,29 @@ class TradingEngine:
                         if vol_24h > 0 and vol_24h < 500000.0: # 24h交易量低於 50萬 USDT 跳過
                             continue
 
-                        df = await self.fetch_klines(symbol)
+                        df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
                         if df.empty or len(df) < 50:
                             continue
+
+                        df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
+                        ema_200_1h = None
+                        if not df_1h.empty and len(df_1h) >= 50:
+                            ema_200_1h = df_1h['close'].ewm(span=min(len(df_1h), 200), adjust=False).mean().iloc[-1]
 
                         price = df.iloc[-1]['close']
                         self.tickers[symbol] = price
 
                         # 2. 防插針檢查 (Anti-Spike Filter)
-                        # 計算最新一根 15m K線的高低幅度和 ATR 比率
                         recent_high = df.iloc[-1]['high']
                         recent_low = df.iloc[-1]['low']
                         atr = df.iloc[-1]['close'] * 0.015
                         candle_spread = recent_high - recent_low
 
-                        # 如果單根 K 線波幅超過 5 倍 ATR，判斷為異常插針 (Flash Spike)，暫停開倉
                         if candle_spread > (atr * 5.0):
                             self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x ATR)，過濾潛在假突破訊號", "WARNING")
                             continue
 
-                        sig = self.strategy.evaluate_signal(df)
+                        sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
                         if sig["action"] in ["BUY", "SELL"]:
                             side = sig["side"]
                             sl = sig["sl"]

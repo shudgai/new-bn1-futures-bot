@@ -99,7 +99,7 @@ class SuperTrendKeltnerStrategy:
         df['st_direction'] = direction
         return df
 
-    def evaluate_signal(self, df: pd.DataFrame) -> dict:
+    def evaluate_signal(self, df: pd.DataFrame, ema_200_1h: float = None) -> dict:
         if len(df) < 50:
             return {"action": "HOLD", "reason": "Not enough data"}
 
@@ -117,8 +117,12 @@ class SuperTrendKeltnerStrategy:
         # 1. 爆量確認：成交量需大於 50 週期均量的 1.15 倍 (防無效低量假突破)
         has_volume_surge = (vol >= vol_ma * 1.15) if vol_ma > 0 else True
 
-        # Long: SuperTrend Bullish AND Price >= Keltner Upper AND EMA 20 >= EMA 50 AND RSI >= 52 AND Volume Surge
-        if curr['st_direction'] == 1 and curr['close'] >= kc_upper and curr['ema_20'] >= curr['ema_50'] and rsi >= 52 and has_volume_surge:
+        # 2. 1h 大週期趨勢總指揮過濾 (多頭不逆勢做空，空頭不逆勢做多)
+        is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
+        is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
+
+        # Long: SuperTrend Bullish AND Price >= Keltner Upper AND EMA 20 >= EMA 50 AND RSI >= 52 AND Volume Surge AND 1h Bullish
+        if curr['st_direction'] == 1 and curr['close'] >= kc_upper and curr['ema_20'] >= curr['ema_50'] and rsi >= 52 and has_volume_surge and is_1h_bullish:
             # 進場突破距離過濾 (避免追高 > 0.3%)
             long_distance_ratio = (price - kc_upper) / kc_upper
             if long_distance_ratio > MAX_BREAKOUT_DISTANCE:
@@ -133,11 +137,11 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": f"5m Strong Bullish Breakout (VolSurge, Dist: {long_distance_ratio:.2%})"
+                "reason": f"5m Strong Bullish Breakout (VolSurge, 1h-Aligned, Dist: {long_distance_ratio:.2%})"
             }
 
-        # Short: SuperTrend Bearish AND Price <= Keltner Lower AND EMA 20 <= EMA 50 AND RSI <= 48 AND Volume Surge
-        if curr['st_direction'] == -1 and curr['close'] <= kc_lower and curr['ema_20'] <= curr['ema_50'] and rsi <= 48 and has_volume_surge:
+        # Short: SuperTrend Bearish AND Price <= Keltner Lower AND EMA 20 <= EMA 50 AND RSI <= 48 AND Volume Surge AND 1h Bearish
+        if curr['st_direction'] == -1 and curr['close'] <= kc_lower and curr['ema_20'] <= curr['ema_50'] and rsi <= 48 and has_volume_surge and is_1h_bearish:
             # 進場跌破距離過濾 (避免殺跌 > 0.3%)
             short_distance_ratio = (kc_lower - price) / kc_lower
             if short_distance_ratio > MAX_BREAKOUT_DISTANCE:
