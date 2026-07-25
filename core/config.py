@@ -35,6 +35,10 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "200"))
 TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "0.8")) # 獲利達 0.8x ATR 鎖定保本
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "1.5"))
 
+# --- 手續費與滑點預留設定 ---
+TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0004")) # 0.04% 吃單手續費
+SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單估計滑點預留
+
 DEFAULT_SYMBOLS = [
     "1000PEPE/USDT", "AAVE/USDT", "ADA/USDT", "APT/USDT", "AVAX/USDT", 
     "BTC/USDT", "DOGE/USDT", "ETH/USDT", "FET/USDT", "NEAR/USDT",

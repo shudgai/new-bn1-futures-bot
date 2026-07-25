@@ -149,8 +149,14 @@ class TradingEngine:
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
+            except (ccxt.NetworkError, ccxt.RequestTimeout) as e:
+                self.account.log(f"🌐 網路連線暫時中斷，正在自動重試... ({type(e).__name__})", "WARNING")
+                await asyncio.sleep(5)
+            except ccxt.ExchangeError as e:
+                self.account.log(f"⚠️ 交易所 API 權限或請求異常: {str(e)}", "WARNING")
+                await asyncio.sleep(5)
             except Exception as e:
-                self.account.log(f"⚠️ 引擎異常: {str(e)}", "WARNING")
+                self.account.log(f"⚠️ 引擎運作異常: {str(e)}", "WARNING")
                 await asyncio.sleep(5)
 
 # Singleton global instance

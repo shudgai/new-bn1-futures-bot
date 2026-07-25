@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
-from core.config import INITIAL_BALANCE, LEVERAGE
+from core.config import INITIAL_BALANCE, LEVERAGE, TAKER_FEE_RATE, SLIPPAGE_PCT
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -66,22 +66,24 @@ class PaperAccount:
         if symbol in self.positions or symbol in self.closing_lock:
             return False
 
-        qty = (amount_usdt * LEVERAGE) / price
-        fee = amount_usdt * 0.0004
+        # 模擬 0.03% 市價單滑點成本 (Slippage Reserve)
+        execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
+        qty = (amount_usdt * LEVERAGE) / execution_price
+        fee = (qty * execution_price) * TAKER_FEE_RATE
         self.balance -= fee
 
         pos = {
             "symbol": symbol,
             "side": side,
-            "entry_price": price,
+            "entry_price": execution_price,
             "qty": qty,
             "margin": amount_usdt,
             "sl": sl,
             "tp": tp,
-            "atr": atr if atr > 0 else price * 0.015,
+            "atr": atr if atr > 0 else execution_price * 0.015,
             "is_breakeven_moved": False,
-            "highest_price": price,
-            "lowest_price": price,
+            "highest_price": execution_price,
+            "lowest_price": execution_price,
             "open_timestamp": time.time(),
             "open_time": get_taipei_now_str(),
             "reason": reason
@@ -94,7 +96,7 @@ class PaperAccount:
             "symbol": symbol,
             "action": f"OPEN_{side}",
             "side": side,
-            "price": price,
+            "price": round(execution_price, 4),
             "qty": round(qty, 4),
             "amount": amount_usdt,
             "fee": round(fee, 4),
@@ -102,7 +104,7 @@ class PaperAccount:
             "status": "OPEN"
         }
         self.trades.insert(0, trade)
-        self.log(f"🚀 開倉成功 [{side}] {symbol} @ {price:.4f} (止損: {sl:.4f}, 止利: {tp:.4f})", "SUCCESS")
+        self.log(f"🚀 開倉成功 [{side}] {symbol} @ {execution_price:.4f} (含滑點 0.03%, 止損: {sl:.4f}, 止利: {tp:.4f})", "SUCCESS")
         self.save_state()
         return True
 
@@ -119,13 +121,16 @@ class PaperAccount:
             qty = pos["qty"]
             margin = pos["margin"]
 
-            if side == "LONG":
-                raw_pnl = (current_price - entry_price) * qty
-            else:
-                raw_pnl = (entry_price - current_price) * qty
+            # 平倉滑點預留
+            exec_close_price = current_price * (1 - SLIPPAGE_PCT) if side == "LONG" else current_price * (1 + SLIPPAGE_PCT)
 
-            open_fee = margin * 0.0004
-            close_fee = (qty * current_price) * 0.0004
+            if side == "LONG":
+                raw_pnl = (exec_close_price - entry_price) * qty
+            else:
+                raw_pnl = (entry_price - exec_close_price) * qty
+
+            open_fee = (qty * entry_price) * TAKER_FEE_RATE
+            close_fee = (qty * exec_close_price) * TAKER_FEE_RATE
             total_fee = open_fee + close_fee
             net_pnl = raw_pnl - total_fee
             self.balance += margin + net_pnl
