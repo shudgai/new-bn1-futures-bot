@@ -70,7 +70,7 @@ class PaperAccount:
         execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
         qty = (amount_usdt * LEVERAGE) / execution_price
         fee = (qty * execution_price) * TAKER_FEE_RATE
-        self.balance -= fee
+        self.balance -= (amount_usdt + fee)  # ✅ 扣除保證金 + 手續費（原本只扣手續費，導致餘額越交易越高）
 
         pos = {
             "symbol": symbol,
