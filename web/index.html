@@ -173,6 +173,7 @@
                                 <th>幣種</th>
                                 <th>方向</th>
                                 <th>入場價</th>
+                                <th>現價</th>
                                 <th>數量</th>
                                 <th>止損 (SL)</th>
                                 <th>止利 (TP)</th>
@@ -183,14 +184,15 @@
                             <tr v-for="pos in bot.positions" :key="pos.symbol">
                                 <td><b>{{ pos.symbol }}</b></td>
                                 <td :class="pos.side === 'LONG' ? 'up' : 'down'">{{ pos.side }}</td>
-                                <td>{{ pos.entry_price.toFixed(4) }}</td>
+                                <td>{{ formatPrice(pos.entry_price) }}</td>
+                                <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td>{{ pos.qty }}</td>
-                                <td style="color:var(--down)">{{ pos.sl.toFixed(4) }}</td>
-                                <td style="color:var(--up)">{{ pos.tp.toFixed(4) }}</td>
+                                <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
+                                <td style="color:var(--up)">{{ formatPrice(pos.tp) }}</td>
                                 <td><span style="font-size:11px; font-weight:700; color:var(--primary)">🤖 自動風控託管</span></td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
-                                <td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                                <td colspan="8" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
                             </tr>
                         </tbody>
                     </table>
@@ -309,6 +311,10 @@
                         return parts[0] + '.' + parts[1].slice(0, 8);
                     }
                     return s;
+                },
+                getCurrPrice(symbol) {
+                    if (!this.bot || !this.bot.tickers) return null;
+                    return this.bot.tickers[symbol] || this.bot.tickers[`${symbol}:USDT`] || this.bot.tickers[symbol.replace('/USDT', '')] || null;
                 },
                 async fetchStatus() {
                     try {
