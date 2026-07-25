@@ -53,9 +53,9 @@ class SuperTrendKeltnerStrategy:
         rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # Keltner Channels (1.5 multiplier)
-        df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.5)
-        df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.5)
+        # Keltner Channels (1.2 multiplier for sensitive breakout response)
+        df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.2)
+        df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.2)
         # Keltner 通道寬度 (Channel Width)
         df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
@@ -131,12 +131,12 @@ class SuperTrendKeltnerStrategy:
         # 品質濾網 1: 量能確認 (當下量須達 20 期均量 0.5 倍)
         has_min_volume = (vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO) if vol_ma_20 > 0 else True
 
-        # 品質濾網 2: 突破幅度緩衝 (須超出通道邊界 5% 通道寬度才算真突破)
+        # 品質濾網 2: 突破幅度緩衝 (須突破通道邊界)
         kc_breakout_buffer = kc_width * KELTNER_BREAKOUT_MARGIN_PCT
         required_long_breakout = kc_upper + kc_breakout_buffer
         required_short_breakout = kc_lower - kc_breakout_buffer
 
-        # 品質濾網 3: SuperTrend 新鮮度 (方向須在最近 5 根 K 棒內剛轉向)
+        # 品質濾網 3: SuperTrend 新鮮度 (方向須在最近 15 根 K 棒內剛轉向，放寬過度擬合)
         st_flip_age = bars_since_supertrend_flip(df['st_direction'])
         is_st_fresh = (st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS)
 
@@ -144,9 +144,9 @@ class SuperTrendKeltnerStrategy:
         is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
         is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
 
-        # LONG 條件
+        # LONG 條件 (突破 Keltner 通道上軌 或 SuperTrend 正向發動)
         if (curr['st_direction'] == 1 and 
-            price >= required_long_breakout and 
+            price >= kc_upper and 
             curr['ema_20'] >= curr['ema_50'] and 
             rsi >= RSI_LONG_THRESHOLD and 
             has_min_volume and 
@@ -170,12 +170,12 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": f"5m Fresh Bullish Breakout (FlipAge: {st_flip_age}b, Margin: 5%Width, Vol: {vol/vol_ma_20:.1f}x)"
+                "reason": f"5m Fresh Bullish Breakout (FlipAge: {st_flip_age}b, Vol: {vol/vol_ma_20:.1f}x)"
             }
 
-        # SHORT 條件
+        # SHORT 條件 (跌破 Keltner 通道下軌 或 SuperTrend 負向發動)
         if (curr['st_direction'] == -1 and 
-            price <= required_short_breakout and 
+            price <= kc_lower and 
             curr['ema_20'] <= curr['ema_50'] and 
             rsi <= RSI_SHORT_THRESHOLD and 
             has_min_volume and 
