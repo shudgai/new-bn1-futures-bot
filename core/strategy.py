@@ -10,14 +10,16 @@ from core.indicators import bars_since_supertrend_flip
 
 class SuperTrendKeltnerStrategy:
     """
-    高精度量化引擎 - 精準狙擊版本 (Sniper Mode)
+    高精度量化引擎 - 回調狙擊版本 (Pullback Sniper Mode)
     核心邏輯：
     1. 底線防禦 (Mandatory)：大週期趨勢 (1h EMA50) 與 SuperTrend 方向必須一致。
     2. 動態評分 (Scoring)：Keltner 突破、量能、RSI、訊號新鮮度 進行加權評分。
-    3. 進場決策三段式：
-       - 評分 >= 90 且追高距離 <= 0.2% → BUY_NOW  (立即開倉)
-       - 評分 >= 90 且追高距離 <= 0.7% → WAIT_PULLBACK (回調待命)
+    3. 進場決策「回調優先」三段式：
+       - 評分 >= 90 且超出 KC 距離 <= 0.1% → BUY_NOW  (剛突破，立即開倉)
+       - 評分 >= 90 且超出 KC 距離 > 0.1% → WAIT_PULLBACK (已追高，等回踩 KC 上軌)
        - 其餘 → HOLD
+    修正原則：KC突破後動量往往已接近末段，應等待回踩 KC 軌道才進場，
+    而非在突破高點追入，避免一開倉就面臨回落。
     """
     def __init__(self, atr_period=10, atr_multiplier=3.0):
         self.atr_period = atr_period
@@ -180,58 +182,56 @@ class SuperTrendKeltnerStrategy:
         else:
             score_details.append("Freshness_Fail")
 
-        # --- 3. 精準狙擊最終決策 (Sniper Mode) ---
+        # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
+        # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
         # 進場門檻：總分 >= MIN_SCORE_THRESHOLD (90 分)
         if score >= MIN_SCORE_THRESHOLD:
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
 
                 if dist <= MAX_BREAKOUT_DISTANCE:
-                    # ✅ A段：評分足且進場點極佳 → 立即開倉
+                    # ✅ A段：剛剛突破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
                     sl = price - (atr * STOP_LOSS_MULTIPLIER)
                     tp = price + (atr * TAKE_PROFIT_MULTIPLIER)
                     return {
                         "action": "BUY", "side": "LONG", "price": price,
                         "sl": sl, "tp": tp, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower,
-                        "reason": f"Sniper_BUY_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
+                        "reason": f"Pullback_BUY_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
                     }
-                elif dist <= (MAX_BREAKOUT_DISTANCE + 0.005):
-                    # ⏳ B段：評分足但价格稍高，進入「回調待命」狀態
+                else:
+                    # ⏳ B段（核心修正）：突破後價格已離 KC 上軌太遠 → 一律等回踩 KC 上軌再進場
+                    # 回調目標：KC 上軌（突破後正常回踩的支撐位）
                     return {
                         "action": "WAIT_PULLBACK", "side": "LONG",
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower,
-                        "target_zone": kc_upper,  # 回調目標：KC 上軌附近
-                        "reason": f"Sniper_WAIT_PULLBACK({score}) | dist={dist:.2%} | {', '.join(score_details)}"
+                        "target_zone": kc_upper,  # 回調目標：KC 上軌（突破後的第一道支撐）
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
                     }
-                else:
-                    return {"action": "HOLD", "reason": f"Score_Pass({score}), but Chase_Limit_Exceeded({dist:.2%})"}
 
             else:  # SHORT
                 dist = (kc_lower - price) / kc_lower
 
                 if dist <= MAX_BREAKOUT_DISTANCE:
-                    # ✅ A段：評分足且進場點極佳 → 立即開倉
+                    # ✅ A段：剛剛跌破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
                     sl = price + (atr * STOP_LOSS_MULTIPLIER)
                     tp = price - (atr * TAKE_PROFIT_MULTIPLIER)
                     return {
                         "action": "SELL", "side": "SHORT", "price": price,
                         "sl": sl, "tp": tp, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower,
-                        "reason": f"Sniper_SELL_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
+                        "reason": f"Pullback_SELL_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
                     }
-                elif dist <= (MAX_BREAKOUT_DISTANCE + 0.005):
-                    # ⏳ B段：評分足但价格稍低，進入「回調待命」狀態
+                else:
+                    # ⏳ B段（核心修正）：跌破後價格已離 KC 下軌太遠 → 一律等反彈回 KC 下軌再做空
                     return {
                         "action": "WAIT_PULLBACK", "side": "SHORT",
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower,
-                        "target_zone": kc_lower,  # 回調目標：KC 下軌附近
-                        "reason": f"Sniper_WAIT_PULLBACK({score}) | dist={dist:.2%} | {', '.join(score_details)}"
+                        "target_zone": kc_lower,  # 回調目標：KC 下軌（跌破後的第一道阻力）
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
                     }
-                else:
-                    return {"action": "HOLD", "reason": f"Score_Pass({score}), but Chase_Limit_Exceeded({dist:.2%})"}
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
 
