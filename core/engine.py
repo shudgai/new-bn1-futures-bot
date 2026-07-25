@@ -1,4 +1,5 @@
 import asyncio
+import time
 import ccxt.async_support as ccxt
 import pandas as pd
 from typing import Dict, List
