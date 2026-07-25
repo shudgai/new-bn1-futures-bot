@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
-from core.config import INITIAL_BALANCE, LEVERAGE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, NET_PROFIT_GUARANTEE_BUFFER
+from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -62,13 +62,15 @@ class PaperAccount:
         self.logs.append(entry)
         self.save_state()
 
-    def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str, atr: float = 0.0):
+    def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str, atr: float = 0.0, leverage: int = None):
         if symbol in self.positions or symbol in self.closing_lock:
             return False
 
+        leverage = leverage if leverage is not None else get_leverage(symbol)
+
         # 模擬 0.03% 市價單滑點成本 (Slippage Reserve)
         execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
-        qty = (amount_usdt * LEVERAGE) / execution_price
+        qty = (amount_usdt * leverage) / execution_price
         fee = (qty * execution_price) * TAKER_FEE_RATE
         self.balance -= (amount_usdt + fee)  # ✅ 扣除保證金 + 手續費（原本只扣手續費，導致餘額越交易越高）
 
@@ -78,6 +80,7 @@ class PaperAccount:
             "entry_price": execution_price,
             "qty": qty,
             "margin": amount_usdt,
+            "leverage": leverage,
             "sl": sl,
             "tp": tp,
             "atr": atr if atr > 0 else execution_price * 0.015,
@@ -104,7 +107,7 @@ class PaperAccount:
             "status": "OPEN"
         }
         self.trades.insert(0, trade)
-        self.log(f"🚀 開倉成功 [{side}] {symbol} @ {execution_price:.4f} (含滑點 0.03%, 止損: {sl:.4f}, 止利: {tp:.4f})", "SUCCESS")
+        self.log(f"🚀 開倉成功 [{side}] {symbol} @ {execution_price:.4f} ({leverage}x槓桿, 含滑點 0.03%, 止損: {sl:.4f}, 止利: {tp:.4f})", "SUCCESS")
         self.save_state()
         return True
 

@@ -6,8 +6,21 @@ load_dotenv()
 PORT = int(os.getenv("PORT", "8006"))
 PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
 INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10000.0"))
-LEVERAGE = int(os.getenv("LEVERAGE", "5"))
+LEVERAGE = int(os.getenv("LEVERAGE", "5"))  # 預設槓桿：SYMBOL_LEVERAGE 未列出的幣種使用此值
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "3"))
+
+# --- 依市值/波動性分級槓桿 ---
+# 主流大市值幣波動小，給高槓桿；高波動迷因幣給低槓桿，控制風險一致性
+SYMBOL_LEVERAGE = {
+    "BTC/USDT": 10, "ETH/USDT": 10,
+    "SOL/USDT": 8, "AVAX/USDT": 8, "AAVE/USDT": 8, "UNI/USDT": 8,
+    "ADA/USDT": 6, "APT/USDT": 6, "DOGE/USDT": 6, "NEAR/USDT": 6,
+    "SUI/USDT": 6, "TAO/USDT": 6, "FET/USDT": 6,
+    "WIF/USDT": 3, "1000PEPE/USDT": 3,
+}
+
+def get_leverage(symbol: str) -> int:
+    return SYMBOL_LEVERAGE.get(symbol, LEVERAGE)
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")

@@ -156,8 +156,8 @@
                         <div class="stat-val" style="color:var(--primary)">{{ bot.trade_amount }} USDT</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">動態槓桿</div>
-                        <div class="stat-val" style="color:var(--accent)">{{ bot.leverage }}x</div>
+                        <div class="stat-label">分級槓桿 (依幣種)</div>
+                        <div class="stat-val" style="color:var(--accent)">{{ leverageRangeText }}</div>
                     </div>
                 </div>
 
@@ -172,6 +172,7 @@
                             <tr>
                                 <th>幣種</th>
                                 <th>方向</th>
+                                <th>槓桿</th>
                                 <th>入場價</th>
                                 <th>現價</th>
                                 <th>未實現損益</th>
@@ -185,6 +186,7 @@
                             <tr v-for="pos in bot.positions" :key="pos.symbol">
                                 <td><b>{{ pos.symbol }}</b></td>
                                 <td :class="pos.side === 'LONG' ? 'up' : 'down'">{{ pos.side }}</td>
+                                <td>{{ pos.leverage || getLeverage(pos.symbol) }}x</td>
                                 <td>{{ formatPrice(pos.entry_price) }}</td>
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td :class="getPosUnrealizedPnl(pos) > 0 ? 'up' : getPosUnrealizedPnl(pos) < 0 ? 'down' : ''" style="font-weight:700;">
@@ -199,7 +201,7 @@
                                 </td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
-                                <td colspan="9" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                                <td colspan="10" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
                             </tr>
                         </tbody>
                     </table>
@@ -283,6 +285,7 @@
                         realized_pnl: 0,
                         unrealized_pnl: 0,
                         leverage: 5,
+                        leverage_map: {},
                         symbols: [],
                         tickers: {},
                         positions: [],
@@ -307,9 +310,19 @@
                         }
                     }
                     return list.sort((a, b) => a.name.localeCompare(b.name));
+                },
+                leverageRangeText() {
+                    const vals = Object.values(this.bot.leverage_map || {});
+                    if (vals.length === 0) return this.bot.leverage + 'x';
+                    const min = Math.min(...vals);
+                    const max = Math.max(...vals);
+                    return min === max ? min + 'x' : min + 'x ~ ' + max + 'x';
                 }
             },
             methods: {
+                getLeverage(symbol) {
+                    return (this.bot.leverage_map && this.bot.leverage_map[symbol]) || this.bot.leverage;
+                },
                 formatPrice(p) {
                     if (p === undefined || p === null) return '-';
                     const s = p.toString();

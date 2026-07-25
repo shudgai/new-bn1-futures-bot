@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from core.config import PORT, DEFAULT_SYMBOLS, LEVERAGE, TRADE_AMOUNT_USDT
+from core.config import PORT, DEFAULT_SYMBOLS, LEVERAGE, SYMBOL_LEVERAGE, TRADE_AMOUNT_USDT
 from core.engine import engine
 
 app = FastAPI(title="Binance Futures Bot 2.0")
@@ -44,6 +44,7 @@ async def get_status():
         "realized_pnl": round(engine.account.realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
         "leverage": LEVERAGE,
+        "leverage_map": SYMBOL_LEVERAGE,
         "trade_amount": TRADE_AMOUNT_USDT,
         "symbols": DEFAULT_SYMBOLS,
         "tickers": engine.tickers,
