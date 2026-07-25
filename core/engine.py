@@ -33,7 +33,7 @@ class TradingEngine:
         await self.exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
 
-    async def fetch_klines(self, symbol: str, timeframe: str = "15m", limit: int = 100) -> pd.DataFrame:
+    async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -102,7 +102,8 @@ class TradingEngine:
                                 amount_usdt=TRADE_AMOUNT_USDT,
                                 sl=sl,
                                 tp=tp,
-                                reason=reason
+                                reason=reason,
+                                atr=sig.get("atr", 0.0)
                             )
 
                 await asyncio.sleep(5)

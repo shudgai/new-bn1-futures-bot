@@ -119,11 +119,11 @@
         <div class="container">
             <!-- LEFT CONTENT -->
             <div>
-                <!-- COIN STRIP -->
+                <!-- COIN STRIP (ALPHABETICAL ORDER) -->
                 <div class="coin-grid">
-                    <div v-for="(price, sym) in bot.tickers" :key="sym" class="coin-card" @click="selectedSymbol = sym">
-                        <div class="coin-name">{{ sym.replace('/USDT','') }}</div>
-                        <div class="coin-price">{{ price.toFixed(4) }}</div>
+                    <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card">
+                        <div class="coin-name">{{ coin.name }}</div>
+                        <div class="coin-price">{{ formatPrice(coin.price) }}</div>
                     </div>
                 </div>
 
@@ -286,7 +286,30 @@
                     }
                 }
             },
+            computed: {
+                sortedTickers() {
+                    if (!this.bot || !this.bot.tickers) return [];
+                    const list = [];
+                    for (const [sym, price] of Object.entries(this.bot.tickers)) {
+                        const cleanName = sym.replace('/USDT', '').replace(':USDT', '');
+                        // Avoid duplicates if both formats exist
+                        if (!list.some(item => item.name === cleanName)) {
+                            list.push({ sym, name: cleanName, price });
+                        }
+                    }
+                    return list.sort((a, b) => a.name.localeCompare(b.name));
+                }
+            },
             methods: {
+                formatPrice(p) {
+                    if (p === undefined || p === null) return '-';
+                    const s = p.toString();
+                    if (s.includes('.')) {
+                        const parts = s.split('.');
+                        return parts[0] + '.' + parts[1].slice(0, 8);
+                    }
+                    return s;
+                },
                 async fetchStatus() {
                     try {
                         const res = await fetch('/api/status');

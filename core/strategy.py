@@ -1,14 +1,18 @@
 import pandas as pd
 import numpy as np
+from core.config import STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE
 
 class SuperTrendKeltnerStrategy:
     """
-    New Quantitative Strategy Engine:
-    - SuperTrend (ATR multiplier 3.0, period 10)
-    - Keltner Channel Breakout (EMA 20, ATR multiplier 1.5)
-    - Dynamic 50/200 Trend Bias Filter
+    High-Frequency Scalping Engine (5m Timeframe):
+    - SuperTrend (ATR multiplier 2.0, period 10 for faster response)
+    - Keltner Channel Breakout (EMA 20, ATR multiplier 1.2)
+    - Fast Trend Filter (EMA 20 vs EMA 50)
+    - Dynamic RSI Confirmation (RSI 14)
+    - Entry Breakout Distance Filter (MAX_BREAKOUT_DISTANCE = 0.3%)
+    - Dual-Tuning Risk Control: SL = 2.0x ATR, TP = 2.5x ATR
     """
-    def __init__(self, atr_period=10, atr_multiplier=3.0):
+    def __init__(self, atr_period=10, atr_multiplier=2.0):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
 
@@ -25,14 +29,20 @@ class SuperTrendKeltnerStrategy:
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         df['atr'] = tr.rolling(window=self.atr_period).mean()
 
-        # EMAs
+        # EMAs (Faster 20 & 50)
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
-        df['ema_200'] = close.ewm(span=200, adjust=False).mean()
 
-        # Keltner Channels
-        df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.5)
-        df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.5)
+        # RSI 14
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / (loss + 1e-9)
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # Keltner Channels (Faster 1.2 multiplier)
+        df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.2)
+        df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.2)
 
         # SuperTrend Calculation
         hl2 = (high + low) / 2
@@ -86,21 +96,28 @@ class SuperTrendKeltnerStrategy:
         return df
 
     def evaluate_signal(self, df: pd.DataFrame) -> dict:
-        if len(df) < 50:
+        if len(df) < 30:
             return {"action": "HOLD", "reason": "Not enough data"}
 
         df = self.compute_indicators(df)
         curr = df.iloc[-1]
-        prev = df.iloc[-2]
-
         price = curr['close']
         atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
+        rsi = curr['rsi']
 
-        # Signal rules
-        # Long: SuperTrend turns bullish AND price breaks above Keltner Upper AND EMA 50 > EMA 200
-        if curr['st_direction'] == 1 and curr['close'] > curr['kc_upper'] and curr['ema_50'] >= curr['ema_200']:
-            sl = price - (atr * 1.5)
-            tp = price + (atr * 3.0)
+        kc_upper = curr['kc_upper']
+        kc_lower = curr['kc_lower']
+
+        # Signal rules for 5m Scalping
+        # Long: SuperTrend Bullish AND Price >= Keltner Upper AND EMA 20 >= EMA 50 AND RSI >= 45
+        if curr['st_direction'] == 1 and curr['close'] >= kc_upper and curr['ema_20'] >= curr['ema_50'] and rsi >= 45:
+            # 1. 進場突破距離過濾 (避免已經暴漲/追高 > 0.3%)
+            long_distance_ratio = (price - kc_upper) / kc_upper
+            if long_distance_ratio > MAX_BREAKOUT_DISTANCE:
+                return {"action": "HOLD", "reason": f"突破追高過大 ({long_distance_ratio:.2%} > Max {MAX_BREAKOUT_DISTANCE:.2%})"}
+
+            sl = price - (atr * STOP_LOSS_MULTIPLIER)
+            tp = price + (atr * TAKE_PROFIT_MULTIPLIER)
             return {
                 "action": "BUY",
                 "side": "LONG",
@@ -108,13 +125,18 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": "SuperTrend Bullish + Keltner Upper Breakout"
+                "reason": f"5m Bullish Breakout (Dist: {long_distance_ratio:.2%})"
             }
 
-        # Short: SuperTrend turns bearish AND price breaks below Keltner Lower AND EMA 50 <= EMA 200
-        if curr['st_direction'] == -1 and curr['close'] < curr['kc_lower'] and curr['ema_50'] <= curr['ema_200']:
-            sl = price + (atr * 1.5)
-            tp = price - (atr * 3.0)
+        # Short: SuperTrend Bearish AND Price <= Keltner Lower AND EMA 20 <= EMA 50 AND RSI <= 55
+        if curr['st_direction'] == -1 and curr['close'] <= kc_lower and curr['ema_20'] <= curr['ema_50'] and rsi <= 55:
+            # 1. 進場跌破距離過濾 (避免已經暴跌/殺跌 > 0.3%)
+            short_distance_ratio = (kc_lower - price) / kc_lower
+            if short_distance_ratio > MAX_BREAKOUT_DISTANCE:
+                return {"action": "HOLD", "reason": f"跌破殺跌過大 ({short_distance_ratio:.2%} > Max {MAX_BREAKOUT_DISTANCE:.2%})"}
+
+            sl = price + (atr * STOP_LOSS_MULTIPLIER)
+            tp = price - (atr * TAKE_PROFIT_MULTIPLIER)
             return {
                 "action": "SELL",
                 "side": "SHORT",
@@ -122,7 +144,7 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": "SuperTrend Bearish + Keltner Lower Breakout"
+                "reason": f"5m Bearish Breakout (Dist: {short_distance_ratio:.2%})"
             }
 
         return {"action": "HOLD", "reason": "No entry trigger"}

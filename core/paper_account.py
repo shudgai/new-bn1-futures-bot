@@ -62,7 +62,7 @@ class PaperAccount:
         self.logs.append(entry)
         self.save_state()
 
-    def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str):
+    def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str, atr: float = 0.0):
         if symbol in self.positions or symbol in self.closing_lock:
             return False
 
@@ -78,6 +78,9 @@ class PaperAccount:
             "margin": amount_usdt,
             "sl": sl,
             "tp": tp,
+            "atr": atr if atr > 0 else price * 0.015,
+            "is_breakeven_moved": False,
+            "open_timestamp": time.time(),
             "open_time": get_taipei_now_str(),
             "reason": reason
         }
@@ -150,24 +153,48 @@ class PaperAccount:
 
     def update_positions(self, ticker_prices: Dict[str, float]):
         total_unrealized = 0.0
+        now_ts = time.time()
+
         for symbol, pos in list(self.positions.items()):
-            if symbol not in ticker_prices:
+            curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
+            if curr_p is None:
                 continue
-            curr_p = ticker_prices[symbol]
             side = pos["side"]
+            entry_p = pos["entry_price"]
             sl = pos["sl"]
             tp = pos["tp"]
+            atr = pos.get("atr", entry_p * 0.015)
+            open_ts = pos.get("open_timestamp", now_ts)
 
+            # 1. 移動止損至保本價 (Trailing Stop to Breakeven when gain >= 1.5x ATR)
+            if not pos.get("is_breakeven_moved", False):
+                if side == "LONG" and (curr_p - entry_p) >= (1.5 * atr):
+                    pos["sl"] = entry_p # 上移止損至保本價
+                    pos["is_breakeven_moved"] = True
+                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 1.5x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
+                elif side == "SHORT" and (entry_p - curr_p) >= (1.5 * atr):
+                    pos["sl"] = entry_p # 下移止損至保本價
+                    pos["is_breakeven_moved"] = True
+                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 1.5x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
+
+            # 2. 時間過濾超時平倉 (24 小時無效震盪自動平倉)
+            if (now_ts - open_ts) >= 86400: # 86400秒 = 24小時
+                self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
+                continue
+
+            # 3. 正常 SL / TP 比對平倉
             if side == "LONG":
-                unrealized = (curr_p - pos["entry_price"]) * pos["qty"]
-                if curr_p <= sl:
-                    self.close_position(symbol, curr_p, "觸發止損 (Stop-Loss)")
+                unrealized = (curr_p - entry_p) * pos["qty"]
+                if curr_p <= pos["sl"]:
+                    reason = "觸發保本止損 (Breakeven)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    self.close_position(symbol, curr_p, reason)
                 elif curr_p >= tp:
                     self.close_position(symbol, curr_p, "觸發止利 (Take-Profit)")
             else: # SHORT
-                unrealized = (pos["entry_price"] - curr_p) * pos["qty"]
-                if curr_p >= sl:
-                    self.close_position(symbol, curr_p, "觸發止損 (Stop-Loss)")
+                unrealized = (curr_p - entry_p) * pos["qty"] * -1
+                if curr_p >= pos["sl"]:
+                    reason = "觸發保本止損 (Breakeven)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    self.close_position(symbol, curr_p, reason)
                 elif curr_p <= tp:
                     self.close_position(symbol, curr_p, "觸發止利 (Take-Profit)")
 
