@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
-    KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
-    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD
+    KELTNER_ATR_MULTIPLIER, KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, 
+    SUPERTREND_MAX_FLIP_AGE_BARS, RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -53,9 +53,9 @@ class SuperTrendKeltnerStrategy:
         rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # Keltner Channels (1.2 multiplier for sensitive breakout response)
-        df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.2)
-        df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.2)
+        # Keltner Channels (KELTNER_ATR_MULTIPLIER for sensitive breakout response)
+        df['kc_upper'] = df['ema_20'] + (df['atr'] * KELTNER_ATR_MULTIPLIER)
+        df['kc_lower'] = df['ema_20'] - (df['atr'] * KELTNER_ATR_MULTIPLIER)
         # Keltner 通道寬度 (Channel Width)
         df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
@@ -145,13 +145,14 @@ class SuperTrendKeltnerStrategy:
         is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
 
         # LONG 條件：突破 Keltner 通道上軌 + 5m EMA20 >= EMA50 + RSI 強勢
-        #            + ✅ 1h 大週期做多保護 + ✅ SuperTrend 非剛翻空
+        #            + ✅ 1h 大週期做多保護 + ✅ SuperTrend 非剛翻空 + ✅ SuperTrend 新鮮度門檻
         if (price >= kc_upper and
             curr['ema_20'] >= curr['ema_50'] and
             rsi >= RSI_LONG_THRESHOLD and
             has_min_volume and
             is_1h_bullish and          # ✅ 1h 趨勢向上才做多，禁止逆勢開倉
-            curr['st_direction'] != -1):  # ✅ SuperTrend 不能是空頭方向（允許剛轉換中）
+            curr['st_direction'] != -1 and # ✅ SuperTrend 不能是空頭方向（允許剛轉換中）
+            is_st_fresh):              # ✅ SuperTrend 新鮮度門檻
 
             # 進場追高動態容忍度
             long_distance_ratio = (price - kc_upper) / kc_upper
@@ -174,13 +175,14 @@ class SuperTrendKeltnerStrategy:
             }
 
         # SHORT 條件：跌破 Keltner 通道下軌 + 5m EMA20 <= EMA50 + RSI 弱勢
-        #             + ✅ 1h 大週期做空保護 + ✅ SuperTrend 非剛翻多
+        #             + ✅ 1h 大週期做空保護 + ✅ SuperTrend 非剛翻多 + ✅ SuperTrend 新鮮度門檻
         if (price <= kc_lower and
             curr['ema_20'] <= curr['ema_50'] and
             rsi <= RSI_SHORT_THRESHOLD and
             has_min_volume and
             is_1h_bearish and          # ✅ 1h 趨勢向下才做空，禁止逆勢開倉
-            curr['st_direction'] != 1):  # ✅ SuperTrend 不能是多頭方向（允許剛轉換中）
+            curr['st_direction'] != 1 and  # ✅ SuperTrend 不能是多頭方向（允許剛轉換中）
+            is_st_fresh):              # ✅ SuperTrend 新鮮度門檻
 
             # 進場殺跌動態容忍度
             short_distance_ratio = (kc_lower - price) / kc_lower
