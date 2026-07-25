@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
-    KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS
+    KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
+    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -147,7 +148,7 @@ class SuperTrendKeltnerStrategy:
         if (curr['st_direction'] == 1 and 
             price >= required_long_breakout and 
             curr['ema_20'] >= curr['ema_50'] and 
-            rsi >= 52 and 
+            rsi >= RSI_LONG_THRESHOLD and 
             has_min_volume and 
             is_st_fresh and 
             is_1h_bullish):
@@ -173,7 +174,7 @@ class SuperTrendKeltnerStrategy:
         if (curr['st_direction'] == -1 and 
             price <= required_short_breakout and 
             curr['ema_20'] <= curr['ema_50'] and 
-            rsi <= 48 and 
+            rsi <= RSI_SHORT_THRESHOLD and 
             has_min_volume and 
             is_st_fresh and 
             is_1h_bearish):

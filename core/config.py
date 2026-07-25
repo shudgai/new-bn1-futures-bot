@@ -13,14 +13,27 @@ TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 
+# --- 風控參數 ---
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.4"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "1.4"))
-MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.003")) # 0.3% max chase threshold
+MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.003"))
 
-# 品質濾網控制參數
+# --- 品質濾網控制參數 (對齊 7 大條件) ---
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.05"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.5"))
 SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "5"))
+
+# --- 動態 RSI 濾網 ---
+RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "52"))
+RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "48"))
+
+# --- 大週期趨勢總指揮 ---
+TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
+TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "200"))
+
+# --- 動態追蹤止利參數 ---
+TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "0.8")) # 獲利達 0.8x ATR 鎖定保本
+TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "1.5"))
 
 DEFAULT_SYMBOLS = [
     "1000PEPE/USDT", "AAVE/USDT", "ADA/USDT", "APT/USDT", "AVAX/USDT", 
