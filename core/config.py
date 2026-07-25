@@ -33,7 +33,7 @@ TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
 # --- 動態追蹤止利參數 ---
-TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "1.2")) # 獲利達 1.2x ATR 才鎖定保本
+TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "0.5")) # 獲利達 0.5x ATR 即啟動鎖利保本
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "2.5"))
 
 # --- 手續費與滑點預留設定 ---

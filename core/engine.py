@@ -81,8 +81,12 @@ class TradingEngine:
                 # 1. 更新實時價格
                 await self.update_market_prices()
 
-                # 2. 更新與執行持倉部位（包含動態追蹤止利 0.8x/1.5x ATR 與 SL/TP 觸發）
+                # 2. 更新與執行持倉部位
+                prev_positions = set(self.account.positions.keys())
                 self.account.update_positions(self.tickers)
+                closed_symbols = prev_positions - set(self.account.positions.keys())
+                for csym in closed_symbols:
+                    self.cooldowns[csym] = time.time()
 
                 # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
                 await self.update_1h_trend_cache()
@@ -92,8 +96,13 @@ class TradingEngine:
                 if available_slots > 0:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
 
+                    now_time = time.time()
                     for symbol in DEFAULT_SYMBOLS:
                         if symbol in self.account.positions:
+                            continue
+
+                        # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
+                        if symbol in self.cooldowns and (now_time - self.cooldowns[symbol]) < 900:
                             continue
 
                         # 4.1 低流動性過濾
