@@ -49,8 +49,14 @@ class TradingEngine:
             tickers = await self.exchange.fetch_tickers(DEFAULT_SYMBOLS)
             for sym, t in tickers.items():
                 if 'last' in t and t['last'] is not None:
-                    self.tickers[sym] = float(t['last'])
+                    price = float(t['last'])
+                    # 統一存成 "SYMBOL/USDT" 格式（去掉 :USDT 後綴）
+                    clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
+                    self.tickers[clean_sym] = price
+                    self.tickers[sym] = price  # 同時保留原格式作為備援
                 if 'quoteVolume' in t and t['quoteVolume'] is not None:
+                    clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
+                    self.ticker_volumes[clean_sym] = float(t['quoteVolume'])
                     self.ticker_volumes[sym] = float(t['quoteVolume'])
         except Exception as e:
             pass

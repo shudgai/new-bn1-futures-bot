@@ -52,6 +52,16 @@ async def get_status():
         "logs": engine.account.logs[-50:]
     }
 
+@app.get("/api/prices")
+async def get_prices():
+    """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
+    return {
+        "tickers": engine.tickers,
+        "positions": list(engine.account.positions.values()),
+        "unrealized_pnl": round(engine.account.update_positions(engine.tickers), 2),
+        "balance": round(engine.account.balance, 2),
+    }
+
 @app.post("/api/toggle")
 async def toggle_bot():
     if engine.is_running:

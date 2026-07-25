@@ -144,16 +144,13 @@ class SuperTrendKeltnerStrategy:
         is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
         is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
 
-        # LONG 條件 (突破 Keltner 通道上軌 或 SuperTrend 正向發動)
-        if (curr['st_direction'] == 1 and 
-            price >= kc_upper and 
+        # LONG 條件：突破 Keltner 通道上軌 + 5m EMA20 >= EMA50 + RSI 強勢 (或 SuperTrend 多頭)
+        if (price >= kc_upper and 
             curr['ema_20'] >= curr['ema_50'] and 
             rsi >= RSI_LONG_THRESHOLD and 
-            has_min_volume and 
-            is_st_fresh and 
-            is_1h_bullish):
+            has_min_volume):
 
-            # 進場追高動態容忍度 (避免高波動時 5% 緩衝區與 MAX_BREAKOUT_DISTANCE 發生數學死結)
+            # 進場追高動態容忍度
             long_distance_ratio = (price - kc_upper) / kc_upper
             kc_buffer_ratio = kc_breakout_buffer / kc_upper
             dynamic_max_distance = max(MAX_BREAKOUT_DISTANCE, kc_buffer_ratio + 0.002)
@@ -170,19 +167,16 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": f"5m Fresh Bullish Breakout (FlipAge: {st_flip_age}b, Vol: {vol/vol_ma_20:.1f}x)"
+                "reason": f"5m Bullish Keltner Breakout (RSI: {rsi:.1f}, Vol: {vol/vol_ma_20:.1f}x)"
             }
 
-        # SHORT 條件 (跌破 Keltner 通道下軌 或 SuperTrend 負向發動)
-        if (curr['st_direction'] == -1 and 
-            price <= kc_lower and 
+        # SHORT 條件：跌破 Keltner 通道下軌 + 5m EMA20 <= EMA50 + RSI 弱勢 (或快速下殺)
+        if (price <= kc_lower and 
             curr['ema_20'] <= curr['ema_50'] and 
             rsi <= RSI_SHORT_THRESHOLD and 
-            has_min_volume and 
-            is_st_fresh and 
-            is_1h_bearish):
+            has_min_volume):
 
-            # 進場殺跌動態容忍度 (避免高波動時 5% 緩衝區與 MAX_BREAKOUT_DISTANCE 發生數學死結)
+            # 進場殺跌動態容忍度
             short_distance_ratio = (kc_lower - price) / kc_lower
             kc_buffer_ratio = kc_breakout_buffer / kc_lower
             dynamic_max_distance = max(MAX_BREAKOUT_DISTANCE, kc_buffer_ratio + 0.002)
@@ -199,7 +193,7 @@ class SuperTrendKeltnerStrategy:
                 "sl": sl,
                 "tp": tp,
                 "atr": atr,
-                "reason": f"5m Fresh Bearish Breakout (FlipAge: {st_flip_age}b, Margin: 5%Width, Vol: {vol/vol_ma_20:.1f}x)"
+                "reason": f"5m Bearish Keltner Breakout (RSI: {rsi:.1f}, Vol: {vol/vol_ma_20:.1f}x)"
             }
 
         return {"action": "HOLD", "reason": "No entry trigger"}

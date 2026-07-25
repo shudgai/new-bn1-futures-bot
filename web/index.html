@@ -321,7 +321,12 @@
                 },
                 getCurrPrice(symbol) {
                     if (!this.bot || !this.bot.tickers) return null;
-                    return this.bot.tickers[symbol] || this.bot.tickers[`${symbol}:USDT`] || this.bot.tickers[symbol.replace('/USDT', '')] || null;
+                    // tickers key 可能是 "DOGE/USDT:USDT"、"DOGE/USDT" 或 "DOGE"
+                    return this.bot.tickers[symbol]                          // 完全一致
+                        || this.bot.tickers[symbol + ':USDT']                // 加 :USDT
+                        || this.bot.tickers[symbol.replace('/USDT', ':USDT')]// /USDT → :USDT
+                        || this.bot.tickers[symbol.replace('/USDT', '')]     // 去掉 /USDT
+                        || null;
                 },
                 getPosUnrealizedPnl(pos) {
                     const curr = this.getCurrPrice(pos.symbol);
@@ -335,6 +340,7 @@
                 getPosRoePct(pos) {
                     const pnl = this.getPosUnrealizedPnl(pos);
                     if (!pos.margin || pos.margin === 0) return 0;
+                    // ROE% = 未實現損益 / 保證金 (已含槓桿效果)
                     return (pnl / pos.margin) * 100;
                 },
                 async fetchStatus() {
@@ -344,6 +350,19 @@
                         this.bot = data;
                     } catch (e) {
                         console.error('Failed to fetch status', e);
+                    }
+                },
+                async fetchPrices() {
+                    // 輕量端點：只更新潁價與持倉（每秒刷新）
+                    try {
+                        const res = await fetch('/api/prices');
+                        const data = await res.json();
+                        if (data.tickers) this.bot.tickers = data.tickers;
+                        if (data.positions) this.bot.positions = data.positions;
+                        if (data.balance !== undefined) this.bot.balance = data.balance;
+                        if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
+                    } catch (e) {
+                        // silent
                     }
                 },
                 async toggleBot() {
@@ -373,7 +392,8 @@
             },
             mounted() {
                 this.fetchStatus();
-                setInterval(this.fetchStatus, 2000);
+                setInterval(this.fetchStatus, 3000);  // 完整狀態（logs/trades）每 3 秒
+                setInterval(this.fetchPrices, 1000);  // 現價與持倉每 1 秒
             }
         }).mount('#app');
     </script>
