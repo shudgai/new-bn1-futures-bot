@@ -189,6 +189,7 @@
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td :class="getPosUnrealizedPnl(pos) > 0 ? 'up' : getPosUnrealizedPnl(pos) < 0 ? 'down' : ''" style="font-weight:700;">
                                     {{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT
+                                    <span style="font-size:11px; margin-left:4px;">({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}%)</span>
                                 </td>
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
@@ -330,6 +331,11 @@
                     } else {
                         return (pos.entry_price - curr) * pos.qty;
                     }
+                },
+                getPosRoePct(pos) {
+                    const pnl = this.getPosUnrealizedPnl(pos);
+                    if (!pos.margin || pos.margin === 0) return 0;
+                    return (pnl / pos.margin) * 100;
                 },
                 async fetchStatus() {
                     try {
