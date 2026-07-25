@@ -166,16 +166,42 @@ class PaperAccount:
             atr = pos.get("atr", entry_p * 0.015)
             open_ts = pos.get("open_timestamp", now_ts)
 
-            # 1. 移動止損至保本價 (Trailing Stop to Breakeven when gain >= 0.8x ATR)
+            # 1. 動態追蹤止利/止損 (Dynamic Trailing Stop & Profit Locking)
+            # A. 第一階段：盈利達 0.8x ATR -> 自動把止損位移至保本價 (Breakeven)
             if not pos.get("is_breakeven_moved", False):
                 if side == "LONG" and (curr_p - entry_p) >= (0.8 * atr):
-                    pos["sl"] = entry_p # 上移止損至保本價
+                    pos["sl"] = entry_p
                     pos["is_breakeven_moved"] = True
-                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 0.8x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
+                    pos["highest_price"] = curr_p
+                    self.log(f"🛡️ [保本觸發] {symbol} 盈利達 0.8x ATR ({curr_p:.4f})，止損位已鎖定保本價 ({entry_p:.4f})", "SUCCESS")
                 elif side == "SHORT" and (entry_p - curr_p) >= (0.8 * atr):
-                    pos["sl"] = entry_p # 下移止損至保本價
+                    pos["sl"] = entry_p
                     pos["is_breakeven_moved"] = True
-                    self.log(f"🛡️ [保本移動止損] {symbol} 盈利達 0.8x ATR ({curr_p:.4f})，止損位已自動移至保本價 ({entry_p:.4f})", "SUCCESS")
+                    pos["lowest_price"] = curr_p
+                    self.log(f"🛡️ [保本觸發] {symbol} 盈利達 0.8x ATR ({curr_p:.4f})，止損位已鎖定保本價 ({entry_p:.4f})", "SUCCESS")
+
+            # B. 第二階段：當利潤繼續上推 (超過 1.2x ATR) ➔ 啟用「移動追蹤止利 (Trailing Profit Lock)」
+            # 讓止損位跟著最高價往上墊高，同時將固定 TP 順延往上推，不設上限讓利潤奔跑！
+            if pos.get("is_breakeven_moved", False):
+                if side == "LONG":
+                    highest = pos.get("highest_price", entry_p)
+                    if curr_p > highest:
+                        pos["highest_price"] = curr_p
+                        # 追蹤止損位墊高：保留峰值獲利的 75%
+                        new_sl = entry_p + (curr_p - entry_p) * 0.75
+                        if new_sl > pos["sl"]:
+                            pos["sl"] = new_sl
+                            pos["tp"] = curr_p + (1.5 * atr) # 停利目標同步往上推伸
+                            self.log(f"📈 [動態追蹤止利上推] {symbol} 突破新高 ({curr_p:.4f})，止利目標推升至 ({pos['tp']:.4f})，已鎖定 75% 獲利底線 ({new_sl:.4f})", "SUCCESS")
+                else: # SHORT
+                    lowest = pos.get("lowest_price", entry_p)
+                    if curr_p < lowest:
+                        pos["lowest_price"] = curr_p
+                        new_sl = entry_p - (entry_p - curr_p) * 0.75
+                        if new_sl < pos["sl"]:
+                            pos["sl"] = new_sl
+                            pos["tp"] = curr_p - (1.5 * atr) # 停利目標同步往下推伸
+                            self.log(f"📉 [動態追蹤止利下推] {symbol} 突破新低 ({curr_p:.4f})，止利目標推升至 ({pos['tp']:.4f})，已鎖定 75% 獲利底線 ({new_sl:.4f})", "SUCCESS")
 
             # 2. 時間過濾超時平倉 (24 小時無效震盪自動平倉)
             if (now_ts - open_ts) >= 86400: # 86400秒 = 24小時
