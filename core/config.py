@@ -21,7 +21,7 @@ MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.003"))
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.01"))
-KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.1"))  # 整理期量能較低，門檻降至 0.1 倍均量
+KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.6"))  # 提高量能過濾門檻至 0.6 倍均量，過濾無量假突破
 SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "999"))  # 停用新鮮度限制，只保留 ST 方向過濾
 
 # --- 動態 RSI 濾網 ---

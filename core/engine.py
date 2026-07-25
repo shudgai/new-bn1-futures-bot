@@ -142,22 +142,14 @@ class TradingEngine:
                         sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
                         if sig["action"] in ["BUY", "SELL"]:
                             # ── 訊號品質評分 ──────────────────────────────
-                            # 1. 成交量比率 (vol / vol_ma_20)
+                            # 1. 成交量爆發比率 (vol / vol_ma_20)
                             curr = df.iloc[-1]
                             vol_ratio = (curr['volume'] / curr['vol_ma_20']) if curr.get('vol_ma_20', 0) > 0 else 1.0
-                            # 2. RSI 強度 (LONG: RSI 越高越好; SHORT: RSI 越低越好)
+                            # 2. RSI 動態強度 (LONG: RSI 越高越好; SHORT: (100 - RSI) 越高越好)
                             rsi = curr['rsi'] if not pd.isna(curr['rsi']) else 50
                             rsi_score = rsi if sig["action"] == "BUY" else (100 - rsi)
-                            # 3. 突破清潔度 (越接近通道邊界越好，過追才被過濾)
-                            kc_upper = curr['kc_upper']
-                            kc_lower = curr['kc_lower']
-                            if sig["action"] == "BUY":
-                                breakout_dist = (price - kc_upper) / kc_upper * 100
-                            else:
-                                breakout_dist = (kc_lower - price) / kc_lower * 100
-                            clean_score = max(0, 1.0 - breakout_dist * 10)  # 越近越高分
-                            # 綜合得分
-                            score = vol_ratio * 0.5 + rsi_score * 0.3 + clean_score * 0.2
+                            # 3. 綜合品質得分 (爆量佔 60%, RSI 強度佔 40%)
+                            score = vol_ratio * 0.6 + (rsi_score / 100.0) * 0.4
                             candidate_signals.append((score, symbol, sig, price, real_atr))
 
                     # 按評分排序，只取最優的空位數
