@@ -34,8 +34,9 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
 # --- 精準狙擊進場門檻 ---
-# MIN_SCORE_THRESHOLD：提高評分門檻至 90 分，只接受最高品質的訊號
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "90"))
+# MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
+# 降至 70 分 = 任 3 項條件通過即可進場（3 項組合皆 >=70），提高交易頻率同時仍過濾掉太弱的訊號。
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間（延長至 25 分鐘，給價格充分回踩 KC 的時間）
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "25"))
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
@@ -74,6 +75,21 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
 SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單估計滑點預留（單邊）
+
+# --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
+# 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
+# 給予更高倍數的下單金額（以 TRADE_AMOUNT_USDT 為基準，而非總資金比例，避免部位隨餘額增長滾雪球）。
+POSITION_SIZE_TIERS = [
+    (90, 1.5),  # 4 項全過（滿分）：1.5x 基礎倉位
+    (80, 1.0),  # 高分：1.0x 基礎倉位
+    (70, 0.6),  # 剛過門檻：0.6x 基礎倉位，小倉試錯
+]
+
+def get_position_multiplier(score: int) -> float:
+    for threshold, mult in POSITION_SIZE_TIERS:
+        if score >= threshold:
+            return mult
+    return 0.0
 
 DEFAULT_SYMBOLS = [
     "1000PEPE/USDT", "AAVE/USDT", "ADA/USDT", "APT/USDT", "AVAX/USDT", 

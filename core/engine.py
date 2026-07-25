@@ -5,7 +5,7 @@ import pandas as pd
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
-    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT
+    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, get_position_multiplier
 )
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
@@ -129,9 +129,10 @@ class TradingEngine:
                         atr = pb_info["atr"]
                         sl  = curr_p - (atr * 2.0)   # 以回調進場價重新計算 SL
                         tp  = curr_p + (atr * 3.0)
+                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
                         self.account.open_position(
                             symbol=pb_symbol, side="LONG", price=curr_p,
-                            amount_usdt=TRADE_AMOUNT_USDT, sl=sl, tp=tp,
+                            amount_usdt=pb_amount, sl=sl, tp=tp,
                             reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
                         )
                         self.account.log(
@@ -143,9 +144,10 @@ class TradingEngine:
                         atr = pb_info["atr"]
                         sl  = curr_p + (atr * 2.0)
                         tp  = curr_p - (atr * 3.0)
+                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
                         self.account.open_position(
                             symbol=pb_symbol, side="SHORT", price=curr_p,
-                            amount_usdt=TRADE_AMOUNT_USDT, sl=sl, tp=tp,
+                            amount_usdt=pb_amount, sl=sl, tp=tp,
                             reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
                         )
                         self.account.log(
@@ -233,6 +235,7 @@ class TradingEngine:
                                 "atr": sig.get("atr", real_atr),
                                 "kc_upper": sig.get("kc_upper", 0),
                                 "kc_lower": sig.get("kc_lower", 0),
+                                "score": sig.get("score", 0),
                                 "timestamp": time.time(),
                                 "reason": sig["reason"]
                             }
@@ -254,7 +257,7 @@ class TradingEngine:
                             symbol=symbol,
                             side=sig["side"],
                             price=price,
-                            amount_usdt=TRADE_AMOUNT_USDT,
+                            amount_usdt=TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", score)),
                             sl=sig["sl"],
                             tp=sig["tp"],
                             reason=sig["reason"],

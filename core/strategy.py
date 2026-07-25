@@ -196,7 +196,7 @@ class SuperTrendKeltnerStrategy:
                     return {
                         "action": "BUY", "side": "LONG", "price": price,
                         "sl": sl, "tp": tp, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "reason": f"Pullback_BUY_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
                     }
                 else:
@@ -205,7 +205,7 @@ class SuperTrendKeltnerStrategy:
                     return {
                         "action": "WAIT_PULLBACK", "side": "LONG",
                         "price": price, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": kc_upper,  # 回調目標：KC 上軌（突破後的第一道支撐）
                         "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
                     }
@@ -220,7 +220,7 @@ class SuperTrendKeltnerStrategy:
                     return {
                         "action": "SELL", "side": "SHORT", "price": price,
                         "sl": sl, "tp": tp, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "reason": f"Pullback_SELL_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
                     }
                 else:
@@ -228,7 +228,7 @@ class SuperTrendKeltnerStrategy:
                     return {
                         "action": "WAIT_PULLBACK", "side": "SHORT",
                         "price": price, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": kc_lower,  # 回調目標：KC 下軌（跌破後的第一道阻力）
                         "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
                     }
