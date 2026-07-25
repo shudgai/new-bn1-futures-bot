@@ -137,6 +137,8 @@ class TradingEngine:
                             self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x 真實ATR)，過濾潛在假突破訊號", "WARNING")
                             continue
 
+                        # 計算指標以取得 rsi 與 kc 通道等欄位
+                        df = self.strategy.compute_indicators(df)
                         sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
                         if sig["action"] in ["BUY", "SELL"]:
                             # ── 訊號品質評分 ──────────────────────────────
