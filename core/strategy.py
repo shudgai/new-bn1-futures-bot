@@ -153,10 +153,13 @@ class SuperTrendKeltnerStrategy:
             is_st_fresh and 
             is_1h_bullish):
 
-            # 進場追高過濾 (偏離通道不超過 0.3%)
+            # 進場追高動態容忍度 (避免高波動時 5% 緩衝區與 MAX_BREAKOUT_DISTANCE 發生數學死結)
             long_distance_ratio = (price - kc_upper) / kc_upper
-            if long_distance_ratio > MAX_BREAKOUT_DISTANCE:
-                return {"action": "HOLD", "reason": f"突破追高過大 ({long_distance_ratio:.2%} > Max {MAX_BREAKOUT_DISTANCE:.2%})"}
+            kc_buffer_ratio = kc_breakout_buffer / kc_upper
+            dynamic_max_distance = max(MAX_BREAKOUT_DISTANCE, kc_buffer_ratio + 0.002)
+
+            if long_distance_ratio > dynamic_max_distance:
+                return {"action": "HOLD", "reason": f"突破追高過大 ({long_distance_ratio:.2%} > Dynamic Max {dynamic_max_distance:.2%})"}
 
             sl = price - (atr * STOP_LOSS_MULTIPLIER)
             tp = price + (atr * TAKE_PROFIT_MULTIPLIER)
@@ -179,10 +182,13 @@ class SuperTrendKeltnerStrategy:
             is_st_fresh and 
             is_1h_bearish):
 
-            # 進場殺跌過濾 (偏離通道不超過 0.3%)
+            # 進場殺跌動態容忍度 (避免高波動時 5% 緩衝區與 MAX_BREAKOUT_DISTANCE 發生數學死結)
             short_distance_ratio = (kc_lower - price) / kc_lower
-            if short_distance_ratio > MAX_BREAKOUT_DISTANCE:
-                return {"action": "HOLD", "reason": f"跌破殺跌過大 ({short_distance_ratio:.2%} > Max {MAX_BREAKOUT_DISTANCE:.2%})"}
+            kc_buffer_ratio = kc_breakout_buffer / kc_lower
+            dynamic_max_distance = max(MAX_BREAKOUT_DISTANCE, kc_buffer_ratio + 0.002)
+
+            if short_distance_ratio > dynamic_max_distance:
+                return {"action": "HOLD", "reason": f"跌破殺跌過大 ({short_distance_ratio:.2%} > Dynamic Max {dynamic_max_distance:.2%})"}
 
             sl = price + (atr * STOP_LOSS_MULTIPLIER)
             tp = price - (atr * TAKE_PROFIT_MULTIPLIER)
