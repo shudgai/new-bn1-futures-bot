@@ -194,8 +194,9 @@ class PaperAccount:
                     max_profit = entry_p - pos["lowest_price"]
                     # 獲利超過 1.2x ATR 才開始追蹤 75% 獲利底線
                     if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
+                        # SHORT 的 SL 在 entry 上方，追蹤止利應把 SL 往下調（收緊保護獲利）
                         trail_sl = entry_p - (max_profit * 0.75)
-                        if trail_sl < pos["sl"]:
+                        if trail_sl > pos["sl"]:  # ✅ SHORT: 新 SL 比原 SL 更低（更靠近市價）才更新
                             pos["sl"] = trail_sl
                             pos["is_breakeven_moved"] = True
                             self.log(f"📉 [獲利追蹤止利下推] {symbol} 創新低 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f})", "SUCCESS")
@@ -205,13 +206,19 @@ class PaperAccount:
                 self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 
-            # 3. 觸發平倉比對 (原初始止損位完全不變，除非有獲利才上推)
+            # 3. 觸發平倉比對
             if side == "LONG":
-                if curr_p <= pos["sl"]:
+                if curr_p >= pos["tp"]:
+                    reason = "觸發止盈 (Take-Profit)" 
+                    self.close_position(symbol, curr_p, reason)
+                elif curr_p <= pos["sl"]:
                     reason = "觸發追蹤止利 (75% 獲利鎖定)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     self.close_position(symbol, curr_p, reason)
             else: # SHORT
-                if curr_p >= pos["sl"]:
+                if curr_p <= pos["tp"]:
+                    reason = "觸發止盈 (Take-Profit)"
+                    self.close_position(symbol, curr_p, reason)
+                elif curr_p >= pos["sl"]:
                     reason = "觸發追蹤止利 (75% 獲利鎖定)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     self.close_position(symbol, curr_p, reason)
 
