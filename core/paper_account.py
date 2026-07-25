@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
-from core.config import INITIAL_BALANCE, LEVERAGE, TAKER_FEE_RATE, SLIPPAGE_PCT
+from core.config import INITIAL_BALANCE, LEVERAGE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -181,8 +181,8 @@ class PaperAccount:
                 if curr_p > pos["highest_price"]:
                     pos["highest_price"] = curr_p
                     max_profit = pos["highest_price"] - entry_p
-                    # 有獲利時：鎖定最高獲利的 75%（只吐回 25%），將平倉停利點向上墊高
-                    if max_profit > 0:
+                    # 獲利超過 1.2x ATR 才開始追蹤 75% 獲利底線
+                    if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
                         trail_sl = entry_p + (max_profit * 0.75)
                         if trail_sl > pos["sl"]:
                             pos["sl"] = trail_sl
@@ -192,8 +192,8 @@ class PaperAccount:
                 if curr_p < pos["lowest_price"]:
                     pos["lowest_price"] = curr_p
                     max_profit = entry_p - pos["lowest_price"]
-                    # 有獲利時：鎖定最高獲利的 75%
-                    if max_profit > 0:
+                    # 獲利超過 1.2x ATR 才開始追蹤 75% 獲利底線
+                    if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
                         trail_sl = entry_p - (max_profit * 0.75)
                         if trail_sl < pos["sl"]:
                             pos["sl"] = trail_sl

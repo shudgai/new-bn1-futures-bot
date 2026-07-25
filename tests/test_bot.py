@@ -1,6 +1,8 @@
 import pytest
 import pandas as pd
 import numpy as np
+import os
+import core.paper_account as pa_module
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
 
@@ -21,7 +23,9 @@ def test_strategy_indicators():
     assert "st_direction" in res.columns
     assert "atr" in res.columns
 
-def test_paper_account_open_close():
+def test_paper_account_open_close(tmp_path, monkeypatch):
+    # 隔離測試：使用臨時空白狀態檔，不受真實持倉影響
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
     initial_bal = account.balance
     success = account.open_position("BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0, "Test Entry")

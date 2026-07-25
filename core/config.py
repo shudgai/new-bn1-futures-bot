@@ -14,8 +14,8 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 
 # --- 風控參數 ---
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.4"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "1.4"))
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.5"))   # 擴大止損空間，避免被 5m 小波動洗掉
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.0"))  # TP 略低於 SL，追求動態追利
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.003"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
@@ -32,8 +32,8 @@ TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
 # --- 動態追蹤止利參數 ---
-TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "0.8")) # 獲利達 0.8x ATR 鎖定保本
-TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "1.5"))
+TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "1.2")) # 獲利達 1.2x ATR 才鎖定保本
+TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "2.5"))
 
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0004")) # 0.04% 吃單手續費
