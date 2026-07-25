@@ -183,7 +183,7 @@ class PaperAccount:
                     max_profit = pos["highest_price"] - entry_p
                     # 獲利超過 1.2x ATR 才開始追蹤 75% 獲利底線
                     if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
-                        trail_sl = entry_p + (max_profit * 0.75)
+                        trail_sl = entry_p + (max_profit * 0.60)  # 鎖住 60% 獲利底線（給行情更多回調空間）
 
                         # ╔═ Net Profit Guarantee (保本線強制 clamp) ══════════════════╗
                         # 確保 trail_sl 比「進場價 + 手續費安全帶」更高，
@@ -203,7 +203,7 @@ class PaperAccount:
                     # 獲利超過 1.2x ATR 才開始追蹤 75% 獲利底線
                     if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
                         # SHORT 的 SL 在 entry 上方，追蹤止利應把 SL 往下調（收緊保護獲利）
-                        trail_sl = entry_p - (max_profit * 0.75)
+                        trail_sl = entry_p - (max_profit * 0.60)  # 鎖住 60% 獲利底線
 
                         # ╔═ Net Profit Guarantee (保本線強制 clamp) ══════════════════╗
                         # SHORT 的保本線：trail_sl 必須低於「進場價 × (1 - NPG_BUFFER)」，

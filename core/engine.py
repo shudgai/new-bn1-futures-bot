@@ -219,7 +219,8 @@ class TradingEngine:
                             # ── 訊號品質評分 ───────────────────────────────
                             curr = df.iloc[-1]
                             vol_ratio = (curr['volume'] / curr['vol_ma_20']) if curr.get('vol_ma_20', 0) > 0 else 1.0
-                            rsi = curr['rsi'] if not pd.isna(curr['rsi']) else 50
+                            rsi_val = curr.get('rsi', None)
+                            rsi = float(rsi_val) if (rsi_val is not None and not pd.isna(rsi_val)) else 50.0
                             rsi_score = rsi if sig["action"] == "BUY" else (100 - rsi)
                             score = vol_ratio * 0.6 + (rsi_score / 100.0) * 0.4
                             candidate_signals.append((score, symbol, sig, price, real_atr))

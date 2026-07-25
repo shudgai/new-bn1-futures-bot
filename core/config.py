@@ -45,9 +45,9 @@ TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
 # --- 動態追蹤止利參數 ---
-# TRAILING_LOCK_ATR_MULT: 獲利至少達到 1.2x ATR 才啟動移動止利，
-#   確保價格已有足夠的真實波段漲幅（約 +0.5%~+0.8%），完整 cover 雙向手續費 + 滑點後才鎖利。
-TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "1.2"))
+# TRAILING_LOCK_ATR_MULT: 獲利至少達到 2.0x ATR 才啟動移動止利，
+#   確保價格已有足夠的真實波段漲幅才鎖利，避免正常回調就被掃出場。
+TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "2.0"))
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "2.5"))
 
 # NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
