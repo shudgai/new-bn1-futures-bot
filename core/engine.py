@@ -3,7 +3,7 @@ import time
 import ccxt.async_support as ccxt
 import pandas as pd
 from typing import Dict, List
-from core.config import DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT
+from core.config import DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
 
@@ -63,8 +63,8 @@ class TradingEngine:
 
         for symbol in DEFAULT_SYMBOLS:
             df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
-            if not df_1h.empty and len(df_1h) >= 50:
-                ema_val = df_1h['close'].ewm(span=min(len(df_1h), 200), adjust=False).mean().iloc[-1]
+            if not df_1h.empty and len(df_1h) >= 30:
+                ema_val = df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False).mean().iloc[-1]
                 self.ema_200_1h_cache[symbol] = float(ema_val)
             await asyncio.sleep(0.1)
         self.last_1h_cache_time = now
