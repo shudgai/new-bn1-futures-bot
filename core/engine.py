@@ -16,6 +16,8 @@ class TradingEngine:
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {} # 24小時成交量 (USDT)
         self.cooldowns: Dict[str, float] = {}
+        self.ema_200_1h_cache: Dict[str, float] = {}
+        self.last_1h_cache_time: float = 0.0
 
     async def start(self):
         if self.is_running:
@@ -52,33 +54,51 @@ class TradingEngine:
         except Exception as e:
             pass
 
+    async def update_1h_trend_cache(self):
+        """10 分鐘才抓取一次 1h 大週期數據，避免頻繁調用 API Rate Limit"""
+        now = time.time()
+        if now - self.last_1h_cache_time < 600 and self.ema_200_1h_cache:
+            return
+
+        for symbol in DEFAULT_SYMBOLS:
+            df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
+            if not df_1h.empty and len(df_1h) >= 50:
+                ema_val = df_1h['close'].ewm(span=min(len(df_1h), 200), adjust=False).mean().iloc[-1]
+                self.ema_200_1h_cache[symbol] = float(ema_val)
+            await asyncio.sleep(0.1)
+        self.last_1h_cache_time = now
+
     async def _main_loop(self):
         while self.is_running:
             try:
+                # 1. 更新實時價格
                 await self.update_market_prices()
+
+                # 2. 更新與執行持倉部位（包含動態追蹤止利 0.8x/1.5x ATR 與 SL/TP 觸發）
                 self.account.update_positions(self.tickers)
 
-                # Check entry signals if current active slots < MAX_SLOTS
+                # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
+                await self.update_1h_trend_cache()
+
+                # 4. 開倉訊號檢查
                 if len(self.account.positions) < MAX_SLOTS:
                     for symbol in DEFAULT_SYMBOLS:
                         if symbol in self.account.positions:
                             continue
 
-                        # 1. 低流動性過濾 (避免低流動性山寨幣出現極大滑點或假報價)
+                        # 4.1 低流動性過濾
                         vol_24h = self.ticker_volumes.get(symbol, 0.0)
-                        if vol_24h > 0 and vol_24h < 500000.0: # 24h交易量低於 50萬 USDT 跳過
+                        if vol_24h > 0 and vol_24h < 500000.0:
                             continue
 
                         df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
                         if df.empty or len(df) < 50:
                             continue
 
-                        df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
-                        ema_200_1h = None
-                        if not df_1h.empty and len(df_1h) >= 50:
-                            ema_200_1h = df_1h['close'].ewm(span=min(len(df_1h), 200), adjust=False).mean().iloc[-1]
+                        # 取出 1h 快取值
+                        ema_200_1h = self.ema_200_1h_cache.get(symbol)
 
-                        # 1. 防插針價格選擇 (SpikeFilter_L2 優先選用 close_price_spike_filtered)
+                        # 防插針價格選擇 (SpikeFilter_L2)
                         if 'close_price_spike_filtered' in df.columns and not pd.isna(df.iloc[-1]['close_price_spike_filtered']):
                             price = float(df.iloc[-1]['close_price_spike_filtered'])
                         else:
@@ -86,14 +106,25 @@ class TradingEngine:
 
                         self.tickers[symbol] = price
 
-                        # 2. 防插針檢查 (Anti-Spike Filter)
+                        # 4.2 計算真實動態 ATR (非固定 1.5%)
+                        high = df['high']
+                        low = df['low']
+                        close = df['close']
+                        tr1 = high - low
+                        tr2 = (high - close.shift(1)).abs()
+                        tr3 = (low - close.shift(1)).abs()
+                        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                        real_atr = tr.rolling(window=10).mean().iloc[-1]
+                        if pd.isna(real_atr) or real_atr <= 0:
+                            real_atr = price * 0.015
+
+                        # 4.3 防插針檢查 (5x 真實 ATR)
                         recent_high = df.iloc[-1]['high']
                         recent_low = df.iloc[-1]['low']
-                        atr = df.iloc[-1]['close'] * 0.015
                         candle_spread = recent_high - recent_low
 
-                        if candle_spread > (atr * 5.0):
-                            self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x ATR)，過濾潛在假突破訊號", "WARNING")
+                        if candle_spread > (real_atr * 5.0):
+                            self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x 真實ATR)，過濾潛在假突破訊號", "WARNING")
                             continue
 
                         sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
@@ -111,7 +142,7 @@ class TradingEngine:
                                 sl=sl,
                                 tp=tp,
                                 reason=reason,
-                                atr=sig.get("atr", 0.0)
+                                atr=sig.get("atr", real_atr)
                             )
 
                 await asyncio.sleep(5)
