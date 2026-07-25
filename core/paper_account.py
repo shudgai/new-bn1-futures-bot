@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
-from core.config import INITIAL_BALANCE, LEVERAGE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT
+from core.config import INITIAL_BALANCE, LEVERAGE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, NET_PROFIT_GUARANTEE_BUFFER
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -184,10 +184,18 @@ class PaperAccount:
                     # 獲利超過 1.2x ATR 才開始追蹤 75% 獲利底線
                     if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
                         trail_sl = entry_p + (max_profit * 0.75)
+
+                        # ╔═ Net Profit Guarantee (保本線強制 clamp) ══════════════════╗
+                        # 確保 trail_sl 比「進場價 + 手續費安全帶」更高，
+                        # 也就是說就算在 trail_sl 觸發平倉，扣完全部手續費+滑點後淨損益一定是正數。
+                        npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
+                        trail_sl = max(trail_sl, npg_floor)
+                        # ╙════════════════════════════════════════════════════════
+
                         if trail_sl > pos["sl"]:
                             pos["sl"] = trail_sl
                             pos["is_breakeven_moved"] = True
-                            self.log(f"📈 [獲利追蹤止利上推] {symbol} 創新高 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f})", "SUCCESS")
+                            self.log(f"📈 [獲利追蹤止利上推] {symbol} 創新高 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f}) [保本線地板: {npg_floor:.4f}]", "SUCCESS")
             else: # SHORT
                 if curr_p < pos["lowest_price"]:
                     pos["lowest_price"] = curr_p
@@ -196,10 +204,18 @@ class PaperAccount:
                     if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
                         # SHORT 的 SL 在 entry 上方，追蹤止利應把 SL 往下調（收緊保護獲利）
                         trail_sl = entry_p - (max_profit * 0.75)
-                        if trail_sl > pos["sl"]:  # ✅ SHORT: 新 SL 比原 SL 更低（更靠近市價）才更新
+
+                        # ╔═ Net Profit Guarantee (保本線強制 clamp) ══════════════════╗
+                        # SHORT 的保本線：trail_sl 必須低於「進場價 × (1 - NPG_BUFFER)」，
+                        # 確保就算在 trail_sl 觸發平倉，扣完手續費+滑點後淨損益一定是正數。
+                        npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
+                        trail_sl = min(trail_sl, npg_ceiling)
+                        # ╙════════════════════════════════════════════════════════
+
+                        if trail_sl < pos["sl"]:  # ✅ SHORT: 新 SL 比原 SL 更低（更非市價）才更新
                             pos["sl"] = trail_sl
                             pos["is_breakeven_moved"] = True
-                            self.log(f"📉 [獲利追蹤止利下推] {symbol} 創新低 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f})", "SUCCESS")
+                            self.log(f"📉 [獲利追蹤止利下推] {symbol} 創新低 ({curr_p:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f}) [保本線上限: {npg_ceiling:.4f}]", "SUCCESS")
 
             # 2. 24小時時間過濾 (超時平倉)
             if (now_ts - open_ts) >= 86400:

@@ -3,7 +3,10 @@ import time
 import ccxt.async_support as ccxt
 import pandas as pd
 from typing import Dict, List
-from core.config import DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD
+from core.config import (
+    DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
+    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT
+)
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
 
@@ -15,10 +18,14 @@ class TradingEngine:
         self.is_running = False
         self.task: asyncio.Task = None
         self.tickers: Dict[str, float] = {}
-        self.ticker_volumes: Dict[str, float] = {} # 24小時成交量 (USDT)
+        self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         self.cooldowns: Dict[str, float] = {}
         self.ema_200_1h_cache: Dict[str, float] = {}
         self.last_1h_cache_time: float = 0.0
+        # 回調待命狀態機（Pullback State Machine）
+        # 格式: { symbol: {"side": "LONG"/"SHORT", "target_zone": float, "atr": float,
+        #                      "sl": float, "tp": float, "timestamp": float, "reason": str} }
+        self.pending_pullbacks: Dict[str, dict] = {}
 
     async def start(self):
         if self.is_running:
@@ -91,7 +98,62 @@ class TradingEngine:
                 # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
                 await self.update_1h_trend_cache()
 
-                # 4. 開倉訊號檢查 — 先收集所有訊號，評分後只取最優的空位數
+                # 4. 回調待命狀態機處理 (檢查所有待命訊號是否回調到位)
+                now_time = time.time()
+                for pb_symbol, pb_info in list(self.pending_pullbacks.items()):
+                    # 4a. 超時檢查：超過 PULLBACK_TIMEOUT_MINUTES 就放棄
+                    elapsed_min = (now_time - pb_info["timestamp"]) / 60.0
+                    if elapsed_min > PULLBACK_TIMEOUT_MINUTES:
+                        del self.pending_pullbacks[pb_symbol]
+                        self.account.log(
+                            f"⏰ [回調超時] {pb_symbol} 待命 {elapsed_min:.1f} 分鐘未回調，放棄本次進場機會", "WARNING"
+                        )
+                        continue
+
+                    # 4b. 探索實時價格
+                    curr_p = self.tickers.get(pb_symbol) or self.tickers.get(f"{pb_symbol}:USDT")
+                    if not curr_p:
+                        continue
+
+                    # 已有持倉則移除待命記錄
+                    if pb_symbol in self.account.positions:
+                        del self.pending_pullbacks[pb_symbol]
+                        continue
+
+                    target = pb_info["target_zone"]
+                    zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
+                    zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
+
+                    # 4c. 价格回調到目標區間內 → 觸發進場
+                    if pb_info["side"] == "LONG" and zone_low <= curr_p <= zone_high:
+                        atr = pb_info["atr"]
+                        sl  = curr_p - (atr * 2.0)   # 以回調進場價重新計算 SL
+                        tp  = curr_p + (atr * 3.0)
+                        self.account.open_position(
+                            symbol=pb_symbol, side="LONG", price=curr_p,
+                            amount_usdt=TRADE_AMOUNT_USDT, sl=sl, tp=tp,
+                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                        )
+                        self.account.log(
+                            f"🎯 [回調進場] {pb_symbol} LONG 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
+                        )
+                        del self.pending_pullbacks[pb_symbol]
+
+                    elif pb_info["side"] == "SHORT" and zone_low <= curr_p <= zone_high:
+                        atr = pb_info["atr"]
+                        sl  = curr_p + (atr * 2.0)
+                        tp  = curr_p - (atr * 3.0)
+                        self.account.open_position(
+                            symbol=pb_symbol, side="SHORT", price=curr_p,
+                            amount_usdt=TRADE_AMOUNT_USDT, sl=sl, tp=tp,
+                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                        )
+                        self.account.log(
+                            f"🎯 [回調進場] {pb_symbol} SHORT 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
+                        )
+                        del self.pending_pullbacks[pb_symbol]
+
+                # 5. 開倉訊號檢查 — 先收集所有訊號，評分後只取最優的空位數
                 available_slots = MAX_SLOTS - len(self.account.positions)
                 if available_slots > 0:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
@@ -99,6 +161,10 @@ class TradingEngine:
                     now_time = time.time()
                     for symbol in DEFAULT_SYMBOLS:
                         if symbol in self.account.positions:
+                            continue
+
+                        # 如果已在回調待命中，跳過訊號偵測（避免重複登記）
+                        if symbol in self.pending_pullbacks:
                             continue
 
                         # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
@@ -150,16 +216,29 @@ class TradingEngine:
                         df = self.strategy.compute_indicators(df)
                         sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
                         if sig["action"] in ["BUY", "SELL"]:
-                            # ── 訊號品質評分 ──────────────────────────────
-                            # 1. 成交量爆發比率 (vol / vol_ma_20)
+                            # ── 訊號品質評分 ───────────────────────────────
                             curr = df.iloc[-1]
                             vol_ratio = (curr['volume'] / curr['vol_ma_20']) if curr.get('vol_ma_20', 0) > 0 else 1.0
-                            # 2. RSI 動態強度 (LONG: RSI 越高越好; SHORT: (100 - RSI) 越高越好)
                             rsi = curr['rsi'] if not pd.isna(curr['rsi']) else 50
                             rsi_score = rsi if sig["action"] == "BUY" else (100 - rsi)
-                            # 3. 綜合品質得分 (爆量佔 60%, RSI 強度佔 40%)
                             score = vol_ratio * 0.6 + (rsi_score / 100.0) * 0.4
                             candidate_signals.append((score, symbol, sig, price, real_atr))
+
+                        elif sig["action"] == "WAIT_PULLBACK":
+                            # ── 回調待命登記 ───────────────────────────────
+                            self.pending_pullbacks[symbol] = {
+                                "side": sig["side"],
+                                "target_zone": sig["target_zone"],
+                                "atr": sig.get("atr", real_atr),
+                                "kc_upper": sig.get("kc_upper", 0),
+                                "kc_lower": sig.get("kc_lower", 0),
+                                "timestamp": time.time(),
+                                "reason": sig["reason"]
+                            }
+                            self.account.log(
+                                f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{PULLBACK_ZONE_PCT:.1%} | {sig['reason']}",
+                                "INFO"
+                            )
 
                     # 按評分排序，只取最優的空位數
                     candidate_signals.sort(key=lambda x: x[0], reverse=True)

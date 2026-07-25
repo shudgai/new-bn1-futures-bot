@@ -14,9 +14,19 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 
 # --- 風控參數 ---
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))   # 縮短止損距離，控制單筆虧損上限
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP=2x SL，確保風報比 1:2 正期望值
-MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.003"))
+# STOP_LOSS_MULTIPLIER 擴大至 2.0x ATR：讓行情有充分呼吸空間，避免被短暫震盪掃損出場
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP=1.5x SL，RR 比維持 1:1.5
+# MAX_BREAKOUT_DISTANCE 收緊至 0.2%：防止在突破瞬間追高，等待回調再進場
+MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.002"))
+
+# --- 精準狙擊進場門檻 ---
+# MIN_SCORE_THRESHOLD：提高評分門檻至 90 分，只接受最高品質的訊號
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "90"))
+# PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間（超時則放棄該次進場機會）
+PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10"))
+# PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.2% 範圍內才觸發進場
+PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.002"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
@@ -33,12 +43,21 @@ TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
 # --- 動態追蹤止利參數 ---
-TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "0.5")) # 獲利達 0.5x ATR 即啟動鎖利保本
+# TRAILING_LOCK_ATR_MULT: 獲利至少達到 1.2x ATR 才啟動移動止利，
+#   確保價格已有足夠的真實波段漲幅（約 +0.5%~+0.8%），完整 cover 雙向手續費 + 滑點後才鎖利。
+TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "1.2"))
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "2.5"))
 
+# NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
+#   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%
+#              滑點預留  0.03% × 2（開+平）= 0.06%
+#              安全緩衝  +0.02%（防止恰好在邊緣虧損）
+#   合計 ≈ 0.18%，trail_sl 必須高於「進場價 × (1 + 0.0018)」才能真正保本。
+NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.0018"))
+
 # --- 手續費與滑點預留設定 ---
-TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0004")) # 0.04% 吃單手續費
-SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單估計滑點預留
+TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
+SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單估計滑點預留（單邊）
 
 DEFAULT_SYMBOLS = [
     "1000PEPE/USDT", "AAVE/USDT", "ADA/USDT", "APT/USDT", "AVAX/USDT", 
