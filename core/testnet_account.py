@@ -9,8 +9,11 @@ from core.config import (
     BINANCE_API_KEY,
     BINANCE_SECRET,
     TAKER_FEE_RATE,
+    TRAILING_TRIGGER_PCT,
+    NET_PROFIT_GUARANTEE_BUFFER,
     get_leverage,
     get_signal_leverage,
+    get_trailing_pullback_pct,
 )
 
 
@@ -202,7 +205,89 @@ class BinanceTestnetAccount:
                 pass
 
     async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
-        return await self.refresh()
+        await self.refresh()
+
+        for symbol, pos in list(self.positions.items()):
+            curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
+            if curr_p is None:
+                continue
+
+            meta = self.position_meta.get(symbol, {})
+            side = pos["side"]
+            entry_p = pos["entry_price"]
+
+            if "peak_profit_pct" not in meta:
+                meta["peak_profit_pct"] = 0.0
+            if "peak_profit_updated_at" not in meta:
+                meta["peak_profit_updated_at"] = pos.get("open_timestamp", time.time())
+
+            if side == "LONG":
+                curr_profit_pct = (curr_p - entry_p) / entry_p
+            else:
+                curr_profit_pct = (entry_p - curr_p) / entry_p
+
+            if curr_profit_pct > meta.get("peak_profit_pct", 0.0):
+                meta["peak_profit_pct"] = curr_profit_pct
+                meta["peak_profit_updated_at"] = time.time()
+
+            peak = meta.get("peak_profit_pct", 0.0)
+            old_sl = pos.get("sl", 0.0)
+
+            if peak >= TRAILING_TRIGGER_PCT and old_sl > 0:
+                pullback = get_trailing_pullback_pct(peak, meta.get("peak_profit_updated_at", time.time()))
+                if side == "LONG":
+                    trail_sl = entry_p * (1.0 + peak * pullback)
+                    npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
+                    trail_sl = max(trail_sl, npg_floor)
+                    if trail_sl > old_sl:
+                        new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
+                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta)
+                        self.log(
+                            f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
+                            "SUCCESS",
+                        )
+                else:
+                    trail_sl = entry_p * (1.0 - peak * pullback)
+                    npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
+                    trail_sl = min(trail_sl, npg_ceiling)
+                    if trail_sl < old_sl:
+                        new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
+                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta)
+                        self.log(
+                            f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
+                            "SUCCESS",
+                        )
+
+            if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
+                await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
+                continue
+
+            self.position_meta[symbol] = meta
+
+        self.save_state()
+        return self.unrealized_pnl
+
+    async def _replace_stop_order(
+        self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict
+    ) -> None:
+        close_side = "sell" if side == "LONG" else "buy"
+        try:
+            await self._cancel_all_orders(symbol)
+            meta["sl"] = new_sl
+            self.position_meta[symbol] = meta
+            await self._create_protection_order(
+                symbol, close_side, "STOP_MARKET", qty, new_sl
+            )
+            tp = meta.get("tp") or 0.0
+            if tp > 0:
+                await self._create_protection_order(
+                    symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp
+                )
+        except Exception as exc:
+            self.log(
+                f"⚠️ {symbol} 移動止利保護單更新失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:
