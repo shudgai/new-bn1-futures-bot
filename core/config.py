@@ -67,9 +67,11 @@ KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
-# SUPERTREND_MAX_FLIP_AGE_BARS：允許 20 根 K 棒內（約 100 分鐘）的翻轉訊號
+# SUPERTREND_MAX_FLIP_AGE_BARS：允許 40 根 K 棒內（約 200 分鐘）的翻轉訊號
 # 8 根太嚴，整理盤下 SuperTrend 翻轉超過 40 分鐘就全部過濾，導致無法開倉
-SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "20"))
+# 20 根仍太短：KC 通道寬度 1.5x ATR，翻轉後價格通常要走超過 20 根才會真正突破通道，
+# 導致「新鮮度」幾乎永遠跟「KC突破」對不上，分數卡死在 70 分、進不了 80~100 分檔位。
+SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "40"))
 
 # --- 動態 RSI 濾網 ---
 RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
