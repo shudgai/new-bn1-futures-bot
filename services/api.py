@@ -100,7 +100,7 @@ async def get_status():
             for score, cap in SIGNAL_LEVERAGE_CAPS
         },
         "trade_amount": TRADE_AMOUNT_USDT,
-        "symbols": DEFAULT_SYMBOLS,
+        "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
         "symbol_rotation": engine.symbol_rotation.status(),
         "trade_ai_analysis": engine.symbol_rotation.trade_analysis.status(),
@@ -123,8 +123,7 @@ async def get_status():
 async def get_prices():
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
     return {
-        "symbols": DEFAULT_SYMBOLS,
-        "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
+        "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
         "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),

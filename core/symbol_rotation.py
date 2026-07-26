@@ -475,6 +475,11 @@ class SymbolRotation:
             self.account.positions,
             directional,
         )
+        # 持倉中的幣強制保留，即使已被輪替出去也不可移除
+        for held_symbol in self.account.positions:
+            if held_symbol not in selected:
+                selected.append(held_symbol)
+                directions[held_symbol] = "BOTH"
         DEFAULT_SYMBOLS[:] = selected
         self.direction_map = directions
         self.last_rotation_at = time.time()
