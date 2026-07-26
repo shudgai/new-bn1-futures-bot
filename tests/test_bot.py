@@ -2,10 +2,12 @@ import pytest
 import pandas as pd
 import numpy as np
 import os
+import json
 import core.paper_account as pa_module
 import core.strategy as strategy_module
 from core.config import DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage
 from core.ai_advisor import LocalAIAdvisor
+from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
@@ -31,6 +33,8 @@ def test_paper_account_open_close(tmp_path, monkeypatch):
     # 隔離測試：使用臨時空白狀態檔，不受真實持倉影響
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
+    close_notifications = []
+    account.on_trade_closed = lambda: close_notifications.append("closed")
     initial_bal = account.balance
     success = account.open_position("BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0, "Test Entry")
     assert success is True
@@ -39,6 +43,7 @@ def test_paper_account_open_close(tmp_path, monkeypatch):
     close_success = account.close_position("BTC/USDT", 51000.0, "Test Exit")
     assert close_success is True
     assert "BTC/USDT" not in account.positions
+    assert close_notifications == ["closed"]
 
 def test_low_score_signal_caps_eth_leverage():
     assert get_position_multiplier(69) == 0.0
@@ -214,6 +219,84 @@ def test_local_ai_advisor_accepts_only_allowed_symbols():
     ranked = asyncio.run(advisor.rank_symbols(metrics))
     assert ranked == ["BTC/USDT", "DOGE/USDT"]
     assert advisor.status()["status"] == "ok"
+
+
+def test_trade_history_ai_analysis_is_sanitized_cached_and_persisted(tmp_path):
+    calls = []
+
+    def fake_request(payload):
+        calls.append(payload)
+        user_payload = json.loads(payload["messages"][1]["content"])
+        assert user_payload["task"] == "analyze_trade_history"
+        history = user_payload["history"]
+        assert history["overview"]["closed_trades"] == 1
+        serialized = json.dumps(history)
+        assert "BINANCE_API_KEY" not in serialized
+        assert "must-not-leak" not in serialized
+        return {
+            "model": "test-local",
+            "choices": [{"message": {"content": json.dumps({
+                "summary": "一筆交易樣本，暫以風控觀察為主。",
+                "strengths": ["有記錄訊號分數"],
+                "weaknesses": ["樣本不足"],
+                "recommendations": ["累積更多樣本後再調整"],
+                "risk_flags": ["單筆結果不具代表性"],
+            }, ensure_ascii=False)}}],
+        }
+
+    advisor = LocalAIAdvisor(
+        "http://127.0.0.1:8888/v1/chat/completions",
+        request_fn=fake_request,
+    )
+    analyzer = TradeHistoryAnalyzer(
+        advisor,
+        analysis_file=str(tmp_path / "ai_trade_analysis.json"),
+    )
+    trades = [
+        {
+            "id": 2,
+            "time": "07/26 01:05:00",
+            "symbol": "BTC/USDT",
+            "action": "CLOSE_LONG",
+            "side": "LONG",
+            "price": 101.0,
+            "amount": 25.0,
+            "fee": 0.1,
+            "pnl": 0.9,
+            "status": "CLOSED",
+            "reason": "觸發止盈 (Take-Profit)",
+        },
+        {
+            "id": 1,
+            "time": "07/26 01:00:00",
+            "symbol": "BTC/USDT",
+            "action": "OPEN_LONG",
+            "side": "LONG",
+            "price": 100.0,
+            "amount": 25.0,
+            "fee": 0.05,
+            "pnl": 0.0,
+            "status": "OPEN",
+            "leverage": 3,
+            "signal_score": 70,
+            "reason": "Pullback_Confirmed",
+            "api_secret": "must-not-leak",
+        },
+    ]
+
+    import asyncio
+    assert asyncio.run(analyzer.analyze_if_changed(trades)) is True
+    assert asyncio.run(analyzer.analyze_if_changed(trades)) is False
+    assert len(calls) == 1
+    assert analyzer.status()["status"] == "ok"
+    assert analyzer.status()["trade_count"] == 1
+    assert (tmp_path / "ai_trade_analysis.json").exists()
+
+    restored = TradeHistoryAnalyzer(
+        advisor,
+        analysis_file=str(tmp_path / "ai_trade_analysis.json"),
+    )
+    assert restored.status()["summary"] == "一筆交易樣本，暫以風控觀察為主。"
 
 
 def test_symbol_rotation_never_replaces_held_symbol():

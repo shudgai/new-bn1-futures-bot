@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List
 
 from core.ai_advisor import LocalAIAdvisor
+from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.config import (
     AI_ADVISOR_ENABLED,
     AI_ADVISOR_TIMEOUT_SEC,
@@ -30,6 +31,7 @@ class SymbolRotation:
             enabled=AI_ADVISOR_ENABLED,
             timeout=AI_ADVISOR_TIMEOUT_SEC,
         )
+        self.trade_analysis = TradeHistoryAnalyzer(self.ai)
         self.last_rotation_at = 0.0
         self.last_changes: List[dict] = []
         self.last_metrics: List[dict] = []
@@ -213,6 +215,7 @@ class SymbolRotation:
             "reason": self.last_reason,
             "ai": self.ai.status(),
             "metrics": self.last_metrics,
+            "trade_ai_analysis": self.trade_analysis.status(),
         }
         with open(SELECTION_FILE, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -224,4 +227,5 @@ class SymbolRotation:
             "reason": self.last_reason,
             "ai": self.ai.status(),
             "top_metrics": self.last_metrics[:12],
+            "trade_ai_analysis": self.trade_analysis.status(),
         }

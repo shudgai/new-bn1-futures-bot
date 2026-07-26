@@ -21,6 +21,9 @@ class TradingEngine:
         self.is_running = False
         self.task: asyncio.Task = None
         self.rotation_task: asyncio.Task = None
+        self.analysis_task: asyncio.Task = None
+        self.analysis_event = asyncio.Event()
+        self.account.on_trade_closed = self.request_trade_analysis
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         self.cooldowns: Dict[str, float] = {}
@@ -40,6 +43,10 @@ class TradingEngine:
         # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
         # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。
         self.rotation_task = asyncio.create_task(self._rotation_loop())
+        # 歷史分析是第三條完全獨立的工作，不等待主交易或幣種輪替。
+        self.analysis_task = asyncio.create_task(self._analysis_loop())
+        # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
+        self.request_trade_analysis()
 
     async def stop(self):
         if not self.is_running:
@@ -49,8 +56,54 @@ class TradingEngine:
             self.task.cancel()
         if self.rotation_task:
             self.rotation_task.cancel()
+        if self.analysis_task:
+            self.analysis_task.cancel()
         await self.exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
+
+    def request_trade_analysis(self) -> None:
+        """平倉事件只設旗標，絕不在平倉／風控路徑等待 AI。"""
+        self.analysis_event.set()
+
+    async def _analysis_loop(self):
+        """事件式歷史分析；連續平倉會合併，失敗才按節流時間重試。"""
+        retry_delay = None
+        while self.is_running:
+            try:
+                if retry_delay is None:
+                    await self.analysis_event.wait()
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            self.analysis_event.wait(),
+                            timeout=retry_delay,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                self.analysis_event.clear()
+
+                analysis_updated = await self.symbol_rotation.trade_analysis.analyze_if_changed(
+                    self.account.trades
+                )
+                analysis_status = self.symbol_rotation.trade_analysis.status()
+                if analysis_updated:
+                    count = analysis_status.get("trade_count", 0)
+                    self.account.log(f"🧠 [AI 歷史分析] 已記錄並分析 {count} 筆平倉交易", "INFO")
+
+                retry_delay = (
+                    self.symbol_rotation.trade_analysis.retry_after_sec
+                    if analysis_status.get("status") == "fallback"
+                    else None
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                retry_delay = self.symbol_rotation.trade_analysis.retry_after_sec
+                self.account.log(
+                    f"⚠️ [AI 歷史分析] 暫時失敗，交易與輪替不受影響："
+                    f"{type(exc).__name__}: {exc}",
+                    "WARNING",
+                )
 
     async def _rotation_loop(self):
         """獨立於主交易迴圈之外定時執行幣種輪替，避免 AI 呼叫延遲停損停利判斷。"""

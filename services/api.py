@@ -83,6 +83,14 @@ async def get_status():
         "trade_amount": TRADE_AMOUNT_USDT,
         "symbols": DEFAULT_SYMBOLS,
         "symbol_rotation": engine.symbol_rotation.status(),
+        "trade_ai_analysis": engine.symbol_rotation.trade_analysis.status(),
+        "trade_ai_worker": {
+            "mode": "event_driven",
+            "running": bool(
+                engine.analysis_task and not engine.analysis_task.done()
+            ),
+            "retry_after_sec": engine.symbol_rotation.trade_analysis.retry_after_sec,
+        },
         "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
         "trades": engine.account.trades[:50],

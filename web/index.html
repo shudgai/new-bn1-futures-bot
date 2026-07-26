@@ -55,6 +55,10 @@
 
         /* Main Container */
         .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+        .right-panel { display: flex; flex-direction: column; }
+        .bot-control-card { order: 1; }
+        .ai-analysis-card { order: 2; }
+        .system-log-card { order: 3; }
 
         /* Cards */
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
@@ -251,24 +255,42 @@
             </div>
 
             <!-- RIGHT PANEL CONTROLS -->
-            <div>
-                <!-- BOT STRATEGY INFO CARD -->
-                <div class="card">
-                    <div class="card-title">🤖 全自動量化交易託管</div>
-                    <div style="font-size:12px; color:var(--muted); line-height:1.7; margin-bottom:14px;">
-                        <p style="margin-bottom:8px;">✅ 系統全自動監控 K 線與 ATR 波動。</p>
-                        <p style="margin-bottom:8px;">✅ 觸發 SuperTrend & Keltner 突破即自動開倉。</p>
-                        <p>✅ 止損止利 (SL/TP) 與平倉風控由機器人全權自動執行。</p>
-                    </div>
-
-                    <!-- 明確大啟動 / 停止按鈕 -->
+            <div class="right-panel">
+                <!-- BOT START / STOP CONTROL -->
+                <div class="card bot-control-card">
                     <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot">
                         {{ bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人' }}
                     </button>
                 </div>
 
+                <!-- AI TRADE HISTORY ANALYSIS -->
+                <div class="card ai-analysis-card">
+                    <div class="card-title">
+                        <span>🧠 AI 歷史交易分析</span>
+                        <span style="font-size:10px; color:var(--muted); text-transform:none;">
+                            {{ bot.trade_ai_analysis.status === 'ok' ? '已記錄' : '等待分析' }}
+                        </span>
+                    </div>
+                    <div style="font-size:12px; line-height:1.7; color:var(--muted);">
+                        <p style="color:var(--text); margin-bottom:8px;">
+                            {{ bot.trade_ai_analysis.summary || '尚未產生分析' }}
+                        </p>
+                        <p style="margin-bottom:6px;">
+                            已分析 {{ bot.trade_ai_analysis.trade_count || 0 }} 筆平倉交易
+                        </p>
+                        <div v-if="bot.trade_ai_analysis.weaknesses && bot.trade_ai_analysis.weaknesses.length">
+                            <b style="color:var(--down)">需改善：</b>
+                            <div v-for="(item, i) in bot.trade_ai_analysis.weaknesses.slice(0, 3)" :key="'w'+i">• {{ item }}</div>
+                        </div>
+                        <div v-if="bot.trade_ai_analysis.recommendations && bot.trade_ai_analysis.recommendations.length" style="margin-top:6px;">
+                            <b style="color:var(--primary)">AI 建議：</b>
+                            <div v-for="(item, i) in bot.trade_ai_analysis.recommendations.slice(0, 3)" :key="'r'+i">• {{ item }}</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- SYSTEM LOG CONSOLE -->
-                <div class="card">
+                <div class="card system-log-card">
                     <div class="card-title">💻 系統日誌 (System Logs)</div>
                     <div class="console">
                         <div v-for="(log, i) in bot.logs" :key="i" class="log-item">
@@ -302,6 +324,15 @@
                         trades: [],
                         total_trades: 0,
                         trade_dates: [],
+                        trade_ai_analysis: {
+                            status: 'not_analyzed',
+                            trade_count: 0,
+                            summary: '',
+                            strengths: [],
+                            weaknesses: [],
+                            recommendations: [],
+                            risk_flags: []
+                        },
                         logs: []
                     },
                     manualOrder: {
@@ -325,15 +356,11 @@
                 },
                 leverageRangeText() {
                     const matrix = this.bot.leverage_by_score || {};
-                    const describe = (score) => {
-                        const vals = Object.values(matrix[String(score)] || {});
-                        if (vals.length === 0) return score + '分 -';
-                        const min = Math.min(...vals);
-                        const max = Math.max(...vals);
-                        const range = min === max ? min + 'x' : min + 'x~' + max + 'x';
-                        return score + '分 ' + range;
-                    };
-                    return describe(80) + ' / ' + describe(100);
+                    const values = Object.values(matrix).flatMap(row => Object.values(row || {}));
+                    if (values.length === 0) return '3x–10x';
+                    const min = Math.min(...values);
+                    const max = Math.max(...values);
+                    return min === max ? min + 'x' : min + 'x–' + max + 'x';
                 }
             },
             methods: {

@@ -23,6 +23,10 @@ class LocalAIAdvisor:
         self.last_error = ""
         self.last_summary = ""
         self.last_model = ""
+        self.last_history_status = "disabled" if not enabled else "not_called"
+        self.last_history_error = ""
+        self.last_history_model = ""
+        self.last_history_summary = ""
 
     def _request(self, payload: dict) -> dict:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -43,10 +47,7 @@ class LocalAIAdvisor:
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            marker = content.find("\"ranked_symbols\"")
-            if marker < 0:
-                raise
-            start = content.rfind("{", 0, marker)
+            start = content.find("{")
             if start < 0:
                 raise
             parsed, _ = json.JSONDecoder().raw_decode(content[start:])
@@ -137,6 +138,102 @@ class LocalAIAdvisor:
             self.last_error = f"{type(exc).__name__}: {exc}"[:300]
             self.last_summary = ""
             return []
+
+    async def analyze_trade_history(self, history: dict) -> dict:
+        """分析去識別化交易紀錄；只提供建議，不得直接改參數或下單。"""
+        if not self.enabled:
+            return {}
+
+        payload = {
+            "model": "local",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a conservative crypto futures performance analyst. "
+                        "Analyze only the supplied historical trade statistics and samples. "
+                        "Find repeatable strengths, loss patterns, stop-loss clusters and "
+                        "risk-control improvements for a 5m SuperTrend + Keltner strategy. "
+                        "Never place trades, never change settings, and never claim certainty. "
+                        "Return exactly one JSON object in Traditional Chinese."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "analyze_trade_history",
+                            "history": history,
+                            "schema": {
+                                "summary": "short Traditional Chinese overview",
+                                "strengths": ["observation"],
+                                "weaknesses": ["observation"],
+                                "recommendations": ["advisory-only improvement"],
+                                "risk_flags": ["risk"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": 1024,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self.request_fn, payload),
+                timeout=self.timeout + 2.0,
+            )
+            self.last_history_model = str(response.get("model", ""))
+            message = response["choices"][0]["message"]
+            content = message.get("content") or message.get("reasoning_content", "")
+            parsed = self._extract_json(content)
+            summary = str(parsed.get("summary", "")).strip()[:500]
+            if not summary:
+                raise ValueError("AI 未回傳歷史分析摘要")
+
+            def clean_list(name: str) -> List[str]:
+                values = parsed.get(name, [])
+                if not isinstance(values, list):
+                    return []
+                return [str(value).strip()[:300] for value in values[:6] if str(value).strip()]
+
+            result = {
+                "summary": summary,
+                "strengths": clean_list("strengths"),
+                "weaknesses": clean_list("weaknesses"),
+                "recommendations": clean_list("recommendations"),
+                "risk_flags": clean_list("risk_flags"),
+            }
+            self.last_history_status = "ok"
+            self.last_history_error = ""
+            self.last_history_summary = summary
+            return result
+        except (
+            asyncio.TimeoutError,
+            urllib.error.URLError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            self.last_history_status = "fallback"
+            self.last_history_error = f"{type(exc).__name__}: {exc}"[:300]
+            self.last_history_summary = ""
+            return {}
+
+    def history_status(self) -> Dict[str, str]:
+        return {
+            "enabled": self.enabled,
+            "status": self.last_history_status,
+            "model": self.last_history_model,
+            "summary": self.last_history_summary,
+            "error": self.last_history_error,
+        }
 
     def status(self) -> Dict[str, str]:
         return {

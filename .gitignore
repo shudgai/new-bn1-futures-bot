@@ -14,6 +14,7 @@ env/
 # Logs and runtime data
 *.log
 data/paper_account.json
+data/ai_trade_analysis.json
 nohup.out
 
 # IDE

@@ -3,7 +3,7 @@ import json
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, BREAKEVEN_LOCK_ATR_MULT, BREAKEVEN_LOCK_PROFIT_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -26,6 +26,7 @@ class PaperAccount:
         self.trades: List[dict] = []
         self.logs: List[dict] = []
         self.closing_lock: set = set() # 避免重複平倉鎖定集合
+        self.on_trade_closed: Optional[Callable[[], None]] = None
         self.load_state()
 
     def load_state(self):
@@ -164,6 +165,12 @@ class PaperAccount:
             log_level = "SUCCESS" if net_pnl > 0 else "DANGER"
             self.log(f"🏁 平倉 [{side}] {symbol} @ {current_price:.4f} | 淨損益: {net_pnl:+.2f} USDT ({close_reason})", log_level)
             self.save_state()
+            if self.on_trade_closed:
+                try:
+                    # 僅發送非同步工作通知；不得讓分析錯誤影響平倉成功。
+                    self.on_trade_closed()
+                except Exception:
+                    pass
             return True
         finally:
             self.closing_lock.discard(symbol)
