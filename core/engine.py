@@ -7,7 +7,7 @@ from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
-    BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier
+    BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT
 )
 from core.strategy import SuperTrendKeltnerStrategy
 from core.testnet_account import BinanceTestnetAccount
@@ -298,7 +298,8 @@ class TradingEngine:
                         atr = pb_info["atr"]
                         sl  = curr_p - (atr * 2.0)   # 以回調進場價重新計算 SL
                         tp  = curr_p + (atr * 3.0)
-                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
+                        pb_available = self.account.get_available_balance()
+                        pb_amount = max(pb_available * get_position_multiplier(pb_info.get("score", 0)), MIN_TRADE_USDT)
                         await self.account.open_position(
                             symbol=pb_symbol, side="LONG", price=curr_p,
                             amount_usdt=pb_amount, sl=sl, tp=tp,
@@ -314,7 +315,8 @@ class TradingEngine:
                         atr = pb_info["atr"]
                         sl  = curr_p + (atr * 2.0)
                         tp  = curr_p - (atr * 3.0)
-                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
+                        pb_available = self.account.get_available_balance()
+                        pb_amount = max(pb_available * get_position_multiplier(pb_info.get("score", 0)), MIN_TRADE_USDT)
                         await self.account.open_position(
                             symbol=pb_symbol, side="SHORT", price=curr_p,
                             amount_usdt=pb_amount, sl=sl, tp=tp,
@@ -326,9 +328,13 @@ class TradingEngine:
                         )
                         del self.pending_pullbacks[pb_symbol]
 
-                # 5. 開倉訊號檢查 — 先收集所有訊號，評分後只取最優的空位數
-                available_slots = MAX_SLOTS - len(self.account.positions)
-                if available_slots > 0:
+                # 5. 開倉訊號檢查 — 依可用餘額動態分配持倉數與金額
+                available_balance = self.account.get_available_balance()
+                if MAX_SLOTS > 0:
+                    max_new_slots = MAX_SLOTS - len(self.account.positions)
+                else:
+                    max_new_slots = max(0, int(available_balance / MIN_TRADE_USDT))
+                if max_new_slots > 0 and available_balance >= MIN_TRADE_USDT:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
                     signal_progress = []
 
@@ -463,18 +469,31 @@ class TradingEngine:
 
                     # 按評分排序，只取最優的空位數
                     candidate_signals.sort(key=lambda x: x[0], reverse=True)
-                    top_signals = candidate_signals[:available_slots]
+                    top_signals = candidate_signals[:max_new_slots]
 
-                    if len(candidate_signals) > available_slots:
-                        skipped = [s[1] for s in candidate_signals[available_slots:]]
-                        self.account.log(f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，選最優 {available_slots} 個，跳過: {', '.join(skipped)}", "INFO")
+                    if len(candidate_signals) > max_new_slots:
+                        skipped = [s[1] for s in candidate_signals[max_new_slots:]]
+                        self.account.log(f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，選最優 {max_new_slots} 個，跳過: {', '.join(skipped)}", "INFO")
+
+                    # 依可用餘額動態分配每筆金額（按分數倍數加權）
+                    n_to_open = len(top_signals)
+                    if n_to_open > 0:
+                        total_weight = sum(
+                            get_position_multiplier(sig.get("score", sc))
+                            for sc, _, sig, _, _ in top_signals
+                        )
+                        if total_weight <= 0:
+                            total_weight = n_to_open
 
                     for score, symbol, sig, price, real_atr in top_signals:
+                        weight = get_position_multiplier(sig.get("score", score))
+                        amount_usdt = available_balance * (weight / total_weight) if n_to_open > 0 else TRADE_AMOUNT_USDT
+                        amount_usdt = max(amount_usdt, MIN_TRADE_USDT)
                         await self.account.open_position(
                             symbol=symbol,
                             side=sig["side"],
                             price=price,
-                            amount_usdt=TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", score)),
+                            amount_usdt=amount_usdt,
                             sl=sig["sl"],
                             tp=sig["tp"],
                             reason=sig["reason"],

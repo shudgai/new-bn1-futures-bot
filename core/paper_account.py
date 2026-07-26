@@ -63,6 +63,10 @@ class PaperAccount:
         self.logs.append(entry)
         self.save_state()
 
+    def get_available_balance(self) -> float:
+        used_margin = sum(pos.get("margin", 0.0) for pos in self.positions.values())
+        return max(0.0, self.balance - used_margin)
+
     def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str, atr: float = 0.0, leverage: int = None, signal_score: int = None):
         if symbol in self.positions or symbol in self.closing_lock:
             return False

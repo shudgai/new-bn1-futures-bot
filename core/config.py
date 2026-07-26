@@ -41,7 +41,12 @@ TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 
-# --- 風控參數 ---
+# --- 動態倉位分配 (依帳戶餘額自動計算持倉數與金額) ---
+# MAX_SLOTS = 0 表示自動：依可用餘額 / MIN_TRADE_USDT 決定可開幾槽
+# 正式上線照帳戶餘額開倉，不固定每筆金額或槽數。
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "0"))
+# MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
+MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # STOP_LOSS_MULTIPLIER 擴大至 2.0x ATR：讓行情有充分呼吸空間，避免被短暫震盪掃損出場
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP=1.5x SL，RR 比維持 1:1.5
