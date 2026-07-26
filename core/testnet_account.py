@@ -176,34 +176,40 @@ class BinanceTestnetAccount:
         return self.unrealized_pnl
 
     async def _record_external_close(self, symbol: str, position: dict) -> None:
-        await self._cancel_all_orders(symbol)
-        self.positions.pop(symbol, None)
-        pnl = float(position.get("unrealized_pnl") or 0.0)
-        self.realized_pnl += pnl
-        self.trades.insert(0, {
-            "id": int(time.time() * 1000),
-            "time": get_taipei_now_str("%m/%d %H:%M:%S"),
-            "symbol": symbol,
-            "action": f"CLOSE_{position['side']}",
-            "side": position["side"],
-            "price": float(position.get("mark_price") or position["entry_price"]),
-            "qty": position["qty"],
-            "amount": position.get("margin", 0.0),
-            "fee": 0.0,
-            "pnl": round(pnl, 4),
-            "status": "CLOSED",
-            "reason": "Binance Testnet 保護單成交",
-        })
-        self.log(
-            f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | "
-            f"估算損益: {pnl:+.2f} USDT",
-            "SUCCESS" if pnl >= 0 else "DANGER",
-        )
-        if self.on_trade_closed:
-            try:
-                self.on_trade_closed()
-            except Exception:
-                pass
+        if symbol in self.closing_lock:
+            return
+        self.closing_lock.add(symbol)
+        try:
+            await self._cancel_all_orders(symbol)
+            self.positions.pop(symbol, None)
+            pnl = float(position.get("unrealized_pnl") or 0.0)
+            self.realized_pnl += pnl
+            self.trades.insert(0, {
+                "id": int(time.time() * 1000),
+                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
+                "symbol": symbol,
+                "action": f"CLOSE_{position['side']}",
+                "side": position["side"],
+                "price": float(position.get("mark_price") or position["entry_price"]),
+                "qty": position["qty"],
+                "amount": position.get("margin", 0.0),
+                "fee": 0.0,
+                "pnl": round(pnl, 4),
+                "status": "CLOSED",
+                "reason": "Binance Testnet 保護單成交",
+            })
+            self.log(
+                f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | "
+                f"估算損益: {pnl:+.2f} USDT",
+                "SUCCESS" if pnl >= 0 else "DANGER",
+            )
+            if self.on_trade_closed:
+                try:
+                    self.on_trade_closed()
+                except Exception:
+                    pass
+        finally:
+            self.closing_lock.discard(symbol)
 
     async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
         await self.refresh()
