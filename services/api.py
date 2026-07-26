@@ -63,12 +63,28 @@ async def get_index():
         return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return HTMLResponse("<h1>Binance Bot Web Dashboard Not Found</h1>")
 
+
+def visible_system_logs():
+    """保留一般歷史日誌，但12幣訊號進度只顯示最新一組。"""
+    logs = engine.account.logs[-200:]
+    progress_prefix = "📊 [12幣訊號進度]"
+    latest_progress_index = next(
+        (index for index in range(len(logs) - 1, -1, -1)
+         if logs[index].get("text", "").startswith(progress_prefix)),
+        None,
+    )
+    return [
+        log for index, log in enumerate(logs)
+        if not log.get("text", "").startswith(progress_prefix)
+        or index == latest_progress_index
+    ][-50:]
+
 @app.get("/api/status")
 async def get_status():
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": "Keltner + SuperTrend 混合模式 (70回調 / 80立即)",
+        "strategy": "Keltner + SuperTrend 混合模式 (12幣雙向)",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -85,7 +101,7 @@ async def get_status():
         },
         "trade_amount": TRADE_AMOUNT_USDT,
         "symbols": DEFAULT_SYMBOLS,
-        "symbol_directions": engine.symbol_rotation.direction_map,
+        "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
         "symbol_rotation": engine.symbol_rotation.status(),
         "trade_ai_analysis": engine.symbol_rotation.trade_analysis.status(),
         "trade_ai_worker": {
@@ -100,7 +116,7 @@ async def get_status():
         "trades": engine.account.trades[:50],
         "total_trades": len(engine.account.trades),
         "trade_dates": sorted({trade_date_str(t) for t in engine.account.trades}, reverse=True),
-        "logs": engine.account.logs[-50:]
+        "logs": visible_system_logs()
     }
 
 @app.get("/api/prices")
@@ -108,7 +124,7 @@ async def get_prices():
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
     return {
         "symbols": DEFAULT_SYMBOLS,
-        "symbol_directions": engine.symbol_rotation.direction_map,
+        "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
         "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
         "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),

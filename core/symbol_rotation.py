@@ -454,7 +454,7 @@ class SymbolRotation:
             if display_backfill_count else ""
         )
         self.last_reason = (
-            f"已掃描 Binance 合約市場 {len(candidates)} 幣；多單 {long_count}、空單 {short_count}；"
+            f"已掃描 Binance 合約市場 {len(candidates)} 幣；方向評分參考 多 {long_count}、空 {short_count}，入選後皆可雙向交易；"
             f"{ai_text}{backfill_text}"
         )
         self._save()

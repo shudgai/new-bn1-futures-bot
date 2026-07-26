@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 import ccxt.async_support as ccxt
 import pandas as pd
@@ -41,13 +42,64 @@ class TradingEngine:
         # 格式: { symbol: {"side": "LONG"/"SHORT", "target_zone": float, "atr": float,
         #                      "sl": float, "tp": float, "timestamp": float, "reason": str} }
         self.pending_pullbacks: Dict[str, dict] = {}
+        self.last_signal_progress_log_at: float = 0.0
+
+    @staticmethod
+    def _format_signal_progress(
+        symbol: str,
+        signal: dict,
+        current_direction: str,
+    ) -> str:
+        """將策略結果壓縮成適合系統日誌的一行進度。"""
+        score = signal.get("score")
+        if score is None:
+            match = re.search(r"Score\((\d+)\)", signal.get("reason", ""))
+            score = int(match.group(1)) if match else 0
+        direction_text = {"LONG": "多單", "SHORT": "空單"}.get(
+            current_direction, "雙向"
+        )
+        action = signal.get("action", "HOLD")
+        reason = signal.get("reason", "")
+        if action in ("BUY", "SELL"):
+            stage = "符合立即開倉"
+        elif action == "WAIT_PULLBACK":
+            stage = "等待回調二次確認"
+        elif "KC_Breakout" in reason:
+            stage = "待KC突破"
+        elif "SuperTrend_Stale" in reason:
+            stale = re.search(r"SuperTrend_Stale\((\d+)\)", reason)
+            stage = f"SuperTrend過期{stale.group(1)}根" if stale else "SuperTrend過期"
+        elif "EMA20" in reason or "1h_Trend" in reason:
+            stage = "趨勢方向不符"
+        elif "Volume" in reason:
+            stage = "量能不足"
+        elif "RSI" in reason:
+            stage = "RSI方向不足"
+        elif "Score_Low" in reason:
+            stage = "分數不足"
+        else:
+            stage = "條件未完成"
+        coin = symbol.replace("/USDT", "")
+        return f"{coin} {direction_text} {int(score)}分,{stage}"
+
+    def _log_signal_progress(
+        self, entries: List[str], now_time: float, symbols_snapshot: List[str]
+    ) -> None:
+        if self.symbol_rotation.last_rotation_at <= 0:
+            return
+        if symbols_snapshot != list(DEFAULT_SYMBOLS):
+            return
+        if not entries or now_time - self.last_signal_progress_log_at < 60:
+            return
+        self.account.log("📊 [12幣訊號進度]\n" + "\n".join(f"• {entry}" for entry in entries), "INFO")
+        self.last_signal_progress_log_at = now_time
 
     async def start(self):
         if self.is_running:
             return
         await self.account.initialize()
         self.is_running = True
-        self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（70分回調＋80分立即 / 12幣方向限制）")
+        self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（70分回調＋80分立即 / 12幣雙向交易）")
         self.task = asyncio.create_task(self._main_loop())
         # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
         # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。
@@ -208,15 +260,10 @@ class TradingEngine:
                 # 4. 回調待命狀態機處理 (檢查所有待命訊號是否回調到位)
                 now_time = time.time()
                 for pb_symbol, pb_info in list(self.pending_pullbacks.items()):
-                    allowed_direction = self.symbol_rotation.direction_map.get(pb_symbol)
-                    if (
-                        pb_symbol not in DEFAULT_SYMBOLS
-                        or allowed_direction != pb_info["side"]
-                    ):
+                    if pb_symbol not in DEFAULT_SYMBOLS:
                         del self.pending_pullbacks[pb_symbol]
                         self.account.log(
-                            f"🔄 [回調取消] {pb_symbol} 已不在目前"
-                            f"{'多單' if pb_info['side'] == 'LONG' else '空單'}名單",
+                            f"🔄 [回調取消] {pb_symbol} 已不在目前12幣名單",
                             "INFO",
                         )
                         continue
@@ -302,29 +349,55 @@ class TradingEngine:
                 available_slots = MAX_SLOTS - len(self.account.positions)
                 if available_slots > 0:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
+                    signal_progress = []
 
                     now_time = time.time()
                     # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
                     # 用 list(...) 先拍一份快照，避免邊跑邊被換牌造成跳過或重複掃描。
-                    for symbol in list(DEFAULT_SYMBOLS):
+                    symbols_snapshot = list(DEFAULT_SYMBOLS)
+                    for symbol in symbols_snapshot:
+                        direction_text = "雙向"
+                        coin = symbol.replace("/USDT", "")
                         if symbol in self.account.positions:
+                            position = self.account.positions[symbol]
+                            position_score = position.get("signal_score") or 0
+                            position_direction = "多單" if position.get("side") == "LONG" else "空單"
+                            signal_progress.append(
+                                f"{coin} {position_direction} {position_score}分,持倉中"
+                            )
                             continue
 
                         # 如果已在回調待命中，跳過訊號偵測（避免重複登記）
                         if symbol in self.pending_pullbacks:
+                            pending = self.pending_pullbacks[symbol]
+                            signal_progress.append(self._format_signal_progress(
+                                symbol,
+                                {"action": "WAIT_PULLBACK", "score": pending.get("score", 0)},
+                                pending.get("side"),
+                            ))
                             continue
 
                         # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
                         if symbol in self.cooldowns and (now_time - self.cooldowns[symbol]) < 900:
+                            remaining = max(0, int((900 - (now_time - self.cooldowns[symbol])) / 60) + 1)
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,冷卻剩{remaining}分鐘"
+                            )
                             continue
 
                         # 4.1 低流動性過濾
                         vol_24h = self.ticker_volumes.get(symbol, 0.0)
                         if vol_24h > 0 and vol_24h < 500000.0:
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,24h流動性不足"
+                            )
                             continue
 
                         df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
                         if df.empty or len(df) < 50:
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,K線資料不足"
+                            )
                             continue
 
                         # 取出 1h 快取值
@@ -357,15 +430,20 @@ class TradingEngine:
 
                         if candle_spread > (real_atr * 5.0):
                             self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x 真實ATR)，過濾潛在假突破訊號", "WARNING")
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,防插針過濾"
+                            )
                             continue
 
                         # 計算指標以取得 rsi 與 kc 通道等欄位
                         df = self.strategy.compute_indicators(df)
                         sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
-                        allowed_direction = self.symbol_rotation.direction_map.get(symbol)
-                        signal_direction = sig.get("side")
-                        if signal_direction and signal_direction != allowed_direction:
-                            continue
+                        current_direction = (
+                            "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
+                        )
+                        signal_progress.append(self._format_signal_progress(
+                            symbol, sig, current_direction
+                        ))
                         if sig["action"] in ["BUY", "SELL"]:
                             # ── 訊號品質評分 ───────────────────────────────
                             curr = df.iloc[-1]
@@ -392,6 +470,8 @@ class TradingEngine:
                                 f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{PULLBACK_ZONE_PCT:.1%} | {sig['reason']}",
                                 "INFO"
                             )
+
+                    self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
 
                     # 按評分排序，只取最優的空位數
                     candidate_signals.sort(key=lambda x: x[0], reverse=True)

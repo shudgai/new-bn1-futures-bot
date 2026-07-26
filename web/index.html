@@ -73,6 +73,7 @@
         .coin-direction { float: right; font-size: 10px; font-weight: 800; }
         .coin-direction.long { color: var(--up); }
         .coin-direction.short { color: var(--down); }
+        .coin-direction.both { color: var(--primary); }
 
         /* Stats Grid */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
@@ -89,8 +90,10 @@
         .down { color: var(--down); font-weight: 700; }
 
         /* Console Log */
-        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-radius: 10px; padding: 14px; max-height: 220px; overflow-y: auto; }
+        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-radius: 10px; padding: 14px; max-height: 220px; overflow: auto; }
         .log-item { margin-bottom: 6px; opacity: 0.9; }
+        .log-item span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .signal-progress-line span:last-child { white-space: nowrap; }
         .log-time { color: var(--muted); margin-right: 8px; }
 
         /* Buttons */
@@ -131,7 +134,7 @@
                     <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card">
                         <div class="coin-name">
                             {{ coin.name }}
-                            <span :class="['coin-direction', coin.direction ? coin.direction.toLowerCase() : '']">{{ coin.direction === 'LONG' ? '多' : coin.direction === 'SHORT' ? '空' : '' }}</span>
+                            <span :class="['coin-direction', coin.direction ? coin.direction.toLowerCase() : '']">{{ coin.direction === 'BOTH' ? '雙向' : '' }}</span>
                         </div>
                         <div class="coin-price">{{ formatPrice(coin.price) }}</div>
                     </div>
@@ -299,10 +302,12 @@
                 <div class="card system-log-card">
                     <div class="card-title">💻 系統日誌 (System Logs)</div>
                     <div class="console">
-                        <div v-for="(log, i) in bot.logs" :key="i" class="log-item">
-                            <span class="log-time">[{{ log.time }}]</span>
-                            <span>{{ log.text }}</span>
-                        </div>
+                        <template v-for="(log, i) in bot.logs" :key="i">
+                            <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• ') }">
+                                <span class="log-time">[{{ log.time }}]</span>
+                                <span>{{ line }}</span>
+                            </div>
+                        </template>
                     </div>
                 </div>
             </div>
