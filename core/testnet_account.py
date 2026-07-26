@@ -143,6 +143,7 @@ class BinanceTestnetAccount:
                 "highest_price": float(meta.get("highest_price") or entry_price),
                 "lowest_price": float(meta.get("lowest_price") or entry_price),
                 "peak_profit_pct": float(meta.get("peak_profit_pct") or 0.0),
+                "peak_profit_updated_at": float(meta.get("peak_profit_updated_at") or 0.0),
                 "open_timestamp": float(meta.get("open_timestamp") or now),
                 "open_time": meta.get("open_time") or get_taipei_now_str(),
                 "reason": meta.get("reason") or "Binance Testnet existing position",
@@ -172,6 +173,7 @@ class BinanceTestnetAccount:
 
     async def _record_external_close(self, symbol: str, position: dict) -> None:
         await self._cancel_all_orders(symbol)
+        self.positions.pop(symbol, None)
         pnl = float(position.get("unrealized_pnl") or 0.0)
         self.realized_pnl += pnl
         self.trades.insert(0, {
@@ -338,6 +340,7 @@ class BinanceTestnetAccount:
                 "highest_price": execution_price,
                 "lowest_price": execution_price,
                 "peak_profit_pct": 0.0,
+                "peak_profit_updated_at": time.time(),
                 "is_breakeven_moved": False,
             }
             self.position_meta[symbol] = meta
@@ -421,6 +424,7 @@ class BinanceTestnetAccount:
                 "exchange_order_id": order.get("id"),
             })
             self.position_meta.pop(symbol, None)
+            self.positions.pop(symbol, None)
             await self.refresh(force=True)
             self.log(
                 f"🏁 Binance Testnet 平倉 [{position['side']}] {symbol} @ "

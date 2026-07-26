@@ -90,6 +90,7 @@ class PaperAccount:
             "highest_price": execution_price,
             "lowest_price": execution_price,
             "peak_profit_pct": 0.0,
+            "peak_profit_updated_at": time.time(),
             "open_timestamp": time.time(),
             "open_time": get_taipei_now_str(),
             "reason": reason,
@@ -198,6 +199,8 @@ class PaperAccount:
             #    利潤從高點回落 TRAILING_PULLBACK_PCT 時平倉。
             if "peak_profit_pct" not in pos:
                 pos["peak_profit_pct"] = 0.0
+            if "peak_profit_updated_at" not in pos:
+                pos["peak_profit_updated_at"] = open_ts
 
             if side == "LONG":
                 curr_profit_pct = (curr_p - entry_p) / entry_p
@@ -207,12 +210,13 @@ class PaperAccount:
             # 更新無槓桿利潤百分比歷史最高值
             if curr_profit_pct > pos["peak_profit_pct"]:
                 pos["peak_profit_pct"] = curr_profit_pct
+                pos["peak_profit_updated_at"] = now_ts
 
             peak = pos["peak_profit_pct"]
 
             if peak >= TRAILING_TRIGGER_PCT:
-                # 依幣種波動率動態決定回吐比例
-                pullback = get_trailing_pullback_pct(atr, entry_p)
+                # 依增利速度動態決定回吐比例
+                pullback = get_trailing_pullback_pct(peak, pos["peak_profit_updated_at"])
                 # 計算 trailing stop 價格：鎖住 peak 的 pullback 比例
                 if side == "LONG":
                     trail_sl = entry_p * (1.0 + peak * pullback)

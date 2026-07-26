@@ -85,23 +85,33 @@ TRAILING_MODE = os.getenv("TRAILING_MODE", "balanced")
 _TRAILING_PULLBACK_MAP = {"conservative": 0.75, "balanced": 0.70, "aggressive": 0.60}
 TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", str(_TRAILING_PULLBACK_MAP.get(TRAILING_MODE, 0.70))))
 
-# --- 動態止利：依幣種波動率自動選擇回吐比例 ---
-# ATR/price ratio 分三級，低波動幣鎖緊一點，高波動幣給更多呼吸空間
-#   低波動 (<0.8%): conservative 75%
-#   中波動 (0.8%-2.0%): balanced 70%
-#   高波動 (>2.0%): aggressive 60%
-VOLATILITY_LOW_THRESHOLD = float(os.getenv("VOLATILITY_LOW_THRESHOLD", "0.008"))
-VOLATILITY_HIGH_THRESHOLD = float(os.getenv("VOLATILITY_HIGH_THRESHOLD", "0.02"))
+# --- 動態止利：依增利速度自動選擇回吐比例 ---
+# 增利速度快 → aggressive（60%）：給行情更多空間
+# 增利速度慢 → conservative（75%）：鎖緊一點
+# SPEED_FAST_THRESHOLD: 增利速度 >= 此值（%/分鐘）判定為快
+SPEED_FAST_THRESHOLD = float(os.getenv("SPEED_FAST_THRESHOLD", "0.0005"))   # 0.05%/min
+# SPEED_SLOW_THRESHOLD: 增利速度 <= 此值（%/分鐘）判定為慢
+SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.01%/min
 
-def get_trailing_pullback_pct(atr: float, entry_price: float) -> float:
-    """根據幣種波動率（ATR/price）動態回傳止利回吐比例。"""
-    if entry_price <= 0 or atr <= 0:
+import time as _time
+
+def get_trailing_pullback_pct(peak_profit_pct: float, peak_updated_at: float) -> float:
+    """根據增利速度（peak profit 成長速率）動態回傳止利回吐比例。
+
+    Args:
+        peak_profit_pct: 歷史最高無槓桿利潤百分比
+        peak_updated_at: 上次 peak 更新時的 timestamp（秒）
+    Returns:
+        回吐比例（0.75 / 0.70 / 0.60）
+    """
+    elapsed_min = (_time.time() - peak_updated_at) / 60.0
+    if elapsed_min <= 0 or peak_profit_pct <= 0:
         return TRAILING_PULLBACK_PCT
-    vol_ratio = atr / entry_price
-    if vol_ratio < VOLATILITY_LOW_THRESHOLD:
-        return _TRAILING_PULLBACK_MAP["conservative"]
-    elif vol_ratio > VOLATILITY_HIGH_THRESHOLD:
+    speed = peak_profit_pct / elapsed_min  # 每分鐘增利 %
+    if speed >= SPEED_FAST_THRESHOLD:
         return _TRAILING_PULLBACK_MAP["aggressive"]
+    elif speed <= SPEED_SLOW_THRESHOLD:
+        return _TRAILING_PULLBACK_MAP["conservative"]
     else:
         return _TRAILING_PULLBACK_MAP["balanced"]
 
