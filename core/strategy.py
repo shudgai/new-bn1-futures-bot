@@ -3,20 +3,23 @@ import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
-    KELTNER_PARTIAL_VOLUME_RATIO, KELTNER_STRONG_VOLUME_RATIO, SUPERTREND_FULL_FRESH_BARS,
-    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_PARTIAL_THRESHOLD, RSI_SHORT_PARTIAL_THRESHOLD,
-    FAST_ENTRY_MODE, MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT,
-    PULLBACK_CONFIRM_RSI_LONG, PULLBACK_CONFIRM_RSI_SHORT
+    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
+    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT
 )
 from core.indicators import bars_since_supertrend_flip
 
 class SuperTrendKeltnerStrategy:
     """
-    SuperTrend + Keltner 交易策略。
-
-    預設混合模式：70~79 分先等待 Keltner 回調並通過二次確認，
-    80 分以上在突破距離安全時立即進場，否則同樣等待回調。
-    FAST_ENTRY_MODE 僅作為可選的完整條件立即進場模式。
+    高精度量化引擎 - 回調狙擊版本 (Pullback Sniper Mode)
+    核心邏輯：
+    1. 底線防禦 (Mandatory)：大週期趨勢 (1h EMA50) 與 SuperTrend 方向必須一致。
+    2. 動態評分 (Scoring)：Keltner 突破、量能、RSI、訊號新鮮度 進行加權評分。
+    3. 進場決策「回調優先」三段式：
+       - 評分 >= 90 且超出 KC 距離 <= 0.1% → BUY_NOW  (剛突破，立即開倉)
+       - 評分 >= 90 且超出 KC 距離 > 0.1% → WAIT_PULLBACK (已追高，等回踩 KC 上軌)
+       - 其餘 → HOLD
+    修正原則：KC突破後動量往往已接近末段，應等待回踩 KC 軌道才進場，
+    而非在突破高點追入，避免一開倉就面臨回落。
     """
     def __init__(self, atr_period=10, atr_multiplier=3.0):
         self.atr_period = atr_period
@@ -109,100 +112,6 @@ class SuperTrendKeltnerStrategy:
         df['st_direction'] = direction
         return df
 
-    def validate_pullback_entry(
-        self, df: pd.DataFrame, side: str, live_price: float, ema_1h: float = None,
-        signal_score: int = None,
-    ) -> dict:
-        """回調真正成交前，以最近一根已收 K 再驗證趨勢與反彈／反壓確認。"""
-        if df is None or len(df) < 50:
-            return {"status": "WAIT", "reason": "K線資料不足"}
-
-        checked = self.compute_indicators(df)
-        if len(checked) < 3:
-            return {"status": "WAIT", "reason": "確認資料不足"}
-
-        # -1 是尚未收完的即時 K；使用 -2 避免盤中指標反覆變動。
-        curr = checked.iloc[-2]
-        prev = checked.iloc[-3]
-        close = (
-            curr['close_price_spike_filtered']
-            if 'close_price_spike_filtered' in checked.columns
-            and not pd.isna(curr.get('close_price_spike_filtered'))
-            else curr['close']
-        )
-        prev_close = (
-            prev['close_price_spike_filtered']
-            if 'close_price_spike_filtered' in checked.columns
-            and not pd.isna(prev.get('close_price_spike_filtered'))
-            else prev['close']
-        )
-        vol_ma = curr.get('vol_ma_20', 0)
-        volume_pass = (
-            not pd.isna(vol_ma) and vol_ma > 0
-            and curr['volume'] >= vol_ma * KELTNER_MIN_VOLUME_RATIO
-        )
-        flip_age = bars_since_supertrend_flip(checked['st_direction'].iloc[:-1])
-        freshness_pass = flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS
-
-        cancel_failures = []
-        wait_failures = []
-        confirmations = []
-        if side == "LONG":
-            if curr['st_direction'] != 1:
-                cancel_failures.append("SuperTrend 已轉空")
-            if ema_1h is not None and live_price < ema_1h:
-                wait_failures.append("價格仍低於 1h EMA50")
-            confirmations.append((
-                curr['rsi'] >= PULLBACK_CONFIRM_RSI_LONG,
-                f"RSI {curr['rsi']:.1f} < {PULLBACK_CONFIRM_RSI_LONG}",
-            ))
-            momentum_pass = curr['ema_20'] > prev['ema_20'] and (
-                live_price >= curr['kc_upper'] or close > prev_close
-            )
-        elif side == "SHORT":
-            if curr['st_direction'] != -1:
-                cancel_failures.append("SuperTrend 已轉多")
-            if ema_1h is not None and live_price > ema_1h:
-                wait_failures.append("價格仍高於 1h EMA50")
-            confirmations.append((
-                curr['rsi'] <= PULLBACK_CONFIRM_RSI_SHORT,
-                f"RSI {curr['rsi']:.1f} > {PULLBACK_CONFIRM_RSI_SHORT}",
-            ))
-            momentum_pass = curr['ema_20'] < prev['ema_20'] and (
-                live_price <= curr['kc_lower'] or close < prev_close
-            )
-        else:
-            cancel_failures.append(f"未知方向 {side}")
-
-        volume_ratio = float(curr['volume']) / float(vol_ma) if vol_ma and vol_ma > 0 else 0.0
-        if not freshness_pass:
-            cancel_failures.append(f"SuperTrend 已過期 ({flip_age} 根)")
-        if cancel_failures:
-            return {"status": "CANCEL", "reason": "；".join(cancel_failures)}
-
-        confirmations.extend([
-            (volume_pass, f"量能 {volume_ratio:.2f}x < {KELTNER_MIN_VOLUME_RATIO:.2f}x"),
-            (momentum_pass, "EMA20斜率與價格動能尚未轉強" if side == "LONG" else "EMA20斜率與價格動能尚未轉弱"),
-        ])
-        passed_count = sum(passed for passed, _ in confirmations)
-        if passed_count < 2:
-            wait_failures.extend(reason for passed, reason in confirmations if not passed)
-        if wait_failures:
-            return {
-                "status": "WAIT",
-                "reason": "二次確認待通過：" + "；".join(wait_failures),
-            }
-
-        return {
-            "status": "PASS",
-            "reason": (
-                f"{'70分低風險回調、' if signal_score is not None and signal_score < 80 else ''}"
-                f"ST有效({flip_age})、1h趨勢、回調確認{passed_count}/3、"
-                f"RSI={curr['rsi']:.1f}、量能={volume_ratio:.2f}x"
-            ),
-            "atr": float(curr['atr']),
-        }
-
     def evaluate_signal(self, df: pd.DataFrame, ema_200_1h: float = None) -> dict:
         if len(df) < 50:
             return {"action": "HOLD", "reason": "Not enough data"}
@@ -220,153 +129,67 @@ class SuperTrendKeltnerStrategy:
         kc_lower = curr['kc_lower']
         kc_width = curr['kc_width'] if not np.isnan(curr['kc_width']) else (price * 0.03)
 
-        # 快速突破模式與8005一致，使用5m EMA20/EMA50波段方向；
-        # 舊回調模式仍保留1h EMA50總趨勢過濾。
+        # --- 1. 底線防禦 (Mandatory Filters) ---
+        # 如果這兩個不通過，分數直接為 0，絕對不開倉
+        is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
+        is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
+        
         st_dir = curr['st_direction']
-        if FAST_ENTRY_MODE:
-            trend_long = curr['ema_20'] >= curr['ema_50']
-            trend_short = curr['ema_20'] <= curr['ema_50']
-            if st_dir == 1 and not trend_long:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: EMA20_Below_EMA50"}
-            if st_dir == -1 and not trend_short:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: EMA20_Above_EMA50"}
-        else:
-            is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
-            is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
-            if st_dir == 1 and not is_1h_bullish:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
-            if st_dir == -1 and not is_1h_bearish:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
+        
+        # 底線判斷
+        if st_dir == 1 and not is_1h_bullish:
+            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
+        if st_dir == -1 and not is_1h_bearish:
+            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
 
         # --- 2. 動態評分系統 (Scoring System) ---
-        score = 10
-        score_details = ["1h_Trend_Pass(+10)"]
+        score = 0
+        score_details = []
 
         # A. Keltner 突破分數 (30分)
         kc_breakout_buffer = kc_width * KELTNER_BREAKOUT_MARGIN_PCT
-        kc_breakout_pass = False
         if st_dir == 1 and price >= (kc_upper + kc_breakout_buffer):
-            kc_breakout_pass = True
             score += 30
             score_details.append("KC_Breakout_Pass")
         elif st_dir == -1 and price <= (kc_lower - kc_breakout_buffer):
-            kc_breakout_pass = True
             score += 30
             score_details.append("KC_Breakout_Pass")
         else:
             score_details.append("KC_Breakout_Fail")
 
-        # B. 量能確認（20/15/8 分）；低於 0.35x 不允許進場。
-        if vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_STRONG_VOLUME_RATIO):
+        # B. 量能確認分數 (20分)
+        if vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
             score += 20
-            score_details.append("Volume_Strong(+20)")
-        elif vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
-            score += 15
-            score_details.append("Volume_Pass(+15)")
-        elif vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_PARTIAL_VOLUME_RATIO):
-            score += 8
-            score_details.append("Volume_Partial(+8)")
+            score_details.append("Volume_Pass")
         else:
             score_details.append("Volume_Fail")
 
-        # C. RSI 方向分數（15/8 分）；先判斷強勢，再判斷部分門檻。
+        # C. RSI 強勢分數 (20分)
         if st_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
-            score += 15
-            score_details.append("RSI_Strong(+15)")
-        elif st_dir == 1 and rsi >= RSI_LONG_PARTIAL_THRESHOLD:
-            score += 8
-            score_details.append("RSI_Partial(+8)")
+            score += 20
+            score_details.append("RSI_Pass")
         elif st_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
-            score += 15
-            score_details.append("RSI_Strong(+15)")
-        elif st_dir == -1 and rsi <= RSI_SHORT_PARTIAL_THRESHOLD:
-            score += 8
-            score_details.append("RSI_Partial(+8)")
+            score += 20
+            score_details.append("RSI_Pass")
         else:
             score_details.append("RSI_Fail")
 
-        # D. 訊號新鮮度分級：0~15 根 25 分，16~40 根 15 分。
+        # D. 訊號新鮮度分數 (30分)
         st_flip_age = bars_since_supertrend_flip(df['st_direction'])
-        freshness_pass = st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS
-        if st_flip_age <= SUPERTREND_FULL_FRESH_BARS:
-            score += 25
-            score_details.append("Freshness_Full(+25)")
-        elif freshness_pass:
-            score += 15
-            score_details.append("Freshness_Aged(+15)")
+        if st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS:
+            score += 30
+            score_details.append("Freshness_Pass")
         else:
             score_details.append("Freshness_Fail")
 
-        # 兩者改為必要條件。舊邏輯在 KC 未突破時 dist 為負數，
-        # 仍可能被「dist <= 0.1%」誤判為立即進場；過期 SuperTrend 也會以 70 分追價。
-        if not kc_breakout_pass:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: KC_Breakout | Score({score}) | {', '.join(score_details)}"
-            }
-        if not freshness_pass:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: SuperTrend_Stale({st_flip_age}) | Score({score}) | {', '.join(score_details)}"
-            }
-        volume_floor_pass = vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_PARTIAL_VOLUME_RATIO
-        rsi_floor_pass = (
-            st_dir == 1 and rsi >= RSI_LONG_PARTIAL_THRESHOLD
-        ) or (
-            st_dir == -1 and rsi <= RSI_SHORT_PARTIAL_THRESHOLD
-        )
-        if not volume_floor_pass:
-            return {
-                "action": "HOLD", "reason": f"Mandatory_Fail: Volume_LT_{KELTNER_PARTIAL_VOLUME_RATIO:.2f}x | Score({score})"
-            }
-        if not rsi_floor_pass:
-            return {
-                "action": "HOLD", "reason": f"Mandatory_Fail: RSI_Direction | RSI({rsi:.1f}) | Score({score})"
-            }
-
-        if FAST_ENTRY_MODE:
-            volume_pass = vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO
-            rsi_pass = (
-                st_dir == 1 and rsi >= RSI_LONG_THRESHOLD
-            ) or (
-                st_dir == -1 and rsi <= RSI_SHORT_THRESHOLD
-            )
-            if not volume_pass:
-                return {
-                    "action": "HOLD",
-                    "reason": f"Mandatory_Fail: Volume_LT_{KELTNER_MIN_VOLUME_RATIO:.2f}x | Score({score})",
-                }
-            if not rsi_pass:
-                return {
-                    "action": "HOLD",
-                    "reason": f"Mandatory_Fail: RSI_Direction | RSI({rsi:.1f}) | Score({score})",
-                }
-            sl = price - atr * STOP_LOSS_MULTIPLIER if st_dir == 1 else price + atr * STOP_LOSS_MULTIPLIER
-            tp = price + atr * TAKE_PROFIT_MULTIPLIER if st_dir == 1 else price - atr * TAKE_PROFIT_MULTIPLIER
-            return {
-                "action": "BUY" if st_dir == 1 else "SELL",
-                "side": "LONG" if st_dir == 1 else "SHORT",
-                "price": price,
-                "sl": sl,
-                "tp": tp,
-                "atr": atr,
-                "kc_upper": kc_upper,
-                "kc_lower": kc_lower,
-                "score": score,
-                "reason": (
-                    f"Fast_Keltner_SuperTrend({score}) | ST新鮮({st_flip_age}) | "
-                    f"EMA20/50同向 | RSI={rsi:.1f} | 量能={vol / vol_ma_20:.2f}x"
-                ),
-            }
-
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
-        # 70~79 分只能等待回調；80 分以上才允許在安全距離內立即進場。
+        # 進場門檻：總分 >= MIN_SCORE_THRESHOLD (90 分)
         if score >= MIN_SCORE_THRESHOLD:
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
 
-                if score >= 80 and dist <= MAX_BREAKOUT_DISTANCE:
+                if dist <= MAX_BREAKOUT_DISTANCE:
                     # ✅ A段：剛剛突破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
                     sl = price - (atr * STOP_LOSS_MULTIPLIER)
                     tp = price + (atr * TAKE_PROFIT_MULTIPLIER)
@@ -384,16 +207,13 @@ class SuperTrendKeltnerStrategy:
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": kc_upper,  # 回調目標：KC 上軌（突破後的第一道支撐）
-                        "reason": (
-                            f"{'Pullback_WAIT_LOW_SCORE' if score < 80 else 'Pullback_WAIT'}({score}) | "
-                            f"dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
-                        )
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
                     }
 
             else:  # SHORT
                 dist = (kc_lower - price) / kc_lower
 
-                if score >= 80 and dist <= MAX_BREAKOUT_DISTANCE:
+                if dist <= MAX_BREAKOUT_DISTANCE:
                     # ✅ A段：剛剛跌破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
                     sl = price + (atr * STOP_LOSS_MULTIPLIER)
                     tp = price - (atr * TAKE_PROFIT_MULTIPLIER)
@@ -410,11 +230,7 @@ class SuperTrendKeltnerStrategy:
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": kc_lower,  # 回調目標：KC 下軌（跌破後的第一道阻力）
-                        "reason": (
-                            f"{'Pullback_WAIT_LOW_SCORE' if score < 80 else 'Pullback_WAIT'}({score}) | "
-                            f"dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
-                        )
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
                     }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
-

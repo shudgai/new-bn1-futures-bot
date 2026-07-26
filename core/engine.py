@@ -6,8 +6,7 @@ import pandas as pd
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
-    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, PULLBACK_ZONE_ATR_MULT,
-    PULLBACK_ZONE_MAX_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
+    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier
 )
 from core.strategy import SuperTrendKeltnerStrategy
@@ -291,71 +290,37 @@ class TradingEngine:
                         continue
 
                     target = pb_info["target_zone"]
-                    atr_zone_pct = PULLBACK_ZONE_ATR_MULT * pb_info.get("atr", 0.0) / target
-                    zone_pct = min(max(PULLBACK_ZONE_PCT, atr_zone_pct), PULLBACK_ZONE_MAX_PCT)
-                    pb_info["zone_pct"] = zone_pct
-                    zone_low = target * (1.0 - zone_pct)
-                    zone_high = target * (1.0 + zone_pct)
+                    zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
+                    zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
 
-                    if not (zone_low <= curr_p <= zone_high):
-                        distance_pct = abs(curr_p - target) / target * 100.0
-                        pb_info["confirmation_reason"] = (
-                            f"等待回調至KC區，距目標{distance_pct:.2f}%"
-                        )
-
-                    # 4c. 價格進入回調區後，必須以最新已收 K 做二次確認。
-                    if zone_low <= curr_p <= zone_high:
-                        confirm_df = await self.fetch_klines(pb_symbol, timeframe="5m", limit=100)
-                        confirmation = self.strategy.validate_pullback_entry(
-                            confirm_df,
-                            side=pb_info["side"],
-                            live_price=curr_p,
-                            ema_1h=self.ema_200_1h_cache.get(pb_symbol),
-                            signal_score=pb_info.get("score"),
-                        )
-                        if confirmation["status"] == "CANCEL":
-                            del self.pending_pullbacks[pb_symbol]
-                            self.account.log(
-                                f"🛑 [回調二次確認失敗] {pb_symbol} {pb_info['side']}："
-                                f"{confirmation['reason']}，取消本次進場",
-                                "WARNING",
-                            )
-                            continue
-                        if confirmation["status"] != "PASS":
-                            pb_info["confirmation_reason"] = confirmation["reason"]
-                            pb_info["last_confirmation_at"] = time.time()
-                            continue
-
-                        atr = confirmation.get("atr", pb_info["atr"])
+                    # 4c. 价格回調到目標區間內 → 觸發進場
+                    if pb_info["side"] == "LONG" and zone_low <= curr_p <= zone_high:
+                        atr = pb_info["atr"]
+                        sl  = curr_p - (atr * 2.0)   # 以回調進場價重新計算 SL
+                        tp  = curr_p + (atr * 3.0)
                         pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
-                        if pb_info["side"] == "LONG":
-                            sl = curr_p - (atr * 2.0)
-                            tp = curr_p + (atr * 3.0)
-                        else:
-                            sl = curr_p + (atr * 2.0)
-                            tp = curr_p - (atr * 3.0)
-
-                        success = await self.account.open_position(
-                            symbol=pb_symbol,
-                            side=pb_info["side"],
-                            price=curr_p,
-                            amount_usdt=pb_amount,
-                            sl=sl,
-                            tp=tp,
-                            reason=(
-                                f"Pullback_Confirmed | {confirmation['reason']} | "
-                                f"{pb_info['reason']}"
-                            ),
-                            atr=atr,
-                            signal_score=pb_info.get("score"),
+                        await self.account.open_position(
+                            symbol=pb_symbol, side="LONG", price=curr_p,
+                            amount_usdt=pb_amount, sl=sl, tp=tp,
+                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
                         )
-                        if not success:
-                            continue
-
                         self.account.log(
-                            f"🎯 [回調確認進場] {pb_symbol} {pb_info['side']} @ {curr_p:.4f} | "
-                            f"{confirmation['reason']} | SL={sl:.4f} TP={tp:.4f}",
-                            "SUCCESS",
+                            f"🎯 [回調進場] {pb_symbol} LONG 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
+                        )
+                        del self.pending_pullbacks[pb_symbol]
+
+                    elif pb_info["side"] == "SHORT" and zone_low <= curr_p <= zone_high:
+                        atr = pb_info["atr"]
+                        sl  = curr_p + (atr * 2.0)
+                        tp  = curr_p - (atr * 3.0)
+                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
+                        await self.account.open_position(
+                            symbol=pb_symbol, side="SHORT", price=curr_p,
+                            amount_usdt=pb_amount, sl=sl, tp=tp,
+                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                        )
+                        self.account.log(
+                            f"🎯 [回調進場] {pb_symbol} SHORT 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
                         )
                         del self.pending_pullbacks[pb_symbol]
 
@@ -485,11 +450,10 @@ class TradingEngine:
                                 "kc_lower": sig.get("kc_lower", 0),
                                 "score": sig.get("score", 0),
                                 "timestamp": time.time(),
-                                "reason": sig["reason"],
-                                "zone_pct": min(max(PULLBACK_ZONE_PCT, PULLBACK_ZONE_ATR_MULT * sig.get("atr", real_atr) / sig["target_zone"]), PULLBACK_ZONE_MAX_PCT),
+                                "reason": sig["reason"]
                             }
                             self.account.log(
-                                f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{self.pending_pullbacks[symbol]['zone_pct']:.1%} | {sig['reason']}",
+                                f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{PULLBACK_ZONE_PCT:.1%} | {sig['reason']}",
                                 "INFO"
                             )
 
