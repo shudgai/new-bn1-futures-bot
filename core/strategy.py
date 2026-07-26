@@ -5,24 +5,18 @@ from core.config import (
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     KELTNER_PARTIAL_VOLUME_RATIO,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_PARTIAL_THRESHOLD, RSI_SHORT_PARTIAL_THRESHOLD,
-    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT,
+    FAST_ENTRY_MODE, MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT,
     PULLBACK_CONFIRM_RSI_LONG, PULLBACK_CONFIRM_RSI_SHORT
 )
 from core.indicators import bars_since_supertrend_flip
 
 class SuperTrendKeltnerStrategy:
     """
-    高精度量化引擎 - 回調狙擊版本 (Pullback Sniper Mode)
-    核心邏輯：
-    1. 底線防禦 (Mandatory)：大週期趨勢 (1h EMA50) 與 SuperTrend 方向必須一致。
-    2. 動態評分 (Scoring)：Keltner 突破、量能、RSI、訊號新鮮度 進行加權評分。
-    3. 進場決策「回調優先」三段式：
-       - KC 突破與新鮮度必須通過，70~79 分 → 一律 WAIT_PULLBACK
-       - 評分至少 80，距 KC <= 0.1% → BUY_NOW
-       - KC 突破與新鮮度必須通過，評分至少 80，距 KC > 0.1% → WAIT_PULLBACK
-       - 其餘 → HOLD
-    修正原則：KC突破後動量往往已接近末段，應等待回踩 KC 軌道才進場，
-    而非在突破高點追入，避免一開倉就面臨回落。
+    SuperTrend + Keltner 交易策略。
+
+    FAST_ENTRY_MODE 開啟時，進場條件對齊 Port 8005：
+    Keltner 突破、SuperTrend 方向與新鮮度、EMA20/EMA50、
+    成交量及 RSI 全部通過後立即進場。關閉時則保留原本的回調等待模式。
     """
     def __init__(self, atr_period=10, atr_multiplier=3.0):
         self.atr_period = atr_period
@@ -215,18 +209,23 @@ class SuperTrendKeltnerStrategy:
         kc_lower = curr['kc_lower']
         kc_width = curr['kc_width'] if not np.isnan(curr['kc_width']) else (price * 0.03)
 
-        # --- 1. 底線防禦 (Mandatory Filters) ---
-        # 如果這兩個不通過，分數直接為 0，絕對不開倉
-        is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
-        is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
-        
+        # 快速突破模式與8005一致，使用5m EMA20/EMA50波段方向；
+        # 舊回調模式仍保留1h EMA50總趨勢過濾。
         st_dir = curr['st_direction']
-        
-        # 底線判斷
-        if st_dir == 1 and not is_1h_bullish:
-            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
-        if st_dir == -1 and not is_1h_bearish:
-            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
+        if FAST_ENTRY_MODE:
+            trend_long = curr['ema_20'] >= curr['ema_50']
+            trend_short = curr['ema_20'] <= curr['ema_50']
+            if st_dir == 1 and not trend_long:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: EMA20_Below_EMA50"}
+            if st_dir == -1 and not trend_short:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: EMA20_Above_EMA50"}
+        else:
+            is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
+            is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
+            if st_dir == 1 and not is_1h_bullish:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
+            if st_dir == -1 and not is_1h_bearish:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
 
         # --- 2. 動態評分系統 (Scoring System) ---
         score = 0
@@ -292,6 +291,41 @@ class SuperTrendKeltnerStrategy:
             return {
                 "action": "HOLD",
                 "reason": f"Mandatory_Fail: SuperTrend_Stale({st_flip_age}) | Score({score}) | {', '.join(score_details)}"
+            }
+
+        if FAST_ENTRY_MODE:
+            volume_pass = vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO
+            rsi_pass = (
+                st_dir == 1 and rsi >= RSI_LONG_THRESHOLD
+            ) or (
+                st_dir == -1 and rsi <= RSI_SHORT_THRESHOLD
+            )
+            if not volume_pass:
+                return {
+                    "action": "HOLD",
+                    "reason": f"Mandatory_Fail: Volume_LT_{KELTNER_MIN_VOLUME_RATIO:.2f}x | Score({score})",
+                }
+            if not rsi_pass:
+                return {
+                    "action": "HOLD",
+                    "reason": f"Mandatory_Fail: RSI_Direction | RSI({rsi:.1f}) | Score({score})",
+                }
+            sl = price - atr * STOP_LOSS_MULTIPLIER if st_dir == 1 else price + atr * STOP_LOSS_MULTIPLIER
+            tp = price + atr * TAKE_PROFIT_MULTIPLIER if st_dir == 1 else price - atr * TAKE_PROFIT_MULTIPLIER
+            return {
+                "action": "BUY" if st_dir == 1 else "SELL",
+                "side": "LONG" if st_dir == 1 else "SHORT",
+                "price": price,
+                "sl": sl,
+                "tp": tp,
+                "atr": atr,
+                "kc_upper": kc_upper,
+                "kc_lower": kc_lower,
+                "score": score,
+                "reason": (
+                    f"Fast_Keltner_SuperTrend({score}) | ST新鮮({st_flip_age}) | "
+                    f"EMA20/50同向 | RSI={rsi:.1f} | 量能={vol / vol_ma_20:.2f}x"
+                ),
             }
 
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---

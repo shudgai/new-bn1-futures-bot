@@ -3,7 +3,8 @@
 BIN="$(pwd)/.venv/bin"
 
 export PORT="8006"
-export PAPER_TRADING="true"
+export PAPER_TRADING="false"
+export USE_TESTNET="true"
 export PYTHONPATH="$(pwd)"
 
 echo "🌐 Starting Port 8006 Binance Futures Bot 2.0..."

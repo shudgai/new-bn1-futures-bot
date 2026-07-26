@@ -6,17 +6,25 @@ from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
-    get_position_multiplier
+    BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier
 )
 from core.strategy import SuperTrendKeltnerStrategy
-from core.paper_account import PaperAccount
+from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
 
 class TradingEngine:
     def __init__(self):
+        # 真實市場公開行情與8006獨立Testnet執行帳戶分流。
         self.exchange = ccxt.binanceusdm({"enableRateLimit": True})
+        self.execution_exchange = ccxt.binanceusdm({
+            "apiKey": BINANCE_API_KEY,
+            "secret": BINANCE_SECRET,
+            "enableRateLimit": True,
+            "options": {"defaultType": "future"},
+        })
+        self.execution_exchange.set_sandbox_mode(True)
         self.strategy = SuperTrendKeltnerStrategy()
-        self.account = PaperAccount()
+        self.account = BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
         self.is_running = False
         self.task: asyncio.Task = None
@@ -37,8 +45,9 @@ class TradingEngine:
     async def start(self):
         if self.is_running:
             return
+        await self.account.initialize()
         self.is_running = True
-        self.account.log("▶️ 量化交易機器人啟動 (台北時間模式 / 防插針防重複平倉防低流動性啟用)")
+        self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（快速突破 / 12幣方向限制）")
         self.task = asyncio.create_task(self._main_loop())
         # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
         # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。
@@ -59,6 +68,7 @@ class TradingEngine:
         if self.analysis_task:
             self.analysis_task.cancel()
         await self.exchange.close()
+        await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
 
     def request_trade_analysis(self) -> None:
@@ -187,7 +197,7 @@ class TradingEngine:
 
                 # 2. 更新與執行持倉部位
                 prev_positions = set(self.account.positions.keys())
-                self.account.update_positions(self.tickers)
+                await self.account.update_positions(self.tickers)
                 closed_symbols = prev_positions - set(self.account.positions.keys())
                 for csym in closed_symbols:
                     self.cooldowns[csym] = time.time()
@@ -264,7 +274,7 @@ class TradingEngine:
                             sl = curr_p + (atr * 2.0)
                             tp = curr_p - (atr * 3.0)
 
-                        success = self.account.open_position(
+                        success = await self.account.open_position(
                             symbol=pb_symbol,
                             side=pb_info["side"],
                             price=curr_p,
@@ -392,7 +402,7 @@ class TradingEngine:
                         self.account.log(f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，選最優 {available_slots} 個，跳過: {', '.join(skipped)}", "INFO")
 
                     for score, symbol, sig, price, real_atr in top_signals:
-                        self.account.open_position(
+                        await self.account.open_position(
                             symbol=symbol,
                             side=sig["side"],
                             price=price,

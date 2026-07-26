@@ -80,6 +80,8 @@ def test_keltner_breakout_and_freshness_are_mandatory(monkeypatch):
         "kc_upper": [101.0] * 50,
         "kc_lower": [99.0] * 50,
         "kc_width": [2.0] * 50,
+        "ema_20": [101.0] * 50,
+        "ema_50": [100.0] * 50,
         "st_direction": [1] * 50,
     })
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
@@ -106,34 +108,35 @@ def _entry_score_frame(volume=700.0, rsi=49.0):
         "kc_upper": [100.0] * 50,
         "kc_lower": [98.0] * 50,
         "kc_width": [2.0] * 50,
+        "ema_20": [101.0] * 50,
+        "ema_50": [100.0] * 50,
         "st_direction": [1] * 50,
     })
 
 
-def test_score_70_waits_for_pullback_even_when_breakout_is_close(monkeypatch):
+def test_fast_breakout_enters_at_half_average_volume(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=700.0, rsi=49.0)
+    frame = _entry_score_frame(volume=500.0, rsi=45.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 15)
 
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+    result = strategy.evaluate_signal(frame, ema_200_1h=999.0)
 
-    assert result["score"] == 70
-    assert result["action"] == "WAIT_PULLBACK"
-    assert "Pullback_WAIT_LOW_SCORE(70)" in result["reason"]
-    assert "Volume_Partial" in result["reason"]
-
-
-def test_score_80_can_enter_when_breakout_is_close(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=900.0, rsi=49.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
-
-    assert result["score"] == 80
+    assert result["score"] == 100
     assert result["action"] == "BUY"
+    assert "Fast_Keltner_SuperTrend" in result["reason"]
+
+
+def test_fast_breakout_rejects_volume_below_half_average(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=499.0, rsi=60.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+
+    assert result["action"] == "HOLD"
+    assert "Volume_LT_0.50x" in result["reason"]
 
 
 def _pullback_frame(side="LONG"):
@@ -175,7 +178,7 @@ def test_pullback_confirmation_cancels_stale_or_weak_signal(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _pullback_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 9)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 16)
 
     stale = strategy.validate_pullback_entry(
         frame, side="LONG", live_price=100.1, ema_1h=95.0

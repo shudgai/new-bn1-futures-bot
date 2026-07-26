@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
-    PORT, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
+    PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
     get_leverage, get_signal_leverage,
 )
 from core.engine import engine
@@ -65,10 +65,13 @@ async def get_index():
 
 @app.get("/api/status")
 async def get_status():
-    unrealized = engine.account.update_positions(engine.tickers)
+    unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": "SuperTrend + Keltner Breakout",
+        "strategy": "8005 Fast Keltner + SuperTrend (12幣方向限制)",
+        "environment": "binance_testnet",
+        "paper_trading": PAPER_TRADING,
+        "available_balance": round(engine.account.available_balance, 2),
         "port": PORT,
         "balance": round(engine.account.balance, 2),
         "realized_pnl": round(engine.account.realized_pnl, 2),
@@ -108,7 +111,7 @@ async def get_prices():
         "symbol_directions": engine.symbol_rotation.direction_map,
         "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
-        "unrealized_pnl": round(engine.account.update_positions(engine.tickers), 2),
+        "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),
         "balance": round(engine.account.balance, 2),
     }
 
@@ -134,7 +137,7 @@ async def manual_order(req: ManualOrderRequest):
     sl = price - (atr * 1.5) if side == "LONG" else price + (atr * 1.5)
     tp = price + (atr * 3.0) if side == "LONG" else price - (atr * 3.0)
 
-    success = engine.account.open_position(
+    success = await engine.account.open_position(
         symbol=symbol,
         side=side,
         price=price,
@@ -189,5 +192,7 @@ async def manual_close(req: ManualCloseRequest):
     if symbol not in engine.account.positions:
         raise HTTPException(status_code=400, detail="查無此持倉")
     price = engine.tickers.get(symbol, engine.account.positions[symbol]["entry_price"])
-    engine.account.close_position(symbol, price, "手動平倉")
+    success = await engine.account.close_position(symbol, price, "手動平倉")
+    if not success:
+        raise HTTPException(status_code=502, detail="Binance Testnet 平倉失敗")
     return {"status": "success", "message": f"手動平倉 {symbol}"}

@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PORT = int(os.getenv("PORT", "8006"))
-PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
+PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10000.0"))
 LEVERAGE = int(os.getenv("LEVERAGE", "5"))  # 預設槓桿：SYMBOL_LEVERAGE 未列出的幣種使用此值
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "3"))
@@ -49,8 +49,8 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
 # --- 精準狙擊進場門檻 ---
-# 70 分訊號只能等待回調並通過二次確認；80 分以上才可在安全距離內立即進場。
-# Keltner 突破與 SuperTrend 新鮮度仍是不可放寬的必要條件。
+# 預設採8005快速突破；設為false時才回到70分回調模式。
+FAST_ENTRY_MODE = os.getenv("FAST_ENTRY_MODE", "true").lower() == "true"
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
 # 回調訊號只保留 10 分鐘，避免使用已經失效的舊突破。
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10"))
@@ -61,18 +61,18 @@ PULLBACK_CONFIRM_RSI_SHORT = int(os.getenv("PULLBACK_CONFIRM_RSI_SHORT", "47"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
-# KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
+# close 超過KC軌道即算突破；量能與新鮮度門檻對齊8005。
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
-KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
-KELTNER_PARTIAL_VOLUME_RATIO = float(os.getenv("KELTNER_PARTIAL_VOLUME_RATIO", "0.65"))
+KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.5"))
+KELTNER_PARTIAL_VOLUME_RATIO = float(os.getenv("KELTNER_PARTIAL_VOLUME_RATIO", "0.35"))
 RSI_LONG_PARTIAL_THRESHOLD = float(os.getenv("RSI_LONG_PARTIAL_THRESHOLD", "50.0"))
 RSI_SHORT_PARTIAL_THRESHOLD = float(os.getenv("RSI_SHORT_PARTIAL_THRESHOLD", "50.0"))
-# SuperTrend 翻轉最多保留 8 根 5 分鐘 K（約 40 分鐘）。
-SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "8"))
+# SuperTrend 翻轉最多保留 15 根 5 分鐘 K（約 75 分鐘）。
+SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "15"))
 
 # --- 動態 RSI 濾網 ---
-RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
-RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
+RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "45"))
+RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "55"))
 
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
