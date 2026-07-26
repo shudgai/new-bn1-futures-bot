@@ -299,21 +299,119 @@ def test_trade_history_ai_analysis_is_sanitized_cached_and_persisted(tmp_path):
     assert restored.status()["summary"] == "一筆交易樣本，暫以風控觀察為主。"
 
 
-def test_symbol_rotation_never_replaces_held_symbol():
-    current = list(DEFAULT_SYMBOLS)
-    held_symbol = current[-1]
-    candidates = current + ["DOT/USDT"]
-    scores = {symbol: 0.5 for symbol in candidates}
-    scores[held_symbol] = 0.0
-    scores[current[-2]] = 0.1
-    scores["DOT/USDT"] = 1.0
+def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 20_000_000.0)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 40)
+    tickers = {
+        "BTC/USDT:USDT": {"quoteVolume": 100_000_000.0},
+        "SKHY/USDT:USDT": {"quoteVolume": 200_000_000.0},
+        "LOW/USDT:USDT": {"quoteVolume": 10_000_000.0},
+    }
+    markets = {
+        "BTC/USDT:USDT": {
+            "symbol": "BTC/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+            "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+        },
+        "SKHY/USDT:USDT": {
+            "symbol": "SKHY/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+            "info": {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY"},
+        },
+        "LOW/USDT:USDT": {
+            "symbol": "LOW/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+            "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+        },
+    }
+    assert SymbolRotation.market_candidates(tickers, markets) == ["BTC/USDT"]
 
-    selected, changes = SymbolRotation.choose_symbols(
-        current, [held_symbol], scores
+
+def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    current = [f"OLD{i}/USDT" for i in range(12)]
+    metrics = []
+    for index in range(7):
+        metrics.append({
+            "symbol": f"L{index}/USDT",
+            "direction": "LONG",
+            "eligible": True,
+            "final_score": 90.0 - index,
+        })
+        metrics.append({
+            "symbol": f"S{index}/USDT",
+            "direction": "SHORT",
+            "eligible": True,
+            "final_score": 89.0 - index,
+        })
+    held_symbol = "OLD11/USDT"
+    selected, directions, changes = SymbolRotation.choose_directional_symbols(
+        current,
+        {held_symbol: {"side": "SHORT"}},
+        metrics,
     )
     assert held_symbol in selected
-    assert any(change["in"] == "DOT/USDT" for change in changes)
+    assert directions[held_symbol] == "SHORT"
+    assert sum(side == "LONG" for side in directions.values()) == 6
+    assert sum(side == "SHORT" for side in directions.values()) == 6
     assert all(change["out"] != held_symbol for change in changes)
+
+
+def test_directional_rotation_backfills_missing_shorts_with_longs(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
+    metrics = [
+        {
+            "symbol": f"L{index}/USDT",
+            "direction": "LONG",
+            "eligible": True,
+            "final_score": 90.0 - index,
+        }
+        for index in range(12)
+    ]
+    metrics.extend([
+        {
+            "symbol": f"S{index}/USDT",
+            "direction": "SHORT",
+            "eligible": True,
+            "final_score": 80.0 - index,
+        }
+        for index in range(2)
+    ])
+
+    selected, directions, _ = SymbolRotation.choose_directional_symbols([], {}, metrics)
+
+    assert len(selected) == 12
+    assert sum(side == "SHORT" for side in directions.values()) == 2
+    assert sum(side == "LONG" for side in directions.values()) == 10
+
+
+def test_directional_rotation_uses_lower_score_longs_only_to_fill_display(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
+    metrics = [
+        {
+            "symbol": f"L{index}/USDT",
+            "direction": "LONG",
+            "eligible": False,
+            "final_score": 59.0 - index,
+        }
+        for index in range(12)
+    ]
+    metrics.extend([
+        {
+            "symbol": f"S{index}/USDT",
+            "direction": "SHORT",
+            "eligible": True,
+            "final_score": 80.0 - index,
+        }
+        for index in range(2)
+    ])
+
+    selected, directions, _ = SymbolRotation.choose_directional_symbols([], {}, metrics)
+
+    assert len(selected) == 12
+    assert sum(side == "SHORT" for side in directions.values()) == 2
+    assert sum(side == "LONG" for side in directions.values()) == 10
 
 
 def test_trade_amount_multiplier_uses_half_size_for_score_70():

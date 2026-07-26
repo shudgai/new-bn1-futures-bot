@@ -57,8 +57,8 @@
         .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
         .right-panel { display: flex; flex-direction: column; }
         .bot-control-card { order: 1; }
-        .ai-analysis-card { order: 2; }
-        .system-log-card { order: 3; }
+        .system-log-card { order: 2; }
+        .ai-analysis-card { order: 3; }
 
         /* Cards */
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
@@ -70,6 +70,9 @@
         .coin-card:hover { border-color: var(--primary); transform: translateY(-1px); }
         .coin-name { font-size: 12px; font-weight: 700; color: var(--muted); }
         .coin-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; margin-top: 4px; }
+        .coin-direction { float: right; font-size: 10px; font-weight: 800; }
+        .coin-direction.long { color: var(--up); }
+        .coin-direction.short { color: var(--down); }
 
         /* Stats Grid */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
@@ -126,7 +129,10 @@
                 <!-- COIN STRIP (ALPHABETICAL ORDER) -->
                 <div class="coin-grid">
                     <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card">
-                        <div class="coin-name">{{ coin.name }}</div>
+                        <div class="coin-name">
+                            {{ coin.name }}
+                            <span :class="['coin-direction', coin.direction ? coin.direction.toLowerCase() : '']">{{ coin.direction === 'LONG' ? '多' : coin.direction === 'SHORT' ? '空' : '' }}</span>
+                        </div>
                         <div class="coin-price">{{ formatPrice(coin.price) }}</div>
                     </div>
                 </div>
@@ -319,6 +325,7 @@
                         leverage_map: {},
                         leverage_by_score: {},
                         symbols: [],
+                        symbol_directions: {},
                         tickers: {},
                         positions: [],
                         trades: [],
@@ -349,7 +356,8 @@
                         .map(sym => ({
                             sym,
                             name: sym.replace('/USDT', ''),
-                            price: this.getCurrPrice(sym)
+                            price: this.getCurrPrice(sym),
+                            direction: (this.bot.symbol_directions || {})[sym] || ''
                         }))
                         .filter(item => item.price !== null && item.price !== undefined)
                         .sort((a, b) => a.name.localeCompare(b.name));
@@ -426,6 +434,7 @@
                         const res = await fetch('/api/prices');
                         const data = await res.json();
                         if (data.symbols) this.bot.symbols = data.symbols;
+                        if (data.symbol_directions) this.bot.symbol_directions = data.symbol_directions;
                         if (data.tickers) this.bot.tickers = data.tickers;
                         if (data.positions) this.bot.positions = data.positions;
                         if (data.balance !== undefined) this.bot.balance = data.balance;

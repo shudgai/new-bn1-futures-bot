@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 import os
@@ -5,17 +6,24 @@ import time
 from collections import defaultdict
 from typing import Dict, Iterable, List
 
+import pandas as pd
+
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
+from core.strategy import SuperTrendKeltnerStrategy
 from core.config import (
     AI_ADVISOR_ENABLED,
     AI_ADVISOR_TIMEOUT_SEC,
     AI_ADVISOR_URL,
     AI_ADVISOR_WEIGHT,
     DEFAULT_SYMBOLS,
+    DIRECTIONAL_MIN_SCORE,
+    DIRECTIONAL_SIDE_COUNT,
     SYMBOL_CANDIDATE_POOL,
+    SYMBOL_MARKET_SCAN_LIMIT,
+    SYMBOL_MIN_QUOTE_VOLUME,
     SYMBOL_ROTATION_COUNT,
-    SYMBOL_ROTATION_MIN_SCORE_GAP,
+    TREND_FILTER_EMA_PERIOD,
 )
 
 
@@ -32,9 +40,11 @@ class SymbolRotation:
             timeout=AI_ADVISOR_TIMEOUT_SEC,
         )
         self.trade_analysis = TradeHistoryAnalyzer(self.ai)
+        self.strategy = SuperTrendKeltnerStrategy()
         self.last_rotation_at = 0.0
         self.last_changes: List[dict] = []
         self.last_metrics: List[dict] = []
+        self.direction_map: Dict[str, str] = {}
         self.last_reason = "尚未執行"
 
     @staticmethod
@@ -63,6 +73,25 @@ class SymbolRotation:
         return stats
 
     @staticmethod
+    def _closed_trade_direction_stats(trades: Iterable[dict]) -> Dict[tuple, dict]:
+        grouped = defaultdict(list)
+        for trade in trades:
+            if str(trade.get("action", "")).startswith("CLOSE"):
+                grouped[(trade.get("symbol", ""), trade.get("side", ""))].append(trade)
+        stats = {}
+        for key, rows in grouped.items():
+            recent = rows[:20]
+            pnls = [float(row.get("pnl") or 0.0) for row in recent]
+            count = len(pnls)
+            stats[key] = {
+                "trades": count,
+                "avg_pnl": sum(pnls) / count,
+                "win_rate": sum(value > 0 for value in pnls) / count,
+                "stop_rate": sum("Stop-Loss" in str(row.get("reason", "")) for row in recent) / count,
+            }
+        return stats
+
+    @staticmethod
     def _normalize_tickers(tickers: dict) -> Dict[str, dict]:
         normalized = {}
         for raw_symbol, ticker in tickers.items():
@@ -70,11 +99,45 @@ class SymbolRotation:
             normalized[symbol] = ticker
         return normalized
 
-    def build_metrics(self, tickers: dict) -> List[dict]:
+
+    @staticmethod
+    def market_candidates(tickers: dict, markets: dict = None) -> List[str]:
+        normalized = SymbolRotation._normalize_tickers(tickers)
+        allowed_crypto = None
+        if markets:
+            allowed_crypto = {
+                market["symbol"].replace(":USDT", "")
+                for market in markets.values()
+                if market.get("active")
+                and market.get("swap")
+                and market.get("quote") == "USDT"
+                and market.get("info", {}).get("contractType") == "PERPETUAL"
+                and market.get("info", {}).get("underlyingType") == "COIN"
+            }
+        excluded_bases = {
+            "1000PEPE", "APT", "ETH", "FET", "TAO", "WIF",
+            "USDC", "FDUSD", "TUSD", "USDP",
+        }
+        ranked = []
+        for symbol, ticker in normalized.items():
+            if not symbol.endswith("/USDT"):
+                continue
+            if allowed_crypto is not None and symbol not in allowed_crypto:
+                continue
+            base = symbol.split("/", 1)[0]
+            quote_volume = float(ticker.get("quoteVolume") or 0.0)
+            if base in excluded_bases or quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
+                continue
+            ranked.append((quote_volume, symbol))
+        ranked.sort(reverse=True)
+        return [symbol for _, symbol in ranked[:SYMBOL_MARKET_SCAN_LIMIT]]
+
+    def build_metrics(self, tickers: dict, candidates: List[str] = None) -> List[dict]:
+        candidates = candidates or SYMBOL_CANDIDATE_POOL
         normalized = self._normalize_tickers(tickers)
         history = self._closed_trade_stats(self.account.trades)
         volumes = []
-        for symbol in SYMBOL_CANDIDATE_POOL:
+        for symbol in candidates:
             ticker = normalized.get(symbol, {})
             volume = float(ticker.get("quoteVolume") or 0.0)
             volumes.append(math.log10(max(volume, 1.0)))
@@ -83,7 +146,7 @@ class SymbolRotation:
         spread = max(high - low, 1e-9)
 
         metrics = []
-        for symbol, log_volume in zip(SYMBOL_CANDIDATE_POOL, volumes):
+        for symbol, log_volume in zip(candidates, volumes):
             ticker = normalized.get(symbol, {})
             quote_volume = float(ticker.get("quoteVolume") or 0.0)
             change_pct = float(ticker.get("percentage") or 0.0)
@@ -124,6 +187,108 @@ class SymbolRotation:
             )
         return metrics
 
+    async def build_directional_metrics(
+        self, exchange, tickers: dict, candidates: List[str] = None
+    ) -> List[dict]:
+        """以 Binance 即時 5m/1h 資料分別評估 LONG 與 SHORT。"""
+        candidates = candidates or SYMBOL_CANDIDATE_POOL
+        normalized = self._normalize_tickers(tickers)
+        history = self._closed_trade_direction_stats(self.account.trades)
+        log_volumes = {
+            symbol: math.log10(max(float(normalized.get(symbol, {}).get("quoteVolume") or 0.0), 1.0))
+            for symbol in candidates
+        }
+        low = min(log_volumes.values()) if log_volumes else 0.0
+        high = max(log_volumes.values()) if log_volumes else 1.0
+        spread = max(high - low, 1e-9)
+        results = []
+
+        for symbol in candidates:
+            try:
+                raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="5m", limit=100)
+                raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=100)
+                columns = ["timestamp", "open", "high", "low", "close", "volume"]
+                df = pd.DataFrame(raw_5m, columns=columns)
+                df_1h = pd.DataFrame(raw_1h, columns=columns)
+                if len(df) < 50 or len(df_1h) < 30:
+                    continue
+
+                computed = self.strategy.compute_indicators(df)
+                curr = computed.iloc[-1]
+                price = float(curr["close"])
+                atr = max(float(curr["atr"]), price * 0.0001)
+                ema_1h = float(
+                    df_1h["close"]
+                    .ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False)
+                    .mean()
+                    .iloc[-1]
+                )
+                st_direction = int(curr["st_direction"])
+                rsi = float(curr["rsi"])
+                vol_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
+                volume_ratio = float(curr["volume"]) / vol_ma if vol_ma > 0 else 0.0
+                liquidity = (log_volumes[symbol] - low) / spread
+                ticker = normalized.get(symbol, {})
+                quote_volume = float(ticker.get("quoteVolume") or 0.0)
+                change_pct = float(ticker.get("percentage") or 0.0)
+
+                for direction in ("LONG", "SHORT"):
+                    is_long = direction == "LONG"
+                    trend_aligned = price >= ema_1h if is_long else price <= ema_1h
+                    st_aligned = st_direction == (1 if is_long else -1)
+                    kc_target = float(curr["kc_upper"] if is_long else curr["kc_lower"])
+                    kc_distance_atr = abs(price - kc_target) / atr
+                    kc_score = max(0.0, 1.0 - kc_distance_atr / 2.0)
+                    rsi_score = (
+                        min(max((rsi - 45.0) / 15.0, 0.0), 1.0)
+                        if is_long
+                        else min(max((55.0 - rsi) / 15.0, 0.0), 1.0)
+                    )
+                    directional_change = change_pct if is_long else -change_pct
+                    movement_score = max(0.0, 1.0 - abs(directional_change - 3.0) / 7.0)
+                    stat = history.get(
+                        (symbol, direction),
+                        {"trades": 0, "avg_pnl": 0.0, "win_rate": 0.5, "stop_rate": 0.0},
+                    )
+                    if stat["trades"] >= 3:
+                        pnl_score = (math.tanh(stat["avg_pnl"] / 1.5) + 1.0) / 2.0
+                        history_score = (
+                            stat["win_rate"] * 0.50
+                            + (1.0 - stat["stop_rate"]) * 0.30
+                            + pnl_score * 0.20
+                        )
+                    else:
+                        history_score = 0.50
+                    quant_score = (
+                        (1.0 if trend_aligned else 0.0) * 20.0
+                        + (1.0 if st_aligned else 0.0) * 15.0
+                        + kc_score * 15.0
+                        + rsi_score * 10.0
+                        + min(volume_ratio / 0.8, 1.0) * 10.0
+                        + liquidity * 15.0
+                        + history_score * 10.0
+                        + movement_score * 5.0
+                    )
+                    results.append({
+                        "symbol": symbol,
+                        "direction": direction,
+                        "quant_score": quant_score,
+                        "eligible": trend_aligned,
+                        "price": price,
+                        "ema_1h": ema_1h,
+                        "st_aligned": st_aligned,
+                        "kc_distance_atr": kc_distance_atr,
+                        "rsi": rsi,
+                        "volume_ratio": volume_ratio,
+                        "quote_volume": quote_volume,
+                        "change_pct": change_pct,
+                        **stat,
+                    })
+            except Exception:
+                continue
+            await asyncio.sleep(0.05)
+        return results
+
     @staticmethod
     def _blend_ai_scores(metrics: List[dict], ai_ranking: List[str]) -> Dict[str, float]:
         quant = {item["symbol"]: item["quant_score"] for item in metrics}
@@ -143,66 +308,155 @@ class SymbolRotation:
         }
 
     @staticmethod
-    def choose_symbols(
+    def choose_directional_symbols(
         current: List[str],
-        held_symbols: Iterable[str],
-        scores: Dict[str, float],
-    ) -> tuple[List[str], List[dict]]:
-        selected = [symbol for symbol in current if symbol in scores]
-        held = set(held_symbols)
-        ranked = sorted(scores, key=scores.get, reverse=True)
-        for symbol in ranked:
-            if len(selected) >= SYMBOL_ROTATION_COUNT:
-                break
-            if symbol not in selected:
-                selected.append(symbol)
-
-        changes = []
-        while True:
-            outsiders = [symbol for symbol in ranked if symbol not in selected]
-            replaceable = [symbol for symbol in selected if symbol not in held]
-            if not outsiders or not replaceable:
-                break
-            best_out = outsiders[0]
-            worst_in = min(replaceable, key=scores.get)
-            gap = scores[best_out] - scores[worst_in]
-            if gap < SYMBOL_ROTATION_MIN_SCORE_GAP:
-                break
-            selected[selected.index(worst_in)] = best_out
-            changes.append(
-                {
-                    "out": worst_in,
-                    "in": best_out,
-                    "score_gap": round(gap, 4),
-                }
+        held_positions: Dict[str, dict],
+        metrics: List[dict],
+    ) -> tuple[List[str], Dict[str, str], List[dict]]:
+        qualified = [
+            item for item in metrics
+            if item.get("eligible") and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
+        ]
+        selected_items = []
+        used_symbols = set()
+        for direction in ("LONG", "SHORT"):
+            side_ranked = sorted(
+                [item for item in qualified if item["direction"] == direction],
+                key=lambda item: item["final_score"],
+                reverse=True,
             )
+            for item in side_ranked:
+                if item["symbol"] in used_symbols:
+                    continue
+                selected_items.append(item)
+                used_symbols.add(item["symbol"])
+                side_count = sum(row["direction"] == direction for row in selected_items)
+                if side_count >= DIRECTIONAL_SIDE_COUNT:
+                    break
 
-        selected = sorted(selected, key=scores.get, reverse=True)[:SYMBOL_ROTATION_COUNT]
-        return selected, changes
+        # 空單不足 6 個時，以其餘達標多單依分數補滿介面 12 個。
+        if len(selected_items) < SYMBOL_ROTATION_COUNT:
+            long_backfill = sorted(
+                [
+                    item for item in qualified
+                    if item["direction"] == "LONG" and item["symbol"] not in used_symbols
+                ],
+                key=lambda item: item["final_score"],
+                reverse=True,
+            )
+            for item in long_backfill:
+                selected_items.append(item)
+                used_symbols.add(item["symbol"])
+                if len(selected_items) >= SYMBOL_ROTATION_COUNT:
+                    break
+
+        # 若達 60 分的多單仍不足，僅以其餘多單排名補足介面；
+        # 這不會繞過策略本身的 70 分實際開倉門檻。
+        if len(selected_items) < SYMBOL_ROTATION_COUNT:
+            display_backfill = sorted(
+                [
+                    item for item in metrics
+                    if item["direction"] == "LONG" and item["symbol"] not in used_symbols
+                ],
+                key=lambda item: item.get("final_score", 0.0),
+                reverse=True,
+            )
+            for item in display_backfill:
+                selected_items.append(item)
+                used_symbols.add(item["symbol"])
+                if len(selected_items) >= SYMBOL_ROTATION_COUNT:
+                    break
+
+        for symbol, position in held_positions.items():
+            if symbol in used_symbols:
+                continue
+            side = str(position.get("side", "LONG")).upper()
+            replaceable = [
+                item for item in selected_items
+                if item["symbol"] not in held_positions and item["direction"] == side
+            ]
+            if not replaceable:
+                replaceable = [
+                    item for item in selected_items if item["symbol"] not in held_positions
+                ]
+            if replaceable:
+                removed = min(replaceable, key=lambda item: item["final_score"])
+                selected_items.remove(removed)
+                used_symbols.discard(removed["symbol"])
+            selected_items.append({
+                "symbol": symbol,
+                "direction": side,
+                "final_score": 100.0,
+                "protected_position": True,
+            })
+            used_symbols.add(symbol)
+
+        selected_items = selected_items[:SYMBOL_ROTATION_COUNT]
+        selected = [item["symbol"] for item in selected_items]
+        directions = {item["symbol"]: item["direction"] for item in selected_items}
+        outgoing = [
+            symbol for symbol in current
+            if symbol not in selected and symbol not in held_positions
+        ]
+        incoming = [symbol for symbol in selected if symbol not in current]
+        changes = [{
+            "out": outgoing[index] if index < len(outgoing) else "",
+            "in": symbol,
+            "direction": directions[symbol],
+        } for index, symbol in enumerate(incoming)]
+        return selected, directions, changes
 
     async def rotate(self, exchange) -> List[dict]:
-        tickers = await exchange.fetch_tickers(SYMBOL_CANDIDATE_POOL)
-        metrics = self.build_metrics(tickers)
-        quant_ranked = sorted(metrics, key=lambda item: item["quant_score"], reverse=True)
+        await exchange.load_markets()
+        tickers = await exchange.fetch_tickers()
+        candidates = self.market_candidates(tickers, exchange.markets)
+        market_metrics = self.build_metrics(tickers, candidates)
+        quant_ranked = sorted(market_metrics, key=lambda item: item["quant_score"], reverse=True)
         ai_ranking = await self.ai.rank_symbols(quant_ranked)
-        scores = self._blend_ai_scores(metrics, ai_ranking)
-        selected, changes = self.choose_symbols(
+        ai_count = max(len(ai_ranking) - 1, 1)
+        ai_scores = {
+            symbol: 1.0 - (index / ai_count)
+            for index, symbol in enumerate(ai_ranking)
+        }
+        directional = await self.build_directional_metrics(exchange, tickers, candidates)
+        for item in directional:
+            item["final_score"] = (
+                item["quant_score"] * (1.0 - AI_ADVISOR_WEIGHT)
+                + ai_scores.get(item["symbol"], 0.5) * 100.0 * AI_ADVISOR_WEIGHT
+            )
+        selected, directions, changes = self.choose_directional_symbols(
             list(DEFAULT_SYMBOLS),
-            self.account.positions.keys(),
-            scores,
+            self.account.positions,
+            directional,
         )
         DEFAULT_SYMBOLS[:] = selected
+        self.direction_map = directions
         self.last_rotation_at = time.time()
         self.last_changes = changes
-        self.last_metrics = sorted(
-            [
-                {**item, "final_score": scores[item["symbol"]]}
-                for item in metrics
-            ],
-            key=lambda item: item["final_score"],
-            reverse=True,
+        selected_lookup = {(item["symbol"], item["direction"]): item for item in directional}
+        self.last_metrics = [
+            selected_lookup.get(
+                (symbol, directions[symbol]),
+                {"symbol": symbol, "direction": directions[symbol], "protected_position": True},
+            )
+            for symbol in selected
+        ]
+        long_count = sum(side == "LONG" for side in directions.values())
+        short_count = sum(side == "SHORT" for side in directions.values())
+        ai_text = "AI 正常輔助" if ai_ranking else "AI 不可用，已使用純量化回退"
+        display_backfill_count = sum(
+            not item.get("eligible") or item.get("final_score", 0.0) < DIRECTIONAL_MIN_SCORE
+            for item in self.last_metrics
+            if not item.get("protected_position")
         )
-        self.last_reason = "已完成量化評分；AI 正常輔助" if ai_ranking else "AI 不可用，已使用純量化回退"
+        backfill_text = (
+            f"；候選牌面補位 {display_backfill_count}"
+            if display_backfill_count else ""
+        )
+        self.last_reason = (
+            f"已掃描 Binance 合約市場 {len(candidates)} 幣；多單 {long_count}、空單 {short_count}；"
+            f"{ai_text}{backfill_text}"
+        )
         self._save()
         return changes
 
@@ -215,6 +469,7 @@ class SymbolRotation:
             "reason": self.last_reason,
             "ai": self.ai.status(),
             "metrics": self.last_metrics,
+            "direction_map": self.direction_map,
             "trade_ai_analysis": self.trade_analysis.status(),
         }
         with open(SELECTION_FILE, "w", encoding="utf-8") as handle:
@@ -227,5 +482,6 @@ class SymbolRotation:
             "reason": self.last_reason,
             "ai": self.ai.status(),
             "top_metrics": self.last_metrics[:12],
+            "direction_map": self.direction_map,
             "trade_ai_analysis": self.trade_analysis.status(),
         }

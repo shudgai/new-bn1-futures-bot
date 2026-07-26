@@ -82,6 +82,7 @@ async def get_status():
         },
         "trade_amount": TRADE_AMOUNT_USDT,
         "symbols": DEFAULT_SYMBOLS,
+        "symbol_directions": engine.symbol_rotation.direction_map,
         "symbol_rotation": engine.symbol_rotation.status(),
         "trade_ai_analysis": engine.symbol_rotation.trade_analysis.status(),
         "trade_ai_worker": {
@@ -104,6 +105,7 @@ async def get_prices():
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
     return {
         "symbols": DEFAULT_SYMBOLS,
+        "symbol_directions": engine.symbol_rotation.direction_map,
         "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
         "unrealized_pnl": round(engine.account.update_positions(engine.tickers), 2),

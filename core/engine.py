@@ -198,6 +198,19 @@ class TradingEngine:
                 # 4. 回調待命狀態機處理 (檢查所有待命訊號是否回調到位)
                 now_time = time.time()
                 for pb_symbol, pb_info in list(self.pending_pullbacks.items()):
+                    allowed_direction = self.symbol_rotation.direction_map.get(pb_symbol)
+                    if (
+                        pb_symbol not in DEFAULT_SYMBOLS
+                        or allowed_direction != pb_info["side"]
+                    ):
+                        del self.pending_pullbacks[pb_symbol]
+                        self.account.log(
+                            f"🔄 [回調取消] {pb_symbol} 已不在目前"
+                            f"{'多單' if pb_info['side'] == 'LONG' else '空單'}名單",
+                            "INFO",
+                        )
+                        continue
+
                     # 4a. 超時檢查：超過 PULLBACK_TIMEOUT_MINUTES 就放棄
                     elapsed_min = (now_time - pb_info["timestamp"]) / 60.0
                     if elapsed_min > PULLBACK_TIMEOUT_MINUTES:
@@ -339,6 +352,10 @@ class TradingEngine:
                         # 計算指標以取得 rsi 與 kc 通道等欄位
                         df = self.strategy.compute_indicators(df)
                         sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
+                        allowed_direction = self.symbol_rotation.direction_map.get(symbol)
+                        signal_direction = sig.get("side")
+                        if signal_direction and signal_direction != allowed_direction:
+                            continue
                         if sig["action"] in ["BUY", "SELL"]:
                             # ── 訊號品質評分 ───────────────────────────────
                             curr = df.iloc[-1]
