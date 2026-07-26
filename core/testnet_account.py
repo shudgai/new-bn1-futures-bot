@@ -142,6 +142,7 @@ class BinanceTestnetAccount:
                 "is_breakeven_moved": bool(meta.get("is_breakeven_moved", False)),
                 "highest_price": float(meta.get("highest_price") or entry_price),
                 "lowest_price": float(meta.get("lowest_price") or entry_price),
+                "peak_profit_pct": float(meta.get("peak_profit_pct") or 0.0),
                 "open_timestamp": float(meta.get("open_timestamp") or now),
                 "open_time": meta.get("open_time") or get_taipei_now_str(),
                 "reason": meta.get("reason") or "Binance Testnet existing position",
@@ -336,6 +337,7 @@ class BinanceTestnetAccount:
                 "signal_score": signal_score,
                 "highest_price": execution_price,
                 "lowest_price": execution_price,
+                "peak_profit_pct": 0.0,
                 "is_breakeven_moved": False,
             }
             self.position_meta[symbol] = meta

@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Callable, Dict, List, Optional
-from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, BREAKEVEN_LOCK_ATR_MULT, BREAKEVEN_LOCK_PROFIT_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage
+from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_TRIGGER_PCT, TRAILING_PULLBACK_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -89,6 +89,7 @@ class PaperAccount:
             "is_breakeven_moved": False,
             "highest_price": execution_price,
             "lowest_price": execution_price,
+            "peak_profit_pct": 0.0,
             "open_timestamp": time.time(),
             "open_time": get_taipei_now_str(),
             "reason": reason,
@@ -193,67 +194,41 @@ class PaperAccount:
             if "highest_price" not in pos: pos["highest_price"] = entry_p
             if "lowest_price" not in pos: pos["lowest_price"] = entry_p
 
-            # 1. 追蹤最高/最低獲利價 (Trailing High/Low Tracking)
+            # 1. 移動止利（百分比制）：無槓桿利潤達 TRAILING_TRIGGER_PCT 啟動，
+            #    利潤從高點回落 TRAILING_PULLBACK_PCT 時平倉。
+            if "peak_profit_pct" not in pos:
+                pos["peak_profit_pct"] = 0.0
+
             if side == "LONG":
-                if curr_p > pos["highest_price"]:
-                    pos["highest_price"] = curr_p
+                curr_profit_pct = (curr_p - entry_p) / entry_p
+            else:
+                curr_profit_pct = (entry_p - curr_p) / entry_p
 
-                # 每次都用目前記錄的最高價重新檢查門檻，不再只在創新高當下才判斷，
-                # 避免獲利卡在「沒達到追蹤止利門檻、之後也沒再創新高」而一直沒鎖利。
-                max_profit = pos["highest_price"] - entry_p
+            # 更新無槓桿利潤百分比歷史最高值
+            if curr_profit_pct > pos["peak_profit_pct"]:
+                pos["peak_profit_pct"] = curr_profit_pct
 
-                if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
-                    trail_sl = entry_p + (max_profit * 0.60)  # 鎖住 60% 獲利底線（給行情更多回調空間）
+            peak = pos["peak_profit_pct"]
 
-                    # ╔═ Net Profit Guarantee (保本線強制 clamp) ══════════════════╗
-                    # 確保 trail_sl 比「進場價 + 手續費安全帶」更高，
-                    # 也就是說就算在 trail_sl 觸發平倉，扣完全部手續費+滑點後淨損益一定是正數。
+            if peak >= TRAILING_TRIGGER_PCT:
+                # 計算 trailing stop 價格：鎖住 peak 的 TRAILING_PULLBACK_PCT
+                if side == "LONG":
+                    trail_sl = entry_p * (1.0 + peak * TRAILING_PULLBACK_PCT)
+                    # Net Profit Guarantee：確保扣完手續費後仍為正
                     npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = max(trail_sl, npg_floor)
-                    # ╙════════════════════════════════════════════════════════
-
                     if trail_sl > pos["sl"]:
                         pos["sl"] = trail_sl
                         pos["is_breakeven_moved"] = True
-                        self.log(f"📈 [獲利追蹤止利上推] {symbol} 創新高 ({pos['highest_price']:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f}) [保本線地板: {npg_floor:.4f}]", "SUCCESS")
-                elif max_profit >= atr * BREAKEVEN_LOCK_ATR_MULT:
-                    # 獲利還沒到全額移動止利門檻，先鎖住已獲利的一部分（而非只鎖保本），避免回吐成虧損
-                    npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
-                    partial_lock = entry_p + (max_profit * BREAKEVEN_LOCK_PROFIT_PCT)
-                    lock_sl = max(partial_lock, npg_floor)
-                    if lock_sl > pos["sl"]:
-                        pos["sl"] = lock_sl
-                        pos["is_breakeven_moved"] = True
-                        self.log(f"🔒 [保本鎖利] {symbol} 獲利達 {BREAKEVEN_LOCK_ATR_MULT}x ATR，SL 上移至 {pos['sl']:.4f}（鎖住已獲利 {BREAKEVEN_LOCK_PROFIT_PCT:.0%}）", "SUCCESS")
-            else: # SHORT
-                if curr_p < pos["lowest_price"]:
-                    pos["lowest_price"] = curr_p
-
-                max_profit = entry_p - pos["lowest_price"]
-
-                if max_profit >= atr * TRAILING_LOCK_ATR_MULT:
-                    # SHORT 的 SL 在 entry 上方，追蹤止利應把 SL 往下調（收緊保護獲利）
-                    trail_sl = entry_p - (max_profit * 0.60)  # 鎖住 60% 獲利底線
-
-                    # ╔═ Net Profit Guarantee (保本線強制 clamp) ══════════════════╗
-                    # SHORT 的保本線：trail_sl 必須低於「進場價 × (1 - NPG_BUFFER)」，
-                    # 確保就算在 trail_sl 觸發平倉，扣完手續費+滑點後淨損益一定是正數。
+                        self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {pos['sl']:.4f}（回吐 {1-TRAILING_PULLBACK_PCT:.0%} 平倉）", "SUCCESS")
+                else:  # SHORT
+                    trail_sl = entry_p * (1.0 - peak * TRAILING_PULLBACK_PCT)
                     npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = min(trail_sl, npg_ceiling)
-                    # ╙════════════════════════════════════════════════════════
-
-                    if trail_sl < pos["sl"]:  # ✅ SHORT: 新 SL 比原 SL 更低（更非市價）才更新
+                    if trail_sl < pos["sl"]:
                         pos["sl"] = trail_sl
                         pos["is_breakeven_moved"] = True
-                        self.log(f"📉 [獲利追蹤止利下推] {symbol} 創新低 ({pos['lowest_price']:.4f})，已鎖定 75% 獲利底線價 ({pos['sl']:.4f}) [保本線上限: {npg_ceiling:.4f}]", "SUCCESS")
-                elif max_profit >= atr * BREAKEVEN_LOCK_ATR_MULT:
-                    npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
-                    partial_lock = entry_p - (max_profit * BREAKEVEN_LOCK_PROFIT_PCT)
-                    lock_sl = min(partial_lock, npg_ceiling)
-                    if lock_sl < pos["sl"]:
-                        pos["sl"] = lock_sl
-                        pos["is_breakeven_moved"] = True
-                        self.log(f"🔒 [保本鎖利] {symbol} 獲利達 {BREAKEVEN_LOCK_ATR_MULT}x ATR，SL 下移至 {pos['sl']:.4f}（鎖住已獲利 {BREAKEVEN_LOCK_PROFIT_PCT:.0%}）", "SUCCESS")
+                        self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {pos['sl']:.4f}（回吐 {1-TRAILING_PULLBACK_PCT:.0%} 平倉）", "SUCCESS")
 
             # 2. 24小時時間過濾 (超時平倉)
             if (now_ts - open_ts) >= 86400:
@@ -266,14 +241,14 @@ class PaperAccount:
                     reason = "觸發止盈 (Take-Profit)" 
                     self.close_position(symbol, curr_p, reason)
                 elif curr_p <= pos["sl"]:
-                    reason = "觸發追蹤止利 (75% 獲利鎖定)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     self.close_position(symbol, curr_p, reason)
             else: # SHORT
                 if curr_p <= pos["tp"]:
                     reason = "觸發止盈 (Take-Profit)"
                     self.close_position(symbol, curr_p, reason)
                 elif curr_p >= pos["sl"]:
-                    reason = "觸發追蹤止利 (75% 獲利鎖定)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     self.close_position(symbol, curr_p, reason)
 
             # 計算未實現損益

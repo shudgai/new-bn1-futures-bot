@@ -74,17 +74,11 @@ RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
-# --- 動態追蹤止利參數 ---
-# TRAILING_LOCK_ATR_MULT: 獲利至少達到 2.0x ATR 才啟動移動止利，
-#   確保價格已有足夠的真實波段漲幅才鎖利，避免正常回調就被掃出場。
-TRAILING_LOCK_ATR_MULT = float(os.getenv("TRAILING_LOCK_ATR_MULT", "2.0"))
-TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "2.5"))
-# BREAKEVEN_LOCK_ATR_MULT: 獲利達到此倍數 ATR 就先鎖利（比 TRAILING_LOCK_ATR_MULT 低很多），
-#   避免獲利在還沒到 60% 移動止利門檻前，因不再創新高而一直曝險在原始止損之下。
-BREAKEVEN_LOCK_ATR_MULT = float(os.getenv("BREAKEVEN_LOCK_ATR_MULT", "0.8"))
-# BREAKEVEN_LOCK_PROFIT_PCT: 這個階段鎖住「已獲利的幾成」，而非只鎖保本線，
-#   隨最高/最低價持續上調（每個 tick 都重新評估），直到達到 TRAILING_LOCK_ATR_MULT 門檻改用 60% 鎖利。
-BREAKEVEN_LOCK_PROFIT_PCT = float(os.getenv("BREAKEVEN_LOCK_PROFIT_PCT", "0.35"))
+# --- 動態追蹤止利參數（百分比制） ---
+# TRAILING_TRIGGER_PCT: 無槓桿利潤達到此百分比時啟動移動止利（0.25%）
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
+# TRAILING_PULLBACK_PCT: 利潤從高點回落到此比例時平倉（75% = 回吐 25% 獲利）
+TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", "0.75"))
 
 # NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
 #   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%
