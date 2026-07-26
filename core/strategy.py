@@ -3,7 +3,7 @@ import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
-    KELTNER_PARTIAL_VOLUME_RATIO,
+    KELTNER_PARTIAL_VOLUME_RATIO, KELTNER_STRONG_VOLUME_RATIO, SUPERTREND_FULL_FRESH_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_PARTIAL_THRESHOLD, RSI_SHORT_PARTIAL_THRESHOLD,
     FAST_ENTRY_MODE, MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT,
     PULLBACK_CONFIRM_RSI_LONG, PULLBACK_CONFIRM_RSI_SHORT
@@ -144,50 +144,61 @@ class SuperTrendKeltnerStrategy:
         flip_age = bars_since_supertrend_flip(checked['st_direction'].iloc[:-1])
         freshness_pass = flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS
 
-        failures = []
+        cancel_failures = []
+        wait_failures = []
+        confirmations = []
         if side == "LONG":
             if curr['st_direction'] != 1:
-                failures.append("SuperTrend 已轉空")
+                cancel_failures.append("SuperTrend 已轉空")
             if ema_1h is not None and live_price < ema_1h:
-                failures.append("跌破 1h EMA50")
-            if curr['rsi'] < PULLBACK_CONFIRM_RSI_LONG:
-                failures.append(f"RSI {curr['rsi']:.1f} < {PULLBACK_CONFIRM_RSI_LONG}")
-            if curr['ema_20'] <= prev['ema_20']:
-                failures.append("EMA20 斜率未向上")
+                wait_failures.append("價格仍低於 1h EMA50")
+            confirmations.append((
+                curr['rsi'] >= PULLBACK_CONFIRM_RSI_LONG,
+                f"RSI {curr['rsi']:.1f} < {PULLBACK_CONFIRM_RSI_LONG}",
+            ))
+            momentum_pass = curr['ema_20'] > prev['ema_20'] and (
+                live_price >= curr['kc_upper'] or close > prev_close
+            )
         elif side == "SHORT":
             if curr['st_direction'] != -1:
-                failures.append("SuperTrend 已轉多")
+                cancel_failures.append("SuperTrend 已轉多")
             if ema_1h is not None and live_price > ema_1h:
-                failures.append("升破 1h EMA50")
-            if curr['rsi'] > PULLBACK_CONFIRM_RSI_SHORT:
-                failures.append(f"RSI {curr['rsi']:.1f} > {PULLBACK_CONFIRM_RSI_SHORT}")
-            if curr['ema_20'] >= prev['ema_20']:
-                failures.append("EMA20 斜率未向下")
+                wait_failures.append("價格仍高於 1h EMA50")
+            confirmations.append((
+                curr['rsi'] <= PULLBACK_CONFIRM_RSI_SHORT,
+                f"RSI {curr['rsi']:.1f} > {PULLBACK_CONFIRM_RSI_SHORT}",
+            ))
+            momentum_pass = curr['ema_20'] < prev['ema_20'] and (
+                live_price <= curr['kc_lower'] or close < prev_close
+            )
         else:
-            failures.append(f"未知方向 {side}")
+            cancel_failures.append(f"未知方向 {side}")
 
-        if not volume_pass:
-            failures.append("量能低於 0.8 倍均量")
+        volume_ratio = float(curr['volume']) / float(vol_ma) if vol_ma and vol_ma > 0 else 0.0
         if not freshness_pass:
-            failures.append(f"SuperTrend 已過期 ({flip_age} 根)")
-        if failures:
-            return {"status": "CANCEL", "reason": "；".join(failures)}
+            cancel_failures.append(f"SuperTrend 已過期 ({flip_age} 根)")
+        if cancel_failures:
+            return {"status": "CANCEL", "reason": "；".join(cancel_failures)}
 
-        if side == "LONG":
-            confirmed = live_price >= curr['kc_upper'] and close > prev_close
-            wait_reason = "等待重新站上 KC 上軌且已收 K 轉強"
-        else:
-            confirmed = live_price <= curr['kc_lower'] and close < prev_close
-            wait_reason = "等待重新跌破 KC 下軌且已收 K 轉弱"
-        if not confirmed:
-            return {"status": "WAIT", "reason": wait_reason}
+        confirmations.extend([
+            (volume_pass, f"量能 {volume_ratio:.2f}x < {KELTNER_MIN_VOLUME_RATIO:.2f}x"),
+            (momentum_pass, "EMA20斜率與價格動能尚未轉強" if side == "LONG" else "EMA20斜率與價格動能尚未轉弱"),
+        ])
+        passed_count = sum(passed for passed, _ in confirmations)
+        if passed_count < 2:
+            wait_failures.extend(reason for passed, reason in confirmations if not passed)
+        if wait_failures:
+            return {
+                "status": "WAIT",
+                "reason": "二次確認待通過：" + "；".join(wait_failures),
+            }
 
         return {
             "status": "PASS",
             "reason": (
                 f"{'70分低風險回調、' if signal_score is not None and signal_score < 80 else ''}"
-                f"ST新鮮({flip_age})、1h趨勢、KC重新確認、"
-                f"RSI={curr['rsi']:.1f}、量能={curr['volume'] / vol_ma:.2f}x、EMA20斜率通過"
+                f"ST有效({flip_age})、1h趨勢、回調確認{passed_count}/3、"
+                f"RSI={curr['rsi']:.1f}、量能={volume_ratio:.2f}x"
             ),
             "atr": float(curr['atr']),
         }
@@ -228,8 +239,8 @@ class SuperTrendKeltnerStrategy:
                 return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
 
         # --- 2. 動態評分系統 (Scoring System) ---
-        score = 0
-        score_details = []
+        score = 10
+        score_details = ["1h_Trend_Pass(+10)"]
 
         # A. Keltner 突破分數 (30分)
         kc_breakout_buffer = kc_width * KELTNER_BREAKOUT_MARGIN_PCT
@@ -245,38 +256,44 @@ class SuperTrendKeltnerStrategy:
         else:
             score_details.append("KC_Breakout_Fail")
 
-        # B. 量能確認分數（完整 20 分、接近門檻 10 分）
-        if vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
+        # B. 量能確認（20/15/8 分）；低於 0.35x 不允許進場。
+        if vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_STRONG_VOLUME_RATIO):
             score += 20
-            score_details.append("Volume_Pass")
+            score_details.append("Volume_Strong(+20)")
+        elif vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
+            score += 15
+            score_details.append("Volume_Pass(+15)")
         elif vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_PARTIAL_VOLUME_RATIO):
-            score += 10
-            score_details.append("Volume_Partial")
+            score += 8
+            score_details.append("Volume_Partial(+8)")
         else:
             score_details.append("Volume_Fail")
 
-        # C. RSI 強勢分數（完整 20 分、方向剛轉強 10 分）
+        # C. RSI 方向分數（15/8 分）；先判斷強勢，再判斷部分門檻。
         if st_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
-            score += 20
-            score_details.append("RSI_Pass")
+            score += 15
+            score_details.append("RSI_Strong(+15)")
         elif st_dir == 1 and rsi >= RSI_LONG_PARTIAL_THRESHOLD:
-            score += 10
-            score_details.append("RSI_Partial")
+            score += 8
+            score_details.append("RSI_Partial(+8)")
         elif st_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
-            score += 20
-            score_details.append("RSI_Pass")
+            score += 15
+            score_details.append("RSI_Strong(+15)")
         elif st_dir == -1 and rsi <= RSI_SHORT_PARTIAL_THRESHOLD:
-            score += 10
-            score_details.append("RSI_Partial")
+            score += 8
+            score_details.append("RSI_Partial(+8)")
         else:
             score_details.append("RSI_Fail")
 
-        # D. 訊號新鮮度分數 (30分)
+        # D. 訊號新鮮度分級：0~15 根 25 分，16~40 根 15 分。
         st_flip_age = bars_since_supertrend_flip(df['st_direction'])
         freshness_pass = st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS
-        if freshness_pass:
-            score += 30
-            score_details.append("Freshness_Pass")
+        if st_flip_age <= SUPERTREND_FULL_FRESH_BARS:
+            score += 25
+            score_details.append("Freshness_Full(+25)")
+        elif freshness_pass:
+            score += 15
+            score_details.append("Freshness_Aged(+15)")
         else:
             score_details.append("Freshness_Fail")
 
@@ -291,6 +308,20 @@ class SuperTrendKeltnerStrategy:
             return {
                 "action": "HOLD",
                 "reason": f"Mandatory_Fail: SuperTrend_Stale({st_flip_age}) | Score({score}) | {', '.join(score_details)}"
+            }
+        volume_floor_pass = vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_PARTIAL_VOLUME_RATIO
+        rsi_floor_pass = (
+            st_dir == 1 and rsi >= RSI_LONG_PARTIAL_THRESHOLD
+        ) or (
+            st_dir == -1 and rsi <= RSI_SHORT_PARTIAL_THRESHOLD
+        )
+        if not volume_floor_pass:
+            return {
+                "action": "HOLD", "reason": f"Mandatory_Fail: Volume_LT_{KELTNER_PARTIAL_VOLUME_RATIO:.2f}x | Score({score})"
+            }
+        if not rsi_floor_pass:
+            return {
+                "action": "HOLD", "reason": f"Mandatory_Fail: RSI_Direction | RSI({rsi:.1f}) | Score({score})"
             }
 
         if FAST_ENTRY_MODE:

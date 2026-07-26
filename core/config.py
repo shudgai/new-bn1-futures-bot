@@ -45,17 +45,19 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # STOP_LOSS_MULTIPLIER 擴大至 2.0x ATR：讓行情有充分呼吸空間，避免被短暫震盪掃損出場
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP=1.5x SL，RR 比維持 1:1.5
-# MAX_BREAKOUT_DISTANCE 收緊至 0.1%：突破後價格仍在 KC 上軌 0.1% 以內才立即進場，否則強制等回調
-MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
+# 突破後價格仍在 KC 軌道 0.15% 以內才立即進場，否則強制等回調。
+MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.0015"))
 
 # --- 精準狙擊進場門檻 ---
 # 預設採混合模式：70~79分等待回調確認，80分以上可在安全突破距離內立即進場。
 FAST_ENTRY_MODE = os.getenv("FAST_ENTRY_MODE", "false").lower() == "true"
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
-# 回調訊號只保留 10 分鐘，避免使用已經失效的舊突破。
-PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10"))
-# 回調成交區收窄至 KC 軌道 ±0.15%，並須通過成交前二次確認。
-PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.0015"))
+# 三根 5m K 提供足夠的回調與已收 K 確認時間。
+PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "15"))
+# 回調區依幣種 ATR 自適應：至少 ±0.3%，最高 ±0.6%。
+PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
+PULLBACK_ZONE_ATR_MULT = float(os.getenv("PULLBACK_ZONE_ATR_MULT", "0.25"))
+PULLBACK_ZONE_MAX_PCT = float(os.getenv("PULLBACK_ZONE_MAX_PCT", "0.006"))
 PULLBACK_CONFIRM_RSI_LONG = int(os.getenv("PULLBACK_CONFIRM_RSI_LONG", "53"))
 PULLBACK_CONFIRM_RSI_SHORT = int(os.getenv("PULLBACK_CONFIRM_RSI_SHORT", "47"))
 
@@ -63,16 +65,18 @@ PULLBACK_CONFIRM_RSI_SHORT = int(os.getenv("PULLBACK_CONFIRM_RSI_SHORT", "47"))
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # close 超過KC軌道即算突破；量能與新鮮度門檻對齊8005。
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
+KELTNER_STRONG_VOLUME_RATIO = float(os.getenv("KELTNER_STRONG_VOLUME_RATIO", "0.8"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.5"))
 KELTNER_PARTIAL_VOLUME_RATIO = float(os.getenv("KELTNER_PARTIAL_VOLUME_RATIO", "0.35"))
 RSI_LONG_PARTIAL_THRESHOLD = float(os.getenv("RSI_LONG_PARTIAL_THRESHOLD", "50.0"))
 RSI_SHORT_PARTIAL_THRESHOLD = float(os.getenv("RSI_SHORT_PARTIAL_THRESHOLD", "50.0"))
-# SuperTrend 翻轉最多保留 15 根 5 分鐘 K（約 75 分鐘）。
-SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "15"))
+# 0~15 根給完整新鮮度分；16~40 根仍可交易但降低權重。
+SUPERTREND_FULL_FRESH_BARS = int(os.getenv("SUPERTREND_FULL_FRESH_BARS", "15"))
+SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "40"))
 
 # --- 動態 RSI 濾網 ---
-RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "45"))
-RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "55"))
+RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "53"))
+RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "47"))
 
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
@@ -123,12 +127,15 @@ DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "6"))
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "60"))
 SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "40"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "20000000"))
-SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "0.08"))
+SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "5.0"))
+SYMBOL_ROTATION_MAX_CHANGES = int(os.getenv("SYMBOL_ROTATION_MAX_CHANGES", "3"))
+SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "7"))
+SYMBOL_MAX_24H_CHANGE_PCT = float(os.getenv("SYMBOL_MAX_24H_CHANGE_PCT", "30.0"))
 AI_ADVISOR_ENABLED = os.getenv("AI_ADVISOR_ENABLED", "true").lower() == "true"
 AI_ADVISOR_URL = os.getenv("AI_ADVISOR_URL", "http://127.0.0.1:8888/v1/chat/completions")
 AI_ADVISOR_TIMEOUT_SEC = float(os.getenv("AI_ADVISOR_TIMEOUT_SEC", "30"))
-# AI 只占 15% 排序權重；量化績效與市場資料仍是主決策。
-AI_ADVISOR_WEIGHT = float(os.getenv("AI_ADVISOR_WEIGHT", "0.15"))
+# 歷史樣本尚少時只讓 AI 微調排序，量化條件仍是主決策。
+AI_ADVISOR_WEIGHT = float(os.getenv("AI_ADVISOR_WEIGHT", "0.05"))
 
 # 高流動性候選池。已退場或近期反覆停損的
 # TAO/FET/APT/WIF/1000PEPE/ETH 不放回自動候選池。

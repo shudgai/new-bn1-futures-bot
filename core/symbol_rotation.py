@@ -23,6 +23,10 @@ from core.config import (
     SYMBOL_MARKET_SCAN_LIMIT,
     SYMBOL_MIN_QUOTE_VOLUME,
     SYMBOL_ROTATION_COUNT,
+    SYMBOL_ROTATION_MIN_SCORE_GAP,
+    SYMBOL_ROTATION_MAX_CHANGES,
+    SYMBOL_MIN_LISTING_DAYS,
+    SYMBOL_MAX_24H_CHANGE_PCT,
     TREND_FILTER_EMA_PERIOD,
 )
 
@@ -126,7 +130,8 @@ class SymbolRotation:
                 continue
             base = symbol.split("/", 1)[0]
             quote_volume = float(ticker.get("quoteVolume") or 0.0)
-            if base in excluded_bases or quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
+            change_pct = abs(float(ticker.get("percentage") or 0.0))
+            if base in excluded_bases or quote_volume < SYMBOL_MIN_QUOTE_VOLUME or change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
                 continue
             ranked.append((quote_volume, symbol))
         ranked.sort(reverse=True)
@@ -206,11 +211,14 @@ class SymbolRotation:
         for symbol in candidates:
             try:
                 raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="5m", limit=100)
-                raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=100)
+                raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=200)
                 columns = ["timestamp", "open", "high", "low", "close", "volume"]
                 df = pd.DataFrame(raw_5m, columns=columns)
                 df_1h = pd.DataFrame(raw_1h, columns=columns)
                 if len(df) < 50 or len(df_1h) < 30:
+                    continue
+                listing_cutoff = time.time() * 1000 - SYMBOL_MIN_LISTING_DAYS * 86400 * 1000
+                if float(df_1h.iloc[0]["timestamp"]) > listing_cutoff:
                     continue
 
                 computed = self.strategy.compute_indicators(df)
@@ -250,6 +258,7 @@ class SymbolRotation:
                         (symbol, direction),
                         {"trades": 0, "avg_pnl": 0.0, "win_rate": 0.5, "stop_rate": 0.0},
                     )
+                    overheat_penalty = min(max((abs(change_pct) - 15.0) / 15.0, 0.0), 1.0) * 15.0
                     if stat["trades"] >= 3:
                         pnl_score = (math.tanh(stat["avg_pnl"] / 1.5) + 1.0) / 2.0
                         history_score = (
@@ -268,7 +277,7 @@ class SymbolRotation:
                         + liquidity * 15.0
                         + history_score * 10.0
                         + movement_score * 5.0
-                    )
+                    ) - overheat_penalty
                     results.append({
                         "symbol": symbol,
                         "direction": direction,
@@ -391,19 +400,56 @@ class SymbolRotation:
             })
             used_symbols.add(symbol)
 
-        selected_items = selected_items[:SYMBOL_ROTATION_COUNT]
-        selected = [item["symbol"] for item in selected_items]
-        directions = {item["symbol"]: item["direction"] for item in selected_items}
-        outgoing = [
-            symbol for symbol in current
-            if symbol not in selected and symbol not in held_positions
+        desired_items = selected_items[:SYMBOL_ROTATION_COUNT]
+        desired_by_symbol = {item["symbol"]: item for item in desired_items}
+        best_by_symbol = {}
+        for item in metrics:
+            symbol = item["symbol"]
+            if symbol not in best_by_symbol or item.get("final_score", 0.0) > best_by_symbol[symbol].get("final_score", 0.0):
+                best_by_symbol[symbol] = item
+
+        changes = []
+        if len(current) >= SYMBOL_ROTATION_COUNT:
+            # 防抖：每輪最多換三幣，且新幣必須比被換幣至少高五分。
+            selected = list(current[:SYMBOL_ROTATION_COUNT])
+            incoming_items = sorted(
+                [item for item in desired_items if item["symbol"] not in selected],
+                key=lambda item: item.get("final_score", 0.0),
+                reverse=True,
+            )
+            for incoming_item in incoming_items:
+                if len(changes) >= SYMBOL_ROTATION_MAX_CHANGES:
+                    break
+                replaceable = [
+                    symbol for symbol in selected
+                    if symbol not in desired_by_symbol and symbol not in held_positions
+                ]
+                if not replaceable:
+                    break
+                outgoing = min(
+                    replaceable,
+                    key=lambda symbol: best_by_symbol.get(symbol, {}).get("final_score", 0.0),
+                )
+                outgoing_score = best_by_symbol.get(outgoing, {}).get("final_score", 0.0)
+                incoming_score = incoming_item.get("final_score", 0.0)
+                if incoming_score < outgoing_score + SYMBOL_ROTATION_MIN_SCORE_GAP:
+                    break
+                selected[selected.index(outgoing)] = incoming_item["symbol"]
+                changes.append({
+                    "out": outgoing,
+                    "in": incoming_item["symbol"],
+                    "direction": incoming_item["direction"],
+                })
+        else:
+            selected = [item["symbol"] for item in desired_items]
+
+        selected_items = [
+            desired_by_symbol.get(symbol)
+            or best_by_symbol.get(symbol)
+            or {"symbol": symbol, "direction": "LONG", "final_score": 0.0}
+            for symbol in selected
         ]
-        incoming = [symbol for symbol in selected if symbol not in current]
-        changes = [{
-            "out": outgoing[index] if index < len(outgoing) else "",
-            "in": symbol,
-            "direction": directions[symbol],
-        } for index, symbol in enumerate(incoming)]
+        directions = {item["symbol"]: item["direction"] for item in selected_items}
         return selected, directions, changes
 
     async def rotate(self, exchange) -> List[dict]:

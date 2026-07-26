@@ -6,7 +6,8 @@ import pandas as pd
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
-    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
+    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, PULLBACK_ZONE_ATR_MULT,
+    PULLBACK_ZONE_MAX_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier
 )
 from core.strategy import SuperTrendKeltnerStrategy
@@ -63,7 +64,9 @@ class TradingEngine:
         if action in ("BUY", "SELL"):
             stage = "符合立即開倉"
         elif action == "WAIT_PULLBACK":
-            stage = "等待回調二次確認"
+            stage = signal.get(
+                "confirmation_reason", "等待回調至KC區後二次確認"
+            )
         elif "KC_Breakout" in reason:
             stage = "待KC突破"
         elif "SuperTrend_Stale" in reason:
@@ -288,8 +291,17 @@ class TradingEngine:
                         continue
 
                     target = pb_info["target_zone"]
-                    zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
-                    zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
+                    atr_zone_pct = PULLBACK_ZONE_ATR_MULT * pb_info.get("atr", 0.0) / target
+                    zone_pct = min(max(PULLBACK_ZONE_PCT, atr_zone_pct), PULLBACK_ZONE_MAX_PCT)
+                    pb_info["zone_pct"] = zone_pct
+                    zone_low = target * (1.0 - zone_pct)
+                    zone_high = target * (1.0 + zone_pct)
+
+                    if not (zone_low <= curr_p <= zone_high):
+                        distance_pct = abs(curr_p - target) / target * 100.0
+                        pb_info["confirmation_reason"] = (
+                            f"等待回調至KC區，距目標{distance_pct:.2f}%"
+                        )
 
                     # 4c. 價格進入回調區後，必須以最新已收 K 做二次確認。
                     if zone_low <= curr_p <= zone_high:
@@ -310,6 +322,8 @@ class TradingEngine:
                             )
                             continue
                         if confirmation["status"] != "PASS":
+                            pb_info["confirmation_reason"] = confirmation["reason"]
+                            pb_info["last_confirmation_at"] = time.time()
                             continue
 
                         atr = confirmation.get("atr", pb_info["atr"])
@@ -372,7 +386,14 @@ class TradingEngine:
                             pending = self.pending_pullbacks[symbol]
                             signal_progress.append(self._format_signal_progress(
                                 symbol,
-                                {"action": "WAIT_PULLBACK", "score": pending.get("score", 0)},
+                                {
+                                    "action": "WAIT_PULLBACK",
+                                    "score": pending.get("score", 0),
+                                    "confirmation_reason": pending.get(
+                                        "confirmation_reason",
+                                        "等待回調至KC區後二次確認",
+                                    ),
+                                },
                                 pending.get("side"),
                             ))
                             continue
@@ -464,10 +485,11 @@ class TradingEngine:
                                 "kc_lower": sig.get("kc_lower", 0),
                                 "score": sig.get("score", 0),
                                 "timestamp": time.time(),
-                                "reason": sig["reason"]
+                                "reason": sig["reason"],
+                                "zone_pct": min(max(PULLBACK_ZONE_PCT, PULLBACK_ZONE_ATR_MULT * sig.get("atr", real_atr) / sig["target_zone"]), PULLBACK_ZONE_MAX_PCT),
                             }
                             self.account.log(
-                                f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{PULLBACK_ZONE_PCT:.1%} | {sig['reason']}",
+                                f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{self.pending_pullbacks[symbol]['zone_pct']:.1%} | {sig['reason']}",
                                 "INFO"
                             )
 

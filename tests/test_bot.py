@@ -92,7 +92,7 @@ def test_keltner_breakout_and_freshness_are_mandatory(monkeypatch):
 
     df.loc[df.index[-1], "close"] = 102.0
     df.loc[df.index[-1], "close_price_spike_filtered"] = 102.0
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 21)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 41)
     result = strategy.evaluate_signal(df, ema_200_1h=90.0)
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: SuperTrend_Stale" in result["reason"]
@@ -114,30 +114,30 @@ def _entry_score_frame(volume=700.0, rsi=49.0):
     })
 
 
-def test_score_70_waits_for_guarded_pullback(monkeypatch):
+def test_score_71_waits_for_guarded_pullback(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=350.0, rsi=40.0)
+    frame = _entry_score_frame(volume=350.0, rsi=50.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 21)
 
     result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
 
-    assert result["score"] == 70
+    assert result["score"] == 71
     assert result["action"] == "WAIT_PULLBACK"
-    assert "Pullback_WAIT_LOW_SCORE(70)" in result["reason"]
+    assert "Pullback_WAIT_LOW_SCORE(71)" in result["reason"]
 
 
-def test_score_80_can_enter_immediately_at_safe_breakout_distance(monkeypatch):
+def test_score_81_can_enter_immediately_at_safe_breakout_distance(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=500.0, rsi=40.0)
+    frame = _entry_score_frame(volume=350.0, rsi=50.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
     result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
 
-    assert result["score"] == 80
+    assert result["score"] == 81
     assert result["action"] == "BUY"
-    assert "Pullback_BUY_NOW(80)" in result["reason"]
+    assert "Pullback_BUY_NOW(81)" in result["reason"]
 
 
 def _pullback_frame(side="LONG"):
@@ -159,27 +159,22 @@ def _pullback_frame(side="LONG"):
     frame.loc[frame.index[-2], "st_direction"] = direction
     return frame
 
-def test_pullback_confirmation_passes_only_after_reclaim(monkeypatch):
+def test_pullback_confirmation_passes_with_two_of_three_checks(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _pullback_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
-
-    waiting = strategy.validate_pullback_entry(
-        frame, side="LONG", live_price=99.9, ema_1h=95.0
-    )
-    assert waiting["status"] == "WAIT"
 
     passed = strategy.validate_pullback_entry(
         frame, side="LONG", live_price=100.1, ema_1h=95.0
     )
     assert passed["status"] == "PASS"
 
-def test_pullback_confirmation_cancels_stale_or_weak_signal(monkeypatch):
+def test_pullback_confirmation_cancels_stale_but_waits_for_transient_conditions(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _pullback_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 16)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 41)
 
     stale = strategy.validate_pullback_entry(
         frame, side="LONG", live_price=100.1, ema_1h=95.0
@@ -189,11 +184,13 @@ def test_pullback_confirmation_cancels_stale_or_weak_signal(monkeypatch):
 
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
     frame.loc[frame.index[-2], "volume"] = 100.0
+    frame.loc[frame.index[-2], "rsi"] = 40.0
     weak = strategy.validate_pullback_entry(
         frame, side="LONG", live_price=100.1, ema_1h=95.0
     )
-    assert weak["status"] == "CANCEL"
-    assert "量能低於" in weak["reason"]
+    assert weak["status"] == "WAIT"
+    assert "二次確認待通過" in weak["reason"]
+    assert "量能 0.11x < 0.50x" in weak["reason"]
 
 
 def test_local_ai_advisor_accepts_only_allowed_symbols():
@@ -331,6 +328,8 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
 def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MAX_CHANGES", 12)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MIN_SCORE_GAP", 0.0)
     current = [f"OLD{i}/USDT" for i in range(12)]
     metrics = []
     for index in range(7):
@@ -357,6 +356,31 @@ def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch
     assert sum(side == "LONG" for side in directions.values()) == 6
     assert sum(side == "SHORT" for side in directions.values()) == 6
     assert all(change["out"] != held_symbol for change in changes)
+
+
+def test_directional_rotation_limits_each_scan_to_three_changes(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MAX_CHANGES", 3)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MIN_SCORE_GAP", 5.0)
+    current = [f"OLD{index}/USDT" for index in range(12)]
+    metrics = [
+        {
+            "symbol": f"NEW{index}/USDT",
+            "direction": "LONG" if index < 6 else "SHORT",
+            "eligible": True,
+            "final_score": 90.0 - index,
+        }
+        for index in range(12)
+    ]
+
+    selected, _, changes = SymbolRotation.choose_directional_symbols(
+        current, {}, metrics
+    )
+
+    assert len(selected) == 12
+    assert len(changes) == 3
+    assert sum(symbol.startswith("NEW") for symbol in selected) == 3
 
 
 def test_directional_rotation_backfills_missing_shorts_with_longs(monkeypatch):
