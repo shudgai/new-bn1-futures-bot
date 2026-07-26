@@ -192,8 +192,10 @@ class BinanceTestnetAccount:
             self.positions.pop(symbol, None)
             close_price = float(position.get("mark_price") or position["entry_price"])
             gross_pnl = float(position.get("unrealized_pnl") or 0.0)
-            exit_fee = close_price * position["qty"] * TAKER_FEE_RATE
-            net_pnl = gross_pnl - exit_fee
+            open_fee = position["entry_price"] * position["qty"] * TAKER_FEE_RATE
+            close_fee = close_price * position["qty"] * TAKER_FEE_RATE
+            total_fee = open_fee + close_fee
+            net_pnl = gross_pnl - total_fee
             self.realized_pnl += net_pnl
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
@@ -204,14 +206,14 @@ class BinanceTestnetAccount:
                 "price": close_price,
                 "qty": position["qty"],
                 "amount": position.get("margin", 0.0),
-                "fee": round(exit_fee, 4),
+                "fee": round(total_fee, 4),
                 "pnl": round(net_pnl, 4),
                 "status": "CLOSED",
                 "reason": "Binance Testnet 保護單成交",
             })
             self.log(
                 f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | "
-                f"損益: {net_pnl:+.2f} USDT (手續費: {exit_fee:.4f})",
+                f"損益: {net_pnl:+.2f} USDT (手續費: {total_fee:.4f})",
                 "SUCCESS" if net_pnl >= 0 else "DANGER",
             )
             if self.on_trade_closed:
@@ -385,7 +387,9 @@ class BinanceTestnetAccount:
                 raw_pnl = (exec_price - pos["entry_price"]) * close_qty
             else:
                 raw_pnl = (pos["entry_price"] - exec_price) * close_qty
-            fee = exec_price * close_qty * TAKER_FEE_RATE
+            open_fee = pos["entry_price"] * close_qty * TAKER_FEE_RATE
+            close_fee = exec_price * close_qty * TAKER_FEE_RATE
+            fee = open_fee + close_fee
             net_pnl = raw_pnl - fee
             self.realized_pnl += net_pnl
             remaining_qty = pos["qty"] - close_qty
@@ -632,8 +636,10 @@ class BinanceTestnetAccount:
                 if position["side"] == "LONG"
                 else (position["entry_price"] - execution_price) * position["qty"]
             )
-            fee = execution_price * position["qty"] * TAKER_FEE_RATE
-            net_pnl = raw_pnl - fee
+            open_fee = position["entry_price"] * position["qty"] * TAKER_FEE_RATE
+            close_fee = execution_price * position["qty"] * TAKER_FEE_RATE
+            total_fee = open_fee + close_fee
+            net_pnl = raw_pnl - total_fee
             self.realized_pnl += net_pnl
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
@@ -644,7 +650,7 @@ class BinanceTestnetAccount:
                 "price": execution_price,
                 "qty": position["qty"],
                 "amount": position.get("margin", 0.0),
-                "fee": round(fee, 4),
+                "fee": round(total_fee, 4),
                 "pnl": round(net_pnl, 4),
                 "status": "CLOSED",
                 "reason": close_reason,
