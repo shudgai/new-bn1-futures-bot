@@ -77,8 +77,13 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # --- 動態追蹤止利參數（百分比制） ---
 # TRAILING_TRIGGER_PCT: 無槓桿利潤達到此百分比時啟動移動止利（0.25%）
 TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
-# TRAILING_PULLBACK_PCT: 利潤從高點回落到此比例時平倉（75% = 回吐 25% 獲利）
-TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", "0.75"))
+# TRAILING_MODE: 三種止利模式 (conservative / balanced / aggressive)
+#   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
+#   balanced:     回吐 30% 平倉（70%）— 平衡鎖利與空間
+#   aggressive:   回吐 40% 平倉（60%）— 給行情最大呼吸空間
+TRAILING_MODE = os.getenv("TRAILING_MODE", "balanced")
+_TRAILING_PULLBACK_MAP = {"conservative": 0.75, "balanced": 0.70, "aggressive": 0.60}
+TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", str(_TRAILING_PULLBACK_MAP.get(TRAILING_MODE, 0.70))))
 
 # NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
 #   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%
