@@ -11,6 +11,7 @@ from core.config import (
     TAKER_FEE_RATE,
     TRAILING_TRIGGER_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
+    PARTIAL_CLOSE_THRESHOLDS,
     get_leverage,
     get_signal_leverage,
     get_trailing_pullback_pct,
@@ -262,6 +263,12 @@ class BinanceTestnetAccount:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 
+            phase = meta.get("partial_close_phase", 0)
+            for i, (threshold, ratio) in enumerate(PARTIAL_CLOSE_THRESHOLDS):
+                if phase <= i and curr_profit_pct >= threshold:
+                    await self._partial_close(symbol, pos, meta, ratio, curr_profit_pct, i + 1)
+                    break
+
             self.position_meta[symbol] = meta
 
         self.save_state()
@@ -288,6 +295,76 @@ class BinanceTestnetAccount:
                 f"⚠️ {symbol} 移動止利保護單更新失敗：{type(exc).__name__}: {exc}",
                 "WARNING",
             )
+
+    async def _partial_close(
+        self, symbol: str, pos: dict, meta: dict, ratio: float, profit_pct: float, phase: int
+    ) -> None:
+        if symbol in self.closing_lock:
+            return
+        self.closing_lock.add(symbol)
+        try:
+            close_qty_raw = pos["qty"] * ratio
+            close_qty = float(self.exchange.amount_to_precision(symbol, close_qty_raw))
+            if close_qty <= 0:
+                return
+            await self._cancel_all_orders(symbol)
+            close_side = "sell" if pos["side"] == "LONG" else "buy"
+            order = await self.exchange.create_order(
+                symbol, "market", close_side, close_qty, None,
+                {"reduceOnly": True, "newOrderRespType": "RESULT"},
+            )
+            exec_price = float(order.get("average") or 0)
+            if pos["side"] == "LONG":
+                raw_pnl = (exec_price - pos["entry_price"]) * close_qty
+            else:
+                raw_pnl = (pos["entry_price"] - exec_price) * close_qty
+            fee = (pos["entry_price"] + exec_price) * close_qty * TAKER_FEE_RATE
+            net_pnl = raw_pnl - fee
+            self.realized_pnl += net_pnl
+            remaining_qty = pos["qty"] - close_qty
+            remaining_margin = pos.get("margin", 0.0) * (remaining_qty / pos["qty"])
+            self.trades.insert(0, {
+                "id": int(time.time() * 1000),
+                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
+                "symbol": symbol,
+                "action": f"PARTIAL_CLOSE_{pos['side']}",
+                "side": pos["side"],
+                "price": exec_price,
+                "qty": close_qty,
+                "amount": remaining_margin,
+                "fee": round(fee, 4),
+                "pnl": round(net_pnl, 4),
+                "status": "CLOSED",
+                "reason": f"分批止盈 (Phase {phase}, 利潤 {profit_pct:.1%})",
+                "exchange_order_id": order.get("id"),
+            })
+            old_sl = meta.get("sl", 0.0)
+            meta["partial_close_phase"] = phase
+            meta["sl"] = old_sl
+            meta["partial_close_qty"] = close_qty
+            self.position_meta[symbol] = meta
+            new_sl = float(self.exchange.price_to_precision(symbol, old_sl))
+            tp = meta.get("tp") or 0.0
+            await self._create_protection_order(
+                symbol, close_side, "STOP_MARKET", remaining_qty, new_sl
+            )
+            if tp > 0:
+                await self._create_protection_order(
+                    symbol, close_side, "TAKE_PROFIT_MARKET", remaining_qty, tp
+                )
+            self.log(
+                f"💰 [分批止盈] {symbol} 平倉 {ratio:.0%}（{close_qty:.2f}）@ {exec_price:.6f} | "
+                f"淨損益: {net_pnl:+.2f} USDT | 剩餘 {remaining_qty:.2f} 繼續持有",
+                "SUCCESS",
+            )
+            await self.refresh(force=True)
+        except Exception as exc:
+            self.log(
+                f"⚠️ {symbol} 分批止盈失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+        finally:
+            self.closing_lock.discard(symbol)
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:

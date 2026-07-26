@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Callable, Dict, List, Optional
-from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_TRIGGER_PCT, TRAILING_PULLBACK_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage, get_trailing_pullback_pct
+from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_TRIGGER_PCT, TRAILING_PULLBACK_PCT, NET_PROFIT_GUARANTEE_BUFFER, PARTIAL_CLOSE_THRESHOLDS, get_leverage, get_signal_leverage, get_trailing_pullback_pct
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -241,6 +241,13 @@ class PaperAccount:
                 self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 
+            # 2.5 分批止盈：到達利潤門檻先平一部分
+            phase = pos.get("partial_close_phase", 0)
+            for i, (threshold, ratio) in enumerate(PARTIAL_CLOSE_THRESHOLDS):
+                if phase <= i and curr_profit_pct >= threshold:
+                    self._partial_close(symbol, pos, ratio, curr_profit_pct, i + 1)
+                    break
+
             # 3. 觸發平倉比對
             if side == "LONG":
                 if curr_p >= pos["tp"]:
@@ -265,4 +272,53 @@ class PaperAccount:
             total_unrealized += unrealized
 
         return total_unrealized
+
+    def _partial_close(self, symbol: str, pos: dict, ratio: float, profit_pct: float, phase: int):
+        if symbol in self.closing_lock:
+            return
+        self.closing_lock.add(symbol)
+        try:
+            close_qty = pos["qty"] * ratio
+            exec_close_price = pos["entry_price"] * (1.0 + profit_pct)
+            if pos["side"] == "LONG":
+                exec_close_price *= (1 - SLIPPAGE_PCT)
+            else:
+                exec_close_price *= (1 + SLIPPAGE_PCT)
+            if pos["side"] == "LONG":
+                raw_pnl = (exec_close_price - pos["entry_price"]) * close_qty
+            else:
+                raw_pnl = (pos["entry_price"] - exec_close_price) * close_qty
+            close_fee = close_qty * exec_close_price * TAKER_FEE_RATE
+            open_fee_portion = close_qty * pos["entry_price"] * TAKER_FEE_RATE
+            total_fee = open_fee_portion + close_fee
+            net_pnl = raw_pnl - total_fee
+            self.balance += (pos["margin"] * ratio) + net_pnl
+            self.realized_pnl += net_pnl
+            remaining_qty = pos["qty"] - close_qty
+            remaining_margin = pos["margin"] * (remaining_qty / pos["qty"])
+            pos["qty"] = remaining_qty
+            pos["margin"] = remaining_margin
+            pos["partial_close_phase"] = phase
+            self.trades.insert(0, {
+                "id": int(time.time() * 1000),
+                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
+                "symbol": symbol,
+                "action": f"PARTIAL_CLOSE_{pos['side']}",
+                "side": pos["side"],
+                "price": exec_close_price,
+                "qty": round(close_qty, 4),
+                "amount": round(pos["margin"], 4),
+                "fee": round(total_fee, 4),
+                "pnl": round(net_pnl, 4),
+                "status": "CLOSED",
+                "reason": f"分批止盈 (Phase {phase}, 利潤 {profit_pct:.1%})",
+            })
+            self.log(
+                f"💰 [分批止盈] {symbol} 平倉 {ratio:.0%}（{close_qty:.2f}）@ {exec_close_price:.4f} | "
+                f"淨損益: {net_pnl:+.2f} USDT | 剩餘 {remaining_qty:.2f} 繼續持有",
+                "SUCCESS",
+            )
+            self.save_state()
+        finally:
+            self.closing_lock.discard(symbol)
 
