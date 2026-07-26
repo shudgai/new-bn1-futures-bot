@@ -190,12 +190,31 @@ class BinanceTestnetAccount:
         try:
             await self._cancel_all_orders(symbol)
             self.positions.pop(symbol, None)
+            # position["mark_price"]/["unrealized_pnl"] 是上一次 refresh()（最多5秒前）
+            # 快取的近似值，不是真正觸發保護單當下的成交價，會跟實際損益有落差。
+            # 改成向交易所查詢最近的實際成交紀錄，取真正的平倉均價來算損益。
             close_price = float(position.get("mark_price") or position["entry_price"])
-            gross_pnl = float(position.get("unrealized_pnl") or 0.0)
+            try:
+                close_side = "sell" if position["side"] == "LONG" else "buy"
+                recent_trades = await self.exchange.fetch_my_trades(symbol, limit=5)
+                cutoff_ms = (time.time() - 300) * 1000
+                closing_fills = [
+                    t for t in recent_trades
+                    if t.get("side") == close_side and (t.get("timestamp") or 0) >= cutoff_ms
+                ]
+                fill_qty = sum(float(t["amount"]) for t in closing_fills)
+                if fill_qty > 0:
+                    close_price = sum(float(t["price"]) * float(t["amount"]) for t in closing_fills) / fill_qty
+            except Exception:
+                pass  # 查詢失敗就退回用快取的 mark_price 估算
+            if position["side"] == "LONG":
+                raw_pnl = (close_price - position["entry_price"]) * position["qty"]
+            else:
+                raw_pnl = (position["entry_price"] - close_price) * position["qty"]
             open_fee = position["entry_price"] * position["qty"] * TAKER_FEE_RATE
             close_fee = close_price * position["qty"] * TAKER_FEE_RATE
             total_fee = open_fee + close_fee
-            net_pnl = gross_pnl - total_fee
+            net_pnl = raw_pnl - total_fee
             self.realized_pnl += net_pnl
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
