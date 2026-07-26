@@ -4,7 +4,8 @@ from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
-    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT
+    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT,
+    KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -60,8 +61,8 @@ class SuperTrendKeltnerStrategy:
         df['rsi'] = 100 - (100 / (1 + rs))
 
         # Keltner Channels
-        df['kc_upper'] = df['ema_20'] + (df['atr'] * 1.5)
-        df['kc_lower'] = df['ema_20'] - (df['atr'] * 1.5)
+        df['kc_upper'] = df['ema_20'] + (df['atr'] * KELTNER_ATR_MULTIPLIER)
+        df['kc_lower'] = df['ema_20'] - (df['atr'] * KELTNER_ATR_MULTIPLIER)
         df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
         # SuperTrend
@@ -128,6 +129,7 @@ class SuperTrendKeltnerStrategy:
         kc_upper = curr['kc_upper']
         kc_lower = curr['kc_lower']
         kc_width = curr['kc_width'] if not np.isnan(curr['kc_width']) else (price * 0.03)
+        ema_20 = curr['ema_20'] if not np.isnan(curr['ema_20']) else price
 
         # --- 1. 底線防禦 (Mandatory Filters) ---
         # 如果這兩個不通過，分數直接為 0，絕對不開倉
@@ -207,14 +209,16 @@ class SuperTrendKeltnerStrategy:
                         "reason": f"Pullback_BUY_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
                     }
                 else:
-                    # ⏳ B段（核心修正）：突破後價格已離 KC 上軌太遠 → 一律等回踩 KC 上軌再進場
-                    # 回調目標：KC 上軌（突破後正常回踩的支撐位）
+                    # ⏳ B段（核心修正）：突破後價格已離 KC 上軌太遠 → 一律等回踩再進場
+                    # 回調目標：從 KC 上軌往 EMA20 均價再靠攏 PULLBACK_TARGET_DEPTH 比例，
+                    # 進場價更低、後續空間更大（見 PULLBACK_TARGET_DEPTH 說明）。
+                    pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
                     return {
                         "action": "WAIT_PULLBACK", "side": "LONG",
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "target_zone": kc_upper,  # 回調目標：KC 上軌（突破後的第一道支撐）
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
+                        "target_zone": pullback_target,
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
                     }
 
             else:  # SHORT
@@ -231,13 +235,16 @@ class SuperTrendKeltnerStrategy:
                         "reason": f"Pullback_SELL_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
                     }
                 else:
-                    # ⏳ B段（核心修正）：跌破後價格已離 KC 下軌太遠 → 一律等反彈回 KC 下軌再做空
+                    # ⏳ B段（核心修正）：跌破後價格已離 KC 下軌太遠 → 一律等反彈再做空
+                    # 回調目標：從 KC 下軌往 EMA20 均價再靠攏 PULLBACK_TARGET_DEPTH 比例，
+                    # 進場價更高（對空單來說更有利）、後續空間更大。
+                    pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
                     return {
                         "action": "WAIT_PULLBACK", "side": "SHORT",
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "target_zone": kc_lower,  # 回調目標：KC 下軌（跌破後的第一道阻力）
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
+                        "target_zone": pullback_target,
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
                     }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}

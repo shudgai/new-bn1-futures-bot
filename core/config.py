@@ -62,6 +62,11 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "25"))
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
+# PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。
+# 0.0 = 只回踩到 KC 軌道（原本行為，等於進場價幾乎沒有比突破點低多少）；
+# 1.0 = 回踩到 EMA20 均價才進場（價格更低、空間更大，但等到的機率也更低）。
+# 設 0.5 取中間值：進場價往均價方向靠一半，換取更多上漲空間，同時不會太少訊號。
+PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.5"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 # KELTNER_ATR_MULTIPLIER 從 1.5 降到 1.0：進場觸發點(KC上/下軌)更貼近均價，
