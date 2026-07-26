@@ -326,13 +326,9 @@ class TradingEngine:
                         )
                         del self.pending_pullbacks[pb_symbol]
 
-                # 5. 開倉訊號檢查 — 依可用餘額動態分配持倉數與金額
+                # 5. 開倉訊號檢查 — 依可用餘額填充預算，用完為止
                 available_balance = self.account.get_available_balance()
-                if MAX_SLOTS > 0:
-                    max_new_slots = MAX_SLOTS - len(self.account.positions)
-                else:
-                    max_new_slots = max(0, int(available_balance / MIN_TRADE_USDT))
-                if max_new_slots > 0 and available_balance >= MIN_TRADE_USDT:
+                if available_balance >= MIN_TRADE_USDT:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
                     signal_progress = []
 
@@ -465,20 +461,29 @@ class TradingEngine:
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
 
-                    # 按評分排序，只取最優的空位數
+                    # 按評分排序，逐個填充直到預算用完
                     candidate_signals.sort(key=lambda x: x[0], reverse=True)
-                    top_signals = candidate_signals[:max_new_slots]
-
-                    if len(candidate_signals) > max_new_slots:
-                        skipped = [s[1] for s in candidate_signals[max_new_slots:]]
-                        self.account.log(f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，選最優 {max_new_slots} 個，跳過: {', '.join(skipped)}", "INFO")
-
-                    for score, symbol, sig, price, real_atr in top_signals:
-                        amount_usdt = min(
-                            TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", score)),
+                    top_signals = []
+                    budget_used = 0.0
+                    for sc, sym, sig, pr, atr_val in candidate_signals:
+                        slot_amount = min(
+                            TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", sc)),
                             TRADE_AMOUNT_USDT
                         )
-                        amount_usdt = max(amount_usdt, MIN_TRADE_USDT)
+                        slot_amount = max(slot_amount, MIN_TRADE_USDT)
+                        if budget_used + slot_amount > available_balance:
+                            break
+                        top_signals.append((sc, sym, sig, pr, atr_val, slot_amount))
+                        budget_used += slot_amount
+
+                    if len(candidate_signals) > len(top_signals):
+                        skipped = [s[1] for s in candidate_signals[len(top_signals):]]
+                        self.account.log(
+                            f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，預算 {available_balance:.0f}U 入場 {len(top_signals)} 個（{budget_used:.0f}U），跳過: {', '.join(skipped)}",
+                            "INFO",
+                        )
+
+                    for score, symbol, sig, price, real_atr, amount_usdt in top_signals:
                         await self.account.open_position(
                             symbol=symbol,
                             side=sig["side"],
