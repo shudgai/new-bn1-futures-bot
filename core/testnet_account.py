@@ -314,16 +314,35 @@ class BinanceTestnetAccount:
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
+            try:
+                await self._create_protection_order(
+                    symbol, close_side, "STOP_MARKET", qty, new_sl
+                )
+            except Exception as exc:
+                # 新止損價已經被市價（MARK_PRICE）穿越，交易所拒絕掛單
+                # （-2021 Order would immediately trigger）。舊保護單已被取消，
+                # 若放著不管部位會完全裸奔，直接市價平倉，等同止損已觸發。
+                self.log(
+                    f"⚠️ {symbol} 移動止利新止損建立失敗（{type(exc).__name__}: {exc}），"
+                    f"研判價格已穿越止利線，改為市價平倉",
+                    "DANGER",
+                )
+                await self.close_position(symbol, new_sl, "移動止利保護單被拒，市價平倉")
+                return
             meta["sl"] = new_sl
             self.position_meta[symbol] = meta
-            await self._create_protection_order(
-                symbol, close_side, "STOP_MARKET", qty, new_sl
-            )
             tp = meta.get("tp") or 0.0
             if tp > 0:
-                await self._create_protection_order(
-                    symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp
-                )
+                try:
+                    await self._create_protection_order(
+                        symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp
+                    )
+                except Exception as exc:
+                    self.log(
+                        f"⚠️ {symbol} 移動止利後止盈單重建失敗：{type(exc).__name__}: {exc}"
+                        f"（止損已生效，僅缺止盈保護）",
+                        "WARNING",
+                    )
             # 直接同步 pos["sl"]，不必等下一次節流的 refresh() 才能看到新止利價，
             # 否則後續 tick 會拿舊值重複判斷「有改善」而再次觸發本函式。
             pos["sl"] = new_sl
