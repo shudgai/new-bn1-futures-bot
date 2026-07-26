@@ -11,6 +11,8 @@ from core.config import (
     TAKER_FEE_RATE,
     TRAILING_TRIGGER_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
+    STOP_LOSS_MULTIPLIER,
+    TAKE_PROFIT_MULTIPLIER,
     PARTIAL_CLOSE_THRESHOLDS,
     get_leverage,
     get_signal_leverage,
@@ -53,6 +55,9 @@ class BinanceTestnetAccount:
         self.on_trade_closed: Optional[Callable[[], None]] = None
         self.last_sync_at = 0.0
         self._markets_loaded = False
+        self._last_trailing_log: Dict[str, float] = {}
+        self._trailing_lock: set = set()
+        self._orphan_protection_attempted: set = set()
         self._load_state()
 
     @staticmethod
@@ -185,26 +190,29 @@ class BinanceTestnetAccount:
         try:
             await self._cancel_all_orders(symbol)
             self.positions.pop(symbol, None)
-            pnl = float(position.get("unrealized_pnl") or 0.0)
-            self.realized_pnl += pnl
+            close_price = float(position.get("mark_price") or position["entry_price"])
+            gross_pnl = float(position.get("unrealized_pnl") or 0.0)
+            exit_fee = close_price * position["qty"] * TAKER_FEE_RATE
+            net_pnl = gross_pnl - exit_fee
+            self.realized_pnl += net_pnl
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
                 "time": get_taipei_now_str("%m/%d %H:%M:%S"),
                 "symbol": symbol,
                 "action": f"CLOSE_{position['side']}",
                 "side": position["side"],
-                "price": float(position.get("mark_price") or position["entry_price"]),
+                "price": close_price,
                 "qty": position["qty"],
                 "amount": position.get("margin", 0.0),
-                "fee": 0.0,
-                "pnl": round(pnl, 4),
+                "fee": round(exit_fee, 4),
+                "pnl": round(net_pnl, 4),
                 "status": "CLOSED",
                 "reason": "Binance Testnet 保護單成交",
             })
             self.log(
                 f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | "
-                f"估算損益: {pnl:+.2f} USDT",
-                "SUCCESS" if pnl >= 0 else "DANGER",
+                f"損益: {net_pnl:+.2f} USDT (手續費: {exit_fee:.4f})",
+                "SUCCESS" if net_pnl >= 0 else "DANGER",
             )
             if self.on_trade_closed:
                 try:
@@ -225,6 +233,10 @@ class BinanceTestnetAccount:
             meta = self.position_meta.get(symbol, {})
             side = pos["side"]
             entry_p = pos["entry_price"]
+
+            if pos.get("sl", 0.0) <= 0 and symbol not in self._orphan_protection_attempted:
+                self._orphan_protection_attempted.add(symbol)
+                await self._create_orphan_protection(symbol, pos, meta)
 
             if "peak_profit_pct" not in meta:
                 meta["peak_profit_pct"] = 0.0
@@ -251,22 +263,28 @@ class BinanceTestnetAccount:
                     trail_sl = max(trail_sl, npg_floor)
                     if trail_sl > old_sl:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta)
-                        self.log(
-                            f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
-                            "SUCCESS",
-                        )
+                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
+                        now_ts = time.time()
+                        if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
+                            self._last_trailing_log[symbol] = now_ts
+                            self.log(
+                                f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
+                                "SUCCESS",
+                            )
                 else:
                     trail_sl = entry_p * (1.0 - peak * pullback)
                     npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = min(trail_sl, npg_ceiling)
                     if trail_sl < old_sl:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta)
-                        self.log(
-                            f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
-                            "SUCCESS",
-                        )
+                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
+                        now_ts = time.time()
+                        if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
+                            self._last_trailing_log[symbol] = now_ts
+                            self.log(
+                                f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
+                                "SUCCESS",
+                            )
 
             if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
@@ -284,8 +302,13 @@ class BinanceTestnetAccount:
         return self.unrealized_pnl
 
     async def _replace_stop_order(
-        self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict
+        self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict, pos: dict
     ) -> None:
+        # 避免同一 symbol 的移動止利在 refresh() 節流窗口內被多個呼叫者
+        # (/api/prices、/api/status、主循環) 重複觸發，造成保護單反覆 cancel/recreate。
+        if symbol in self._trailing_lock:
+            return
+        self._trailing_lock.add(symbol)
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
@@ -299,9 +322,44 @@ class BinanceTestnetAccount:
                 await self._create_protection_order(
                     symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp
                 )
+            # 直接同步 pos["sl"]，不必等下一次節流的 refresh() 才能看到新止利價，
+            # 否則後續 tick 會拿舊值重複判斷「有改善」而再次觸發本函式。
+            pos["sl"] = new_sl
         except Exception as exc:
             self.log(
                 f"⚠️ {symbol} 移動止利保護單更新失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+        finally:
+            self._trailing_lock.discard(symbol)
+
+    async def _create_orphan_protection(self, symbol: str, pos: dict, meta: dict) -> None:
+        side = pos["side"]
+        entry_p = pos["entry_price"]
+        atr = meta.get("atr") or entry_p * 0.015
+        if side == "LONG":
+            sl_price = float(self.exchange.price_to_precision(symbol, entry_p - atr * STOP_LOSS_MULTIPLIER))
+            tp_price = float(self.exchange.price_to_precision(symbol, entry_p + atr * TAKE_PROFIT_MULTIPLIER))
+        else:
+            sl_price = float(self.exchange.price_to_precision(symbol, entry_p + atr * STOP_LOSS_MULTIPLIER))
+            tp_price = float(self.exchange.price_to_precision(symbol, entry_p - atr * TAKE_PROFIT_MULTIPLIER))
+        close_side = "sell" if side == "LONG" else "buy"
+        try:
+            await self._cancel_all_orders(symbol)
+            await self._create_protection_order(symbol, close_side, "STOP_MARKET", pos["qty"], sl_price)
+            await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
+            meta["sl"] = sl_price
+            meta["tp"] = tp_price
+            meta["atr"] = atr
+            self.position_meta[symbol] = meta
+            self.save_state()
+            self.log(
+                f"🔧 [補建保護單] {symbol} 偵測到無止損止盈持倉，已自動建立 SL={sl_price} TP={tp_price}",
+                "WARNING",
+            )
+        except Exception as exc:
+            self.log(
+                f"⚠️ {symbol} 補建保護單失敗：{type(exc).__name__}: {exc}",
                 "WARNING",
             )
 
@@ -327,7 +385,7 @@ class BinanceTestnetAccount:
                 raw_pnl = (exec_price - pos["entry_price"]) * close_qty
             else:
                 raw_pnl = (pos["entry_price"] - exec_price) * close_qty
-            fee = (pos["entry_price"] + exec_price) * close_qty * TAKER_FEE_RATE
+            fee = exec_price * close_qty * TAKER_FEE_RATE
             net_pnl = raw_pnl - fee
             self.realized_pnl += net_pnl
             remaining_qty = pos["qty"] - close_qty
@@ -574,9 +632,7 @@ class BinanceTestnetAccount:
                 if position["side"] == "LONG"
                 else (position["entry_price"] - execution_price) * position["qty"]
             )
-            fee = (
-                position["entry_price"] + execution_price
-            ) * position["qty"] * TAKER_FEE_RATE
+            fee = execution_price * position["qty"] * TAKER_FEE_RATE
             net_pnl = raw_pnl - fee
             self.realized_pnl += net_pnl
             self.trades.insert(0, {

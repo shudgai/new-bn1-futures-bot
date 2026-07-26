@@ -90,7 +90,12 @@
         .down { color: var(--down); font-weight: 700; }
 
         /* Console Log */
-        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-radius: 10px; padding: 14px; max-height: 220px; overflow: auto; }
+        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-radius: 10px; padding: 14px; max-height: 600px; overflow: auto; }
+
+        /* Collapsible card title */
+        .card-title.collapsible { cursor: pointer; user-select: none; }
+        .collapse-arrow { display: inline-block; transition: transform 0.2s; font-size: 10px; margin-left: 6px; }
+        .collapse-arrow.open { transform: rotate(90deg); }
         .log-item { margin-bottom: 6px; opacity: 0.9; }
         .log-item span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
         .signal-progress-line span:last-child { white-space: nowrap; }
@@ -274,13 +279,13 @@
 
                 <!-- AI TRADE HISTORY ANALYSIS -->
                 <div class="card ai-analysis-card">
-                    <div class="card-title">
-                        <span>🧠 AI 歷史交易分析</span>
+                    <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
+                        <span><span class="collapse-arrow" :class="{ open: aiAnalysisExpanded }">▶</span> 🧠 AI 歷史交易分析</span>
                         <span style="font-size:10px; color:var(--muted); text-transform:none;">
                             {{ bot.trade_ai_analysis.status === 'ok' ? '已記錄' : '等待分析' }}
                         </span>
                     </div>
-                    <div style="font-size:12px; line-height:1.7; color:var(--muted);">
+                    <div v-show="aiAnalysisExpanded" style="font-size:12px; line-height:1.7; color:var(--muted);">
                         <p style="color:var(--text); margin-bottom:8px;">
                             {{ bot.trade_ai_analysis.summary || '尚未產生分析' }}
                         </p>
@@ -352,7 +357,8 @@
                         symbol: 'BTC/USDT',
                         amount: 50.0
                     },
-                    exportDate: ''
+                    exportDate: '',
+                    aiAnalysisExpanded: false
                 }
             },
             computed: {
