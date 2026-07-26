@@ -47,7 +47,7 @@ class TradingEngine:
             return
         await self.account.initialize()
         self.is_running = True
-        self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（快速突破 / 12幣方向限制）")
+        self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（70分回調＋80分立即 / 12幣方向限制）")
         self.task = asyncio.create_task(self._main_loop())
         # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
         # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。

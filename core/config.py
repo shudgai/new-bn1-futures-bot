@@ -49,8 +49,8 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
 # --- 精準狙擊進場門檻 ---
-# 預設採8005快速突破；設為false時才回到70分回調模式。
-FAST_ENTRY_MODE = os.getenv("FAST_ENTRY_MODE", "true").lower() == "true"
+# 預設採混合模式：70~79分等待回調確認，80分以上可在安全突破距離內立即進場。
+FAST_ENTRY_MODE = os.getenv("FAST_ENTRY_MODE", "false").lower() == "true"
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
 # 回調訊號只保留 10 分鐘，避免使用已經失效的舊突破。
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10"))

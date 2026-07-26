@@ -14,9 +14,9 @@ class SuperTrendKeltnerStrategy:
     """
     SuperTrend + Keltner 交易策略。
 
-    FAST_ENTRY_MODE 開啟時，進場條件對齊 Port 8005：
-    Keltner 突破、SuperTrend 方向與新鮮度、EMA20/EMA50、
-    成交量及 RSI 全部通過後立即進場。關閉時則保留原本的回調等待模式。
+    預設混合模式：70~79 分先等待 Keltner 回調並通過二次確認，
+    80 分以上在突破距離安全時立即進場，否則同樣等待回調。
+    FAST_ENTRY_MODE 僅作為可選的完整條件立即進場模式。
     """
     def __init__(self, atr_period=10, atr_multiplier=3.0):
         self.atr_period = atr_period
