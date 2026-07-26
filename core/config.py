@@ -49,8 +49,8 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
 # --- 精準狙擊進場門檻 ---
-# Keltner 突破與 SuperTrend 新鮮度已是必要條件；兩者加上量能或 RSI 時實際最低為 80 分。
-# 保留 70 作設定相容與槓桿安全後盾，但正常自動訊號不會再以 70 分開倉。
+# 70 分訊號只能等待回調並通過二次確認；80 分以上才可在安全距離內立即進場。
+# Keltner 突破與 SuperTrend 新鮮度仍是不可放寬的必要條件。
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
 # 回調訊號只保留 10 分鐘，避免使用已經失效的舊突破。
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10"))
@@ -64,6 +64,9 @@ KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
+KELTNER_PARTIAL_VOLUME_RATIO = float(os.getenv("KELTNER_PARTIAL_VOLUME_RATIO", "0.65"))
+RSI_LONG_PARTIAL_THRESHOLD = float(os.getenv("RSI_LONG_PARTIAL_THRESHOLD", "50.0"))
+RSI_SHORT_PARTIAL_THRESHOLD = float(os.getenv("RSI_SHORT_PARTIAL_THRESHOLD", "50.0"))
 # SuperTrend 翻轉最多保留 8 根 5 分鐘 K（約 40 分鐘）。
 SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "8"))
 
@@ -104,7 +107,7 @@ SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單�
 POSITION_SIZE_TIERS = [
     (90, 1.0),  # 滿分訊號仍維持固定基準金額
     (80, 1.0),  # 高分訊號固定基準金額
-    (70, 1.0),  # 相容性後盾；不再縮放單次交易金額
+    (70, 0.5),  # 最低合格訊號只使用半倉，且必須先通過回調二次確認
 ]
 
 def get_position_multiplier(score: int) -> float:

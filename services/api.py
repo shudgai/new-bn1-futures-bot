@@ -35,7 +35,7 @@ def visible_tickers():
 def active_leverage_by_score():
     return {
         str(score): {symbol: get_signal_leverage(symbol, score) for symbol in DEFAULT_SYMBOLS}
-        for score in (80, 100)
+        for score in (70, 80, 100)
     }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")

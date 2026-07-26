@@ -41,6 +41,10 @@ def test_paper_account_open_close(tmp_path, monkeypatch):
     assert "BTC/USDT" not in account.positions
 
 def test_low_score_signal_caps_eth_leverage():
+    assert get_position_multiplier(69) == 0.0
+    assert get_position_multiplier(70) == 0.5
+    assert get_position_multiplier(80) == 1.0
+    assert get_position_multiplier(90) == 1.0
     assert get_signal_leverage("ETH/USDT", 70) == 3
     assert get_signal_leverage("ETH/USDT", 80) == 6
     assert get_signal_leverage("ETH/USDT", 90) == 10
@@ -85,6 +89,47 @@ def test_keltner_breakout_and_freshness_are_mandatory(monkeypatch):
     result = strategy.evaluate_signal(df, ema_200_1h=90.0)
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: SuperTrend_Stale" in result["reason"]
+
+def _entry_score_frame(volume=700.0, rsi=49.0):
+    return pd.DataFrame({
+        "close": [100.05] * 50,
+        "close_price_spike_filtered": [100.05] * 50,
+        "atr": [1.0] * 50,
+        "rsi": [rsi] * 50,
+        "volume": [volume] * 50,
+        "vol_ma_20": [1000.0] * 50,
+        "kc_upper": [100.0] * 50,
+        "kc_lower": [98.0] * 50,
+        "kc_width": [2.0] * 50,
+        "st_direction": [1] * 50,
+    })
+
+
+def test_score_70_waits_for_pullback_even_when_breakout_is_close(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=700.0, rsi=49.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+
+    assert result["score"] == 70
+    assert result["action"] == "WAIT_PULLBACK"
+    assert "Pullback_WAIT_LOW_SCORE(70)" in result["reason"]
+    assert "Volume_Partial" in result["reason"]
+
+
+def test_score_80_can_enter_when_breakout_is_close(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=900.0, rsi=49.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+
+    assert result["score"] == 80
+    assert result["action"] == "BUY"
+
 
 def _pullback_frame(side="LONG"):
     prices = np.linspace(99.0, 101.0, 50)
@@ -188,7 +233,7 @@ def test_symbol_rotation_never_replaces_held_symbol():
     assert all(change["out"] != held_symbol for change in changes)
 
 
-def test_trade_amount_multiplier_is_fixed():
-    assert get_position_multiplier(70) == 1.0
+def test_trade_amount_multiplier_uses_half_size_for_score_70():
+    assert get_position_multiplier(70) == 0.5
     assert get_position_multiplier(80) == 1.0
     assert get_position_multiplier(100) == 1.0

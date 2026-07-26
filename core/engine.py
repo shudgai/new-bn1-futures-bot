@@ -176,6 +176,7 @@ class TradingEngine:
                             side=pb_info["side"],
                             live_price=curr_p,
                             ema_1h=self.ema_200_1h_cache.get(pb_symbol),
+                            signal_score=pb_info.get("score"),
                         )
                         if confirmation["status"] == "CANCEL":
                             del self.pending_pullbacks[pb_symbol]

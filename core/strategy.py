@@ -3,7 +3,8 @@ import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
-    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
+    KELTNER_PARTIAL_VOLUME_RATIO,
+    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_PARTIAL_THRESHOLD, RSI_SHORT_PARTIAL_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT,
     PULLBACK_CONFIRM_RSI_LONG, PULLBACK_CONFIRM_RSI_SHORT
 )
@@ -16,7 +17,8 @@ class SuperTrendKeltnerStrategy:
     1. 底線防禦 (Mandatory)：大週期趨勢 (1h EMA50) 與 SuperTrend 方向必須一致。
     2. 動態評分 (Scoring)：Keltner 突破、量能、RSI、訊號新鮮度 進行加權評分。
     3. 進場決策「回調優先」三段式：
-       - KC 突破與新鮮度必須通過，評分至少 80，距 KC <= 0.1% → BUY_NOW
+       - KC 突破與新鮮度必須通過，70~79 分 → 一律 WAIT_PULLBACK
+       - 評分至少 80，距 KC <= 0.1% → BUY_NOW
        - KC 突破與新鮮度必須通過，評分至少 80，距 KC > 0.1% → WAIT_PULLBACK
        - 其餘 → HOLD
     修正原則：KC突破後動量往往已接近末段，應等待回踩 KC 軌道才進場，
@@ -114,7 +116,8 @@ class SuperTrendKeltnerStrategy:
         return df
 
     def validate_pullback_entry(
-        self, df: pd.DataFrame, side: str, live_price: float, ema_1h: float = None
+        self, df: pd.DataFrame, side: str, live_price: float, ema_1h: float = None,
+        signal_score: int = None,
     ) -> dict:
         """回調真正成交前，以最近一根已收 K 再驗證趨勢與反彈／反壓確認。"""
         if df is None or len(df) < 50:
@@ -188,6 +191,7 @@ class SuperTrendKeltnerStrategy:
         return {
             "status": "PASS",
             "reason": (
+                f"{'70分低風險回調、' if signal_score is not None and signal_score < 80 else ''}"
                 f"ST新鮮({flip_age})、1h趨勢、KC重新確認、"
                 f"RSI={curr['rsi']:.1f}、量能={curr['volume'] / vol_ma:.2f}x、EMA20斜率通過"
             ),
@@ -242,20 +246,29 @@ class SuperTrendKeltnerStrategy:
         else:
             score_details.append("KC_Breakout_Fail")
 
-        # B. 量能確認分數 (20分)
+        # B. 量能確認分數（完整 20 分、接近門檻 10 分）
         if vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
             score += 20
             score_details.append("Volume_Pass")
+        elif vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_PARTIAL_VOLUME_RATIO):
+            score += 10
+            score_details.append("Volume_Partial")
         else:
             score_details.append("Volume_Fail")
 
-        # C. RSI 強勢分數 (20分)
+        # C. RSI 強勢分數（完整 20 分、方向剛轉強 10 分）
         if st_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
             score += 20
             score_details.append("RSI_Pass")
+        elif st_dir == 1 and rsi >= RSI_LONG_PARTIAL_THRESHOLD:
+            score += 10
+            score_details.append("RSI_Partial")
         elif st_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
             score += 20
             score_details.append("RSI_Pass")
+        elif st_dir == -1 and rsi <= RSI_SHORT_PARTIAL_THRESHOLD:
+            score += 10
+            score_details.append("RSI_Partial")
         else:
             score_details.append("RSI_Fail")
 
@@ -283,12 +296,12 @@ class SuperTrendKeltnerStrategy:
 
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
-        # 必要條件套用後，正常自動訊號的實際最低分為 80。
+        # 70~79 分只能等待回調；80 分以上才允許在安全距離內立即進場。
         if score >= MIN_SCORE_THRESHOLD:
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
 
-                if dist <= MAX_BREAKOUT_DISTANCE:
+                if score >= 80 and dist <= MAX_BREAKOUT_DISTANCE:
                     # ✅ A段：剛剛突破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
                     sl = price - (atr * STOP_LOSS_MULTIPLIER)
                     tp = price + (atr * TAKE_PROFIT_MULTIPLIER)
@@ -306,13 +319,16 @@ class SuperTrendKeltnerStrategy:
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": kc_upper,  # 回調目標：KC 上軌（突破後的第一道支撐）
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
+                        "reason": (
+                            f"{'Pullback_WAIT_LOW_SCORE' if score < 80 else 'Pullback_WAIT'}({score}) | "
+                            f"dist={dist:.2%} | KC_Upper={kc_upper:.4f} | {', '.join(score_details)}"
+                        )
                     }
 
             else:  # SHORT
                 dist = (kc_lower - price) / kc_lower
 
-                if dist <= MAX_BREAKOUT_DISTANCE:
+                if score >= 80 and dist <= MAX_BREAKOUT_DISTANCE:
                     # ✅ A段：剛剛跌破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
                     sl = price + (atr * STOP_LOSS_MULTIPLIER)
                     tp = price - (atr * TAKE_PROFIT_MULTIPLIER)
@@ -329,7 +345,10 @@ class SuperTrendKeltnerStrategy:
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": kc_lower,  # 回調目標：KC 下軌（跌破後的第一道阻力）
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
+                        "reason": (
+                            f"{'Pullback_WAIT_LOW_SCORE' if score < 80 else 'Pullback_WAIT'}({score}) | "
+                            f"dist={dist:.2%} | KC_Lower={kc_lower:.4f} | {', '.join(score_details)}"
+                        )
                     }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
