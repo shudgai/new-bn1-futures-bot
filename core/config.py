@@ -99,16 +99,16 @@ SPEED_FAST_THRESHOLD = float(os.getenv("SPEED_FAST_THRESHOLD", "0.0005"))   # 0.
 SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.01%/min
 
 # --- 利潤分級鎖倉：利潤越高，鎖越緊，避免大幅回吐 ---
-# 門檻從 TRAILING_TRIGGER_PCT（0.25%）本身開始分級，讓移動止利一啟動
-# 就立刻套用 75% 鎖倉下限（最多回吐 25%），之後利潤每再墊高 0.25%，
-# 鎖倉比例跟著往上收緊，回吐空間越來越小。
+# 剛觸發（0.25%）時不強制套用分級門檻，只看增利速度（60~75%），
+# 保留較大的回檔空間，避免一碰到 0.25% 就被雜訊掃出；
+# 之後利潤每再墊高 0.25%，鎖倉比例才開始收緊。
 # (最低利潤%, 最低鎖倉比例) — 從高到低匹配，命中即停
 _PROFIT_TIER_FLOOR = [
-    (TRAILING_TRIGGER_PCT * 5, 0.95),  # ≥1.25% 無槓桿利潤 → 至少鎖 95%（僅回吐5%）
-    (TRAILING_TRIGGER_PCT * 4, 0.90),  # ≥1.00% → 至少鎖 90%
-    (TRAILING_TRIGGER_PCT * 3, 0.85),  # ≥0.75% → 至少鎖 85%
-    (TRAILING_TRIGGER_PCT * 2, 0.80),  # ≥0.50% → 至少鎖 80%
-    (TRAILING_TRIGGER_PCT * 1, 0.75),  # ≥0.25%（剛觸發）→ 至少鎖 75%（最多回吐 25%）
+    (TRAILING_TRIGGER_PCT * 6, 0.95),  # ≥1.50% 無槓桿利潤 → 至少鎖 95%（僅回吐5%）
+    (TRAILING_TRIGGER_PCT * 5, 0.90),  # ≥1.25% → 至少鎖 90%
+    (TRAILING_TRIGGER_PCT * 4, 0.85),  # ≥1.00% → 至少鎖 85%
+    (TRAILING_TRIGGER_PCT * 3, 0.80),  # ≥0.75% → 至少鎖 80%
+    (TRAILING_TRIGGER_PCT * 2, 0.75),  # ≥0.50% → 至少鎖 75%
 ]
 
 # --- 分批止盈參數 ---
