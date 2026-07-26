@@ -85,7 +85,7 @@ TRAILING_MODE = os.getenv("TRAILING_MODE", "balanced")
 _TRAILING_PULLBACK_MAP = {"conservative": 0.75, "balanced": 0.70, "aggressive": 0.60}
 TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", str(_TRAILING_PULLBACK_MAP.get(TRAILING_MODE, 0.70))))
 
-# --- 動態止利：依增利速度自動選擇回吐比例 ---
+# --- 動態止利：依增利速度 + 利潤分級自動選擇回吐比例 ---
 # 增利速度快 → aggressive（60%）：給行情更多空間
 # 增利速度慢 → conservative（75%）：鎖緊一點
 # SPEED_FAST_THRESHOLD: 增利速度 >= 此值（%/分鐘）判定為快
@@ -93,27 +93,47 @@ SPEED_FAST_THRESHOLD = float(os.getenv("SPEED_FAST_THRESHOLD", "0.0005"))   # 0.
 # SPEED_SLOW_THRESHOLD: 增利速度 <= 此值（%/分鐘）判定為慢
 SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.01%/min
 
+# --- 利潤分級鎖倉：利潤越高，鎖越緊，避免大幅回吐 ---
+# (最低利潤%, 最低鎖倉比例) — 從高到低匹配，命中即停
+_PROFIT_TIER_FLOOR = [
+    (0.15, 0.85),  # ≥15% 無槓桿利潤 → 至少鎖 85%（僅回吐15%）
+    (0.10, 0.80),  # ≥10% → 至少鎖 80%
+    (0.05, 0.75),  # ≥5% → 至少鎖 75%
+]
+
 import time as _time
 
 def get_trailing_pullback_pct(peak_profit_pct: float, peak_updated_at: float) -> float:
-    """根據增利速度（peak profit 成長速率）動態回傳止利回吐比例。
+    """根據增利速度 + 利潤分級動態回傳止利回吐比例。
+
+    先依增利速度決定基礎回吐比例，再用利潤分級下限收緊，
+    確保高利潤時不會回吐太多。
 
     Args:
         peak_profit_pct: 歷史最高無槓桿利潤百分比
         peak_updated_at: 上次 peak 更新時的 timestamp（秒）
     Returns:
-        回吐比例（0.75 / 0.70 / 0.60）
+        鎖倉比例（0.85 / 0.80 / 0.75 / 0.70 / 0.60）
     """
+    # 1. 依增利速度決定基礎回吐比例
     elapsed_min = (_time.time() - peak_updated_at) / 60.0
     if elapsed_min <= 0 or peak_profit_pct <= 0:
-        return TRAILING_PULLBACK_PCT
-    speed = peak_profit_pct / elapsed_min  # 每分鐘增利 %
-    if speed >= SPEED_FAST_THRESHOLD:
-        return _TRAILING_PULLBACK_MAP["aggressive"]
-    elif speed <= SPEED_SLOW_THRESHOLD:
-        return _TRAILING_PULLBACK_MAP["conservative"]
+        base = TRAILING_PULLBACK_PCT
     else:
-        return _TRAILING_PULLBACK_MAP["balanced"]
+        speed = peak_profit_pct / elapsed_min
+        if speed >= SPEED_FAST_THRESHOLD:
+            base = _TRAILING_PULLBACK_MAP["aggressive"]
+        elif speed <= SPEED_SLOW_THRESHOLD:
+            base = _TRAILING_PULLBACK_MAP["conservative"]
+        else:
+            base = _TRAILING_PULLBACK_MAP["balanced"]
+
+    # 2. 利潤分級下限：利潤越高，鎖越緊
+    for tier_min_profit, tier_min_lock in _PROFIT_TIER_FLOOR:
+        if peak_profit_pct >= tier_min_profit:
+            return max(base, tier_min_lock)
+
+    return base
 
 # NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
 #   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%
