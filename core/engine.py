@@ -302,7 +302,8 @@ class TradingEngine:
                         await self.account.open_position(
                             symbol=pb_symbol, side="LONG", price=curr_p,
                             amount_usdt=pb_amount, sl=sl, tp=tp,
-                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr,
+                            signal_score=pb_info.get("score"),
                         )
                         self.account.log(
                             f"🎯 [回調進場] {pb_symbol} LONG 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
@@ -317,7 +318,8 @@ class TradingEngine:
                         await self.account.open_position(
                             symbol=pb_symbol, side="SHORT", price=curr_p,
                             amount_usdt=pb_amount, sl=sl, tp=tp,
-                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr,
+                            signal_score=pb_info.get("score"),
                         )
                         self.account.log(
                             f"🎯 [回調進場] {pb_symbol} SHORT 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"

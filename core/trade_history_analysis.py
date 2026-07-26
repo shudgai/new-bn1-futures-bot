@@ -61,6 +61,26 @@ class TradeHistoryAnalyzer:
             if action.startswith("OPEN_"):
                 open_by_symbol[symbol] = trade
                 continue
+            if action.startswith("PARTIAL_CLOSE_"):
+                opened = open_by_symbol.get(symbol, {})
+                closed.append(
+                    {
+                        "symbol": symbol,
+                        "side": str(trade.get("side") or opened.get("side") or ""),
+                        "opened_at": str(opened.get("time", "")),
+                        "closed_at": str(trade.get("time", "")),
+                        "entry_price": float(opened.get("price") or 0.0),
+                        "exit_price": float(trade.get("price") or 0.0),
+                        "amount": float(trade.get("amount") or opened.get("amount") or 0.0),
+                        "leverage": int(opened.get("leverage") or 0),
+                        "signal_score": opened.get("signal_score"),
+                        "entry_reason": str(opened.get("reason", ""))[:300],
+                        "exit_reason": str(trade.get("reason", ""))[:200],
+                        "fee": float(trade.get("fee") or 0.0),
+                        "net_pnl": float(trade.get("pnl") or 0.0),
+                    }
+                )
+                continue
             if not action.startswith("CLOSE_"):
                 continue
 
@@ -103,7 +123,11 @@ class TradeHistoryAnalyzer:
                     "avg_pnl": round(sum(pnls) / len(rows), 4),
                     "win_rate": round(sum(value > 0 for value in pnls) / len(rows), 4),
                     "stop_rate": round(
-                        sum("Stop-Loss" in row["exit_reason"] for row in rows) / len(rows),
+                        sum(
+                            "Stop-Loss" in row["exit_reason"]
+                            or "保護單成交" in row["exit_reason"]
+                            for row in rows
+                        ) / len(rows),
                         4,
                     ),
                 }
@@ -125,7 +149,11 @@ class TradeHistoryAnalyzer:
             "avg_pnl": round(sum(pnls) / count, 4) if count else 0.0,
             "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss else None,
             "stop_rate": round(
-                sum("Stop-Loss" in row["exit_reason"] for row in records) / count,
+                sum(
+                    "Stop-Loss" in row["exit_reason"]
+                    or "保護單成交" in row["exit_reason"]
+                    for row in records
+                ) / count,
                 4,
             ) if count else 0.0,
         }
