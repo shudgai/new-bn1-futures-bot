@@ -77,13 +77,33 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # --- 動態追蹤止利參數（百分比制） ---
 # TRAILING_TRIGGER_PCT: 無槓桿利潤達到此百分比時啟動移動止利（0.25%）
 TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
-# TRAILING_MODE: 三種止利模式 (conservative / balanced / aggressive)
+# TRAILING_MODE: 預設止利模式 (conservative / balanced / aggressive)
 #   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
 #   balanced:     回吐 30% 平倉（70%）— 平衡鎖利與空間
 #   aggressive:   回吐 40% 平倉（60%）— 給行情最大呼吸空間
 TRAILING_MODE = os.getenv("TRAILING_MODE", "balanced")
 _TRAILING_PULLBACK_MAP = {"conservative": 0.75, "balanced": 0.70, "aggressive": 0.60}
 TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", str(_TRAILING_PULLBACK_MAP.get(TRAILING_MODE, 0.70))))
+
+# --- 動態止利：依幣種波動率自動選擇回吐比例 ---
+# ATR/price ratio 分三級，低波動幣鎖緊一點，高波動幣給更多呼吸空間
+#   低波動 (<0.8%): conservative 75%
+#   中波動 (0.8%-2.0%): balanced 70%
+#   高波動 (>2.0%): aggressive 60%
+VOLATILITY_LOW_THRESHOLD = float(os.getenv("VOLATILITY_LOW_THRESHOLD", "0.008"))
+VOLATILITY_HIGH_THRESHOLD = float(os.getenv("VOLATILITY_HIGH_THRESHOLD", "0.02"))
+
+def get_trailing_pullback_pct(atr: float, entry_price: float) -> float:
+    """根據幣種波動率（ATR/price）動態回傳止利回吐比例。"""
+    if entry_price <= 0 or atr <= 0:
+        return TRAILING_PULLBACK_PCT
+    vol_ratio = atr / entry_price
+    if vol_ratio < VOLATILITY_LOW_THRESHOLD:
+        return _TRAILING_PULLBACK_MAP["conservative"]
+    elif vol_ratio > VOLATILITY_HIGH_THRESHOLD:
+        return _TRAILING_PULLBACK_MAP["aggressive"]
+    else:
+        return _TRAILING_PULLBACK_MAP["balanced"]
 
 # NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
 #   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%

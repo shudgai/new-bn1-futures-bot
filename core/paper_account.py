@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Callable, Dict, List, Optional
-from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_TRIGGER_PCT, TRAILING_PULLBACK_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage
+from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_TRIGGER_PCT, TRAILING_PULLBACK_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage, get_trailing_pullback_pct
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -211,24 +211,26 @@ class PaperAccount:
             peak = pos["peak_profit_pct"]
 
             if peak >= TRAILING_TRIGGER_PCT:
-                # 計算 trailing stop 價格：鎖住 peak 的 TRAILING_PULLBACK_PCT
+                # 依幣種波動率動態決定回吐比例
+                pullback = get_trailing_pullback_pct(atr, entry_p)
+                # 計算 trailing stop 價格：鎖住 peak 的 pullback 比例
                 if side == "LONG":
-                    trail_sl = entry_p * (1.0 + peak * TRAILING_PULLBACK_PCT)
+                    trail_sl = entry_p * (1.0 + peak * pullback)
                     # Net Profit Guarantee：確保扣完手續費後仍為正
                     npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = max(trail_sl, npg_floor)
                     if trail_sl > pos["sl"]:
                         pos["sl"] = trail_sl
                         pos["is_breakeven_moved"] = True
-                        self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {pos['sl']:.4f}（回吐 {1-TRAILING_PULLBACK_PCT:.0%} 平倉）", "SUCCESS")
+                        self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {pos['sl']:.4f}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
                 else:  # SHORT
-                    trail_sl = entry_p * (1.0 - peak * TRAILING_PULLBACK_PCT)
+                    trail_sl = entry_p * (1.0 - peak * pullback)
                     npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = min(trail_sl, npg_ceiling)
                     if trail_sl < pos["sl"]:
                         pos["sl"] = trail_sl
                         pos["is_breakeven_moved"] = True
-                        self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {pos['sl']:.4f}（回吐 {1-TRAILING_PULLBACK_PCT:.0%} 平倉）", "SUCCESS")
+                        self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {pos['sl']:.4f}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
 
             # 2. 24小時時間過濾 (超時平倉)
             if (now_ts - open_ts) >= 86400:
