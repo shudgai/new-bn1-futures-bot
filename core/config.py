@@ -176,6 +176,15 @@ RAPID_MOVE_WINDOW = int(os.getenv("RAPID_MOVE_WINDOW", "3"))
 # RAPID_MOVE_THRESHOLD: 窗口內漲跌幅超過此值（%）則排除
 RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
 
+# --- 高波動幣種過濾：ATR 佔價格比例過高就不開倉 ---
+# 實測 87 筆平倉交易發現，最大的幾筆虧損（AKE -2.11、ONDO -1.19、LAB -1.16、
+# ZAMA -1.03）都集中在 ATR/價格 明顯偏高的幣種：SL/TP 是用 ATR 倍數算的，
+# 幣種本身波動率越高，同樣的倉位金額下止損被觸發時虧的錢就越大，
+# 而移動止利鎖住的獲利卻不會跟著等比放大，造成贏小賠大。
+# 反觀 BTC(0.19%)、HYPE(0.26%)、SOL(0.30%)、AAVE(0.60%) 這類 ATR% 較低的
+# 幣種整體是賺錢的，故以 0.6% 為門檻，超過就跳過進場。
+MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
+
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
 # 給予更高倍數的下單金額（以 TRADE_AMOUNT_USDT 為基準，而非總資金比例，避免部位隨餘額增長滾雪球）。

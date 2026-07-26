@@ -4,7 +4,7 @@ from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
-    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT
+    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -133,14 +133,21 @@ class SuperTrendKeltnerStrategy:
         # 如果這兩個不通過，分數直接為 0，絕對不開倉
         is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
         is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
-        
+
         st_dir = curr['st_direction']
-        
+
         # 底線判斷
         if st_dir == 1 and not is_1h_bullish:
             return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
         if st_dir == -1 and not is_1h_bearish:
             return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
+
+        # 高波動幣種過濾：ATR 佔價格比例過高，SL/TP 用 ATR 倍數算出來的
+        # 停損距離會被放大，同樣倉位金額下觸發止損時虧的錢遠大於移動止利
+        # 能鎖住的獲利，實測是最大幾筆虧損的共同特徵，直接跳過不開倉。
+        atr_pct = atr / price if price > 0 else 0
+        if atr_pct > MAX_ATR_PCT:
+            return {"action": "HOLD", "reason": f"Mandatory_Fail: ATR_Too_High({atr_pct:.2%})"}
 
         # --- 2. 動態評分系統 (Scoring System) ---
         score = 0

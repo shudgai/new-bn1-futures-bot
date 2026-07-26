@@ -73,6 +73,9 @@ class TradingEngine:
             stage = f"SuperTrend過期{stale.group(1)}根" if stale else "SuperTrend過期"
         elif "EMA20" in reason or "1h_Trend" in reason:
             stage = "趨勢方向不符"
+        elif "ATR_Too_High" in reason:
+            atr_match = re.search(r"ATR_Too_High\(([\d.]+%)\)", reason)
+            stage = f"波動過大{atr_match.group(1)}過濾" if atr_match else "波動過大過濾"
         elif "Volume" in reason:
             stage = "量能不足"
         elif "RSI" in reason:
