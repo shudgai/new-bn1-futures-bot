@@ -28,6 +28,8 @@ from core.config import (
     SYMBOL_MIN_LISTING_DAYS,
     SYMBOL_MAX_24H_CHANGE_PCT,
     TREND_FILTER_EMA_PERIOD,
+    RAPID_MOVE_WINDOW,
+    RAPID_MOVE_THRESHOLD,
 )
 
 
@@ -224,6 +226,16 @@ class SymbolRotation:
                 computed = self.strategy.compute_indicators(df)
                 curr = computed.iloc[-1]
                 price = float(curr["close"])
+
+                # 急升急降過濾：回看最近 N 根5分K，漲跌幅超標則跳過
+                if len(df) >= RAPID_MOVE_WINDOW + 1:
+                    recent_close = float(df.iloc[-1]["close"])
+                    past_close = float(df.iloc[-(RAPID_MOVE_WINDOW + 1)]["close"])
+                    if past_close > 0:
+                        recent_change_pct = abs((recent_close - past_close) / past_close * 100.0)
+                        if recent_change_pct > RAPID_MOVE_THRESHOLD:
+                            continue
+
                 atr = max(float(curr["atr"]), price * 0.0001)
                 ema_1h = float(
                     df_1h["close"]

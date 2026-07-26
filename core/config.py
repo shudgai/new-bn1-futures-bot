@@ -156,6 +156,12 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
 SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單估計滑點預留（單邊）
 
+# --- 急升急降過濾：排除短期劇烈波動的幣種 ---
+# RAPID_MOVE_WINDOW: 回看幾根5分K（3根=15分鐘）
+RAPID_MOVE_WINDOW = int(os.getenv("RAPID_MOVE_WINDOW", "3"))
+# RAPID_MOVE_THRESHOLD: 窗口內漲跌幅超過此值（%）則排除
+RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
+
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
 # 給予更高倍數的下單金額（以 TRADE_AMOUNT_USDT 為基準，而非總資金比例，避免部位隨餘額增長滾雪球）。
