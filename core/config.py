@@ -47,9 +47,10 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "0"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
-# STOP_LOSS_MULTIPLIER 擴大至 2.0x ATR：讓行情有充分呼吸空間，避免被短暫震盪掃損出場
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP=1.5x SL，RR 比維持 1:1.5
+# STOP_LOSS_MULTIPLIER 收緊至 1.2x ATR：對齊移動止利實際能鎖到的利潤幅度，
+# 避免「贏的時候賺很少、輸的時候虧到全額止損」的風報比不對稱問題。
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.2"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP 維持不變，RR 比改善為約 1:2.5
 # MAX_BREAKOUT_DISTANCE 收緊至 0.1%：突破後價格仍在 KC 上軌 0.1% 以內才立即進場，否則強制等回調
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
@@ -63,7 +64,9 @@ PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "25"))
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
-KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
+# KELTNER_ATR_MULTIPLIER 從 1.5 降到 1.0：進場觸發點(KC上/下軌)更貼近均價，
+# 避免追價追在已經衝一大段之後的高點，讓進場後還有更多空間可以走。
+KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.0"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
@@ -103,14 +106,15 @@ SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.0
 # --- 利潤分級鎖倉：利潤越高，鎖越緊，避免大幅回吐 ---
 # 剛觸發（0.25%）時不強制套用分級門檻，只看增利速度（60~75%），
 # 保留較大的回檔空間，避免一碰到 0.25% 就被雜訊掃出；
-# 之後利潤每再墊高 0.25%，鎖倉比例才開始收緊。
+# 門檻整體拉開到配合收緊後的止損距離（1.2x ATR），讓真正的贏家
+# 有機會跑得比止損距離更遠，不要利潤還沒到止損的一半就被鎖死出場。
 # (最低利潤%, 最低鎖倉比例) — 從高到低匹配，命中即停
 _PROFIT_TIER_FLOOR = [
-    (TRAILING_TRIGGER_PCT * 6, 0.95),  # ≥1.50% 無槓桿利潤 → 至少鎖 95%（僅回吐5%）
-    (TRAILING_TRIGGER_PCT * 5, 0.90),  # ≥1.25% → 至少鎖 90%
-    (TRAILING_TRIGGER_PCT * 4, 0.85),  # ≥1.00% → 至少鎖 85%
-    (TRAILING_TRIGGER_PCT * 3, 0.80),  # ≥0.75% → 至少鎖 80%
-    (TRAILING_TRIGGER_PCT * 2, 0.75),  # ≥0.50% → 至少鎖 75%
+    (TRAILING_TRIGGER_PCT * 10, 0.95),  # ≥2.50% 無槓桿利潤 → 至少鎖 95%（僅回吐5%）
+    (TRAILING_TRIGGER_PCT * 8, 0.90),   # ≥2.00% → 至少鎖 90%
+    (TRAILING_TRIGGER_PCT * 6, 0.85),   # ≥1.50% → 至少鎖 85%
+    (TRAILING_TRIGGER_PCT * 4, 0.80),   # ≥1.00% → 至少鎖 80%
+    (TRAILING_TRIGGER_PCT * 2, 0.70),   # ≥0.50% → 至少鎖 70%
 ]
 
 # --- 分批止盈參數 ---
