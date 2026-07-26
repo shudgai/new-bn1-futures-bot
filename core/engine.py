@@ -5,18 +5,22 @@ import pandas as pd
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
-    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, get_position_multiplier
+    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
+    get_position_multiplier
 )
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
+from core.symbol_rotation import SymbolRotation
 
 class TradingEngine:
     def __init__(self):
         self.exchange = ccxt.binanceusdm({"enableRateLimit": True})
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount()
+        self.symbol_rotation = SymbolRotation(self.account)
         self.is_running = False
         self.task: asyncio.Task = None
+        self.rotation_task: asyncio.Task = None
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         self.cooldowns: Dict[str, float] = {}
@@ -33,6 +37,9 @@ class TradingEngine:
         self.is_running = True
         self.account.log("▶️ 量化交易機器人啟動 (台北時間模式 / 防插針防重複平倉防低流動性啟用)")
         self.task = asyncio.create_task(self._main_loop())
+        # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
+        # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。
+        self.rotation_task = asyncio.create_task(self._rotation_loop())
 
     async def stop(self):
         if not self.is_running:
@@ -40,8 +47,32 @@ class TradingEngine:
         self.is_running = False
         if self.task:
             self.task.cancel()
+        if self.rotation_task:
+            self.rotation_task.cancel()
         await self.exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
+
+    async def _rotation_loop(self):
+        """獨立於主交易迴圈之外定時執行幣種輪替，避免 AI 呼叫延遲停損停利判斷。"""
+        while self.is_running:
+            try:
+                now_time = time.time()
+                if now_time - self.symbol_rotation.last_rotation_at >= SYMBOL_ROTATION_INTERVAL_SEC:
+                    changes = await self.symbol_rotation.rotate(self.exchange)
+                    if changes:
+                        change_text = "、".join(f"{item['out']}→{item['in']}" for item in changes)
+                        self.account.log(f"🔄 [幣種輪替] {change_text}；{self.symbol_rotation.last_reason}", "INFO")
+                    else:
+                        self.account.log(f"✅ [幣種輪替] 目前 12 幣仍為較優組合；{self.symbol_rotation.last_reason}", "INFO")
+                await asyncio.sleep(30)  # 30 秒檢查一次是否到了下次輪替時間
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                # 輪替與 AI 都是輔助層，失敗時不能中斷持倉管理與主策略。
+                self.symbol_rotation.last_rotation_at = time.time()
+                self.symbol_rotation.last_reason = f"輪替失敗，保留原牌面：{type(exc).__name__}"
+                self.account.log(f"⚠️ [幣種輪替] 暫時失敗，保留原牌面並繼續交易：{type(exc).__name__}: {exc}", "WARNING")
+                await asyncio.sleep(30)
 
     async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:
         try:
@@ -53,7 +84,13 @@ class TradingEngine:
 
     async def update_market_prices(self):
         try:
-            tickers = await self.exchange.fetch_tickers(DEFAULT_SYMBOLS)
+            # 牌面外的舊持倉仍必須取得報價，才能正常執行停損／停利；
+            # 只有 DEFAULT_SYMBOLS 會進入下方的新開倉掃描。
+            monitored_symbols = list(dict.fromkeys([
+                *DEFAULT_SYMBOLS,
+                *self.account.positions.keys(),
+            ]))
+            tickers = await self.exchange.fetch_tickers(monitored_symbols)
             for sym, t in tickers.items():
                 if 'last' in t and t['last'] is not None:
                     price = float(t['last'])
@@ -74,7 +111,11 @@ class TradingEngine:
         if now - self.last_1h_cache_time < 600 and self.ema_200_1h_cache:
             return
 
-        for symbol in DEFAULT_SYMBOLS:
+        monitored_symbols = list(dict.fromkeys([
+            *DEFAULT_SYMBOLS,
+            *self.account.positions.keys(),
+        ]))
+        for symbol in monitored_symbols:
             df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
             if not df_1h.empty and len(df_1h) >= 30:
                 ema_val = df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False).mean().iloc[-1]
@@ -87,6 +128,9 @@ class TradingEngine:
             try:
                 # 1. 更新實時價格
                 await self.update_market_prices()
+
+                # 幣種輪替已移到獨立的 _rotation_loop() 背景任務執行，
+                # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
                 # 2. 更新與執行持倉部位
                 prev_positions = set(self.account.positions.keys())
@@ -124,34 +168,56 @@ class TradingEngine:
                     zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
                     zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
 
-                    # 4c. 价格回調到目標區間內 → 觸發進場
-                    if pb_info["side"] == "LONG" and zone_low <= curr_p <= zone_high:
-                        atr = pb_info["atr"]
-                        sl  = curr_p - (atr * 2.0)   # 以回調進場價重新計算 SL
-                        tp  = curr_p + (atr * 3.0)
-                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
-                        self.account.open_position(
-                            symbol=pb_symbol, side="LONG", price=curr_p,
-                            amount_usdt=pb_amount, sl=sl, tp=tp,
-                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                    # 4c. 價格進入回調區後，必須以最新已收 K 做二次確認。
+                    if zone_low <= curr_p <= zone_high:
+                        confirm_df = await self.fetch_klines(pb_symbol, timeframe="5m", limit=100)
+                        confirmation = self.strategy.validate_pullback_entry(
+                            confirm_df,
+                            side=pb_info["side"],
+                            live_price=curr_p,
+                            ema_1h=self.ema_200_1h_cache.get(pb_symbol),
                         )
-                        self.account.log(
-                            f"🎯 [回調進場] {pb_symbol} LONG 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
-                        )
-                        del self.pending_pullbacks[pb_symbol]
+                        if confirmation["status"] == "CANCEL":
+                            del self.pending_pullbacks[pb_symbol]
+                            self.account.log(
+                                f"🛑 [回調二次確認失敗] {pb_symbol} {pb_info['side']}："
+                                f"{confirmation['reason']}，取消本次進場",
+                                "WARNING",
+                            )
+                            continue
+                        if confirmation["status"] != "PASS":
+                            continue
 
-                    elif pb_info["side"] == "SHORT" and zone_low <= curr_p <= zone_high:
-                        atr = pb_info["atr"]
-                        sl  = curr_p + (atr * 2.0)
-                        tp  = curr_p - (atr * 3.0)
+                        atr = confirmation.get("atr", pb_info["atr"])
                         pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
-                        self.account.open_position(
-                            symbol=pb_symbol, side="SHORT", price=curr_p,
-                            amount_usdt=pb_amount, sl=sl, tp=tp,
-                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr
+                        if pb_info["side"] == "LONG":
+                            sl = curr_p - (atr * 2.0)
+                            tp = curr_p + (atr * 3.0)
+                        else:
+                            sl = curr_p + (atr * 2.0)
+                            tp = curr_p - (atr * 3.0)
+
+                        success = self.account.open_position(
+                            symbol=pb_symbol,
+                            side=pb_info["side"],
+                            price=curr_p,
+                            amount_usdt=pb_amount,
+                            sl=sl,
+                            tp=tp,
+                            reason=(
+                                f"Pullback_Confirmed | {confirmation['reason']} | "
+                                f"{pb_info['reason']}"
+                            ),
+                            atr=atr,
+                            signal_score=pb_info.get("score"),
                         )
+                        if not success:
+                            continue
+
                         self.account.log(
-                            f"🎯 [回調進場] {pb_symbol} SHORT 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
+                            f"🎯 [回調確認進場] {pb_symbol} {pb_info['side']} @ {curr_p:.4f} | "
+                            f"{confirmation['reason']} | SL={sl:.4f} TP={tp:.4f}",
+                            "SUCCESS",
                         )
                         del self.pending_pullbacks[pb_symbol]
 
@@ -161,7 +227,9 @@ class TradingEngine:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
 
                     now_time = time.time()
-                    for symbol in DEFAULT_SYMBOLS:
+                    # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
+                    # 用 list(...) 先拍一份快照，避免邊跑邊被換牌造成跳過或重複掃描。
+                    for symbol in list(DEFAULT_SYMBOLS):
                         if symbol in self.account.positions:
                             continue
 
@@ -261,7 +329,8 @@ class TradingEngine:
                             sl=sig["sl"],
                             tp=sig["tp"],
                             reason=sig["reason"],
-                            atr=sig.get("atr", real_atr)
+                            atr=sig.get("atr", real_atr),
+                            signal_score=sig.get("score")
                         )
 
                 await asyncio.sleep(5)

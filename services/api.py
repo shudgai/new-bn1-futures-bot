@@ -1,12 +1,42 @@
 import os
+import csv
+import io
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from core.config import PORT, DEFAULT_SYMBOLS, LEVERAGE, SYMBOL_LEVERAGE, TRADE_AMOUNT_USDT
+from core.config import (
+    PORT, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
+    get_leverage, get_signal_leverage,
+)
 from core.engine import engine
+from core.paper_account import get_taipei_now_str
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+def trade_date_str(trade: dict) -> str:
+    """交易 id 是毫秒級 unix timestamp，trade['time'] 沒有年份無法拿來篩選日期，故用 id 換算台北時區日期"""
+    return datetime.fromtimestamp(trade.get("id", 0) / 1000, TAIPEI_TZ).strftime("%Y-%m-%d")
 
 app = FastAPI(title="Binance Futures Bot 2.0")
+
+def visible_tickers():
+    """只回傳目前牌面與持倉，避免輪替後的舊價格快取留在介面。"""
+    symbols = list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()]))
+    result = {}
+    for symbol in symbols:
+        price = engine.tickers.get(symbol) or engine.tickers.get(f"{symbol}:USDT")
+        if price is not None:
+            result[symbol] = price
+    return result
+
+def active_leverage_by_score():
+    return {
+        str(score): {symbol: get_signal_leverage(symbol, score) for symbol in DEFAULT_SYMBOLS}
+        for score in (80, 100)
+    }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
@@ -44,12 +74,20 @@ async def get_status():
         "realized_pnl": round(engine.account.realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
         "leverage": LEVERAGE,
-        "leverage_map": SYMBOL_LEVERAGE,
+        "leverage_map": {symbol: get_leverage(symbol) for symbol in DEFAULT_SYMBOLS},
+        "leverage_by_score": active_leverage_by_score(),
+        "signal_leverage_caps": {
+            str(score): ("symbol_max" if cap is None else cap)
+            for score, cap in SIGNAL_LEVERAGE_CAPS
+        },
         "trade_amount": TRADE_AMOUNT_USDT,
         "symbols": DEFAULT_SYMBOLS,
-        "tickers": engine.tickers,
+        "symbol_rotation": engine.symbol_rotation.status(),
+        "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
         "trades": engine.account.trades[:50],
+        "total_trades": len(engine.account.trades),
+        "trade_dates": sorted({trade_date_str(t) for t in engine.account.trades}, reverse=True),
         "logs": engine.account.logs[-50:]
     }
 
@@ -57,7 +95,8 @@ async def get_status():
 async def get_prices():
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
     return {
-        "tickers": engine.tickers,
+        "symbols": DEFAULT_SYMBOLS,
+        "tickers": visible_tickers(),
         "positions": list(engine.account.positions.values()),
         "unrealized_pnl": round(engine.account.update_positions(engine.tickers), 2),
         "balance": round(engine.account.balance, 2),
@@ -97,6 +136,42 @@ async def manual_order(req: ManualOrderRequest):
     if not success:
         raise HTTPException(status_code=400, detail="已有該幣種持倉或系統異常")
     return {"status": "success", "message": f"手動開倉 {side} {symbol}"}
+
+@app.get("/api/export_trades")
+async def export_trades(date: str = None):
+    """匯出交易明細 (CSV)。date 格式 YYYY-MM-DD（台北時區），不帶則匯出全部交易紀錄"""
+    fieldnames = [
+        "id", "time", "symbol", "action", "side", "price", "qty", "amount",
+        "fee", "pnl", "status", "leverage", "signal_score", "reason", "sl", "tp"
+    ]
+    # trades 是新到舊排列 (insert(0, ...))，匯出時改成舊到新，方便照時間順序閱讀
+    all_trades = list(reversed(engine.account.trades))
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date 格式須為 YYYY-MM-DD")
+        selected_trades = [t for t in all_trades if trade_date_str(t) == date]
+    else:
+        selected_trades = all_trades
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for t in selected_trades:
+        writer.writerow({k: t.get(k, "") for k in fieldnames})
+
+    label = date if date else "all"
+    filename = f"trade_history_{label}_{get_taipei_now_str('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content=output.getvalue().encode("utf-8-sig"),  # BOM 確保 Excel 開啟中文不亂碼
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Total-Records": str(len(selected_trades)),
+        }
+    )
 
 @app.post("/api/manual_close")
 async def manual_close(req: ManualCloseRequest):

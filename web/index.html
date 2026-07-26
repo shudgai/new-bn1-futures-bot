@@ -152,11 +152,11 @@
                         </div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">單次交易金額</div>
+                        <div class="stat-label">單次交易金額（固定）</div>
                         <div class="stat-val" style="color:var(--primary)">{{ bot.trade_amount }} USDT</div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">分級槓桿 (依幣種)</div>
+                        <div class="stat-label">實際槓桿 (依訊號分數)</div>
                         <div class="stat-val" style="color:var(--accent)">{{ leverageRangeText }}</div>
                     </div>
                 </div>
@@ -209,7 +209,16 @@
 
                 <!-- TRADE HISTORY TABLE -->
                 <div class="card">
-                    <div class="card-title">📜 近期交易明細 (Trade History)</div>
+                    <div class="card-title">
+                        <span>📜 近期交易明細 (Trade History)</span>
+                        <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
+                            <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
+                                <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
+                                <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
+                            </select>
+                            <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
+                        </div>
+                    </div>
                     <div style="max-height:220px; overflow-y:auto;">
                         <table>
                             <thead>
@@ -286,42 +295,54 @@
                         unrealized_pnl: 0,
                         leverage: 5,
                         leverage_map: {},
+                        leverage_by_score: {},
                         symbols: [],
                         tickers: {},
                         positions: [],
                         trades: [],
+                        total_trades: 0,
+                        trade_dates: [],
                         logs: []
                     },
                     manualOrder: {
                         symbol: 'BTC/USDT',
                         amount: 50.0
-                    }
+                    },
+                    exportDate: ''
                 }
             },
             computed: {
                 sortedTickers() {
-                    if (!this.bot || !this.bot.tickers) return [];
-                    const list = [];
-                    for (const [sym, price] of Object.entries(this.bot.tickers)) {
-                        const cleanName = sym.replace('/USDT', '').replace(':USDT', '');
-                        // Avoid duplicates if both formats exist
-                        if (!list.some(item => item.name === cleanName)) {
-                            list.push({ sym, name: cleanName, price });
-                        }
-                    }
-                    return list.sort((a, b) => a.name.localeCompare(b.name));
+                    if (!this.bot || !Array.isArray(this.bot.symbols)) return [];
+                    return this.bot.symbols
+                        .map(sym => ({
+                            sym,
+                            name: sym.replace('/USDT', ''),
+                            price: this.getCurrPrice(sym)
+                        }))
+                        .filter(item => item.price !== null && item.price !== undefined)
+                        .sort((a, b) => a.name.localeCompare(b.name));
                 },
                 leverageRangeText() {
-                    const vals = Object.values(this.bot.leverage_map || {});
-                    if (vals.length === 0) return this.bot.leverage + 'x';
-                    const min = Math.min(...vals);
-                    const max = Math.max(...vals);
-                    return min === max ? min + 'x' : min + 'x ~ ' + max + 'x';
+                    const matrix = this.bot.leverage_by_score || {};
+                    const describe = (score) => {
+                        const vals = Object.values(matrix[String(score)] || {});
+                        if (vals.length === 0) return score + '分 -';
+                        const min = Math.min(...vals);
+                        const max = Math.max(...vals);
+                        const range = min === max ? min + 'x' : min + 'x~' + max + 'x';
+                        return score + '分 ' + range;
+                    };
+                    return describe(80) + ' / ' + describe(100);
                 }
             },
             methods: {
                 getLeverage(symbol) {
                     return (this.bot.leverage_map && this.bot.leverage_map[symbol]) || this.bot.leverage;
+                },
+                downloadTrades() {
+                    const url = this.exportDate ? '/api/export_trades?date=' + this.exportDate : '/api/export_trades';
+                    window.location.href = url;
                 },
                 formatPrice(p) {
                     if (p === undefined || p === null) return '-';
@@ -377,6 +398,7 @@
                     try {
                         const res = await fetch('/api/prices');
                         const data = await res.json();
+                        if (data.symbols) this.bot.symbols = data.symbols;
                         if (data.tickers) this.bot.tickers = data.tickers;
                         if (data.positions) this.bot.positions = data.positions;
                         if (data.balance !== undefined) this.bot.balance = data.balance;

@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
-from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, BREAKEVEN_LOCK_ATR_MULT, BREAKEVEN_LOCK_PROFIT_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage
+from core.config import INITIAL_BALANCE, TAKER_FEE_RATE, SLIPPAGE_PCT, TRAILING_LOCK_ATR_MULT, BREAKEVEN_LOCK_ATR_MULT, BREAKEVEN_LOCK_PROFIT_PCT, NET_PROFIT_GUARANTEE_BUFFER, get_leverage, get_signal_leverage
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -62,11 +62,12 @@ class PaperAccount:
         self.logs.append(entry)
         self.save_state()
 
-    def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str, atr: float = 0.0, leverage: int = None):
+    def open_position(self, symbol: str, side: str, price: float, amount_usdt: float, sl: float, tp: float, reason: str, atr: float = 0.0, leverage: int = None, signal_score: int = None):
         if symbol in self.positions or symbol in self.closing_lock:
             return False
 
-        leverage = leverage if leverage is not None else get_leverage(symbol)
+        if leverage is None:
+            leverage = get_signal_leverage(symbol, signal_score) if signal_score is not None else get_leverage(symbol)
 
         # 模擬 0.03% 市價單滑點成本 (Slippage Reserve)
         execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
@@ -89,7 +90,8 @@ class PaperAccount:
             "lowest_price": execution_price,
             "open_timestamp": time.time(),
             "open_time": get_taipei_now_str(),
-            "reason": reason
+            "reason": reason,
+            "signal_score": signal_score
         }
         self.positions[symbol] = pos
 
@@ -104,7 +106,12 @@ class PaperAccount:
             "amount": amount_usdt,
             "fee": round(fee, 4),
             "pnl": 0.0,
-            "status": "OPEN"
+            "status": "OPEN",
+            "leverage": leverage,
+            "signal_score": signal_score,
+            "reason": reason,
+            "sl": sl,
+            "tp": tp
         }
         self.trades.insert(0, trade)
         self.log(f"🚀 開倉成功 [{side}] {symbol} @ {execution_price:.4f} ({leverage}x槓桿, 含滑點 0.03%, 止損: {sl:.4f}, 止利: {tp:.4f})", "SUCCESS")
