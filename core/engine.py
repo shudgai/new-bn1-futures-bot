@@ -10,7 +10,7 @@ from core.config import (
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD
 )
-from core.strategy import SuperTrendKeltnerStrategy
+from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
 
@@ -320,8 +320,13 @@ class TradingEngine:
                     # 4c. 价格回調到目標區間內 → 觸發進場
                     if pb_info["side"] == "LONG" and zone_low <= curr_p <= zone_high:
                         atr = pb_info["atr"]
-                        sl  = curr_p - (atr * 2.0)   # 以回調進場價重新計算 SL
-                        tp  = curr_p + (atr * 3.0)
+                        # 以回調進場價重新計算 SL/TP，統一用 compute_sl_tp_distance()
+                        # 讀取 config 的 STOP_LOSS_MULTIPLIER/TAKE_PROFIT_MULTIPLIER，
+                        # 並套用 MIN_SL_DISTANCE_PCT 下限（原本這裡寫死 2.0/3.0，
+                        # 完全沒有跟到後續的止損止盈調整）。
+                        sl_distance, tp_distance = compute_sl_tp_distance(curr_p, atr)
+                        sl = curr_p - sl_distance
+                        tp = curr_p + tp_distance
                         pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
                         await self.account.open_position(
                             symbol=pb_symbol, side="LONG", price=curr_p,
@@ -336,8 +341,9 @@ class TradingEngine:
 
                     elif pb_info["side"] == "SHORT" and zone_low <= curr_p <= zone_high:
                         atr = pb_info["atr"]
-                        sl  = curr_p + (atr * 2.0)
-                        tp  = curr_p - (atr * 3.0)
+                        sl_distance, tp_distance = compute_sl_tp_distance(curr_p, atr)
+                        sl = curr_p + sl_distance
+                        tp = curr_p - tp_distance
                         pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
                         await self.account.open_position(
                             symbol=pb_symbol, side="SHORT", price=curr_p,
