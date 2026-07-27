@@ -250,12 +250,15 @@ def get_position_multiplier(score: int) -> float:
     return 0.0
 
 # --- 動態幣種輪替與本機 AI 輔助 ---
-# 從 12 幣擴大到 16 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會
-# 出現達標訊號），而不是放寬同一批幣的評分門檻（那樣會直接增加假突破機率）。
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "16"))
+# 12→16→18 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會出現達標
+# 訊號），而不是放寬同一批幣的評分門檻（那樣會直接增加假突破機率）。
+# API 負擔：報價是一次批次拿全部幣種，不隨幣數增加；K 線只對還沒進場/
+# 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
+# Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "18"))
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "3600"))
 # 跟著 SYMBOL_ROTATION_COUNT 等比放大（12→6 是 1:2），維持多空對稱席次。
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "8"))
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "9"))
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "60"))
 SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "40"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "20000000"))
@@ -278,11 +281,11 @@ SYMBOL_CANDIDATE_POOL = [
     "SOL/USDT", "SUI/USDT", "TRX/USDT", "XLM/USDT", "XRP/USDT",
 ]
 
-# 可新開倉牌面：正績效幣種搭配高流動性主流合約，共 12 個候選。
+# 可新開倉牌面：正績效幣種搭配高流動性主流合約。
 # TAO 與近期反覆停損幣種不列入；已退出牌面的既有持倉仍會被管理。
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
-# SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（16）覆寫，這裡先湊到
-# 16 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
+# SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（18）覆寫，這裡先湊到
+# 18 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
 DEFAULT_SYMBOLS = [
     "ADA/USDT",
     "ARB/USDT",
@@ -292,9 +295,11 @@ DEFAULT_SYMBOLS = [
     "BTC/USDT",
     "DOGE/USDT",
     "DOT/USDT",
+    "ETC/USDT",
     "FIL/USDT",
     "LINK/USDT",
     "LTC/USDT",
+    "OP/USDT",
     "SOL/USDT",
     "SUI/USDT",
     "TRX/USDT",
