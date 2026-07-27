@@ -7,7 +7,6 @@ PORT = int(os.getenv("PORT", "8006"))
 PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10000.0"))
 LEVERAGE = int(os.getenv("LEVERAGE", "5"))  # 預設槓桿：SYMBOL_LEVERAGE 未列出的幣種使用此值
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "3"))
 
 # --- 依市值/波動性分級槓桿 ---
 # 主流大市值幣波動小，給高槓桿；高波動迷因幣給低槓桿，控制風險一致性
@@ -41,10 +40,15 @@ TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 
-# --- 動態倉位分配 (依帳戶餘額自動計算持倉數與金額) ---
-# MAX_SLOTS = 0 表示自動：依可用餘額 / MIN_TRADE_USDT 決定可開幾槽
-# 正式上線照帳戶餘額開倉，不固定每筆金額或槽數。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "0"))
+# --- 動態倉位分配 (依帳戶餘額自動計算金額，MAX_SLOTS 限制同時持倉數) ---
+# 之前這個變數只有 import 進 engine.py，實際開倉邏輯完全沒有用到它——
+# 只要餘額夠、同時間有幾個訊號達標就全部開，導致行情同時觸發多個高度
+# 相關的訊號時（同一波市場方向），一次開一堆單，一旦反轉就一次全部
+# 停損。現在真的接上：同時最多 MAX_SLOTS 筆持倉，訊號一次多於這個數字
+# 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
+# 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
+# 筆數，只受可用餘額約束（回到原本的行為）。
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # STOP_LOSS_MULTIPLIER 拉大回 2.0x ATR：1.2x 太緊，實測太容易被

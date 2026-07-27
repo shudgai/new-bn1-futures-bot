@@ -327,6 +327,12 @@ class TradingEngine:
                     if pb_symbol in self.cooldowns and (now_time - self.cooldowns[pb_symbol]) < 900:
                         continue
 
+                    # 同時持倉上限檢查：跟第 5 步的 MAX_SLOTS 用同一套規則，
+                    # 避免這條獨立的回調觸發路徑繞過槽位上限。先跳過這一輪，
+                    # 不刪除待命記錄，等有槽位空出來（且尚未超時）再繼續檢查。
+                    if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
+                        continue
+
                     target = pb_info["target_zone"]
                     zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
                     zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
@@ -536,11 +542,20 @@ class TradingEngine:
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
 
-                    # 按評分排序，逐個填充直到預算用完
+                    # 按評分排序，逐個填充，直到預算用完或同時持倉數達到 MAX_SLOTS
+                    # 上限為止——避免行情同時觸發多個高度相關的訊號時（同一波
+                    # 市場方向）一次開一堆單，一旦反轉就一次全部停損。訊號一次
+                    # 多於剩餘槽位時，依評分排序只挑最優的填滿槽位。
                     candidate_signals.sort(key=lambda x: x[0], reverse=True)
                     top_signals = []
                     budget_used = 0.0
+                    open_slots = (
+                        max(0, MAX_SLOTS - len(self.account.positions))
+                        if MAX_SLOTS > 0 else None
+                    )
                     for sc, sym, sig, pr, atr_val in candidate_signals:
+                        if open_slots is not None and len(top_signals) >= open_slots:
+                            break
                         slot_amount = min(
                             TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", sc)),
                             TRADE_AMOUNT_USDT
@@ -553,8 +568,12 @@ class TradingEngine:
 
                     if len(candidate_signals) > len(top_signals):
                         skipped = [s[1] for s in candidate_signals[len(top_signals):]]
+                        slot_note = (
+                            f"，同時持倉上限 {MAX_SLOTS} 槽（目前持倉 {len(self.account.positions)}）"
+                            if MAX_SLOTS > 0 else ""
+                        )
                         self.account.log(
-                            f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，預算 {available_balance:.0f}U 入場 {len(top_signals)} 個（{budget_used:.0f}U），跳過: {', '.join(skipped)}",
+                            f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，預算 {available_balance:.0f}U 入場 {len(top_signals)} 個（{budget_used:.0f}U）{slot_note}，跳過: {', '.join(skipped)}",
                             "INFO",
                         )
 
