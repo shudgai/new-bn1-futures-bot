@@ -13,6 +13,7 @@ from core.config import (
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
+from core.indicators import drop_unclosed_candle
 
 class TradingEngine:
     def __init__(self):
@@ -225,7 +226,10 @@ class TradingEngine:
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            return df
+            # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
+            # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
+            # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
+            return drop_unclosed_candle(df, timeframe)
         except Exception as e:
             return pd.DataFrame()
 

@@ -406,7 +406,11 @@ class BinanceTestnetAccount:
                     if peak_price > entry_p:
                         candidates.append(peak_price - chandelier_distance)
                     trail_sl = max(candidates)
-                    if trail_sl > old_sl:
+                    # 移動幅度太小就不重新掛單：避免行情緩慢推進時每一輪主迴圈
+                    # (5秒)都在 cancel/create 保護單，頻繁觸發 API 呼叫/速率限制。
+                    # 保本鎖第一次啟動時通常是相對原本寬止損的一大步，不會被這個
+                    # 門檻擋住，只有後續的細微調整才會被跳過。
+                    if trail_sl > old_sl and (trail_sl - old_sl) >= atr_val * 0.05:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         # 移動止盈：止損還在收緊，代表趨勢仍在走，固定止盈價不該
                         # 提前把單子封頂——用當下價格重新算 ATR 距離往外推，只會
@@ -433,7 +437,7 @@ class BinanceTestnetAccount:
                     if trough_price < entry_p:
                         candidates.append(trough_price + chandelier_distance)
                     trail_sl = min(candidates)
-                    if trail_sl < old_sl:
+                    if trail_sl < old_sl and (old_sl - trail_sl) >= atr_val * 0.05:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
                         current_tp = meta.get("tp") or float("inf")
@@ -730,6 +734,15 @@ class BinanceTestnetAccount:
             return False
 
         try:
+            # 強制逐倉保證金模式：專案從沒設定過保證金模式，代表可能一直用帳戶
+            # 預設的全倉——全倉下一筆爆倉會吃掉整個帳戶保證金，不只該筆本金，
+            # 直接打破 MAX_SLOTS/TRADE_AMOUNT_USDT「每筆只賭固定金額」的風控
+            # 假設。已經是 ISOLATED 時 Binance 會回錯誤（-4046 No need to change
+            # margin type），單純忽略即可，不影響下單流程。
+            try:
+                await self.exchange.set_margin_mode("ISOLATED", symbol)
+            except Exception:
+                pass
             await self.exchange.set_leverage(leverage, symbol)
             entry_order = await self.exchange.create_order(
                 symbol,

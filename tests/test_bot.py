@@ -81,6 +81,7 @@ def test_atr_range_filter_is_mandatory(monkeypatch):
         "close_price_spike_filtered": [100.0] * 50,
         "atr": [1.0] * 50,  # atr/price = 1% > MAX_ATR_PCT(0.6%)
         "rsi": [60.0] * 50,
+        "adx": [30.0] * 50,
         "volume": [1000.0] * 50,
         "vol_ma_20": [900.0] * 50,
         "kc_upper": [101.0] * 50,
@@ -102,12 +103,13 @@ def test_atr_range_filter_is_mandatory(monkeypatch):
     assert "Mandatory_Fail: ATR_Too_Low" in result["reason"]
 
 
-def _entry_score_frame(volume=700.0, rsi=49.0):
+def _entry_score_frame(volume=700.0, rsi=49.0, adx=20.0):
     return pd.DataFrame({
         "close": [100.05] * 50,
         "close_price_spike_filtered": [100.05] * 50,
         "atr": [0.3] * 50,  # atr/price = 0.3%，落在 MIN/MAX_ATR_PCT 之間，不會被強制門檻擋掉
         "rsi": [rsi] * 50,
+        "adx": [adx] * 50,
         "volume": [volume] * 50,
         "vol_ma_20": [1000.0] * 50,
         "kc_upper": [100.0] * 50,
@@ -123,8 +125,8 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     """KC 突破/訊號新鮮度沒過，不再是強制擋單（Mandatory_Fail），
     而是評分制底下的扣分，分數不夠門檻時走 HOLD + Score_Low。"""
     strategy = SuperTrendKeltnerStrategy()
-    # 量能、RSI 也刻意不過，確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD
-    frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5)
+    # 量能、RSI、ADX 也刻意不過，確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD
+    frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5, adx=5.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: SUPERTREND_MAX_FLIP_AGE_BARS + 1)
 
@@ -139,8 +141,8 @@ def test_qualifying_score_waits_for_pullback_never_buys_immediately(monkeypatch)
     """一律回踩機制：分數再高也不會有 BUY（立即進場），只會是 WAIT_PULLBACK。
     用 config 常數而非寫死的分數，避免每次調參又要改測試。"""
     strategy = SuperTrendKeltnerStrategy()
-    # 量能、RSI、新鮮度都給足以通過的條件，KC 突破在 _entry_score_frame 裡本來就成立
-    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5)
+    # 量能、RSI、新鮮度、ADX 都給足以通過的條件，KC 突破在 _entry_score_frame 裡本來就成立
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 

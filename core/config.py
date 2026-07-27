@@ -114,6 +114,15 @@ KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  
 # 導致「新鮮度」幾乎永遠跟「KC突破」對不上，分數卡死在 70 分、進不了 80~100 分檔位。
 SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "40"))
 
+# --- ADX 趨勢強度濾網（品質加分用，非強制門檻）---
+# KC 突破配上低 ADX，是盤整期假突破的常見樣貌；但直接拿來當強制門檻風險
+# 較高（可能大幅壓低訊號數量，又還沒有實測數據佐證合適的門檻值），所以
+# 先併入 evaluate_signal() 的品質加分（E4），跟 ATR/RSI/量能三項同一套邏輯：
+# ADX_QUALITY_MIN 以下不加分，ADX_QUALITY_FULL 以上視為滿分。
+ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
+ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
+ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
+
 # --- 動態 RSI 濾網 ---
 RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
 RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))

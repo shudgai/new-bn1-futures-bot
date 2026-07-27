@@ -11,6 +11,7 @@ import pandas as pd
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import SuperTrendKeltnerStrategy
+from core.indicators import drop_unclosed_candle
 from core.config import (
     AI_ADVISOR_ENABLED,
     AI_ADVISOR_TIMEOUT_SEC,
@@ -222,8 +223,8 @@ class SymbolRotation:
                 raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="5m", limit=100)
                 raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=200)
                 columns = ["timestamp", "open", "high", "low", "close", "volume"]
-                df = pd.DataFrame(raw_5m, columns=columns)
-                df_1h = pd.DataFrame(raw_1h, columns=columns)
+                df = drop_unclosed_candle(pd.DataFrame(raw_5m, columns=columns), "5m")
+                df_1h = drop_unclosed_candle(pd.DataFrame(raw_1h, columns=columns), "1h")
                 if len(df) < 50 or len(df_1h) < 30:
                     continue
                 listing_cutoff = time.time() * 1000 - SYMBOL_MIN_LISTING_DAYS * 86400 * 1000

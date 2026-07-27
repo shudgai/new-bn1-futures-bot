@@ -5,7 +5,8 @@ from core.config import (
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
-    KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT
+    KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
+    ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -30,9 +31,10 @@ class SuperTrendKeltnerStrategy:
     修正原則：KC突破後動量往往已接近末段，應等待回踩 KC 軌道才進場，
     而非在突破高點追入，避免一開倉就面臨回落。
     """
-    def __init__(self, atr_period=10, atr_multiplier=3.0):
+    def __init__(self, atr_period=10, atr_multiplier=3.0, adx_period=ADX_PERIOD):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
+        self.adx_period = adx_period
 
     def compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -67,6 +69,18 @@ class SuperTrendKeltnerStrategy:
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
+
+        # ADX（趨勢強度濾網）：KC 突破配上低 ADX，是盤整期假突破的常見樣貌，
+        # 用來在評分裡分辨「真的有趨勢動能撐著的突破」跟「雜訊型突破」。
+        up_move = high.diff()
+        down_move = -low.diff()
+        plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
+        minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
+        tr_smooth = tr.ewm(alpha=1 / self.adx_period, adjust=False).mean()
+        plus_di = 100 * (plus_dm.ewm(alpha=1 / self.adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
+        minus_di = 100 * (minus_dm.ewm(alpha=1 / self.adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+        df['adx'] = dx.ewm(alpha=1 / self.adx_period, adjust=False).mean()
 
         # Keltner Channels
         df['kc_upper'] = df['ema_20'] + (df['atr'] * KELTNER_ATR_MULTIPLIER)
@@ -132,6 +146,7 @@ class SuperTrendKeltnerStrategy:
         price = curr['close_price_spike_filtered'] if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered'])) else curr['close']
         atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
         rsi = curr['rsi']
+        adx = curr['adx'] if not np.isnan(curr['adx']) else 0.0
         vol = curr['volume']
         vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
         kc_upper = curr['kc_upper']
@@ -228,6 +243,11 @@ class SuperTrendKeltnerStrategy:
         vol_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
         vol_margin = max(0.0, vol_ratio - KELTNER_MIN_VOLUME_RATIO)
         quality_bonus += round(min(vol_margin / 1.0, 1.0) * 3)
+        # E4. 趨勢強度（ADX）：ADX 越高代表越像真的有趨勢動能撐著，越低越像
+        # 盤整期雜訊——KC 突破配上低 ADX，正是假突破最常見的樣貌之一。
+        # ADX_QUALITY_MIN 以下不加分，ADX_QUALITY_FULL 以上視為滿分。
+        adx_ratio = (adx - ADX_QUALITY_MIN) / (ADX_QUALITY_FULL - ADX_QUALITY_MIN)
+        quality_bonus += round(min(max(adx_ratio, 0.0), 1.0) * 3)
 
         score += quality_bonus
         if quality_bonus > 0:
