@@ -14,6 +14,8 @@ from core.config import (
     STOP_LOSS_MULTIPLIER,
     TAKE_PROFIT_MULTIPLIER,
     PARTIAL_CLOSE_THRESHOLDS,
+    FLASH_MOVE_WINDOW_SEC,
+    FLASH_MOVE_THRESHOLD_PCT,
     get_leverage,
     get_signal_leverage,
     get_trailing_pullback_pct,
@@ -58,6 +60,8 @@ class BinanceTestnetAccount:
         self._last_trailing_log: Dict[str, float] = {}
         self._trailing_lock: set = set()
         self._orphan_protection_attempted: set = set()
+        self._price_history: Dict[str, List[tuple]] = {}
+        self._last_flash_log: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -294,8 +298,17 @@ class BinanceTestnetAccount:
 
             peak = meta.get("peak_profit_pct", 0.0)
             old_sl = pos.get("sl", 0.0)
+            now_ts = time.time()
+            is_flash = self._is_flash_move(symbol, curr_p, side, now_ts)
+            if is_flash and now_ts - self._last_flash_log.get(symbol, 0) >= 30:
+                self._last_flash_log[symbol] = now_ts
+                self.log(
+                    f"🌪️ [急殺辨識] {symbol} 短時間內劇烈逆勢波動，暫停收緊移動止利"
+                    f"（原止損 {old_sl} 維持不變）",
+                    "WARNING",
+                )
 
-            if peak >= TRAILING_TRIGGER_PCT and old_sl > 0:
+            if peak >= TRAILING_TRIGGER_PCT and old_sl > 0 and not is_flash:
                 pullback = get_trailing_pullback_pct(peak, meta.get("peak_profit_updated_at", time.time()))
                 if side == "LONG":
                     trail_sl = entry_p * (1.0 + peak * pullback)
@@ -304,7 +317,6 @@ class BinanceTestnetAccount:
                     if trail_sl > old_sl:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
-                        now_ts = time.time()
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
                             self.log(
@@ -318,7 +330,6 @@ class BinanceTestnetAccount:
                     if trail_sl < old_sl:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
-                        now_ts = time.time()
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
                             self.log(
@@ -340,6 +351,24 @@ class BinanceTestnetAccount:
 
         self.save_state()
         return self.unrealized_pnl
+
+    def _is_flash_move(self, symbol: str, curr_p: float, side: str, now_ts: float) -> bool:
+        """短窗口內逆勢劇烈波動（急殺/急拉）偵測，只看最近 FLASH_MOVE_WINDOW_SEC 秒。"""
+        history = self._price_history.setdefault(symbol, [])
+        history.append((now_ts, curr_p))
+        cutoff = now_ts - FLASH_MOVE_WINDOW_SEC
+        while history and history[0][0] < cutoff:
+            history.pop(0)
+        if len(history) < 2:
+            return False
+        oldest_price = history[0][1]
+        if oldest_price <= 0:
+            return False
+        if side == "LONG":
+            adverse_move = (oldest_price - curr_p) / oldest_price
+        else:
+            adverse_move = (curr_p - oldest_price) / oldest_price
+        return adverse_move >= FLASH_MOVE_THRESHOLD_PCT
 
     async def _replace_stop_order(
         self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict, pos: dict

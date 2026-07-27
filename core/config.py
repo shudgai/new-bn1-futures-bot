@@ -191,6 +191,19 @@ RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
 # 幣種整體是賺錢的，故以 0.6% 為門檻，超過就跳過進場。
 MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
 
+# --- 急殺/急拉辨識：短時間內劇烈波動時，暫停收緊移動止利 ---
+# 觀察到多筆持倉在幾分鐘內同時觸發止損，事後價格常常又漲回去——
+# 這是「洗盤瞬間把止損位置一次掃過」的典型模式。根因是移動止利想
+# 把止損調緊時，價格已經在瞬間急殺/急拉中衝過新止損價，導致保護單
+# 被拒（Order would immediately trigger）或直接觸發，等於在最劇烈
+# 的那一下被迫出場。偵測到短窗口內的劇烈波動時，暫停「收緊止損」
+# 這個動作（原本已設定好的止損不變、不撤銷，只是不再往上調緊），
+# 給洗盤留一點緩衝空間，等波動平息再恢復正常移動止利。
+# FLASH_MOVE_WINDOW_SEC：觀察窗口（秒）
+FLASH_MOVE_WINDOW_SEC = float(os.getenv("FLASH_MOVE_WINDOW_SEC", "60"))
+# FLASH_MOVE_THRESHOLD_PCT：窗口內逆勢波動超過此比例，視為急殺/急拉
+FLASH_MOVE_THRESHOLD_PCT = float(os.getenv("FLASH_MOVE_THRESHOLD_PCT", "0.015"))
+
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
 # 給予更高倍數的下單金額（以 TRADE_AMOUNT_USDT 為基準，而非總資金比例，避免部位隨餘額增長滾雪球）。
