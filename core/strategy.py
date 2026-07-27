@@ -5,9 +5,17 @@ from core.config import (
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT,
-    KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH
+    KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT
 )
 from core.indicators import bars_since_supertrend_flip
+
+
+def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
+    """算出止損/止盈距離，並套用 MIN_SL_DISTANCE_PCT 下限，避免低波動期間
+    ATR 太小導致止損距離縮到容易被雜訊掃出的地步。回傳 (sl_distance, tp_distance)。"""
+    sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
+    tp_distance = sl_distance * (TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER)
+    return sl_distance, tp_distance
 
 class SuperTrendKeltnerStrategy:
     """
@@ -222,8 +230,9 @@ class SuperTrendKeltnerStrategy:
 
                 if dist <= MAX_BREAKOUT_DISTANCE:
                     # ✅ A段：剛剛突破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
-                    sl = price - (atr * STOP_LOSS_MULTIPLIER)
-                    tp = price + (atr * TAKE_PROFIT_MULTIPLIER)
+                    sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
+                    sl = price - sl_distance
+                    tp = price + tp_distance
                     return {
                         "action": "BUY", "side": "LONG", "price": price,
                         "sl": sl, "tp": tp, "atr": atr,
@@ -248,8 +257,9 @@ class SuperTrendKeltnerStrategy:
 
                 if dist <= MAX_BREAKOUT_DISTANCE:
                     # ✅ A段：剛剛跌破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
-                    sl = price + (atr * STOP_LOSS_MULTIPLIER)
-                    tp = price - (atr * TAKE_PROFIT_MULTIPLIER)
+                    sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
+                    sl = price + sl_distance
+                    tp = price - tp_distance
                     return {
                         "action": "SELL", "side": "SHORT", "price": price,
                         "sl": sl, "tp": tp, "atr": atr,

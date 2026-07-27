@@ -11,8 +11,6 @@ from core.config import (
     TAKER_FEE_RATE,
     TRAILING_TRIGGER_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
-    STOP_LOSS_MULTIPLIER,
-    TAKE_PROFIT_MULTIPLIER,
     PARTIAL_CLOSE_THRESHOLDS,
     FLASH_MOVE_WINDOW_SEC,
     FLASH_MOVE_THRESHOLD_PCT,
@@ -22,6 +20,7 @@ from core.config import (
     get_signal_leverage,
     get_trailing_pullback_pct,
 )
+from core.strategy import compute_sl_tp_distance
 
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -445,12 +444,13 @@ class BinanceTestnetAccount:
         side = pos["side"]
         entry_p = pos["entry_price"]
         atr = meta.get("atr") or entry_p * 0.015
+        sl_distance, tp_distance = compute_sl_tp_distance(entry_p, atr)
         if side == "LONG":
-            sl_price = float(self.exchange.price_to_precision(symbol, entry_p - atr * STOP_LOSS_MULTIPLIER))
-            tp_price = float(self.exchange.price_to_precision(symbol, entry_p + atr * TAKE_PROFIT_MULTIPLIER))
+            sl_price = float(self.exchange.price_to_precision(symbol, entry_p - sl_distance))
+            tp_price = float(self.exchange.price_to_precision(symbol, entry_p + tp_distance))
         else:
-            sl_price = float(self.exchange.price_to_precision(symbol, entry_p + atr * STOP_LOSS_MULTIPLIER))
-            tp_price = float(self.exchange.price_to_precision(symbol, entry_p - atr * TAKE_PROFIT_MULTIPLIER))
+            sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance))
+            tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance))
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
