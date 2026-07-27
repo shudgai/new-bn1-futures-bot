@@ -207,10 +207,29 @@ class BinanceTestnetAccount:
                     close_price = sum(float(t["price"]) * float(t["amount"]) for t in closing_fills) / fill_qty
             except Exception:
                 pass  # 查詢失敗就退回用快取的 mark_price 估算
-            if position["side"] == "LONG":
-                raw_pnl = (close_price - position["entry_price"]) * position["qty"]
-            else:
-                raw_pnl = (position["entry_price"] - close_price) * position["qty"]
+            # 損益改用 Binance 官方的已實現損益帳本（REALIZED_PNL income）為準，
+            # 不再自己拿成交明細反推——反推容易把移動止利換單過程中的零碎成交
+            # 也算進去，導致跟實際損益對不上。close_price 只用來顯示、算手續費。
+            raw_pnl = None
+            try:
+                income_rows = await self.exchange.fapiPrivateGetIncome({
+                    "symbol": self._raw_symbol(symbol),
+                    "incomeType": "REALIZED_PNL",
+                    "limit": 20,
+                })
+                cutoff_ms = (time.time() - 300) * 1000
+                recent_pnl_rows = [
+                    r for r in income_rows if float(r.get("time", 0)) >= cutoff_ms
+                ]
+                if recent_pnl_rows:
+                    raw_pnl = sum(float(r.get("income", 0)) for r in recent_pnl_rows)
+            except Exception:
+                pass
+            if raw_pnl is None:
+                if position["side"] == "LONG":
+                    raw_pnl = (close_price - position["entry_price"]) * position["qty"]
+                else:
+                    raw_pnl = (position["entry_price"] - close_price) * position["qty"]
             open_fee = position["entry_price"] * position["qty"] * TAKER_FEE_RATE
             close_fee = close_price * position["qty"] * TAKER_FEE_RATE
             total_fee = open_fee + close_fee
