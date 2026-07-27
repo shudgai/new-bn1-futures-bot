@@ -58,6 +58,7 @@ class SymbolRotation:
         self.direction_map: Dict[str, str] = {}
         self.last_reason = "尚未執行"
         self.volatility_stats: Dict[str, dict] = {}
+        self.atr_history: Dict[str, List[float]] = {}
 
     @staticmethod
     def _closed_trade_stats(trades: Iterable[dict]) -> Dict[str, dict]:
@@ -277,12 +278,28 @@ class SymbolRotation:
                     daily_down_series = (daily_group["open"] - daily_group["low"]) / daily_group["open"] * 100.0
                     daily_up_pct = round(daily_up_series.mean(), 3)
                     daily_down_pct = round(daily_down_series.mean(), 3)
+                # 硬性排除：波動率不是只看這一次的快照就下結論（單次量測可能剛好
+                # 遇到雜訊），累積最近幾次輪替（預設 6 次 ≈ 6 小時）的 ATR% 取
+                # 平均，明顯持續偏離策略可交易區間（MIN_ATR_PCT ~ MAX_ATR_PCT）
+                # 太多時，直接排除在候選之外，不用等 volatility_quality 慢慢把
+                # 分數壓低、也不用你自己盯著波動率表手動判斷該不該留。門檻抓
+                # 寬鬆（0.5x ~ 1.5x）只排除明顯不合的，貼著邊界的交給評分去比。
+                atr_hist = self.atr_history.setdefault(symbol, [])
+                atr_hist.append(atr_pct)
+                del atr_hist[:-6]
+                avg_recent_atr_pct = sum(atr_hist) / len(atr_hist)
+                volatility_excluded = len(atr_hist) >= 3 and (
+                    avg_recent_atr_pct < MIN_ATR_PCT * 0.5
+                    or avg_recent_atr_pct > MAX_ATR_PCT * 1.5
+                )
+
                 self.volatility_stats[symbol] = {
                     "atr_pct": round(atr_pct * 100.0, 4),
                     "avg_daily_up_pct": daily_up_pct,
                     "avg_daily_down_pct": daily_down_pct,
                     "sample_days": int(daily_group.shape[0]) if len(daily_group) else 0,
                     "change_24h_pct": round(change_pct, 3),
+                    "volatility_excluded": volatility_excluded,
                     "updated_at": time.time(),
                 }
 
@@ -340,7 +357,8 @@ class SymbolRotation:
                         "symbol": symbol,
                         "direction": direction,
                         "quant_score": quant_score,
-                        "eligible": trend_aligned,
+                        "eligible": trend_aligned and not volatility_excluded,
+                        "volatility_excluded": volatility_excluded,
                         "price": price,
                         "ema_1h": ema_1h,
                         "st_aligned": st_aligned,

@@ -287,7 +287,10 @@
                         </thead>
                         <tbody>
                             <tr v-for="row in sortedVolatility" :key="row.symbol">
-                                <td><b>{{ row.name }}</b></td>
+                                <td>
+                                    <b>{{ row.name }}</b>
+                                    <span v-if="row.volatility_excluded" style="font-size:10px; color:var(--down); border:1px solid var(--down); border-radius:4px; padding:1px 4px; margin-left:4px;" title="波動率持續偏離可交易區間太多，已自動排除在幣種輪替候選之外">已排除</span>
+                                </td>
                                 <td>{{ row.atr_pct.toFixed(3) }}%</td>
                                 <td class="up">+{{ row.avg_daily_up_pct.toFixed(2) }}%</td>
                                 <td class="down">-{{ row.avg_daily_down_pct.toFixed(2) }}%</td>
@@ -435,6 +438,7 @@
                                 avg_daily_down_pct: stats[sym].avg_daily_down_pct || 0,
                                 sample_days: stats[sym].sample_days || 0,
                                 change_24h_pct: stats[sym].change_24h_pct || 0,
+                                volatility_excluded: !!stats[sym].volatility_excluded,
                                 leverageRangeText
                             };
                         })
