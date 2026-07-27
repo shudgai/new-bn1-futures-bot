@@ -4,7 +4,7 @@ from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
-    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT,
+    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT
 )
 from core.indicators import bars_since_supertrend_flip
@@ -152,12 +152,17 @@ class SuperTrendKeltnerStrategy:
         if st_dir == -1 and not is_1h_bearish:
             return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
 
-        # 高波動幣種過濾：ATR 佔價格比例過高，SL/TP 用 ATR 倍數算出來的
-        # 停損距離會被放大，同樣倉位金額下觸發止損時虧的錢遠大於移動止利
-        # 能鎖住的獲利，實測是最大幾筆虧損的共同特徵，直接跳過不開倉。
+        # 波動率過濾：ATR 佔價格比例太高或太低都不開倉。
+        # 太高：SL/TP 用 ATR 倍數算出來的停損距離會被放大，同樣倉位金額下
+        # 觸發止損時虧的錢遠大於移動止利能鎖住的獲利，是最大幾筆虧損的
+        # 共同特徵。太低：市場太安靜時的「突破」更可能是盤整區間的假突破，
+        # 沒有真實動能支撐，容易一進場就反轉（實測一批止損反推 ATR 只有
+        # 0.07%~0.21%）。兩者一起框出一個波動適中的可交易區間。
         atr_pct = atr / price if price > 0 else 0
         if atr_pct > MAX_ATR_PCT:
             return {"action": "HOLD", "reason": f"Mandatory_Fail: ATR_Too_High({atr_pct:.2%})"}
+        if atr_pct < MIN_ATR_PCT:
+            return {"action": "HOLD", "reason": f"Mandatory_Fail: ATR_Too_Low({atr_pct:.2%})"}
 
         # --- 2. 動態評分系統 (Scoring System) ---
         score = 0
@@ -203,9 +208,16 @@ class SuperTrendKeltnerStrategy:
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
         # 三項各佔 0~3 分，數值越好加分越多，實測跟虧損大小/勝率相關：
         quality_bonus = 0
-        # E1. 波動品質：ATR% 距離上限(MAX_ATR_PCT)越遠，代表波動越溫和
-        atr_headroom = max(0.0, 1.0 - (atr_pct / MAX_ATR_PCT)) if MAX_ATR_PCT > 0 else 0.0
-        quality_bonus += round(atr_headroom * 3)
+        # E1. 波動品質：越接近 [MIN_ATR_PCT, MAX_ATR_PCT] 區間的中點分數越高，
+        # 越靠近任一邊界（太安靜或太劇烈）分數越低。不能只獎勵「越低越好」，
+        # 因為太低的 ATR 反而是假突破風險（見上面的 Mandatory_Fail 說明）。
+        atr_mid = (MIN_ATR_PCT + MAX_ATR_PCT) / 2.0
+        atr_half_range = (MAX_ATR_PCT - MIN_ATR_PCT) / 2.0
+        atr_quality = (
+            max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
+            if atr_half_range > 0 else 0.0
+        )
+        quality_bonus += round(atr_quality * 3)
         # E2. RSI 強度：超出門檻越多代表動能越強（15分視為滿分）
         if st_dir == 1:
             rsi_margin = max(0.0, rsi - RSI_LONG_THRESHOLD)

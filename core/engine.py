@@ -77,6 +77,9 @@ class TradingEngine:
         elif "ATR_Too_High" in reason:
             atr_match = re.search(r"ATR_Too_High\(([\d.]+%)\)", reason)
             stage = f"波動過大{atr_match.group(1)}過濾" if atr_match else "波動過大過濾"
+        elif "ATR_Too_Low" in reason:
+            atr_match = re.search(r"ATR_Too_Low\(([\d.]+%)\)", reason)
+            stage = f"波動過低{atr_match.group(1)}過濾" if atr_match else "波動過低過濾"
         elif "Volume" in reason:
             stage = "量能不足"
         elif "RSI" in reason:

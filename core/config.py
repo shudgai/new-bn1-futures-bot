@@ -198,6 +198,11 @@ RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
 # 反觀 BTC(0.19%)、HYPE(0.26%)、SOL(0.30%)、AAVE(0.60%) 這類 ATR% 較低的
 # 幣種整體是賺錢的，故以 0.6% 為門檻，超過就跳過進場。
 MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
+# MIN_ATR_PCT：波動率太低也不開倉。實測 BTC/LINK/LTC/BNB/XRP 一批集中在
+# 12 分鐘內的止損，反推 ATR 只有 0.07%~0.21%——市場太安靜時的「突破」
+# 更可能是假突破（盤整區間的雜訊），沒有真實動能支撐，容易一進場就
+# 反轉。跟 MAX_ATR_PCT 一起框出一個「波動適中」的可交易區間。
+MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
 
 # --- 急殺/急拉辨識：短時間內劇烈波動時，暫停收緊移動止利 ---
 # 觀察到多筆持倉在幾分鐘內同時觸發止損，事後價格常常又漲回去——
