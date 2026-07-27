@@ -355,30 +355,26 @@ class SymbolRotation:
                 if side_count >= DIRECTIONAL_SIDE_COUNT:
                     break
 
-        # 空單不足 6 個時，以其餘達標多單依分數補滿介面 12 個。
+        # 任一邊不足 6 個時，用兩邊剩餘還達標的候選依分數混合補滿介面 12 個。
+        # 原本這裡固定只用多單補位，導致空單候選不夠 6 個時，池子會被多單
+        # 灌滿——就算多單那陣子完全沒訊號，池子裡也擠不出空單可以做。
         if len(selected_items) < SYMBOL_ROTATION_COUNT:
-            long_backfill = sorted(
-                [
-                    item for item in qualified
-                    if item["direction"] == "LONG" and item["symbol"] not in used_symbols
-                ],
+            mixed_backfill = sorted(
+                [item for item in qualified if item["symbol"] not in used_symbols],
                 key=lambda item: item["final_score"],
                 reverse=True,
             )
-            for item in long_backfill:
+            for item in mixed_backfill:
                 selected_items.append(item)
                 used_symbols.add(item["symbol"])
                 if len(selected_items) >= SYMBOL_ROTATION_COUNT:
                     break
 
-        # 若達 60 分的多單仍不足，僅以其餘多單排名補足介面；
+        # 若達 60 分的候選仍不足，僅以其餘任一方向排名補足介面；
         # 這不會繞過策略本身的 70 分實際開倉門檻。
         if len(selected_items) < SYMBOL_ROTATION_COUNT:
             display_backfill = sorted(
-                [
-                    item for item in metrics
-                    if item["direction"] == "LONG" and item["symbol"] not in used_symbols
-                ],
+                [item for item in metrics if item["symbol"] not in used_symbols],
                 key=lambda item: item.get("final_score", 0.0),
                 reverse=True,
             )
