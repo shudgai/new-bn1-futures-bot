@@ -227,11 +227,11 @@
 
                 <!-- VOLATILITY STATS TABLE -->
                 <div class="card">
-                    <div class="card-title">
-                        <span>📈 幣種波動率統計 (每小時輪替時更新)</span>
+                    <div class="card-title collapsible" @click="volatilityExpanded = !volatilityExpanded">
+                        <span><span class="collapse-arrow" :class="{ open: volatilityExpanded }">▶</span> 📈 幣種波動率統計 (每小時輪替時更新)</span>
                         <span style="font-size:11px; color:var(--muted)">實測 5m K 線，非市值猜測</span>
                     </div>
-                    <table>
+                    <table v-show="volatilityExpanded">
                         <thead>
                             <tr>
                                 <th>幣種</th>
@@ -394,7 +394,8 @@
                         amount: 50.0
                     },
                     exportDate: '',
-                    aiAnalysisExpanded: false
+                    aiAnalysisExpanded: false,
+                    volatilityExpanded: false
                 }
             },
             computed: {
