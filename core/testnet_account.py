@@ -392,56 +392,63 @@ class BinanceTestnetAccount:
             if old_sl > 0 and not is_flash:
                 atr_val = meta.get("atr") or entry_p * 0.015
                 chandelier_distance = CHANDELIER_ATR_MULT * atr_val
+                # 保本鎖 + ATR 移動停利疊加：一旦最高價（多單）/最低價（空單）
+                # 扣掉手續費+滑點緩衝後仍是淨賺，立刻把止損鎖到保本線——不用
+                # 等 ATR 移動停利先跟上，避免「剛轉正就拉回，結果連保本都保
+                # 不住」的空窗期。價格續創新高/新低時，ATR 移動停利接手繼續
+                # 收緊；兩者取較嚴格的一個，只會愈收愈緊，不會放寬。
                 if side == "LONG":
                     peak_price = meta["highest_price"]
+                    breakeven_level = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
+                    candidates = [old_sl]
+                    if peak_price >= breakeven_level:
+                        candidates.append(breakeven_level)
                     if peak_price > entry_p:
-                        trail_sl = peak_price - chandelier_distance
-                        if trail_sl > entry_p:
-                            npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
-                            trail_sl = max(trail_sl, npg_floor)
-                        if trail_sl > old_sl:
-                            new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                            # 移動止盈：止損還在跟著新高收緊，代表趨勢仍在走，固定止盈價
-                            # 不該提前把單子封頂——用當下價格重新算 ATR 距離往外推，
-                            # 只會往外擴不會往內縮，出場主要交給移動止損判斷趨勢是否反轉。
-                            _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
-                            new_tp = max(curr_p + tp_distance, meta.get("tp") or 0.0)
-                            new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
-                            await self._replace_stop_order(
-                                symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
+                        candidates.append(peak_price - chandelier_distance)
+                    trail_sl = max(candidates)
+                    if trail_sl > old_sl:
+                        new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
+                        # 移動止盈：止損還在收緊，代表趨勢仍在走，固定止盈價不該
+                        # 提前把單子封頂——用當下價格重新算 ATR 距離往外推，只會
+                        # 往外擴不會往內縮，出場主要交給移動止損判斷趨勢是否反轉。
+                        _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
+                        new_tp = max(curr_p + tp_distance, meta.get("tp") or 0.0)
+                        new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
+                        await self._replace_stop_order(
+                            symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
+                        )
+                        if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
+                            self._last_trailing_log[symbol] = now_ts
+                            self.log(
+                                f"📈 [ATR移動止利] {symbol} 最高價 {peak_price:.6f}，"
+                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}",
+                                "SUCCESS",
                             )
-                            if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
-                                self._last_trailing_log[symbol] = now_ts
-                                self.log(
-                                    f"📈 [ATR移動止利] {symbol} 最高價 {peak_price:.6f}，"
-                                    f"回吐 {CHANDELIER_ATR_MULT}x ATR 後止損推至 {new_sl}，"
-                                    f"止盈同步推至 {new_tp_price}",
-                                    "SUCCESS",
-                                )
                 else:
                     trough_price = meta["lowest_price"]
+                    breakeven_level = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
+                    candidates = [old_sl]
+                    if trough_price <= breakeven_level:
+                        candidates.append(breakeven_level)
                     if trough_price < entry_p:
-                        trail_sl = trough_price + chandelier_distance
-                        if trail_sl < entry_p:
-                            npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
-                            trail_sl = min(trail_sl, npg_ceiling)
-                        if trail_sl < old_sl:
-                            new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                            _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
-                            current_tp = meta.get("tp") or float("inf")
-                            new_tp = min(curr_p - tp_distance, current_tp)
-                            new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
-                            await self._replace_stop_order(
-                                symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
+                        candidates.append(trough_price + chandelier_distance)
+                    trail_sl = min(candidates)
+                    if trail_sl < old_sl:
+                        new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
+                        _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
+                        current_tp = meta.get("tp") or float("inf")
+                        new_tp = min(curr_p - tp_distance, current_tp)
+                        new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
+                        await self._replace_stop_order(
+                            symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
+                        )
+                        if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
+                            self._last_trailing_log[symbol] = now_ts
+                            self.log(
+                                f"📉 [ATR移動止利] {symbol} 最低價 {trough_price:.6f}，"
+                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}",
+                                "SUCCESS",
                             )
-                            if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
-                                self._last_trailing_log[symbol] = now_ts
-                                self.log(
-                                    f"📉 [ATR移動止利] {symbol} 最低價 {trough_price:.6f}，"
-                                    f"回吐 {CHANDELIER_ATR_MULT}x ATR 後止損推至 {new_sl}，"
-                                    f"止盈同步推至 {new_tp_price}",
-                                    "SUCCESS",
-                                )
 
             if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
