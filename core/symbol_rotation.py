@@ -279,16 +279,18 @@ class SymbolRotation:
                     daily_up_pct = round(daily_up_series.mean(), 3)
                     daily_down_pct = round(daily_down_series.mean(), 3)
                 # 硬性排除：波動率不是只看這一次的快照就下結論（單次量測可能剛好
-                # 遇到雜訊），累積最近幾次輪替（預設 6 次 ≈ 6 小時）的 ATR% 取
-                # 平均，明顯持續偏離策略可交易區間（MIN_ATR_PCT ~ MAX_ATR_PCT）
-                # 太多時，直接排除在候選之外，不用等 volatility_quality 慢慢把
-                # 分數壓低、也不用你自己盯著波動率表手動判斷該不該留。門檻抓
-                # 寬鬆（0.5x ~ 1.5x）只排除明顯不合的，貼著邊界的交給評分去比。
+                # 遇到雜訊），累積最近幾次輪替（最多保留 6 次 ≈ 6 小時歷史，滿
+                # 2 次 ≈ 2 小時就開始判斷）的 ATR% 取平均，明顯持續偏離策略可
+                # 交易區間（MIN_ATR_PCT ~ MAX_ATR_PCT）太多時，直接排除在候選
+                # 之外，不用等 volatility_quality 慢慢把分數壓低、也不用你自己
+                # 盯著波動率表手動判斷該不該留。門檻抓寬鬆（0.5x ~ 1.5x）只排除
+                # 明顯不合的，貼著邊界的交給評分去比。ATR 本身已經是 10 根 5
+                # 分鐘K棒（約50分鐘）的平滑值，不是單點雜訊，2 次確認足夠。
                 atr_hist = self.atr_history.setdefault(symbol, [])
                 atr_hist.append(atr_pct)
                 del atr_hist[:-6]
                 avg_recent_atr_pct = sum(atr_hist) / len(atr_hist)
-                volatility_excluded = len(atr_hist) >= 3 and (
+                volatility_excluded = len(atr_hist) >= 2 and (
                     avg_recent_atr_pct < MIN_ATR_PCT * 0.5
                     or avg_recent_atr_pct > MAX_ATR_PCT * 1.5
                 )
