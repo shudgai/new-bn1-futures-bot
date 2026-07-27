@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from core.config import (
-    STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, MAX_BREAKOUT_DISTANCE,
+    STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
@@ -240,55 +240,31 @@ class SuperTrendKeltnerStrategy:
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
 
-                if dist <= MAX_BREAKOUT_DISTANCE:
-                    # ✅ A段：剛剛突破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
-                    sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
-                    sl = price - sl_distance
-                    tp = price + tp_distance
-                    return {
-                        "action": "BUY", "side": "LONG", "price": price,
-                        "sl": sl, "tp": tp, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "reason": f"Pullback_BUY_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
-                    }
-                else:
-                    # ⏳ B段（核心修正）：突破後價格已離 KC 上軌太遠 → 一律等回踩再進場
-                    # 回調目標：從 KC 上軌往 EMA20 均價再靠攏 PULLBACK_TARGET_DEPTH 比例，
-                    # 進場價更低、後續空間更大（見 PULLBACK_TARGET_DEPTH 說明）。
-                    pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
-                    return {
-                        "action": "WAIT_PULLBACK", "side": "LONG",
-                        "price": price, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "target_zone": pullback_target,
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
-                    }
+                # 一律等回踩到目標區再進場，不再有「突破當下距離夠近就立刻
+                # 追價買」的路徑——KC 通道倍數是拿來判斷「這是不是真突破」
+                # 的確認門檻，跟「用什麼價格進場」是兩件事，進場價一律交給
+                # 回踩機制決定，通道調寬也不會讓進場價跟著追高。
+                # 回調目標：從 KC 上軌往 EMA20 均價再靠攏 PULLBACK_TARGET_DEPTH 比例。
+                pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
+                return {
+                    "action": "WAIT_PULLBACK", "side": "LONG",
+                    "price": price, "atr": atr,
+                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                    "target_zone": pullback_target,
+                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
+                }
 
             else:  # SHORT
                 dist = (kc_lower - price) / kc_lower
 
-                if dist <= MAX_BREAKOUT_DISTANCE:
-                    # ✅ A段：剛剛跌破（距離極近 ≤ 0.1%），仍在安全進場點 → 立即開倉
-                    sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
-                    sl = price + sl_distance
-                    tp = price - tp_distance
-                    return {
-                        "action": "SELL", "side": "SHORT", "price": price,
-                        "sl": sl, "tp": tp, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "reason": f"Pullback_SELL_NOW({score}) | dist={dist:.2%} | {', '.join(score_details)}"
-                    }
-                else:
-                    # ⏳ B段（核心修正）：跌破後價格已離 KC 下軌太遠 → 一律等反彈再做空
-                    # 回調目標：從 KC 下軌往 EMA20 均價再靠攏 PULLBACK_TARGET_DEPTH 比例，
-                    # 進場價更高（對空單來說更有利）、後續空間更大。
-                    pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
-                    return {
-                        "action": "WAIT_PULLBACK", "side": "SHORT",
-                        "price": price, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "target_zone": pullback_target,
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
-                    }
+                # 同理：空單也一律等反彈到目標區再進場。
+                pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
+                return {
+                    "action": "WAIT_PULLBACK", "side": "SHORT",
+                    "price": price, "atr": atr,
+                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                    "target_zone": pullback_target,
+                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
+                }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
