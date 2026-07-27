@@ -229,15 +229,16 @@
                 <div class="card">
                     <div class="card-title collapsible" @click="volatilityExpanded = !volatilityExpanded">
                         <span><span class="collapse-arrow" :class="{ open: volatilityExpanded }">▶</span> 📈 幣種波動率統計 (每小時輪替時更新)</span>
-                        <span style="font-size:11px; color:var(--muted)">實測 5m K 線，非市值猜測</span>
+                        <span style="font-size:11px; color:var(--muted)">幣種本身市場價格，跟持倉損益無關</span>
                     </div>
                     <table v-show="volatilityExpanded">
                         <thead>
                             <tr>
                                 <th>幣種</th>
                                 <th>ATR%</th>
-                                <th>平均漲幅</th>
-                                <th>平均跌幅</th>
+                                <th>平均單日漲幅<br><span style="font-weight:400; color:var(--muted)">(當日開盤→最高)</span></th>
+                                <th>平均單日跌幅<br><span style="font-weight:400; color:var(--muted)">(當日開盤→最低)</span></th>
+                                <th>樣本天數</th>
                                 <th>24h 漲跌</th>
                                 <th>實際槓桿上限</th>
                             </tr>
@@ -246,15 +247,16 @@
                             <tr v-for="row in sortedVolatility" :key="row.symbol">
                                 <td><b>{{ row.name }}</b></td>
                                 <td>{{ row.atr_pct.toFixed(3) }}%</td>
-                                <td class="up">+{{ row.avg_up_pct.toFixed(3) }}%</td>
-                                <td class="down">-{{ row.avg_down_pct.toFixed(3) }}%</td>
+                                <td class="up">+{{ row.avg_daily_up_pct.toFixed(2) }}%</td>
+                                <td class="down">-{{ row.avg_daily_down_pct.toFixed(2) }}%</td>
+                                <td style="color:var(--muted)">{{ row.sample_days }} 天</td>
                                 <td :class="row.change_24h_pct > 0 ? 'up' : row.change_24h_pct < 0 ? 'down' : ''">
                                     {{ row.change_24h_pct > 0 ? '+' : '' }}{{ row.change_24h_pct.toFixed(2) }}%
                                 </td>
                                 <td>{{ row.leverage }}x</td>
                             </tr>
                             <tr v-if="sortedVolatility.length === 0">
-                                <td colspan="6" style="text-align:center; color:var(--muted); padding:16px;">尚未累積波動率資料，等下一次幣種輪替後顯示</td>
+                                <td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">尚未累積波動率資料，等下一次幣種輪替後顯示</td>
                             </tr>
                         </tbody>
                     </table>
@@ -418,8 +420,9 @@
                             symbol: sym,
                             name: sym.replace('/USDT', ''),
                             atr_pct: stats[sym].atr_pct || 0,
-                            avg_up_pct: stats[sym].avg_up_pct || 0,
-                            avg_down_pct: stats[sym].avg_down_pct || 0,
+                            avg_daily_up_pct: stats[sym].avg_daily_up_pct || 0,
+                            avg_daily_down_pct: stats[sym].avg_daily_down_pct || 0,
+                            sample_days: stats[sym].sample_days || 0,
                             change_24h_pct: stats[sym].change_24h_pct || 0,
                             leverage: this.getLeverage(sym)
                         }))

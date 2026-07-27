@@ -258,17 +258,30 @@ class SymbolRotation:
                 quote_volume = float(ticker.get("quoteVolume") or 0.0)
                 change_pct = float(ticker.get("percentage") or 0.0)
 
-                # 波動率統計：用同一批已抓的 5m K 線算，不額外呼叫 API。
-                # 記錄每個幣「正常會漲跌多少」，用來取代原本用市值猜的固定
-                # 槓桿表，也餵給下面的候選評分（見 volatility_quality）。
+                # 波動率統計：用同一批已抓的 K 線算，不額外呼叫 API，純粹是
+                # 幣種本身的市場價格，跟我們的持倉損益完全無關。
+                # avg_daily_up_pct/avg_daily_down_pct 用 1h K 線（已抓 200 小時
+                # ≈ 8~9 天）按 UTC 日期分組，算「當天開盤到最高/最低的漲跌幅」
+                # 再取平均——這樣才是「這個幣一天大概能漲跌多少%」，而不是
+                # 單根 5 分鐘 K 棒本身的漲跌（那個尺度太小，看不出真正空間）。
                 atr_pct = atr / price if price > 0 else 0.0
-                bar_returns_pct = df["close"].pct_change().dropna() * 100.0
-                up_moves = bar_returns_pct[bar_returns_pct > 0]
-                down_moves = bar_returns_pct[bar_returns_pct < 0]
+                daily_up_pct, daily_down_pct = 0.0, 0.0
+                df_daily = df_1h.copy()
+                df_daily["date"] = pd.to_datetime(df_daily["timestamp"], unit="ms", utc=True).dt.date
+                daily_group = df_daily.groupby("date").agg(
+                    open=("open", "first"), high=("high", "max"), low=("low", "min")
+                )
+                daily_group = daily_group[daily_group["open"] > 0]
+                if len(daily_group):
+                    daily_up_series = (daily_group["high"] - daily_group["open"]) / daily_group["open"] * 100.0
+                    daily_down_series = (daily_group["open"] - daily_group["low"]) / daily_group["open"] * 100.0
+                    daily_up_pct = round(daily_up_series.mean(), 3)
+                    daily_down_pct = round(daily_down_series.mean(), 3)
                 self.volatility_stats[symbol] = {
                     "atr_pct": round(atr_pct * 100.0, 4),
-                    "avg_up_pct": round(up_moves.mean(), 4) if len(up_moves) else 0.0,
-                    "avg_down_pct": round(abs(down_moves.mean()), 4) if len(down_moves) else 0.0,
+                    "avg_daily_up_pct": daily_up_pct,
+                    "avg_daily_down_pct": daily_down_pct,
+                    "sample_days": int(daily_group.shape[0]) if len(daily_group) else 0,
                     "change_24h_pct": round(change_pct, 3),
                     "updated_at": time.time(),
                 }
