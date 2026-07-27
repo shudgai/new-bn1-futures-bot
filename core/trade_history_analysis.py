@@ -105,6 +105,25 @@ class TradeHistoryAnalyzer:
         return closed
 
     @staticmethod
+    def _score_bucket(score) -> str:
+        """把精細評分（70~100+）分成幾個區間，樣本數少時比逐分分組更有統計意義。"""
+        if score in (None, ""):
+            return "未記錄"
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return "未記錄"
+        if value < 71:
+            return "70(壓線)"
+        if value <= 75:
+            return "71-75"
+        if value <= 80:
+            return "76-80"
+        if value <= 90:
+            return "81-90"
+        return "91+"
+
+    @staticmethod
     def _group_stats(records: List[dict], key: str) -> List[dict]:
         groups = defaultdict(list)
         for row in records:
@@ -137,6 +156,8 @@ class TradeHistoryAnalyzer:
     @classmethod
     def build_history(cls, trades: Iterable[dict]) -> dict:
         records = cls.pair_closed_trades(trades)
+        for row in records:
+            row["score_bucket"] = cls._score_bucket(row.get("signal_score"))
         pnls = [row["net_pnl"] for row in records]
         gross_profit = sum(value for value in pnls if value > 0)
         gross_loss = abs(sum(value for value in pnls if value < 0))
@@ -158,12 +179,19 @@ class TradeHistoryAnalyzer:
             ) if count else 0.0,
         }
         digest_source = json.dumps(records, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        bucket_order = ["70(壓線)", "71-75", "76-80", "81-90", "91+", "未記錄"]
+        by_score_bucket = sorted(
+            cls._group_stats(records, "score_bucket"),
+            key=lambda item: bucket_order.index(item["score_bucket"])
+            if item["score_bucket"] in bucket_order else 999,
+        )
         return {
             "history_digest": hashlib.sha256(digest_source).hexdigest(),
             "overview": overview,
             "by_symbol": cls._group_stats(records, "symbol"),
             "by_side": cls._group_stats(records, "side"),
             "by_signal_score": cls._group_stats(records, "signal_score"),
+            "by_score_bucket": by_score_bucket,
             "by_exit_reason": cls._group_stats(records, "exit_reason"),
             "recent_closed_trades": records[-50:],
         }
@@ -194,6 +222,7 @@ class TradeHistoryAnalyzer:
             "by_symbol": history["by_symbol"],
             "by_side": history["by_side"],
             "by_signal_score": history["by_signal_score"],
+            "by_score_bucket": history["by_score_bucket"],
             "by_exit_reason": history["by_exit_reason"],
             "recent_closed_trades": history["recent_closed_trades"],
         }
@@ -214,6 +243,7 @@ class TradeHistoryAnalyzer:
                 "overview": history["overview"],
                 "by_symbol": history["by_symbol"],
                 "by_signal_score": history["by_signal_score"],
+                "by_score_bucket": history["by_score_bucket"],
                 "by_exit_reason": history["by_exit_reason"],
             },
             "error": ai_status.get("error", ""),
