@@ -87,6 +87,23 @@ class TradingEngine:
         coin = symbol.replace("/USDT", "")
         return f"{coin} {direction_text} {int(score)}分,{stage}"
 
+    def _symbol_recent_performance(self, symbol: str, side: str) -> dict:
+        """取這個幣種+方向最近 10 筆已平倉交易的勝率與平均損益，用來過濾歷史表現差的訊號。"""
+        recent = [
+            t for t in self.account.trades
+            if t.get("symbol") == symbol
+            and t.get("side") == side
+            and str(t.get("action", "")).startswith("CLOSE")
+        ][:10]
+        if not recent:
+            return {"trades": 0, "avg_pnl": 0.0, "win_rate": 1.0}
+        pnls = [float(t.get("pnl") or 0.0) for t in recent]
+        return {
+            "trades": len(pnls),
+            "avg_pnl": sum(pnls) / len(pnls),
+            "win_rate": sum(p > 0 for p in pnls) / len(pnls),
+        }
+
     def _log_signal_progress(
         self, entries: List[str], now_time: float, symbols_snapshot: List[str]
     ) -> None:
@@ -436,14 +453,19 @@ class TradingEngine:
                             symbol, sig, current_direction
                         ))
                         if sig["action"] in ["BUY", "SELL"]:
-                            # ── 訊號品質評分 ───────────────────────────────
-                            curr = df.iloc[-1]
-                            vol_ratio = (curr['volume'] / curr['vol_ma_20']) if curr.get('vol_ma_20', 0) > 0 else 1.0
-                            rsi_val = curr.get('rsi', None)
-                            rsi = float(rsi_val) if (rsi_val is not None and not pd.isna(rsi_val)) else 50.0
-                            rsi_score = rsi if sig["action"] == "BUY" else (100 - rsi)
-                            score = vol_ratio * 0.6 + (rsi_score / 100.0) * 0.4
-                            candidate_signals.append((score, symbol, sig, price, real_atr))
+                            # 歷史表現過濾：這個幣種+方向近期樣本數夠多、但勝率極低
+                            # 且平均虧錢，代表訊號在這個幣種上不可靠，本輪先跳過。
+                            perf = self._symbol_recent_performance(symbol, sig["side"])
+                            if perf["trades"] >= 3 and perf["win_rate"] <= 0.2 and perf["avg_pnl"] < 0:
+                                self.account.log(
+                                    f"🚫 [歷史表現過濾] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
+                                    f"勝率僅 {perf['win_rate']:.0%}、平均損益 {perf['avg_pnl']:+.3f}，本輪跳過",
+                                    "WARNING",
+                                )
+                            else:
+                                # 候選訊號排序分數直接沿用策略算好的細分評分（含品質加分），
+                                # 同一輪出現多個候選時，優先選分數最高的下單。
+                                candidate_signals.append((sig.get("score", 0), symbol, sig, price, real_atr))
 
                         elif sig["action"] == "WAIT_PULLBACK":
                             # ── 回調待命登記 ───────────────────────────────

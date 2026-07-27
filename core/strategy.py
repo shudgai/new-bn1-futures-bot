@@ -191,6 +191,28 @@ class SuperTrendKeltnerStrategy:
         else:
             score_details.append("Freshness_Fail")
 
+        # E. 品質細分加分（0~9分）：讓同樣達標 70/80 分的訊號能再分出優劣，
+        # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
+        # 三項各佔 0~3 分，數值越好加分越多，實測跟虧損大小/勝率相關：
+        quality_bonus = 0
+        # E1. 波動品質：ATR% 距離上限(MAX_ATR_PCT)越遠，代表波動越溫和
+        atr_headroom = max(0.0, 1.0 - (atr_pct / MAX_ATR_PCT)) if MAX_ATR_PCT > 0 else 0.0
+        quality_bonus += round(atr_headroom * 3)
+        # E2. RSI 強度：超出門檻越多代表動能越強（15分視為滿分）
+        if st_dir == 1:
+            rsi_margin = max(0.0, rsi - RSI_LONG_THRESHOLD)
+        else:
+            rsi_margin = max(0.0, RSI_SHORT_THRESHOLD - rsi)
+        quality_bonus += round(min(rsi_margin / 15.0, 1.0) * 3)
+        # E3. 量能強度：超過門檻越多代表確認度越高（多 1 倍視為滿分）
+        vol_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
+        vol_margin = max(0.0, vol_ratio - KELTNER_MIN_VOLUME_RATIO)
+        quality_bonus += round(min(vol_margin / 1.0, 1.0) * 3)
+
+        score += quality_bonus
+        if quality_bonus > 0:
+            score_details.append(f"Quality+{quality_bonus}")
+
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
         # 進場門檻：總分 >= MIN_SCORE_THRESHOLD (90 分)
