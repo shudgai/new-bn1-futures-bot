@@ -8,7 +8,7 @@ from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
-    MIN_SCORE_THRESHOLD, USE_TESTNET
+    MIN_SCORE_THRESHOLD, USE_TESTNET, POSITION_TREND_CHECK_INTERVAL_SEC,
 )
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
@@ -45,6 +45,11 @@ class TradingEngine:
         #                      "sl": float, "tp": float, "timestamp": float, "reason": str} }
         self.pending_pullbacks: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
+        # 持倉幣種的 SuperTrend 方向快取，用來偵測趨勢反轉、餵給移動止損當
+        # 候選收緊價（見 update_position_trends）。不用跟主迴圈一樣每 5 秒
+        # 重算，5 分K本身要 5 分鐘才會真的變化。
+        self.position_trend_cache: Dict[str, int] = {}
+        self.last_position_trend_check: float = 0.0
 
     @staticmethod
     def _format_signal_progress(
@@ -274,6 +279,25 @@ class TradingEngine:
             await asyncio.sleep(0.1)
         self.last_1h_cache_time = now
 
+    async def update_position_trends(self):
+        """定期（非每5秒）幫目前持倉的幣種重新計算 SuperTrend 方向，用來偵測
+        趨勢反轉。只覆蓋持倉，不是全部牌面，數量少、頻率也低，對 API 負擔
+        很小。結果只當成移動止損的候選收緊價之一，不會直接觸發平倉，避免
+        變成第二套跟移動止損互搶出場的邏輯。"""
+        now = time.time()
+        if now - self.last_position_trend_check < POSITION_TREND_CHECK_INTERVAL_SEC:
+            return
+        self.last_position_trend_check = now
+
+        held_symbols = list(self.account.positions.keys())
+        for symbol in held_symbols:
+            df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+            if df.empty or len(df) < 50:
+                continue
+            computed = self.strategy.compute_indicators(df)
+            self.position_trend_cache[symbol] = int(computed.iloc[-1]["st_direction"])
+            await asyncio.sleep(0.1)
+
     async def _main_loop(self):
         while self.is_running:
             try:
@@ -284,8 +308,9 @@ class TradingEngine:
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
                 # 2. 更新與執行持倉部位
+                await self.update_position_trends()
                 prev_positions = set(self.account.positions.keys())
-                await self.account.update_positions(self.tickers)
+                await self.account.update_positions(self.tickers, trend_directions=self.position_trend_cache)
                 closed_symbols = prev_positions - set(self.account.positions.keys())
                 for csym in closed_symbols:
                     self.cooldowns[csym] = time.time()

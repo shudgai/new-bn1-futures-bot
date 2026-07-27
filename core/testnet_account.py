@@ -17,6 +17,7 @@ from core.config import (
     ENTRY_GRACE_EXTRA_ATR,
     MAX_DAILY_LOSS_PCT,
     CHANDELIER_ATR_MULT,
+    REVERSAL_EXIT_ATR_MULT,
     get_leverage,
     get_signal_leverage,
 )
@@ -310,8 +311,11 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
 
-    async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
+    async def update_positions(
+        self, ticker_prices: Dict[str, float], trend_directions: Dict[str, int] = None
+    ) -> float:
         await self.refresh()
+        trend_directions = trend_directions or {}
 
         for symbol, pos in list(self.positions.items()):
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
@@ -392,20 +396,30 @@ class BinanceTestnetAccount:
             if old_sl > 0 and not is_flash:
                 atr_val = meta.get("atr") or entry_p * 0.015
                 chandelier_distance = CHANDELIER_ATR_MULT * atr_val
-                # 保本鎖 + ATR 移動停利疊加：一旦最高價（多單）/最低價（空單）
-                # 扣掉手續費+滑點緩衝後仍是淨賺，立刻把止損鎖到保本線——不用
-                # 等 ATR 移動停利先跟上，避免「剛轉正就拉回，結果連保本都保
-                # 不住」的空窗期。價格續創新高/新低時，ATR 移動停利接手繼續
-                # 收緊；兩者取較嚴格的一個，只會愈收愈緊，不會放寬。
+                # 三個候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
+                # 1) 保本鎖：一旦最高價（多單）/最低價（空單）扣掉手續費+滑點
+                #    緩衝後仍是淨賺，立刻鎖到保本線，不用等 ATR 移動停利先跟上。
+                # 2) ATR 移動停利：價格續創新高/新低時持續收緊。
+                # 3) 趨勢反轉：持倉幣種 SuperTrend 方向（已收盤K棒算，見
+                #    engine.update_position_trends）反轉時，收緊到「反轉當下
+                #    價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」——不是直接平倉，
+                #    只是多一個候選價，部位已經獲利、移動停利已經收得更緊時
+                #    這個候選會被比下去，不會跟移動停利互搶出場。主要補上
+                #    「還沒獲利、移動停利尚未生效」這段只能等固定止損的空窗期。
+                st_dir = trend_directions.get(symbol)
+                want_dir = 1 if side == "LONG" else -1
+                reversed_trend = st_dir is not None and st_dir != want_dir
                 if side == "LONG":
                     peak_price = meta["highest_price"]
                     breakeven_level = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
-                    candidates = [old_sl]
+                    candidates = [(old_sl, "原止損")]
                     if peak_price >= breakeven_level:
-                        candidates.append(breakeven_level)
+                        candidates.append((breakeven_level, "保本鎖"))
                     if peak_price > entry_p:
-                        candidates.append(peak_price - chandelier_distance)
-                    trail_sl = max(candidates)
+                        candidates.append((peak_price - chandelier_distance, "ATR移動停利"))
+                    if reversed_trend:
+                        candidates.append((curr_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
+                    trail_sl, trail_reason = max(candidates, key=lambda c: c[0])
                     # 移動幅度太小就不重新掛單：避免行情緩慢推進時每一輪主迴圈
                     # (5秒)都在 cancel/create 保護單，頻繁觸發 API 呼叫/速率限制。
                     # 保本鎖第一次啟動時通常是相對原本寬止損的一大步，不會被這個
@@ -424,19 +438,21 @@ class BinanceTestnetAccount:
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
                             self.log(
-                                f"📈 [ATR移動止利] {symbol} 最高價 {peak_price:.6f}，"
+                                f"📈 [{trail_reason}] {symbol} 最高價 {peak_price:.6f}，"
                                 f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}",
                                 "SUCCESS",
                             )
                 else:
                     trough_price = meta["lowest_price"]
                     breakeven_level = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
-                    candidates = [old_sl]
+                    candidates = [(old_sl, "原止損")]
                     if trough_price <= breakeven_level:
-                        candidates.append(breakeven_level)
+                        candidates.append((breakeven_level, "保本鎖"))
                     if trough_price < entry_p:
-                        candidates.append(trough_price + chandelier_distance)
-                    trail_sl = min(candidates)
+                        candidates.append((trough_price + chandelier_distance, "ATR移動停利"))
+                    if reversed_trend:
+                        candidates.append((curr_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
+                    trail_sl, trail_reason = min(candidates, key=lambda c: c[0])
                     if trail_sl < old_sl and (old_sl - trail_sl) >= atr_val * 0.05:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
@@ -449,7 +465,7 @@ class BinanceTestnetAccount:
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
                             self.log(
-                                f"📉 [ATR移動止利] {symbol} 最低價 {trough_price:.6f}，"
+                                f"📉 [{trail_reason}] {symbol} 最低價 {trough_price:.6f}，"
                                 f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}",
                                 "SUCCESS",
                             )

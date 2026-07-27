@@ -141,6 +141,19 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # 波動範圍做了縮放，不會像百分比那樣同一個數字卻對不同幣鬆緊不一。
 CHANDELIER_ATR_MULT = float(os.getenv("CHANDELIER_ATR_MULT", "0.5"))
 
+# --- 趨勢反轉收緊止損（不是獨立平倉路徑）---
+# 持倉中的幣種 SuperTrend 方向（用已收盤K棒算）反轉時，不會直接市價平倉
+# （那樣會變成第二套跟移動止損互搶的出場邏輯），而是算出一個「反轉當下
+# 價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」的候選止損價，丟進跟保本鎖、
+# ATR 移動停利同一套「取最嚴格候選」的邏輯裡一起比。部位還沒獲利、移動
+# 停利還沒發揮作用時，這個候選通常最緊，正好補上「虧損單只能等固定止損
+# 吃到底」的空窗期；一旦移動停利已經在運作（部位已經獲利、止損推得比它
+# 更緊），這個候選就會直接被比下去，不會互相打架。
+REVERSAL_EXIT_ATR_MULT = float(os.getenv("REVERSAL_EXIT_ATR_MULT", "0.5"))
+# 持倉的 SuperTrend 方向不用跟主迴圈一樣每 5 秒重算一次——5 分K本身
+# 每 5 分鐘才會真的變化，用較低頻率檢查即可，避免浪費 API 呼叫。
+POSITION_TREND_CHECK_INTERVAL_SEC = float(os.getenv("POSITION_TREND_CHECK_INTERVAL_SEC", "90"))
+
 # --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 為舊版百分比制移動止利，
 # 只剩 core/paper_account.py（未上線使用的模擬帳戶）在用，
 # BinanceTestnetAccount 的正式交易已改用上面的 ATR 移動停利。---
