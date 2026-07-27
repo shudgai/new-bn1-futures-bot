@@ -98,12 +98,19 @@ RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
-# --- 動態追蹤止利參數（百分比制） ---
-# TRAILING_TRIGGER_PCT: 無槓桿利潤達到此百分比時啟動移動止利。
-# 從 0.25% 拉高到 0.5%：實測均賺:均賠 = 1:2.42（賠得比賺得多），因為
-# 止損是固定距離吃到底，獲利卻一碰到 0.25% 就立刻鎖 60~75%，等於贏面
-# 還沒跑開就被鎖死出場。拉高觸發門檻讓獲利先跑出一段空間再開始鎖利，
-# 不動止損距離（避免重踩之前 1.2x ATR 太緊被雜訊掃出的舊坑）。
+# --- ATR 移動停利（chandelier exit，正式上線帳戶 BinanceTestnetAccount 使用）---
+# 實測 328 筆歷史交易發現，中位數「進場後最大有利幅度」只有 0.23%，
+# 47.5% 連 0.25% 都碰不到、只有 16.7% 能碰到 0.5%——固定百分比門檻對
+# 大部分幣種根本啟動不了，本來有一點小獲利的單子鎖不到利，最後反轉
+# 坐成不小的停損。改成「從進場後出現過的最高價（多單）/最低價（空單）
+# 回吐 CHANDELIER_ATR_MULT 倍 ATR」：不用等固定百分比，只要創新高就有
+# 新的止損保護，回吐幅度用該幣種自己的 ATR 衡量，天生就對每個幣的正常
+# 波動範圍做了縮放，不會像百分比那樣同一個數字卻對不同幣鬆緊不一。
+CHANDELIER_ATR_MULT = float(os.getenv("CHANDELIER_ATR_MULT", "0.5"))
+
+# --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 為舊版百分比制移動止利，
+# 只剩 core/paper_account.py（未上線使用的模擬帳戶）在用，
+# BinanceTestnetAccount 的正式交易已改用上面的 ATR 移動停利。---
 TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.005"))
 # TRAILING_MODE: 預設止利模式 (conservative / balanced / aggressive)
 #   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
