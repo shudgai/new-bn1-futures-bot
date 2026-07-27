@@ -47,10 +47,13 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "0"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
-# STOP_LOSS_MULTIPLIER 收緊至 1.2x ATR：對齊移動止利實際能鎖到的利潤幅度，
-# 避免「贏的時候賺很少、輸的時候虧到全額止損」的風報比不對稱問題。
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.2"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))  # TP 維持不變，RR 比改善為約 1:2.5
+# STOP_LOSS_MULTIPLIER 拉大回 2.0x ATR：1.2x 太緊，實測太容易被
+# Testnet 流動性較淺導致的 MARK_PRICE 瞬間偏離雜訊掃出（例如 SOL
+# 進場僅 38 秒就停損），給更多呼吸空間。
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
+# TAKE_PROFIT_MULTIPLIER 拉大到 4.0x：跟止損維持 1:2 風報比，同時
+# 讓移動止利有更多空間可以跑，不會太早撞到停利天花板。
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.0"))
 # MAX_BREAKOUT_DISTANCE 收緊至 0.1%：突破後價格仍在 KC 上軌 0.1% 以內才立即進場，否則強制等回調
 MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
