@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    API_TOKEN, get_leverage, get_signal_leverage,
+    API_TOKEN,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -34,7 +34,10 @@ def visible_tickers():
 
 def active_leverage_by_score():
     return {
-        str(score): {symbol: get_signal_leverage(symbol, score) for symbol in DEFAULT_SYMBOLS}
+        str(score): {
+            symbol: engine.symbol_rotation.get_dynamic_leverage(symbol, score)
+            for symbol in DEFAULT_SYMBOLS
+        }
         for score in (70, 80, 100)
     }
 
@@ -103,7 +106,10 @@ async def get_status():
         "realized_pnl": round(engine.account.realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
         "leverage": LEVERAGE,
-        "leverage_map": {symbol: get_leverage(symbol) for symbol in DEFAULT_SYMBOLS},
+        "leverage_map": {
+            symbol: engine.symbol_rotation.get_dynamic_leverage(symbol, 100)
+            for symbol in DEFAULT_SYMBOLS
+        },
         "leverage_by_score": active_leverage_by_score(),
         "signal_leverage_caps": {
             str(score): ("symbol_max" if cap is None else cap)
@@ -113,6 +119,11 @@ async def get_status():
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
         "symbol_rotation": engine.symbol_rotation.status(),
+        "volatility_stats": {
+            symbol: engine.symbol_rotation.volatility_stats[symbol]
+            for symbol in DEFAULT_SYMBOLS
+            if symbol in engine.symbol_rotation.volatility_stats
+        },
         "trade_ai_analysis": engine.symbol_rotation.trade_analysis.status(),
         "trade_ai_worker": {
             "mode": "event_driven",

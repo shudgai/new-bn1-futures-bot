@@ -376,6 +376,7 @@ class TradingEngine:
                             amount_usdt=pb_amount, sl=sl, tp=tp,
                             reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr,
                             signal_score=pb_info.get("score"),
+                            leverage=self.symbol_rotation.get_dynamic_leverage(pb_symbol, pb_info.get("score", 0)),
                         )
                         self.account.log(
                             f"🎯 [回調進場] {pb_symbol} {side} 回調至目標區 ({curr_p:.4f}) 二次確認通過，觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
@@ -587,7 +588,8 @@ class TradingEngine:
                             tp=sig["tp"],
                             reason=sig["reason"],
                             atr=sig.get("atr", real_atr),
-                            signal_score=sig.get("score")
+                            signal_score=sig.get("score"),
+                            leverage=self.symbol_rotation.get_dynamic_leverage(symbol, sig.get("score")),
                         )
 
                 await asyncio.sleep(5)

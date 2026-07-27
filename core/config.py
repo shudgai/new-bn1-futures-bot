@@ -35,6 +35,26 @@ def get_signal_leverage(symbol: str, score: int) -> int:
             return symbol_leverage if cap is None else min(symbol_leverage, cap)
     return 1
 
+# --- 依實測 ATR% 分級槓桿（取代上面 SYMBOL_LEVERAGE 用市值猜的假設）---
+# SYMBOL_LEVERAGE 是憑「市值大小」猜這個幣波動小/大，本身沒有實測依據。
+# core/symbol_rotation.py 現在會用已經在抓的 5m K 線順便記錄每個幣種的
+# 實際 ATR%，有資料後改用這裡的門檻決定槓桿上限：波動越小給越高槓桿，
+# 波動越大給越低槓桿，跟策略本身的 MIN_ATR_PCT(0.15%)~MAX_ATR_PCT(0.6%)
+# 可交易區間對齊。還沒累積到資料的幣種，get_dynamic_leverage() 會退回
+# 上面的 SYMBOL_LEVERAGE 靜態表，行為不變。
+ATR_LEVERAGE_TIERS = [
+    (0.002, 10),   # 實測 ATR% < 0.20% → 10x
+    (0.003, 8),    # < 0.30% → 8x
+    (0.0045, 6),   # < 0.45% → 6x
+    (0.006, 3),    # < 0.60%（MAX_ATR_PCT 邊界）→ 3x
+]
+
+def get_atr_based_leverage(atr_pct: float) -> int:
+    for threshold, lev in ATR_LEVERAGE_TIERS:
+        if atr_pct < threshold:
+            return lev
+    return 3
+
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")

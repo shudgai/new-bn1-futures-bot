@@ -30,6 +30,11 @@ from core.config import (
     TREND_FILTER_EMA_PERIOD,
     RAPID_MOVE_WINDOW,
     RAPID_MOVE_THRESHOLD,
+    MIN_ATR_PCT,
+    MAX_ATR_PCT,
+    get_atr_based_leverage,
+    get_signal_leverage,
+    SIGNAL_LEVERAGE_CAPS,
 )
 
 
@@ -52,6 +57,7 @@ class SymbolRotation:
         self.last_metrics: List[dict] = []
         self.direction_map: Dict[str, str] = {}
         self.last_reason = "尚未執行"
+        self.volatility_stats: Dict[str, dict] = {}
 
     @staticmethod
     def _closed_trade_stats(trades: Iterable[dict]) -> Dict[str, dict]:
@@ -252,6 +258,21 @@ class SymbolRotation:
                 quote_volume = float(ticker.get("quoteVolume") or 0.0)
                 change_pct = float(ticker.get("percentage") or 0.0)
 
+                # 波動率統計：用同一批已抓的 5m K 線算，不額外呼叫 API。
+                # 記錄每個幣「正常會漲跌多少」，用來取代原本用市值猜的固定
+                # 槓桿表，也餵給下面的候選評分（見 volatility_quality）。
+                atr_pct = atr / price if price > 0 else 0.0
+                bar_returns_pct = df["close"].pct_change().dropna() * 100.0
+                up_moves = bar_returns_pct[bar_returns_pct > 0]
+                down_moves = bar_returns_pct[bar_returns_pct < 0]
+                self.volatility_stats[symbol] = {
+                    "atr_pct": round(atr_pct * 100.0, 4),
+                    "avg_up_pct": round(up_moves.mean(), 4) if len(up_moves) else 0.0,
+                    "avg_down_pct": round(abs(down_moves.mean()), 4) if len(down_moves) else 0.0,
+                    "change_24h_pct": round(change_pct, 3),
+                    "updated_at": time.time(),
+                }
+
                 for direction in ("LONG", "SHORT"):
                     is_long = direction == "LONG"
                     trend_aligned = price >= ema_1h if is_long else price <= ema_1h
@@ -266,6 +287,17 @@ class SymbolRotation:
                     )
                     directional_change = change_pct if is_long else -change_pct
                     movement_score = max(0.0, 1.0 - abs(directional_change - 3.0) / 7.0)
+                    # 波動品質：用實測 ATR% 是否落在策略實際會用到的可交易區間
+                    # （MIN_ATR_PCT ~ MAX_ATR_PCT）中段來評分，跟 movement_score
+                    # （看瞬間 24h 漲跌）是兩個角度——這裡看的是這個幣種「持續性的
+                    # 5m 波動」跟策略實際下單門檻合不合拍，同一套公式跟
+                    # strategy.py 的 quality_bonus 一致，不重新發明。
+                    atr_mid = (MIN_ATR_PCT + MAX_ATR_PCT) / 2.0
+                    atr_half_range = (MAX_ATR_PCT - MIN_ATR_PCT) / 2.0
+                    volatility_quality = (
+                        max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
+                        if atr_half_range > 0 else 0.0
+                    )
                     stat = history.get(
                         (symbol, direction),
                         {"trades": 0, "avg_pnl": 0.0, "win_rate": 0.5, "stop_rate": 0.0},
@@ -289,6 +321,7 @@ class SymbolRotation:
                         + liquidity * 15.0
                         + history_score * 10.0
                         + movement_score * 5.0
+                        + volatility_quality * 5.0
                     ) - overheat_penalty
                     results.append({
                         "symbol": symbol,
@@ -530,6 +563,7 @@ class SymbolRotation:
             "metrics": self.last_metrics,
             "direction_map": self.direction_map,
             "trade_ai_analysis": self.trade_analysis.status(),
+            "volatility_stats": self.volatility_stats,
         }
         with open(SELECTION_FILE, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -543,4 +577,20 @@ class SymbolRotation:
             "top_metrics": self.last_metrics[:12],
             "direction_map": self.direction_map,
             "trade_ai_analysis": self.trade_analysis.status(),
+            "volatility_stats": self.volatility_stats,
         }
+
+    def get_dynamic_leverage(self, symbol: str, score) -> int:
+        """依實測 ATR% 決定槓桿上限，取代原本用市值猜的 SYMBOL_LEVERAGE；
+        該幣種還沒有實測資料時（例如剛啟動、還沒跑過第一次輪替），
+        退回原本的靜態表，行為不變。"""
+        stats = self.volatility_stats.get(symbol)
+        if not stats or not stats.get("atr_pct"):
+            return get_signal_leverage(symbol, score)
+        atr_pct = stats["atr_pct"] / 100.0
+        symbol_cap = get_atr_based_leverage(atr_pct)
+        score_value = score or 0
+        for threshold, cap in SIGNAL_LEVERAGE_CAPS:
+            if score_value >= threshold:
+                return symbol_cap if cap is None else min(symbol_cap, cap)
+        return 1

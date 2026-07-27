@@ -225,6 +225,41 @@
                     </table>
                 </div>
 
+                <!-- VOLATILITY STATS TABLE -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>📈 幣種波動率統計 (每小時輪替時更新)</span>
+                        <span style="font-size:11px; color:var(--muted)">實測 5m K 線，非市值猜測</span>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>幣種</th>
+                                <th>ATR%</th>
+                                <th>平均漲幅</th>
+                                <th>平均跌幅</th>
+                                <th>24h 漲跌</th>
+                                <th>實際槓桿上限</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="row in sortedVolatility" :key="row.symbol">
+                                <td><b>{{ row.name }}</b></td>
+                                <td>{{ row.atr_pct.toFixed(3) }}%</td>
+                                <td class="up">+{{ row.avg_up_pct.toFixed(3) }}%</td>
+                                <td class="down">-{{ row.avg_down_pct.toFixed(3) }}%</td>
+                                <td :class="row.change_24h_pct > 0 ? 'up' : row.change_24h_pct < 0 ? 'down' : ''">
+                                    {{ row.change_24h_pct > 0 ? '+' : '' }}{{ row.change_24h_pct.toFixed(2) }}%
+                                </td>
+                                <td>{{ row.leverage }}x</td>
+                            </tr>
+                            <tr v-if="sortedVolatility.length === 0">
+                                <td colspan="6" style="text-align:center; color:var(--muted); padding:16px;">尚未累積波動率資料，等下一次幣種輪替後顯示</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
                 <!-- TRADE HISTORY TABLE -->
                 <div class="card">
                     <div class="card-title">
@@ -337,6 +372,7 @@
                         leverage_by_score: {},
                         symbols: [],
                         symbol_directions: {},
+                        volatility_stats: {},
                         tickers: {},
                         positions: [],
                         trades: [],
@@ -372,6 +408,20 @@
                             direction: (this.bot.symbol_directions || {})[sym] || ''
                         }))
                         .filter(item => item.price !== null && item.price !== undefined)
+                        .sort((a, b) => a.name.localeCompare(b.name));
+                },
+                sortedVolatility() {
+                    const stats = this.bot.volatility_stats || {};
+                    return Object.keys(stats)
+                        .map(sym => ({
+                            symbol: sym,
+                            name: sym.replace('/USDT', ''),
+                            atr_pct: stats[sym].atr_pct || 0,
+                            avg_up_pct: stats[sym].avg_up_pct || 0,
+                            avg_down_pct: stats[sym].avg_down_pct || 0,
+                            change_24h_pct: stats[sym].change_24h_pct || 0,
+                            leverage: this.getLeverage(sym)
+                        }))
                         .sort((a, b) => a.name.localeCompare(b.name));
                 },
                 leverageRangeText() {
