@@ -225,43 +225,6 @@
                     </table>
                 </div>
 
-                <!-- VOLATILITY STATS TABLE -->
-                <div class="card">
-                    <div class="card-title collapsible" @click="volatilityExpanded = !volatilityExpanded">
-                        <span><span class="collapse-arrow" :class="{ open: volatilityExpanded }">▶</span> 📈 幣種波動率統計 (每小時輪替時更新)</span>
-                        <span style="font-size:11px; color:var(--muted)">幣種本身市場價格，跟持倉損益無關</span>
-                    </div>
-                    <table v-show="volatilityExpanded">
-                        <thead>
-                            <tr>
-                                <th>幣種</th>
-                                <th>ATR%</th>
-                                <th>平均單日漲幅<br><span style="font-weight:400; color:var(--muted)">(當日開盤→最高)</span></th>
-                                <th>平均單日跌幅<br><span style="font-weight:400; color:var(--muted)">(當日開盤→最低)</span></th>
-                                <th>樣本天數</th>
-                                <th>24h 漲跌</th>
-                                <th>實際槓桿上限</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="row in sortedVolatility" :key="row.symbol">
-                                <td><b>{{ row.name }}</b></td>
-                                <td>{{ row.atr_pct.toFixed(3) }}%</td>
-                                <td class="up">+{{ row.avg_daily_up_pct.toFixed(2) }}%</td>
-                                <td class="down">-{{ row.avg_daily_down_pct.toFixed(2) }}%</td>
-                                <td style="color:var(--muted)">{{ row.sample_days }} 天</td>
-                                <td :class="row.change_24h_pct > 0 ? 'up' : row.change_24h_pct < 0 ? 'down' : ''">
-                                    {{ row.change_24h_pct > 0 ? '+' : '' }}{{ row.change_24h_pct.toFixed(2) }}%
-                                </td>
-                                <td>{{ row.leverage }}x</td>
-                            </tr>
-                            <tr v-if="sortedVolatility.length === 0">
-                                <td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">尚未累積波動率資料，等下一次幣種輪替後顯示</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-
                 <!-- TRADE HISTORY TABLE -->
                 <div class="card">
                     <div class="card-title">
@@ -302,6 +265,43 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+
+                <!-- VOLATILITY STATS TABLE -->
+                <div class="card">
+                    <div class="card-title collapsible" @click="volatilityExpanded = !volatilityExpanded">
+                        <span><span class="collapse-arrow" :class="{ open: volatilityExpanded }">▶</span> 📈 幣種波動率統計 (每小時輪替時更新)</span>
+                        <span style="font-size:11px; color:var(--muted)">幣種本身市場價格，跟持倉損益無關</span>
+                    </div>
+                    <table v-show="volatilityExpanded">
+                        <thead>
+                            <tr>
+                                <th>幣種</th>
+                                <th>ATR%</th>
+                                <th>平均單日漲幅<br><span style="font-weight:400; color:var(--muted)">(當日開盤→最高)</span></th>
+                                <th>平均單日跌幅<br><span style="font-weight:400; color:var(--muted)">(當日開盤→最低)</span></th>
+                                <th>樣本天數</th>
+                                <th>24h 漲跌</th>
+                                <th>槓桿<br><span style="font-weight:400; color:var(--muted)">(依當下訊號分數)</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="row in sortedVolatility" :key="row.symbol">
+                                <td><b>{{ row.name }}</b></td>
+                                <td>{{ row.atr_pct.toFixed(3) }}%</td>
+                                <td class="up">+{{ row.avg_daily_up_pct.toFixed(2) }}%</td>
+                                <td class="down">-{{ row.avg_daily_down_pct.toFixed(2) }}%</td>
+                                <td style="color:var(--muted)">{{ row.sample_days }} 天</td>
+                                <td :class="row.change_24h_pct > 0 ? 'up' : row.change_24h_pct < 0 ? 'down' : ''">
+                                    {{ row.change_24h_pct > 0 ? '+' : '' }}{{ row.change_24h_pct.toFixed(2) }}%
+                                </td>
+                                <td>{{ row.leverageRangeText }}</td>
+                            </tr>
+                            <tr v-if="sortedVolatility.length === 0">
+                                <td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">尚未累積波動率資料，等下一次幣種輪替後顯示</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -415,17 +415,29 @@
                 },
                 sortedVolatility() {
                     const stats = this.bot.volatility_stats || {};
+                    const byScore = this.bot.leverage_by_score || {};
                     return Object.keys(stats)
-                        .map(sym => ({
-                            symbol: sym,
-                            name: sym.replace('/USDT', ''),
-                            atr_pct: stats[sym].atr_pct || 0,
-                            avg_daily_up_pct: stats[sym].avg_daily_up_pct || 0,
-                            avg_daily_down_pct: stats[sym].avg_daily_down_pct || 0,
-                            sample_days: stats[sym].sample_days || 0,
-                            change_24h_pct: stats[sym].change_24h_pct || 0,
-                            leverage: this.getLeverage(sym)
-                        }))
+                        .map(sym => {
+                            // 槓桿實際上會跟著這一次訊號的分數走（分數不到門檻，
+                            // 就算是波動很小的幣如 BTC 也不會給到上限倍數），
+                            // 這裡顯示 70~100 分對應的槓桿範圍，而不是單一個
+                            // 「上限」數字，避免誤會成「這個幣現在就是 Nx」。
+                            const lev70 = (byScore['70'] || {})[sym];
+                            const lev100 = (byScore['100'] || {})[sym];
+                            const leverageRangeText = (lev70 === undefined || lev100 === undefined)
+                                ? '-'
+                                : (lev70 === lev100 ? lev70 + 'x' : lev70 + 'x～' + lev100 + 'x');
+                            return {
+                                symbol: sym,
+                                name: sym.replace('/USDT', ''),
+                                atr_pct: stats[sym].atr_pct || 0,
+                                avg_daily_up_pct: stats[sym].avg_daily_up_pct || 0,
+                                avg_daily_down_pct: stats[sym].avg_daily_down_pct || 0,
+                                sample_days: stats[sym].sample_days || 0,
+                                change_24h_pct: stats[sym].change_24h_pct || 0,
+                                leverageRangeText
+                            };
+                        })
                         .sort((a, b) => a.name.localeCompare(b.name));
                 },
                 leverageRangeText() {
