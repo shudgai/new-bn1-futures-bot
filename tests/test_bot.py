@@ -351,6 +351,7 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
 def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MAX_CHANGES", 12)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MIN_SCORE_GAP", 0.0)
     current = [f"OLD{i}/USDT" for i in range(12)]
@@ -384,6 +385,7 @@ def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch
 def test_directional_rotation_limits_each_scan_to_three_changes(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MAX_CHANGES", 3)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_MIN_SCORE_GAP", 5.0)
     current = [f"OLD{index}/USDT" for index in range(12)]

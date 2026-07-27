@@ -99,8 +99,12 @@ TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
 # --- 動態追蹤止利參數（百分比制） ---
-# TRAILING_TRIGGER_PCT: 無槓桿利潤達到此百分比時啟動移動止利（0.25%）
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
+# TRAILING_TRIGGER_PCT: 無槓桿利潤達到此百分比時啟動移動止利。
+# 從 0.25% 拉高到 0.5%：實測均賺:均賠 = 1:2.42（賠得比賺得多），因為
+# 止損是固定距離吃到底，獲利卻一碰到 0.25% 就立刻鎖 60~75%，等於贏面
+# 還沒跑開就被鎖死出場。拉高觸發門檻讓獲利先跑出一段空間再開始鎖利，
+# 不動止損距離（避免重踩之前 1.2x ATR 太緊被雜訊掃出的舊坑）。
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.005"))
 # TRAILING_MODE: 預設止利模式 (conservative / balanced / aggressive)
 #   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
 #   balanced:     回吐 30% 平倉（70%）— 平衡鎖利與空間
@@ -246,9 +250,12 @@ def get_position_multiplier(score: int) -> float:
     return 0.0
 
 # --- 動態幣種輪替與本機 AI 輔助 ---
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "12"))
+# 從 12 幣擴大到 16 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會
+# 出現達標訊號），而不是放寬同一批幣的評分門檻（那樣會直接增加假突破機率）。
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "16"))
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "3600"))
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "6"))
+# 跟著 SYMBOL_ROTATION_COUNT 等比放大（12→6 是 1:2），維持多空對稱席次。
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "8"))
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "60"))
 SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "40"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "20000000"))
@@ -273,18 +280,25 @@ SYMBOL_CANDIDATE_POOL = [
 
 # 可新開倉牌面：正績效幣種搭配高流動性主流合約，共 12 個候選。
 # TAO 與近期反覆停損幣種不列入；已退出牌面的既有持倉仍會被管理。
+# 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
+# SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（16）覆寫，這裡先湊到
+# 16 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
 DEFAULT_SYMBOLS = [
     "ADA/USDT",
+    "ARB/USDT",
     "AVAX/USDT",
     "BCH/USDT",
     "BNB/USDT",
     "BTC/USDT",
     "DOGE/USDT",
+    "DOT/USDT",
+    "FIL/USDT",
     "LINK/USDT",
     "LTC/USDT",
     "SOL/USDT",
     "SUI/USDT",
     "TRX/USDT",
+    "XLM/USDT",
     "XRP/USDT",
 ]
 
