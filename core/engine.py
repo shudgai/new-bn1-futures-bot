@@ -453,19 +453,30 @@ class TradingEngine:
                             symbol, sig, current_direction
                         ))
                         if sig["action"] in ["BUY", "SELL"]:
-                            # 歷史表現過濾：這個幣種+方向近期樣本數夠多、但勝率極低
-                            # 且平均虧錢，代表訊號在這個幣種上不可靠，本輪先跳過。
+                            # 歷史勝率乘數化：不再是「一票否決」，改成用這個幣種+方向
+                            # 近期的勝率/平均損益算一個係數，直接修正分數本身——讓歷史
+                            # 數據跟即時訊號合併成同一套邏輯，分數越貼近真實期望值。
+                            # 樣本數 < 3 時不修正（資料不夠可信），係數維持 1.0。
                             perf = self._symbol_recent_performance(symbol, sig["side"])
-                            if perf["trades"] >= 3 and perf["win_rate"] <= 0.2 and perf["avg_pnl"] < 0:
-                                self.account.log(
-                                    f"🚫 [歷史表現過濾] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
-                                    f"勝率僅 {perf['win_rate']:.0%}、平均損益 {perf['avg_pnl']:+.3f}，本輪跳過",
-                                    "WARNING",
-                                )
+                            if perf["trades"] >= 3:
+                                # 勝率 30% → 約 0.6x；勝率 80% → 約 1.0x（封頂），樣本不足外一律套用。
+                                win_rate_mult = max(0.4, min(1.0, 0.3 + perf["win_rate"]))
+                                pnl_mult = 1.0 if perf["avg_pnl"] >= 0 else 0.85
+                                history_mult = win_rate_mult * pnl_mult
                             else:
-                                # 候選訊號排序分數直接沿用策略算好的細分評分（含品質加分），
-                                # 同一輪出現多個候選時，優先選分數最高的下單。
-                                candidate_signals.append((sig.get("score", 0), symbol, sig, price, real_atr))
+                                history_mult = 1.0
+                            adjusted_score = round(sig.get("score", 0) * history_mult)
+                            if history_mult < 0.99:
+                                self.account.log(
+                                    f"📉 [歷史係數] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
+                                    f"勝率 {perf['win_rate']:.0%}、平均損益 {perf['avg_pnl']:+.3f} → "
+                                    f"係數 x{history_mult:.2f}，分數 {sig.get('score', 0)}→{adjusted_score}",
+                                    "INFO",
+                                )
+                            sig["score"] = adjusted_score
+                            # 候選訊號排序分數直接沿用修正後的評分，同一輪出現多個候選時
+                            # 優先選分數最高的下單，倉位大小/槓桿也會跟著這個分數走。
+                            candidate_signals.append((adjusted_score, symbol, sig, price, real_atr))
 
                         elif sig["action"] == "WAIT_PULLBACK":
                             # ── 回調待命登記 ───────────────────────────────
