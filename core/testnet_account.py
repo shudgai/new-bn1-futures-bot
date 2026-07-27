@@ -16,6 +16,8 @@ from core.config import (
     PARTIAL_CLOSE_THRESHOLDS,
     FLASH_MOVE_WINDOW_SEC,
     FLASH_MOVE_THRESHOLD_PCT,
+    ENTRY_GRACE_SECONDS,
+    ENTRY_GRACE_EXTRA_ATR,
     get_leverage,
     get_signal_leverage,
     get_trailing_pullback_pct,
@@ -307,6 +309,24 @@ class BinanceTestnetAccount:
                     f"（原止損 {old_sl} 維持不變）",
                     "WARNING",
                 )
+
+            # 進場緩衝期結束：把剛進場時放寬的止損收緊回原本策略設定的正常距離。
+            # 若急殺正在發生就先不收緊（避免在最劇烈的當下把止損調緊），
+            # 若移動止利已經把止損推得比目標還緊，直接清掉標記、不需要再處理。
+            if "target_sl" in meta and now_ts >= meta.get("grace_until", 0) and not is_flash:
+                target_sl = meta["target_sl"]
+                already_tighter = (
+                    (side == "LONG" and old_sl >= target_sl)
+                    or (side == "SHORT" and 0 < old_sl <= target_sl)
+                )
+                if already_tighter:
+                    meta.pop("target_sl", None)
+                else:
+                    new_sl = float(self.exchange.price_to_precision(symbol, target_sl))
+                    await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
+                    meta.pop("target_sl", None)
+                    self.log(f"⏱️ [緩衝期結束] {symbol} 止損收緊回正常距離 {new_sl}", "INFO")
+                    old_sl = pos.get("sl", old_sl)
 
             if peak >= TRAILING_TRIGGER_PCT and old_sl > 0 and not is_flash:
                 pullback = get_trailing_pullback_pct(peak, meta.get("peak_profit_updated_at", time.time()))
@@ -635,9 +655,18 @@ class BinanceTestnetAccount:
             )
             sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp))
+            atr_value = atr if atr > 0 else execution_price * 0.015
+            # 進場緩衝期：剛進場的 ENTRY_GRACE_SECONDS 秒內，實際掛在交易所的
+            # 止損先額外放寬 ENTRY_GRACE_EXTRA_ATR 倍 ATR，避開剛進場時最容易
+            # 發生的 MARK_PRICE 瞬間偏離雜訊；緩衝期一過會自動收緊回 sl_price。
+            grace_buffer = atr_value * ENTRY_GRACE_EXTRA_ATR
+            grace_sl = (
+                sl_price - grace_buffer if side == "LONG" else sl_price + grace_buffer
+            )
+            grace_sl_price = float(self.exchange.price_to_precision(symbol, grace_sl))
             try:
                 await self._create_protection_order(
-                    symbol, close_side, "STOP_MARKET", qty, sl_price
+                    symbol, close_side, "STOP_MARKET", qty, grace_sl_price
                 )
                 await self._create_protection_order(
                     symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
@@ -649,9 +678,11 @@ class BinanceTestnetAccount:
 
             fee = qty * execution_price * TAKER_FEE_RATE
             meta = {
-                "sl": sl_price,
+                "sl": grace_sl_price,
+                "target_sl": sl_price,
+                "grace_until": time.time() + ENTRY_GRACE_SECONDS,
                 "tp": tp_price,
-                "atr": atr if atr > 0 else execution_price * 0.015,
+                "atr": atr_value,
                 "open_timestamp": time.time(),
                 "open_time": get_taipei_now_str(),
                 "reason": reason,
@@ -685,7 +716,8 @@ class BinanceTestnetAccount:
             await self.refresh(force=True)
             self.log(
                 f"🚀 Binance Testnet 開倉成功 [{side}] {symbol} @ "
-                f"{execution_price:.6f} ({leverage}x，SL={sl_price}, TP={tp_price})",
+                f"{execution_price:.6f} ({leverage}x，SL={sl_price}, TP={tp_price}，"
+                f"{ENTRY_GRACE_SECONDS:.0f}秒緩衝期內實際止損暫寬至 {grace_sl_price})",
                 "SUCCESS",
             )
             return True

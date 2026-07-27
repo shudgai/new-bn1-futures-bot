@@ -204,6 +204,17 @@ FLASH_MOVE_WINDOW_SEC = float(os.getenv("FLASH_MOVE_WINDOW_SEC", "60"))
 # FLASH_MOVE_THRESHOLD_PCT：窗口內逆勢波動超過此比例，視為急殺/急拉
 FLASH_MOVE_THRESHOLD_PCT = float(os.getenv("FLASH_MOVE_THRESHOLD_PCT", "0.015"))
 
+# --- 進場緩衝期：剛進場的短時間內，止損暫時放寬，過了就收緊回正常距離 ---
+# 實測 SOL/USDT 一筆進場僅 38 秒就被止損掃出，但畫面追蹤的價格根本沒跌到
+# 止損價——保護單觸發用的是 MARK_PRICE，在流動性較淺的環境下容易跟顯示
+# 的成交價瞬間出現落差，剛進場時特別容易被這種雜訊掃到。
+# 給進場後 ENTRY_GRACE_SECONDS 秒的緩衝，止損距離額外加寬
+# ENTRY_GRACE_EXTRA_ATR 倍 ATR，緩衝期一過就收緊回原本設定的正常距離。
+# 注意：緩衝期內止損變寬，代表如果是真的走勢不對（不是雜訊），
+# 虧損上限會比正常大，是用多承擔一點初期風險換取不被雜訊洗出場。
+ENTRY_GRACE_SECONDS = float(os.getenv("ENTRY_GRACE_SECONDS", "60"))
+ENTRY_GRACE_EXTRA_ATR = float(os.getenv("ENTRY_GRACE_EXTRA_ATR", "0.5"))
+
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
 # 給予更高倍數的下單金額（以 TRADE_AMOUNT_USDT 為基準，而非總資金比例，避免部位隨餘額增長滾雪球）。
