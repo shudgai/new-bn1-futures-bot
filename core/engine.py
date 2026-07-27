@@ -7,7 +7,8 @@ from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
-    BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT
+    BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
+    MIN_SCORE_THRESHOLD
 )
 from core.strategy import SuperTrendKeltnerStrategy
 from core.testnet_account import BinanceTestnetAccount
@@ -465,7 +466,13 @@ class TradingEngine:
                                 history_mult = win_rate_mult * pnl_mult
                             else:
                                 history_mult = 1.0
-                            adjusted_score = round(sig.get("score", 0) * history_mult)
+                            # 分數本來就已經通過 MIN_SCORE_THRESHOLD 才准開倉，乘數只用來
+                            # 反映「這個訊號在同批候選裡排序該往後、倉位該縮小」，不應該把
+                            # 一個本來合格的訊號懲罰到連最低分級的槓桿/倉位都拿不到。
+                            adjusted_score = max(
+                                MIN_SCORE_THRESHOLD,
+                                round(sig.get("score", 0) * history_mult),
+                            )
                             if history_mult < 0.99:
                                 self.account.log(
                                     f"📉 [歷史係數] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
