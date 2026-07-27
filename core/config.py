@@ -56,8 +56,9 @@ MAX_BREAKOUT_DISTANCE = float(os.getenv("MAX_BREAKOUT_DISTANCE", "0.001"))
 
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
-# 降至 70 分 = 任 3 項條件通過即可進場（3 項組合皆 >=70），提高交易頻率同時仍過濾掉太弱的訊號。
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "70"))
+# 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
+# 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間（延長至 25 分鐘，給價格充分回踩 KC 的時間）
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "25"))
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
