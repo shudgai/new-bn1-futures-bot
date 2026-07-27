@@ -16,11 +16,13 @@ from core.config import (
     FLASH_MOVE_THRESHOLD_PCT,
     ENTRY_GRACE_SECONDS,
     ENTRY_GRACE_EXTRA_ATR,
+    MAX_DAILY_LOSS_PCT,
     get_leverage,
     get_signal_leverage,
     get_trailing_pullback_pct,
 )
 from core.strategy import compute_sl_tp_distance
+from core.notifier import notify_email
 
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -63,6 +65,10 @@ class BinanceTestnetAccount:
         self._orphan_protection_attempted: set = set()
         self._price_history: Dict[str, List[tuple]] = {}
         self._last_flash_log: Dict[str, float] = {}
+        self.daily_date: Optional[str] = None
+        self.daily_start_balance: float = 0.0
+        self.daily_start_realized_pnl: float = 0.0
+        self.daily_halt_logged: bool = False
         self._load_state()
 
     @staticmethod
@@ -88,6 +94,10 @@ class BinanceTestnetAccount:
             self.trades = data.get("trades", [])
             self.logs = data.get("logs", [])
             self.position_meta = data.get("position_meta", {})
+            self.daily_date = data.get("daily_date")
+            self.daily_start_balance = float(data.get("daily_start_balance", 0.0))
+            self.daily_start_realized_pnl = float(data.get("daily_start_realized_pnl", 0.0))
+            self.daily_halt_logged = bool(data.get("daily_halt_logged", False))
         except Exception:
             pass
 
@@ -99,6 +109,10 @@ class BinanceTestnetAccount:
             "trades": self.trades,
             "logs": self.logs[-200:],
             "position_meta": self.position_meta,
+            "daily_date": self.daily_date,
+            "daily_start_balance": self.daily_start_balance,
+            "daily_start_realized_pnl": self.daily_start_realized_pnl,
+            "daily_halt_logged": self.daily_halt_logged,
         }
         with open(STATE_FILE, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -111,6 +125,35 @@ class BinanceTestnetAccount:
             "level": level,
         })
         self.save_state()
+        if level == "DANGER":
+            notify_email(f"[Binance Bot] {message}")
+
+    def _check_daily_reset(self) -> None:
+        """台北時區跨日就重置今日虧損熔斷的計算基準。"""
+        today = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")
+        if self.daily_date != today:
+            self.daily_date = today
+            self.daily_start_balance = self.balance
+            self.daily_start_realized_pnl = self.realized_pnl
+            self.daily_halt_logged = False
+
+    def daily_loss_limit_hit(self) -> tuple:
+        """回傳 (是否觸發熔斷, 今日虧損百分比)。觸發時只暫停開新倉，
+        既有持倉的止損/止利不受影響，隔天（台北時區）自動重置。"""
+        if self.daily_start_balance <= 0:
+            return False, 0.0
+        daily_pnl = self.realized_pnl - self.daily_start_realized_pnl
+        loss_pct = max(0.0, -daily_pnl / self.daily_start_balance * 100.0)
+        hit = loss_pct >= MAX_DAILY_LOSS_PCT
+        if hit and not self.daily_halt_logged:
+            self.daily_halt_logged = True
+            self.log(
+                f"🛑 [每日熔斷] 今日已實現虧損 {loss_pct:.1f}%，達到門檻 "
+                f"{MAX_DAILY_LOSS_PCT:.0f}%，暫停開新倉（既有持倉仍正常管理），"
+                f"明日（台北時區）自動重置",
+                "DANGER",
+            )
+        return hit, loss_pct
 
     def get_available_balance(self) -> float:
         return max(0.0, self.available_balance)
@@ -132,6 +175,7 @@ class BinanceTestnetAccount:
         usdt = next((row for row in balance_rows if row.get("asset") == "USDT"), {})
         self.balance = float(usdt.get("balance") or 0.0)
         self.available_balance = float(usdt.get("availableBalance") or self.balance)
+        self._check_daily_reset()
 
         raw_positions = await self.exchange.fapiPrivateV2GetPositionRisk()
         active = {}
@@ -329,17 +373,27 @@ class BinanceTestnetAccount:
 
             if peak >= TRAILING_TRIGGER_PCT and old_sl > 0 and not is_flash:
                 pullback = get_trailing_pullback_pct(peak, meta.get("peak_profit_updated_at", time.time()))
+                atr_val = meta.get("atr") or entry_p * 0.015
                 if side == "LONG":
                     trail_sl = entry_p * (1.0 + peak * pullback)
                     npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = max(trail_sl, npg_floor)
                     if trail_sl > old_sl:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
+                        # 移動止盈：止損還在跟著新高收緊，代表趨勢仍在走，固定止盈價
+                        # 不該提前把單子封頂——用當下價格重新算 ATR 距離往外推，
+                        # 只會往外擴不會往內縮，出場主要交給移動止損判斷趨勢是否反轉。
+                        _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
+                        new_tp = max(curr_p + tp_distance, meta.get("tp") or 0.0)
+                        new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
+                        await self._replace_stop_order(
+                            symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
+                        )
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
                             self.log(
-                                f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
+                                f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}"
+                                f"（回吐 {1-pullback:.0%} 平倉），止盈同步推至 {new_tp_price}",
                                 "SUCCESS",
                             )
                 else:
@@ -348,11 +402,18 @@ class BinanceTestnetAccount:
                     trail_sl = min(trail_sl, npg_ceiling)
                     if trail_sl < old_sl:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
+                        _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
+                        current_tp = meta.get("tp") or float("inf")
+                        new_tp = min(curr_p - tp_distance, current_tp)
+                        new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
+                        await self._replace_stop_order(
+                            symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
+                        )
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
                             self.log(
-                                f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}（回吐 {1-pullback:.0%} 平倉）",
+                                f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {peak:.4%}，止利線推至 {new_sl}"
+                                f"（回吐 {1-pullback:.0%} 平倉），止盈同步推至 {new_tp_price}",
                                 "SUCCESS",
                             )
 
@@ -390,7 +451,8 @@ class BinanceTestnetAccount:
         return adverse_move >= FLASH_MOVE_THRESHOLD_PCT
 
     async def _replace_stop_order(
-        self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict, pos: dict
+        self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict, pos: dict,
+        new_tp: float = None,
     ) -> None:
         # 避免同一 symbol 的移動止利在 refresh() 節流窗口內被多個呼叫者
         # (/api/prices、/api/status、主循環) 重複觸發，造成保護單反覆 cancel/recreate。
@@ -416,6 +478,8 @@ class BinanceTestnetAccount:
                 await self.close_position(symbol, new_sl, "移動止利保護單被拒，市價平倉")
                 return
             meta["sl"] = new_sl
+            if new_tp and new_tp > 0:
+                meta["tp"] = new_tp
             self.position_meta[symbol] = meta
             tp = meta.get("tp") or 0.0
             if tp > 0:

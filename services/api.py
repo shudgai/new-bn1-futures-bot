@@ -3,13 +3,13 @@ import csv
 import io
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    get_leverage, get_signal_leverage,
+    API_TOKEN, get_leverage, get_signal_leverage,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -48,8 +48,18 @@ class ManualOrderRequest(BaseModel):
 class ManualCloseRequest(BaseModel):
     symbol: str
 
+def require_auth(authorization: str = Header(default="")) -> None:
+    """異動端點（開倉/平倉/開關機器人）的身份驗證。
+    未設定 API_TOKEN 時（本機開發階段）不強制驗證，只在啟動時印出警告。"""
+    if not API_TOKEN:
+        return
+    if authorization != f"Bearer {API_TOKEN}":
+        raise HTTPException(status_code=401, detail="未授權：缺少或錯誤的 Authorization Header")
+
 @app.on_event("startup")
 async def startup_event():
+    if not API_TOKEN:
+        print("⚠️ API_TOKEN 未設定：/api/toggle、/api/manual_order、/api/manual_close 目前不驗證身份，對外開放前請在 .env 設定 API_TOKEN")
     await engine.start()
 
 @app.on_event("shutdown")
@@ -131,7 +141,7 @@ async def get_prices():
     }
 
 @app.post("/api/toggle")
-async def toggle_bot():
+async def toggle_bot(_auth: None = Depends(require_auth)):
     if engine.is_running:
         await engine.stop()
     else:
@@ -139,7 +149,7 @@ async def toggle_bot():
     return {"is_running": engine.is_running}
 
 @app.post("/api/manual_order")
-async def manual_order(req: ManualOrderRequest):
+async def manual_order(req: ManualOrderRequest, _auth: None = Depends(require_auth)):
     symbol = req.symbol.strip()
     side = req.side.upper()
     amount = req.amount if req.amount > 0 else TRADE_AMOUNT_USDT
@@ -202,7 +212,7 @@ async def export_trades(date: str = None):
     )
 
 @app.post("/api/manual_close")
-async def manual_close(req: ManualCloseRequest):
+async def manual_close(req: ManualCloseRequest, _auth: None = Depends(require_auth)):
     symbol = req.symbol.strip()
     if symbol not in engine.account.positions:
         raise HTTPException(status_code=400, detail="查無此持倉")

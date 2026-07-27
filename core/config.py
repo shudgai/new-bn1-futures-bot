@@ -287,3 +287,31 @@ DEFAULT_SYMBOLS = [
     "TRX/USDT",
     "XRP/USDT",
 ]
+
+# --- 真實/測試網切換 ---
+# 預設 true：一律使用 Binance Testnet（set_sandbox_mode），不管 BINANCE_API_KEY
+# 是不是正式帳戶的金鑰都不會下真錢單。正式上線當天才手動改為 false，並確認
+# .env 裡的 BINANCE_API_KEY/BINANCE_SECRET 已換成正式帳戶的金鑰。
+USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
+
+# --- 每日虧損熔斷 ---
+# 當日已實現虧損達帳戶餘額（今日起始值）的此比例時，暫停開新倉；
+# 既有持倉的止損/止利仍正常運作，不受影響。隔天（台北時區）自動重置。
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0"))
+
+# --- API 認證 ---
+# /api/manual_order、/api/manual_close、/api/toggle 等異動端點要求帶
+# Authorization: Bearer <API_TOKEN>。未設定時（本機開發階段）不強制驗證，
+# 但啟動時會印出警告——對外開放前務必設定。
+API_TOKEN = os.getenv("API_TOKEN", "")
+
+# --- Email 警報 ---
+# 用 SMTP 寄送重大事件（開倉/平倉失敗、每日熔斷觸發等 DANGER 等級事件）。
+# SMTP_USER/SMTP_PASSWORD 未設定時直接跳過通知，不影響交易流程。
+# 若用 Gmail 寄信：SMTP_USER 是寄件用的 Gmail 帳號，SMTP_PASSWORD 要用
+# Google 帳號「應用程式密碼」（App Password），不是登入密碼本身。
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "shudgai999@gmail.com")

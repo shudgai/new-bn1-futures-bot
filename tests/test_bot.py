@@ -5,7 +5,10 @@ import os
 import json
 import core.paper_account as pa_module
 import core.strategy as strategy_module
-from core.config import DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage
+from core.config import (
+    DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
+    RSI_LONG_THRESHOLD, SUPERTREND_MAX_FLIP_AGE_BARS, MIN_SCORE_THRESHOLD,
+)
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import SuperTrendKeltnerStrategy
@@ -47,9 +50,9 @@ def test_paper_account_open_close(tmp_path, monkeypatch):
 
 def test_low_score_signal_caps_eth_leverage():
     assert get_position_multiplier(69) == 0.0
-    assert get_position_multiplier(70) == 0.5
+    assert get_position_multiplier(70) == 0.6
     assert get_position_multiplier(80) == 1.0
-    assert get_position_multiplier(90) == 1.0
+    assert get_position_multiplier(90) == 1.5
     assert get_signal_leverage("ETH/USDT", 70) == 3
     assert get_signal_leverage("ETH/USDT", 80) == 6
     assert get_signal_leverage("ETH/USDT", 90) == 10
@@ -68,12 +71,15 @@ def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeyp
     assert trade["signal_score"] == 70
     assert trade["reason"] == "Score70 test"
 
-def test_keltner_breakout_and_freshness_are_mandatory(monkeypatch):
+def test_atr_range_filter_is_mandatory(monkeypatch):
+    """1h 大趨勢之外，ATR 波動率範圍是目前唯一還會直接 HOLD 的強制門檻
+    （KC 突破、量能、RSI、新鮮度都已改成評分制，見下面
+    test_kc_breakout_and_freshness_lower_score_not_mandatory）。"""
     strategy = SuperTrendKeltnerStrategy()
     df = pd.DataFrame({
         "close": [100.0] * 50,
         "close_price_spike_filtered": [100.0] * 50,
-        "atr": [1.0] * 50,
+        "atr": [1.0] * 50,  # atr/price = 1% > MAX_ATR_PCT(0.6%)
         "rsi": [60.0] * 50,
         "volume": [1000.0] * 50,
         "vol_ma_20": [900.0] * 50,
@@ -88,20 +94,19 @@ def test_keltner_breakout_and_freshness_are_mandatory(monkeypatch):
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
     result = strategy.evaluate_signal(df, ema_200_1h=90.0)
     assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: KC_Breakout" in result["reason"]
+    assert "Mandatory_Fail: ATR_Too_High" in result["reason"]
 
-    df.loc[df.index[-1], "close"] = 102.0
-    df.loc[df.index[-1], "close_price_spike_filtered"] = 102.0
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 41)
+    df.loc[:, "atr"] = 0.001  # atr/price = 0.001% < MIN_ATR_PCT(0.15%)
     result = strategy.evaluate_signal(df, ema_200_1h=90.0)
     assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: SuperTrend_Stale" in result["reason"]
+    assert "Mandatory_Fail: ATR_Too_Low" in result["reason"]
+
 
 def _entry_score_frame(volume=700.0, rsi=49.0):
     return pd.DataFrame({
         "close": [100.05] * 50,
         "close_price_spike_filtered": [100.05] * 50,
-        "atr": [1.0] * 50,
+        "atr": [0.3] * 50,  # atr/price = 0.3%，落在 MIN/MAX_ATR_PCT 之間，不會被強制門檻擋掉
         "rsi": [rsi] * 50,
         "volume": [volume] * 50,
         "vol_ma_20": [1000.0] * 50,
@@ -114,83 +119,101 @@ def _entry_score_frame(volume=700.0, rsi=49.0):
     })
 
 
-def test_score_71_waits_for_guarded_pullback(monkeypatch):
+def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
+    """KC 突破/訊號新鮮度沒過，不再是強制擋單（Mandatory_Fail），
+    而是評分制底下的扣分，分數不夠門檻時走 HOLD + Score_Low。"""
     strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=350.0, rsi=50.0)
+    # 量能、RSI 也刻意不過，確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD
+    frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 21)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: SUPERTREND_MAX_FLIP_AGE_BARS + 1)
 
     result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
 
-    assert result["score"] == 71
-    assert result["action"] == "WAIT_PULLBACK"
-    assert "Pullback_WAIT_LOW_SCORE(71)" in result["reason"]
+    assert result["action"] == "HOLD"
+    # Score_Low 分支的 dict 沒有獨立的 "score" 欄位，分數只嵌在 reason 文字裡
+    assert "Score_Low" in result["reason"]
 
 
-def test_score_81_can_enter_immediately_at_safe_breakout_distance(monkeypatch):
+def test_qualifying_score_waits_for_pullback_never_buys_immediately(monkeypatch):
+    """一律回踩機制：分數再高也不會有 BUY（立即進場），只會是 WAIT_PULLBACK。
+    用 config 常數而非寫死的分數，避免每次調參又要改測試。"""
     strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=350.0, rsi=50.0)
+    # 量能、RSI、新鮮度都給足以通過的條件，KC 突破在 _entry_score_frame 裡本來就成立
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
     result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
 
-    assert result["score"] == 81
-    assert result["action"] == "BUY"
-    assert "Pullback_BUY_NOW(81)" in result["reason"]
+    assert result["action"] == "WAIT_PULLBACK"
+    assert result["score"] >= MIN_SCORE_THRESHOLD
+    assert "target_zone" in result
+    assert f"Pullback_WAIT({result['score']})" in result["reason"]
 
 
-def _pullback_frame(side="LONG"):
-    prices = np.linspace(99.0, 101.0, 50)
+def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, atr=0.3):
+    """confirm_pullback_entry() 用的最小 K 線快照：atr 落在 MIN/MAX_ATR_PCT
+    之間，避免被 ATR 範圍門檻誤擋，方便單獨測試量能/RSI/趨勢反轉的判斷。"""
     direction = 1 if side == "LONG" else -1
-    frame = pd.DataFrame({
-        "close": prices if side == "LONG" else prices[::-1],
-        "close_price_spike_filtered": prices if side == "LONG" else prices[::-1],
-        "atr": [1.0] * 50,
-        "rsi": [60.0 if side == "LONG" else 40.0] * 50,
-        "volume": [1000.0] * 50,
+    if st_direction is None:
+        st_direction = direction
+    if rsi is None:
+        rsi = 60.0 if side == "LONG" else 40.0
+    price = 100.0
+    return pd.DataFrame({
+        "close": [price] * 50,
+        "close_price_spike_filtered": [price] * 50,
+        "atr": [atr] * 50,
+        "rsi": [rsi] * 50,
+        "volume": [volume] * 50,
         "vol_ma_20": [900.0] * 50,
-        "kc_upper": [100.0] * 50,
-        "kc_lower": [100.0] * 50,
-        "ema_20": prices if side == "LONG" else prices[::-1],
-        "st_direction": [direction] * 49 + [-direction],
+        "kc_upper": [101.0] * 50,
+        "kc_lower": [99.0] * 50,
+        "ema_20": [price] * 50,
+        "st_direction": [st_direction] * 50,
     })
-    # 最後一根是未收 K；最近已收 K 必須維持原方向。
-    frame.loc[frame.index[-2], "st_direction"] = direction
-    return frame
 
-def test_pullback_confirmation_passes_with_two_of_three_checks(monkeypatch):
+
+def test_pullback_reconfirmation_passes_when_conditions_still_hold(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
-    frame = _pullback_frame("LONG")
+    frame = _reconfirm_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
-    passed = strategy.validate_pullback_entry(
-        frame, side="LONG", live_price=100.1, ema_1h=95.0
-    )
-    assert passed["status"] == "PASS"
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "PASS"
 
-def test_pullback_confirmation_cancels_stale_but_waits_for_transient_conditions(monkeypatch):
+
+def test_pullback_reconfirmation_cancels_when_supertrend_reversed(monkeypatch):
+    """假突破最典型的樣貌：登記回調待命之後，SuperTrend 方向其實已經反轉了。"""
     strategy = SuperTrendKeltnerStrategy()
-    frame = _pullback_frame("LONG")
+    frame = _reconfirm_frame("LONG", st_direction=-1)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 41)
 
-    stale = strategy.validate_pullback_entry(
-        frame, side="LONG", live_price=100.1, ema_1h=95.0
-    )
-    assert stale["status"] == "CANCEL"
-    assert "SuperTrend 已過期" in stale["reason"]
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "CANCEL"
+    assert "SuperTrend 方向已反轉" in result["reason"]
 
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
-    frame.loc[frame.index[-2], "volume"] = 100.0
-    frame.loc[frame.index[-2], "rsi"] = 40.0
-    weak = strategy.validate_pullback_entry(
-        frame, side="LONG", live_price=100.1, ema_1h=95.0
-    )
-    assert weak["status"] == "WAIT"
-    assert "二次確認待通過" in weak["reason"]
-    assert "量能 0.11x < 0.50x" in weak["reason"]
+
+def test_pullback_reconfirmation_cancels_when_momentum_faded(monkeypatch):
+    """量能萎縮到門檻以下：原本的突破已經沒有真實成交量支撐，回踩進場前取消。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG", volume=100.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "CANCEL"
+    assert "量能轉弱" in result["reason"]
+
+
+def test_pullback_reconfirmation_cancels_when_1h_trend_flipped(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=105.0)
+    assert result["status"] == "CANCEL"
+    assert "1h 大趨勢已轉空" in result["reason"]
 
 
 def test_local_ai_advisor_accepts_only_allowed_symbols():
@@ -442,7 +465,7 @@ def test_directional_rotation_uses_lower_score_longs_only_to_fill_display(monkey
     assert sum(side == "LONG" for side in directions.values()) == 10
 
 
-def test_trade_amount_multiplier_uses_half_size_for_score_70():
-    assert get_position_multiplier(70) == 0.5
+def test_trade_amount_multiplier_uses_tiered_size_for_score_70():
+    assert get_position_multiplier(70) == 0.6
     assert get_position_multiplier(80) == 1.0
-    assert get_position_multiplier(100) == 1.0
+    assert get_position_multiplier(100) == 1.5

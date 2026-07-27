@@ -8,7 +8,7 @@ from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
-    MIN_SCORE_THRESHOLD
+    MIN_SCORE_THRESHOLD, USE_TESTNET
 )
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
@@ -24,7 +24,7 @@ class TradingEngine:
             "enableRateLimit": True,
             "options": {"defaultType": "future"},
         })
-        self.execution_exchange.set_sandbox_mode(True)
+        self.execution_exchange.set_sandbox_mode(USE_TESTNET)
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
@@ -125,7 +125,13 @@ class TradingEngine:
             return
         await self.account.initialize()
         self.is_running = True
-        self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（70分回調＋80分立即 / 12幣雙向交易）")
+        if USE_TESTNET:
+            self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（70分回調＋80分立即 / 12幣雙向交易）")
+        else:
+            self.account.log(
+                "🔴🔴🔴 正式實盤模式已啟用（USE_TESTNET=false）：本次啟動將用真實資金下單！",
+                "DANGER",
+            )
         self.task = asyncio.create_task(self._main_loop())
         # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
         # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。
@@ -313,52 +319,69 @@ class TradingEngine:
                         del self.pending_pullbacks[pb_symbol]
                         continue
 
+                    # 冷卻時間檢查：跟第 5 步的新訊號掃描用同一套規則。原本這裡沒檢查，
+                    # 導致剛平倉的幣種如果剛好有更早登記的回調訊號在排隊，價格一回踩
+                    # 到目標區就會立刻重新開倉——進場價跟剛平倉的價位幾乎一樣，等於
+                    # 白白繳一次手續費又立刻承擔新的止損風險。冷卻期間先跳過這一輪，
+                    # 不刪除待命記錄，冷卻結束後（且尚未超時）還是會繼續檢查回踩。
+                    if pb_symbol in self.cooldowns and (now_time - self.cooldowns[pb_symbol]) < 900:
+                        continue
+
                     target = pb_info["target_zone"]
                     zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
                     zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
 
-                    # 4c. 价格回調到目標區間內 → 觸發進場
-                    if pb_info["side"] == "LONG" and zone_low <= curr_p <= zone_high:
+                    # 4c. 价格回調到目標區間內 → 先做二次確認，通過才觸發進場
+                    if pb_info["side"] in ("LONG", "SHORT") and zone_low <= curr_p <= zone_high:
+                        side = pb_info["side"]
+                        # 二次確認：訊號登記時的量能/RSI/趨勢資料可能已經是幾分鐘甚至
+                        # 快 25 分鐘前的舊資料，真正回踩到位這一刻，用最新 K 線重新檢查
+                        # 核心條件是否還成立——避免「突破當下訊號成立，等回踩進場時
+                        # 動能其實已經退潮」這種假突破最典型的樣貌。
+                        confirm_df = await self.fetch_klines(pb_symbol, timeframe="5m", limit=100)
+                        if confirm_df.empty or len(confirm_df) < 50:
+                            continue
+                        confirm = self.strategy.confirm_pullback_entry(
+                            confirm_df, side, ema_1h=self.ema_200_1h_cache.get(pb_symbol)
+                        )
+                        if confirm["status"] != "PASS":
+                            del self.pending_pullbacks[pb_symbol]
+                            self.account.log(
+                                f"🛡️ [回調二次確認未通過] {pb_symbol} {side} 取消本次進場：{confirm['reason']}",
+                                "WARNING",
+                            )
+                            continue
+
                         atr = pb_info["atr"]
                         # 以回調進場價重新計算 SL/TP，統一用 compute_sl_tp_distance()
                         # 讀取 config 的 STOP_LOSS_MULTIPLIER/TAKE_PROFIT_MULTIPLIER，
                         # 並套用 MIN_SL_DISTANCE_PCT 下限（原本這裡寫死 2.0/3.0，
                         # 完全沒有跟到後續的止損止盈調整）。
                         sl_distance, tp_distance = compute_sl_tp_distance(curr_p, atr)
-                        sl = curr_p - sl_distance
-                        tp = curr_p + tp_distance
+                        if side == "LONG":
+                            sl = curr_p - sl_distance
+                            tp = curr_p + tp_distance
+                        else:
+                            sl = curr_p + sl_distance
+                            tp = curr_p - tp_distance
                         pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
                         await self.account.open_position(
-                            symbol=pb_symbol, side="LONG", price=curr_p,
+                            symbol=pb_symbol, side=side, price=curr_p,
                             amount_usdt=pb_amount, sl=sl, tp=tp,
                             reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr,
                             signal_score=pb_info.get("score"),
                         )
                         self.account.log(
-                            f"🎯 [回調進場] {pb_symbol} LONG 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
-                        )
-                        del self.pending_pullbacks[pb_symbol]
-
-                    elif pb_info["side"] == "SHORT" and zone_low <= curr_p <= zone_high:
-                        atr = pb_info["atr"]
-                        sl_distance, tp_distance = compute_sl_tp_distance(curr_p, atr)
-                        sl = curr_p + sl_distance
-                        tp = curr_p - tp_distance
-                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
-                        await self.account.open_position(
-                            symbol=pb_symbol, side="SHORT", price=curr_p,
-                            amount_usdt=pb_amount, sl=sl, tp=tp,
-                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr,
-                            signal_score=pb_info.get("score"),
-                        )
-                        self.account.log(
-                            f"🎯 [回調進場] {pb_symbol} SHORT 回調至目標區 ({curr_p:.4f}) 觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
+                            f"🎯 [回調進場] {pb_symbol} {side} 回調至目標區 ({curr_p:.4f}) 二次確認通過，觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
                         )
                         del self.pending_pullbacks[pb_symbol]
 
                 # 5. 開倉訊號檢查 — 依可用餘額填充預算，用完為止
+                # 每日虧損熔斷：觸發時只跳過本段（不開新倉），上面的持倉管理
+                # （止損/止利/移動止利/分批止盈）完全不受影響。
+                daily_halt, _daily_loss_pct = self.account.daily_loss_limit_hit()
                 available_balance = self.account.get_available_balance()
-                if available_balance >= MIN_TRADE_USDT:
+                if not daily_halt and available_balance >= MIN_TRADE_USDT:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
                     signal_progress = []
 

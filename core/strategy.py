@@ -268,3 +268,57 @@ class SuperTrendKeltnerStrategy:
                 }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
+
+    def confirm_pullback_entry(self, df: pd.DataFrame, side: str, ema_1h: float = None) -> dict:
+        """回踩觸發當下的二次確認。
+
+        訊號登記等待回踩時，可能已經是好幾分鐘甚至將近 PULLBACK_TIMEOUT_MINUTES
+        分鐘前的舊資料；等價格真的回踩到目標區時，量能可能已經萎縮、RSI 可能已經
+        轉弱、甚至大趨勢或 SuperTrend 方向已經反轉——這正是「假突破」最常見的
+        樣貌：一開始的突破訊號成立，但等真正要進場時動能其實已經退潮。這裡用
+        當下最新的一根 K 棒重新檢查核心條件是否還成立，任何一項不成立就直接
+        取消這次回踩進場，而不是機械式地照著已經過期的舊訊號開倉。
+        """
+        if len(df) < 50:
+            return {"status": "CANCEL", "reason": "K線資料不足"}
+
+        df = self.compute_indicators(df)
+        curr = df.iloc[-1]
+        price = curr['close_price_spike_filtered'] if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered'])) else curr['close']
+        atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
+        rsi = curr['rsi']
+        vol = curr['volume']
+        vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
+        st_dir = curr['st_direction']
+        want_dir = 1 if side == "LONG" else -1
+
+        if st_dir != want_dir:
+            return {
+                "status": "CANCEL",
+                "reason": f"SuperTrend 方向已反轉（現為{'多頭' if st_dir == 1 else '空頭'}）",
+            }
+
+        if ema_1h is not None:
+            if side == "LONG" and price < ema_1h:
+                return {"status": "CANCEL", "reason": "1h 大趨勢已轉空"}
+            if side == "SHORT" and price > ema_1h:
+                return {"status": "CANCEL", "reason": "1h 大趨勢已轉多"}
+
+        atr_pct = atr / price if price > 0 else 0
+        if atr_pct > MAX_ATR_PCT:
+            return {"status": "CANCEL", "reason": f"波動率轉為過高 ATR_Too_High({atr_pct:.2%})"}
+        if atr_pct < MIN_ATR_PCT:
+            return {"status": "CANCEL", "reason": f"波動率轉為過低 ATR_Too_Low({atr_pct:.2%})"}
+
+        if vol_ma_20 > 0 and vol < (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
+            return {
+                "status": "CANCEL",
+                "reason": f"量能轉弱 {vol / vol_ma_20:.2f}x < {KELTNER_MIN_VOLUME_RATIO:.2f}x",
+            }
+
+        if side == "LONG" and rsi < RSI_LONG_THRESHOLD:
+            return {"status": "CANCEL", "reason": f"RSI 轉弱 {rsi:.1f} < {RSI_LONG_THRESHOLD}"}
+        if side == "SHORT" and rsi > RSI_SHORT_THRESHOLD:
+            return {"status": "CANCEL", "reason": f"RSI 轉弱 {rsi:.1f} > {RSI_SHORT_THRESHOLD}"}
+
+        return {"status": "PASS", "reason": "二次確認通過"}
