@@ -313,10 +313,14 @@ class BinanceTestnetAccount:
             self.closing_lock.discard(symbol)
 
     async def update_positions(
-        self, ticker_prices: Dict[str, float], trend_directions: Dict[str, int] = None
+        self,
+        ticker_prices: Dict[str, float],
+        trend_directions: Dict[str, int] = None,
+        atr_overrides: Dict[str, float] = None,
     ) -> float:
         await self.refresh()
         trend_directions = trend_directions or {}
+        atr_overrides = atr_overrides or {}
 
         for symbol, pos in list(self.positions.items()):
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
@@ -395,7 +399,12 @@ class BinanceTestnetAccount:
             # 用小距離就會啟動保護，量大的幣（如 BANK）則有對應更大的空間，
             # 不用像百分比那樣一體適用卻對每個幣鬆緊不一。
             if old_sl > 0 and not is_flash:
-                atr_val = meta.get("atr") or entry_p * 0.015
+                # 優先用 engine.update_position_trends() 定期重算的即時 ATR，
+                # 反映當下波動度；還沒有即時值時（例如剛啟動、還沒輪到這個
+                # 幣種重算）才退回進場當下存的舊值。同步寫回 meta，讓其他
+                # 讀 meta["atr"] 的地方（如補建保護單、儀表板）也看到新值。
+                atr_val = atr_overrides.get(symbol) or meta.get("atr") or entry_p * 0.015
+                meta["atr"] = atr_val
                 chandelier_distance = CHANDELIER_ATR_MULT * atr_val
                 # 三個候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
                 # 1) 保本鎖：一旦最高價（多單）/最低價（空單）扣掉手續費+滑點

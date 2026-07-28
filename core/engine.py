@@ -49,6 +49,10 @@ class TradingEngine:
         # 候選收緊價（見 update_position_trends）。不用跟主迴圈一樣每 5 秒
         # 重算，5 分K本身要 5 分鐘才會真的變化。
         self.position_trend_cache: Dict[str, int] = {}
+        # 同一次重算順便更新的即時 ATR，取代原本「整個持倉期間都用進場那
+        # 一刻存的 ATR」——讓移動止損/趨勢反轉的距離反映當下波動度，不是
+        # 進場當下的舊波動度。
+        self.position_atr_cache: Dict[str, float] = {}
         self.last_position_trend_check: float = 0.0
 
     @staticmethod
@@ -280,10 +284,11 @@ class TradingEngine:
         self.last_1h_cache_time = now
 
     async def update_position_trends(self):
-        """定期（非每5秒）幫目前持倉的幣種重新計算 SuperTrend 方向，用來偵測
-        趨勢反轉。只覆蓋持倉，不是全部牌面，數量少、頻率也低，對 API 負擔
-        很小。結果只當成移動止損的候選收緊價之一，不會直接觸發平倉，避免
-        變成第二套跟移動止損互搶出場的邏輯。"""
+        """定期（非每5秒）幫目前持倉的幣種重新計算 SuperTrend 方向與 ATR，
+        用來偵測趨勢反轉、更新移動止損距離。只覆蓋持倉，不是全部牌面，
+        數量少、頻率也低，對 API 負擔很小。方向結果只當成移動止損的候選
+        收緊價之一，不會直接觸發平倉，避免變成第二套跟移動止損互搶出場
+        的邏輯。"""
         now = time.time()
         if now - self.last_position_trend_check < POSITION_TREND_CHECK_INTERVAL_SEC:
             return
@@ -295,7 +300,10 @@ class TradingEngine:
             if df.empty or len(df) < 50:
                 continue
             computed = self.strategy.compute_indicators(df)
-            self.position_trend_cache[symbol] = int(computed.iloc[-1]["st_direction"])
+            curr = computed.iloc[-1]
+            self.position_trend_cache[symbol] = int(curr["st_direction"])
+            if not pd.isna(curr["atr"]) and curr["atr"] > 0:
+                self.position_atr_cache[symbol] = float(curr["atr"])
             await asyncio.sleep(0.1)
 
     async def _main_loop(self):
@@ -310,7 +318,11 @@ class TradingEngine:
                 # 2. 更新與執行持倉部位
                 await self.update_position_trends()
                 prev_positions = set(self.account.positions.keys())
-                await self.account.update_positions(self.tickers, trend_directions=self.position_trend_cache)
+                await self.account.update_positions(
+                    self.tickers,
+                    trend_directions=self.position_trend_cache,
+                    atr_overrides=self.position_atr_cache,
+                )
                 closed_symbols = prev_positions - set(self.account.positions.keys())
                 for csym in closed_symbols:
                     self.cooldowns[csym] = time.time()
