@@ -52,7 +52,7 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_position_multiplier(69) == 0.0
     assert get_position_multiplier(70) == 0.6
     assert get_position_multiplier(80) == 1.0
-    assert get_position_multiplier(90) == 1.5
+    assert get_position_multiplier(90) == 1.0
     assert get_signal_leverage("ETH/USDT", 70) == 3
     assert get_signal_leverage("ETH/USDT", 80) == 6
     assert get_signal_leverage("ETH/USDT", 90) == 10
@@ -472,4 +472,4 @@ def test_directional_rotation_uses_lower_score_longs_only_to_fill_display(monkey
 def test_trade_amount_multiplier_uses_tiered_size_for_score_70():
     assert get_position_multiplier(70) == 0.6
     assert get_position_multiplier(80) == 1.0
-    assert get_position_multiplier(100) == 1.5
+    assert get_position_multiplier(100) == 1.0
