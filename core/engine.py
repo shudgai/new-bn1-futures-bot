@@ -50,6 +50,10 @@ class TradingEngine:
         # 一刻存的 ATR」——讓移動止損/趨勢反轉的距離反映當下波動度，不是
         # 進場當下的舊波動度。
         self.position_atr_cache: Dict[str, float] = {}
+        # 同一次重算順便快取 Keltner 中軌（EMA20），移動止損改用通道結構
+        # 防守後，這個值就是止損的收緊候選之一（見 testnet_account.py
+        # update_positions 的 kc_mid_overrides）。
+        self.position_kc_mid_cache: Dict[str, float] = {}
         self.last_position_trend_check: float = 0.0
 
     @staticmethod
@@ -301,6 +305,8 @@ class TradingEngine:
             self.position_trend_cache[symbol] = int(curr["st_direction"])
             if not pd.isna(curr["atr"]) and curr["atr"] > 0:
                 self.position_atr_cache[symbol] = float(curr["atr"])
+            if not pd.isna(curr["ema_20"]) and curr["ema_20"] > 0:
+                self.position_kc_mid_cache[symbol] = float(curr["ema_20"])
             await asyncio.sleep(0.1)
 
     async def _main_loop(self):
@@ -318,6 +324,7 @@ class TradingEngine:
                     self.tickers,
                     trend_directions=self.position_trend_cache,
                     atr_overrides=self.position_atr_cache,
+                    kc_mid_overrides=self.position_kc_mid_cache,
                 )
                 # 冷卻時間唯一資料來源是 self.account.last_closed_at（見
                 # testnet_account.py），不管平倉是這裡的主迴圈觸發，還是

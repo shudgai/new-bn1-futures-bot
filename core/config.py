@@ -157,21 +157,11 @@ RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
-# --- ATR 移動停利（chandelier exit，正式上線帳戶 BinanceTestnetAccount 使用）---
-# 實測 328 筆歷史交易發現，中位數「進場後最大有利幅度」只有 0.23%，
-# 47.5% 連 0.25% 都碰不到、只有 16.7% 能碰到 0.5%——固定百分比門檻對
-# 大部分幣種根本啟動不了，本來有一點小獲利的單子鎖不到利，最後反轉
-# 坐成不小的停損。改成「從進場後出現過的最高價（多單）/最低價（空單）
-# 回吐 CHANDELIER_ATR_MULT 倍 ATR」：不用等固定百分比，只要創新高就有
-# 新的止損保護，回吐幅度用該幣種自己的 ATR 衡量，天生就對每個幣的正常
-# 波動範圍做了縮放，不會像百分比那樣同一個數字卻對不同幣鬆緊不一。
-CHANDELIER_ATR_MULT = float(os.getenv("CHANDELIER_ATR_MULT", "0.5"))
-
 # --- 趨勢反轉收緊止損（不是獨立平倉路徑）---
 # 持倉中的幣種 SuperTrend 方向（用已收盤K棒算）反轉時，不會直接市價平倉
 # （那樣會變成第二套跟移動止損互搶的出場邏輯），而是算出一個「反轉當下
 # 價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」的候選止損價，丟進跟保本鎖、
-# ATR 移動停利同一套「取最嚴格候選」的邏輯裡一起比。部位還沒獲利、移動
+# 通道中軌防守同一套「取最嚴格候選」的邏輯裡一起比。部位還沒獲利、移動
 # 停利還沒發揮作用時，這個候選通常最緊，正好補上「虧損單只能等固定止損
 # 吃到底」的空窗期；一旦移動停利已經在運作（部位已經獲利、止損推得比它
 # 更緊），這個候選就會直接被比下去，不會互相打架。

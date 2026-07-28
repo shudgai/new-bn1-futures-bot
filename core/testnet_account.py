@@ -17,7 +17,6 @@ from core.config import (
     ENTRY_GRACE_SECONDS,
     ENTRY_GRACE_EXTRA_ATR,
     MAX_DAILY_LOSS_PCT,
-    CHANDELIER_ATR_MULT,
     REVERSAL_EXIT_ATR_MULT,
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
@@ -379,10 +378,12 @@ class BinanceTestnetAccount:
         ticker_prices: Dict[str, float],
         trend_directions: Dict[str, int] = None,
         atr_overrides: Dict[str, float] = None,
+        kc_mid_overrides: Dict[str, float] = None,
     ) -> float:
         await self.refresh()
         trend_directions = trend_directions or {}
         atr_overrides = atr_overrides or {}
+        kc_mid_overrides = kc_mid_overrides or {}
 
         for symbol, pos in list(self.positions.items()):
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
@@ -467,16 +468,14 @@ class BinanceTestnetAccount:
                     self.log(f"⏱️ [緩衝期結束] {symbol} 止損收緊回正常距離 {new_sl}", "INFO")
                     old_sl = pos.get("sl", old_sl)
 
-            # 移動止利改用 ATR 移動停利（chandelier exit）：不再等固定百分比
-            # 才啟動。實測 328 筆歷史交易發現，中位數的「進場後最大有利幅度」
-            # 只有 0.23%，47.5% 連 0.25% 都碰不到、只有 16.7% 能碰到 0.5%——
-            # 固定百分比門檻對大部分幣種根本啟動不了，導致本來有一點小獲利的
-            # 單子，因為到不了門檻鎖不到利，最後反轉坐雲霄飛車坐成停損（而且
-            # 停損金額不小）。改成「從進場後出現過的最高價（多單）/最低價
-            # （空單）回吐 CHANDELIER_ATR_MULT 倍 ATR」：只要創新高就有新的
-            # 止損保護，回吐幅度用該幣種自己的 ATR 衡量，量小的幣（如 TRX）
-            # 用小距離就會啟動保護，量大的幣（如 BANK）則有對應更大的空間，
-            # 不用像百分比那樣一體適用卻對每個幣鬆緊不一。
+            # 移動止利：曾經用「峰值 - 0.5倍ATR」的 chandelier exit，但實測
+            # 發現這個距離對正常的價格雜訊/反彈太敏感——BCH 這筆只往有利
+            # 方向走了 0.09%（0.5倍ATR）就把止損收緊到幾乎貼著進場價，
+            # 隨便一次正常反彈就洗出場，虧損幾乎全是手續費，行情根本沒走壞。
+            # 改成跟著 Keltner 中軌（EMA20，見 engine.update_position_trends
+            # 用已收盤5分K重算、每90秒更新一次，不會被單一 tick 雜訊牽動）
+            # 走：只有中軌本身推進到比進場價更有利的位置，才會被納入止損
+            # 候選，用真正的通道結構防守，而不是任意抓的 ATR 倍數。
             # 進場緩衝期內完全不做移動停利/趨勢反轉收緊：緩衝期本來就是刻意
             # 放寬止損、讓部位撐過剛進場的雜訊（見上面「進場緩衝期結束」），
             # 但這裡原本沒檢查 grace_until，導致進場後只要價格隨便跳一個
@@ -491,17 +490,20 @@ class BinanceTestnetAccount:
                 # 讀 meta["atr"] 的地方（如補建保護單、儀表板）也看到新值。
                 atr_val = atr_overrides.get(symbol) or meta.get("atr") or entry_p * 0.015
                 meta["atr"] = atr_val
-                chandelier_distance = CHANDELIER_ATR_MULT * atr_val
-                # 三個候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
+                kc_mid = kc_mid_overrides.get(symbol)
+                # 四個候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
                 # 1) 保本鎖：一旦最高價（多單）/最低價（空單）扣掉手續費+滑點
-                #    緩衝後仍是淨賺，立刻鎖到保本線，不用等 ATR 移動停利先跟上。
-                # 2) ATR 移動停利：價格續創新高/新低時持續收緊。
+                #    緩衝後仍是淨賺，立刻鎖到保本線，不用等通道中軌先跟上。
+                # 2) 通道中軌防守：Keltner 中軌（EMA20）推進到比進場價更有利
+                #    的位置時，跟著中軌收緊——中軌本身用已收盤K棒每90秒重算
+                #    一次，不受單一 tick 雜訊牽動，價格要真的把中軌structure
+                #    跌破/突破才會觸發，給正常回檔/反彈更多空間。
                 # 3) 趨勢反轉：持倉幣種 SuperTrend 方向（已收盤K棒算，見
                 #    engine.update_position_trends）反轉時，收緊到「反轉當下
                 #    價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」——不是直接平倉，
-                #    只是多一個候選價，部位已經獲利、移動停利已經收得更緊時
-                #    這個候選會被比下去，不會跟移動停利互搶出場。主要補上
-                #    「還沒獲利、移動停利尚未生效」這段只能等固定止損的空窗期。
+                #    只是多一個候選價，部位已經獲利、中軌防守已經收得更緊時
+                #    這個候選會被比下去，不會跟中軌防守互搶出場。主要補上
+                #    「還沒獲利、中軌防守尚未生效」這段只能等固定止損的空窗期。
                 st_dir = trend_directions.get(symbol)
                 want_dir = 1 if side == "LONG" else -1
                 reversed_trend = st_dir is not None and st_dir != want_dir
@@ -511,12 +513,11 @@ class BinanceTestnetAccount:
                     candidates = [(old_sl, "原止損")]
                     if peak_price >= breakeven_level:
                         candidates.append((breakeven_level, "保本鎖"))
-                    # 要求最高價至少比進場價多走一個 chandelier_distance，
-                    # 這個候選價才可能 >= entry_p，不會比「連本金都保不住」
-                    # 還緊——避免進場後隨便一個雜訊 tick 就被當成「創新高」，
-                    # 算出一個比原始止損（2x ATR）緊很多的候選價。
-                    if peak_price - entry_p >= chandelier_distance:
-                        candidates.append((peak_price - chandelier_distance, "ATR移動停利"))
+                    # 要求中軌本身已經推進到比進場價更有利的位置，這個候選價
+                    # 才可能 >= entry_p，不會比「連本金都保不住」還緊——避免
+                    # 進場當下中軌還在進場價下方時就被當成防守線。
+                    if kc_mid is not None and kc_mid > entry_p:
+                        candidates.append((kc_mid, "通道中軌防守"))
                     if reversed_trend:
                         candidates.append((curr_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = max(candidates, key=lambda c: c[0])
@@ -548,11 +549,11 @@ class BinanceTestnetAccount:
                     candidates = [(old_sl, "原止損")]
                     if trough_price <= breakeven_level:
                         candidates.append((breakeven_level, "保本鎖"))
-                    # 同上（LONG 分支）：要求最低價至少比進場價多走一個
-                    # chandelier_distance，避免隨便一個雜訊 tick 就被當成
-                    # 「創新低」，算出比原始止損緊很多的候選價。
-                    if entry_p - trough_price >= chandelier_distance:
-                        candidates.append((trough_price + chandelier_distance, "ATR移動停利"))
+                    # 同上（LONG 分支）：要求中軌本身已經推進到比進場價更
+                    # 有利的位置，避免進場當下中軌還在進場價上方就被當成
+                    # 防守線。
+                    if kc_mid is not None and kc_mid < entry_p:
+                        candidates.append((kc_mid, "通道中軌防守"))
                     if reversed_trend:
                         candidates.append((curr_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = min(candidates, key=lambda c: c[0])
