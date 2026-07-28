@@ -160,6 +160,14 @@ MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "22"))
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
+# ADX_DECLINE_LOOKBACK_BARS：實測 AAVE/USDT 07/28 14:48 這筆進場，往前
+# 回看 8 根 5 分K，ADX 從 19.51 一路降到 14.67 才進場——SuperTrend 方向
+# 還沒翻轉、新鮮度分數也還算高，但 ADX 連續下滑代表動能早就在退潮，是
+# 典型的「末端趨勢」樣貌，只是新鮮度（看 SuperTrend 翻轉）量不到。這裡
+# 額外用「ADX 現在比 N 根K棒前低，且已經低於 ADX_QUALITY_MIN」當強制
+# 門檻，專門抓這種「方向沒變但動能已經在衰退」的情況，跟品質加分（軟性
+# 只影響排序）分開，是硬性擋單。
+ADX_DECLINE_LOOKBACK_BARS = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS", "6"))
 
 # --- 動態 RSI 濾網 ---
 RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))

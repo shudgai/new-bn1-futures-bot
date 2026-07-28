@@ -7,7 +7,7 @@ from core.config import (
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
-    ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL,
+    ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -234,6 +234,18 @@ class SuperTrendKeltnerStrategy:
         score += freshness_score
         score_details.append(f"Freshness({st_flip_age}bars)+{freshness_score}")
 
+        # D2. ADX 動能衰退檢查：SuperTrend 方向沒翻轉不代表動能沒有在退潮——
+        # 實測 AAVE/USDT 進場前 8 根 5 分K，ADX 從 19.51 一路降到 14.67 才
+        # 進場，方向沒變、新鮮度分數也還高，但這正是「末端趨勢」的典型樣貌：
+        # 動能已經在衰退，只是方向還沒真的反轉。ADX 現在比 N 根K棒前低，
+        # 且已經低於 ADX_QUALITY_MIN，代表這不是「本來就安靜」而是「正在
+        # 退潮」，直接擋單。
+        adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
+        adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
+        adx_declining_exhausted = (
+            not pd.isna(adx_prior) and adx < ADX_QUALITY_MIN and adx < adx_prior
+        )
+
         # E. 品質細分加分（0~9分）：讓同樣達標 70/80 分的訊號能再分出優劣，
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
         # 三項各佔 0~3 分，數值越好加分越多，實測跟虧損大小/勝率相關：
@@ -278,6 +290,15 @@ class SuperTrendKeltnerStrategy:
             return {
                 "action": "HOLD",
                 "reason": f"Mandatory_Fail: Freshness_Too_Stale({st_flip_age}bars) | Score({score}) | {', '.join(score_details)}",
+            }
+
+        # 額外防線：ADX 動能已經在衰退（見上面 D2）直接擋單，不管總分靠
+        # 其他項目湊得多高——這種「方向沒變、新鮮度分數也不低，但 ADX
+        # 連續下滑」正是新鮮度抓不到的另一種末端趨勢樣貌。
+        if score >= MIN_SCORE_THRESHOLD and adx_declining_exhausted:
+            return {
+                "action": "HOLD",
+                "reason": f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}",
             }
 
         if score >= MIN_SCORE_THRESHOLD:
@@ -354,6 +375,18 @@ class SuperTrendKeltnerStrategy:
             return {
                 "status": "CANCEL",
                 "reason": f"距離原始突破已過太久 Freshness({st_flip_age}bars)={freshness_score}<{MIN_FRESHNESS_SCORE}",
+            }
+
+        # ADX 動能衰退檢查（跟 evaluate_signal() 同一套邏輯）：方向沒反轉、
+        # 新鮮度也還夠，但 ADX 現在比 N 根K棒前低且已經低於 ADX_QUALITY_MIN，
+        # 代表動能在等待回踩的這段時間持續衰退，一樣是末端趨勢的樣貌。
+        adx = curr['adx'] if not pd.isna(curr['adx']) else 0.0
+        adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
+        adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
+        if not pd.isna(adx_prior) and adx < ADX_QUALITY_MIN and adx < adx_prior:
+            return {
+                "status": "CANCEL",
+                "reason": f"ADX 動能持續衰退 {adx:.1f}<{adx_prior:.1f}（{ADX_DECLINE_LOOKBACK_BARS}根K棒前）",
             }
 
         if ema_1h is not None:

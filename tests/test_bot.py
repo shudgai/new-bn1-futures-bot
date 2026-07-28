@@ -154,6 +154,23 @@ def test_qualifying_score_waits_for_pullback_never_buys_immediately(monkeypatch)
     assert f"Pullback_WAIT({result['score']})" in result["reason"]
 
 
+def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
+    """SuperTrend 方向沒反轉、分數也達標，但 ADX 連續下滑且已經低於
+    ADX_QUALITY_MIN——實測 AAVE/USDT 07/28 這筆進場前 8 根 5 分K，ADX
+    從 19.51 降到 14.67 才進場，方向沒變、新鮮度分數也還高，是新鮮度
+    抓不到的另一種末端趨勢樣貌，必須直接擋單而不是只扣分。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
+    frame.loc[44:49, "adx"] = [19.5, 18.8, 17.6, 16.5, 15.7, 14.7]
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+
+    assert result["action"] == "HOLD"
+    assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
+
+
 def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, atr=0.3):
     """confirm_pullback_entry() 用的最小 K 線快照：atr 落在 MIN/MAX_ATR_PCT
     之間，避免被 ATR 範圍門檻誤擋，方便單獨測試量能/RSI/趨勢反轉的判斷。"""
@@ -174,6 +191,7 @@ def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, at
         "kc_lower": [99.0] * 50,
         "ema_20": [price] * 50,
         "st_direction": [st_direction] * 50,
+        "adx": [25.0] * 50,
     })
 
 
@@ -210,6 +228,22 @@ def test_pullback_reconfirmation_cancels_when_too_stale(monkeypatch):
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
     assert "距離原始突破已過太久" in result["reason"]
+
+
+def test_pullback_reconfirmation_cancels_when_adx_declining(monkeypatch):
+    """SuperTrend 方向沒反轉、新鮮度也還夠，但 ADX 連續下滑且已經低於
+    ADX_QUALITY_MIN——實測 AAVE/USDT 進場前就是這個樣貌（方向沒變，
+    動能已經在退潮），屬於新鮮度抓不到的另一種末端趨勢。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    adx_series = [25.0] * 44 + [19.5, 18.8, 17.6, 16.5, 15.7, 14.7]
+    frame["adx"] = adx_series
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "CANCEL"
+    assert "ADX 動能持續衰退" in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_momentum_faded(monkeypatch):
