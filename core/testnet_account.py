@@ -399,6 +399,14 @@ class BinanceTestnetAccount:
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
             if curr_p is None:
                 continue
+            # 交易所拿標記價格（Mark Price）算浮動損益、也拿標記價格觸發
+            # 止損止盈（見 _create_protection_order 的 workingType=MARK_PRICE），
+            # 但 curr_p 是最新成交價（ticker 的 last），兩者本來就有基差。
+            # 移動停利要收緊到什麼程度、判斷行情走了多少，必須跟交易所
+            # 實際觸發的基準一致，才不會發生「策略覺得沒動，但標記價格
+            # 早就達標」的資訊落差——這裡改用標記價格為主，沒有標記價格
+            # 時才退回最新成交價。
+            mark_p = pos.get("mark_price") or curr_p
 
             meta = self.position_meta.get(symbol, {})
             side = pos["side"]
@@ -426,13 +434,13 @@ class BinanceTestnetAccount:
                 meta["lowest_price"] = entry_p
 
             if side == "LONG":
-                curr_profit_pct = (curr_p - entry_p) / entry_p
-                if curr_p > meta["highest_price"]:
-                    meta["highest_price"] = curr_p
+                curr_profit_pct = (mark_p - entry_p) / entry_p
+                if mark_p > meta["highest_price"]:
+                    meta["highest_price"] = mark_p
             else:
-                curr_profit_pct = (entry_p - curr_p) / entry_p
-                if curr_p < meta["lowest_price"]:
-                    meta["lowest_price"] = curr_p
+                curr_profit_pct = (entry_p - mark_p) / entry_p
+                if mark_p < meta["lowest_price"]:
+                    meta["lowest_price"] = mark_p
 
             # peak_profit_pct 只留給前端顯示「歷史最高無槓桿利潤」用，出場判斷
             # 已經改用下面的 ATR 移動停利（見 highest_price/lowest_price）。
@@ -534,15 +542,17 @@ class BinanceTestnetAccount:
                     if kc_mid is not None and kc_mid > entry_p:
                         candidates.append((kc_mid, "通道中軌防守"))
                     if reversed_trend:
-                        candidates.append((curr_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
+                        candidates.append((mark_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = max(candidates, key=lambda c: c[0])
-                    # 安全防線：不管哪個候選勝出，新止損跟「現價」之間都至少
-                    # 留 MIN_STOP_DISTANCE_ATR_MULT 倍 ATR 距離才送單，避免
-                    # 通道中軌這類「跟著一個價位」而非「跟現價保持固定距離」
-                    # 的候選，在盤整時跟現價收斂到太近甚至重疊，送單被交易所
-                    # 以「Order would immediately trigger」拒絕，觸發不必要的
+                    # 安全防線：不管哪個候選勝出，新止損跟「標記價格」之間都
+                    # 至少留 MIN_STOP_DISTANCE_ATR_MULT 倍 ATR 距離才送單——
+                    # 交易所是拿標記價格判斷新止損會不會立刻觸發，用最新成交
+                    # 價算安全距離，兩者基差夠大時還是可能被拒單。通道中軌這
+                    # 類「跟著一個價位」而非「跟現價保持固定距離」的候選，在
+                    # 盤整時容易跟標記價收斂到太近甚至重疊，送單被交易所以
+                    # 「Order would immediately trigger」拒絕，觸發不必要的
                     # 緊急市價平倉（實測 OP/USDT 就是這樣，行情根本沒反轉）。
-                    trail_sl = min(trail_sl, curr_p - atr_val * MIN_STOP_DISTANCE_ATR_MULT)
+                    trail_sl = min(trail_sl, mark_p - atr_val * MIN_STOP_DISTANCE_ATR_MULT)
                     # 移動幅度太小就不重新掛單：避免行情緩慢推進時每一輪主迴圈
                     # (5秒)都在 cancel/create 保護單，頻繁觸發 API 呼叫/速率限制。
                     # 保本鎖第一次啟動時通常是相對原本寬止損的一大步，不會被這個
@@ -550,18 +560,17 @@ class BinanceTestnetAccount:
                     if trail_sl > old_sl and (trail_sl - old_sl) >= atr_val * 0.05:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         # 移動止盈：止損還在收緊，代表趨勢仍在走，固定止盈價不該
-                        # 提前把單子封頂——用當下價格重新算 ATR 距離往外推，只會
+                        # 提前把單子封頂——用標記價格重新算 ATR 距離往外推，只會
                         # 往外擴不會往內縮，出場主要交給移動止損判斷趨勢是否反轉。
-                        _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
-                        new_tp = max(curr_p + tp_distance, meta.get("tp") or 0.0)
+                        _, tp_distance = compute_sl_tp_distance(mark_p, atr_val)
+                        new_tp = max(mark_p + tp_distance, meta.get("tp") or 0.0)
                         new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
                         await self._replace_stop_order(
                             symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
                         )
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
-                            mark_price = pos.get("mark_price")
-                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_price:.6f}）" if mark_price is not None else ""
+                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_p:.6f}）"
                             self.log(
                                 f"📈 [{trail_reason}] {symbol} 最高價 {peak_price:.6f}，"
                                 f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}{mark_suffix}",
@@ -580,23 +589,22 @@ class BinanceTestnetAccount:
                     if kc_mid is not None and kc_mid < entry_p:
                         candidates.append((kc_mid, "通道中軌防守"))
                     if reversed_trend:
-                        candidates.append((curr_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
+                        candidates.append((mark_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = min(candidates, key=lambda c: c[0])
-                    # 同上（LONG 分支）：新止損跟現價至少留安全距離才送單。
-                    trail_sl = max(trail_sl, curr_p + atr_val * MIN_STOP_DISTANCE_ATR_MULT)
+                    # 同上（LONG 分支）：新止損跟標記價格至少留安全距離才送單。
+                    trail_sl = max(trail_sl, mark_p + atr_val * MIN_STOP_DISTANCE_ATR_MULT)
                     if trail_sl < old_sl and (old_sl - trail_sl) >= atr_val * 0.05:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
+                        _, tp_distance = compute_sl_tp_distance(mark_p, atr_val)
                         current_tp = meta.get("tp") or float("inf")
-                        new_tp = min(curr_p - tp_distance, current_tp)
+                        new_tp = min(mark_p - tp_distance, current_tp)
                         new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
                         await self._replace_stop_order(
                             symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
                         )
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
-                            mark_price = pos.get("mark_price")
-                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_price:.6f}）" if mark_price is not None else ""
+                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_p:.6f}）"
                             self.log(
                                 f"📉 [{trail_reason}] {symbol} 最低價 {trough_price:.6f}，"
                                 f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}{mark_suffix}",
