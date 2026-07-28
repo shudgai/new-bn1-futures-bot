@@ -125,9 +125,13 @@ KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
 # MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單，不管
 # 總分靠 KC突破/量能/RSI/品質加分湊得多高——專門攔「已經開始老化、快要
-# 反轉的趨勢尾端，靠其他項目湊夠分數壓線擠進場」這種樣貌。預設 6 分，
-# 相當於翻轉超過約 96 根K棒（8小時）就擋單。
-MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "6"))
+# 反轉的趨勢尾端，靠其他項目湊夠分數壓線擠進場」這種樣貌。
+# 從 6 分拉高到 18 分（相當於翻轉要在 2.5 小時內/30根K棒）：實測 SUI/UNI/
+# BNB 三筆同時在 46~53 根（約4小時）翻轉齡時進場，新鮮度只拿 17~18分——
+# 不算嚴重過期（6分門檻放行了），但進場後三個幣幾乎同時反彈，虧損收場。
+# 6 分只攔「嚴重過期」（超過8小時），拉高到 18 分改攔「不再新鮮」（超過
+# 2.5小時），減少「趨勢已經老化、容易反彈」時進場的機會。
+MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "18"))
 
 # --- ADX 趨勢強度濾網（品質加分用，非強制門檻）---
 # KC 突破配上低 ADX，是盤整期假突破的常見樣貌；但直接拿來當強制門檻風險
