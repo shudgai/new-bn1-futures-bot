@@ -101,6 +101,17 @@ MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
 # 硬進場也常常是在虧損邊緣。90 秒給觀察到的最長觸發時間（26秒）約
 # 3.5 倍緩衝，足夠又不會拖太久。
 PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "1.5"))
+# PENDING_REPOST_STREAK_LIMIT / PENDING_BACKOFF_MINUTES：實測發現同一個
+# symbol 的限價單超時/條件變差被撤銷後，下一輪掃描常常算出幾乎一樣的
+# target_price，就這樣連續掛單-撤單好幾次（AVAX/USDT 曾連續掛了 5 次
+# 幾乎同一個價位，耗時 8 分鐘才成交，成交後直接停損 -2.34 USDT；
+# LINK/USDT 曾在 1 分鐘內因「量能轉弱」連續撤單 5 次）。這代表撤單當下
+# 這個setup已經不新鮮，之後重掛也大機率是在賭同一個正在退潮的假突破。
+# 連續失敗（撤單）達到門檻就強制冷卻一段時間，不再對同一個 symbol 反覆
+# 嘗試，逼它等到下一次真正重新出現的訊號，而不是死守著同一個已經偏離
+# 的價位。
+PENDING_REPOST_STREAK_LIMIT = int(os.getenv("PENDING_REPOST_STREAK_LIMIT", "3"))
+PENDING_BACKOFF_MINUTES = float(os.getenv("PENDING_BACKOFF_MINUTES", "15"))
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。

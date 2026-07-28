@@ -342,7 +342,9 @@ class TradingEngine:
                 now_time = time.time()
                 for pb_symbol, pb_info in list(self.account.pending_limit_orders.items()):
                     if pb_symbol not in DEFAULT_SYMBOLS:
-                        await self.account.cancel_pending_limit(pb_symbol, "已不在目前牌面名單")
+                        await self.account.cancel_pending_limit(
+                            pb_symbol, "已不在目前牌面名單", count_failure=False
+                        )
                         continue
 
                     # 4a. 超時撤單：實測真正成交的掛單都在 30 秒內成交，
@@ -416,6 +418,18 @@ class TradingEngine:
                             remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
                             signal_progress.append(
                                 f"{coin} {direction_text} 0分,冷卻剩{remaining}分鐘"
+                            )
+                            continue
+
+                        # 連續掛單失敗冷卻：同一 symbol 連續好幾次限價單
+                        # 超時/條件變差被撤銷，代表反覆卡在同一個已經不
+                        # 新鮮的 setup，強制冷卻一段時間（見
+                        # testnet_account.cancel_pending_limit）。
+                        backoff_until = self.account.pending_backoff_until.get(symbol, 0.0)
+                        if backoff_until > now_time:
+                            remaining = max(0, int((backoff_until - now_time) / 60) + 1)
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,連續掛單失敗冷卻剩{remaining}分鐘"
                             )
                             continue
 

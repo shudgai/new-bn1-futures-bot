@@ -20,6 +20,8 @@ from core.config import (
     REVERSAL_EXIT_ATR_MULT,
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
+    PENDING_REPOST_STREAK_LIMIT,
+    PENDING_BACKOFF_MINUTES,
     get_leverage,
     get_signal_leverage,
 )
@@ -87,6 +89,12 @@ class BinanceTestnetAccount:
         # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
         # 一個 symbol 同時最多一張掛單。
         self.pending_limit_orders: Dict[str, dict] = {}
+        # 連續掛單失敗（撤單）計數與冷卻：同一 symbol 的限價單連續超時/
+        # 條件變差被撤銷達 PENDING_REPOST_STREAK_LIMIT 次，代表反覆卡在
+        # 同一個已經不新鮮的 setup，強制冷卻 PENDING_BACKOFF_MINUTES 分鐘，
+        # 見 cancel_pending_limit()／place_limit_entry()。
+        self.pending_repost_streak: Dict[str, int] = {}
+        self.pending_backoff_until: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -1036,6 +1044,8 @@ class BinanceTestnetAccount:
         engine.py 每輪呼叫的條件重新檢查（見 engine._main_loop 第4步）。"""
         if symbol in self.positions or symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False
+        if time.time() < self.pending_backoff_until.get(symbol, 0.0):
+            return False
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(
                 f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕掛單",
@@ -1119,6 +1129,7 @@ class BinanceTestnetAccount:
                 # 跟這裡疊出重複止損止盈單。先佔位讓孤兒保護機制略過這個
                 # symbol，交給 _finalize_new_position 統一處理。
                 self._orphan_protection_attempted.add(symbol)
+                self.pending_repost_streak.pop(symbol, None)
                 await self._finalize_new_position(
                     symbol, info["side"], execution_price, filled_qty,
                     info["target_price"], info["sl"], info["tp"], info["reason"],
@@ -1137,6 +1148,7 @@ class BinanceTestnetAccount:
                         "WARNING",
                     )
                     self._orphan_protection_attempted.add(symbol)
+                    self.pending_repost_streak.pop(symbol, None)
                     await self._finalize_new_position(
                         symbol, info["side"], execution_price, filled_qty,
                         info["target_price"], info["sl"], info["tp"], info["reason"],
@@ -1146,8 +1158,14 @@ class BinanceTestnetAccount:
                 else:
                     self.log(f"↩️ {symbol} 限價單已被取消/拒絕，放棄本次進場", "INFO")
 
-    async def cancel_pending_limit(self, symbol: str, reason: str) -> None:
-        """主動撤單（超時或條件變差），engine.py 呼叫。"""
+    async def cancel_pending_limit(self, symbol: str, reason: str, count_failure: bool = True) -> None:
+        """主動撤單（超時或條件變差），engine.py 呼叫。
+
+        count_failure=True（預設）時計入連續失敗次數：達到
+        PENDING_REPOST_STREAK_LIMIT 就強制冷卻 PENDING_BACKOFF_MINUTES
+        分鐘，避免同一個已經不新鮮的 setup 被反覆掛單-撤單。symbol 被
+        輪替出牌面（不是「這次沒成交」）時 engine.py 會傳 False，不計入。
+        """
         info = self.pending_limit_orders.get(symbol)
         if not info:
             return
@@ -1163,6 +1181,17 @@ class BinanceTestnetAccount:
             return
         del self.pending_limit_orders[symbol]
         self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
+        if count_failure:
+            streak = self.pending_repost_streak.get(symbol, 0) + 1
+            self.pending_repost_streak[symbol] = streak
+            if streak >= PENDING_REPOST_STREAK_LIMIT:
+                self.pending_backoff_until[symbol] = time.time() + PENDING_BACKOFF_MINUTES * 60
+                self.pending_repost_streak[symbol] = 0
+                self.log(
+                    f"🧊 [連續掛單失敗冷卻] {symbol} 連續 {streak} 次掛單未成交/條件變差，"
+                    f"暫停重新掛單 {PENDING_BACKOFF_MINUTES:.0f} 分鐘",
+                    "WARNING",
+                )
 
     async def close_position(
         self, symbol: str, current_price: float, close_reason: str
