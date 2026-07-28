@@ -560,9 +560,11 @@ class BinanceTestnetAccount:
                         )
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
+                            mark_price = pos.get("mark_price")
+                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_price:.6f}）" if mark_price is not None else ""
                             self.log(
                                 f"📈 [{trail_reason}] {symbol} 最高價 {peak_price:.6f}，"
-                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}",
+                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}{mark_suffix}",
                                 "SUCCESS",
                             )
                 else:
@@ -593,9 +595,11 @@ class BinanceTestnetAccount:
                         )
                         if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
                             self._last_trailing_log[symbol] = now_ts
+                            mark_price = pos.get("mark_price")
+                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_price:.6f}）" if mark_price is not None else ""
                             self.log(
                                 f"📉 [{trail_reason}] {symbol} 最低價 {trough_price:.6f}，"
-                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}",
+                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}{mark_suffix}",
                                 "SUCCESS",
                             )
 
@@ -652,9 +656,13 @@ class BinanceTestnetAccount:
                 # 新止損價已經被市價（MARK_PRICE）穿越，交易所拒絕掛單
                 # （-2021 Order would immediately trigger）。舊保護單已被取消，
                 # 若放著不管部位會完全裸奔，直接市價平倉，等同止損已觸發。
+                # 記下當時的現價（收盤價系列）跟標記價，方便事後判斷這次
+                # 觸發是真的行情走了，還是標記價/現價基差造成的雜訊。
+                mark_price = pos.get("mark_price")
+                mark_suffix = f"（新止損 {new_sl}／標記價 {mark_price:.6f}）" if mark_price is not None else f"（新止損 {new_sl}）"
                 self.log(
                     f"⚠️ {symbol} 移動止利新止損建立失敗（{type(exc).__name__}: {exc}），"
-                    f"研判價格已穿越止利線，改為市價平倉",
+                    f"研判價格已穿越止利線，改為市價平倉{mark_suffix}",
                     "DANGER",
                 )
                 await self.close_position(symbol, new_sl, "移動止利保護單被拒，市價平倉")
