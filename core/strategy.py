@@ -342,6 +342,20 @@ class SuperTrendKeltnerStrategy:
                 "reason": f"SuperTrend 方向已反轉（現為{'多頭' if st_dir == 1 else '空頭'}）",
             }
 
+        # 距離原始突破過了多久：方向沒反轉不代表這個突破還「新鮮」——等回踩
+        # 的這段時間裡，行情可能只是在原地震盪消耗動能，SuperTrend 遲遲沒
+        # 真的翻轉，但這個突破本身已經是強弩之末。跟 evaluate_signal() 的
+        # 新鮮度用同一套連續淡化公式重新算一次，太舊直接取消，不是只看
+        # 方向對不對。
+        st_flip_age = bars_since_supertrend_flip(df['st_direction'])
+        freshness_ratio = max(0.0, 1.0 - st_flip_age / FRESHNESS_DECAY_BARS) if FRESHNESS_DECAY_BARS > 0 else 0.0
+        freshness_score = round(freshness_ratio * 30)
+        if freshness_score < MIN_FRESHNESS_SCORE:
+            return {
+                "status": "CANCEL",
+                "reason": f"距離原始突破已過太久 Freshness({st_flip_age}bars)={freshness_score}<{MIN_FRESHNESS_SCORE}",
+            }
+
         if ema_1h is not None:
             if side == "LONG" and price < ema_1h:
                 return {"status": "CANCEL", "reason": "1h 大趨勢已轉空"}
