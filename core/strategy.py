@@ -3,6 +3,7 @@ import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
+    MIN_FRESHNESS_SCORE,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
@@ -270,6 +271,15 @@ class SuperTrendKeltnerStrategy:
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
         # 進場門檻：總分 >= MIN_SCORE_THRESHOLD (90 分)
+        # 額外防線：新鮮度子分數太低（趨勢已經很舊）直接擋單，不管總分靠
+        # 其他項目湊得多高——避免「已經開始老化、快要反轉的趨勢尾端，
+        # 靠其他項目湊夠分數壓線擠進場」這種樣貌。
+        if score >= MIN_SCORE_THRESHOLD and freshness_score < MIN_FRESHNESS_SCORE:
+            return {
+                "action": "HOLD",
+                "reason": f"Mandatory_Fail: Freshness_Too_Stale({st_flip_age}bars) | Score({score}) | {', '.join(score_details)}",
+            }
+
         if score >= MIN_SCORE_THRESHOLD:
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper

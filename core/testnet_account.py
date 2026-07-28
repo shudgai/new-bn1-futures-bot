@@ -18,6 +18,7 @@ from core.config import (
     MAX_DAILY_LOSS_PCT,
     CHANDELIER_ATR_MULT,
     REVERSAL_EXIT_ATR_MULT,
+    MIN_OPEN_SIGNAL_SCORE,
     get_leverage,
     get_signal_leverage,
 )
@@ -732,6 +733,15 @@ class BinanceTestnetAccount:
         signal_score: int = None,
     ) -> bool:
         if symbol in self.positions or symbol in self.closing_lock:
+            return False
+        # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
+        # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
+        # None）不受影響，這只針對訊號驅動的自動開倉。
+        if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
+            self.log(
+                f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕開倉",
+                "WARNING",
+            )
             return False
         await self._ensure_markets()
         leverage = leverage or (

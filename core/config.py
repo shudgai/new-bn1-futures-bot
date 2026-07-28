@@ -89,6 +89,11 @@ MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.004"))
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
 # 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
+# MIN_OPEN_SIGNAL_SCORE：開倉前最後一道防線，不管呼叫端邏輯有沒有正確
+# 擋住，分數低於這個值一律拒絕下單（見 testnet_account.open_position）。
+# 正常流程分數不會低於 MIN_SCORE_THRESHOLD(71)，這裡刻意設 70（略低於
+# 71）純粹當保險，不影響現有正常流程。
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間（延長至 25 分鐘，給價格充分回踩 KC 的時間）
 PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "25"))
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
@@ -118,6 +123,11 @@ KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  
 # 發生給滿分 30 分，隨根數線性淡化，到 FRESHNESS_DECAY_BARS 掃到 0 分，
 # 讓「剛翻轉」跟「翻轉很久了」的差異真正反映在分數上，不是全有全無。
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
+# MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單，不管
+# 總分靠 KC突破/量能/RSI/品質加分湊得多高——專門攔「已經開始老化、快要
+# 反轉的趨勢尾端，靠其他項目湊夠分數壓線擠進場」這種樣貌。預設 6 分，
+# 相當於翻轉超過約 96 根K棒（8小時）就擋單。
+MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "6"))
 
 # --- ADX 趨勢強度濾網（品質加分用，非強制門檻）---
 # KC 突破配上低 ADX，是盤整期假突破的常見樣貌；但直接拿來當強制門檻風險
