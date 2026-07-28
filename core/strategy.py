@@ -8,6 +8,7 @@ from core.config import (
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
+    EMA_EXTENSION_MAX_ATR_MULT,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -150,7 +151,7 @@ class SuperTrendKeltnerStrategy:
         df['st_direction'] = direction
         return df
 
-    def evaluate_signal(self, df: pd.DataFrame, ema_200_1h: float = None) -> dict:
+    def evaluate_signal(self, df: pd.DataFrame, ema_200_1h: float = None, trend_1h_declining: bool = False) -> dict:
         if len(df) < 50:
             return {"action": "HOLD", "reason": "Not enough data"}
 
@@ -246,6 +247,13 @@ class SuperTrendKeltnerStrategy:
             not pd.isna(adx_prior) and adx < ADX_QUALITY_MIN and adx < adx_prior
         )
 
+        # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
+        # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。
+        # 跟 KC 突破（E4/A）是兩件事——KC 突破只要求價格超出通道邊界一點，
+        # 這裡抓的是「超出太多」的極端情況。
+        ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
+        price_overextended = ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT
+
         # E. 品質細分加分（0~9分）：讓同樣達標 70/80 分的訊號能再分出優劣，
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
         # 三項各佔 0~3 分，數值越好加分越多，實測跟虧損大小/勝率相關：
@@ -301,6 +309,24 @@ class SuperTrendKeltnerStrategy:
                 "reason": f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}",
             }
 
+        # 額外防線：價格已經乖離 EMA20 太遠（見上面 D3），代表這波已經漲/
+        # 跌很多才追進場，均值回歸風險高，不管總分靠其他項目湊得多高。
+        if score >= MIN_SCORE_THRESHOLD and price_overextended:
+            return {
+                "action": "HOLD",
+                "reason": f"Mandatory_Fail: Price_Overextended({ema20_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}",
+            }
+
+        # 額外防線：大週期（1h）本身的動能也在衰退（見 engine.py
+        # update_1h_trend_cache 用同一批1h K線算的 ADX 衰退判斷），代表
+        # 不只是5分K的小趨勢要提防，連大方向本身都已經在做頭/做底，
+        # 這是5分K的新鮮度/ADX檢查看不到的更高層級末端訊號。
+        if score >= MIN_SCORE_THRESHOLD and trend_1h_declining:
+            return {
+                "action": "HOLD",
+                "reason": f"Mandatory_Fail: 1h_Trend_Declining | Score({score}) | {', '.join(score_details)}",
+            }
+
         if score >= MIN_SCORE_THRESHOLD:
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
@@ -334,7 +360,9 @@ class SuperTrendKeltnerStrategy:
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
 
-    def confirm_pullback_entry(self, df: pd.DataFrame, side: str, ema_1h: float = None) -> dict:
+    def confirm_pullback_entry(
+        self, df: pd.DataFrame, side: str, ema_1h: float = None, trend_1h_declining: bool = False
+    ) -> dict:
         """回踩觸發當下的二次確認。
 
         訊號登記等待回踩時，可能已經是將近 PULLBACK_TIMEOUT_MINUTES 分鐘前
@@ -354,6 +382,7 @@ class SuperTrendKeltnerStrategy:
         rsi = curr['rsi']
         vol = curr['volume']
         vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
+        ema_20 = curr['ema_20'] if not pd.isna(curr['ema_20']) else price
         st_dir = curr['st_direction']
         want_dir = 1 if side == "LONG" else -1
 
@@ -361,6 +390,24 @@ class SuperTrendKeltnerStrategy:
             return {
                 "status": "CANCEL",
                 "reason": f"SuperTrend 方向已反轉（現為{'多頭' if st_dir == 1 else '空頭'}）",
+            }
+
+        # 大週期（1h）本身動能也在衰退（跟 evaluate_signal() 同一套判斷，
+        # engine.py 用同一批1h K線算好傳進來）：等回踩的這段時間裡，就算
+        # 5分K條件都還成立，大方向本身若已經在做頭/做底，一樣取消。
+        if trend_1h_declining:
+            return {
+                "status": "CANCEL",
+                "reason": "大週期(1h)動能已在衰退 1h_Trend_Declining",
+            }
+
+        # 價格乖離 EMA20 太遠：等回踩的這段時間裡價格可能又衝更遠，均值
+        # 回歸風險比登記當下更高，一樣取消。
+        ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
+        if ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT:
+            return {
+                "status": "CANCEL",
+                "reason": f"價格乖離EMA20過大 Price_Overextended({ema20_distance_atr:.1f}x_ATR)",
             }
 
         # 距離原始突破過了多久：方向沒反轉不代表這個突破還「新鮮」——等回踩

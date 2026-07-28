@@ -9,6 +9,7 @@ from core.config import (
     PULLBACK_TIMEOUT_MINUTES, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET, POSITION_TREND_CHECK_INTERVAL_SEC,
+    ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H,
 )
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
@@ -38,6 +39,11 @@ class TradingEngine:
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         self.ema_200_1h_cache: Dict[str, float] = {}
+        # 大週期（1h）本身動能是不是也在衰退，用同一批 update_1h_trend_
+        # cache() 已經抓到的1h K線算 ADX，判斷「不只是5分K的小趨勢要提防，
+        # 連大方向本身都已經在做頭/做底」——5分K的新鮮度/ADX檢查看不到
+        # 這一層。
+        self.adx_1h_declining_cache: Dict[str, bool] = {}
         self.last_1h_cache_time: float = 0.0
         # 回調進場改用真正掛在交易所的限價單（見 core/testnet_account.py
         # 的 pending_limit_orders），不再用軟體輪詢價格的狀態機。
@@ -83,6 +89,13 @@ class TradingEngine:
         elif "SuperTrend_Stale" in reason:
             stale = re.search(r"SuperTrend_Stale\((\d+)\)", reason)
             stage = f"SuperTrend過期{stale.group(1)}根" if stale else "SuperTrend過期"
+        elif "ADX_Declining_Exhaustion" in reason:
+            stage = "ADX動能衰退過濾"
+        elif "Price_Overextended" in reason:
+            overext_match = re.search(r"Price_Overextended\(([\d.]+x_ATR)\)", reason)
+            stage = f"價格乖離過大{overext_match.group(1)}" if overext_match else "價格乖離過大"
+        elif "1h_Trend_Declining" in reason:
+            stage = "大週期動能衰退過濾"
         elif "EMA20" in reason or "1h_Trend" in reason:
             stage = "趨勢方向不符"
         elif "ATR_Too_High" in reason:
@@ -281,6 +294,16 @@ class TradingEngine:
             if not df_1h.empty and len(df_1h) >= 30:
                 ema_val = df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False).mean().iloc[-1]
                 self.ema_200_1h_cache[symbol] = float(ema_val)
+                # 用同一批已抓到的1h K線順便算 ADX，不用額外呼叫API：判斷
+                # 大週期本身的動能是不是也在衰退（不只是方向對不對）。
+                computed_1h = self.strategy.compute_indicators(df_1h)
+                adx_1h = computed_1h['adx'].iloc[-1]
+                lookback_idx = len(computed_1h) - 1 - ADX_DECLINE_LOOKBACK_BARS_1H
+                adx_1h_prior = computed_1h['adx'].iloc[lookback_idx] if lookback_idx >= 0 else float('nan')
+                if not pd.isna(adx_1h) and not pd.isna(adx_1h_prior):
+                    self.adx_1h_declining_cache[symbol] = bool(
+                        adx_1h < ADX_QUALITY_MIN and adx_1h < adx_1h_prior
+                    )
             await asyncio.sleep(0.1)
         self.last_1h_cache_time = now
 
@@ -365,7 +388,8 @@ class TradingEngine:
                     if confirm_df.empty or len(confirm_df) < 50:
                         continue
                     confirm = self.strategy.confirm_pullback_entry(
-                        confirm_df, pb_info["side"], ema_1h=self.ema_200_1h_cache.get(pb_symbol)
+                        confirm_df, pb_info["side"], ema_1h=self.ema_200_1h_cache.get(pb_symbol),
+                        trend_1h_declining=self.adx_1h_declining_cache.get(pb_symbol, False),
                     )
                     if confirm["status"] != "PASS":
                         await self.account.cancel_pending_limit(
@@ -485,7 +509,10 @@ class TradingEngine:
 
                         # 計算指標以取得 rsi 與 kc 通道等欄位
                         df = self.strategy.compute_indicators(df)
-                        sig = self.strategy.evaluate_signal(df, ema_200_1h=ema_200_1h)
+                        sig = self.strategy.evaluate_signal(
+                            df, ema_200_1h=ema_200_1h,
+                            trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
+                        )
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
                         )

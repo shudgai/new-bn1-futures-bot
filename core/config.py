@@ -168,6 +168,17 @@ ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # 門檻，專門抓這種「方向沒變但動能已經在衰退」的情況，跟品質加分（軟性
 # 只影響排序）分開，是硬性擋單。
 ADX_DECLINE_LOOKBACK_BARS = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS", "6"))
+# ADX_DECLINE_LOOKBACK_BARS_1H：同一套「ADX 現在比 N 根K棒前低，且已經
+# 低於 ADX_QUALITY_MIN」邏輯，但改看 1h K線——5分K的新鮮度/ADX檢查只能
+# 看到「這根5分K的小趨勢夠不夠新」，看不出「大週期本身是不是也已經在
+# 做頭/做底」。用同一批 update_1h_trend_cache() 已經抓到的1h K線重算，
+# 不用額外呼叫API。
+ADX_DECLINE_LOOKBACK_BARS_1H = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS_1H", "6"))
+# EMA_EXTENSION_MAX_ATR_MULT：價格距離 EMA20 太遠（用 ATR 正規化衡量）
+# 代表這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就拉回。
+# 實測當下多個幣種的正常距離落在 0.75~2.71 倍 ATR，3.5 倍給了足夠緩衝，
+# 只擋真正極端拉開的情況。
+EMA_EXTENSION_MAX_ATR_MULT = float(os.getenv("EMA_EXTENSION_MAX_ATR_MULT", "3.5"))
 
 # --- 動態 RSI 濾網 ---
 RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))

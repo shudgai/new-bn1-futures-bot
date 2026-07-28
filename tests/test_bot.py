@@ -171,6 +171,36 @@ def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
 
 
+def test_price_overextended_blocks_entry_even_with_qualifying_score(monkeypatch):
+    """價格距離 EMA20 太遠（用 ATR 正規化衡量）代表這波已經漲很多才追
+    進場，均值回歸風險高，不管總分靠其他項目湊得多高都要擋單。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
+    frame["ema_20"] = 100.05 - 5 * 0.3  # 距離拉開到 5倍 ATR，超過 EMA_EXTENSION_MAX_ATR_MULT(3.5)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+
+    assert result["action"] == "HOLD"
+    assert "Mandatory_Fail: Price_Overextended" in result["reason"]
+
+
+def test_1h_trend_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
+    """大週期（1h）本身動能也在衰退時（engine.py 用同一批1h K線算好傳
+    進來），就算5分K的分數/條件都達標，也要擋單——這是5分K的新鮮度/
+    ADX檢查看不到的更高層級末端訊號。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_200_1h=95.0, trend_1h_declining=True)
+
+    assert result["action"] == "HOLD"
+    assert "Mandatory_Fail: 1h_Trend_Declining" in result["reason"]
+
+
 def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, atr=0.3):
     """confirm_pullback_entry() 用的最小 K 線快照：atr 落在 MIN/MAX_ATR_PCT
     之間，避免被 ATR 範圍門檻誤擋，方便單獨測試量能/RSI/趨勢反轉的判斷。"""
@@ -244,6 +274,35 @@ def test_pullback_reconfirmation_cancels_when_adx_declining(monkeypatch):
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
     assert "ADX 動能持續衰退" in result["reason"]
+
+
+def test_pullback_reconfirmation_cancels_when_1h_trend_declining(monkeypatch):
+    """等回踩的這段時間裡，就算5分K條件都還成立，若大週期(1h)本身的
+    動能已經在衰退（engine.py 算好傳進來），一樣取消。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(
+        frame, side="LONG", ema_1h=95.0, trend_1h_declining=True
+    )
+    assert result["status"] == "CANCEL"
+    assert "大週期(1h)動能已在衰退" in result["reason"]
+
+
+def test_pullback_reconfirmation_cancels_when_price_overextended(monkeypatch):
+    """等回踩的這段時間裡價格可能又衝更遠，均值回歸風險比登記當下更高，
+    超過 EMA_EXTENSION_MAX_ATR_MULT 就取消。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    frame["ema_20"] = 100.0 - 5 * 0.3  # _reconfirm_frame price=100.0, atr=0.3
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "CANCEL"
+    assert "價格乖離EMA20過大" in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_momentum_faded(monkeypatch):
