@@ -181,6 +181,7 @@ def test_pullback_reconfirmation_passes_when_conditions_still_hold(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "PASS"
@@ -191,10 +192,24 @@ def test_pullback_reconfirmation_cancels_when_supertrend_reversed(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG", st_direction=-1)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
     assert "SuperTrend 方向已反轉" in result["reason"]
+
+
+def test_pullback_reconfirmation_cancels_when_too_stale(monkeypatch):
+    """方向沒反轉不代表還「新鮮」——等回踩的期間，行情可能只是原地盤整
+    消耗動能，SuperTrend 遲遲沒真的翻轉，但這個突破本身已經是強弩之末。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: FRESHNESS_DECAY_BARS)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "CANCEL"
+    assert "距離原始突破已過太久" in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_momentum_faded(monkeypatch):
@@ -202,6 +217,7 @@ def test_pullback_reconfirmation_cancels_when_momentum_faded(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG", volume=100.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
@@ -212,6 +228,7 @@ def test_pullback_reconfirmation_cancels_when_1h_trend_flipped(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=105.0)
     assert result["status"] == "CANCEL"
