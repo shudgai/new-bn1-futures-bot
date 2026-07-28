@@ -294,6 +294,15 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 # 推進滿一倍 ATR，才讓保本鎖的候選價生效，跟「通道中軌防守」用同一套
 # 「給正常波動更多空間」的精神，只是這裡用 ATR 衡量而不是通道結構。
 BREAKEVEN_LOCK_MIN_ATR_MULT = float(os.getenv("BREAKEVEN_LOCK_MIN_ATR_MULT", "1.0"))
+# MIN_STOP_DISTANCE_ATR_MULT：不管保本鎖/通道中軌防守/趨勢反轉哪個候選
+# 勝出，新止損跟「現價」之間都至少要留這個倍數的 ATR 距離，才送到交易所
+# 掛單。實測 OP/USDT 07/28 17:46 這筆，通道中軌（EMA20）剛好跟現價幾乎
+# 重疊，算出的新止損送單時距離已經是 0，被交易所以「Order would
+# immediately trigger」拒絕，程式判斷成「價格已穿越止盈線」，直接緊急
+# 市價平倉——行情其實只是在原地小幅震盪，不是真的走勢反轉。通道中軌是
+# 「跟著一個價位」而不是「跟現價保持固定距離」，在盤整時可能跟現價收斂
+# 到很近甚至重疊，需要額外的安全距離守住，不能只看候選價本身怎麼算。
+MIN_STOP_DISTANCE_ATR_MULT = float(os.getenv("MIN_STOP_DISTANCE_ATR_MULT", "0.15"))
 
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）

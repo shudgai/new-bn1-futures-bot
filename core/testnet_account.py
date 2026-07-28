@@ -12,6 +12,7 @@ from core.config import (
     TAKER_FEE_RATE,
     NET_PROFIT_GUARANTEE_BUFFER,
     BREAKEVEN_LOCK_MIN_ATR_MULT,
+    MIN_STOP_DISTANCE_ATR_MULT,
     PARTIAL_CLOSE_THRESHOLDS,
     FLASH_MOVE_WINDOW_SEC,
     FLASH_MOVE_THRESHOLD_PCT,
@@ -535,6 +536,13 @@ class BinanceTestnetAccount:
                     if reversed_trend:
                         candidates.append((curr_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = max(candidates, key=lambda c: c[0])
+                    # 安全防線：不管哪個候選勝出，新止損跟「現價」之間都至少
+                    # 留 MIN_STOP_DISTANCE_ATR_MULT 倍 ATR 距離才送單，避免
+                    # 通道中軌這類「跟著一個價位」而非「跟現價保持固定距離」
+                    # 的候選，在盤整時跟現價收斂到太近甚至重疊，送單被交易所
+                    # 以「Order would immediately trigger」拒絕，觸發不必要的
+                    # 緊急市價平倉（實測 OP/USDT 就是這樣，行情根本沒反轉）。
+                    trail_sl = min(trail_sl, curr_p - atr_val * MIN_STOP_DISTANCE_ATR_MULT)
                     # 移動幅度太小就不重新掛單：避免行情緩慢推進時每一輪主迴圈
                     # (5秒)都在 cancel/create 保護單，頻繁觸發 API 呼叫/速率限制。
                     # 保本鎖第一次啟動時通常是相對原本寬止損的一大步，不會被這個
@@ -572,6 +580,8 @@ class BinanceTestnetAccount:
                     if reversed_trend:
                         candidates.append((curr_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = min(candidates, key=lambda c: c[0])
+                    # 同上（LONG 分支）：新止損跟現價至少留安全距離才送單。
+                    trail_sl = max(trail_sl, curr_p + atr_val * MIN_STOP_DISTANCE_ATR_MULT)
                     if trail_sl < old_sl and (old_sl - trail_sl) >= atr_val * 0.05:
                         new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
                         _, tp_distance = compute_sl_tp_distance(curr_p, atr_val)
