@@ -95,12 +95,13 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # 71）純粹當保險，不影響現有正常流程。
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
-# 25 分鐘→1.5 分鐘（90秒）：實測真正成功觸發的回調，從登記到回踩到位
-# 只花 13~26 秒，25 分鐘的等待時間跟實際情況差了幾十倍——等這麼久才
-# 回踩到位，代表的不是「這次比較慢」，而是原本的訊號時機早就過了，
-# 硬進場也常常是在虧損邊緣。90 秒給觀察到的最長觸發時間（26秒）約
-# 3.5 倍緩衝，足夠又不會拖太久。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "1.5"))
+# 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內
+# 就成交（7.2~9.7 秒），只有 1 筆例外撐了 67.4 秒；反觀逾時撤單的 22
+# 筆，全部卡滿 90~105 秒才放棄——代表 90 秒對「不會成交」的單只是白等，
+# 價格早就背離、動能已經轉向。20 秒給最快成交群約 2 倍緩衝，短線動能
+# 真的夠強會立刻回踩接到，等不到就代表這次動能偏單邊，繼續等大機率是
+# 在賭一個正在遠離的假訊號，不如撤單讓 engine.py 用最新資料重新判斷。
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "0.3333"))
 # PENDING_REPOST_STREAK_LIMIT / PENDING_BACKOFF_MINUTES：實測發現同一個
 # symbol 的限價單超時/條件變差被撤銷後，下一輪掃描常常算出幾乎一樣的
 # target_price，就這樣連續掛單-撤單好幾次（AVAX/USDT 曾連續掛了 5 次

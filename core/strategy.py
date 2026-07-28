@@ -316,8 +316,8 @@ class SuperTrendKeltnerStrategy:
     def confirm_pullback_entry(self, df: pd.DataFrame, side: str, ema_1h: float = None) -> dict:
         """回踩觸發當下的二次確認。
 
-        訊號登記等待回踩時，可能已經是好幾分鐘甚至將近 PULLBACK_TIMEOUT_MINUTES
-        分鐘前的舊資料；等價格真的回踩到目標區時，量能可能已經萎縮、RSI 可能已經
+        訊號登記等待回踩時，可能已經是將近 PULLBACK_TIMEOUT_MINUTES 分鐘前
+        （目前預設 20 秒）的舊資料；等價格真的回踩到目標區時，量能可能已經萎縮、RSI 可能已經
         轉弱、甚至大趨勢或 SuperTrend 方向已經反轉——這正是「假突破」最常見的
         樣貌：一開始的突破訊號成立，但等真正要進場時動能其實已經退潮。這裡用
         當下最新的一根 K 棒重新檢查核心條件是否還成立，任何一項不成立就直接
