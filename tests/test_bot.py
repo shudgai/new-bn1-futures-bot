@@ -7,7 +7,7 @@ import core.paper_account as pa_module
 import core.strategy as strategy_module
 from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
-    RSI_LONG_THRESHOLD, SUPERTREND_MAX_FLIP_AGE_BARS, MIN_SCORE_THRESHOLD,
+    RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -128,7 +128,7 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     # 量能、RSI、ADX 也刻意不過，確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD
     frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5, adx=5.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: SUPERTREND_MAX_FLIP_AGE_BARS + 1)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: FRESHNESS_DECAY_BARS + 50)
 
     result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
 

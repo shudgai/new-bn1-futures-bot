@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER,
-    KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, SUPERTREND_MAX_FLIP_AGE_BARS,
+    KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
@@ -97,8 +97,22 @@ class SuperTrendKeltnerStrategy:
         supertrend = pd.Series(index=df.index, dtype=float)
         direction = pd.Series(index=df.index, dtype=int)
 
+        # 遞迴起點必須是 ATR 第一個有效值的那根，不能是第 0 根：ATR 是
+        # atr_period 期滾動平均，前面幾根一定是 NaN，basic_upper/lower 算出來
+        # 也是 NaN。如果從第 0 根開始遞迴，下面的棘輪邏輯全部是「跟前一根
+        # 比大小」，只要比較對象是 NaN，Python/pandas 的比較結果永遠是
+        # False，會一路落入 else 分支維持前一根的 NaN，一路傳染到最後一根，
+        # 導致 final_upper/final_lower 永遠是 NaN、方向永遠卡在初始值 1
+        # （多頭），不管實際價格怎麼走都不會翻轉——這是先前空單訊號被完全
+        # 堵死、新鮮度分數永遠拿不到的根本原因。
+        first_valid = df['atr'].first_valid_index()
+        start_pos = df.index.get_loc(first_valid) if first_valid is not None else len(df)
+
         for i in range(len(df)):
-            if i == 0:
+            if i < start_pos:
+                direction.iloc[i] = 1
+                continue
+            if i == start_pos:
                 final_upper.iloc[i] = basic_upper.iloc[i]
                 final_lower.iloc[i] = basic_lower.iloc[i]
                 direction.iloc[i] = 1
@@ -211,13 +225,13 @@ class SuperTrendKeltnerStrategy:
         else:
             score_details.append("RSI_Fail")
 
-        # D. 訊號新鮮度分數 (30分)
+        # D. 訊號新鮮度分數 (連續淡化，滿分30分)：剛翻轉給滿分，隨根數線性
+        # 淡化，到 FRESHNESS_DECAY_BARS 掃到 0 分，不是硬門檻全有全無。
         st_flip_age = bars_since_supertrend_flip(df['st_direction'])
-        if st_flip_age <= SUPERTREND_MAX_FLIP_AGE_BARS:
-            score += 30
-            score_details.append("Freshness_Pass")
-        else:
-            score_details.append("Freshness_Fail")
+        freshness_ratio = max(0.0, 1.0 - st_flip_age / FRESHNESS_DECAY_BARS) if FRESHNESS_DECAY_BARS > 0 else 0.0
+        freshness_score = round(freshness_ratio * 30)
+        score += freshness_score
+        score_details.append(f"Freshness({st_flip_age}bars)+{freshness_score}")
 
         # E. 品質細分加分（0~9分）：讓同樣達標 70/80 分的訊號能再分出優劣，
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。

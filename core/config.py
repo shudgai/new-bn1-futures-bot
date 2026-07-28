@@ -108,11 +108,16 @@ KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
-# SUPERTREND_MAX_FLIP_AGE_BARS：允許 40 根 K 棒內（約 200 分鐘）的翻轉訊號
-# 8 根太嚴，整理盤下 SuperTrend 翻轉超過 40 分鐘就全部過濾，導致無法開倉
-# 20 根仍太短：KC 通道寬度 1.5x ATR，翻轉後價格通常要走超過 20 根才會真正突破通道，
-# 導致「新鮮度」幾乎永遠跟「KC突破」對不上，分數卡死在 70 分、進不了 80~100 分檔位。
-SUPERTREND_MAX_FLIP_AGE_BARS = int(os.getenv("SUPERTREND_MAX_FLIP_AGE_BARS", "40"))
+# FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化，不是硬門檻。
+# 原本用「40 根K棒內（8→20→40 根一路調寬）滿分、超過直接 0 分」的硬門檻，
+# 但實測發現 core/strategy.py 的 SuperTrend 計算曾經有 bug（第0根 ATR 是
+# NaN，遞迴棘輪邏輯遇到 NaN 比較永遠傳染下去，導致方向永遠卡在初始值、
+# 從未真正翻轉——187 筆歷史交易 100% 都是多單、新鮮度 0/187 通過），修好
+# bug 後用真實資料量測，KC突破/量能/RSI都到齊時，距離上次翻轉常態落在
+# 20~40 根，硬門檻不管設多寬都容易卡在「差一點點」的邊界。改成翻轉剛
+# 發生給滿分 30 分，隨根數線性淡化，到 FRESHNESS_DECAY_BARS 掃到 0 分，
+# 讓「剛翻轉」跟「翻轉很久了」的差異真正反映在分數上，不是全有全無。
+FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
 
 # --- ADX 趨勢強度濾網（品質加分用，非強制門檻）---
 # KC 突破配上低 ADX，是盤整期假突破的常見樣貌；但直接拿來當強制門檻風險
