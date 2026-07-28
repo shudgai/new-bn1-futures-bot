@@ -70,6 +70,18 @@ class BinanceTestnetAccount:
         self.daily_start_balance: float = 0.0
         self.daily_start_realized_pnl: float = 0.0
         self.daily_halt_logged: bool = False
+        # 平倉時間唯一資料來源：不管平倉是主迴圈觸發還是 /api/prices、
+        # /api/status 這些網頁輪詢呼叫觸發，都會記在這裡。原本冷卻時間是
+        # engine.py 自己拿「這輪呼叫前後持倉少了誰」來判斷，但平倉如果是
+        # 被網頁輪詢（跟主迴圈完全不同步、各自獨立呼叫 update_positions）
+        # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
+        self.last_closed_at: Dict[str, float] = {}
+        # 移動止損/趨勢反轉評估節流：/api/prices、/api/status 每 1~3 秒就
+        # 會各自呼叫一次 update_positions()，跟主迴圈（5秒一次）完全不同步，
+        # 同一個持倉可能在很短時間內被多個呼叫者重複評估、疊加觸發好幾次
+        # 止損調整，price 已經跑掉時容易被交易所拒單、觸發不必要的緊急
+        # 市價平倉。加上這個節流，同一個 symbol 的止損評估最多每 4 秒做一次。
+        self._last_trailing_eval_at: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -237,6 +249,7 @@ class BinanceTestnetAccount:
         if symbol in self.closing_lock:
             return
         self.closing_lock.add(symbol)
+        self.last_closed_at[symbol] = time.time()
         try:
             await self._cancel_all_orders(symbol)
             self.positions.pop(symbol, None)
@@ -370,10 +383,19 @@ class BinanceTestnetAccount:
                     "WARNING",
                 )
 
+            # 節流：/api/prices、/api/status 每 1~3 秒就會各自呼叫一次
+            # update_positions()，跟主迴圈（5秒一次）完全不同步。同一個持倉
+            # 的止損調整（緩衝期收尾 + 移動停利/趨勢反轉）最多每 4 秒評估
+            # 一次，避免不同呼叫者在極短時間內重複觸發、疊加收緊，price
+            # 已經跑掉時容易被交易所拒單觸發不必要的緊急市價平倉。
+            can_eval_trailing = now_ts - self._last_trailing_eval_at.get(symbol, 0) >= 4.0
+            if can_eval_trailing:
+                self._last_trailing_eval_at[symbol] = now_ts
+
             # 進場緩衝期結束：把剛進場時放寬的止損收緊回原本策略設定的正常距離。
             # 若急殺正在發生就先不收緊（避免在最劇烈的當下把止損調緊），
             # 若移動止利已經把止損推得比目標還緊，直接清掉標記、不需要再處理。
-            if "target_sl" in meta and now_ts >= meta.get("grace_until", 0) and not is_flash:
+            if can_eval_trailing and "target_sl" in meta and now_ts >= meta.get("grace_until", 0) and not is_flash:
                 target_sl = meta["target_sl"]
                 already_tighter = (
                     (side == "LONG" and old_sl >= target_sl)
@@ -405,7 +427,7 @@ class BinanceTestnetAccount:
             # 緩衝期的保護，新止損送到交易所時常常價格已經穿越，觸發保護單
             # 被拒→緊急市價平倉，整個緩衝期形同虛設（實測 BTC 連續好幾筆
             # 進場後 1~11 秒內就被這樣洗出場，虧損金額精準卡在 0.5x ATR）。
-            if old_sl > 0 and not is_flash and now_ts >= meta.get("grace_until", 0):
+            if can_eval_trailing and old_sl > 0 and not is_flash and now_ts >= meta.get("grace_until", 0):
                 # 優先用 engine.update_position_trends() 定期重算的即時 ATR，
                 # 反映當下波動度；還沒有即時值時（例如剛啟動、還沒輪到這個
                 # 幣種重算）才退回進場當下存的舊值。同步寫回 meta，讓其他
@@ -895,6 +917,7 @@ class BinanceTestnetAccount:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
         self.closing_lock.add(symbol)
+        self.last_closed_at[symbol] = time.time()
         position = dict(self.positions[symbol])
         try:
             await self._cancel_all_orders(symbol)

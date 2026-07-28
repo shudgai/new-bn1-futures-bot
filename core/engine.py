@@ -37,7 +37,6 @@ class TradingEngine:
         self.account.on_trade_closed = self.request_trade_analysis
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
-        self.cooldowns: Dict[str, float] = {}
         self.ema_200_1h_cache: Dict[str, float] = {}
         self.last_1h_cache_time: float = 0.0
         # 回調待命狀態機（Pullback State Machine）
@@ -317,15 +316,16 @@ class TradingEngine:
 
                 # 2. 更新與執行持倉部位
                 await self.update_position_trends()
-                prev_positions = set(self.account.positions.keys())
                 await self.account.update_positions(
                     self.tickers,
                     trend_directions=self.position_trend_cache,
                     atr_overrides=self.position_atr_cache,
                 )
-                closed_symbols = prev_positions - set(self.account.positions.keys())
-                for csym in closed_symbols:
-                    self.cooldowns[csym] = time.time()
+                # 冷卻時間唯一資料來源是 self.account.last_closed_at（見
+                # testnet_account.py），不管平倉是這裡的主迴圈觸發，還是
+                # /api/prices、/api/status 這些跟主迴圈不同步的網頁輪詢
+                # 呼叫觸發，都會準確記錄，不會像原本這裡自己拿前後快照
+                # 判斷那樣，漏掉別的呼叫者觸發的平倉。
 
                 # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
                 await self.update_1h_trend_cache()
@@ -365,7 +365,8 @@ class TradingEngine:
                     # 到目標區就會立刻重新開倉——進場價跟剛平倉的價位幾乎一樣，等於
                     # 白白繳一次手續費又立刻承擔新的止損風險。冷卻期間先跳過這一輪，
                     # 不刪除待命記錄，冷卻結束後（且尚未超時）還是會繼續檢查回踩。
-                    if pb_symbol in self.cooldowns and (now_time - self.cooldowns[pb_symbol]) < 900:
+                    last_closed = self.account.last_closed_at.get(pb_symbol)
+                    if last_closed is not None and (now_time - last_closed) < 900:
                         continue
 
                     # 同時持倉上限檢查：跟第 5 步的 MAX_SLOTS 用同一套規則，
@@ -467,8 +468,9 @@ class TradingEngine:
                             continue
 
                         # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
-                        if symbol in self.cooldowns and (now_time - self.cooldowns[symbol]) < 900:
-                            remaining = max(0, int((900 - (now_time - self.cooldowns[symbol])) / 60) + 1)
+                        last_closed = self.account.last_closed_at.get(symbol)
+                        if last_closed is not None and (now_time - last_closed) < 900:
+                            remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
                             signal_progress.append(
                                 f"{coin} {direction_text} 0分,冷卻剩{remaining}分鐘"
                             )
