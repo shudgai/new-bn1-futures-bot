@@ -285,6 +285,15 @@ def get_trailing_pullback_pct(peak_profit_pct: float, peak_updated_at: float) ->
 #              安全緩衝  +0.02%（防止恰好在邊緣虧損）
 #   合計 ≈ 0.18%，trail_sl 必須高於「進場價 × (1 + 0.0018)」才能真正保本。
 NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.0018"))
+# BREAKEVEN_LOCK_MIN_ATR_MULT：保本鎖原本只要「最高價/最低價扣掉手續費
+# 緩衝後淨賺」就會啟動，不管這個有利幅度用該幣種自己的波動度衡量算不算
+# 大。實測三筆真實虧損都是這個樣貌：AAVE/USDT 只走了 0.93倍ATR、
+# BCH/USDT 0.53倍、DOT/USDT 更少，保本鎖就把止損鎖到幾乎貼著進場價，
+# 隨後一次正常的價格雜訊反彈（行情根本沒走壞，AAVE平倉後還繼續跌到
+# 96.51）就把單子洗出場，虧的幾乎全是手續費。要求最高價/最低價至少
+# 推進滿一倍 ATR，才讓保本鎖的候選價生效，跟「通道中軌防守」用同一套
+# 「給正常波動更多空間」的精神，只是這裡用 ATR 衡量而不是通道結構。
+BREAKEVEN_LOCK_MIN_ATR_MULT = float(os.getenv("BREAKEVEN_LOCK_MIN_ATR_MULT", "1.0"))
 
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）

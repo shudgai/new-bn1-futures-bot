@@ -11,6 +11,7 @@ from core.config import (
     BINANCE_SECRET,
     TAKER_FEE_RATE,
     NET_PROFIT_GUARANTEE_BUFFER,
+    BREAKEVEN_LOCK_MIN_ATR_MULT,
     PARTIAL_CLOSE_THRESHOLDS,
     FLASH_MOVE_WINDOW_SEC,
     FLASH_MOVE_THRESHOLD_PCT,
@@ -500,8 +501,9 @@ class BinanceTestnetAccount:
                 meta["atr"] = atr_val
                 kc_mid = kc_mid_overrides.get(symbol)
                 # 四個候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
-                # 1) 保本鎖：一旦最高價（多單）/最低價（空單）扣掉手續費+滑點
-                #    緩衝後仍是淨賺，立刻鎖到保本線，不用等通道中軌先跟上。
+                # 1) 保本鎖：最高價（多單）/最低價（空單）扣掉手續費+滑點
+                #    緩衝後淨賺，且至少推進滿 BREAKEVEN_LOCK_MIN_ATR_MULT
+                #    倍 ATR（不是隨便有賺就鎖），才鎖到保本線。
                 # 2) 通道中軌防守：Keltner 中軌（EMA20）推進到比進場價更有利
                 #    的位置時，跟著中軌收緊——中軌本身用已收盤K棒每90秒重算
                 #    一次，不受單一 tick 雜訊牽動，價格要真的把中軌structure
@@ -519,7 +521,11 @@ class BinanceTestnetAccount:
                     peak_price = meta["highest_price"]
                     breakeven_level = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                     candidates = [(old_sl, "原止損")]
-                    if peak_price >= breakeven_level:
+                    # 要求最高價至少推進滿 BREAKEVEN_LOCK_MIN_ATR_MULT 倍
+                    # ATR 才讓保本鎖生效，不是「有淨賺就鎖」——避免行情才
+                    # 走一點點雜訊幅度就被鎖死在幾乎貼著進場價的止損，一次
+                    # 正常反彈就洗出場（實測 AAVE/BCH/DOT 都是這個樣貌）。
+                    if peak_price >= breakeven_level and (peak_price - entry_p) >= atr_val * BREAKEVEN_LOCK_MIN_ATR_MULT:
                         candidates.append((breakeven_level, "保本鎖"))
                     # 要求中軌本身已經推進到比進場價更有利的位置，這個候選價
                     # 才可能 >= entry_p，不會比「連本金都保不住」還緊——避免
@@ -555,7 +561,8 @@ class BinanceTestnetAccount:
                     trough_price = meta["lowest_price"]
                     breakeven_level = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                     candidates = [(old_sl, "原止損")]
-                    if trough_price <= breakeven_level:
+                    # 同上（LONG 分支）：要求最低價至少推進滿一倍 ATR。
+                    if trough_price <= breakeven_level and (entry_p - trough_price) >= atr_val * BREAKEVEN_LOCK_MIN_ATR_MULT:
                         candidates.append((breakeven_level, "保本鎖"))
                     # 同上（LONG 分支）：要求中軌本身已經推進到比進場價更
                     # 有利的位置，避免進場當下中軌還在進場價上方就被當成
