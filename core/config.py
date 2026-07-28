@@ -94,8 +94,13 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # 正常流程分數不會低於 MIN_SCORE_THRESHOLD(71)，這裡刻意設 70（略低於
 # 71）純粹當保險，不影響現有正常流程。
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
-# PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間（延長至 25 分鐘，給價格充分回踩 KC 的時間）
-PULLBACK_TIMEOUT_MINUTES = int(os.getenv("PULLBACK_TIMEOUT_MINUTES", "25"))
+# PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
+# 25 分鐘→1.5 分鐘（90秒）：實測真正成功觸發的回調，從登記到回踩到位
+# 只花 13~26 秒，25 分鐘的等待時間跟實際情況差了幾十倍——等這麼久才
+# 回踩到位，代表的不是「這次比較慢」，而是原本的訊號時機早就過了，
+# 硬進場也常常是在虧損邊緣。90 秒給觀察到的最長觸發時間（26秒）約
+# 3.5 倍緩衝，足夠又不會拖太久。
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "1.5"))
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。

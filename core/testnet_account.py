@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import time
@@ -19,6 +20,7 @@ from core.config import (
     CHANDELIER_ATR_MULT,
     REVERSAL_EXIT_ATR_MULT,
     MIN_OPEN_SIGNAL_SCORE,
+    DEFAULT_SYMBOLS,
     get_leverage,
     get_signal_leverage,
 )
@@ -82,6 +84,10 @@ class BinanceTestnetAccount:
         # 止損調整，price 已經跑掉時容易被交易所拒單、觸發不必要的緊急
         # 市價平倉。加上這個節流，同一個 symbol 的止損評估最多每 4 秒做一次。
         self._last_trailing_eval_at: Dict[str, float] = {}
+        # 真正掛在交易所的限價回調進場單追蹤，取代原本「軟體輪詢價格到了
+        # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
+        # 一個 symbol 同時最多一張掛單。
+        self.pending_limit_orders: Dict[str, dict] = {}
         self._load_state()
 
     @staticmethod
@@ -176,7 +182,41 @@ class BinanceTestnetAccount:
             raise RuntimeError("8006 Testnet API Key 尚未設定")
         await self.exchange.load_markets()
         self._markets_loaded = True
+        await self._cancel_orphan_entry_orders()
         await self.refresh(force=True)
+
+    async def _cancel_orphan_entry_orders(self) -> None:
+        """開機時清掉「軟體重啟後失去追蹤，但交易所還留著」的孤兒進場限價單。
+        place_limit_entry() 掛的是一般 LIMIT 單；SL/TP 保護單是另一種
+        algoOrder（CONDITIONAL）類型，不會被這裡誤刪。如果機器人剛好在
+        限價單還沒成交時重啟，pending_limit_orders 這個記憶體追蹤會被
+        清空，但單子還留在交易所——放著不管，之後萬一意外成交，就會變成
+        一個沒有止損止盈保護的裸倉。開機時主動清掉這種殘留單，之後由
+        正常的訊號掃描重新評估要不要掛新單。
+
+        Binance USDM 合約的 fetchOpenOrders() 不指定 symbol 時會被限流拒絕
+        （"fetching open orders without specifying a symbol is rate-limited"），
+        所以逐幣種查詢目前牌面（DEFAULT_SYMBOLS）——涵蓋絕大多數會發生的
+        情況，牌面之外的舊幣種孤兒單機率很低，先不處理。"""
+        for symbol in DEFAULT_SYMBOLS:
+            try:
+                open_orders = await self.exchange.fetch_open_orders(symbol)
+            except Exception as exc:
+                self.log(f"⚠️ 檢查 {symbol} 孤兒掛單失敗（略過）：{type(exc).__name__}: {exc}", "WARNING")
+                continue
+            for order in open_orders:
+                if order.get("type") != "limit":
+                    continue
+                try:
+                    await self.exchange.cancel_order(order["id"], symbol)
+                    self.log(
+                        f"🧹 [孤兒掛單清理] 取消重啟前殘留的限價單 {symbol} "
+                        f"{order.get('side')} @ {order.get('price')}",
+                        "WARNING",
+                    )
+                except Exception as exc:
+                    self.log(f"⚠️ 清理孤兒掛單失敗 {symbol}：{type(exc).__name__}: {exc}", "WARNING")
+            await asyncio.sleep(0.05)
 
     async def refresh(self, force: bool = False) -> float:
         now = time.time()
@@ -344,7 +384,15 @@ class BinanceTestnetAccount:
             side = pos["side"]
             entry_p = pos["entry_price"]
 
-            if pos.get("sl", 0.0) <= 0 and symbol not in self._orphan_protection_attempted:
+            # symbol 還有我們自己在追蹤的限價掛單時，就算交易所那邊已經
+            # 部分成交、看起來像「持倉但沒保護單」，也不要插手——這種情況
+            # 交給 check_pending_limit_orders()/_finalize_new_position() 統一
+            # 處理，避免兩邊搶著建立不一致的止損止盈單。
+            if (
+                pos.get("sl", 0.0) <= 0
+                and symbol not in self._orphan_protection_attempted
+                and symbol not in self.pending_limit_orders
+            ):
                 self._orphan_protection_attempted.add(symbol)
                 await self._create_orphan_protection(symbol, pos, meta)
 
@@ -777,6 +825,8 @@ class BinanceTestnetAccount:
         leverage: int = None,
         signal_score: int = None,
     ) -> bool:
+        """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
+        訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
         if symbol in self.positions or symbol in self.closing_lock:
             return False
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
@@ -805,16 +855,7 @@ class BinanceTestnetAccount:
             return False
 
         try:
-            # 強制逐倉保證金模式：專案從沒設定過保證金模式，代表可能一直用帳戶
-            # 預設的全倉——全倉下一筆爆倉會吃掉整個帳戶保證金，不只該筆本金，
-            # 直接打破 MAX_SLOTS/TRADE_AMOUNT_USDT「每筆只賭固定金額」的風控
-            # 假設。已經是 ISOLATED 時 Binance 會回錯誤（-4046 No need to change
-            # margin type），單純忽略即可，不影響下單流程。
-            try:
-                await self.exchange.set_margin_mode("ISOLATED", symbol)
-            except Exception:
-                pass
-            await self.exchange.set_leverage(leverage, symbol)
+            await self._prepare_leverage(symbol, leverage)
             entry_order = await self.exchange.create_order(
                 symbol,
                 "market",
@@ -824,8 +865,58 @@ class BinanceTestnetAccount:
                 {"newOrderRespType": "RESULT"},
             )
             execution_price = float(entry_order.get("average") or price)
-            sl_distance = abs(price - sl)
-            tp_distance = abs(tp - price)
+        except Exception as exc:
+            self.log(
+                f"🛑 Binance Testnet 開倉失敗 {symbol}："
+                f"{type(exc).__name__}: {exc}",
+                "DANGER",
+            )
+            await self.refresh(force=True)
+            return False
+
+        return await self._finalize_new_position(
+            symbol, side, execution_price, qty, price, sl, tp, reason, atr,
+            leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
+        )
+
+    async def _prepare_leverage(self, symbol: str, leverage: int) -> None:
+        # 強制逐倉保證金模式：專案從沒設定過保證金模式，代表可能一直用帳戶
+        # 預設的全倉——全倉下一筆爆倉會吃掉整個帳戶保證金，不只該筆本金，
+        # 直接打破 MAX_SLOTS/TRADE_AMOUNT_USDT「每筆只賭固定金額」的風控
+        # 假設。已經是 ISOLATED 時 Binance 會回錯誤（-4046 No need to change
+        # margin type），單純忽略即可，不影響下單流程。
+        try:
+            await self.exchange.set_margin_mode("ISOLATED", symbol)
+        except Exception:
+            pass
+        await self.exchange.set_leverage(leverage, symbol)
+
+    async def _finalize_new_position(
+        self,
+        symbol: str,
+        side: str,
+        execution_price: float,
+        qty: float,
+        price_ref: float,
+        sl: float,
+        tp: float,
+        reason: str,
+        atr: float,
+        leverage: int,
+        signal_score,
+        close_side: str,
+        entry_order_id,
+        amount_usdt: float,
+    ) -> bool:
+        """開倉單成交後的收尾：建立SL/TP保護單、寫入meta、記錄交易。
+        market（open_position）與 limit（place_limit_entry 成交後）兩條
+        路徑共用，避免重複程式碼。price_ref 是原本規劃進場的參考價（市價
+        單是訊號當下價、限價單是掛單目標價），sl/tp 距離以它為基準換算，
+        再套用到實際成交價上，讓成交價比預期更好時，止損止盈距離維持
+        原本規劃的寬度，不會因為成交價落差而跟著偏移。"""
+        try:
+            sl_distance = abs(price_ref - sl)
+            tp_distance = abs(tp - price_ref)
             adjusted_sl = (
                 execution_price - sl_distance if side == "LONG"
                 else execution_price + sl_distance
@@ -846,6 +937,11 @@ class BinanceTestnetAccount:
             )
             grace_sl_price = float(self.exchange.price_to_precision(symbol, grace_sl))
             try:
+                # 限價單成交後，這裡跟主迴圈/網頁輪詢都可能同時偵測到「這個
+                # symbol 有持倉但還沒保護單」而觸發 _create_orphan_protection，
+                # 兩邊可能疊出重複的止損止盈單。先清一次掛單，確保接下來建的
+                # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
+                await self._cancel_all_orders(symbol)
                 await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", qty, grace_sl_price
                 )
@@ -892,7 +988,7 @@ class BinanceTestnetAccount:
                 "reason": reason,
                 "sl": sl_price,
                 "tp": tp_price,
-                "exchange_order_id": entry_order.get("id"),
+                "exchange_order_id": entry_order_id,
             })
             await self.refresh(force=True)
             self.log(
@@ -904,12 +1000,159 @@ class BinanceTestnetAccount:
             return True
         except Exception as exc:
             self.log(
-                f"🛑 Binance Testnet 開倉失敗 {symbol}："
+                f"🛑 Binance Testnet 開倉收尾失敗 {symbol}："
                 f"{type(exc).__name__}: {exc}",
                 "DANGER",
             )
             await self.refresh(force=True)
             return False
+
+    async def place_limit_entry(
+        self,
+        symbol: str,
+        side: str,
+        target_price: float,
+        amount_usdt: float,
+        sl: float,
+        tp: float,
+        reason: str,
+        atr: float = 0.0,
+        leverage: int = None,
+        signal_score: int = None,
+    ) -> bool:
+        """在交易所掛真正的限價單進場，取代原本「軟體輪詢等到價再送市價單」
+        的做法：不用等主迴圈下一輪才發現價格到了，交易所直接幫忙盯著；
+        還沒成交、條件變差或超時的處理交給 check_pending_limit_orders()/
+        engine.py 每輪呼叫的條件重新檢查（見 engine._main_loop 第4步）。"""
+        if symbol in self.positions or symbol in self.closing_lock or symbol in self.pending_limit_orders:
+            return False
+        if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
+            self.log(
+                f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕掛單",
+                "WARNING",
+            )
+            return False
+        await self._ensure_markets()
+        leverage = leverage or (
+            get_signal_leverage(symbol, signal_score)
+            if signal_score is not None
+            else get_leverage(symbol)
+        )
+        order_side = "buy" if side == "LONG" else "sell"
+        qty = float(self.exchange.amount_to_precision(
+            symbol,
+            (amount_usdt * leverage) / max(target_price, 1e-12),
+        ))
+        if qty <= 0:
+            self.log(f"🛑 {symbol} 掛單數量低於交易所最小精度", "WARNING")
+            return False
+
+        try:
+            await self._prepare_leverage(symbol, leverage)
+            price_str = self.exchange.price_to_precision(symbol, target_price)
+            order = await self.exchange.create_order(
+                symbol, "limit", order_side, qty, float(price_str),
+                {"timeInForce": "GTC"},
+            )
+        except Exception as exc:
+            self.log(
+                f"🛑 {symbol} 限價掛單失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+            return False
+
+        self.pending_limit_orders[symbol] = {
+            "order_id": order.get("id"),
+            "side": side,
+            "qty": qty,
+            "target_price": float(price_str),
+            "amount_usdt": amount_usdt,
+            "sl": sl,
+            "tp": tp,
+            "reason": reason,
+            "atr": atr,
+            "leverage": leverage,
+            "signal_score": signal_score,
+            "placed_at": time.time(),
+        }
+        self.log(
+            f"📝 [限價掛單] {symbol} {side} 掛單 @ {price_str}（{leverage}x），等待成交",
+            "INFO",
+        )
+        return True
+
+    async def check_pending_limit_orders(self) -> None:
+        """每輪主迴圈呼叫：檢查所有限價掛單狀態，成交就補建保護單並記錄
+        交易；被交易所取消/拒絕的直接清掉追蹤。超時/條件變差的主動撤單
+        判斷交給 engine.py（需要策略/K線資料才能重新驗證條件），這裡只
+        處理「有沒有成交」。"""
+        for symbol, info in list(self.pending_limit_orders.items()):
+            try:
+                order_status = await self.exchange.fetch_order(info["order_id"], symbol)
+            except Exception as exc:
+                self.log(
+                    f"⚠️ {symbol} 查詢限價單狀態失敗：{type(exc).__name__}: {exc}",
+                    "WARNING",
+                )
+                continue
+
+            status = order_status.get("status")
+            filled_qty = float(order_status.get("filled") or 0.0)
+            close_side = "sell" if info["side"] == "LONG" else "buy"
+
+            if status == "closed" and filled_qty > 0:
+                execution_price = float(order_status.get("average") or info["target_price"])
+                del self.pending_limit_orders[symbol]
+                # 提前佔用孤兒保護標記：限價單成交後到 _finalize_new_position
+                # 真正建好保護單這段期間，主迴圈或網頁輪詢的 update_positions()
+                # 可能會搶先看到「有持倉但還沒保護單」而觸發孤兒保護機制，
+                # 跟這裡疊出重複止損止盈單。先佔位讓孤兒保護機制略過這個
+                # symbol，交給 _finalize_new_position 統一處理。
+                self._orphan_protection_attempted.add(symbol)
+                await self._finalize_new_position(
+                    symbol, info["side"], execution_price, filled_qty,
+                    info["target_price"], info["sl"], info["tp"], info["reason"],
+                    info["atr"], info["leverage"], info["signal_score"], close_side,
+                    info["order_id"], info["amount_usdt"],
+                )
+            elif status in ("canceled", "rejected", "expired"):
+                del self.pending_limit_orders[symbol]
+                if filled_qty > 0:
+                    # 部分成交後被取消：剩餘數量不會再成交了，直接用已成交
+                    # 的量入場，不留一個「半個部位」在系統外面沒人管。
+                    execution_price = float(order_status.get("average") or info["target_price"])
+                    self.log(
+                        f"⚠️ {symbol} 限價單部分成交（{filled_qty}/{info['qty']}）後停止，"
+                        f"以實際成交量入場",
+                        "WARNING",
+                    )
+                    self._orphan_protection_attempted.add(symbol)
+                    await self._finalize_new_position(
+                        symbol, info["side"], execution_price, filled_qty,
+                        info["target_price"], info["sl"], info["tp"], info["reason"],
+                        info["atr"], info["leverage"], info["signal_score"], close_side,
+                        info["order_id"], info["amount_usdt"],
+                    )
+                else:
+                    self.log(f"↩️ {symbol} 限價單已被取消/拒絕，放棄本次進場", "INFO")
+
+    async def cancel_pending_limit(self, symbol: str, reason: str) -> None:
+        """主動撤單（超時或條件變差），engine.py 呼叫。"""
+        info = self.pending_limit_orders.get(symbol)
+        if not info:
+            return
+        try:
+            await self.exchange.cancel_order(info["order_id"], symbol)
+        except Exception as exc:
+            # 可能剛好在這個瞬間成交了，撤單會失敗；不主動刪追蹤記錄，
+            # 讓下一輪 check_pending_limit_orders() 去確認實際狀態並收尾。
+            self.log(
+                f"⚠️ {symbol} 撤銷限價單失敗（可能剛好成交）：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+            return
+        del self.pending_limit_orders[symbol]
+        self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
 
     async def close_position(
         self, symbol: str, current_price: float, close_reason: str

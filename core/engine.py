@@ -6,7 +6,7 @@ import pandas as pd
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
-    PULLBACK_TIMEOUT_MINUTES, PULLBACK_ZONE_PCT, SYMBOL_ROTATION_INTERVAL_SEC,
+    PULLBACK_TIMEOUT_MINUTES, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET, POSITION_TREND_CHECK_INTERVAL_SEC,
 )
@@ -39,10 +39,8 @@ class TradingEngine:
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         self.ema_200_1h_cache: Dict[str, float] = {}
         self.last_1h_cache_time: float = 0.0
-        # 回調待命狀態機（Pullback State Machine）
-        # 格式: { symbol: {"side": "LONG"/"SHORT", "target_zone": float, "atr": float,
-        #                      "sl": float, "tp": float, "timestamp": float, "reason": str} }
-        self.pending_pullbacks: Dict[str, dict] = {}
+        # 回調進場改用真正掛在交易所的限價單（見 core/testnet_account.py
+        # 的 pending_limit_orders），不再用軟體輪詢價格的狀態機。
         self.last_signal_progress_log_at: float = 0.0
         # 持倉幣種的 SuperTrend 方向快取，用來偵測趨勢反轉、餵給移動止損當
         # 候選收緊價（見 update_position_trends）。不用跟主迴圈一樣每 5 秒
@@ -330,100 +328,41 @@ class TradingEngine:
                 # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
                 await self.update_1h_trend_cache()
 
-                # 4. 回調待命狀態機處理 (檢查所有待命訊號是否回調到位)
+                # 4. 限價回調掛單監控：先讓帳戶檢查有沒有成交，再處理超時/
+                # 條件變差撤單。實際「等到價」交給交易所的限價單去做，不用
+                # 軟體輪詢，這裡只負責監督掛單還要不要繼續等。
+                await self.account.check_pending_limit_orders()
                 now_time = time.time()
-                for pb_symbol, pb_info in list(self.pending_pullbacks.items()):
+                for pb_symbol, pb_info in list(self.account.pending_limit_orders.items()):
                     if pb_symbol not in DEFAULT_SYMBOLS:
-                        del self.pending_pullbacks[pb_symbol]
-                        self.account.log(
-                            f"🔄 [回調取消] {pb_symbol} 已不在目前12幣名單",
-                            "INFO",
-                        )
+                        await self.account.cancel_pending_limit(pb_symbol, "已不在目前牌面名單")
                         continue
 
-                    # 4a. 超時檢查：超過 PULLBACK_TIMEOUT_MINUTES 就放棄
-                    elapsed_min = (now_time - pb_info["timestamp"]) / 60.0
+                    # 4a. 超時撤單：實測真正成交的掛單都在 30 秒內成交，
+                    # PULLBACK_TIMEOUT_MINUTES 已經給了充分緩衝，超過還沒
+                    # 成交代表這次不會等到了，撤單放棄不要留著裸奔。
+                    elapsed_min = (now_time - pb_info["placed_at"]) / 60.0
                     if elapsed_min > PULLBACK_TIMEOUT_MINUTES:
-                        del self.pending_pullbacks[pb_symbol]
-                        self.account.log(
-                            f"⏰ [回調超時] {pb_symbol} 待命 {elapsed_min:.1f} 分鐘未回調，放棄本次進場機會", "WARNING"
+                        await self.account.cancel_pending_limit(
+                            pb_symbol, f"掛單 {elapsed_min * 60:.0f} 秒未成交，放棄本次進場"
                         )
                         continue
 
-                    # 4b. 探索實時價格
-                    curr_p = self.tickers.get(pb_symbol) or self.tickers.get(f"{pb_symbol}:USDT")
-                    if not curr_p:
+                    # 4b. 條件變差就撤單：掛單還沒成交的這段等待期間，用最新
+                    # K 線重新檢查核心條件是否還成立（複用回踩二次確認），
+                    # 避免掛著一張已經不合時宜的舊單被動成交在錯誤的時機——
+                    # 這正是原本「換成真限價單」會失去、現在補回來的安全網。
+                    confirm_df = await self.fetch_klines(pb_symbol, timeframe="5m", limit=100)
+                    if confirm_df.empty or len(confirm_df) < 50:
                         continue
-
-                    # 已有持倉則移除待命記錄
-                    if pb_symbol in self.account.positions:
-                        del self.pending_pullbacks[pb_symbol]
-                        continue
-
-                    # 冷卻時間檢查：跟第 5 步的新訊號掃描用同一套規則。原本這裡沒檢查，
-                    # 導致剛平倉的幣種如果剛好有更早登記的回調訊號在排隊，價格一回踩
-                    # 到目標區就會立刻重新開倉——進場價跟剛平倉的價位幾乎一樣，等於
-                    # 白白繳一次手續費又立刻承擔新的止損風險。冷卻期間先跳過這一輪，
-                    # 不刪除待命記錄，冷卻結束後（且尚未超時）還是會繼續檢查回踩。
-                    last_closed = self.account.last_closed_at.get(pb_symbol)
-                    if last_closed is not None and (now_time - last_closed) < 900:
-                        continue
-
-                    # 同時持倉上限檢查：跟第 5 步的 MAX_SLOTS 用同一套規則，
-                    # 避免這條獨立的回調觸發路徑繞過槽位上限。先跳過這一輪，
-                    # 不刪除待命記錄，等有槽位空出來（且尚未超時）再繼續檢查。
-                    if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
-                        continue
-
-                    target = pb_info["target_zone"]
-                    zone_low  = target * (1.0 - PULLBACK_ZONE_PCT)
-                    zone_high = target * (1.0 + PULLBACK_ZONE_PCT)
-
-                    # 4c. 价格回調到目標區間內 → 先做二次確認，通過才觸發進場
-                    if pb_info["side"] in ("LONG", "SHORT") and zone_low <= curr_p <= zone_high:
-                        side = pb_info["side"]
-                        # 二次確認：訊號登記時的量能/RSI/趨勢資料可能已經是幾分鐘甚至
-                        # 快 25 分鐘前的舊資料，真正回踩到位這一刻，用最新 K 線重新檢查
-                        # 核心條件是否還成立——避免「突破當下訊號成立，等回踩進場時
-                        # 動能其實已經退潮」這種假突破最典型的樣貌。
-                        confirm_df = await self.fetch_klines(pb_symbol, timeframe="5m", limit=100)
-                        if confirm_df.empty or len(confirm_df) < 50:
-                            continue
-                        confirm = self.strategy.confirm_pullback_entry(
-                            confirm_df, side, ema_1h=self.ema_200_1h_cache.get(pb_symbol)
+                    confirm = self.strategy.confirm_pullback_entry(
+                        confirm_df, pb_info["side"], ema_1h=self.ema_200_1h_cache.get(pb_symbol)
+                    )
+                    if confirm["status"] != "PASS":
+                        await self.account.cancel_pending_limit(
+                            pb_symbol, f"條件已變差：{confirm['reason']}"
                         )
-                        if confirm["status"] != "PASS":
-                            del self.pending_pullbacks[pb_symbol]
-                            self.account.log(
-                                f"🛡️ [回調二次確認未通過] {pb_symbol} {side} 取消本次進場：{confirm['reason']}",
-                                "WARNING",
-                            )
-                            continue
-
-                        atr = pb_info["atr"]
-                        # 以回調進場價重新計算 SL/TP，統一用 compute_sl_tp_distance()
-                        # 讀取 config 的 STOP_LOSS_MULTIPLIER/TAKE_PROFIT_MULTIPLIER，
-                        # 並套用 MIN_SL_DISTANCE_PCT 下限（原本這裡寫死 2.0/3.0，
-                        # 完全沒有跟到後續的止損止盈調整）。
-                        sl_distance, tp_distance = compute_sl_tp_distance(curr_p, atr)
-                        if side == "LONG":
-                            sl = curr_p - sl_distance
-                            tp = curr_p + tp_distance
-                        else:
-                            sl = curr_p + sl_distance
-                            tp = curr_p - tp_distance
-                        pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(pb_info.get("score", 0))
-                        await self.account.open_position(
-                            symbol=pb_symbol, side=side, price=curr_p,
-                            amount_usdt=pb_amount, sl=sl, tp=tp,
-                            reason=f"Pullback_Entry | {pb_info['reason']}", atr=atr,
-                            signal_score=pb_info.get("score"),
-                            leverage=self.symbol_rotation.get_dynamic_leverage(pb_symbol, pb_info.get("score", 0)),
-                        )
-                        self.account.log(
-                            f"🎯 [回調進場] {pb_symbol} {side} 回調至目標區 ({curr_p:.4f}) 二次確認通過，觸發開倉！ SL={sl:.4f} TP={tp:.4f}", "SUCCESS"
-                        )
-                        del self.pending_pullbacks[pb_symbol]
+                        continue
 
                 # 5. 開倉訊號檢查 — 依可用餘額填充預算，用完為止
                 # 每日虧損熔斷：觸發時只跳過本段（不開新倉），上面的持倉管理
@@ -450,18 +389,15 @@ class TradingEngine:
                             )
                             continue
 
-                        # 如果已在回調待命中，跳過訊號偵測（避免重複登記）
-                        if symbol in self.pending_pullbacks:
-                            pending = self.pending_pullbacks[symbol]
+                        # 如果已經掛著限價單，跳過訊號偵測（避免重複掛單）
+                        if symbol in self.account.pending_limit_orders:
+                            pending = self.account.pending_limit_orders[symbol]
                             signal_progress.append(self._format_signal_progress(
                                 symbol,
                                 {
                                     "action": "WAIT_PULLBACK",
-                                    "score": pending.get("score", 0),
-                                    "confirmation_reason": pending.get(
-                                        "confirmation_reason",
-                                        "等待回調至KC區後二次確認",
-                                    ),
+                                    "score": pending.get("signal_score", 0),
+                                    "confirmation_reason": f"限價單等待成交 @ {pending.get('target_price')}",
                                 },
                                 pending.get("side"),
                             ))
@@ -568,20 +504,28 @@ class TradingEngine:
                             candidate_signals.append((adjusted_score, symbol, sig, price, real_atr))
 
                         elif sig["action"] == "WAIT_PULLBACK":
-                            # ── 回調待命登記 ───────────────────────────────
-                            self.pending_pullbacks[symbol] = {
-                                "side": sig["side"],
-                                "target_zone": sig["target_zone"],
-                                "atr": sig.get("atr", real_atr),
-                                "kc_upper": sig.get("kc_upper", 0),
-                                "kc_lower": sig.get("kc_lower", 0),
-                                "score": sig.get("score", 0),
-                                "timestamp": time.time(),
-                                "reason": sig["reason"]
-                            }
-                            self.account.log(
-                                f"⏳ [回調待命] {symbol} {sig['side']} 登記，目標區: {sig['target_zone']:.4f} ±{PULLBACK_ZONE_PCT:.1%} | {sig['reason']}",
-                                "INFO"
+                            # ── 直接在交易所掛真正的限價單 ──────────────────
+                            # 掛單真的會佔用保證金，等同持倉，所以跟持倉數一起
+                            # 算 MAX_SLOTS，不是等成交那一刻才檢查。
+                            total_committed = len(self.account.positions) + len(self.account.pending_limit_orders)
+                            if MAX_SLOTS > 0 and total_committed >= MAX_SLOTS:
+                                continue
+                            target_price = sig["target_zone"]
+                            atr = sig.get("atr", real_atr)
+                            sl_distance, tp_distance = compute_sl_tp_distance(target_price, atr)
+                            if sig["side"] == "LONG":
+                                sl = target_price - sl_distance
+                                tp = target_price + tp_distance
+                            else:
+                                sl = target_price + sl_distance
+                                tp = target_price - tp_distance
+                            pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", 0))
+                            await self.account.place_limit_entry(
+                                symbol=symbol, side=sig["side"], target_price=target_price,
+                                amount_usdt=pb_amount, sl=sl, tp=tp,
+                                reason=f"Pullback_Limit | {sig['reason']}", atr=atr,
+                                leverage=self.symbol_rotation.get_dynamic_leverage(symbol, sig.get("score", 0)),
+                                signal_score=sig.get("score"),
                             )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
