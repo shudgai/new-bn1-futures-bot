@@ -117,11 +117,19 @@ class BinanceTestnetAccount:
             self.daily_start_balance = float(data.get("daily_start_balance", 0.0))
             self.daily_start_realized_pnl = float(data.get("daily_start_realized_pnl", 0.0))
             self.daily_halt_logged = bool(data.get("daily_halt_logged", False))
+            self.last_closed_at = {
+                str(k): float(v) for k, v in data.get("last_closed_at", {}).items()
+            }
         except Exception:
             pass
 
     def save_state(self) -> None:
         os.makedirs(DATA_DIR, exist_ok=True)
+        now_ts = time.time()
+        last_closed_at = {
+            symbol: ts for symbol, ts in self.last_closed_at.items()
+            if now_ts - ts < 3600
+        }
         payload = {
             "environment": "binance_usdm_legacy_testnet",
             "realized_pnl": self.realized_pnl,
@@ -132,6 +140,7 @@ class BinanceTestnetAccount:
             "daily_start_balance": self.daily_start_balance,
             "daily_start_realized_pnl": self.daily_start_realized_pnl,
             "daily_halt_logged": self.daily_halt_logged,
+            "last_closed_at": last_closed_at,
         }
         with open(STATE_FILE, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
