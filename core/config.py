@@ -75,9 +75,16 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # Testnet 流動性較淺導致的 MARK_PRICE 瞬間偏離雜訊掃出（例如 SOL
 # 進場僅 38 秒就停損），給更多呼吸空間。
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
-# TAKE_PROFIT_MULTIPLIER 拉大到 4.0x：跟止損維持 1:2 風報比，同時
-# 讓移動止利有更多空間可以跑，不會太早撞到停利天花板。
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.0"))
+# TAKE_PROFIT_MULTIPLIER：實測全部 242 筆已平倉交易、逐筆比對開倉/平倉
+# 價跟原始停利價後發現，1:2 風報比（4.0x）下，真正打到/接近原始停利價
+# 的只有 3 筆（1.3%），53.5% 收在接近進場價或更差，45.1% 是移動停利
+# 提早鎖住的小額獲利——平均獲利只有 +0.14 USDT，平均虧損卻是 -0.44
+# USDT（賺賠比只有 0.32，總損益 -40.6 USDT）。停利目標對這個回調型
+# 策略的實際行情走勢來說明顯設太遠，移動停利機制（保本鎖/通道中軌/
+# 趨勢反轉）根本沒機會讓價格跑到那裡就先鎖利了。降到 2.75x（風報比
+# 1:1.375），把目標拉近到更貼近實際可達成的距離，讓更多交易真的有
+# 機會完整吃到停利，而不是依賴移動停利提早鎖住小額獲利。
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.75"))
 # MIN_SL_DISTANCE_PCT：止損距離下限（佔進場價的比例），不管 ATR 倍數設多寬，
 # 波動率本身很低的時候（實測 BTC/LINK/LTC/BNB/XRP 反推 ATR 只有 0.07%~0.21%），
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
