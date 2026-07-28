@@ -8,6 +8,7 @@ import core.strategy as strategy_module
 from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD,
+    get_trailing_distance_mult, TRAILING_ACTIVATION_ATR_MULT,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -57,6 +58,15 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("ETH/USDT", 80) == 6
     assert get_signal_leverage("ETH/USDT", 90) == 10
     assert get_signal_leverage("APT/USDT", 70) == 3
+
+
+def test_trailing_distance_tiers_tighten_as_profit_grows():
+    """動態階梯移動停利：獲利越多，跟隨距離收得越緊，剛啟動時給最寬的
+    呼吸空間，噴出段（>3倍ATR）收到最緊，確保能咬住大波段的利潤。"""
+    assert get_trailing_distance_mult(TRAILING_ACTIVATION_ATR_MULT) == 1.0
+    assert get_trailing_distance_mult(1.4) == 1.0
+    assert get_trailing_distance_mult(1.6) == 0.7
+    assert get_trailing_distance_mult(3.5) == 0.4
 
 def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))

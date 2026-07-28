@@ -204,7 +204,7 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # 持倉中的幣種 SuperTrend 方向（用已收盤K棒算）反轉時，不會直接市價平倉
 # （那樣會變成第二套跟移動止損互搶的出場邏輯），而是算出一個「反轉當下
 # 價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」的候選止損價，丟進跟保本鎖、
-# 通道中軌防守同一套「取最嚴格候選」的邏輯裡一起比。部位還沒獲利、移動
+# 動態階梯移動停利同一套「取最嚴格候選」的邏輯裡一起比。部位還沒獲利、移動
 # 停利還沒發揮作用時，這個候選通常最緊，正好補上「虧損單只能等固定止損
 # 吃到底」的空窗期；一旦移動停利已經在運作（部位已經獲利、止損推得比它
 # 更緊），這個候選就會直接被比下去，不會互相打架。
@@ -306,7 +306,35 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 # 推進滿一倍 ATR，才讓保本鎖的候選價生效，跟「通道中軌防守」用同一套
 # 「給正常波動更多空間」的精神，只是這裡用 ATR 衡量而不是通道結構。
 BREAKEVEN_LOCK_MIN_ATR_MULT = float(os.getenv("BREAKEVEN_LOCK_MIN_ATR_MULT", "1.0"))
-# MIN_STOP_DISTANCE_ATR_MULT：不管保本鎖/通道中軌防守/趨勢反轉哪個候選
+# --- 動態階梯移動停利（取代原本的「通道中軌防守」）---
+# 核心解決「跑得太快被雜訊洗掉、跑得太慢把利潤全部吐回」的矛盾：獲利
+# 剛啟動時給較寬的跟隨距離（讓正常回檔有呼吸空間），獲利越大就把跟隨
+# 距離收得越緊（確保反轉時能鎖住大部分已經賺到的利潤）。跟保本鎖是
+# 互補而非取代關係——保本鎖專門保證「淨賺」，這裡的啟動門檻本身沒有
+# 保證獲利（例如剛啟動時跟隨距離可能比啟動門檻本身還寬），兩者都當
+# 候選價交給下面的 max()/min() 選最嚴格的一個。
+# TRAILING_ACTIVATION_ATR_MULT：最高/最低價至少推進滿這個倍數的 ATR，
+# 動態階梯才開始生效，門檻本身刻意設得比保本鎖（1.0倍）低一點（0.7倍），
+# 讓還沒到保本鎖門檻、但已經有一定幅度的行情也能提早開始收緊風險。
+TRAILING_ACTIVATION_ATR_MULT = float(os.getenv("TRAILING_ACTIVATION_ATR_MULT", "0.7"))
+# TRAILING_DISTANCE_TIERS：(獲利倍數門檻, 跟隨距離倍數)，由大到小比對，
+# 命中第一個「獲利倍數 > 門檻」的級距。獲利越多，跟隨距離收得越緊：
+#   獲利 > 3.0倍ATR → 只留 0.4倍ATR 距離（爆發段，儘量咬住極限利潤）
+#   獲利 > 1.5倍ATR → 留 0.7倍ATR 距離（中段，鎖定基本盤）
+#   其餘（剛啟動，介於 0.7~1.5倍之間）→ 留 1.0倍ATR 距離（給呼吸空間）
+TRAILING_DISTANCE_TIERS = [
+    (3.0, 0.4),
+    (1.5, 0.7),
+]
+TRAILING_DISTANCE_DEFAULT_MULT = float(os.getenv("TRAILING_DISTANCE_DEFAULT_MULT", "1.0"))
+
+def get_trailing_distance_mult(profit_atr_mult: float) -> float:
+    for threshold, trail_mult in TRAILING_DISTANCE_TIERS:
+        if profit_atr_mult > threshold:
+            return trail_mult
+    return TRAILING_DISTANCE_DEFAULT_MULT
+
+# MIN_STOP_DISTANCE_ATR_MULT：不管保本鎖/動態移動停利/趨勢反轉哪個候選
 # 勝出，新止損跟「現價」之間都至少要留這個倍數的 ATR 距離，才送到交易所
 # 掛單。實測 OP/USDT 07/28 17:46 這筆，通道中軌（EMA20）剛好跟現價幾乎
 # 重疊，算出的新止損送單時距離已經是 0，被交易所以「Order would

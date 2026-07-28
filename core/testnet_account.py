@@ -12,6 +12,8 @@ from core.config import (
     TAKER_FEE_RATE,
     NET_PROFIT_GUARANTEE_BUFFER,
     BREAKEVEN_LOCK_MIN_ATR_MULT,
+    TRAILING_ACTIVATION_ATR_MULT,
+    get_trailing_distance_mult,
     MIN_STOP_DISTANCE_ATR_MULT,
     PARTIAL_CLOSE_THRESHOLDS,
     FLASH_MOVE_WINDOW_SEC,
@@ -397,12 +399,10 @@ class BinanceTestnetAccount:
         ticker_prices: Dict[str, float],
         trend_directions: Dict[str, int] = None,
         atr_overrides: Dict[str, float] = None,
-        kc_mid_overrides: Dict[str, float] = None,
     ) -> float:
         await self.refresh()
         trend_directions = trend_directions or {}
         atr_overrides = atr_overrides or {}
-        kc_mid_overrides = kc_mid_overrides or {}
 
         for symbol, pos in list(self.positions.items()):
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
@@ -542,21 +542,25 @@ class BinanceTestnetAccount:
                 # 讀 meta["atr"] 的地方（如補建保護單、儀表板）也看到新值。
                 atr_val = atr_overrides.get(symbol) or meta.get("atr") or entry_p * 0.015
                 meta["atr"] = atr_val
-                kc_mid = kc_mid_overrides.get(symbol)
-                # 四個候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
+                # 候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
                 # 1) 保本鎖：最高價（多單）/最低價（空單）扣掉手續費+滑點
                 #    緩衝後淨賺，且至少推進滿 BREAKEVEN_LOCK_MIN_ATR_MULT
                 #    倍 ATR（不是隨便有賺就鎖），才鎖到保本線。
-                # 2) 通道中軌防守：Keltner 中軌（EMA20）推進到比進場價更有利
-                #    的位置時，跟著中軌收緊——中軌本身用已收盤K棒每90秒重算
-                #    一次，不受單一 tick 雜訊牽動，價格要真的把中軌structure
-                #    跌破/突破才會觸發，給正常回檔/反彈更多空間。
+                # 2) 動態階梯移動停利：取代原本的「通道中軌防守」，解決
+                #    「跑得太快被雜訊洗掉、跑得太慢把利潤全部吐回」的矛盾。
+                #    最高/最低價至少推進滿 TRAILING_ACTIVATION_ATR_MULT
+                #    （0.7倍）才啟動；啟動後跟隨距離依獲利幅度分級收緊——
+                #    剛啟動給 1.0倍ATR 呼吸空間，獲利 >1.5倍ATR 收到 0.7倍，
+                #    獲利 >3.0倍ATR（噴出段）收到 0.4倍，儘量咬住大波段的
+                #    利潤。跟保本鎖是互補：這裡的啟動門檻本身不保證淨賺
+                #    （剛啟動時跟隨距離可能比門檻本身還寬），兩者都當候選
+                #    交給下面取最嚴格的一個，各自守住不同階段。
                 # 3) 趨勢反轉：持倉幣種 SuperTrend 方向（已收盤K棒算，見
                 #    engine.update_position_trends）反轉時，收緊到「反轉當下
                 #    價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」——不是直接平倉，
-                #    只是多一個候選價，部位已經獲利、中軌防守已經收得更緊時
-                #    這個候選會被比下去，不會跟中軌防守互搶出場。主要補上
-                #    「還沒獲利、中軌防守尚未生效」這段只能等固定止損的空窗期。
+                #    只是多一個候選價，部位已經獲利、移動停利已經收得更緊時
+                #    這個候選會被比下去，不會互搶出場。主要補上「還沒獲利、
+                #    移動停利尚未啟動」這段只能等固定止損的空窗期。
                 st_dir = trend_directions.get(symbol)
                 want_dir = 1 if side == "LONG" else -1
                 reversed_trend = st_dir is not None and st_dir != want_dir
@@ -570,11 +574,10 @@ class BinanceTestnetAccount:
                     # 正常反彈就洗出場（實測 AAVE/BCH/DOT 都是這個樣貌）。
                     if peak_price >= breakeven_level and (peak_price - entry_p) >= atr_val * BREAKEVEN_LOCK_MIN_ATR_MULT:
                         candidates.append((breakeven_level, "保本鎖"))
-                    # 要求中軌本身已經推進到比進場價更有利的位置，這個候選價
-                    # 才可能 >= entry_p，不會比「連本金都保不住」還緊——避免
-                    # 進場當下中軌還在進場價下方時就被當成防守線。
-                    if kc_mid is not None and kc_mid > entry_p:
-                        candidates.append((kc_mid, "通道中軌防守"))
+                    profit_atr_mult = (peak_price - entry_p) / atr_val if atr_val > 0 else 0.0
+                    if profit_atr_mult >= TRAILING_ACTIVATION_ATR_MULT:
+                        trail_dist_mult = get_trailing_distance_mult(profit_atr_mult)
+                        candidates.append((peak_price - trail_dist_mult * atr_val, "動態移動停利"))
                     if reversed_trend:
                         candidates.append((mark_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = max(candidates, key=lambda c: c[0])
@@ -617,11 +620,10 @@ class BinanceTestnetAccount:
                     # 同上（LONG 分支）：要求最低價至少推進滿一倍 ATR。
                     if trough_price <= breakeven_level and (entry_p - trough_price) >= atr_val * BREAKEVEN_LOCK_MIN_ATR_MULT:
                         candidates.append((breakeven_level, "保本鎖"))
-                    # 同上（LONG 分支）：要求中軌本身已經推進到比進場價更
-                    # 有利的位置，避免進場當下中軌還在進場價上方就被當成
-                    # 防守線。
-                    if kc_mid is not None and kc_mid < entry_p:
-                        candidates.append((kc_mid, "通道中軌防守"))
+                    profit_atr_mult = (entry_p - trough_price) / atr_val if atr_val > 0 else 0.0
+                    if profit_atr_mult >= TRAILING_ACTIVATION_ATR_MULT:
+                        trail_dist_mult = get_trailing_distance_mult(profit_atr_mult)
+                        candidates.append((trough_price + trail_dist_mult * atr_val, "動態移動停利"))
                     if reversed_trend:
                         candidates.append((mark_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
                     trail_sl, trail_reason = min(candidates, key=lambda c: c[0])
