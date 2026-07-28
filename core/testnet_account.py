@@ -24,6 +24,8 @@ from core.config import (
     DEFAULT_SYMBOLS,
     PENDING_REPOST_STREAK_LIMIT,
     PENDING_BACKOFF_MINUTES,
+    STOP_LIMIT_SLIPPAGE_GUARD_PCT,
+    STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
     get_leverage,
     get_signal_leverage,
 )
@@ -87,6 +89,12 @@ class BinanceTestnetAccount:
         # 止損調整，price 已經跑掉時容易被交易所拒單、觸發不必要的緊急
         # 市價平倉。加上這個節流，同一個 symbol 的止損評估最多每 4 秒做一次。
         self._last_trailing_eval_at: Dict[str, float] = {}
+        # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
+        # 範圍內的限價單而非市價單）可能因為價格跳空滑出緩衝範圍而遲遲
+        # 無法成交，導致部位裸奔。記錄「標記價開始穿越止損」的時間點，
+        # 超過 STOP_LIMIT_UNFILLED_TIMEOUT_SEC 秒還沒平倉就強制市價出場，
+        # 見 update_positions() 的檢查。
+        self._stop_breach_since: Dict[str, float] = {}
         # 真正掛在交易所的限價回調進場單追蹤，取代原本「軟體輪詢價格到了
         # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
         # 一個 symbol 同時最多一張掛單。
@@ -308,6 +316,7 @@ class BinanceTestnetAccount:
             return
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = time.time()
+        self._stop_breach_since.pop(symbol, None)
         try:
             await self._cancel_all_orders(symbol)
             self.positions.pop(symbol, None)
@@ -450,6 +459,31 @@ class BinanceTestnetAccount:
 
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
+
+            # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
+            # 範圍內的限價單）可能因為價格跳空滑出緩衝範圍而遲遲無法成交：
+            # 標記價已經穿越止損價，但持倉還在，代表限價單掛著沒成交。
+            # 超過 STOP_LIMIT_UNFILLED_TIMEOUT_SEC 秒還是這樣，直接強制
+            # 市價平倉，不讓部位無限期裸奔等一張可能永遠不會成交的限價單。
+            if old_sl > 0:
+                breached = (
+                    (side == "LONG" and mark_p <= old_sl)
+                    or (side == "SHORT" and mark_p >= old_sl)
+                )
+                if breached:
+                    breach_start = self._stop_breach_since.setdefault(symbol, now_ts)
+                    if now_ts - breach_start >= STOP_LIMIT_UNFILLED_TIMEOUT_SEC:
+                        self._stop_breach_since.pop(symbol, None)
+                        self.log(
+                            f"🚨 {symbol} 限價止損觸發後超過{STOP_LIMIT_UNFILLED_TIMEOUT_SEC:.0f}秒"
+                            f"未成交（標記價 {mark_p:.6f} 已穿越止損 {old_sl}），強制市價平倉",
+                            "DANGER",
+                        )
+                        await self.close_position(symbol, curr_p, "限價止損逾時未成交，強制市價平倉")
+                        continue
+                else:
+                    self._stop_breach_since.pop(symbol, None)
+
             is_flash = self._is_flash_move(symbol, curr_p, side, now_ts)
             if is_flash and now_ts - self._last_flash_log.get(symbol, 0) >= 30:
                 self._last_flash_log[symbol] = now_ts
@@ -658,7 +692,8 @@ class BinanceTestnetAccount:
             await self._cancel_all_orders(symbol)
             try:
                 await self._create_protection_order(
-                    symbol, close_side, "STOP_MARKET", qty, new_sl
+                    symbol, close_side, "STOP_MARKET", qty, new_sl,
+                    limit_price=self._stop_limit_price(new_sl, close_side),
                 )
             except Exception as exc:
                 # 新止損價已經被市價（MARK_PRICE）穿越，交易所拒絕掛單
@@ -716,7 +751,10 @@ class BinanceTestnetAccount:
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
-            await self._create_protection_order(symbol, close_side, "STOP_MARKET", pos["qty"], sl_price)
+            await self._create_protection_order(
+                symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
+                limit_price=self._stop_limit_price(sl_price, close_side),
+            )
             await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
             meta["sl"] = sl_price
             meta["tp"] = tp_price
@@ -785,7 +823,8 @@ class BinanceTestnetAccount:
             new_sl = float(self.exchange.price_to_precision(symbol, old_sl))
             tp = meta.get("tp") or 0.0
             await self._create_protection_order(
-                symbol, close_side, "STOP_MARKET", remaining_qty, new_sl
+                symbol, close_side, "STOP_MARKET", remaining_qty, new_sl,
+                limit_price=self._stop_limit_price(new_sl, close_side),
             )
             if tp > 0:
                 await self._create_protection_order(
@@ -826,23 +865,38 @@ class BinanceTestnetAccount:
             pass
 
     async def _create_protection_order(
-        self, symbol: str, side: str, order_type: str, qty: float, trigger_price: float
+        self, symbol: str, side: str, order_type: str, qty: float, trigger_price: float,
+        limit_price: float = None,
     ) -> dict:
-        return await self.exchange.request(
-            "algoOrder",
-            "fapiPrivate",
-            "POST",
-            {
-                "algoType": "CONDITIONAL",
-                "symbol": self._raw_symbol(symbol),
-                "side": side.upper(),
-                "type": order_type,
-                "quantity": self.exchange.amount_to_precision(symbol, qty),
-                "triggerPrice": self.exchange.price_to_precision(symbol, trigger_price),
-                "reduceOnly": "true",
-                "workingType": "MARK_PRICE",
-            },
-        )
+        """建立條件單。limit_price 有給值時，STOP_MARKET 改成限價止損
+        （STOP，帶 price），觸發後轉成「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
+        範圍內的限價單，而不是不管市價多差都吃單的市價單——實測 DOT/USDT
+        保本鎖正確收緊止損後，觸發轉市價單滑價 0.66%，把理論上 +0.34 的
+        小賺滑成 -2.30 的虧損。TAKE_PROFIT_MARKET 維持原本市價，profit-
+        taking 滑價頂多少賺一點，不像止損滑價會擴大虧損那麼需要限制。"""
+        params = {
+            "algoType": "CONDITIONAL",
+            "symbol": self._raw_symbol(symbol),
+            "side": side.upper(),
+            "quantity": self.exchange.amount_to_precision(symbol, qty),
+            "triggerPrice": self.exchange.price_to_precision(symbol, trigger_price),
+            "reduceOnly": "true",
+            "workingType": "MARK_PRICE",
+        }
+        if limit_price is not None and order_type == "STOP_MARKET":
+            params["type"] = "STOP"
+            params["price"] = self.exchange.price_to_precision(symbol, limit_price)
+        else:
+            params["type"] = order_type
+        return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
+
+    @staticmethod
+    def _stop_limit_price(trigger_price: float, close_side: str) -> float:
+        """算出限價止損的限價：買回補空單時願意多付一點（觸發價之上），
+        賣出平多單時願意少賣一點（觸發價之下），緩衝之外寧可不成交。"""
+        if close_side == "buy":
+            return trigger_price * (1 + STOP_LIMIT_SLIPPAGE_GUARD_PCT)
+        return trigger_price * (1 - STOP_LIMIT_SLIPPAGE_GUARD_PCT)
 
     async def _emergency_flatten(self, symbol: str, side: str, qty: float) -> None:
         close_side = "sell" if side == "LONG" else "buy"
@@ -994,7 +1048,8 @@ class BinanceTestnetAccount:
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
                 await self._create_protection_order(
-                    symbol, close_side, "STOP_MARKET", qty, grace_sl_price
+                    symbol, close_side, "STOP_MARKET", qty, grace_sl_price,
+                    limit_price=self._stop_limit_price(grace_sl_price, close_side),
                 )
                 await self._create_protection_order(
                     symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
@@ -1268,6 +1323,7 @@ class BinanceTestnetAccount:
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = time.time()
+        self._stop_breach_since.pop(symbol, None)
         position = dict(self.positions[symbol])
         try:
             await self._cancel_all_orders(symbol)

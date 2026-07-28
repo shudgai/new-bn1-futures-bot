@@ -42,10 +42,15 @@ def get_signal_leverage(symbol: str, score: int) -> int:
 # 波動越大給越低槓桿，跟策略本身的 MIN_ATR_PCT(0.15%)~MAX_ATR_PCT(0.6%)
 # 可交易區間對齊。還沒累積到資料的幣種，get_dynamic_leverage() 會退回
 # 上面的 SYMBOL_LEVERAGE 靜態表，行為不變。
+# 上限從 10x/8x/6x 降到 6x/5x/4x：實測 DOT/USDT ATR%=0.22%（落在 <0.30%
+# 這一級）用 8x 進場，止損觸發轉市價單滑價 0.66%，換算成 8x 槓桿的虧損
+# 放大到 -2.30 USDT（若沒放大槓桿只會是這個數字的一小部分）。「波動率
+# 低」不代表「不會有快速的價格跳動」，尤其測試網流動性淺、滑價風險本來
+# 就比實盤高，槓桿倍數再放大會把同樣的滑價百分比換算成更大的金額損失。
 ATR_LEVERAGE_TIERS = [
-    (0.002, 10),   # 實測 ATR% < 0.20% → 10x
-    (0.003, 8),    # < 0.30% → 8x
-    (0.0045, 6),   # < 0.45% → 6x
+    (0.002, 6),    # 實測 ATR% < 0.20% → 6x（原10x）
+    (0.003, 5),    # < 0.30% → 5x（原8x）
+    (0.0045, 4),   # < 0.45% → 4x（原6x）
     (0.006, 3),    # < 0.60%（MAX_ATR_PCT 邊界）→ 3x
 ]
 
@@ -310,6 +315,20 @@ BREAKEVEN_LOCK_MIN_ATR_MULT = float(os.getenv("BREAKEVEN_LOCK_MIN_ATR_MULT", "1.
 # 「跟著一個價位」而不是「跟現價保持固定距離」，在盤整時可能跟現價收斂
 # 到很近甚至重疊，需要額外的安全距離守住，不能只看候選價本身怎麼算。
 MIN_STOP_DISTANCE_ATR_MULT = float(os.getenv("MIN_STOP_DISTANCE_ATR_MULT", "0.15"))
+# STOP_LIMIT_SLIPPAGE_GUARD_PCT：止損保護單原本是 STOP_MARKET（觸發後
+# 直接轉市價單成交，不管當下市價多差都會成交），實測 DOT/USDT 07/28
+# 19:42~19:44 這筆，保本鎖正確把止損收緊到 0.7586（理論上該筆已經是
+# +0.34 USDT 小賺），但觸發轉市價單時滑價 0.66%，實際卻虧了 -2.30
+# USDT——滑價吃掉的金額比原本該賺的還多。改用 STOP（限價止損）：觸發
+# 後轉成「觸發價 ± 這個緩衝」的限價單，超過緩衝範圍寧可不成交，也不要
+# 用任意差的市價成交。緩衝抓 0.2%，足夠涵蓋正常滑價，又不會大到讓限價
+# 單長時間掛不出去。搭配下面的逾時未成交強制平倉機制，避免價格跳空
+# 超過緩衝時部位裸奔太久。
+STOP_LIMIT_SLIPPAGE_GUARD_PCT = float(os.getenv("STOP_LIMIT_SLIPPAGE_GUARD_PCT", "0.002"))
+# STOP_LIMIT_UNFILLED_TIMEOUT_SEC：限價止損觸發後，如果市價已經穿越
+# 限價單的緩衝範圍導致遲遲無法成交，超過這個秒數就放棄等待、直接強制
+# 市價平倉，避免部位無限期裸奔。
+STOP_LIMIT_UNFILLED_TIMEOUT_SEC = float(os.getenv("STOP_LIMIT_UNFILLED_TIMEOUT_SEC", "8"))
 
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
