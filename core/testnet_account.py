@@ -398,7 +398,14 @@ class BinanceTestnetAccount:
             # 止損保護，回吐幅度用該幣種自己的 ATR 衡量，量小的幣（如 TRX）
             # 用小距離就會啟動保護，量大的幣（如 BANK）則有對應更大的空間，
             # 不用像百分比那樣一體適用卻對每個幣鬆緊不一。
-            if old_sl > 0 and not is_flash:
+            # 進場緩衝期內完全不做移動停利/趨勢反轉收緊：緩衝期本來就是刻意
+            # 放寬止損、讓部位撐過剛進場的雜訊（見上面「進場緩衝期結束」），
+            # 但這裡原本沒檢查 grace_until，導致進場後只要價格隨便跳一個
+            # tick，就會立刻算出「現價 ± 0.5倍ATR」的超緊候選價，直接蓋掉
+            # 緩衝期的保護，新止損送到交易所時常常價格已經穿越，觸發保護單
+            # 被拒→緊急市價平倉，整個緩衝期形同虛設（實測 BTC 連續好幾筆
+            # 進場後 1~11 秒內就被這樣洗出場，虧損金額精準卡在 0.5x ATR）。
+            if old_sl > 0 and not is_flash and now_ts >= meta.get("grace_until", 0):
                 # 優先用 engine.update_position_trends() 定期重算的即時 ATR，
                 # 反映當下波動度；還沒有即時值時（例如剛啟動、還沒輪到這個
                 # 幣種重算）才退回進場當下存的舊值。同步寫回 meta，讓其他
@@ -425,7 +432,11 @@ class BinanceTestnetAccount:
                     candidates = [(old_sl, "原止損")]
                     if peak_price >= breakeven_level:
                         candidates.append((breakeven_level, "保本鎖"))
-                    if peak_price > entry_p:
+                    # 要求最高價至少比進場價多走一個 chandelier_distance，
+                    # 這個候選價才可能 >= entry_p，不會比「連本金都保不住」
+                    # 還緊——避免進場後隨便一個雜訊 tick 就被當成「創新高」，
+                    # 算出一個比原始止損（2x ATR）緊很多的候選價。
+                    if peak_price - entry_p >= chandelier_distance:
                         candidates.append((peak_price - chandelier_distance, "ATR移動停利"))
                     if reversed_trend:
                         candidates.append((curr_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
@@ -458,7 +469,10 @@ class BinanceTestnetAccount:
                     candidates = [(old_sl, "原止損")]
                     if trough_price <= breakeven_level:
                         candidates.append((breakeven_level, "保本鎖"))
-                    if trough_price < entry_p:
+                    # 同上（LONG 分支）：要求最低價至少比進場價多走一個
+                    # chandelier_distance，避免隨便一個雜訊 tick 就被當成
+                    # 「創新低」，算出比原始止損緊很多的候選價。
+                    if entry_p - trough_price >= chandelier_distance:
                         candidates.append((trough_price + chandelier_distance, "ATR移動停利"))
                     if reversed_trend:
                         candidates.append((curr_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
