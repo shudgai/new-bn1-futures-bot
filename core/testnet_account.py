@@ -1172,14 +1172,49 @@ class BinanceTestnetAccount:
         try:
             await self.exchange.cancel_order(info["order_id"], symbol)
         except Exception as exc:
-            # 可能剛好在這個瞬間成交了，撤單會失敗；不主動刪追蹤記錄，
-            # 讓下一輪 check_pending_limit_orders() 去確認實際狀態並收尾。
+            # 可能剛好在這個瞬間「完全」成交了，撤單會失敗；不主動刪追蹤
+            # 記錄，讓下一輪 check_pending_limit_orders() 去確認實際狀態
+            # 並收尾。
             self.log(
                 f"⚠️ {symbol} 撤銷限價單失敗（可能剛好成交）：{type(exc).__name__}: {exc}",
                 "WARNING",
             )
             return
+
+        # 幣安允許取消「部分成交」單剩餘未成交的數量，這種情況 cancel_order
+        # 不會丟例外，但撤單生效前那一刻可能已經有一部分數量真的成交在
+        # 交易所了。撤單成功後一定要重新查一次實際成交量，不然這部分持倉
+        # 會繞過 _finalize_new_position()，缺少策略算好的止損止盈距離，
+        # 只能等孤兒保護機制事後用固定寬距離補一個粗糙止損（實測
+        # DOT/USDT 07/28 15:03 就是這樣：策略算出來的止損距離現價只有
+        # 約 0.5%，孤兒保護補的卻是 3% 開外，形同整個持倉期間沒有真正
+        # 合理的風控距離，直到保本鎖第一次觸發就被正常反彈洗出場）。
+        try:
+            order_status = await self.exchange.fetch_order(info["order_id"], symbol)
+            filled_qty = float(order_status.get("filled") or 0.0)
+        except Exception:
+            filled_qty = 0.0
+
         del self.pending_limit_orders[symbol]
+
+        if filled_qty > 0:
+            execution_price = float(order_status.get("average") or info["target_price"])
+            close_side = "sell" if info["side"] == "LONG" else "buy"
+            self.log(
+                f"⚠️ {symbol} 撤單瞬間已部分成交（{filled_qty}/{info['qty']}），"
+                f"以實際成交量入場並補上正確止損止盈",
+                "WARNING",
+            )
+            self._orphan_protection_attempted.add(symbol)
+            self.pending_repost_streak.pop(symbol, None)
+            await self._finalize_new_position(
+                symbol, info["side"], execution_price, filled_qty,
+                info["target_price"], info["sl"], info["tp"], info["reason"],
+                info["atr"], info["leverage"], info["signal_score"], close_side,
+                info["order_id"], info["amount_usdt"],
+            )
+            return
+
         self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
         if count_failure:
             streak = self.pending_repost_streak.get(symbol, 0) + 1
