@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    API_TOKEN,
+    API_TOKEN, TAKER_FEE_RATE,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -126,6 +126,7 @@ async def get_status():
             for score, cap in SIGNAL_LEVERAGE_CAPS
         },
         "trade_amount": TRADE_AMOUNT_USDT,
+        "taker_fee_rate": TAKER_FEE_RATE,
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
         "symbol_rotation": engine.symbol_rotation.status(),

@@ -224,8 +224,18 @@
                                     </span>
                                 </td>
                                 <td>{{ pos.qty }}</td>
-                                <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
-                                <td style="color:var(--up)">{{ formatPrice(pos.tp) }}</td>
+                                <td style="color:var(--down)">
+                                    {{ formatPrice(pos.sl) }}
+                                    <span style="font-size:11px; display:block;" title="打到止損的預估淨損益（已扣估計手續費，實際成交可能因滑價略有落差）">
+                                        {{ getEstimatedLossAtSL(pos).toFixed(2) }}U
+                                    </span>
+                                </td>
+                                <td style="color:var(--up)">
+                                    {{ formatPrice(pos.tp) }}
+                                    <span style="font-size:11px; display:block;" title="打到止利的預估淨損益（已扣估計手續費，實際成交可能因滑價略有落差）">
+                                        +{{ getEstimatedProfitAtTP(pos).toFixed(2) }}U
+                                    </span>
+                                </td>
                                 <td style="white-space:nowrap;">
                                     <button class="btn btn-stop" style="padding:4px 12px; font-size:12px; white-space:nowrap; display:inline-block;" @click="closePos(pos.symbol)">平倉</button>
                                 </td>
@@ -512,6 +522,24 @@
                     if (!pos.margin || pos.margin === 0) return 0;
                     // 現貨% = 未實現損益 / (保證金 x 槓桿)，等同去除槓桿效果的實際價格漲跌幅
                     return (pnl / (pos.margin * leverage)) * 100;
+                },
+                // 開倉時就設好的固定 SL/TP，反推「如果打到止利/止損」的預估
+                // 淨損益（已扣開倉+平倉手續費估計），純參考用——實際成交價
+                // 可能因為滑價/限價止損緩衝略有落差，不是精確保證值。
+                getEstimatedPnlAt(pos, exitPrice) {
+                    if (!pos || !exitPrice || !pos.entry_price || !pos.qty) return 0;
+                    const feeRate = this.bot.taker_fee_rate || 0.0005;
+                    const raw = pos.side === 'LONG'
+                        ? (exitPrice - pos.entry_price) * pos.qty
+                        : (pos.entry_price - exitPrice) * pos.qty;
+                    const fee = (pos.entry_price + exitPrice) * pos.qty * feeRate;
+                    return raw - fee;
+                },
+                getEstimatedProfitAtTP(pos) {
+                    return this.getEstimatedPnlAt(pos, pos.tp);
+                },
+                getEstimatedLossAtSL(pos) {
+                    return this.getEstimatedPnlAt(pos, pos.sl);
                 },
                 async fetchStatus() {
                     try {
