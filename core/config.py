@@ -82,15 +82,20 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # 帳戶真實可用餘額——正式上線時把這個值改回 0（或整個移除環境變數）即可，
 # 不用再改程式碼。
 TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
-# STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER：回到最初版本
-# (commit 32fe430) 的固定距離與風報比 1:2。中間調過 1.2x/2.0x 的止損、
-# 4.0x/2.75x 的止利，也加過移動止利/保本鎖/ATR階梯等一整套開倉後動態
-# 調整機制，但實測下來大多數交易都被那套機制在遠比原始止利/止損更近的
-# 位置提早鎖利/停損出場（甚至倒虧），跟固定 SL/TP 的原始設計互相打架。
-# 現在移除所有開倉後的動態調整（見 testnet_account.py update_positions），
-# 回到「開倉時設好 SL/TP，只等價格碰到其中一個才平倉」的原始方式。
+# STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
+
+# --- 三階段階梯移動停利 / 移動保本配置 ---
+# ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
+ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
+# TIER 1 (保本鎖): 浮盈達 +0.6% 時，將止損移至進場價+0.05%（確保不損保本）
+TRAILING_TIER1_TRIGGER_PCT = float(os.getenv("TRAILING_TIER1_TRIGGER_PCT", "0.006"))
+# TIER 2 (第一階段鎖利): 浮盈達 +1.2% 時，將止損移至進場價+0.6%（鎖定第一階段獲利）
+TRAILING_TIER2_TRIGGER_PCT = float(os.getenv("TRAILING_TIER2_TRIGGER_PCT", "0.012"))
+# TIER 3 (高點回撤追蹤): 浮盈達 +1.8% 時啟動，若從最高獲利回撤 30% 即市價平倉
+TRAILING_TIER3_TRIGGER_PCT = float(os.getenv("TRAILING_TIER3_TRIGGER_PCT", "0.018"))
+TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
 # MIN_SL_DISTANCE_PCT：止損距離下限（佔進場價的比例），不管 ATR 倍數設多寬，
 # 波動率本身很低的時候（實測 BTC/LINK/LTC/BNB/XRP 反推 ATR 只有 0.07%~0.21%），
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限

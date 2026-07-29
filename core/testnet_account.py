@@ -15,6 +15,11 @@ from core.config import (
     DEFAULT_SYMBOLS,
     STOP_LIMIT_SLIPPAGE_GUARD_PCT,
     STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
+    ENABLE_TRAILING_STOP,
+    TRAILING_TIER1_TRIGGER_PCT,
+    TRAILING_TIER2_TRIGGER_PCT,
+    TRAILING_TIER3_TRIGGER_PCT,
+    TRAILING_TIER3_CALLBACK_RATIO,
     get_leverage,
     get_signal_leverage,
 )
@@ -426,10 +431,70 @@ class BinanceTestnetAccount:
                 else:
                     self._stop_breach_since.pop(symbol, None)
 
-            # 開倉後不再動態調整 SL/TP（回到最初版本的固定止損/止利方式），
-            # 只保留「限價止損逾時未成交」的強制平倉（上面），跟下面的
-            # 24h 無效震盪時間過濾——兩者都是執行面的保護機制，跟「開倉
-            # 停利停損方式」無關，不受這次revert影響。
+            # ── 三階段移動停利與保本鎖邏輯 ──
+            if ENABLE_TRAILING_STOP:
+                pnl_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
+                highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
+                if pnl_pct > highest_pnl:
+                    highest_pnl = pnl_pct
+                    meta["highest_pnl_pct"] = highest_pnl
+
+                tier = meta.get("trailing_tier", 0)
+
+                # Tier 1: 達 +0.6% 鎖保本 (進場價 + 0.05%)
+                if tier < 1 and highest_pnl >= TRAILING_TIER1_TRIGGER_PCT:
+                    new_sl = entry_p * 1.0005 if side == "LONG" else entry_p * 0.9995
+                    new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
+                    meta["sl"] = new_sl_price
+                    meta["trailing_tier"] = 1
+                    pos["sl"] = new_sl_price
+                    self.log(f"🛡️ [保本鎖] {symbol} 浮盈達 {highest_pnl:.2%}，止損移至保本價 {new_sl_price}", "SUCCESS")
+                    # 重新向交易所更新止損單
+                    try:
+                        close_side = "sell" if side == "LONG" else "buy"
+                        await self._cancel_all_orders(symbol)
+                        await self._create_protection_order(
+                            symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
+                            limit_price=self._stop_limit_price(new_sl_price, close_side)
+                        )
+                        if pos.get("tp"):
+                            await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], pos["tp"])
+                    except Exception as e:
+                        self.log(f"⚠️ {symbol} 更新保本止損單失敗: {e}", "WARNING")
+
+                # Tier 2: 達 +1.2% 鎖定 +0.6% 獲利
+                elif tier < 2 and highest_pnl >= TRAILING_TIER2_TRIGGER_PCT:
+                    new_sl = entry_p * 1.006 if side == "LONG" else entry_p * 0.994
+                    new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
+                    meta["sl"] = new_sl_price
+                    meta["trailing_tier"] = 2
+                    pos["sl"] = new_sl_price
+                    self.log(f"🔒 [階梯鎖利 T2] {symbol} 浮盈達 {highest_pnl:.2%}，止損移至 +0.6% 價位 {new_sl_price}", "SUCCESS")
+                    try:
+                        close_side = "sell" if side == "LONG" else "buy"
+                        await self._cancel_all_orders(symbol)
+                        await self._create_protection_order(
+                            symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
+                            limit_price=self._stop_limit_price(new_sl_price, close_side)
+                        )
+                        if pos.get("tp"):
+                            await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], pos["tp"])
+                    except Exception as e:
+                        self.log(f"⚠️ {symbol} 更新 T2 止損單失敗: {e}", "WARNING")
+
+                # Tier 3: 達 +1.8% 啟動高點回撤 30% 觸發平倉
+                elif highest_pnl >= TRAILING_TIER3_TRIGGER_PCT:
+                    if tier < 3:
+                        meta["trailing_tier"] = 3
+                        self.log(f"🚀 [高點追蹤 T3 啟動] {symbol} 浮盈達 {highest_pnl:.2%}，開啟高點回撤 30% 平倉機制", "SUCCESS")
+                    
+                    callback_drop = highest_pnl * TRAILING_TIER3_CALLBACK_RATIO
+                    target_pnl = highest_pnl - callback_drop
+                    if pnl_pct <= target_pnl:
+                        self.log(f"🎯 [高點回撤平倉] {symbol} 最高浮盈 {highest_pnl:.2%}，已回撤至 {pnl_pct:.2%}（回撤達 {TRAILING_TIER3_CALLBACK_RATIO:.0%}），市價平倉獲利", "SUCCESS")
+                        await self.close_position(symbol, curr_p, f"移動停利 (高點回撤 {TRAILING_TIER3_CALLBACK_RATIO:.0%})")
+                        continue
+
             if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
