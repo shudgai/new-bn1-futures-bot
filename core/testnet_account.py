@@ -695,6 +695,14 @@ class BinanceTestnetAccount:
                 "signal_score": signal_score,
             }
             self.position_meta[symbol] = meta
+            # 「金額」用實際成交的 qty×成交價÷槓桿算，不要直接沿用呼叫端
+            # 傳入的 amount_usdt（原本打算下的預算）——限價單部分成交時
+            # （見 check_pending_limit_orders/cancel_pending_limit 的部分
+            # 成交路徑），真正吃到的 qty 會比預算算出來的量少，此時若照
+            # 舊寫法把 amount_usdt 原封不動記錄下去，開倉那筆金額會跟平倉
+            # 時用真實 qty 反推的金額對不上（實測 SUI/USDT 07/29 03:20 這筆
+            # 差了 6.12 USDT），讓人誤以為部位沒平乾淨。
+            actual_margin = abs(execution_price * qty) / max(leverage, 1)
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
                 "time": get_taipei_now_str("%m/%d %H:%M:%S"),
@@ -703,7 +711,7 @@ class BinanceTestnetAccount:
                 "side": side,
                 "price": round(execution_price, 8),
                 "qty": qty,
-                "amount": amount_usdt,
+                "amount": round(actual_margin, 8),
                 "fee": round(fee, 4),
                 "pnl": 0.0,
                 "status": "OPEN",

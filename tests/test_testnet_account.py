@@ -138,3 +138,49 @@ async def test_testnet_account_manual_close_is_reduce_only(tmp_path, monkeypatch
     assert "DOGE/USDT" not in account.positions
     assert exchange.orders[-1]["params"]["reduceOnly"] is True
     assert "DOGE/USDT" in exchange.cancelled
+
+
+@pytest.mark.anyio
+async def test_partial_fill_limit_entry_records_actual_margin(tmp_path, monkeypatch):
+    """限價單只部分成交時，開倉交易紀錄的「金額」要用實際成交的
+    qty×成交價÷槓桿反推，不能直接沿用原本預算的 amount_usdt——否則開倉/
+    平倉兩筆紀錄的金額對不上，讓人誤以為部位沒平乾淨（實測 SUI/USDT
+    07/29 這筆就是這樣，開倉記成 30U、平倉卻反推出 23.88U）。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+
+    class PartialFillExchange(FakeTestnetExchange):
+        async def create_order(self, symbol, order_type, side, qty, price=None, params=None):
+            if order_type == "limit":
+                order = {
+                    "id": str(len(self.orders) + 1),
+                    "symbol": symbol, "type": order_type, "side": side,
+                    "amount": qty, "price": price, "params": params or {},
+                }
+                self.orders.append(order)
+                return order
+            return await super().create_order(symbol, order_type, side, qty, price, params)
+
+        async def fetch_order(self, order_id, symbol):
+            # 預算算出來的掛單量是 2.5，這裡模擬只成交了 1.5（部分成交）
+            return {"status": "closed", "filled": 1.5, "average": 100.0}
+
+    exchange = PartialFillExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
+        reason="test", atr=1.0, leverage=5, signal_score=100,
+    )
+    await account.check_pending_limit_orders()
+
+    open_trade = account.trades[0]
+    assert open_trade["action"] == "OPEN_LONG"
+    assert open_trade["qty"] == 1.5
+    # 實際金額 = 1.5 * 100 / 5 = 30，不是原本預算的 50
+    assert open_trade["amount"] == pytest.approx(30.0)
