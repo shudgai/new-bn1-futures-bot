@@ -216,8 +216,8 @@
                                     <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
                                         {{ pos.trigger && pos.trigger.ma_ok === false ? '✗' : '✓' }}
                                     </span>
-                                    <span v-if="pos.trigger && pos.trigger.reasons && pos.trigger.reasons.some(r => r.includes('前低') || r.includes('前高'))" style="color:var(--down); font-weight:700; margin-left:4px; font-size:12px;">
-                                        ⚠️ {{ pos.trigger.reasons.filter(r => r.includes('前低') || r.includes('前高')).join('、') }}
+                                    <span v-if="pos.trigger && pos.trigger.reasons && pos.trigger.reasons.some(r => r.includes('前低') || r.includes('前高'))" style="color:var(--down); font-weight:700; margin-left:4px; font-size:14px;" :title="pos.trigger.reasons.filter(r => r.includes('前低') || r.includes('前高')).join('、')">
+                                        !
                                     </span>
                                 </td>
                                 <td>{{ pos.qty }}</td>
