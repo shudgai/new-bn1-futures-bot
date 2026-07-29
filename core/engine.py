@@ -8,8 +8,8 @@ from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, SYMBOL_ROTATION_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
-    MIN_SCORE_THRESHOLD, USE_TESTNET, POSITION_TREND_CHECK_INTERVAL_SEC,
-    ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H,
+    MIN_SCORE_THRESHOLD, USE_TESTNET,
+    ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
 )
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
@@ -38,6 +38,8 @@ class TradingEngine:
         self.account.on_trade_closed = self.request_trade_analysis
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
+        self.last_ticker_success_ts: float = time.time()
+        self._last_stale_ticker_log: float = 0.0
         self.ema_200_1h_cache: Dict[str, float] = {}
         # 大週期（1h）本身動能是不是也在衰退，用同一批 update_1h_trend_
         # cache() 已經抓到的1h K線算 ADX，判斷「不只是5分K的小趨勢要提防，
@@ -48,15 +50,6 @@ class TradingEngine:
         # 回調進場改用真正掛在交易所的限價單（見 core/testnet_account.py
         # 的 pending_limit_orders），不再用軟體輪詢價格的狀態機。
         self.last_signal_progress_log_at: float = 0.0
-        # 持倉幣種的 SuperTrend 方向快取，用來偵測趨勢反轉、餵給移動止損當
-        # 候選收緊價（見 update_position_trends）。不用跟主迴圈一樣每 5 秒
-        # 重算，5 分K本身要 5 分鐘才會真的變化。
-        self.position_trend_cache: Dict[str, int] = {}
-        # 同一次重算順便更新的即時 ATR，取代原本「整個持倉期間都用進場那
-        # 一刻存的 ATR」——讓移動止損/趨勢反轉的距離反映當下波動度，不是
-        # 進場當下的舊波動度。
-        self.position_atr_cache: Dict[str, float] = {}
-        self.last_position_trend_check: float = 0.0
 
     @staticmethod
     def _format_signal_progress(
@@ -272,8 +265,21 @@ class TradingEngine:
                     clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
                     self.ticker_volumes[clean_sym] = float(t['quoteVolume'])
                     self.ticker_volumes[sym] = float(t['quoteVolume'])
+            self.last_ticker_success_ts = time.time()
         except Exception as e:
-            pass
+            # 原本這裡整個吞掉例外，抓價失敗時 self.tickers 會停在上一次的
+            # 舊報價，止損/止利判斷、訊號評分全部悄悄用過期價格繼續跑，
+            # 不會有任何紀錄。改成量測「已經幾秒沒更新」並每 30 秒記一次
+            # WARNING，讓抓價持續失敗這件事至少看得到，不是無聲無息。
+            now = time.time()
+            stale_sec = now - self.last_ticker_success_ts
+            if now - self._last_stale_ticker_log >= 30:
+                self._last_stale_ticker_log = now
+                self.account.log(
+                    f"⚠️ 抓取即時報價失敗（{type(e).__name__}: {e}），"
+                    f"報價已 {stale_sec:.0f} 秒未更新",
+                    "WARNING",
+                )
 
     async def update_1h_trend_cache(self):
         """10 分鐘才抓取一次 1h 大週期數據，避免頻繁調用 API Rate Limit"""
@@ -303,29 +309,6 @@ class TradingEngine:
             await asyncio.sleep(0.1)
         self.last_1h_cache_time = now
 
-    async def update_position_trends(self):
-        """定期（非每5秒）幫目前持倉的幣種重新計算 SuperTrend 方向與 ATR，
-        用來偵測趨勢反轉、更新移動止損距離。只覆蓋持倉，不是全部牌面，
-        數量少、頻率也低，對 API 負擔很小。方向結果只當成移動止損的候選
-        收緊價之一，不會直接觸發平倉，避免變成第二套跟移動止損互搶出場
-        的邏輯。"""
-        now = time.time()
-        if now - self.last_position_trend_check < POSITION_TREND_CHECK_INTERVAL_SEC:
-            return
-        self.last_position_trend_check = now
-
-        held_symbols = list(self.account.positions.keys())
-        for symbol in held_symbols:
-            df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
-            if df.empty or len(df) < 50:
-                continue
-            computed = self.strategy.compute_indicators(df)
-            curr = computed.iloc[-1]
-            self.position_trend_cache[symbol] = int(curr["st_direction"])
-            if not pd.isna(curr["atr"]) and curr["atr"] > 0:
-                self.position_atr_cache[symbol] = float(curr["atr"])
-            await asyncio.sleep(0.1)
-
     async def _main_loop(self):
         while self.is_running:
             try:
@@ -336,12 +319,7 @@ class TradingEngine:
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
                 # 2. 更新與執行持倉部位
-                await self.update_position_trends()
-                await self.account.update_positions(
-                    self.tickers,
-                    trend_directions=self.position_trend_cache,
-                    atr_overrides=self.position_atr_cache,
-                )
+                await self.account.update_positions(self.tickers)
                 # 冷卻時間唯一資料來源是 self.account.last_closed_at（見
                 # testnet_account.py），不管平倉是這裡的主迴圈觸發，還是
                 # /api/prices、/api/status 這些跟主迴圈不同步的網頁輪詢
@@ -395,6 +373,8 @@ class TradingEngine:
                 # （止損/止利/移動止利/分批止盈）完全不受影響。
                 daily_halt, _daily_loss_pct = self.account.daily_loss_limit_hit()
                 available_balance = self.account.get_available_balance()
+                if TEST_BUDGET_CAP_USDT > 0:
+                    available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
                 if not daily_halt and available_balance >= MIN_TRADE_USDT:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
                     signal_progress = []

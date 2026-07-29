@@ -10,18 +10,7 @@ from core.config import (
     BINANCE_API_KEY,
     BINANCE_SECRET,
     TAKER_FEE_RATE,
-    NET_PROFIT_GUARANTEE_BUFFER,
-    BREAKEVEN_LOCK_MIN_ATR_MULT,
-    TRAILING_ACTIVATION_ATR_MULT,
-    get_trailing_distance_mult,
-    MIN_STOP_DISTANCE_ATR_MULT,
-    PARTIAL_CLOSE_THRESHOLDS,
-    FLASH_MOVE_WINDOW_SEC,
-    FLASH_MOVE_THRESHOLD_PCT,
-    ENTRY_GRACE_SECONDS,
-    ENTRY_GRACE_EXTRA_ATR,
     MAX_DAILY_LOSS_PCT,
-    REVERSAL_EXIT_ATR_MULT,
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
     PENDING_REPOST_STREAK_LIMIT,
@@ -70,11 +59,7 @@ class BinanceTestnetAccount:
         self.on_trade_closed: Optional[Callable[[], None]] = None
         self.last_sync_at = 0.0
         self._markets_loaded = False
-        self._last_trailing_log: Dict[str, float] = {}
-        self._trailing_lock: set = set()
         self._orphan_protection_attempted: set = set()
-        self._price_history: Dict[str, List[tuple]] = {}
-        self._last_flash_log: Dict[str, float] = {}
         self.daily_date: Optional[str] = None
         self.daily_start_balance: float = 0.0
         self.daily_start_realized_pnl: float = 0.0
@@ -85,12 +70,6 @@ class BinanceTestnetAccount:
         # 被網頁輪詢（跟主迴圈完全不同步、各自獨立呼叫 update_positions）
         # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
         self.last_closed_at: Dict[str, float] = {}
-        # 移動止損/趨勢反轉評估節流：/api/prices、/api/status 每 1~3 秒就
-        # 會各自呼叫一次 update_positions()，跟主迴圈（5秒一次）完全不同步，
-        # 同一個持倉可能在很短時間內被多個呼叫者重複評估、疊加觸發好幾次
-        # 止損調整，price 已經跑掉時容易被交易所拒單、觸發不必要的緊急
-        # 市價平倉。加上這個節流，同一個 symbol 的止損評估最多每 4 秒做一次。
-        self._last_trailing_eval_at: Dict[str, float] = {}
         # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
         # 範圍內的限價單而非市價單）可能因為價格跳空滑出緩衝範圍而遲遲
         # 無法成交，導致部位裸奔。記錄「標記價開始穿越止損」的時間點，
@@ -281,11 +260,6 @@ class BinanceTestnetAccount:
                 "sl": float(meta.get("sl") or 0.0),
                 "tp": float(meta.get("tp") or 0.0),
                 "atr": float(meta.get("atr") or entry_price * 0.015),
-                "is_breakeven_moved": bool(meta.get("is_breakeven_moved", False)),
-                "highest_price": float(meta.get("highest_price") or entry_price),
-                "lowest_price": float(meta.get("lowest_price") or entry_price),
-                "peak_profit_pct": float(meta.get("peak_profit_pct") or 0.0),
-                "peak_profit_updated_at": float(meta.get("peak_profit_updated_at") or 0.0),
                 "open_timestamp": float(meta.get("open_timestamp") or now),
                 "open_time": meta.get("open_time") or get_taipei_now_str(),
                 "reason": meta.get("reason") or "Binance Testnet existing position",
@@ -394,15 +368,8 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
 
-    async def update_positions(
-        self,
-        ticker_prices: Dict[str, float],
-        trend_directions: Dict[str, int] = None,
-        atr_overrides: Dict[str, float] = None,
-    ) -> float:
+    async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
         await self.refresh()
-        trend_directions = trend_directions or {}
-        atr_overrides = atr_overrides or {}
 
         for symbol, pos in list(self.positions.items()):
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
@@ -433,30 +400,6 @@ class BinanceTestnetAccount:
                 self._orphan_protection_attempted.add(symbol)
                 await self._create_orphan_protection(symbol, pos, meta)
 
-            if "peak_profit_pct" not in meta:
-                meta["peak_profit_pct"] = 0.0
-            if "peak_profit_updated_at" not in meta:
-                meta["peak_profit_updated_at"] = pos.get("open_timestamp", time.time())
-            if "highest_price" not in meta:
-                meta["highest_price"] = entry_p
-            if "lowest_price" not in meta:
-                meta["lowest_price"] = entry_p
-
-            if side == "LONG":
-                curr_profit_pct = (mark_p - entry_p) / entry_p
-                if mark_p > meta["highest_price"]:
-                    meta["highest_price"] = mark_p
-            else:
-                curr_profit_pct = (entry_p - mark_p) / entry_p
-                if mark_p < meta["lowest_price"]:
-                    meta["lowest_price"] = mark_p
-
-            # peak_profit_pct 只留給前端顯示「歷史最高無槓桿利潤」用，出場判斷
-            # 已經改用下面的 ATR 移動停利（見 highest_price/lowest_price）。
-            if curr_profit_pct > meta.get("peak_profit_pct", 0.0):
-                meta["peak_profit_pct"] = curr_profit_pct
-                meta["peak_profit_updated_at"] = time.time()
-
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
 
@@ -484,260 +427,18 @@ class BinanceTestnetAccount:
                 else:
                     self._stop_breach_since.pop(symbol, None)
 
-            is_flash = self._is_flash_move(symbol, curr_p, side, now_ts)
-            if is_flash and now_ts - self._last_flash_log.get(symbol, 0) >= 30:
-                self._last_flash_log[symbol] = now_ts
-                self.log(
-                    f"🌪️ [急殺辨識] {symbol} 短時間內劇烈逆勢波動，暫停收緊移動止利"
-                    f"（原止損 {old_sl} 維持不變）",
-                    "WARNING",
-                )
-
-            # 節流：/api/prices、/api/status 每 1~3 秒就會各自呼叫一次
-            # update_positions()，跟主迴圈（5秒一次）完全不同步。同一個持倉
-            # 的止損調整（緩衝期收尾 + 移動停利/趨勢反轉）最多每 4 秒評估
-            # 一次，避免不同呼叫者在極短時間內重複觸發、疊加收緊，price
-            # 已經跑掉時容易被交易所拒單觸發不必要的緊急市價平倉。
-            can_eval_trailing = now_ts - self._last_trailing_eval_at.get(symbol, 0) >= 4.0
-            if can_eval_trailing:
-                self._last_trailing_eval_at[symbol] = now_ts
-
-            # 進場緩衝期結束：把剛進場時放寬的止損收緊回原本策略設定的正常距離。
-            # 若急殺正在發生就先不收緊（避免在最劇烈的當下把止損調緊），
-            # 若移動止利已經把止損推得比目標還緊，直接清掉標記、不需要再處理。
-            if can_eval_trailing and "target_sl" in meta and now_ts >= meta.get("grace_until", 0) and not is_flash:
-                target_sl = meta["target_sl"]
-                already_tighter = (
-                    (side == "LONG" and old_sl >= target_sl)
-                    or (side == "SHORT" and 0 < old_sl <= target_sl)
-                )
-                if already_tighter:
-                    meta.pop("target_sl", None)
-                else:
-                    new_sl = float(self.exchange.price_to_precision(symbol, target_sl))
-                    await self._replace_stop_order(symbol, side, pos["qty"], old_sl, new_sl, meta, pos)
-                    meta.pop("target_sl", None)
-                    self.log(f"⏱️ [緩衝期結束] {symbol} 止損收緊回正常距離 {new_sl}", "INFO")
-                    old_sl = pos.get("sl", old_sl)
-
-            # 移動止利：曾經用「峰值 - 0.5倍ATR」的 chandelier exit，但實測
-            # 發現這個距離對正常的價格雜訊/反彈太敏感——BCH 這筆只往有利
-            # 方向走了 0.09%（0.5倍ATR）就把止損收緊到幾乎貼著進場價，
-            # 隨便一次正常反彈就洗出場，虧損幾乎全是手續費，行情根本沒走壞。
-            # 改成跟著 Keltner 中軌（EMA20，見 engine.update_position_trends
-            # 用已收盤5分K重算、每90秒更新一次，不會被單一 tick 雜訊牽動）
-            # 走：只有中軌本身推進到比進場價更有利的位置，才會被納入止損
-            # 候選，用真正的通道結構防守，而不是任意抓的 ATR 倍數。
-            # 進場緩衝期內完全不做移動停利/趨勢反轉收緊：緩衝期本來就是刻意
-            # 放寬止損、讓部位撐過剛進場的雜訊（見上面「進場緩衝期結束」），
-            # 但這裡原本沒檢查 grace_until，導致進場後只要價格隨便跳一個
-            # tick，就會立刻算出「現價 ± 0.5倍ATR」的超緊候選價，直接蓋掉
-            # 緩衝期的保護，新止損送到交易所時常常價格已經穿越，觸發保護單
-            # 被拒→緊急市價平倉，整個緩衝期形同虛設（實測 BTC 連續好幾筆
-            # 進場後 1~11 秒內就被這樣洗出場，虧損金額精準卡在 0.5x ATR）。
-            if can_eval_trailing and old_sl > 0 and not is_flash and now_ts >= meta.get("grace_until", 0):
-                # 優先用 engine.update_position_trends() 定期重算的即時 ATR，
-                # 反映當下波動度；還沒有即時值時（例如剛啟動、還沒輪到這個
-                # 幣種重算）才退回進場當下存的舊值。同步寫回 meta，讓其他
-                # 讀 meta["atr"] 的地方（如補建保護單、儀表板）也看到新值。
-                atr_val = atr_overrides.get(symbol) or meta.get("atr") or entry_p * 0.015
-                meta["atr"] = atr_val
-                # 候選止損價取最嚴格的一個，只會愈收愈緊、不會放寬：
-                # 1) 保本鎖：最高價（多單）/最低價（空單）扣掉手續費+滑點
-                #    緩衝後淨賺，且至少推進滿 BREAKEVEN_LOCK_MIN_ATR_MULT
-                #    倍 ATR（不是隨便有賺就鎖），才鎖到保本線。
-                # 2) 動態階梯移動停利：取代原本的「通道中軌防守」，解決
-                #    「跑得太快被雜訊洗掉、跑得太慢把利潤全部吐回」的矛盾。
-                #    最高/最低價至少推進滿 TRAILING_ACTIVATION_ATR_MULT
-                #    （0.7倍）才啟動；啟動後跟隨距離依獲利幅度分級收緊——
-                #    剛啟動給 1.0倍ATR 呼吸空間，獲利 >1.5倍ATR 收到 0.7倍，
-                #    獲利 >3.0倍ATR（噴出段）收到 0.4倍，儘量咬住大波段的
-                #    利潤。跟保本鎖是互補：這裡的啟動門檻本身不保證淨賺
-                #    （剛啟動時跟隨距離可能比門檻本身還寬），兩者都當候選
-                #    交給下面取最嚴格的一個，各自守住不同階段。
-                # 3) 趨勢反轉：持倉幣種 SuperTrend 方向（已收盤K棒算，見
-                #    engine.update_position_trends）反轉時，收緊到「反轉當下
-                #    價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」——不是直接平倉，
-                #    只是多一個候選價，部位已經獲利、移動停利已經收得更緊時
-                #    這個候選會被比下去，不會互搶出場。主要補上「還沒獲利、
-                #    移動停利尚未啟動」這段只能等固定止損的空窗期。
-                st_dir = trend_directions.get(symbol)
-                want_dir = 1 if side == "LONG" else -1
-                reversed_trend = st_dir is not None and st_dir != want_dir
-                if side == "LONG":
-                    peak_price = meta["highest_price"]
-                    breakeven_level = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
-                    candidates = [(old_sl, "原止損")]
-                    # 要求最高價至少推進滿 BREAKEVEN_LOCK_MIN_ATR_MULT 倍
-                    # ATR 才讓保本鎖生效，不是「有淨賺就鎖」——避免行情才
-                    # 走一點點雜訊幅度就被鎖死在幾乎貼著進場價的止損，一次
-                    # 正常反彈就洗出場（實測 AAVE/BCH/DOT 都是這個樣貌）。
-                    if peak_price >= breakeven_level and (peak_price - entry_p) >= atr_val * BREAKEVEN_LOCK_MIN_ATR_MULT:
-                        candidates.append((breakeven_level, "保本鎖"))
-                    profit_atr_mult = (peak_price - entry_p) / atr_val if atr_val > 0 else 0.0
-                    if profit_atr_mult >= TRAILING_ACTIVATION_ATR_MULT:
-                        trail_dist_mult = get_trailing_distance_mult(profit_atr_mult)
-                        candidates.append((peak_price - trail_dist_mult * atr_val, "動態移動停利"))
-                    if reversed_trend:
-                        candidates.append((mark_p - REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
-                    trail_sl, trail_reason = max(candidates, key=lambda c: c[0])
-                    # 安全防線：不管哪個候選勝出，新止損跟「標記價格」之間都
-                    # 至少留 MIN_STOP_DISTANCE_ATR_MULT 倍 ATR 距離才送單——
-                    # 交易所是拿標記價格判斷新止損會不會立刻觸發，用最新成交
-                    # 價算安全距離，兩者基差夠大時還是可能被拒單。通道中軌這
-                    # 類「跟著一個價位」而非「跟現價保持固定距離」的候選，在
-                    # 盤整時容易跟標記價收斂到太近甚至重疊，送單被交易所以
-                    # 「Order would immediately trigger」拒絕，觸發不必要的
-                    # 緊急市價平倉（實測 OP/USDT 就是這樣，行情根本沒反轉）。
-                    trail_sl = min(trail_sl, mark_p - atr_val * MIN_STOP_DISTANCE_ATR_MULT)
-                    # 移動幅度太小就不重新掛單：避免行情緩慢推進時每一輪主迴圈
-                    # (5秒)都在 cancel/create 保護單，頻繁觸發 API 呼叫/速率限制。
-                    # 保本鎖第一次啟動時通常是相對原本寬止損的一大步，不會被這個
-                    # 門檻擋住，只有後續的細微調整才會被跳過。
-                    if trail_sl > old_sl and (trail_sl - old_sl) >= atr_val * 0.05:
-                        new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        # 移動止盈：止損還在收緊，代表趨勢仍在走，固定止盈價不該
-                        # 提前把單子封頂——用標記價格重新算 ATR 距離往外推，只會
-                        # 往外擴不會往內縮，出場主要交給移動止損判斷趨勢是否反轉。
-                        _, tp_distance = compute_sl_tp_distance(mark_p, atr_val)
-                        new_tp = max(mark_p + tp_distance, meta.get("tp") or 0.0)
-                        new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
-                        await self._replace_stop_order(
-                            symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
-                        )
-                        if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
-                            self._last_trailing_log[symbol] = now_ts
-                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_p:.6f}）"
-                            self.log(
-                                f"📈 [{trail_reason}] {symbol} 最高價 {peak_price:.6f}，"
-                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}{mark_suffix}",
-                                "SUCCESS",
-                            )
-                else:
-                    trough_price = meta["lowest_price"]
-                    breakeven_level = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
-                    candidates = [(old_sl, "原止損")]
-                    # 同上（LONG 分支）：要求最低價至少推進滿一倍 ATR。
-                    if trough_price <= breakeven_level and (entry_p - trough_price) >= atr_val * BREAKEVEN_LOCK_MIN_ATR_MULT:
-                        candidates.append((breakeven_level, "保本鎖"))
-                    profit_atr_mult = (entry_p - trough_price) / atr_val if atr_val > 0 else 0.0
-                    if profit_atr_mult >= TRAILING_ACTIVATION_ATR_MULT:
-                        trail_dist_mult = get_trailing_distance_mult(profit_atr_mult)
-                        candidates.append((trough_price + trail_dist_mult * atr_val, "動態移動停利"))
-                    if reversed_trend:
-                        candidates.append((mark_p + REVERSAL_EXIT_ATR_MULT * atr_val, "趨勢反轉"))
-                    trail_sl, trail_reason = min(candidates, key=lambda c: c[0])
-                    # 同上（LONG 分支）：新止損跟標記價格至少留安全距離才送單。
-                    trail_sl = max(trail_sl, mark_p + atr_val * MIN_STOP_DISTANCE_ATR_MULT)
-                    if trail_sl < old_sl and (old_sl - trail_sl) >= atr_val * 0.05:
-                        new_sl = float(self.exchange.price_to_precision(symbol, trail_sl))
-                        _, tp_distance = compute_sl_tp_distance(mark_p, atr_val)
-                        current_tp = meta.get("tp") or float("inf")
-                        new_tp = min(mark_p - tp_distance, current_tp)
-                        new_tp_price = float(self.exchange.price_to_precision(symbol, new_tp))
-                        await self._replace_stop_order(
-                            symbol, side, pos["qty"], old_sl, new_sl, meta, pos, new_tp=new_tp_price
-                        )
-                        if now_ts - self._last_trailing_log.get(symbol, 0) >= 30:
-                            self._last_trailing_log[symbol] = now_ts
-                            mark_suffix = f"（現價 {curr_p:.6f}／標記價 {mark_p:.6f}）"
-                            self.log(
-                                f"📉 [{trail_reason}] {symbol} 最低價 {trough_price:.6f}，"
-                                f"止損推至 {new_sl}，止盈同步推至 {new_tp_price}{mark_suffix}",
-                                "SUCCESS",
-                            )
-
+            # 開倉後不再動態調整 SL/TP（回到最初版本的固定止損/止利方式），
+            # 只保留「限價止損逾時未成交」的強制平倉（上面），跟下面的
+            # 24h 無效震盪時間過濾——兩者都是執行面的保護機制，跟「開倉
+            # 停利停損方式」無關，不受這次revert影響。
             if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
-
-            phase = meta.get("partial_close_phase", 0)
-            for i, (threshold, ratio) in enumerate(PARTIAL_CLOSE_THRESHOLDS):
-                if phase <= i and curr_profit_pct >= threshold:
-                    await self._partial_close(symbol, pos, meta, ratio, curr_profit_pct, i + 1)
-                    break
 
             self.position_meta[symbol] = meta
 
         self.save_state()
         return self.unrealized_pnl
-
-    def _is_flash_move(self, symbol: str, curr_p: float, side: str, now_ts: float) -> bool:
-        """短窗口內逆勢劇烈波動（急殺/急拉）偵測，只看最近 FLASH_MOVE_WINDOW_SEC 秒。"""
-        history = self._price_history.setdefault(symbol, [])
-        history.append((now_ts, curr_p))
-        cutoff = now_ts - FLASH_MOVE_WINDOW_SEC
-        while history and history[0][0] < cutoff:
-            history.pop(0)
-        if len(history) < 2:
-            return False
-        oldest_price = history[0][1]
-        if oldest_price <= 0:
-            return False
-        if side == "LONG":
-            adverse_move = (oldest_price - curr_p) / oldest_price
-        else:
-            adverse_move = (curr_p - oldest_price) / oldest_price
-        return adverse_move >= FLASH_MOVE_THRESHOLD_PCT
-
-    async def _replace_stop_order(
-        self, symbol: str, side: str, qty: float, old_sl: float, new_sl: float, meta: dict, pos: dict,
-        new_tp: float = None,
-    ) -> None:
-        # 避免同一 symbol 的移動止利在 refresh() 節流窗口內被多個呼叫者
-        # (/api/prices、/api/status、主循環) 重複觸發，造成保護單反覆 cancel/recreate。
-        if symbol in self._trailing_lock:
-            return
-        self._trailing_lock.add(symbol)
-        close_side = "sell" if side == "LONG" else "buy"
-        try:
-            await self._cancel_all_orders(symbol)
-            try:
-                await self._create_protection_order(
-                    symbol, close_side, "STOP_MARKET", qty, new_sl,
-                    limit_price=self._stop_limit_price(new_sl, close_side),
-                )
-            except Exception as exc:
-                # 新止損價已經被市價（MARK_PRICE）穿越，交易所拒絕掛單
-                # （-2021 Order would immediately trigger）。舊保護單已被取消，
-                # 若放著不管部位會完全裸奔，直接市價平倉，等同止損已觸發。
-                # 記下當時的現價（收盤價系列）跟標記價，方便事後判斷這次
-                # 觸發是真的行情走了，還是標記價/現價基差造成的雜訊。
-                mark_price = pos.get("mark_price")
-                mark_suffix = f"（新止損 {new_sl}／標記價 {mark_price:.6f}）" if mark_price is not None else f"（新止損 {new_sl}）"
-                self.log(
-                    f"⚠️ {symbol} 移動止利新止損建立失敗（{type(exc).__name__}: {exc}），"
-                    f"研判價格已穿越止利線，改為市價平倉{mark_suffix}",
-                    "DANGER",
-                )
-                await self.close_position(symbol, new_sl, "移動止利保護單被拒，市價平倉")
-                return
-            meta["sl"] = new_sl
-            if new_tp and new_tp > 0:
-                meta["tp"] = new_tp
-            self.position_meta[symbol] = meta
-            tp = meta.get("tp") or 0.0
-            if tp > 0:
-                try:
-                    await self._create_protection_order(
-                        symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp
-                    )
-                except Exception as exc:
-                    self.log(
-                        f"⚠️ {symbol} 移動止利後止盈單重建失敗：{type(exc).__name__}: {exc}"
-                        f"（止損已生效，僅缺止盈保護）",
-                        "WARNING",
-                    )
-            # 直接同步 pos["sl"]，不必等下一次節流的 refresh() 才能看到新止利價，
-            # 否則後續 tick 會拿舊值重複判斷「有改善」而再次觸發本函式。
-            pos["sl"] = new_sl
-        except Exception as exc:
-            self.log(
-                f"⚠️ {symbol} 移動止利保護單更新失敗：{type(exc).__name__}: {exc}",
-                "WARNING",
-            )
-        finally:
-            self._trailing_lock.discard(symbol)
 
     async def _create_orphan_protection(self, symbol: str, pos: dict, meta: dict) -> None:
         side = pos["side"]
@@ -772,79 +473,6 @@ class BinanceTestnetAccount:
                 f"⚠️ {symbol} 補建保護單失敗：{type(exc).__name__}: {exc}",
                 "WARNING",
             )
-
-    async def _partial_close(
-        self, symbol: str, pos: dict, meta: dict, ratio: float, profit_pct: float, phase: int
-    ) -> None:
-        if symbol in self.closing_lock:
-            return
-        self.closing_lock.add(symbol)
-        try:
-            close_qty_raw = pos["qty"] * ratio
-            close_qty = float(self.exchange.amount_to_precision(symbol, close_qty_raw))
-            if close_qty <= 0:
-                return
-            await self._cancel_all_orders(symbol)
-            close_side = "sell" if pos["side"] == "LONG" else "buy"
-            order = await self.exchange.create_order(
-                symbol, "market", close_side, close_qty, None,
-                {"reduceOnly": True, "newOrderRespType": "RESULT"},
-            )
-            exec_price = float(order.get("average") or 0)
-            if pos["side"] == "LONG":
-                raw_pnl = (exec_price - pos["entry_price"]) * close_qty
-            else:
-                raw_pnl = (pos["entry_price"] - exec_price) * close_qty
-            open_fee = pos["entry_price"] * close_qty * TAKER_FEE_RATE
-            close_fee = exec_price * close_qty * TAKER_FEE_RATE
-            fee = open_fee + close_fee
-            net_pnl = raw_pnl - fee
-            self.realized_pnl += net_pnl
-            remaining_qty = pos["qty"] - close_qty
-            remaining_margin = pos.get("margin", 0.0) * (remaining_qty / pos["qty"])
-            self.trades.insert(0, {
-                "id": int(time.time() * 1000),
-                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
-                "symbol": symbol,
-                "action": f"PARTIAL_CLOSE_{pos['side']}",
-                "side": pos["side"],
-                "price": exec_price,
-                "qty": close_qty,
-                "amount": remaining_margin,
-                "fee": round(fee, 4),
-                "pnl": round(net_pnl, 4),
-                "status": "CLOSED",
-                "reason": f"分批止盈 (Phase {phase}, 利潤 {profit_pct:.1%})",
-                "exchange_order_id": order.get("id"),
-            })
-            old_sl = meta.get("sl", 0.0)
-            meta["partial_close_phase"] = phase
-            meta["sl"] = old_sl
-            meta["partial_close_qty"] = close_qty
-            self.position_meta[symbol] = meta
-            new_sl = float(self.exchange.price_to_precision(symbol, old_sl))
-            tp = meta.get("tp") or 0.0
-            await self._create_protection_order(
-                symbol, close_side, "STOP_MARKET", remaining_qty, new_sl,
-                limit_price=self._stop_limit_price(new_sl, close_side),
-            )
-            if tp > 0:
-                await self._create_protection_order(
-                    symbol, close_side, "TAKE_PROFIT_MARKET", remaining_qty, tp
-                )
-            self.log(
-                f"💰 [分批止盈] {symbol} 平倉 {ratio:.0%}（{close_qty:.2f}）@ {exec_price:.6f} | "
-                f"淨損益: {net_pnl:+.2f} USDT | 剩餘 {remaining_qty:.2f} 繼續持有",
-                "SUCCESS",
-            )
-            await self.refresh(force=True)
-        except Exception as exc:
-            self.log(
-                f"⚠️ {symbol} 分批止盈失敗：{type(exc).__name__}: {exc}",
-                "WARNING",
-            )
-        finally:
-            self.closing_lock.discard(symbol)
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:
@@ -1035,14 +663,6 @@ class BinanceTestnetAccount:
             sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp))
             atr_value = atr if atr > 0 else execution_price * 0.015
-            # 進場緩衝期：剛進場的 ENTRY_GRACE_SECONDS 秒內，實際掛在交易所的
-            # 止損先額外放寬 ENTRY_GRACE_EXTRA_ATR 倍 ATR，避開剛進場時最容易
-            # 發生的 MARK_PRICE 瞬間偏離雜訊；緩衝期一過會自動收緊回 sl_price。
-            grace_buffer = atr_value * ENTRY_GRACE_EXTRA_ATR
-            grace_sl = (
-                sl_price - grace_buffer if side == "LONG" else sl_price + grace_buffer
-            )
-            grace_sl_price = float(self.exchange.price_to_precision(symbol, grace_sl))
             try:
                 # 限價單成交後，這裡跟主迴圈/網頁輪詢都可能同時偵測到「這個
                 # symbol 有持倉但還沒保護單」而觸發 _create_orphan_protection，
@@ -1050,8 +670,8 @@ class BinanceTestnetAccount:
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
                 await self._create_protection_order(
-                    symbol, close_side, "STOP_MARKET", qty, grace_sl_price,
-                    limit_price=self._stop_limit_price(grace_sl_price, close_side),
+                    symbol, close_side, "STOP_MARKET", qty, sl_price,
+                    limit_price=self._stop_limit_price(sl_price, close_side),
                 )
                 await self._create_protection_order(
                     symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
@@ -1062,21 +682,17 @@ class BinanceTestnetAccount:
                 raise
 
             fee = qty * execution_price * TAKER_FEE_RATE
+            # 開倉時設好 SL/TP 之後就不再更動，只等價格碰到其中一個交易所
+            # 保護單才平倉（回到最初版本的固定止損/止利方式，見 config.py
+            # 的 STOP_LOSS_MULTIPLIER/TAKE_PROFIT_MULTIPLIER 註解）。
             meta = {
-                "sl": grace_sl_price,
-                "target_sl": sl_price,
-                "grace_until": time.time() + ENTRY_GRACE_SECONDS,
+                "sl": sl_price,
                 "tp": tp_price,
                 "atr": atr_value,
                 "open_timestamp": time.time(),
                 "open_time": get_taipei_now_str(),
                 "reason": reason,
                 "signal_score": signal_score,
-                "highest_price": execution_price,
-                "lowest_price": execution_price,
-                "peak_profit_pct": 0.0,
-                "peak_profit_updated_at": time.time(),
-                "is_breakeven_moved": False,
             }
             self.position_meta[symbol] = meta
             self.trades.insert(0, {
@@ -1101,8 +717,7 @@ class BinanceTestnetAccount:
             await self.refresh(force=True)
             self.log(
                 f"🚀 Binance Testnet 開倉成功 [{side}] {symbol} @ "
-                f"{execution_price:.6f} ({leverage}x，SL={sl_price}, TP={tp_price}，"
-                f"{ENTRY_GRACE_SECONDS:.0f}秒緩衝期內實際止損暫寬至 {grace_sl_price})",
+                f"{execution_price:.6f} ({leverage}x，SL={sl_price}, TP={tp_price})",
                 "SUCCESS",
             )
             return True

@@ -7,8 +7,7 @@ import core.paper_account as pa_module
 import core.strategy as strategy_module
 from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
-    RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD,
-    get_trailing_distance_mult, TRAILING_ACTIVATION_ATR_MULT,
+    RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -59,14 +58,6 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("ETH/USDT", 90) == 10
     assert get_signal_leverage("APT/USDT", 70) == 3
 
-
-def test_trailing_distance_tiers_tighten_as_profit_grows():
-    """動態階梯移動停利：獲利越多，跟隨距離收得越緊，剛啟動時給最寬的
-    呼吸空間，噴出段（>3倍ATR）收到最緊，確保能咬住大波段的利潤。"""
-    assert get_trailing_distance_mult(TRAILING_ACTIVATION_ATR_MULT) == 1.0
-    assert get_trailing_distance_mult(1.4) == 1.0
-    assert get_trailing_distance_mult(1.6) == 0.7
-    assert get_trailing_distance_mult(3.5) == 0.4
 
 def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
@@ -315,16 +306,32 @@ def test_pullback_reconfirmation_cancels_when_price_overextended(monkeypatch):
     assert "價格乖離EMA20過大" in result["reason"]
 
 
-def test_pullback_reconfirmation_cancels_when_momentum_faded(monkeypatch):
-    """量能萎縮到門檻以下：原本的突破已經沒有真實成交量支撐，回踩進場前取消。"""
+def test_pullback_reconfirmation_passes_when_volume_weak_but_other_signals_strong(monkeypatch):
+    """量能單項不再是硬性關卡：新鮮度/RSI/ADX 都還強的情況下，總分
+    （B量能+C RSI+D新鮮度+E品質，滿分79）足以覆蓋 PULLBACK_SCORE_THRESHOLD，
+    量能偏弱不再單獨否決這筆回踩進場——這是本次改動要達成的補償式判斷。"""
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG", volume=100.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "PASS"
+
+
+def test_pullback_reconfirmation_cancels_when_pullback_score_insufficient(monkeypatch):
+    """量能弱、RSI 剛好卡在門檻（無邊際加分）、ADX 剛好卡在 ADX_QUALITY_MIN
+    （無邊際加分，但還不到觸發 ADX 衰退硬性紅線的程度）：單項都沒踩到絕對
+    紅線，但總分湊不到 PULLBACK_SCORE_THRESHOLD，一樣要取消。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG", volume=100.0, rsi=RSI_LONG_THRESHOLD)
+    frame["adx"] = [ADX_QUALITY_MIN] * 50
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
-    assert "量能轉弱" in result["reason"]
+    assert "回調總分不足" in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_1h_trend_flipped(monkeypatch):

@@ -8,7 +8,7 @@ from core.config import (
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
-    EMA_EXTENSION_MAX_ATR_MULT,
+    EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -448,15 +448,46 @@ class SuperTrendKeltnerStrategy:
         if atr_pct < MIN_ATR_PCT:
             return {"status": "CANCEL", "reason": f"波動率轉為過低 ATR_Too_Low({atr_pct:.2%})"}
 
-        if vol_ma_20 > 0 and vol < (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
+        # 回調總分（B量能+C RSI+D新鮮度+E品質加分，滿分79，跟 evaluate_signal()
+        # 同一套加權）：量能/RSI 不再各自當硬性關卡、任一項不過就整筆取消，
+        # 改成允許互相補償——量能爆量成長可以補足 RSI 差一點點的缺口，更貼近
+        # 真實交易判斷。上面的方向反轉/大趨勢衰退/新鮮度太舊/ADX動能衰退/
+        # 價格乖離過大/ATR%範圍 是絕對紅線，不受總分補償影響，維持硬性取消。
+        score_b = 20 if (vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO) else 0
+        score_c = 20 if (
+            (side == "LONG" and rsi >= RSI_LONG_THRESHOLD)
+            or (side == "SHORT" and rsi <= RSI_SHORT_THRESHOLD)
+        ) else 0
+        score_d = freshness_score
+
+        atr_mid = (MIN_ATR_PCT + MAX_ATR_PCT) / 2.0
+        atr_half_range = (MAX_ATR_PCT - MIN_ATR_PCT) / 2.0
+        atr_quality = (
+            max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
+            if atr_half_range > 0 else 0.0
+        )
+        if side == "LONG":
+            rsi_margin = max(0.0, rsi - RSI_LONG_THRESHOLD)
+        else:
+            rsi_margin = max(0.0, RSI_SHORT_THRESHOLD - rsi)
+        vol_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
+        vol_margin = max(0.0, vol_ratio - KELTNER_MIN_VOLUME_RATIO)
+        adx_ratio = (adx - ADX_QUALITY_MIN) / (ADX_QUALITY_FULL - ADX_QUALITY_MIN)
+        score_e = (
+            round(atr_quality * 3)
+            + round(min(rsi_margin / 15.0, 1.0) * 3)
+            + round(min(vol_margin / 1.0, 1.0) * 3)
+            + round(min(max(adx_ratio, 0.0), 1.0) * 3)
+        )
+
+        pullback_score = score_b + score_c + score_d + score_e
+        if pullback_score < PULLBACK_SCORE_THRESHOLD:
             return {
                 "status": "CANCEL",
-                "reason": f"量能轉弱 {vol / vol_ma_20:.2f}x < {KELTNER_MIN_VOLUME_RATIO:.2f}x",
+                "reason": (
+                    f"回調總分不足 Pullback_Score({pullback_score}<{PULLBACK_SCORE_THRESHOLD}) | "
+                    f"Volume+{score_b} RSI+{score_c} Freshness+{score_d} Quality+{score_e}"
+                ),
             }
 
-        if side == "LONG" and rsi < RSI_LONG_THRESHOLD:
-            return {"status": "CANCEL", "reason": f"RSI 轉弱 {rsi:.1f} < {RSI_LONG_THRESHOLD}"}
-        if side == "SHORT" and rsi > RSI_SHORT_THRESHOLD:
-            return {"status": "CANCEL", "reason": f"RSI 轉弱 {rsi:.1f} > {RSI_SHORT_THRESHOLD}"}
-
-        return {"status": "PASS", "reason": "二次確認通過"}
+        return {"status": "PASS", "reason": f"二次確認通過 Pullback_Score({pullback_score})"}

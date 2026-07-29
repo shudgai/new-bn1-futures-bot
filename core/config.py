@@ -76,20 +76,21 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
-# STOP_LOSS_MULTIPLIER 拉大回 2.0x ATR：1.2x 太緊，實測太容易被
-# Testnet 流動性較淺導致的 MARK_PRICE 瞬間偏離雜訊掃出（例如 SOL
-# 進場僅 38 秒就停損），給更多呼吸空間。
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
-# TAKE_PROFIT_MULTIPLIER：實測全部 242 筆已平倉交易、逐筆比對開倉/平倉
-# 價跟原始停利價後發現，1:2 風報比（4.0x）下，真正打到/接近原始停利價
-# 的只有 3 筆（1.3%），53.5% 收在接近進場價或更差，45.1% 是移動停利
-# 提早鎖住的小額獲利——平均獲利只有 +0.14 USDT，平均虧損卻是 -0.44
-# USDT（賺賠比只有 0.32，總損益 -40.6 USDT）。停利目標對這個回調型
-# 策略的實際行情走勢來說明顯設太遠，移動停利機制（保本鎖/通道中軌/
-# 趨勢反轉）根本沒機會讓價格跑到那裡就先鎖利了。降到 2.75x（風報比
-# 1:1.375），把目標拉近到更貼近實際可達成的距離，讓更多交易真的有
-# 機會完整吃到停利，而不是依賴移動停利提早鎖住小額獲利。
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.75"))
+# TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
+# 不管 Testnet 帳戶實際餘額有多少（例如帳戶有 4600U，但先假裝只有 150U，
+# 觀察在這個額度下實際能開滿幾槽）。設 0（或不設）代表不封頂，直接用
+# 帳戶真實可用餘額——正式上線時把這個值改回 0（或整個移除環境變數）即可，
+# 不用再改程式碼。
+TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
+# STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER：回到最初版本
+# (commit 32fe430) 的固定距離與風報比 1:2。中間調過 1.2x/2.0x 的止損、
+# 4.0x/2.75x 的止利，也加過移動止利/保本鎖/ATR階梯等一整套開倉後動態
+# 調整機制，但實測下來大多數交易都被那套機制在遠比原始止利/止損更近的
+# 位置提早鎖利/停損出場（甚至倒虧），跟固定 SL/TP 的原始設計互相打架。
+# 現在移除所有開倉後的動態調整（見 testnet_account.py update_positions），
+# 回到「開倉時設好 SL/TP，只等價格碰到其中一個才平倉」的原始方式。
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 # MIN_SL_DISTANCE_PCT：止損距離下限（佔進場價的比例），不管 ATR 倍數設多寬，
 # 波動率本身很低的時候（實測 BTC/LINK/LTC/BNB/XRP 反推 ATR 只有 0.07%~0.21%），
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
@@ -132,6 +133,16 @@ PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # 1.0 = 回踩到 EMA20 均價才進場（價格更低、空間更大，但等到的機率也更低）。
 # 設 0.5 取中間值：進場價往均價方向靠一半，換取更多上漲空間，同時不會太少訊號。
 PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.5"))
+# PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
+# 原本量能/RSI 是各自獨立的硬性關卡，任一項不過就整筆取消，太僵硬——
+# 量能爆量成長理應能補足 RSI 差一點點的缺口。改成跟 evaluate_signal() 同一套
+# 加權（B量能20+C RSI20+D新鮮度30+E品質加分9，滿分79，A項KC突破在回調定義上
+# 必然不成立故排除不計），總分需達到此門檻才放行；方向反轉/大趨勢衰退/新鮮度
+# 太舊/ADX動能衰退/價格乖離過大/ATR%範圍 這些絕對紅線不受影響，維持硬性取消。
+# 初始值依 MIN_SCORE_THRESHOLD(71/109≈65%) 同比例換算 79*0.65≈51，回調交易
+# 確定性通常略低於直接突破，抓稍高一點的 55 分換取勝率，之後應以實測的
+# 回調交易勝率數據校正。
+PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "55"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 # KELTNER_ATR_MULTIPLIER 調回 1.5：實測最早期(通道確實是1.5倍時)勝率
@@ -199,19 +210,6 @@ RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
-
-# --- 趨勢反轉收緊止損（不是獨立平倉路徑）---
-# 持倉中的幣種 SuperTrend 方向（用已收盤K棒算）反轉時，不會直接市價平倉
-# （那樣會變成第二套跟移動止損互搶的出場邏輯），而是算出一個「反轉當下
-# 價格 ± REVERSAL_EXIT_ATR_MULT 倍 ATR」的候選止損價，丟進跟保本鎖、
-# 動態階梯移動停利同一套「取最嚴格候選」的邏輯裡一起比。部位還沒獲利、移動
-# 停利還沒發揮作用時，這個候選通常最緊，正好補上「虧損單只能等固定止損
-# 吃到底」的空窗期；一旦移動停利已經在運作（部位已經獲利、止損推得比它
-# 更緊），這個候選就會直接被比下去，不會互相打架。
-REVERSAL_EXIT_ATR_MULT = float(os.getenv("REVERSAL_EXIT_ATR_MULT", "0.5"))
-# 持倉的 SuperTrend 方向不用跟主迴圈一樣每 5 秒重算一次——5 分K本身
-# 每 5 分鐘才會真的變化，用較低頻率檢查即可，避免浪費 API 呼叫。
-POSITION_TREND_CHECK_INTERVAL_SEC = float(os.getenv("POSITION_TREND_CHECK_INTERVAL_SEC", "90"))
 
 # --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 為舊版百分比制移動止利，
 # 只剩 core/paper_account.py（未上線使用的模擬帳戶）在用，
@@ -293,56 +291,16 @@ def get_trailing_pullback_pct(peak_profit_pct: float, peak_updated_at: float) ->
 
 # NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
 #   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%
-#              滑點預留  0.03% × 2（開+平）= 0.06%
-#              安全緩衝  +0.02%（防止恰好在邊緣虧損）
-#   合計 ≈ 0.18%，trail_sl 必須高於「進場價 × (1 + 0.0018)」才能真正保本。
-NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.0018"))
-# BREAKEVEN_LOCK_MIN_ATR_MULT：保本鎖原本只要「最高價/最低價扣掉手續費
-# 緩衝後淨賺」就會啟動，不管這個有利幅度用該幣種自己的波動度衡量算不算
-# 大。實測三筆真實虧損都是這個樣貌：AAVE/USDT 只走了 0.93倍ATR、
-# BCH/USDT 0.53倍、DOT/USDT 更少，保本鎖就把止損鎖到幾乎貼著進場價，
-# 隨後一次正常的價格雜訊反彈（行情根本沒走壞，AAVE平倉後還繼續跌到
-# 96.51）就把單子洗出場，虧的幾乎全是手續費。要求最高價/最低價至少
-# 推進滿一倍 ATR，才讓保本鎖的候選價生效，跟「通道中軌防守」用同一套
-# 「給正常波動更多空間」的精神，只是這裡用 ATR 衡量而不是通道結構。
-BREAKEVEN_LOCK_MIN_ATR_MULT = float(os.getenv("BREAKEVEN_LOCK_MIN_ATR_MULT", "1.0"))
-# --- 動態階梯移動停利（取代原本的「通道中軌防守」）---
-# 核心解決「跑得太快被雜訊洗掉、跑得太慢把利潤全部吐回」的矛盾：獲利
-# 剛啟動時給較寬的跟隨距離（讓正常回檔有呼吸空間），獲利越大就把跟隨
-# 距離收得越緊（確保反轉時能鎖住大部分已經賺到的利潤）。跟保本鎖是
-# 互補而非取代關係——保本鎖專門保證「淨賺」，這裡的啟動門檻本身沒有
-# 保證獲利（例如剛啟動時跟隨距離可能比啟動門檻本身還寬），兩者都當
-# 候選價交給下面的 max()/min() 選最嚴格的一個。
-# TRAILING_ACTIVATION_ATR_MULT：最高/最低價至少推進滿這個倍數的 ATR，
-# 動態階梯才開始生效，門檻本身刻意設得比保本鎖（1.0倍）低一點（0.7倍），
-# 讓還沒到保本鎖門檻、但已經有一定幅度的行情也能提早開始收緊風險。
-TRAILING_ACTIVATION_ATR_MULT = float(os.getenv("TRAILING_ACTIVATION_ATR_MULT", "0.7"))
-# TRAILING_DISTANCE_TIERS：(獲利倍數門檻, 跟隨距離倍數)，由大到小比對，
-# 命中第一個「獲利倍數 > 門檻」的級距。獲利越多，跟隨距離收得越緊：
-#   獲利 > 3.0倍ATR → 只留 0.4倍ATR 距離（爆發段，儘量咬住極限利潤）
-#   獲利 > 1.5倍ATR → 留 0.7倍ATR 距離（中段，鎖定基本盤）
-#   其餘（剛啟動，介於 0.7~1.5倍之間）→ 留 1.0倍ATR 距離（給呼吸空間）
-TRAILING_DISTANCE_TIERS = [
-    (3.0, 0.4),
-    (1.5, 0.7),
-]
-TRAILING_DISTANCE_DEFAULT_MULT = float(os.getenv("TRAILING_DISTANCE_DEFAULT_MULT", "1.0"))
-
-def get_trailing_distance_mult(profit_atr_mult: float) -> float:
-    for threshold, trail_mult in TRAILING_DISTANCE_TIERS:
-        if profit_atr_mult > threshold:
-            return trail_mult
-    return TRAILING_DISTANCE_DEFAULT_MULT
-
-# MIN_STOP_DISTANCE_ATR_MULT：不管保本鎖/動態移動停利/趨勢反轉哪個候選
-# 勝出，新止損跟「現價」之間都至少要留這個倍數的 ATR 距離，才送到交易所
-# 掛單。實測 OP/USDT 07/28 17:46 這筆，通道中軌（EMA20）剛好跟現價幾乎
-# 重疊，算出的新止損送單時距離已經是 0，被交易所以「Order would
-# immediately trigger」拒絕，程式判斷成「價格已穿越止盈線」，直接緊急
-# 市價平倉——行情其實只是在原地小幅震盪，不是真的走勢反轉。通道中軌是
-# 「跟著一個價位」而不是「跟現價保持固定距離」，在盤整時可能跟現價收斂
-# 到很近甚至重疊，需要額外的安全距離守住，不能只看候選價本身怎麼算。
-MIN_STOP_DISTANCE_ATR_MULT = float(os.getenv("MIN_STOP_DISTANCE_ATR_MULT", "0.15"))
+#              止損滑價緩衝 STOP_LIMIT_SLIPPAGE_GUARD_PCT = 0.20%
+#              （原本抓 0.03%×2=0.06% 滑點預留，比實際的滑價緩衝還小，
+#              保本鎖觸發後在緩衝邊緣成交時穩定倒虧，實測 SUI/USDT
+#              07/28 21:43~21:49 這筆就是精準卡在 0.6791×1.002 的滑價
+#              邊緣成交，鎖到的 0.18% 完全蓋不住 0.10%+0.20%）
+#              安全緩衝  +0.05%
+#   合計 ≈ 0.35%，trail_sl 必須高於「進場價 × (1 + 0.0035)」才能真正保本。
+NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.0035"))
+# 只剩 core/paper_account.py 在用（BinanceTestnetAccount 已移除開倉後的
+# 動態止損調整，改回固定 SL/TP，見 STOP_LOSS_MULTIPLIER 註解）。
 # STOP_LIMIT_SLIPPAGE_GUARD_PCT：止損保護單原本是 STOP_MARKET（觸發後
 # 直接轉市價單成交，不管當下市價多差都會成交），實測 DOT/USDT 07/28
 # 19:42~19:44 這筆，保本鎖正確把止損收緊到 0.7586（理論上該筆已經是
@@ -381,30 +339,6 @@ MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
 # 更可能是假突破（盤整區間的雜訊），沒有真實動能支撐，容易一進場就
 # 反轉。跟 MAX_ATR_PCT 一起框出一個「波動適中」的可交易區間。
 MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
-
-# --- 急殺/急拉辨識：短時間內劇烈波動時，暫停收緊移動止利 ---
-# 觀察到多筆持倉在幾分鐘內同時觸發止損，事後價格常常又漲回去——
-# 這是「洗盤瞬間把止損位置一次掃過」的典型模式。根因是移動止利想
-# 把止損調緊時，價格已經在瞬間急殺/急拉中衝過新止損價，導致保護單
-# 被拒（Order would immediately trigger）或直接觸發，等於在最劇烈
-# 的那一下被迫出場。偵測到短窗口內的劇烈波動時，暫停「收緊止損」
-# 這個動作（原本已設定好的止損不變、不撤銷，只是不再往上調緊），
-# 給洗盤留一點緩衝空間，等波動平息再恢復正常移動止利。
-# FLASH_MOVE_WINDOW_SEC：觀察窗口（秒）
-FLASH_MOVE_WINDOW_SEC = float(os.getenv("FLASH_MOVE_WINDOW_SEC", "60"))
-# FLASH_MOVE_THRESHOLD_PCT：窗口內逆勢波動超過此比例，視為急殺/急拉
-FLASH_MOVE_THRESHOLD_PCT = float(os.getenv("FLASH_MOVE_THRESHOLD_PCT", "0.015"))
-
-# --- 進場緩衝期：剛進場的短時間內，止損暫時放寬，過了就收緊回正常距離 ---
-# 實測 SOL/USDT 一筆進場僅 38 秒就被止損掃出，但畫面追蹤的價格根本沒跌到
-# 止損價——保護單觸發用的是 MARK_PRICE，在流動性較淺的環境下容易跟顯示
-# 的成交價瞬間出現落差，剛進場時特別容易被這種雜訊掃到。
-# 給進場後 ENTRY_GRACE_SECONDS 秒的緩衝，止損距離額外加寬
-# ENTRY_GRACE_EXTRA_ATR 倍 ATR，緩衝期一過就收緊回原本設定的正常距離。
-# 注意：緩衝期內止損變寬，代表如果是真的走勢不對（不是雜訊），
-# 虧損上限會比正常大，是用多承擔一點初期風險換取不被雜訊洗出場。
-ENTRY_GRACE_SECONDS = float(os.getenv("ENTRY_GRACE_SECONDS", "60"))
-ENTRY_GRACE_EXTRA_ATR = float(os.getenv("ENTRY_GRACE_EXTRA_ATR", "0.5"))
 
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
