@@ -113,12 +113,12 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
 # MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
 # 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD：分流機制門檻。
-# 當評分 >= 85 時，代表動能極強爆量突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
-# 當 71 <= 評分 < 85 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
-STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "85"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
+# 當評分 >= 78 時，代表強勢突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
+# 當 65 <= 評分 < 78 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
+STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
 # 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內
 # 就成交（7.2~9.7 秒），只有 1 筆例外撐了 67.4 秒；反觀逾時撤單的 22
@@ -144,15 +144,8 @@ PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # 大幅提升成交率，同時仍比「直接追在突破點」便宜一點點。
 PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.2"))
 # PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
-# 原本量能/RSI 是各自獨立的硬性關卡，任一項不過就整筆取消，太僵硬——
-# 量能爆量成長理應能補足 RSI 差一點點的缺口。改成跟 evaluate_signal() 同一套
-# 加權（B量能20+C RSI20+D新鮮度30+E品質加分9，滿分79，A項KC突破在回調定義上
-# 必然不成立故排除不計），總分需達到此門檻才放行；方向反轉/大趨勢衰退/新鮮度
-# 太舊/ADX動能衰退/價格乖離過大/ATR%範圍 這些絕對紅線不受影響，維持硬性取消。
-# 初始值依 MIN_SCORE_THRESHOLD(71/109≈65%) 同比例換算 79*0.65≈51，回調交易
-# 確定性通常略低於直接突破，抓稍高一點的 55 分換取勝率，之後應以實測的
-# 回調交易勝率數據校正。
-PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "55"))
+# 55 -> 48：配合進場門檻放寬，同步調降回踩二次確認分級門檻。
+PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 # KELTNER_ATR_MULTIPLIER 調回 1.5：實測最早期(通道確實是1.5倍時)勝率
@@ -164,39 +157,17 @@ KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
 # BREAKOUT_CONFIRM_BARS：KC 突破需要「收盤確認」的防假突破機制。
-# 影線碰到通道邊界不算突破——必須有 BREAKOUT_CONFIRM_BARS 根「已收盤 K 棒」
-# 的收盤價仍在 KC 通道外，才視為有效突破。
-# 檢查範圍固定取倒數第 2、3 根（即 df.iloc[-3:-1]），最新的 iloc[-1] 是
-# 當前可能仍未收盤的 K 棒，不計入確認（避免「目前 close 突破但棒沒收」的假訊號）。
-# 設 1 = 前兩根中至少 1 根收盤在通道外（寬鬆）；設 2 = 前兩根都要在外（嚴格）。
 BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 # POST_BREAKOUT_VOL_SUSTAIN_RATIO：突破後量能持續性確認，用於 confirm_pullback_entry()。
-# 假突破特徵之一是「突破當根量大，後續量立刻萎縮」——代表突破動能已耗盡，
-# 接下來的回踩是真正的反轉而非健康的拉回。
-# 取回踩確認當下倒數第 2、3 根 K 棒的平均量能，若 < 均量 × 此比例，取消進場。
-# 設 0.6 = 允許量能回落至突破時的 60% 均量水準，太低代表已沒有撐盤動力。
 POST_BREAKOUT_VOL_SUSTAIN_RATIO = float(os.getenv("POST_BREAKOUT_VOL_SUSTAIN_RATIO", "0.6"))
-# FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化，不是硬門檻。
-# 原本用「40 根K棒內（8→20→40 根一路調寬）滿分、超過直接 0 分」的硬門檻，
-# 但實測發現 core/strategy.py 的 SuperTrend 計算曾經有 bug（第0根 ATR 是
-# NaN，遞迴棘輪邏輯遇到 NaN 比較永遠傳染下去，導致方向永遠卡在初始值、
-# 從未真正翻轉——187 筆歷史交易 100% 都是多單、新鮮度 0/187 通過），修好
-# bug 後用真實資料量測，KC突破/量能/RSI都到齊時，距離上次翻轉常態落在
-# 20~40 根，硬門檻不管設多寬都容易卡在「差一點點」的邊界。改成翻轉剛
-# 發生給滿分 30 分，隨根數線性淡化，到 FRESHNESS_DECAY_BARS 掃到 0 分，
-# 讓「剛翻轉」跟「翻轉很久了」的差異真正反映在分數上，不是全有全無。
+# FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化。
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
-# MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單，不管
-# 總分靠 KC突破/量能/RSI/品質加分湊得多高——專門攔「已經開始老化、快要
-# 反轉的趨勢尾端，靠其他項目湊夠分數壓線擠進場」這種樣貌。
-# 6→18→22 分（相當於翻轉要在 32 根K棒/約2.7小時內）：實測 SUI/UNI/BNB
-# 三筆在 46~53 根（約4小時）翻轉齡時進場，新鮮度只拿 17~18分——18分
-# 門檻只能擋掉 17 分那筆，UNI/BNB 的 18 分剛好卡在邊界（>=18 還是會
-# 放行），拉到 22 分才能穩定擋住這整批。事後用長時間範圍K線核對，這批
-# 是「真趨勢在原始翻轉當下發生，之後轉盤整」——SuperTrend 是慢指標，
-# 趨勢轉盤整後方向不會馬上跟著變，盤整區間內的小幅回落容易被誤判成
-# 趨勢延續的突破，實際上只是區間內雜訊。
-MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "22"))
+# MIN_FRESHNESS_SCORE：新鮮度子分數門檻。從 22 降至 15 分，放寬對趨勢翻轉發生時間點的嚴格限制（允許約 4.5 小時內發生的趨勢）。
+MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "15"))
+
+# --- ADX 趨勢強度濾網 ---
+# 1. ADX_MANDATORY_MIN（硬性底線）：低於此值直接 HOLD。從 12.0 降至 10.0，允許微弱起步趨勢進入評分。
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))
 
 # --- ADX 趨勢強度濾網 ---
 # 兩層防線分開設計：
