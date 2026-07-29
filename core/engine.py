@@ -84,6 +84,14 @@ class TradingEngine:
             stage = signal.get(
                 "confirmation_reason", "等待回調至KC區後二次確認"
             )
+        elif "BTC_1h_ST_JustFlipped" in reason:
+            stage = "BTC剛翻轉緩衝期過濾"
+        elif "BTC_Regime" in reason:
+            stage = "BTC大盤方向不符"
+        elif "Symbol_1h_ST" in reason:
+            stage = "個幣1h趨勢不符"
+        elif "ADX_Too_Low" in reason:
+            stage = "ADX過低過濾"
         elif "KC_Breakout" in reason:
             stage = "待KC突破"
         elif "SuperTrend_Stale" in reason:
