@@ -410,6 +410,23 @@ class SuperTrendKeltnerStrategy:
                 "reason": f"價格乖離EMA20過大 Price_Overextended({ema20_distance_atr:.1f}x_ATR)",
             }
 
+        # 回踩跌破/突破 EMA20：健康的回調應該只是往 EMA20 靠近，不會真的
+        # 穿越到對面——多單回踩時價格已經跌破 EMA20（或空單回踩時已經站
+        # 上 EMA20），代表這已經不是「回調」，而是價格真的穿越均線在反轉。
+        # 跟上面「乖離過大」是兩個不同方向的風險：那個抓「離 EMA20 太遠」
+        # （不管在哪一側），這個抓「跑到 EMA20 錯的那一側」，兩種情況都
+        # 可能發生、必須分開判斷，缺一不可。
+        if side == "LONG" and price < ema_20:
+            return {
+                "status": "CANCEL",
+                "reason": f"回踩跌破EMA20，疑似真反轉 EMA20_Breached(price={price:.6f}<ema20={ema_20:.6f})",
+            }
+        if side == "SHORT" and price > ema_20:
+            return {
+                "status": "CANCEL",
+                "reason": f"回踩突破EMA20，疑似真反轉 EMA20_Breached(price={price:.6f}>ema20={ema_20:.6f})",
+            }
+
         # 距離原始突破過了多久：方向沒反轉不代表這個突破還「新鮮」——等回踩
         # 的這段時間裡，行情可能只是在原地震盪消耗動能，SuperTrend 遲遲沒
         # 真的翻轉，但這個突破本身已經是強弩之末。跟 evaluate_signal() 的

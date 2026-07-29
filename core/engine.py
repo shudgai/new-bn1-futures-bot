@@ -7,6 +7,7 @@ from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, SYMBOL_ROTATION_INTERVAL_SEC,
+    UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
@@ -214,6 +215,7 @@ class TradingEngine:
 
     async def _rotation_loop(self):
         """獨立於主交易迴圈之外定時執行幣種輪替，避免 AI 呼叫延遲停損停利判斷。"""
+        last_unhealthy_check_at = 0.0
         while self.is_running:
             try:
                 now_time = time.time()
@@ -224,7 +226,16 @@ class TradingEngine:
                         self.account.log(f"🔄 [幣種輪替] {change_text}；{self.symbol_rotation.last_reason}", "INFO")
                     else:
                         self.account.log(f"✅ [幣種輪替] 目前 12 幣仍為較優組合；{self.symbol_rotation.last_reason}", "INFO")
-                await asyncio.sleep(30)  # 30 秒檢查一次是否到了下次輪替時間
+                    last_unhealthy_check_at = now_time
+                elif now_time - last_unhealthy_check_at >= UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC:
+                    last_unhealthy_check_at = now_time
+                    purge_changes = await self.symbol_rotation.purge_unhealthy(self.exchange)
+                    if purge_changes:
+                        change_text = "、".join(
+                            f"{item['out']}→{item['in']}（{item['reason']}）" for item in purge_changes
+                        )
+                        self.account.log(f"🚨 [不健康幣種淘汰] {change_text}", "WARNING")
+                await asyncio.sleep(30)  # 30 秒檢查一次是否到了下次輪替/健康檢查時間
             except asyncio.CancelledError:
                 break
             except Exception as exc:

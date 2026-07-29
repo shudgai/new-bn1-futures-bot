@@ -367,6 +367,13 @@ def get_position_multiplier(score: int) -> float:
 # Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
 SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "18"))
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "3600"))
+# UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
+# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設1小時）才會換牌，尚未持倉的候選觀察
+# 名單如果在這段期間變得明顯不健康（流動性枯竭、24h暴漲暴跌、波動率長期
+# 偏離可交易區間），不用等到下一次整點輪替才處理——只用當下 ticker 資料
+# 判斷（不用額外呼叫 AI/抓K線，成本很低），每隔這個秒數就檢查一次，發現
+# 就立刻換掉。已經有持倉的幣種不受影響，維持只等SL/TP/24h時間過濾出場。
+UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
 # 跟著 SYMBOL_ROTATION_COUNT 等比放大（12→6 是 1:2），維持多空對稱席次。
 DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "9"))
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "60"))

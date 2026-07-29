@@ -110,7 +110,7 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
     assert "DOGE/USDT" in account.positions
     assert [order["type"] for order in exchange.orders] == [
         "market",
-        "STOP_MARKET",
+        "STOP",
         "TAKE_PROFIT_MARKET",
     ]
     assert exchange.orders[1]["params"]["reduceOnly"] == "true"

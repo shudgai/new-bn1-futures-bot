@@ -527,6 +527,62 @@ class SymbolRotation:
         directions = {item["symbol"]: item["direction"] for item in selected_items}
         return selected, directions, changes
 
+    async def purge_unhealthy(self, exchange) -> List[dict]:
+        """輕量健康檢查：只用當下 ticker 資料，判斷候選觀察名單（尚未持倉）
+        裡有沒有幣種已經變得不健康，不用等下一次整點的完整輪替（含AI+全池
+        K線，最壞要等 SYMBOL_ROTATION_INTERVAL_SEC）才處理。已經有持倉的
+        幣種不受影響，維持只等SL/TP/24h時間過濾出場，不會被這裡動到。"""
+        tickers = await exchange.fetch_tickers()
+        normalized = self._normalize_tickers(tickers)
+        held = set(self.account.positions.keys())
+        changes: List[dict] = []
+        replacement_pool = None
+
+        for symbol in list(DEFAULT_SYMBOLS):
+            if symbol in held:
+                continue
+            ticker = normalized.get(symbol)
+            if not ticker:
+                continue
+            quote_volume = float(ticker.get("quoteVolume") or 0.0)
+            change_pct = abs(float(ticker.get("percentage") or 0.0))
+            volatility_excluded = bool(
+                self.volatility_stats.get(symbol, {}).get("volatility_excluded")
+            )
+
+            if quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
+                reason = f"流動性不足({quote_volume:.0f}<{SYMBOL_MIN_QUOTE_VOLUME:.0f})"
+            elif change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
+                reason = f"24h暴漲暴跌({change_pct:.1f}%>{SYMBOL_MAX_24H_CHANGE_PCT:.1f}%)"
+            elif volatility_excluded:
+                reason = "波動率長期偏離可交易區間"
+            else:
+                continue
+
+            if replacement_pool is None:
+                replacement_pool = self.market_candidates(tickers, exchange.markets)
+            replacement = next(
+                (
+                    candidate for candidate in replacement_pool
+                    if candidate not in DEFAULT_SYMBOLS and candidate not in held
+                ),
+                None,
+            )
+            if replacement is None:
+                continue
+
+            idx = DEFAULT_SYMBOLS.index(symbol)
+            DEFAULT_SYMBOLS[idx] = replacement
+            self.direction_map.pop(symbol, None)
+            self.direction_map[replacement] = "BOTH"
+            self.atr_history.pop(symbol, None)
+            self.volatility_stats.pop(symbol, None)
+            changes.append({"out": symbol, "in": replacement, "reason": reason})
+
+        if changes:
+            self._save()
+        return changes
+
     async def rotate(self, exchange) -> List[dict]:
         await exchange.load_markets()
         tickers = await exchange.fetch_tickers()

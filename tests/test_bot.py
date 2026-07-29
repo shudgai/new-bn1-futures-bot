@@ -306,6 +306,47 @@ def test_pullback_reconfirmation_cancels_when_price_overextended(monkeypatch):
     assert "價格乖離EMA20過大" in result["reason"]
 
 
+def test_pullback_reconfirmation_cancels_when_price_breaches_ema20_long(monkeypatch):
+    """健康回調只應該靠近 EMA20，不會真的穿越到對面：多單回踩時價格已經
+    跌破 EMA20（哪怕乖離幅度還不到 Price_Overextended 的門檻），代表這已
+    經不是回調、是真的在反轉，直接取消。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    frame["ema_20"] = 100.05  # price(100.0) < ema_20，乖離幅度很小，不會觸發 Price_Overextended
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "CANCEL"
+    assert "回踩跌破EMA20" in result["reason"]
+
+
+def test_pullback_reconfirmation_cancels_when_price_breaches_ema20_short(monkeypatch):
+    """空單回踩時價格已經站上 EMA20，一樣視為真反轉而非健康回調，取消。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("SHORT")
+    frame["ema_20"] = 99.95  # price(100.0) > ema_20
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="SHORT", ema_1h=105.0)
+    assert result["status"] == "CANCEL"
+    assert "回踩突破EMA20" in result["reason"]
+
+
+def test_pullback_reconfirmation_passes_when_price_still_on_correct_side_of_ema20(monkeypatch):
+    """多單回踩時價格還在 EMA20 之上（哪怕只是貼著），視為還在健康回調
+    範圍內，不觸發這道新防線。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    frame["ema_20"] = 99.95  # price(100.0) 剛好還在 ema_20 之上
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+    assert result["status"] == "PASS"
+
+
 def test_pullback_reconfirmation_passes_when_volume_weak_but_other_signals_strong(monkeypatch):
     """量能單項不再是硬性關卡：新鮮度/RSI/ADX 都還強的情況下，總分
     （B量能+C RSI+D新鮮度+E品質，滿分79）足以覆蓋 PULLBACK_SCORE_THRESHOLD，
@@ -475,6 +516,53 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
         },
     }
     assert SymbolRotation.market_candidates(tickers, markets) == ["BTC/USDT"]
+
+
+def test_purge_unhealthy_swaps_illiquid_candidate_but_protects_held_position(monkeypatch):
+    """觀察名單裡流動性枯竭的候選幣種要立刻換掉，不用等下一次整點輪替；
+    已經有持倉的幣種即使一樣流動性枯竭，也不能被這個輕量健康檢查動到。"""
+    import asyncio
+
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 20_000_000.0)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MAX_24H_CHANGE_PCT", 30.0)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 40)
+    watchlist = ["ILLIQUID/USDT", "HELDLOW/USDT", "GOOD/USDT"]
+    monkeypatch.setattr("core.symbol_rotation.DEFAULT_SYMBOLS", watchlist)
+
+    class _FakeAccount:
+        positions = {"HELDLOW/USDT": {"side": "LONG"}}
+        trades = []
+
+    class _FakeExchange:
+        markets = {
+            "GOOD/USDT:USDT": {
+                "symbol": "GOOD/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+                "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+            },
+            "REPLACEMENT/USDT:USDT": {
+                "symbol": "REPLACEMENT/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+                "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+            },
+        }
+
+        async def fetch_tickers(self):
+            return {
+                "ILLIQUID/USDT:USDT": {"quoteVolume": 1_000_000.0, "percentage": 1.0},
+                "HELDLOW/USDT:USDT": {"quoteVolume": 1_000_000.0, "percentage": 1.0},
+                "GOOD/USDT:USDT": {"quoteVolume": 100_000_000.0, "percentage": 1.0},
+                "REPLACEMENT/USDT:USDT": {"quoteVolume": 90_000_000.0, "percentage": 1.0},
+            }
+
+    rotation = SymbolRotation(_FakeAccount())
+    changes = asyncio.run(rotation.purge_unhealthy(_FakeExchange()))
+
+    assert changes == [{
+        "out": "ILLIQUID/USDT", "in": "REPLACEMENT/USDT",
+        "reason": "流動性不足(1000000<20000000)",
+    }]
+    assert "ILLIQUID/USDT" not in watchlist
+    assert "REPLACEMENT/USDT" in watchlist
+    assert "HELDLOW/USDT" in watchlist  # 持倉中，即使流動性也差，不能被換掉
 
 
 def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch):
