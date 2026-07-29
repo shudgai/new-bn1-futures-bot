@@ -213,10 +213,12 @@
                                     <span style="font-size:11px; margin-left:4px;">({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}%/{{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)</span>
                                 </td>
                                 <td>
-                                    <span v-if="pos.trigger && pos.trigger.active" style="color:var(--down); font-weight:700;">
-                                        ⚠️ {{ pos.trigger.reasons.join('、') }}
+                                    <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
+                                        {{ pos.trigger && pos.trigger.ma_ok === false ? '✗' : '✓' }}
                                     </span>
-                                    <span v-else style="color:var(--muted); font-size:12px;">—</span>
+                                    <span v-if="pos.trigger && pos.trigger.reasons && pos.trigger.reasons.some(r => r.includes('前低') || r.includes('前高'))" style="color:var(--down); font-weight:700; margin-left:4px; font-size:12px;">
+                                        ⚠️ {{ pos.trigger.reasons.filter(r => r.includes('前低') || r.includes('前高')).join('、') }}
+                                    </span>
                                 </td>
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>

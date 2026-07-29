@@ -730,7 +730,27 @@ def test_position_trigger_short_flags_ma_cross_and_prior_high_break():
 
 
 def test_position_trigger_inactive_when_not_enough_bars():
-    """K線資料不足（少於 lookback_bars+2）時，不判斷、也不誤報警示。"""
+    """K線資料不足（少於 lookback_bars+1）時，不判斷、也不誤報警示。"""
     result = compute_position_trigger(_trigger_frame([100.0] * 5), "LONG")
     assert result["active"] is False
+    assert result["ma_ok"] is True
+
+
+def test_position_trigger_ma_ok_stays_false_across_multiple_bars_below_ma():
+    """持續性狀態，不是只在剛好穿越的那一根才觸發：跌破均線之後只要
+    收盤價還在均線下面，接下來好幾根都應該持續打叉，不會穿越後下一根
+    就自動恢復顯示沒事（原本用「穿越瞬間」判斷會有這個問題）。"""
+    closes = [100.0] * 24 + [90.0, 89.0, 88.0]
+    result = compute_position_trigger(_trigger_frame(closes), "LONG")
+    assert result["ma_ok"] is False
+    assert "跌破均線" in result["reasons"]
+
+
+def test_position_trigger_short_ma_ok_true_when_price_still_below_ma():
+    """空單：收盤價還在均線之下（對空單是健康的一側），ma_ok 應為
+    True，不誤報「站上均線」。"""
+    closes = [100.0] * 24 + [99.0]
+    result = compute_position_trigger(_trigger_frame(closes), "SHORT")
+    assert result["ma_ok"] is True
+    assert "站上均線" not in result["reasons"]
     assert result["reasons"] == []
