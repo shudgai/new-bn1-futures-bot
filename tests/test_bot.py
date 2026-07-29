@@ -97,12 +97,12 @@ def test_atr_range_filter_is_mandatory(monkeypatch):
     })
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-    result = strategy.evaluate_signal(df, ema_200_1h=90.0)
+    result = strategy.evaluate_signal(df, ema_50_1h=90.0)
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: ATR_Too_High" in result["reason"]
 
     df.loc[:, "atr"] = 0.001  # atr/price = 0.001% < MIN_ATR_PCT(0.15%)
-    result = strategy.evaluate_signal(df, ema_200_1h=90.0)
+    result = strategy.evaluate_signal(df, ema_50_1h=90.0)
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: ATR_Too_Low" in result["reason"]
 
@@ -136,7 +136,7 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: FRESHNESS_DECAY_BARS + 50)
 
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
     assert result["action"] == "HOLD"
     # Score_Low 分支的 dict 沒有獨立的 "score" 欄位，分數只嵌在 reason 文字裡
@@ -153,13 +153,13 @@ def test_qualifying_score_scheme_a_branching(monkeypatch):
     frame_high = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-    result_high = strategy.evaluate_signal(frame_high, ema_200_1h=95.0)
+    result_high = strategy.evaluate_signal(frame_high, ema_50_1h=95.0)
     assert result_high["action"] == "BUY"
     assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
 
     # 溫和突破 (71 ~ 84) -> 應為 WAIT_PULLBACK
     frame_mid = _entry_score_frame(volume=1000.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
-    result_mid = strategy.evaluate_signal(frame_mid, ema_200_1h=95.0)
+    result_mid = strategy.evaluate_signal(frame_mid, ema_50_1h=95.0)
     if result_mid["score"] < STRONG_BREAKOUT_SCORE_THRESHOLD:
         assert result_mid["action"] == "WAIT_PULLBACK"
         assert "target_zone" in result_mid
@@ -176,7 +176,7 @@ def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
@@ -191,7 +191,7 @@ def test_price_overextended_blocks_entry_even_with_qualifying_score(monkeypatch)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: Price_Overextended" in result["reason"]
@@ -206,7 +206,7 @@ def test_1h_trend_declining_blocks_entry_even_with_qualifying_score(monkeypatch)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0, trend_1h_declining=True)
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0, trend_1h_declining=True)
 
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: 1h_Trend_Declining" in result["reason"]

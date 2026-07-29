@@ -163,7 +163,7 @@ class SuperTrendKeltnerStrategy:
 
     def evaluate_signal(
         self, df: pd.DataFrame,
-        ema_200_1h: float = None,
+        ema_50_1h: float = None,
         trend_1h_declining: bool = False,
         st_direction_1h: int = None,
         btc_st_direction_1h: int = 0,
@@ -220,8 +220,8 @@ class SuperTrendKeltnerStrategy:
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），
         # 這一層確保價格需明顯站穩 EMA50 同側才允許。
-        ema_50_upper_band = ema_200_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
-        ema_50_lower_band = ema_200_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
+        ema_50_upper_band = ema_50_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT) if ema_50_1h else None
+        ema_50_lower_band = ema_50_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT) if ema_50_1h else None
         is_1h_bullish = (price >= ema_50_upper_band) if ema_50_upper_band is not None else True
         is_1h_bearish = (price <= ema_50_lower_band) if ema_50_lower_band is not None else True
         if st_dir == 1 and not is_1h_bullish:

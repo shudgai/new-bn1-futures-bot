@@ -41,7 +41,7 @@ class TradingEngine:
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
         self.last_ticker_success_ts: float = time.time()
         self._last_stale_ticker_log: float = 0.0
-        self.ema_200_1h_cache: Dict[str, float] = {}
+        self.ema_50_1h_cache: Dict[str, float] = {}
         # 大週期（1h）本身動能是不是也在衰退，用同一批 update_1h_trend_
         # cache() 已經抓到的1h K線算 ADX，判斷「不只是5分K的小趨勢要提防，
         # 連大方向本身都已經在做頭/做底」——5分K的新鮮度/ADX檢查看不到
@@ -331,7 +331,7 @@ class TradingEngine:
     async def update_1h_trend_cache(self):
         """10 分鐘才抓取一次 1h 大週期數據，避免頻繁調用 API Rate Limit"""
         now = time.time()
-        if now - self.last_1h_cache_time < 600 and self.ema_200_1h_cache:
+        if now - self.last_1h_cache_time < 600 and self.ema_50_1h_cache:
             return
 
         monitored_symbols = list(dict.fromkeys([
@@ -347,7 +347,7 @@ class TradingEngine:
             df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=150)
             if not df_1h.empty and len(df_1h) >= 30:
                 ema_val = df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False).mean().iloc[-1]
-                self.ema_200_1h_cache[symbol] = float(ema_val)
+                self.ema_50_1h_cache[symbol] = float(ema_val)
                 # 計算 1h 指標（SuperTrend + ADX）
                 computed_1h = self.strategy.compute_indicators(df_1h)
 
@@ -422,7 +422,7 @@ class TradingEngine:
                     if confirm_df.empty or len(confirm_df) < 50:
                         continue
                     confirm = self.strategy.confirm_pullback_entry(
-                        confirm_df, pb_info["side"], ema_1h=self.ema_200_1h_cache.get(pb_symbol),
+                        confirm_df, pb_info["side"], ema_1h=self.ema_50_1h_cache.get(pb_symbol),
                         trend_1h_declining=self.adx_1h_declining_cache.get(pb_symbol, False),
                     )
                     if confirm["status"] != "PASS":
@@ -497,7 +497,7 @@ class TradingEngine:
                             continue
 
                         # 取出 1h 快取值
-                        ema_200_1h = self.ema_200_1h_cache.get(symbol)
+                        ema_50_1h = self.ema_50_1h_cache.get(symbol)
 
                         # 防插針價格選擇 (SpikeFilter_L2)
                         if 'close_price_spike_filtered' in df.columns and not pd.isna(df.iloc[-1]['close_price_spike_filtered']):
@@ -535,7 +535,7 @@ class TradingEngine:
                         df = self.strategy.compute_indicators(df)
                         sig = self.strategy.evaluate_signal(
                             df,
-                            ema_200_1h=ema_200_1h,
+                            ema_50_1h=ema_50_1h,
                             trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
                             st_direction_1h=self.st_direction_1h_cache.get(symbol),
                             btc_st_direction_1h=self.btc_1h_st_direction,
