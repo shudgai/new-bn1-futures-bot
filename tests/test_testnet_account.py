@@ -182,5 +182,54 @@ async def test_partial_fill_limit_entry_records_actual_margin(tmp_path, monkeypa
     open_trade = account.trades[0]
     assert open_trade["action"] == "OPEN_LONG"
     assert open_trade["qty"] == 1.5
-    # 實際金額 = 1.5 * 100 / 5 = 30，不是原本預算的 50
+    # 實際金額 = 1.5 * 100 / 5 = 30，不是原本打算的 50
     assert open_trade["amount"] == pytest.approx(30.0)
+
+
+@pytest.mark.anyio
+async def test_repeated_pending_limit_retries_log_only_once(tmp_path, monkeypatch):
+    """同一 symbol 連續掛單-撤單（未成交/條件變差）不設冷卻，可以無限次
+    重試，但畫面上只印第一次「掛單/撤銷」，之後同樣的循環不再重複印，
+    避免同一個 symbol 洗版——底層撤單/重掛的邏輯本身每次都正常執行。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+
+    class RetryExchange(FakeTestnetExchange):
+        async def create_order(self, symbol, order_type, side, qty, price=None, params=None):
+            if order_type == "limit":
+                order = {
+                    "id": str(len(self.orders) + 1),
+                    "symbol": symbol, "type": order_type, "side": side,
+                    "amount": qty, "price": price, "params": params or {},
+                }
+                self.orders.append(order)
+                return order
+            return await super().create_order(symbol, order_type, side, qty, price, params)
+
+        async def cancel_order(self, order_id, symbol):
+            return {}
+
+        async def fetch_order(self, order_id, symbol):
+            return {"status": "canceled", "filled": 0.0}
+
+    exchange = RetryExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    for _ in range(5):
+        placed = await account.place_limit_entry(
+            "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
+            reason="test", atr=1.0, leverage=5, signal_score=100,
+        )
+        assert placed is True
+        await account.cancel_pending_limit("DOGE/USDT", "掛單 30 秒未成交，放棄本次進場")
+
+    assert len(exchange.orders) == 5  # 底層真的掛了 5 次單，不受日誌節流影響
+    place_logs = [entry for entry in account.logs if "限價掛單" in entry["text"]]
+    cancel_logs = [entry for entry in account.logs if "限價單撤銷" in entry["text"]]
+    assert len(place_logs) == 1
+    assert len(cancel_logs) == 1
