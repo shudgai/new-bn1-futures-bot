@@ -47,6 +47,11 @@ class TradingEngine:
         # 連大方向本身都已經在做頭/做底」——5分K的新鮮度/ADX檢查看不到
         # 這一層。
         self.adx_1h_declining_cache: Dict[str, bool] = {}
+        # 個幣 1h SuperTrend 方向快取（1=多頭 / -1=空頭）
+        self.st_direction_1h_cache: Dict[str, int] = {}
+        # BTC 大盤方向：1h SuperTrend 方向 + 翻轉後已過幾根 1h K棒
+        self.btc_1h_st_direction: int = 0      # 0=未知, 1=多頭, -1=空頭
+        self.btc_1h_st_flip_age: int = 999     # 翻轉後已過幾根 1h K棒（999=尚未初始化）
         self.last_1h_cache_time: float = 0.0
         # 回調進場改用真正掛在交易所的限價單（見 core/testnet_account.py
         # 的 pending_limit_orders），不再用軟體輪詢價格的狀態機。
@@ -333,14 +338,30 @@ class TradingEngine:
             *DEFAULT_SYMBOLS,
             *self.account.positions.keys(),
         ]))
-        for symbol in monitored_symbols:
-            df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
+
+        # 確保 BTC/USDT 一定在監控列表裡（守門員需要它）
+        btc_symbol = "BTC/USDT"
+        all_symbols = list(dict.fromkeys([btc_symbol, *monitored_symbols]))
+
+        for symbol in all_symbols:
+            df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=150)
             if not df_1h.empty and len(df_1h) >= 30:
                 ema_val = df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False).mean().iloc[-1]
                 self.ema_200_1h_cache[symbol] = float(ema_val)
-                # 用同一批已抓到的1h K線順便算 ADX，不用額外呼叫API：判斷
-                # 大週期本身的動能是不是也在衰退（不只是方向對不對）。
+                # 計算 1h 指標（SuperTrend + ADX）
                 computed_1h = self.strategy.compute_indicators(df_1h)
+
+                # 個幣 1h SuperTrend 方向快取
+                st_dir_1h = int(computed_1h['st_direction'].iloc[-1])
+                self.st_direction_1h_cache[symbol] = st_dir_1h
+
+                # BTC 守門員：記錄方向 + 翻轉後幾根 K棒
+                if symbol == btc_symbol:
+                    from core.indicators import bars_since_supertrend_flip
+                    self.btc_1h_st_direction = st_dir_1h
+                    self.btc_1h_st_flip_age = int(bars_since_supertrend_flip(computed_1h['st_direction']))
+
+                # ADX 衰退快取
                 adx_1h = computed_1h['adx'].iloc[-1]
                 lookback_idx = len(computed_1h) - 1 - ADX_DECLINE_LOOKBACK_BARS_1H
                 adx_1h_prior = computed_1h['adx'].iloc[lookback_idx] if lookback_idx >= 0 else float('nan')
@@ -513,8 +534,12 @@ class TradingEngine:
                         # 計算指標以取得 rsi 與 kc 通道等欄位
                         df = self.strategy.compute_indicators(df)
                         sig = self.strategy.evaluate_signal(
-                            df, ema_200_1h=ema_200_1h,
+                            df,
+                            ema_200_1h=ema_200_1h,
                             trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
+                            st_direction_1h=self.st_direction_1h_cache.get(symbol),
+                            btc_st_direction_1h=self.btc_1h_st_direction,
+                            btc_st_flip_age=self.btc_1h_st_flip_age,
                         )
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"

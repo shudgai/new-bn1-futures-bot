@@ -109,6 +109,19 @@ MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.004"))
 # 決定要不要提早手動平倉。
 DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
 
+# --- BTC 大盤方向守門員 ---
+# BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
+# 全體幣種的開倉方向守門——BTC 多頭只允許多單，BTC 空頭只允許空單。
+# 這是防止「大盤偏多但 bot 大量開空」最有效的單一機制。
+BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower() == "true"
+# BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
+# 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
+BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "3"))
+# SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
+# 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
+# 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
+SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
+
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，

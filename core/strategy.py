@@ -12,6 +12,7 @@ from core.config import (
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
     STRONG_BREAKOUT_SCORE_THRESHOLD, STRONG_BREAKOUT_EMA50_MAX_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
+    BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, SYMBOL_1H_ST_FILTER_ENABLED,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -160,7 +161,14 @@ class SuperTrendKeltnerStrategy:
         df['st_direction'] = direction
         return df
 
-    def evaluate_signal(self, df: pd.DataFrame, ema_200_1h: float = None, trend_1h_declining: bool = False) -> dict:
+    def evaluate_signal(
+        self, df: pd.DataFrame,
+        ema_200_1h: float = None,
+        trend_1h_declining: bool = False,
+        st_direction_1h: int = None,
+        btc_st_direction_1h: int = 0,
+        btc_st_flip_age: int = 999,
+    ) -> dict:
         if len(df) < 50:
             return {"action": "HOLD", "reason": "Not enough data"}
 
@@ -181,23 +189,45 @@ class SuperTrendKeltnerStrategy:
         ema_50 = curr['ema_50'] if not np.isnan(curr['ema_50']) else price
 
         # --- 1. 底線防禦 (Mandatory Filters) ---
-        # --- 強化 1h 大週期趨勢強制過濾 ---
-        # 改為要求「明顯同方向」而非只是「price 剛好高於/低於 EMA50」：
-        # 市場橫盤時 price 可能在 EMA50 附近震盪，加上 MARGIN 緩衝確保
-        # 價格已真正站穩 EMA50 上方（多單）或明顯跌破（空單）才允許。
-        ema_50_upper_band = ema_200_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
-        ema_50_lower_band = ema_200_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
-
-        is_1h_bullish = (price >= ema_50_upper_band) if ema_50_upper_band is not None else True
-        is_1h_bearish = (price <= ema_50_lower_band) if ema_50_lower_band is not None else True
 
         st_dir = curr['st_direction']
 
-        # 底線判斷：5m SuperTrend 方向必須與 1h 趨勢一致（含 EMA50 緩衝邊距）
+        # 層 A：BTC 大盤守門員（最高優先級）
+        # BTC 1h SuperTrend 代表整體市場大方向，多數山寨幣跟著 BTC 走。
+        # BTC 多頭時開空單、BTC 空頭時開多單，都是在跟大盤對抗。
+        if BTC_REGIME_FILTER_ENABLED and btc_st_direction_1h != 0:
+            # BTC 剛翻轉（< N 根 1h K棒），方向尚不確定，禁止開新倉
+            if btc_st_flip_age < BTC_REGIME_FLIP_BUFFER_BARS:
+                return {
+                    "action": "HOLD",
+                    "reason": f"Mandatory_Fail: BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
+                }
+            # BTC 大盤方向與訊號方向不一致 → 擋單
+            if st_dir == 1 and btc_st_direction_1h == -1:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: BTC_Regime_Bearish(vs_LONG_signal)"}
+            if st_dir == -1 and btc_st_direction_1h == 1:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: BTC_Regime_Bullish(vs_SHORT_signal)"}
+
+        # 層 B：個幣自身 1h SuperTrend 方向對齊
+        # 1h SuperTrend 翻轉需要較長時間，比 price vs EMA50 準確 3~5 倍。
+        # 要求 5m SuperTrend 方向 == 個幣 1h SuperTrend 方向才允許開倉。
+        if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
+            if st_dir == 1 and st_direction_1h == -1:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: Symbol_1h_ST_Bearish(vs_5m_LONG)"}
+            if st_dir == -1 and st_direction_1h == 1:
+                return {"action": "HOLD", "reason": "Mandatory_Fail: Symbol_1h_ST_Bullish(vs_5m_SHORT)"}
+
+        # 層 C：1h EMA50 輔助確認（第三道防線）
+        # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），
+        # 這一層確保價格需明顯站穩 EMA50 同側才允許。
+        ema_50_upper_band = ema_200_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
+        ema_50_lower_band = ema_200_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
+        is_1h_bullish = (price >= ema_50_upper_band) if ema_50_upper_band is not None else True
+        is_1h_bearish = (price <= ema_50_lower_band) if ema_50_lower_band is not None else True
         if st_dir == 1 and not is_1h_bullish:
-            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
+            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_EMA50_Bearish"}
         if st_dir == -1 and not is_1h_bearish:
-            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
+            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_EMA50_Bullish"}
 
         # 防線 3：ADX 硬性最低門檻 — ADX 低於此值代表市場完全無趨勢動能，
         # 盤整期假突破發生率最高，直接 HOLD 不進入評分系統。
