@@ -20,6 +20,7 @@ from core.config import (
     TRAILING_TIER2_TRIGGER_PCT,
     TRAILING_TIER3_TRIGGER_PCT,
     TRAILING_TIER3_CALLBACK_RATIO,
+    PROFIT_ALERT_GIVEBACK_RATIO,
     get_leverage,
     get_signal_leverage,
 )
@@ -254,6 +255,20 @@ class BinanceTestnetAccount:
             mark_price = float(row.get("markPrice") or entry_price)
             leverage = int(float(row.get("leverage") or get_leverage(symbol)))
             meta = self.position_meta.get(symbol, {})
+            # 獲利了結參考提醒（純顯示，不影響三階段自動移動停利）：目前
+            # 無槓桿浮盈跟至今最高浮盈（跟 update_positions() 的
+            # highest_pnl_pct 共用同一個 meta 欄位）比較，回吐超過
+            # PROFIT_ALERT_GIVEBACK_RATIO 就標記提醒，讓使用者比自動
+            # Tier3 機制更早看到「已經從高點回落不少」。
+            pnl_pct = (
+                (mark_price - entry_price) / entry_price if side == "LONG"
+                else (entry_price - mark_price) / entry_price
+            ) if entry_price > 0 else 0.0
+            peak_pnl_pct = max(meta.get("highest_pnl_pct", pnl_pct), pnl_pct)
+            profit_giveback_ratio = (
+                (peak_pnl_pct - pnl_pct) / peak_pnl_pct if peak_pnl_pct > 0 else 0.0
+            )
+            profit_alert = pnl_pct > 0 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             active[symbol] = {
                 "symbol": symbol,
                 "side": side,
@@ -270,6 +285,8 @@ class BinanceTestnetAccount:
                 "signal_score": meta.get("signal_score"),
                 "mark_price": mark_price,
                 "unrealized_pnl": float(row.get("unRealizedProfit") or 0.0),
+                "peak_pnl_pct": peak_pnl_pct,
+                "profit_alert": profit_alert,
             }
 
         self.positions = active

@@ -281,3 +281,59 @@ async def test_open_position_rejects_zero_amount(tmp_path, monkeypatch):
     assert success is False
     assert len(exchange.orders) == 0
     assert any("金額為 0" in entry["text"] for entry in account.logs)
+
+
+@pytest.mark.anyio
+async def test_refresh_flags_profit_alert_when_giveback_from_peak(tmp_path, monkeypatch):
+    """獲利了結參考提醒：目前還有獲利，但從至今最高浮盈回吐超過
+    PROFIT_ALERT_GIVEBACK_RATIO，就標記 profit_alert=True。純顯示用，
+    不影響三階段自動移動停利（那套維持原樣，這裡另外疊加一個提醒）。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # 進場 100，目前標記價 105（浮盈 5%），但歷史最高浮盈曾到 10%，
+    # 回吐 = (10%-5%)/10% = 50% >= 20% 門檻，應該觸發提醒。
+    account.position_meta["DOGE/USDT"] = {"highest_pnl_pct": 0.10}
+    exchange.positions = [{
+        "symbol": "DOGEUSDT", "positionAmt": "100", "entryPrice": "100",
+        "markPrice": "105", "leverage": "5", "unRealizedProfit": "50",
+    }]
+
+    await account.refresh(force=True)
+
+    pos = account.positions["DOGE/USDT"]
+    assert pos["profit_alert"] is True
+    assert pos["peak_pnl_pct"] == pytest.approx(0.10)
+
+
+@pytest.mark.anyio
+async def test_refresh_no_profit_alert_when_still_near_peak(tmp_path, monkeypatch):
+    """浮盈還貼在高點附近（回吐幅度小於門檻），不誤報。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # 浮盈 4.5%，歷史最高 5%，回吐僅 10% < 20% 門檻。
+    account.position_meta["DOGE/USDT"] = {"highest_pnl_pct": 0.05}
+    exchange.positions = [{
+        "symbol": "DOGEUSDT", "positionAmt": "100", "entryPrice": "100",
+        "markPrice": "104.5", "leverage": "5", "unRealizedProfit": "45",
+    }]
+
+    await account.refresh(force=True)
+
+    pos = account.positions["DOGE/USDT"]
+    assert pos["profit_alert"] is False

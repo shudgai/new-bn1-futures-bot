@@ -96,6 +96,13 @@ TRAILING_TIER2_TRIGGER_PCT = float(os.getenv("TRAILING_TIER2_TRIGGER_PCT", "0.01
 # TIER 3 (高點回撤追蹤): 浮盈達 +1.8% 時啟動，若從最高獲利回撤 30% 即市價平倉
 TRAILING_TIER3_TRIGGER_PCT = float(os.getenv("TRAILING_TIER3_TRIGGER_PCT", "0.018"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
+# PROFIT_ALERT_GIVEBACK_RATIO：獲利了結參考提醒，純顯示用，不會自動平倉
+# ——上面的三階段移動停利維持原樣、自動執行不受影響，這個是額外疊加的
+# 「純提醒」版本。只要目前還有獲利（不管有沒有到 Tier1 門檻），且從進場
+# 至今的最高浮盈回吐超過這個比例，介面就會提示「已經從高點回落不少」，
+# 門檻刻意設在比 Tier3 的回撤比例（30%）更早／更敏感一點，讓使用者能在
+# 自動機制真的動手之前就先看到，自己判斷要不要提前手動平倉。
+PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
 # MIN_SL_DISTANCE_PCT：止損距離下限（佔進場價的比例），不管 ATR 倍數設多寬，
 # 波動率本身很低的時候（實測 BTC/LINK/LTC/BNB/XRP 反推 ATR 只有 0.07%~0.21%），
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
