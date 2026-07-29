@@ -22,6 +22,39 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
+def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
+    """持倉手動平倉參考指標：用 EMA20 判斷「跌破/站上均線」，用近
+    lookback_bars 根K棒（不含當前這根）的前低/前高判斷「跌破前低/站上
+    前高」。純粹是給使用者按網頁「平倉」按鈕前參考用的視覺提示，不是
+    自動出場條件。多單看下檔風險（跌破均線／跌破前低），空單看上檔
+    風險（站上均線／站上前高），對稱處理。"""
+    min_len = lookback_bars + 2
+    if df is None or len(df) < min_len:
+        return {"active": False, "reasons": []}
+
+    ema = df["close"].ewm(span=ma_period, adjust=False).mean()
+    curr_close = float(df["close"].iloc[-1])
+    prev_close = float(df["close"].iloc[-2])
+    curr_ema = float(ema.iloc[-1])
+    prev_ema = float(ema.iloc[-2])
+
+    reasons = []
+    if side == "LONG":
+        if curr_close < curr_ema and prev_close >= prev_ema:
+            reasons.append("跌破均線")
+        prior_low = float(df["low"].iloc[-(lookback_bars + 1):-1].min())
+        if curr_close < prior_low:
+            reasons.append("跌破前低")
+    else:
+        if curr_close > curr_ema and prev_close <= prev_ema:
+            reasons.append("站上均線")
+        prior_high = float(df["high"].iloc[-(lookback_bars + 1):-1].max())
+        if curr_close > prior_high:
+            reasons.append("站上前高")
+
+    return {"active": bool(reasons), "reasons": reasons}
+
+
 def bars_since_supertrend_flip(direction_series: pd.Series) -> int:
     """
     計算 SuperTrend 方向自上次轉向（Flip）以來經過的 K 棒數量 (Bars)。

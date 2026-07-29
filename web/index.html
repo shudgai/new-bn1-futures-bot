@@ -194,6 +194,7 @@
                                 <th>入場價</th>
                                 <th>現價</th>
                                 <th>未實現損益</th>
+                                <th>觸發條件</th>
                                 <th>數量</th>
                                 <th>止損 (SL)</th>
                                 <th>止利 (TP)</th>
@@ -211,6 +212,12 @@
                                     {{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT
                                     <span style="font-size:11px; margin-left:4px;">({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}%/{{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)</span>
                                 </td>
+                                <td>
+                                    <span v-if="pos.trigger && pos.trigger.active" style="color:var(--down); font-weight:700;">
+                                        ⚠️ {{ pos.trigger.reasons.join('、') }}
+                                    </span>
+                                    <span v-else style="color:var(--muted); font-size:12px;">—</span>
+                                </td>
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">{{ formatPrice(pos.sl) }}</td>
                                 <td style="color:var(--up)">{{ formatPrice(pos.tp) }}</td>
@@ -219,7 +226,7 @@
                                 </td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
-                                <td colspan="10" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                                <td colspan="11" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
                             </tr>
                         </tbody>
                     </table>

@@ -14,6 +14,7 @@ from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import SuperTrendKeltnerStrategy
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
+from core.indicators import compute_position_trigger
 
 def test_strategy_indicators():
     strategy = SuperTrendKeltnerStrategy()
@@ -688,3 +689,48 @@ def test_trade_amount_multiplier_uses_tiered_size_for_score_70():
     assert get_position_multiplier(70) == 0.6
     assert get_position_multiplier(80) == 1.0
     assert get_position_multiplier(100) == 1.0
+
+
+def _trigger_frame(closes, lows=None, highs=None):
+    lows = lows if lows is not None else closes
+    highs = highs if highs is not None else closes
+    return pd.DataFrame({"close": closes, "low": lows, "high": highs})
+
+
+def test_position_trigger_long_flags_ma_cross_and_prior_low_break():
+    """多單：均線走平的情況下，最後一根K棒重挫，同時跌破均線也跌破前低。"""
+    closes = [100.0] * 24 + [90.0]
+    lows = [99.0] * 24 + [90.0]
+    highs = [101.0] * 24 + [90.0]
+    result = compute_position_trigger(_trigger_frame(closes, lows, highs), "LONG")
+    assert result["active"] is True
+    assert "跌破均線" in result["reasons"]
+    assert "跌破前低" in result["reasons"]
+
+
+def test_position_trigger_long_inactive_when_price_healthy():
+    """多單：價格穩定在均線與前低之上，不觸發任何警示。"""
+    closes = [100.0] * 24 + [100.5]
+    lows = [99.0] * 25
+    highs = [101.0] * 25
+    result = compute_position_trigger(_trigger_frame(closes, lows, highs), "LONG")
+    assert result["active"] is False
+    assert result["reasons"] == []
+
+
+def test_position_trigger_short_flags_ma_cross_and_prior_high_break():
+    """空單：對稱情境，最後一根K棒暴衝，同時站上均線也站上前高。"""
+    closes = [100.0] * 24 + [110.0]
+    lows = [99.0] * 24 + [110.0]
+    highs = [101.0] * 24 + [110.0]
+    result = compute_position_trigger(_trigger_frame(closes, lows, highs), "SHORT")
+    assert result["active"] is True
+    assert "站上均線" in result["reasons"]
+    assert "站上前高" in result["reasons"]
+
+
+def test_position_trigger_inactive_when_not_enough_bars():
+    """K線資料不足（少於 lookback_bars+2）時，不判斷、也不誤報警示。"""
+    result = compute_position_trigger(_trigger_frame([100.0] * 5), "LONG")
+    assert result["active"] is False
+    assert result["reasons"] == []

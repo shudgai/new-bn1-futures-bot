@@ -32,6 +32,16 @@ def visible_tickers():
             result[symbol] = price
     return result
 
+def positions_with_triggers():
+    """持倉列表附加手動平倉參考指標（跌破/站上均線、跌破前低/站上前高），
+    純參考用途，不影響自動止損止利。"""
+    result = []
+    for symbol, pos in engine.account.positions.items():
+        merged = dict(pos)
+        merged["trigger"] = engine.position_triggers.get(symbol, {"active": False, "reasons": []})
+        result.append(merged)
+    return result
+
 def active_leverage_by_score():
     return {
         str(score): {
@@ -133,7 +143,7 @@ async def get_status():
             "retry_after_sec": engine.symbol_rotation.trade_analysis.retry_after_sec,
         },
         "tickers": visible_tickers(),
-        "positions": list(engine.account.positions.values()),
+        "positions": positions_with_triggers(),
         "trades": engine.account.trades[:50],
         "total_trades": len(engine.account.trades),
         "trade_dates": sorted({trade_date_str(t) for t in engine.account.trades}, reverse=True),
@@ -146,7 +156,7 @@ async def get_prices():
     return {
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "tickers": visible_tickers(),
-        "positions": list(engine.account.positions.values()),
+        "positions": positions_with_triggers(),
         "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),
         "balance": round(engine.account.balance, 2),
     }

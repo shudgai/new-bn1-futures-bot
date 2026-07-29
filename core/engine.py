@@ -15,7 +15,7 @@ from core.config import (
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
-from core.indicators import drop_unclosed_candle
+from core.indicators import drop_unclosed_candle, compute_position_trigger
 
 class TradingEngine:
     def __init__(self):
@@ -51,6 +51,11 @@ class TradingEngine:
         # 回調進場改用真正掛在交易所的限價單（見 core/testnet_account.py
         # 的 pending_limit_orders），不再用軟體輪詢價格的狀態機。
         self.last_signal_progress_log_at: float = 0.0
+        # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
+        # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
+        # 止損/止利/24h時間過濾等既有的自動平倉邏輯。
+        self.position_triggers: Dict[str, dict] = {}
+        self.trigger_task: asyncio.Task = None
 
     @staticmethod
     def _format_signal_progress(
@@ -152,6 +157,8 @@ class TradingEngine:
         self.rotation_task = asyncio.create_task(self._rotation_loop())
         # 歷史分析是第三條完全獨立的工作，不等待主交易或幣種輪替。
         self.analysis_task = asyncio.create_task(self._analysis_loop())
+        # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
+        self.trigger_task = asyncio.create_task(self._position_trigger_loop())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -165,6 +172,8 @@ class TradingEngine:
             self.rotation_task.cancel()
         if self.analysis_task:
             self.analysis_task.cancel()
+        if self.trigger_task:
+            self.trigger_task.cancel()
         await self.exchange.close()
         await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
@@ -243,6 +252,28 @@ class TradingEngine:
                 self.symbol_rotation.last_rotation_at = time.time()
                 self.symbol_rotation.last_reason = f"輪替失敗，保留原牌面：{type(exc).__name__}"
                 self.account.log(f"⚠️ [幣種輪替] 暫時失敗，保留原牌面並繼續交易：{type(exc).__name__}: {exc}", "WARNING")
+                await asyncio.sleep(30)
+
+    async def _position_trigger_loop(self):
+        """持倉手動平倉參考指標：用 EMA20（策略本身 Keltner 通道用的同一條
+        基準線）跟近 20 根 5 分K的前低/前高，判斷「跌破均線」「跌破前低」
+        （多單）或「站上均線」「站上前高」（空單）。純粹是給使用者按網頁
+        「平倉」按鈕前參考用的視覺提示，不會觸發任何自動平倉，獨立成
+        背景任務、抓K線失敗或變慢也不影響主迴圈的止損止利判斷。"""
+        while self.is_running:
+            try:
+                for symbol, position in list(self.account.positions.items()):
+                    df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
+                    trigger = compute_position_trigger(df, position.get("side"))
+                    trigger["updated_at"] = time.time()
+                    self.position_triggers[symbol] = trigger
+                for symbol in set(self.position_triggers) - set(self.account.positions):
+                    self.position_triggers.pop(symbol, None)
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(30)
 
     async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:
