@@ -233,3 +233,51 @@ async def test_repeated_pending_limit_retries_log_only_once(tmp_path, monkeypatc
     cancel_logs = [entry for entry in account.logs if "限價單撤銷" in entry["text"]]
     assert len(place_logs) == 1
     assert len(cancel_logs) == 1
+
+
+@pytest.mark.anyio
+async def test_place_limit_entry_rejects_zero_amount(tmp_path, monkeypatch):
+    """amount_usdt<=0 時要提早拒絕、印出警告，不能讓 qty=0 一路送進
+    exchange.amount_to_precision() 炸出未捕捉的交易所例外——實測
+    DOGE/USDT 07/29 這筆就是 MIN_SCORE_THRESHOLD 跟 POSITION_SIZE_TIERS
+    最低檔沒對齊，算出 amount_usdt=0，把整個主迴圈拖垮反覆重炸。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    placed = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=0.0, sl=98.0, tp=103.0,
+        reason="test", atr=1.0, leverage=5, signal_score=100,
+    )
+
+    assert placed is False
+    assert len(exchange.orders) == 0
+    assert any("金額為 0" in entry["text"] for entry in account.logs)
+
+
+@pytest.mark.anyio
+async def test_open_position_rejects_zero_amount(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    success = await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 0.0, 98.0, 103.0, "test",
+        atr=1.0, leverage=5, signal_score=100,
+    )
+
+    assert success is False
+    assert len(exchange.orders) == 0
+    assert any("金額為 0" in entry["text"] for entry in account.logs)

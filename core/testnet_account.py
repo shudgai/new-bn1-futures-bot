@@ -637,6 +637,16 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
+        # 下單金額為 0（或負數）時，qty 算出來也會是 0，若直接送進
+        # exchange.amount_to_precision() 會被交易所丟出精度例外，這個
+        # 例外沒有包在 try/except 裡，會一路往上炸穿整個主迴圈（實測
+        # DOGE/USDT 這筆就是這樣：MIN_SCORE_THRESHOLD 調到 65 但
+        # POSITION_SIZE_TIERS 最低檔還停在 70，65~69 分的訊號算出來的
+        # amount_usdt 直接是 0，主迴圈每輪都在同一個地方反覆炸掉）。
+        # 在這裡提前擋掉，用原本就有的「金額/精度不足」警告取代未捕捉例外。
+        if amount_usdt <= 0:
+            self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
+            return False
         await self._ensure_markets()
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)
@@ -826,6 +836,12 @@ class BinanceTestnetAccount:
                 f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕掛單",
                 "WARNING",
             )
+            return False
+        # 見 open_position() 同一道防線的說明：amount_usdt<=0 時 qty 會是 0，
+        # 直接送進 exchange.amount_to_precision() 會炸出未捕捉的交易所例外，
+        # 拖垮整個主迴圈，這裡提前擋掉。
+        if amount_usdt <= 0:
+            self.log(f"🛑 {symbol} 掛單金額為 0，拒絕掛單", "WARNING")
             return False
         await self._ensure_markets()
         leverage = leverage or (

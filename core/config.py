@@ -372,10 +372,18 @@ MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
 # （75U），但配合高分訊號常同時給到的高槓桿（6~10x），單筆虧損金額被
 # 放大不少。改成滿分也只給 1.0x，槓桿仍照分數/實測波動率分級，但下單
 # 本金一律不超過 TRADE_AMOUNT_USDT。
+# 最低檔的門檻用 MIN_SCORE_THRESHOLD 本身，不要寫死數字：MIN_SCORE_THRESHOLD
+# 之前從 71 調到 65，但這裡最低檔一直停在寫死的 70，導致 65~69 分的訊號
+# 落在兩個門檻中間的空隙，get_position_multiplier() 找不到符合的檔位，
+# 回傳 0.0 → 下單金額變成 0 → exchange.amount_to_precision() 丟出未捕捉
+# 的交易所例外，把整個主迴圈拖垮、每輪重複炸同一個 symbol（實測
+# DOGE/USDT 07/29 20:20 這筆就是這樣連續炸了好幾分鐘）。用
+# MIN_SCORE_THRESHOLD 本身當最低檔門檻，兩者永遠對齊，以後調
+# MIN_SCORE_THRESHOLD 不會再重新打開這個空隙。
 POSITION_SIZE_TIERS = [
     (90, 1.0),  # 4 項全過（滿分）：1.0x 基礎倉位（上限，不再額外放大）
     (80, 1.0),  # 高分：1.0x 基礎倉位
-    (70, 0.6),  # 剛過門檻：0.6x 基礎倉位，小倉試錯
+    (MIN_SCORE_THRESHOLD, 0.6),  # 剛過門檻：0.6x 基礎倉位，小倉試錯
 ]
 
 def get_position_multiplier(score: int) -> float:

@@ -52,8 +52,11 @@ def test_paper_account_open_close(tmp_path, monkeypatch):
     assert close_notifications == ["closed"]
 
 def test_low_score_signal_caps_eth_leverage():
-    assert get_position_multiplier(69) == 0.0
-    assert get_position_multiplier(70) == 0.6
+    """最低檔門檻用 MIN_SCORE_THRESHOLD 本身，避免它跟這裡的最低檔位置
+    調開之後又出現「兩個門檻中間的分數算出 0 倍位，下單金額變 0」的
+    空隙（實測 DOGE/USDT 07/29 這筆就是這樣炸掉主迴圈的）。"""
+    assert get_position_multiplier(MIN_SCORE_THRESHOLD - 1) == 0.0
+    assert get_position_multiplier(MIN_SCORE_THRESHOLD) == 0.6
     assert get_position_multiplier(80) == 1.0
     assert get_position_multiplier(90) == 1.0
     assert get_signal_leverage("ETH/USDT", 70) == 3
@@ -703,7 +706,7 @@ def test_directional_rotation_uses_lower_score_longs_only_to_fill_display(monkey
 
 
 def test_trade_amount_multiplier_uses_tiered_size_for_score_70():
-    assert get_position_multiplier(70) == 0.6
+    assert get_position_multiplier(MIN_SCORE_THRESHOLD) == 0.6
     assert get_position_multiplier(80) == 1.0
     assert get_position_multiplier(100) == 1.0
 
