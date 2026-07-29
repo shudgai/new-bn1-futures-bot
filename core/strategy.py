@@ -10,6 +10,7 @@ from core.config import (
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
+    STRONG_BREAKOUT_SCORE_THRESHOLD,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -356,35 +357,47 @@ class SuperTrendKeltnerStrategy:
             }
 
         if score >= MIN_SCORE_THRESHOLD:
-            if st_dir == 1:
-                dist = (price - kc_upper) / kc_upper
-
-                # 一律等回踩到目標區再進場，不再有「突破當下距離夠近就立刻
-                # 追價買」的路徑——KC 通道倍數是拿來判斷「這是不是真突破」
-                # 的確認門檻，跟「用什麼價格進場」是兩件事，進場價一律交給
-                # 回踩機制決定，通道調寬也不會讓進場價跟著追高。
-                # 回調目標：從 KC 上軌往 EMA20 均價再靠攏 PULLBACK_TARGET_DEPTH 比例。
-                pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
-                return {
-                    "action": "WAIT_PULLBACK", "side": "LONG",
-                    "price": price, "atr": atr,
-                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                    "target_zone": pullback_target,
-                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
-                }
-
-            else:  # SHORT
-                dist = (kc_lower - price) / kc_lower
-
-                # 同理：空單也一律等反彈到目標區再進場。
-                pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
-                return {
-                    "action": "WAIT_PULLBACK", "side": "SHORT",
-                    "price": price, "atr": atr,
-                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                    "target_zone": pullback_target,
-                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
-                }
+            # ── 方案 A：分流機制 ──
+            # 評分 >= 85 (STRONG_BREAKOUT_SCORE_THRESHOLD)：代表動能爆量極強突破，直接市價進場 (BUY / SELL)，抓取單邊暴利行情。
+            # 評分 71 ~ 84：代表溫和突破，採取回踩進場 (WAIT_PULLBACK)，掛限價單等待優質價格。
+            if score >= STRONG_BREAKOUT_SCORE_THRESHOLD:
+                if st_dir == 1:
+                    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
+                    sl, tp = price - sl_dist, price + tp_dist
+                    return {
+                        "action": "BUY", "side": "LONG", "price": price, "atr": atr,
+                        "sl": sl, "tp": tp, "score": score,
+                        "reason": f"StrongBreakout_BUY({score}) | {', '.join(score_details)}"
+                    }
+                else:
+                    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
+                    sl, tp = price + sl_dist, price - tp_dist
+                    return {
+                        "action": "SELL", "side": "SHORT", "price": price, "atr": atr,
+                        "sl": sl, "tp": tp, "score": score,
+                        "reason": f"StrongBreakout_SELL({score}) | {', '.join(score_details)}"
+                    }
+            else:
+                if st_dir == 1:
+                    dist = (price - kc_upper) / kc_upper
+                    pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
+                    return {
+                        "action": "WAIT_PULLBACK", "side": "LONG",
+                        "price": price, "atr": atr,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                        "target_zone": pullback_target,
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
+                    }
+                else:  # SHORT
+                    dist = (kc_lower - price) / kc_lower
+                    pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
+                    return {
+                        "action": "WAIT_PULLBACK", "side": "SHORT",
+                        "price": price, "atr": atr,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                        "target_zone": pullback_target,
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
+                    }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
 

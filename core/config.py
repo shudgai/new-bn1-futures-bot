@@ -114,10 +114,10 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
 # 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
-# MIN_OPEN_SIGNAL_SCORE：開倉前最後一道防線，不管呼叫端邏輯有沒有正確
-# 擋住，分數低於這個值一律拒絕下單（見 testnet_account.open_position）。
-# 正常流程分數不會低於 MIN_SCORE_THRESHOLD(71)，這裡刻意設 70（略低於
-# 71）純粹當保險，不影響現有正常流程。
+# STRONG_BREAKOUT_SCORE_THRESHOLD：分流機制門檻。
+# 當評分 >= 85 時，代表動能極強爆量突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
+# 當 71 <= 評分 < 85 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
+STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "85"))
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
 # 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內

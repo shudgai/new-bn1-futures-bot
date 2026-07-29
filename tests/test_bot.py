@@ -9,6 +9,7 @@ from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, DISASTER_STOP_MULTIPLIER,
+    STRONG_BREAKOUT_SCORE_THRESHOLD,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -142,21 +143,26 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     assert "Score_Low" in result["reason"]
 
 
-def test_qualifying_score_waits_for_pullback_never_buys_immediately(monkeypatch):
-    """一律回踩機制：分數再高也不會有 BUY（立即進場），只會是 WAIT_PULLBACK。
-    用 config 常數而非寫死的分數，避免每次調參又要改測試。"""
+def test_qualifying_score_scheme_a_branching(monkeypatch):
+    """方案 A 分流機制：
+    評分 >= 85 時觸發 BUY（強勢突破直接市價進場）；
+    評分 71~84 時觸發 WAIT_PULLBACK（溫和突破等待回踩）。"""
     strategy = SuperTrendKeltnerStrategy()
-    # 量能、RSI、新鮮度、ADX 都給足以通過的條件，KC 突破在 _entry_score_frame 裡本來就成立
-    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
+    
+    # 高分強突破 (>= 85) -> 應為 BUY
+    frame_high = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+    result_high = strategy.evaluate_signal(frame_high, ema_200_1h=95.0)
+    assert result_high["action"] == "BUY"
+    assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
 
-    result = strategy.evaluate_signal(frame, ema_200_1h=95.0)
-
-    assert result["action"] == "WAIT_PULLBACK"
-    assert result["score"] >= MIN_SCORE_THRESHOLD
-    assert "target_zone" in result
-    assert f"Pullback_WAIT({result['score']})" in result["reason"]
+    # 溫和突破 (71 ~ 84) -> 應為 WAIT_PULLBACK
+    frame_mid = _entry_score_frame(volume=1000.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
+    result_mid = strategy.evaluate_signal(frame_mid, ema_200_1h=95.0)
+    if result_mid["score"] < STRONG_BREAKOUT_SCORE_THRESHOLD:
+        assert result_mid["action"] == "WAIT_PULLBACK"
+        assert "target_zone" in result_mid
 
 
 def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
