@@ -51,6 +51,38 @@ class TradeHistoryAnalyzer:
         os.replace(temp_file, self.analysis_file)
 
     @staticmethod
+    def _infer_exit_type(trade: dict, opened: dict) -> str:
+        explicit = str(trade.get("exit_type") or "").upper()
+        if explicit in {"TP", "SL", "OTHER", "UNKNOWN"}:
+            return explicit
+        reason = str(trade.get("reason") or "")
+        if "Take-Profit" in reason or "止盈" in reason:
+            return "TP"
+        if "Stop-Loss" in reason or "止損" in reason:
+            return "SL"
+        if "保護單成交" not in reason:
+            return "OTHER"
+
+        # 舊資料只有籠統的「保護單成交」時，以當時記錄的原始 SL/TP 價格
+        # 回推；價格沒有碰到任一邊界的移動止損舊單維持 UNKNOWN，不偽造分類。
+        side = str(trade.get("side") or opened.get("side") or "")
+        close_price = float(trade.get("price") or 0.0)
+        sl = float(opened.get("sl") or 0.0)
+        tp = float(opened.get("tp") or 0.0)
+        tolerance = abs(close_price) * 0.002
+        if side == "LONG":
+            if tp > 0 and close_price >= tp - tolerance:
+                return "TP"
+            if sl > 0 and close_price <= sl + tolerance:
+                return "SL"
+        elif side == "SHORT":
+            if tp > 0 and close_price <= tp + tolerance:
+                return "TP"
+            if sl > 0 and close_price >= sl - tolerance:
+                return "SL"
+        return "UNKNOWN"
+
+    @staticmethod
     def pair_closed_trades(trades: Iterable[dict]) -> List[dict]:
         """配對開平倉，避免把 API Key、餘額、持倉等帳戶資料送入 AI。"""
         open_by_symbol: Dict[str, dict] = {}
@@ -76,6 +108,7 @@ class TradeHistoryAnalyzer:
                         "signal_score": opened.get("signal_score"),
                         "entry_reason": str(opened.get("reason", ""))[:300],
                         "exit_reason": str(trade.get("reason", ""))[:200],
+                        "exit_type": TradeHistoryAnalyzer._infer_exit_type(trade, opened),
                         "fee": float(trade.get("fee") or 0.0),
                         "net_pnl": float(trade.get("pnl") or 0.0),
                     }
@@ -98,6 +131,7 @@ class TradeHistoryAnalyzer:
                     "signal_score": opened.get("signal_score"),
                     "entry_reason": str(opened.get("reason", ""))[:300],
                     "exit_reason": str(trade.get("reason", ""))[:200],
+                    "exit_type": TradeHistoryAnalyzer._infer_exit_type(trade, opened),
                     "fee": float(trade.get("fee") or 0.0),
                     "net_pnl": float(trade.get("pnl") or 0.0),
                 }
@@ -124,6 +158,10 @@ class TradeHistoryAnalyzer:
         return "91+"
 
     @staticmethod
+    def _is_stop(row: dict) -> bool:
+        return row.get("exit_type") == "SL"
+
+    @staticmethod
     def _group_stats(records: List[dict], key: str) -> List[dict]:
         groups = defaultdict(list)
         for row in records:
@@ -142,12 +180,7 @@ class TradeHistoryAnalyzer:
                     "avg_pnl": round(sum(pnls) / len(rows), 4),
                     "win_rate": round(sum(value > 0 for value in pnls) / len(rows), 4),
                     "stop_rate": round(
-                        sum(
-                            "Stop-Loss" in row["exit_reason"]
-                            or "保護單成交" in row["exit_reason"]
-                            for row in rows
-                        ) / len(rows),
-                        4,
+                        sum(TradeHistoryAnalyzer._is_stop(row) for row in rows) / len(rows), 4
                     ),
                 }
             )
@@ -162,6 +195,9 @@ class TradeHistoryAnalyzer:
         gross_profit = sum(value for value in pnls if value > 0)
         gross_loss = abs(sum(value for value in pnls if value < 0))
         count = len(records)
+        stop_count = sum(cls._is_stop(row) for row in records)
+        tp_count = sum(row.get("exit_type") == "TP" for row in records)
+        classified_protection_count = stop_count + tp_count
         overview = {
             "closed_trades": count,
             "net_pnl": round(sum(pnls), 4),
@@ -169,14 +205,11 @@ class TradeHistoryAnalyzer:
             "win_rate": round(sum(value > 0 for value in pnls) / count, 4) if count else 0.0,
             "avg_pnl": round(sum(pnls) / count, 4) if count else 0.0,
             "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss else None,
-            "stop_rate": round(
-                sum(
-                    "Stop-Loss" in row["exit_reason"]
-                    or "保護單成交" in row["exit_reason"]
-                    for row in records
-                ) / count,
-                4,
-            ) if count else 0.0,
+            "stop_rate": round(stop_count / count, 4) if count else 0.0,
+            "protection_stop_rate": round(stop_count / classified_protection_count, 4) if classified_protection_count else 0.0,
+            "tp_count": tp_count,
+            "sl_count": stop_count,
+            "unknown_exit_count": sum(row.get("exit_type") == "UNKNOWN" for row in records),
         }
         digest_source = json.dumps(records, ensure_ascii=False, sort_keys=True).encode("utf-8")
         bucket_order = ["70(壓線)", "71-75", "76-80", "81-90", "91+", "未記錄"]
@@ -192,6 +225,7 @@ class TradeHistoryAnalyzer:
             "by_side": cls._group_stats(records, "side"),
             "by_signal_score": cls._group_stats(records, "signal_score"),
             "by_score_bucket": by_score_bucket,
+            "by_exit_type": cls._group_stats(records, "exit_type"),
             "by_exit_reason": cls._group_stats(records, "exit_reason"),
             "recent_closed_trades": records[-50:],
         }
@@ -223,6 +257,7 @@ class TradeHistoryAnalyzer:
             "by_side": history["by_side"],
             "by_signal_score": history["by_signal_score"],
             "by_score_bucket": history["by_score_bucket"],
+            "by_exit_type": history["by_exit_type"],
             "by_exit_reason": history["by_exit_reason"],
             "recent_closed_trades": history["recent_closed_trades"],
         }
@@ -244,6 +279,7 @@ class TradeHistoryAnalyzer:
                 "by_symbol": history["by_symbol"],
                 "by_signal_score": history["by_signal_score"],
                 "by_score_bucket": history["by_score_bucket"],
+                "by_exit_type": history["by_exit_type"],
                 "by_exit_reason": history["by_exit_reason"],
             },
             "error": ai_status.get("error", ""),

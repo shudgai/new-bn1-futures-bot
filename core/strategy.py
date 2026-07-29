@@ -1,16 +1,16 @@
 import pandas as pd
 import numpy as np
 from core.config import (
-    STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER,
+    STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
     MIN_FRESHNESS_SCORE,
-    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD,
+    RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
+    ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
-    STRONG_BREAKOUT_SCORE_THRESHOLD, STRONG_BREAKOUT_EMA50_MAX_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, SYMBOL_1H_ST_FILTER_ENABLED,
 )
@@ -21,13 +21,21 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     """算出止損/止盈距離，並套用 MIN_SL_DISTANCE_PCT 下限，避免低波動期間
     ATR 太小導致止損距離縮到容易被雜訊掃出的地步。回傳 (sl_distance, tp_distance)。
 
-    止盈距離用「基準止損距離」（1.5x ATR / MIN_SL_DISTANCE_PCT 下限）算出
-    固定風報比，維持原本的停利目標不變；實際回傳的止損距離另外乘上
-    DISASTER_STOP_MULTIPLIER 放寬成最後防線——使用者要的是「先不要止損，
-    讓利潤有機會回來，人工判斷要不要平倉」，不是把止盈也一起放寬。"""
+    止損可由 DISASTER_STOP_MULTIPLIER 放寬，但止盈會同步拉遠到「扣除
+    進出場 taker fee 後」仍至少符合 MIN_NET_REWARD_RISK，避免表面 1:2、
+    實際因放寬止損與手續費只剩約 1:1.3。公式使用較保守的較高出場名目
+    金額估算手續費，因此多空方向都不會低於設定值。"""
     base_sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
-    tp_distance = base_sl_distance * (TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER)
     sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
+    configured_tp_distance = base_sl_distance * (
+        TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER
+    )
+    fee_rate = max(0.0, min(TAKER_FEE_RATE, 0.99))
+    net_risk_per_unit = sl_distance * (1 + fee_rate) + 2 * price * fee_rate
+    min_tp_distance = (
+        MIN_NET_REWARD_RISK * net_risk_per_unit + 2 * price * fee_rate
+    ) / max(1 - fee_rate, 1e-9)
+    tp_distance = max(configured_tp_distance, min_tp_distance)
     return sl_distance, tp_distance
 
 class SuperTrendKeltnerStrategy:
@@ -36,12 +44,8 @@ class SuperTrendKeltnerStrategy:
     核心邏輯：
     1. 底線防禦 (Mandatory)：大週期趨勢 (1h EMA50) 與 SuperTrend 方向必須一致。
     2. 動態評分 (Scoring)：Keltner 突破、量能、RSI、訊號新鮮度 進行加權評分。
-    3. 進場決策「回調優先」三段式：
-       - 評分 >= 90 且超出 KC 距離 <= 0.1% → BUY_NOW  (剛突破，立即開倉)
-       - 評分 >= 90 且超出 KC 距離 > 0.1% → WAIT_PULLBACK (已追高，等回踩 KC 上軌)
-       - 其餘 → HOLD
-    修正原則：KC突破後動量往往已接近末段，應等待回踩 KC 軌道才進場，
-    而非在突破高點追入，避免一開倉就面臨回落。
+    3. 所有達標訊號一律 WAIT_PULLBACK，等待 50% 回踩與成交前二次確認。
+    KC 突破後動量可能已接近末段，不因分數高而在突破高點市價追入。
     """
     def __init__(self, atr_period=10, atr_multiplier=3.0, adx_period=ADX_PERIOD):
         self.atr_period = atr_period
@@ -248,6 +252,13 @@ class SuperTrendKeltnerStrategy:
         if atr_pct < MIN_ATR_PCT:
             return {"action": "HOLD", "reason": f"Mandatory_Fail: ATR_Too_Low({atr_pct:.2%})"}
 
+        # 極端 RSI 代表行情已經過熱／過冷，不是更高品質的追價訊號。
+        if st_dir == 1 and rsi > RSI_LONG_MAX:
+            return {"action": "HOLD", "reason": f"Mandatory_Fail: RSI_Overbought({rsi:.1f}>{RSI_LONG_MAX:.1f})"}
+        if st_dir == -1 and rsi < RSI_SHORT_MIN:
+            return {"action": "HOLD", "reason": f"Mandatory_Fail: RSI_Oversold({rsi:.1f}<{RSI_SHORT_MIN:.1f})"}
+
+
         # --- 2. 動態評分系統 (Scoring System) ---
         score = 0
         score_details = []
@@ -310,8 +321,10 @@ class SuperTrendKeltnerStrategy:
         # 退潮」，直接擋單。
         adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
         adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
+        adx_drop = (adx_prior - adx) if not pd.isna(adx_prior) else 0.0
         adx_declining_exhausted = (
-            not pd.isna(adx_prior) and adx < ADX_QUALITY_MIN and adx < adx_prior
+            not pd.isna(adx_prior)
+            and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
 
         # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
@@ -335,12 +348,14 @@ class SuperTrendKeltnerStrategy:
             if atr_half_range > 0 else 0.0
         )
         quality_bonus += round(atr_quality * 3)
-        # E2. RSI 強度：超出門檻越多代表動能越強（15分視為滿分）
-        if st_dir == 1:
-            rsi_margin = max(0.0, rsi - RSI_LONG_THRESHOLD)
-        else:
-            rsi_margin = max(0.0, RSI_SHORT_THRESHOLD - rsi)
-        quality_bonus += round(min(rsi_margin / 15.0, 1.0) * 3)
+        # E2. RSI 品質：獎勵健康動能區中段，不再讓越極端的 RSI 得分越高。
+        rsi_ideal = 60.0 if st_dir == 1 else 40.0
+        rsi_half_width = max(
+            rsi_ideal - RSI_LONG_THRESHOLD if st_dir == 1 else RSI_SHORT_THRESHOLD - rsi_ideal,
+            1.0,
+        )
+        rsi_quality = max(0.0, 1.0 - abs(rsi - rsi_ideal) / rsi_half_width)
+        quality_bonus += round(rsi_quality * 3)
         # E3. 量能強度：超過門檻越多代表確認度越高（多 1 倍視為滿分）
         vol_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
         vol_margin = max(0.0, vol_ratio - KELTNER_MIN_VOLUME_RATIO)
@@ -395,63 +410,29 @@ class SuperTrendKeltnerStrategy:
             }
 
         if score >= MIN_SCORE_THRESHOLD:
-            # ── 方案 A：分流機制 ──
-            # 評分 >= 85 (STRONG_BREAKOUT_SCORE_THRESHOLD)：代表動能爆量極強突破，直接市價進場 (BUY / SELL)，抓取單邊暴利行情。
-            # 評分 71 ~ 84：代表溫和突破，採取回踩進場 (WAIT_PULLBACK)，掛限價單等待優質價格。
-            #
-            # 市價立即進場專用的末端趨勢防護：距離 EMA50（比 EMA20 遲鈍很多
-            # 的中期均線）太遠，代表這波動能其實已經悶著頭走了一大段，只是
-            # 相對 EMA20 還沒乖離到 D3 那條門檻。市價進場沒有回踩等待期讓
-            # confirm_pullback_entry() 再確認一次，最容易撞上「進場點剛好
-            # 是這波最後一根」的情況（實測 NEAR/USDT 這筆）。觸發時不整筆
-            # 擋單，訊號本身仍合格，只是降級成跟溫和突破一樣走 WAIT_PULLBACK，
-            # 讓它多一層等回踩＋二次確認的緩衝。
-            ema50_distance_atr = abs(price - ema_50) / atr if atr > 0 else 0.0
-            strong_breakout_overextended = ema50_distance_atr > STRONG_BREAKOUT_EMA50_MAX_ATR_MULT
-
-            if score >= STRONG_BREAKOUT_SCORE_THRESHOLD and not strong_breakout_overextended:
-                if st_dir == 1:
-                    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
-                    sl, tp = price - sl_dist, price + tp_dist
-                    return {
-                        "action": "BUY", "side": "LONG", "price": price, "atr": atr,
-                        "sl": sl, "tp": tp, "score": score,
-                        "reason": f"StrongBreakout_BUY({score}) | {', '.join(score_details)}"
-                    }
-                else:
-                    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
-                    sl, tp = price + sl_dist, price - tp_dist
-                    return {
-                        "action": "SELL", "side": "SHORT", "price": price, "atr": atr,
-                        "sl": sl, "tp": tp, "score": score,
-                        "reason": f"StrongBreakout_SELL({score}) | {', '.join(score_details)}"
-                    }
-            else:
-                downgrade_note = (
-                    f" | StrongBreakout_Downgraded_EMA50Overextended({ema50_distance_atr:.1f}x_ATR)"
-                    if score >= STRONG_BREAKOUT_SCORE_THRESHOLD and strong_breakout_overextended
-                    else ""
-                )
-                if st_dir == 1:
-                    dist = (price - kc_upper) / kc_upper
-                    pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
-                    return {
-                        "action": "WAIT_PULLBACK", "side": "LONG",
-                        "price": price, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "target_zone": pullback_target,
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
-                    }
-                else:  # SHORT
-                    dist = (kc_lower - price) / kc_lower
-                    pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
-                    return {
-                        "action": "WAIT_PULLBACK", "side": "SHORT",
-                        "price": price, "atr": atr,
-                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                        "target_zone": pullback_target,
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
-                    }
+            # 不再因高分直接市價追突破；達標訊號全部等待 50% 回踩，成交前再
+            # 用最新 K 線做二次確認，避免開在趨勢末端與均線背離的位置。
+            downgrade_note = " | MarketChase_Disabled"
+            if st_dir == 1:
+                dist = (price - kc_upper) / kc_upper
+                pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
+                return {
+                    "action": "WAIT_PULLBACK", "side": "LONG",
+                    "price": price, "atr": atr,
+                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                    "target_zone": pullback_target,
+                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
+                }
+            else:  # SHORT
+                dist = (kc_lower - price) / kc_lower
+                pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
+                return {
+                    "action": "WAIT_PULLBACK", "side": "SHORT",
+                    "price": price, "atr": atr,
+                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                    "target_zone": pullback_target,
+                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
+                }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
 
@@ -487,9 +468,12 @@ class SuperTrendKeltnerStrategy:
                 "reason": f"SuperTrend 方向已反轉（現為{'多頭' if st_dir == 1 else '空頭'}）",
             }
 
-        # 大週期（1h）本身動能也在衰退（跟 evaluate_signal() 同一套判斷，
-        # engine.py 用同一批1h K線算好傳進來）：等回踩的這段時間裡，就算
-        # 5分K條件都還成立，大方向本身若已經在做頭/做底，一樣取消。
+        if side == "LONG" and rsi > RSI_LONG_MAX:
+            return {"status": "CANCEL", "reason": f"RSI過熱 RSI_Overbought({rsi:.1f}>{RSI_LONG_MAX:.1f})"}
+        if side == "SHORT" and rsi < RSI_SHORT_MIN:
+            return {"status": "CANCEL", "reason": f"RSI過冷 RSI_Oversold({rsi:.1f}<{RSI_SHORT_MIN:.1f})"}
+
+        # 大週期（1h）本身動能衰退時，即使 5 分K條件仍成立也取消。
         if trend_1h_declining:
             return {
                 "status": "CANCEL",
@@ -542,7 +526,11 @@ class SuperTrendKeltnerStrategy:
         adx = curr['adx'] if not pd.isna(curr['adx']) else 0.0
         adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
         adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
-        if not pd.isna(adx_prior) and adx < ADX_QUALITY_MIN and adx < adx_prior:
+        adx_drop = (adx_prior - adx) if not pd.isna(adx_prior) else 0.0
+        if (
+            not pd.isna(adx_prior)
+            and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
+        ):
             return {
                 "status": "CANCEL",
                 "reason": f"ADX 動能持續衰退 {adx:.1f}<{adx_prior:.1f}（{ADX_DECLINE_LOOKBACK_BARS}根K棒前）",
@@ -593,16 +581,18 @@ class SuperTrendKeltnerStrategy:
             max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
             if atr_half_range > 0 else 0.0
         )
-        if side == "LONG":
-            rsi_margin = max(0.0, rsi - RSI_LONG_THRESHOLD)
-        else:
-            rsi_margin = max(0.0, RSI_SHORT_THRESHOLD - rsi)
+        rsi_ideal = 60.0 if side == "LONG" else 40.0
+        rsi_half_width = max(
+            rsi_ideal - RSI_LONG_THRESHOLD if side == "LONG" else RSI_SHORT_THRESHOLD - rsi_ideal,
+            1.0,
+        )
+        rsi_quality = max(0.0, 1.0 - abs(rsi - rsi_ideal) / rsi_half_width)
         vol_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
         vol_margin = max(0.0, vol_ratio - KELTNER_MIN_VOLUME_RATIO)
         adx_ratio = (adx - ADX_QUALITY_MIN) / (ADX_QUALITY_FULL - ADX_QUALITY_MIN)
         score_e = (
             round(atr_quality * 3)
-            + round(min(rsi_margin / 15.0, 1.0) * 3)
+            + round(rsi_quality * 3)
             + round(min(vol_margin / 1.0, 1.0) * 3)
             + round(min(max(adx_ratio, 0.0), 1.0) * 3)
         )

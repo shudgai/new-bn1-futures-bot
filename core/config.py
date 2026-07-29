@@ -85,16 +85,19 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
+# 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
+MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.8"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
-# TIER 1 (保本鎖): 浮盈達 +0.6% 時，將止損移至進場價+0.05%（確保不損保本）
-TRAILING_TIER1_TRIGGER_PCT = float(os.getenv("TRAILING_TIER1_TRIGGER_PCT", "0.006"))
-# TIER 2 (第一階段鎖利): 浮盈達 +1.2% 時，將止損移至進場價+0.6%（鎖定第一階段獲利）
-TRAILING_TIER2_TRIGGER_PCT = float(os.getenv("TRAILING_TIER2_TRIGGER_PCT", "0.012"))
-# TIER 3 (高點回撤追蹤): 浮盈達 +1.8% 時啟動，若從最高獲利回撤 30% 即市價平倉
-TRAILING_TIER3_TRIGGER_PCT = float(os.getenv("TRAILING_TIER3_TRIGGER_PCT", "0.018"))
+# 觸發門檻改用每筆進場 ATR：1 ATR 保本、2 ATR 鎖住 1 ATR、3 ATR 啟動追蹤。
+TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.0"))
+TRAILING_TIER2_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER2_TRIGGER_ATR_MULT", "2.0"))
+TRAILING_TIER3_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER3_TRIGGER_ATR_MULT", "3.0"))
+TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "1.0"))
+# Tier 1 保本價除覆蓋雙邊 taker fee 外，再多留這段緩衝吸收價格精度誤差。
+TRAILING_BREAK_EVEN_EXTRA_PCT = float(os.getenv("TRAILING_BREAK_EVEN_EXTRA_PCT", "0.0001"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
 # PROFIT_ALERT_GIVEBACK_RATIO：獲利了結參考提醒，純顯示用，不會自動平倉
 # ——上面的三階段移動停利維持原樣、自動執行不受影響，這個是額外疊加的
@@ -108,13 +111,12 @@ PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
 # 保證止損距離不會低於此比例，止盈距離依 TAKE_PROFIT/STOP_LOSS 倍數比例同步放大。
 MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.004"))
-# DISASTER_STOP_MULTIPLIER：使用者要求「先不要止損，讓利潤有機會回來，
-# 由人工判斷要不要平倉」，把原本 1.5x ATR 的緊止損改成一條寬鬆很多的
-# 最後防線（乘在 sl_distance 上，止盈維持原本距離不變，只放寬止損）。
-# 這不是完全拿掉止損（那樣不在螢幕前時會被無限套牢），而是保留一個
-# 極端行情下的最後保護，平常給價格足夠空間回調/反彈，讓使用者自己
-# 決定要不要提早手動平倉。
-DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
+# DISASTER_STOP_MULTIPLIER：曾經因為「先不要止損，讓利潤有機會回來，
+# 由人工判斷要不要平倉」的需求，把原本 1.5x ATR 的緊止損放寬到 2.5 倍當
+# 最後防線。後來實際看下來覺得太寬，收回到 1.5 倍——等於跟 STOP_LOSS_
+# MULTIPLIER 本身的基準止損距離一致，等於沒有額外放寬，回到最初固定
+# 1:2 風報比的原始設計。想再放寬回去，改這個數字即可，不用動程式碼。
+DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.5"))
 
 # --- BTC 大盤方向守門員 ---
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
@@ -134,21 +136,11 @@ SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").l
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
 # 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
-# STRONG_BREAKOUT_SCORE_THRESHOLD：分流機制門檻。
-# 當評分 >= 78 時，代表動能極強爆量突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
-# 當 65 <= 評分 < 78 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
+# STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表與測試辨識高分訊號；進場策略不再
+# 因高分而直接市價追單，所有達標訊號一律等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
-# STRONG_BREAKOUT_EMA50_MAX_ATR_MULT：立即市價進場（StrongBreakout）專用的
-# 末端趨勢防護。市價進場沒有「等回踩」那段緩衝時間可以讓 confirm_pullback_
-# entry() 再確認一次，等於一有訊號就直接追價，最容易撞上「這波已經走到
-# 末端」的情況——實測 NEAR/USDT 這筆，進場當下距離 EMA20 不算太遠（沒觸發
-# D3 Price_Overextended），但距離走得慢很多的 EMA50 已經很遠，代表這波
-# 跌勢其實已經悶著頭走了一大段，進場點剛好卡在最後一根低點，隨後一小時
-# 內就反彈回去停損。用 EMA50（比 EMA20 遲鈍很多）當基準，能抓到「短線
-# 均線沒有明顯乖離，但相對中期趨勢已經走了很遠」這種 D3 抓不到的末端樣貌。
-# 觸發時不整筆擋單（訊號分數本身仍然合格），而是降級成跟溫和突破一樣
-# 改走 WAIT_PULLBACK，讓它跟一般訊號一樣等回踩、通過二次確認再進場。
+# 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
 # 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內
@@ -169,10 +161,8 @@ PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。
 # 0.0 = 只回踩到 KC 軌道（進場價最靠近突破點，成交率最高）；
 # 1.0 = 回踩到 EMA20 均價才進場（空間最大，但等到的機率最低）。
-# 0.5 → 0.2：實測 0.5 太深，突破後價格常無法回踩那麼遠，掛單超時撤單
-# 後機會就錯過了。改 0.2 讓掛單位置非常靠近 KC 軌道（只往 EMA20 靠 20%），
-# 大幅提升成交率，同時仍比「直接追在突破點」便宜一點點。
-PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.2"))
+# 固定等待 50% 回踩，避免只回到 KC 軌附近就接到仍在背離均線的價格。
+PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.5"))
 # PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
 # 55 -> 48：配合進場門檻放寬，同步調降回踩二次確認分級門檻。
 PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
@@ -223,6 +213,8 @@ ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # 門檻，專門抓這種「方向沒變但動能已經在衰退」的情況，跟品質加分（軟性
 # 只影響排序）分開，是硬性擋單。
 ADX_DECLINE_LOOKBACK_BARS = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS", "6"))
+ADX_DECLINE_MIN_DROP = float(os.getenv("ADX_DECLINE_MIN_DROP", "2.0"))
+ADX_DECLINE_MIN_DROP_RATIO = float(os.getenv("ADX_DECLINE_MIN_DROP_RATIO", "0.08"))
 # ADX_DECLINE_LOOKBACK_BARS_1H：同一套「ADX 現在比 N 根K棒前低，且已經
 # 低於 ADX_QUALITY_MIN」邏輯，但改看 1h K線——5分K的新鮮度/ADX檢查只能
 # 看到「這根5分K的小趨勢夠不夠新」，看不出「大週期本身是不是也已經在
@@ -231,13 +223,14 @@ ADX_DECLINE_LOOKBACK_BARS = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS", "6"))
 ADX_DECLINE_LOOKBACK_BARS_1H = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS_1H", "6"))
 # EMA_EXTENSION_MAX_ATR_MULT：價格距離 EMA20 太遠（用 ATR 正規化衡量）
 # 代表這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就拉回。
-# 實測當下多個幣種的正常距離落在 0.75~2.71 倍 ATR，3.5 倍給了足夠緩衝，
-# 只擋真正極端拉開的情況。
-EMA_EXTENSION_MAX_ATR_MULT = float(os.getenv("EMA_EXTENSION_MAX_ATR_MULT", "3.5"))
+# 將上限收緊為 2.5 倍 ATR，避免在價格已明顯背離短期均線時開倉。
+EMA_EXTENSION_MAX_ATR_MULT = float(os.getenv("EMA_EXTENSION_MAX_ATR_MULT", "2.5"))
 
 # --- 動態 RSI 濾網 ---
 RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
 RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
+RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "68"))
+RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "32"))
 
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
@@ -437,6 +430,16 @@ SYMBOL_CANDIDATE_POOL = [
     "HBAR/USDT", "ICP/USDT", "LINK/USDT", "LTC/USDT", "OP/USDT",
     "SOL/USDT", "SUI/USDT", "TRX/USDT", "XLM/USDT", "XRP/USDT",
 ]
+
+# 實績已確認為負期望的幣種暫停新倉；既有持倉仍由原 SL/TP 管理。
+ENTRY_DISABLED_SYMBOLS = {
+    symbol.strip()
+    for symbol in os.getenv(
+        "ENTRY_DISABLED_SYMBOLS",
+        "BNB/USDT,HYPE/USDT,SUI/USDT,SOL/USDT",
+    ).split(",")
+    if symbol.strip()
+}
 
 # 可新開倉牌面：正績效幣種搭配高流動性主流合約。
 # TAO 與近期反覆停損幣種不列入；已退出牌面的既有持倉仍會被管理。

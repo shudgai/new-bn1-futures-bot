@@ -11,6 +11,7 @@ from core.config import (
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
+    ENTRY_DISABLED_SYMBOLS,
 )
 from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.testnet_account import BinanceTestnetAccount
@@ -123,6 +124,16 @@ class TradingEngine:
         coin = symbol.replace("/USDT", "")
         return f"{coin} {direction_text} {int(score)}分,{stage}"
 
+
+    @staticmethod
+    def _history_adjusted_score(raw_score: int, performance: dict) -> tuple[int, float]:
+        if performance["trades"] < 3:
+            return int(raw_score), 1.0
+        win_rate_mult = max(0.4, min(1.0, 0.3 + performance["win_rate"]))
+        pnl_mult = 1.0 if performance["avg_pnl"] >= 0 else 0.85
+        multiplier = win_rate_mult * pnl_mult
+        return round(raw_score * multiplier), multiplier
+
     def _symbol_recent_performance(self, symbol: str, side: str) -> dict:
         """取這個幣種+方向最近 10 筆已平倉交易的勝率與平均損益，用來過濾歷史表現差的訊號。"""
         recent = [
@@ -158,7 +169,7 @@ class TradingEngine:
         await self.account.initialize()
         self.is_running = True
         if USE_TESTNET:
-            self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（70分回調＋80分立即 / 12幣雙向交易）")
+            self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（達標訊號全數回踩確認 / 12幣雙向交易）")
         else:
             self.account.log(
                 "🔴🔴🔴 正式實盤模式已啟用（USE_TESTNET=false）：本次啟動將用真實資金下單！",
@@ -400,9 +411,14 @@ class TradingEngine:
                 # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
                 await self.update_1h_trend_cache()
 
-                # 4. 限價回調掛單監控：先讓帳戶檢查有沒有成交，再處理超時/
-                # 條件變差撤單。實際「等到價」交給交易所的限價單去做，不用
-                # 軟體輪詢，這裡只負責監督掛單還要不要繼續等。
+                # 4. 限價回調掛單監控：已暫停新倉的幣種必須在成交檢查前撤單，
+                # 避免舊掛單剛好先成交；其餘掛單再交由帳戶同步成交狀態。
+                for pb_symbol in list(self.account.pending_limit_orders):
+                    if pb_symbol in ENTRY_DISABLED_SYMBOLS:
+                        await self.account.cancel_pending_limit(
+                            pb_symbol, "幣種已列入暫停新倉名單"
+                        )
+
                 await self.account.check_pending_limit_orders()
                 now_time = time.time()
                 for pb_symbol, pb_info in list(self.account.pending_limit_orders.items()):
@@ -481,6 +497,12 @@ class TradingEngine:
                             continue
 
                         # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
+
+                        if symbol in ENTRY_DISABLED_SYMBOLS:
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,暫停新倉"
+                            )
+                            continue
                         last_closed = self.account.last_closed_at.get(symbol)
                         if last_closed is not None and (now_time - last_closed) < 900:
                             remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
@@ -555,25 +577,10 @@ class TradingEngine:
                         signal_progress.append(self._format_signal_progress(
                             symbol, sig, current_direction
                         ))
-                        if sig["action"] in ["BUY", "SELL"]:
-                            # 歷史勝率乘數化：不再是「一票否決」，改成用這個幣種+方向
-                            # 近期的勝率/平均損益算一個係數，直接修正分數本身——讓歷史
-                            # 數據跟即時訊號合併成同一套邏輯，分數越貼近真實期望值。
-                            # 樣本數 < 3 時不修正（資料不夠可信），係數維持 1.0。
+                        if sig["action"] in ["BUY", "SELL", "WAIT_PULLBACK"]:
                             perf = self._symbol_recent_performance(symbol, sig["side"])
-                            if perf["trades"] >= 3:
-                                # 勝率 30% → 約 0.6x；勝率 80% → 約 1.0x（封頂），樣本不足外一律套用。
-                                win_rate_mult = max(0.4, min(1.0, 0.3 + perf["win_rate"]))
-                                pnl_mult = 1.0 if perf["avg_pnl"] >= 0 else 0.85
-                                history_mult = win_rate_mult * pnl_mult
-                            else:
-                                history_mult = 1.0
-                            # 分數本來就已經通過 MIN_SCORE_THRESHOLD 才准開倉，乘數只用來
-                            # 反映「這個訊號在同批候選裡排序該往後、倉位該縮小」，不應該把
-                            # 一個本來合格的訊號懲罰到連最低分級的槓桿/倉位都拿不到。
-                            adjusted_score = max(
-                                MIN_SCORE_THRESHOLD,
-                                round(sig.get("score", 0) * history_mult),
+                            adjusted_score, history_mult = self._history_adjusted_score(
+                                sig.get("score", 0), perf
                             )
                             if history_mult < 0.99:
                                 self.account.log(
@@ -583,8 +590,13 @@ class TradingEngine:
                                     "INFO",
                                 )
                             sig["score"] = adjusted_score
-                            # 候選訊號排序分數直接沿用修正後的評分，同一輪出現多個候選時
-                            # 優先選分數最高的下單，倉位大小/槓桿也會跟著這個分數走。
+                            if adjusted_score < MIN_SCORE_THRESHOLD:
+                                signal_progress.append(
+                                    f"{coin} {sig['side']} {adjusted_score}分,歷史績效降分後取消"
+                                )
+                                continue
+
+                        if sig["action"] in ["BUY", "SELL"]:
                             candidate_signals.append((adjusted_score, symbol, sig, price, real_atr))
 
                         elif sig["action"] == "WAIT_PULLBACK":

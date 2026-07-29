@@ -337,3 +337,41 @@ async def test_refresh_no_profit_alert_when_still_near_peak(tmp_path, monkeypatc
 
     pos = account.positions["DOGE/USDT"]
     assert pos["profit_alert"] is False
+
+
+def test_atr_trailing_levels_scale_with_each_positions_atr(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    account = BinanceTestnetAccount(FakeTestnetExchange())
+
+    levels = account._atr_trailing_levels(entry_price=100.0, atr=0.5)
+
+    assert levels["tier1_trigger"] == pytest.approx(0.005)
+    assert levels["tier2_trigger"] == pytest.approx(0.010)
+    assert levels["tier3_trigger"] == pytest.approx(0.015)
+    assert levels["tier2_lock_distance"] == pytest.approx(0.5)
+    assert levels["breakeven_buffer_pct"] > 2 * testnet_module.TAKER_FEE_RATE
+
+
+@pytest.mark.anyio
+async def test_external_close_classifies_exchange_tp_and_price_fallback_sl(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    account = BinanceTestnetAccount(FakeTestnetExchange())
+    position = {
+        "side": "LONG", "entry_price": 100.0, "sl": 98.0, "tp": 104.0,
+    }
+
+    exit_type, reason = await account._classify_external_close(
+        "DOGE/USDT", position,
+        [{"type": "TAKE_PROFIT_MARKET", "price": 104.0, "amount": 1.0}],
+        104.0,
+    )
+    assert exit_type == "TP"
+    assert "Take-Profit" in reason
+
+    exit_type, reason = await account._classify_external_close(
+        "DOGE/USDT", position, [], 97.9,
+    )
+    assert exit_type == "SL"
+    assert "Stop-Loss" in reason

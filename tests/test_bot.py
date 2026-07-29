@@ -9,7 +9,9 @@ from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, DISASTER_STOP_MULTIPLIER,
-    STRONG_BREAKOUT_SCORE_THRESHOLD,
+    TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
+    STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
+    PULLBACK_TARGET_DEPTH, ENTRY_DISABLED_SYMBOLS,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -17,6 +19,7 @@ from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import compute_position_trigger
+from core.engine import TradingEngine
 
 def test_strategy_indicators():
     strategy = SuperTrendKeltnerStrategy()
@@ -122,7 +125,7 @@ def _entry_score_frame(volume=700.0, rsi=49.0, adx=20.0):
         "kc_upper": [100.0] * 50,
         "kc_lower": [98.0] * 50,
         "kc_width": [2.0] * 50,
-        "ema_20": [101.0] * 50,
+        "ema_20": [99.8] * 50,
         "ema_50": [100.0] * 50,
         "st_direction": [1] * 50,
     })
@@ -146,26 +149,55 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     assert "Score_Low" in result["reason"]
 
 
-def test_qualifying_score_scheme_a_branching(monkeypatch):
-    """方案 A 分流機制：
-    評分 >= 85 時觸發 BUY（強勢突破直接市價進場）；
-    評分 71~84 時觸發 WAIT_PULLBACK（溫和突破等待回踩）。"""
+def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
+    """高分與中分突破都不得市價追單，一律等待深回踩。"""
     strategy = SuperTrendKeltnerStrategy()
-    
-    # 高分強突破 (>= 85) -> 應為 BUY
     frame_high = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
     result_high = strategy.evaluate_signal(frame_high, ema_50_1h=95.0)
-    assert result_high["action"] == "BUY"
+    assert result_high["action"] == "WAIT_PULLBACK"
     assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
+    assert "MarketChase_Disabled" in result_high["reason"]
+    expected_target = 100.0 - (100.0 - 99.8) * PULLBACK_TARGET_DEPTH
+    assert result_high["target_zone"] == pytest.approx(expected_target)
 
-    # 溫和突破 (71 ~ 84) -> 應為 WAIT_PULLBACK
     frame_mid = _entry_score_frame(volume=1000.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
     result_mid = strategy.evaluate_signal(frame_mid, ema_50_1h=95.0)
-    if result_mid["score"] < STRONG_BREAKOUT_SCORE_THRESHOLD:
-        assert result_mid["action"] == "WAIT_PULLBACK"
-        assert "target_zone" in result_mid
+    assert result_mid["action"] == "WAIT_PULLBACK"
+    assert "target_zone" in result_mid
+
+
+def test_extreme_rsi_blocks_chasing_both_directions(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    long_frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_MAX + 1, adx=35.0)
+    long_result = strategy.evaluate_signal(long_frame, ema_50_1h=95.0)
+    assert long_result["action"] == "HOLD"
+    assert "RSI_Overbought" in long_result["reason"]
+
+    short_frame = _entry_score_frame(volume=1500.0, rsi=RSI_SHORT_MIN - 1, adx=35.0)
+    short_frame["st_direction"] = -1
+    short_frame["close"] = 97.95
+    short_frame["close_price_spike_filtered"] = 97.95
+    short_frame["ema_20"] = 98.2
+    short_result = strategy.evaluate_signal(short_frame, ema_50_1h=105.0)
+    assert short_result["action"] == "HOLD"
+    assert "RSI_Oversold" in short_result["reason"]
+
+
+def test_history_penalty_can_cancel_an_otherwise_high_score_signal():
+    adjusted, multiplier = TradingEngine._history_adjusted_score(
+        106, {"trades": 5, "win_rate": 0.30, "avg_pnl": -0.10}
+    )
+    assert multiplier == pytest.approx(0.51)
+    assert adjusted < MIN_SCORE_THRESHOLD
+
+
+def test_known_negative_expectancy_symbols_are_paused():
+    assert {"BNB/USDT", "HYPE/USDT", "SUI/USDT", "SOL/USDT"} <= ENTRY_DISABLED_SYMBOLS
 
 
 def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
@@ -185,12 +217,26 @@ def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
 
 
+def test_adx_decline_blocks_even_before_adx_falls_below_quality_floor(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=30.0)
+    frame.loc[43:49, "adx"] = [35.0, 34.0, 33.0, 32.0, 31.0, 30.5, 30.0]
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
+
+    assert result["action"] == "HOLD"
+    assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
+
+
+
 def test_price_overextended_blocks_entry_even_with_qualifying_score(monkeypatch):
     """價格距離 EMA20 太遠（用 ATR 正規化衡量）代表這波已經漲很多才追
     進場，均值回歸風險高，不管總分靠其他項目湊得多高都要擋單。"""
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
-    frame["ema_20"] = 100.05 - 5 * 0.3  # 距離拉開到 5倍 ATR，超過 EMA_EXTENSION_MAX_ATR_MULT(3.5)
+    frame["ema_20"] = 100.05 - 5 * 0.3  # 距離拉開到 5倍 ATR，超過 current 2.5x limit
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
@@ -802,18 +848,48 @@ def test_position_trigger_short_ma_ok_true_when_price_still_below_ma():
     assert result["reasons"] == []
 
 
-def test_sl_tp_distance_widens_stop_but_preserves_take_profit_target():
-    """使用者要求「先不要止損，讓利潤有機會回來，人工判斷要不要平倉」：
-    止損距離要乘上 DISASTER_STOP_MULTIPLIER 變成寬鬆的最後防線，但止盈
-    距離必須維持原本的風報比不變，不能跟著一起放寬。"""
+def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
+    """止損放寬後，TP 必須同步拉遠，使扣除雙邊 taker fee 後仍達最低風報比。"""
     price, atr = 100.0, 2.0  # atr*1.5=3.0 > price*MIN_SL_DISTANCE_PCT，取ATR倍數為基準
     base_sl_distance = atr * STOP_LOSS_MULTIPLIER
-    expected_tp_distance = base_sl_distance * (TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER)
     expected_sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
 
     sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
+    conservative_net_risk = sl_distance * (1 + TAKER_FEE_RATE) + 2 * price * TAKER_FEE_RATE
+    net_reward = tp_distance * (1 - TAKER_FEE_RATE) - 2 * price * TAKER_FEE_RATE
 
     assert sl_distance == pytest.approx(expected_sl_distance)
-    assert tp_distance == pytest.approx(expected_tp_distance)
-    assert sl_distance > base_sl_distance  # 止損確實被放寬了
-    assert tp_distance == pytest.approx(expected_tp_distance)  # 止盈沒有被放寬影響
+    assert net_reward / conservative_net_risk >= MIN_NET_REWARD_RISK
+    assert tp_distance > base_sl_distance * (
+        TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER
+    )
+
+
+def test_trade_history_counts_only_classified_stop_losses():
+    trades = [
+        {
+            "action": "CLOSE_LONG", "symbol": "AAA/USDT", "side": "LONG",
+            "price": 104.0, "pnl": 3.8, "fee": 0.2,
+            "reason": "Binance Testnet 止盈單成交 (Take-Profit)", "exit_type": "TP",
+        },
+        {
+            "action": "OPEN_LONG", "symbol": "AAA/USDT", "side": "LONG",
+            "price": 100.0, "sl": 98.0, "tp": 104.0,
+        },
+        {
+            "action": "CLOSE_LONG", "symbol": "BBB/USDT", "side": "LONG",
+            "price": 98.0, "pnl": -2.2, "fee": 0.2,
+            "reason": "Binance Testnet 止損單成交 (Stop-Loss)", "exit_type": "SL",
+        },
+        {
+            "action": "OPEN_LONG", "symbol": "BBB/USDT", "side": "LONG",
+            "price": 100.0, "sl": 98.0, "tp": 104.0,
+        },
+    ]
+
+    overview = TradeHistoryAnalyzer.build_history(trades)["overview"]
+
+    assert overview["tp_count"] == 1
+    assert overview["sl_count"] == 1
+    assert overview["stop_rate"] == pytest.approx(0.5)
+    assert overview["protection_stop_rate"] == pytest.approx(0.5)

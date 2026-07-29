@@ -16,9 +16,11 @@ from core.config import (
     STOP_LIMIT_SLIPPAGE_GUARD_PCT,
     STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
     ENABLE_TRAILING_STOP,
-    TRAILING_TIER1_TRIGGER_PCT,
-    TRAILING_TIER2_TRIGGER_PCT,
-    TRAILING_TIER3_TRIGGER_PCT,
+    TRAILING_TIER1_TRIGGER_ATR_MULT,
+    TRAILING_TIER2_TRIGGER_ATR_MULT,
+    TRAILING_TIER3_TRIGGER_ATR_MULT,
+    TRAILING_TIER2_LOCK_ATR_MULT,
+    TRAILING_BREAK_EVEN_EXTRA_PCT,
     TRAILING_TIER3_CALLBACK_RATIO,
     PROFIT_ALERT_GIVEBACK_RATIO,
     get_leverage,
@@ -105,6 +107,18 @@ class BinanceTestnetAccount:
     def _clean_symbol(symbol: str) -> str:
         raw = str(symbol).upper().replace("/", "").replace(":USDT", "")
         return f"{raw[:-4]}/USDT" if raw.endswith("USDT") else raw
+
+    @staticmethod
+    def _atr_trailing_levels(entry_price: float, atr: float) -> dict:
+        """把每筆進場 ATR 換算成無槓桿價格百分比，供三階段鎖利使用。"""
+        atr_pct = max(float(atr), 0.0) / max(float(entry_price), 1e-12)
+        return {
+            "tier1_trigger": atr_pct * TRAILING_TIER1_TRIGGER_ATR_MULT,
+            "tier2_trigger": atr_pct * TRAILING_TIER2_TRIGGER_ATR_MULT,
+            "tier3_trigger": atr_pct * TRAILING_TIER3_TRIGGER_ATR_MULT,
+            "tier2_lock_distance": max(float(atr), 0.0) * TRAILING_TIER2_LOCK_ATR_MULT,
+            "breakeven_buffer_pct": 2 * TAKER_FEE_RATE + TRAILING_BREAK_EVEN_EXTRA_PCT,
+        }
 
     def _load_state(self) -> None:
         if not os.path.exists(STATE_FILE):
@@ -308,6 +322,63 @@ class BinanceTestnetAccount:
         self.save_state()
         return self.unrealized_pnl
 
+    @staticmethod
+    def _protection_type_from_order(order: dict) -> Optional[str]:
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        values = [
+            order.get("type"), order.get("orderType"), order.get("origType"),
+            info.get("type"), info.get("orderType"), info.get("origType"),
+        ]
+        normalized = " ".join(str(value).upper() for value in values if value)
+        if "TAKE_PROFIT" in normalized:
+            return "TP"
+        if "STOP" in normalized:
+            return "SL"
+        return None
+
+    async def _classify_external_close(
+        self, symbol: str, position: dict, closing_fills: List[dict], close_price: float
+    ) -> tuple[str, str]:
+        """優先讀實際成交訂單類型；API 未提供時才用 SL/TP 觸發價兜底。"""
+        for fill in closing_fills:
+            exit_type = self._protection_type_from_order(fill)
+            if exit_type:
+                break
+            info = fill.get("info") if isinstance(fill.get("info"), dict) else {}
+            order_id = fill.get("order") or fill.get("orderId") or info.get("orderId")
+            if not order_id or not hasattr(self.exchange, "fetch_order"):
+                continue
+            try:
+                order = await self.exchange.fetch_order(str(order_id), symbol)
+                exit_type = self._protection_type_from_order(order)
+                if exit_type:
+                    break
+            except Exception:
+                continue
+        else:
+            exit_type = None
+
+        if not exit_type:
+            sl = float(position.get("sl") or 0.0)
+            tp = float(position.get("tp") or 0.0)
+            tolerance = abs(close_price) * 0.002
+            if position.get("side") == "LONG":
+                if tp > 0 and close_price >= tp - tolerance:
+                    exit_type = "TP"
+                elif sl > 0 and close_price <= sl + tolerance:
+                    exit_type = "SL"
+            else:
+                if tp > 0 and close_price <= tp + tolerance:
+                    exit_type = "TP"
+                elif sl > 0 and close_price >= sl - tolerance:
+                    exit_type = "SL"
+
+        reasons = {
+            "TP": "Binance Testnet 止盈單成交 (Take-Profit)",
+            "SL": "Binance Testnet 止損單成交 (Stop-Loss)",
+        }
+        return exit_type or "OTHER", reasons.get(exit_type, "Binance Testnet 外部平倉（類型未識別）")
+
     async def _record_external_close(self, symbol: str, position: dict) -> None:
         if symbol in self.closing_lock:
             return
@@ -321,6 +392,7 @@ class BinanceTestnetAccount:
             # 快取的近似值，不是真正觸發保護單當下的成交價，會跟實際損益有落差。
             # 改成向交易所查詢最近的實際成交紀錄，取真正的平倉均價來算損益。
             close_price = float(position.get("mark_price") or position["entry_price"])
+            closing_fills: List[dict] = []
             try:
                 close_side = "sell" if position["side"] == "LONG" else "buy"
                 recent_trades = await self.exchange.fetch_my_trades(symbol, limit=5)
@@ -334,6 +406,9 @@ class BinanceTestnetAccount:
                     close_price = sum(float(t["price"]) * float(t["amount"]) for t in closing_fills) / fill_qty
             except Exception:
                 pass  # 查詢失敗就退回用快取的 mark_price 估算
+            exit_type, exit_reason = await self._classify_external_close(
+                symbol, position, closing_fills, close_price
+            )
             # 損益改用 Binance 官方的已實現損益帳本（REALIZED_PNL income）為準，
             # 不再自己拿成交明細反推——反推容易把移動止利換單過程中的零碎成交
             # 也算進去，導致跟實際損益對不上。close_price 只用來顯示、算手續費。
@@ -374,10 +449,11 @@ class BinanceTestnetAccount:
                 "fee": round(total_fee, 4),
                 "pnl": round(net_pnl, 4),
                 "status": "CLOSED",
-                "reason": "Binance Testnet 保護單成交",
+                "reason": exit_reason,
+                "exit_type": exit_type,
             })
             self.log(
-                f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | "
+                f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | {exit_reason} | "
                 f"損益: {net_pnl:+.2f} USDT (手續費: {total_fee:.4f})",
                 "SUCCESS" if net_pnl >= 0 else "DANGER",
             )
@@ -457,15 +533,22 @@ class BinanceTestnetAccount:
                     meta["highest_pnl_pct"] = highest_pnl
 
                 tier = meta.get("trailing_tier", 0)
+                levels = self._atr_trailing_levels(
+                    entry_p, pos.get("atr") or meta.get("atr") or 0.0
+                )
 
-                # Tier 1: 達 +0.6% 鎖保本 (進場價 + 0.05%)
-                if tier < 1 and highest_pnl >= TRAILING_TIER1_TRIGGER_PCT:
-                    new_sl = entry_p * 1.0005 if side == "LONG" else entry_p * 0.9995
+                # Tier 1: 達 1 ATR，止損移到覆蓋雙邊手續費後的保本價。
+                if tier < 1 and highest_pnl >= levels["tier1_trigger"]:
+                    buffer_pct = levels["breakeven_buffer_pct"]
+                    new_sl = (
+                        entry_p * (1 + buffer_pct) if side == "LONG"
+                        else entry_p * (1 - buffer_pct)
+                    )
                     new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
                     meta["sl"] = new_sl_price
                     meta["trailing_tier"] = 1
                     pos["sl"] = new_sl_price
-                    self.log(f"🛡️ [保本鎖] {symbol} 浮盈達 {highest_pnl:.2%}，止損移至保本價 {new_sl_price}", "SUCCESS")
+                    self.log(f"🛡️ [ATR保本鎖] {symbol} 浮盈達 {highest_pnl:.2%}（1 ATR={levels['tier1_trigger']:.2%}），止損移至含費保本價 {new_sl_price}", "SUCCESS")
                     # 重新向交易所更新止損單
                     try:
                         close_side = "sell" if side == "LONG" else "buy"
@@ -479,14 +562,18 @@ class BinanceTestnetAccount:
                     except Exception as e:
                         self.log(f"⚠️ {symbol} 更新保本止損單失敗: {e}", "WARNING")
 
-                # Tier 2: 達 +1.2% 鎖定 +0.6% 獲利
-                elif tier < 2 and highest_pnl >= TRAILING_TIER2_TRIGGER_PCT:
-                    new_sl = entry_p * 1.006 if side == "LONG" else entry_p * 0.994
+                # Tier 2: 達 2 ATR，鎖住 1 ATR 的價格距離。
+                elif tier < 2 and highest_pnl >= levels["tier2_trigger"]:
+                    lock_distance = levels["tier2_lock_distance"]
+                    new_sl = (
+                        entry_p + lock_distance if side == "LONG"
+                        else entry_p - lock_distance
+                    )
                     new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
                     meta["sl"] = new_sl_price
                     meta["trailing_tier"] = 2
                     pos["sl"] = new_sl_price
-                    self.log(f"🔒 [階梯鎖利 T2] {symbol} 浮盈達 {highest_pnl:.2%}，止損移至 +0.6% 價位 {new_sl_price}", "SUCCESS")
+                    self.log(f"🔒 [ATR鎖利 T2] {symbol} 浮盈達 {highest_pnl:.2%}（2 ATR={levels['tier2_trigger']:.2%}），止損鎖住 1 ATR @ {new_sl_price}", "SUCCESS")
                     try:
                         close_side = "sell" if side == "LONG" else "buy"
                         await self._cancel_all_orders(symbol)
@@ -499,11 +586,11 @@ class BinanceTestnetAccount:
                     except Exception as e:
                         self.log(f"⚠️ {symbol} 更新 T2 止損單失敗: {e}", "WARNING")
 
-                # Tier 3: 達 +1.8% 啟動高點回撤 30% 觸發平倉
-                elif highest_pnl >= TRAILING_TIER3_TRIGGER_PCT:
+                # Tier 3: 達 3 ATR 啟動高點回撤追蹤。
+                elif highest_pnl >= levels["tier3_trigger"]:
                     if tier < 3:
                         meta["trailing_tier"] = 3
-                        self.log(f"🚀 [高點追蹤 T3 啟動] {symbol} 浮盈達 {highest_pnl:.2%}，開啟高點回撤 30% 平倉機制", "SUCCESS")
+                        self.log(f"🚀 [ATR高點追蹤 T3] {symbol} 浮盈達 {highest_pnl:.2%}（3 ATR={levels['tier3_trigger']:.2%}），開啟高點回撤 {TRAILING_TIER3_CALLBACK_RATIO:.0%}", "SUCCESS")
                     
                     callback_drop = highest_pnl * TRAILING_TIER3_CALLBACK_RATIO
                     target_pnl = highest_pnl - callback_drop
