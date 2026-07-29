@@ -8,16 +8,23 @@ from core.config import (
     MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
-    EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD,
+    EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
+    ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
 )
 from core.indicators import bars_since_supertrend_flip
 
 
 def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     """算出止損/止盈距離，並套用 MIN_SL_DISTANCE_PCT 下限，避免低波動期間
-    ATR 太小導致止損距離縮到容易被雜訊掃出的地步。回傳 (sl_distance, tp_distance)。"""
-    sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
-    tp_distance = sl_distance * (TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER)
+    ATR 太小導致止損距離縮到容易被雜訊掃出的地步。回傳 (sl_distance, tp_distance)。
+
+    止盈距離用「基準止損距離」（1.5x ATR / MIN_SL_DISTANCE_PCT 下限）算出
+    固定風報比，維持原本的停利目標不變；實際回傳的止損距離另外乘上
+    DISASTER_STOP_MULTIPLIER 放寬成最後防線——使用者要的是「先不要止損，
+    讓利潤有機會回來，人工判斷要不要平倉」，不是把止盈也一起放寬。"""
+    base_sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
+    tp_distance = base_sl_distance * (TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER)
+    sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
     return sl_distance, tp_distance
 
 class SuperTrendKeltnerStrategy:
@@ -183,6 +190,13 @@ class SuperTrendKeltnerStrategy:
         if st_dir == -1 and not is_1h_bearish:
             return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bullish"}
 
+        # 防線 3：ADX 硬性最低門檻 — ADX 低於此值代表市場完全無趨勢動能，
+        # 盤整期假突破發生率最高，直接 HOLD 不進入評分系統。
+        # 注意：ADX 衰退擋單（D2，見下方）是另一種機制，兩者互補不衝突：
+        # 這裡擋「太低」，D2 擋「方向沒變但動能在退潮」。
+        if adx < ADX_MANDATORY_MIN:
+            return {"action": "HOLD", "reason": f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{ADX_MANDATORY_MIN})"}
+
         # 波動率過濾：ATR 佔價格比例太高或太低都不開倉。
         # 太高：SL/TP 用 ATR 倍數算出來的停損距離會被放大，同樣倉位金額下
         # 觸發止損時虧的錢遠大於移動止利能鎖住的獲利，是最大幾筆虧損的
@@ -199,14 +213,28 @@ class SuperTrendKeltnerStrategy:
         score = 0
         score_details = []
 
-        # A. Keltner 突破分數 (30分)
+        # A. Keltner 突破分數 (30分) + 收盤確認防假突破
         kc_breakout_buffer = kc_width * KELTNER_BREAKOUT_MARGIN_PCT
-        if st_dir == 1 and price >= (kc_upper + kc_breakout_buffer):
+        # 防線 1：KC 突破收盤確認 — 取倒數第 2、3 根「已收盤」K 棒（iloc[-3:-1]）
+        # 檢查收盤價是否仍在 KC 通道外，最新那根 iloc[-1] 可能尚未收盤不計入。
+        # 這樣可過濾「影線剛碰到通道邊界但K棒尚未收出確認」的假突破訊號。
+        past_slice = df.iloc[-3:-1]  # 前兩根已收盤K棒
+        if len(past_slice) >= 1:
+            if st_dir == 1:
+                closed_confirmed = int((past_slice['close'] >= (past_slice['kc_upper'] + kc_breakout_buffer)).sum()) >= BREAKOUT_CONFIRM_BARS
+            else:
+                closed_confirmed = int((past_slice['close'] <= (past_slice['kc_lower'] - kc_breakout_buffer)).sum()) >= BREAKOUT_CONFIRM_BARS
+        else:
+            closed_confirmed = False  # 資料不足，保守處理視為未確認
+
+        if st_dir == 1 and price >= (kc_upper + kc_breakout_buffer) and closed_confirmed:
             score += 30
             score_details.append("KC_Breakout_Pass")
-        elif st_dir == -1 and price <= (kc_lower - kc_breakout_buffer):
+        elif st_dir == -1 and price <= (kc_lower - kc_breakout_buffer) and closed_confirmed:
             score += 30
             score_details.append("KC_Breakout_Pass")
+        elif not closed_confirmed:
+            score_details.append(f"KC_Breakout_NoClose({BREAKOUT_CONFIRM_BARS}bar_required)")
         else:
             score_details.append("KC_Breakout_Fail")
 
@@ -464,6 +492,21 @@ class SuperTrendKeltnerStrategy:
             return {"status": "CANCEL", "reason": f"波動率轉為過高 ATR_Too_High({atr_pct:.2%})"}
         if atr_pct < MIN_ATR_PCT:
             return {"status": "CANCEL", "reason": f"波動率轉為過低 ATR_Too_Low({atr_pct:.2%})"}
+
+        # 防線 2：突破後量能持續性確認 — 假突破特徵之一是「突破當根量大，
+        # 後續量立刻萎縮」，代表突破動能已耗盡，接下來的回踩是真正反轉。
+        # 取倒數第 2、3 根 K 棒（iloc[-3:-1]）的平均量能；最新那根（iloc[-1]）
+        # 當前 K 棒尚未收盤、量能仍在累積，不用於穩定性判斷。
+        if vol_ma_20 > 0 and len(df) >= 3:
+            recent_vol_avg = df['volume'].iloc[-3:-1].mean()
+            min_sustain_vol = vol_ma_20 * POST_BREAKOUT_VOL_SUSTAIN_RATIO
+            if recent_vol_avg < min_sustain_vol:
+                return {
+                    "status": "CANCEL",
+                    "reason": (
+                        f"突破後量能萎縮 Vol_Fade({recent_vol_avg:.0f}<{min_sustain_vol:.0f}=均量×{POST_BREAKOUT_VOL_SUSTAIN_RATIO})"
+                    ),
+                }
 
         # 回調總分（B量能+C RSI+D新鮮度+E品質加分，滿分79，跟 evaluate_signal()
         # 同一套加權）：量能/RSI 不再各自當硬性關卡、任一項不過就整筆取消，

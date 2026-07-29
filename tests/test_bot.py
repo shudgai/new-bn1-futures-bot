@@ -8,10 +8,11 @@ import core.strategy as strategy_module
 from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
+    STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, DISASTER_STOP_MULTIPLIER,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
-from core.strategy import SuperTrendKeltnerStrategy
+from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import compute_position_trigger
@@ -127,8 +128,10 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     """KC 突破/訊號新鮮度沒過，不再是強制擋單（Mandatory_Fail），
     而是評分制底下的扣分，分數不夠門檻時走 HOLD + Score_Low。"""
     strategy = SuperTrendKeltnerStrategy()
-    # 量能、RSI、ADX 也刻意不過，確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD
-    frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5, adx=5.0)
+    # ADX 給 13（高於 ADX_MANDATORY_MIN=12 硬性門檻，讓訊號進入評分系統，
+    # 但低於 ADX_QUALITY_MIN=15，品質加分仍為 0）；量能、RSI 也刻意不過，
+    # 確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD，走到 Score_Low 分支。
+    frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5, adx=13.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: FRESHNESS_DECAY_BARS + 50)
 
@@ -351,9 +354,12 @@ def test_pullback_reconfirmation_passes_when_price_still_on_correct_side_of_ema2
 def test_pullback_reconfirmation_passes_when_volume_weak_but_other_signals_strong(monkeypatch):
     """量能單項不再是硬性關卡：新鮮度/RSI/ADX 都還強的情況下，總分
     （B量能+C RSI+D新鮮度+E品質，滿分79）足以覆蓋 PULLBACK_SCORE_THRESHOLD，
-    量能偏弱不再單獨否決這筆回踩進場——這是本次改動要達成的補償式判斷。"""
+    量能偏弱不再單獨否決這筆回踩進場——這是本次改動要達成的補償式判斷。
+    volume=600 落在 vol_ma_20(900) × POST_BREAKOUT_VOL_SUSTAIN_RATIO(0.6)=540 以上（通過衰退門檻），
+    但低於 KELTNER_MIN_VOLUME_RATIO(0.8)×900=720（B量能評分仍為 0），
+    確認即使量能評分零分，其餘訊號可補足到總分門檻。"""
     strategy = SuperTrendKeltnerStrategy()
-    frame = _reconfirm_frame("LONG", volume=100.0)
+    frame = _reconfirm_frame("LONG", volume=600.0)  # 通過衰退門檻但低於量能加分門檻
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
@@ -361,10 +367,12 @@ def test_pullback_reconfirmation_passes_when_volume_weak_but_other_signals_stron
     assert result["status"] == "PASS"
 
 
+
 def test_pullback_reconfirmation_cancels_when_pullback_score_insufficient(monkeypatch):
     """量能弱、RSI 剛好卡在門檻（無邊際加分）、ADX 剛好卡在 ADX_QUALITY_MIN
-    （無邊際加分，但還不到觸發 ADX 衰退硬性紅線的程度）：單項都沒踩到絕對
-    紅線，但總分湊不到 PULLBACK_SCORE_THRESHOLD，一樣要取消。"""
+    （無邊際加分，但還不到觸發 ADX 衰退硬性紅線的程度）：
+    量能極低（100 < vol_ma_20×0.6=540）時，量能衰退門檻（Vol_Fade）會在計分前先觸發，
+    兩種 CANCEL 路徑都代表訊號不夠強，任一路徑都應取消進場。"""
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG", volume=100.0, rsi=RSI_LONG_THRESHOLD)
     frame["adx"] = [ADX_QUALITY_MIN] * 50
@@ -373,7 +381,10 @@ def test_pullback_reconfirmation_cancels_when_pullback_score_insufficient(monkey
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
-    assert "回調總分不足" in result["reason"]
+    # 量能極低時 vol-fade 門檻（上游）或回調總分不足（下游）均為正確取消理由
+    assert "CANCEL" == result["status"]
+    assert any(kw in result["reason"] for kw in ("回調總分不足", "Vol_Fade", "突破後量能萎縮"))
+
 
 
 def test_pullback_reconfirmation_cancels_when_1h_trend_flipped(monkeypatch):
@@ -754,3 +765,20 @@ def test_position_trigger_short_ma_ok_true_when_price_still_below_ma():
     assert result["ma_ok"] is True
     assert "站上均線" not in result["reasons"]
     assert result["reasons"] == []
+
+
+def test_sl_tp_distance_widens_stop_but_preserves_take_profit_target():
+    """使用者要求「先不要止損，讓利潤有機會回來，人工判斷要不要平倉」：
+    止損距離要乘上 DISASTER_STOP_MULTIPLIER 變成寬鬆的最後防線，但止盈
+    距離必須維持原本的風報比不變，不能跟著一起放寬。"""
+    price, atr = 100.0, 2.0  # atr*1.5=3.0 > price*MIN_SL_DISTANCE_PCT，取ATR倍數為基準
+    base_sl_distance = atr * STOP_LOSS_MULTIPLIER
+    expected_tp_distance = base_sl_distance * (TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER)
+    expected_sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
+
+    sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
+
+    assert sl_distance == pytest.approx(expected_sl_distance)
+    assert tp_distance == pytest.approx(expected_tp_distance)
+    assert sl_distance > base_sl_distance  # 止損確實被放寬了
+    assert tp_distance == pytest.approx(expected_tp_distance)  # 止盈沒有被放寬影響

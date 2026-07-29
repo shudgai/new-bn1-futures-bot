@@ -96,6 +96,13 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
 # 保證止損距離不會低於此比例，止盈距離依 TAKE_PROFIT/STOP_LOSS 倍數比例同步放大。
 MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.004"))
+# DISASTER_STOP_MULTIPLIER：使用者要求「先不要止損，讓利潤有機會回來，
+# 由人工判斷要不要平倉」，把原本 1.5x ATR 的緊止損改成一條寬鬆很多的
+# 最後防線（乘在 sl_distance 上，止盈維持原本距離不變，只放寬止損）。
+# 這不是完全拿掉止損（那樣不在螢幕前時會被無限套牢），而是保留一個
+# 極端行情下的最後保護，平常給價格足夠空間回調/反彈，讓使用者自己
+# 決定要不要提早手動平倉。
+DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
 
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
@@ -149,6 +156,19 @@ KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
+# BREAKOUT_CONFIRM_BARS：KC 突破需要「收盤確認」的防假突破機制。
+# 影線碰到通道邊界不算突破——必須有 BREAKOUT_CONFIRM_BARS 根「已收盤 K 棒」
+# 的收盤價仍在 KC 通道外，才視為有效突破。
+# 檢查範圍固定取倒數第 2、3 根（即 df.iloc[-3:-1]），最新的 iloc[-1] 是
+# 當前可能仍未收盤的 K 棒，不計入確認（避免「目前 close 突破但棒沒收」的假訊號）。
+# 設 1 = 前兩根中至少 1 根收盤在通道外（寬鬆）；設 2 = 前兩根都要在外（嚴格）。
+BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
+# POST_BREAKOUT_VOL_SUSTAIN_RATIO：突破後量能持續性確認，用於 confirm_pullback_entry()。
+# 假突破特徵之一是「突破當根量大，後續量立刻萎縮」——代表突破動能已耗盡，
+# 接下來的回踩是真正的反轉而非健康的拉回。
+# 取回踩確認當下倒數第 2、3 根 K 棒的平均量能，若 < 均量 × 此比例，取消進場。
+# 設 0.6 = 允許量能回落至突破時的 60% 均量水準，太低代表已沒有撐盤動力。
+POST_BREAKOUT_VOL_SUSTAIN_RATIO = float(os.getenv("POST_BREAKOUT_VOL_SUSTAIN_RATIO", "0.6"))
 # FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化，不是硬門檻。
 # 原本用「40 根K棒內（8→20→40 根一路調寬）滿分、超過直接 0 分」的硬門檻，
 # 但實測發現 core/strategy.py 的 SuperTrend 計算曾經有 bug（第0根 ATR 是
@@ -171,12 +191,18 @@ FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
 # 趨勢延續的突破，實際上只是區間內雜訊。
 MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "22"))
 
-# --- ADX 趨勢強度濾網（品質加分用，非強制門檻）---
-# KC 突破配上低 ADX，是盤整期假突破的常見樣貌；但直接拿來當強制門檻風險
-# 較高（可能大幅壓低訊號數量，又還沒有實測數據佐證合適的門檻值），所以
-# 先併入 evaluate_signal() 的品質加分（E4），跟 ATR/RSI/量能三項同一套邏輯：
-# ADX_QUALITY_MIN 以下不加分，ADX_QUALITY_FULL 以上視為滿分。
+# --- ADX 趨勢強度濾網 ---
+# 兩層防線分開設計：
+# 1. ADX_MANDATORY_MIN（硬性底線）：ADX 低於此值直接 HOLD，連評分都不進入。
+#    盤整期 ADX 常落在 10~17，12 以下可確認為「完全無趨勢」，假突破最高發。
+#    設 12 而非直接用 ADX_QUALITY_MIN(15) 是刻意保守——只擋極端無動能場景，
+#    不大幅壓縮訊號數量；後續實測再視情況調高。
+# 2. ADX_QUALITY_MIN/FULL（軟性加分）：12~30 區間內按比例加分，越高越好，
+#    但不到最低門檻就加 0 分；超出 ADX_QUALITY_FULL 視為滿分。
+# 3. ADX_DECLINE 衰退擋單：ADX 現在比 N 根前低且已低於 ADX_QUALITY_MIN，
+#    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "12.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # ADX_DECLINE_LOOKBACK_BARS：實測 AAVE/USDT 07/28 14:48 這筆進場，往前
