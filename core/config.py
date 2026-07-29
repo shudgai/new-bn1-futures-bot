@@ -115,17 +115,13 @@ MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
 # 真的夠強會立刻回踩接到，等不到就代表這次動能偏單邊，繼續等大機率是
 # 在賭一個正在遠離的假訊號，不如撤單讓 engine.py 用最新資料重新判斷。
 PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "0.3333"))
-# PENDING_REPOST_STREAK_LIMIT / PENDING_BACKOFF_MINUTES：實測發現同一個
-# symbol 的限價單超時/條件變差被撤銷後，下一輪掃描常常算出幾乎一樣的
-# target_price，就這樣連續掛單-撤單好幾次（AVAX/USDT 曾連續掛了 5 次
-# 幾乎同一個價位，耗時 8 分鐘才成交，成交後直接停損 -2.34 USDT；
-# LINK/USDT 曾在 1 分鐘內因「量能轉弱」連續撤單 5 次）。這代表撤單當下
-# 這個setup已經不新鮮，之後重掛也大機率是在賭同一個正在退潮的假突破。
-# 連續失敗（撤單）達到門檻就強制冷卻一段時間，不再對同一個 symbol 反覆
-# 嘗試，逼它等到下一次真正重新出現的訊號，而不是死守著同一個已經偏離
-# 的價位。
-PENDING_REPOST_STREAK_LIMIT = int(os.getenv("PENDING_REPOST_STREAK_LIMIT", "3"))
-PENDING_BACKOFF_MINUTES = float(os.getenv("PENDING_BACKOFF_MINUTES", "15"))
+# 移除連續掛單失敗冷卻（原 PENDING_REPOST_STREAK_LIMIT/PENDING_BACKOFF_
+# MINUTES）：原本連續撤單達門檻會強制冷卻一段時間，但這會讓一個
+# symbol 剛好在冷卻期間真的出現達標訊號時被錯過。改成不限次數重掛，
+# 每次掛單前都要重新通過分數門檻（見 testnet_account.place_limit_entry
+# 的 MIN_OPEN_SIGNAL_SCORE 檢查），未成交/條件變差就撤單，下一輪分數
+# 夠不夠再決定要不要重掛，用分數本身當唯一守門，不用額外的次數/時間
+# 限制。
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。
