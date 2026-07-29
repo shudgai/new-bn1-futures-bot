@@ -10,7 +10,8 @@ from core.config import (
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
-    STRONG_BREAKOUT_SCORE_THRESHOLD,
+    STRONG_BREAKOUT_SCORE_THRESHOLD, STRONG_BREAKOUT_EMA50_MAX_ATR_MULT,
+    TREND_AGREE_EMA_MARGIN_PCT,
 )
 from core.indicators import bars_since_supertrend_flip
 
@@ -177,15 +178,22 @@ class SuperTrendKeltnerStrategy:
         kc_lower = curr['kc_lower']
         kc_width = curr['kc_width'] if not np.isnan(curr['kc_width']) else (price * 0.03)
         ema_20 = curr['ema_20'] if not np.isnan(curr['ema_20']) else price
+        ema_50 = curr['ema_50'] if not np.isnan(curr['ema_50']) else price
 
         # --- 1. 底線防禦 (Mandatory Filters) ---
-        # 如果這兩個不通過，分數直接為 0，絕對不開倉
-        is_1h_bullish = (price >= ema_200_1h) if ema_200_1h is not None else True
-        is_1h_bearish = (price <= ema_200_1h) if ema_200_1h is not None else True
+        # --- 強化 1h 大週期趨勢強制過濾 ---
+        # 改為要求「明顯同方向」而非只是「price 剛好高於/低於 EMA50」：
+        # 市場橫盤時 price 可能在 EMA50 附近震盪，加上 MARGIN 緩衝確保
+        # 價格已真正站穩 EMA50 上方（多單）或明顯跌破（空單）才允許。
+        ema_50_upper_band = ema_200_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
+        ema_50_lower_band = ema_200_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT) if ema_200_1h else None
+
+        is_1h_bullish = (price >= ema_50_upper_band) if ema_50_upper_band is not None else True
+        is_1h_bearish = (price <= ema_50_lower_band) if ema_50_lower_band is not None else True
 
         st_dir = curr['st_direction']
 
-        # 底線判斷
+        # 底線判斷：5m SuperTrend 方向必須與 1h 趨勢一致（含 EMA50 緩衝邊距）
         if st_dir == 1 and not is_1h_bullish:
             return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_Trend_Bearish"}
         if st_dir == -1 and not is_1h_bearish:
@@ -360,7 +368,18 @@ class SuperTrendKeltnerStrategy:
             # ── 方案 A：分流機制 ──
             # 評分 >= 85 (STRONG_BREAKOUT_SCORE_THRESHOLD)：代表動能爆量極強突破，直接市價進場 (BUY / SELL)，抓取單邊暴利行情。
             # 評分 71 ~ 84：代表溫和突破，採取回踩進場 (WAIT_PULLBACK)，掛限價單等待優質價格。
-            if score >= STRONG_BREAKOUT_SCORE_THRESHOLD:
+            #
+            # 市價立即進場專用的末端趨勢防護：距離 EMA50（比 EMA20 遲鈍很多
+            # 的中期均線）太遠，代表這波動能其實已經悶著頭走了一大段，只是
+            # 相對 EMA20 還沒乖離到 D3 那條門檻。市價進場沒有回踩等待期讓
+            # confirm_pullback_entry() 再確認一次，最容易撞上「進場點剛好
+            # 是這波最後一根」的情況（實測 NEAR/USDT 這筆）。觸發時不整筆
+            # 擋單，訊號本身仍合格，只是降級成跟溫和突破一樣走 WAIT_PULLBACK，
+            # 讓它多一層等回踩＋二次確認的緩衝。
+            ema50_distance_atr = abs(price - ema_50) / atr if atr > 0 else 0.0
+            strong_breakout_overextended = ema50_distance_atr > STRONG_BREAKOUT_EMA50_MAX_ATR_MULT
+
+            if score >= STRONG_BREAKOUT_SCORE_THRESHOLD and not strong_breakout_overextended:
                 if st_dir == 1:
                     sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
                     sl, tp = price - sl_dist, price + tp_dist
@@ -378,6 +397,11 @@ class SuperTrendKeltnerStrategy:
                         "reason": f"StrongBreakout_SELL({score}) | {', '.join(score_details)}"
                     }
             else:
+                downgrade_note = (
+                    f" | StrongBreakout_Downgraded_EMA50Overextended({ema50_distance_atr:.1f}x_ATR)"
+                    if score >= STRONG_BREAKOUT_SCORE_THRESHOLD and strong_breakout_overextended
+                    else ""
+                )
                 if st_dir == 1:
                     dist = (price - kc_upper) / kc_upper
                     pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
@@ -386,7 +410,7 @@ class SuperTrendKeltnerStrategy:
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": pullback_target,
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                     }
                 else:  # SHORT
                     dist = (kc_lower - price) / kc_lower
@@ -396,7 +420,7 @@ class SuperTrendKeltnerStrategy:
                         "price": price, "atr": atr,
                         "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                         "target_zone": pullback_target,
-                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}"
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                     }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}

@@ -113,12 +113,23 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
 # MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
 # 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD：分流機制門檻。
-# 當評分 >= 78 時，代表強勢突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
-# 當 65 <= 評分 < 78 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
-STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
+# 當評分 >= 85 時，代表動能極強爆量突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
+# 當 71 <= 評分 < 85 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
+STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "85"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
+# STRONG_BREAKOUT_EMA50_MAX_ATR_MULT：立即市價進場（StrongBreakout）專用的
+# 末端趨勢防護。市價進場沒有「等回踩」那段緩衝時間可以讓 confirm_pullback_
+# entry() 再確認一次，等於一有訊號就直接追價，最容易撞上「這波已經走到
+# 末端」的情況——實測 NEAR/USDT 這筆，進場當下距離 EMA20 不算太遠（沒觸發
+# D3 Price_Overextended），但距離走得慢很多的 EMA50 已經很遠，代表這波
+# 跌勢其實已經悶著頭走了一大段，進場點剛好卡在最後一根低點，隨後一小時
+# 內就反彈回去停損。用 EMA50（比 EMA20 遲鈍很多）當基準，能抓到「短線
+# 均線沒有明顯乖離，但相對中期趨勢已經走了很遠」這種 D3 抓不到的末端樣貌。
+# 觸發時不整筆擋單（訊號分數本身仍然合格），而是降級成跟溫和突破一樣
+# 改走 WAIT_PULLBACK，讓它跟一般訊號一樣等回踩、通過二次確認再進場。
+STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
 # 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內
 # 就成交（7.2~9.7 秒），只有 1 筆例外撐了 67.4 秒；反觀逾時撤單的 22
@@ -145,7 +156,7 @@ PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.2"))
 # PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
 # 55 -> 48：配合進場門檻放寬，同步調降回踩二次確認分級門檻。
-PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
+PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "55"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 # KELTNER_ATR_MULTIPLIER 調回 1.5：實測最早期(通道確實是1.5倍時)勝率
@@ -162,12 +173,14 @@ BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 POST_BREAKOUT_VOL_SUSTAIN_RATIO = float(os.getenv("POST_BREAKOUT_VOL_SUSTAIN_RATIO", "0.6"))
 # FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化。
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
-# MIN_FRESHNESS_SCORE：新鮮度子分數門檻。從 22 降至 15 分，放寬對趨勢翻轉發生時間點的嚴格限制（允許約 4.5 小時內發生的趨勢）。
-MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "15"))
-
-# --- ADX 趨勢強度濾網 ---
-# 1. ADX_MANDATORY_MIN（硬性底線）：低於此值直接 HOLD。從 12.0 降至 10.0，允許微弱起步趨勢進入評分。
-ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))
+# MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單。設 22 分（翻轉要在 32 根K棒/約2.7小時內）。
+MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "22"))
+# TREND_AGREE_EMA_MARGIN_PCT：強化 1h 大週期趨勢過濾的緩衝邊距。
+# 現有機制「price < EMA50」就允許空單，當市場橫盤時任何小回調都會讓
+# price 暫時低於 EMA50，導致空單被允許開倉。
+# 新增此邊距後，改為要求「price < EMA50 × (1 - MARGIN)」才算真正看跌，
+# 確保價格需要明顯跌破 EMA50 而不只是輕碰。設 0.003 = 需跌破 EMA50 的 0.3% 以下。
+TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.003"))
 
 # --- ADX 趨勢強度濾網 ---
 # 兩層防線分開設計：
