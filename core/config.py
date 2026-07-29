@@ -116,7 +116,7 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "2.5"))
 BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower() == "true"
 # BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
 # 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
-BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "3"))
+BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "2"))
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
@@ -126,12 +126,12 @@ SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").l
 # MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
 # 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
 # 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD：分流機制門檻。
-# 當評分 >= 85 時，代表動能極強爆量突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
-# 當 71 <= 評分 < 85 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
-STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "85"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "70"))
+# 當評分 >= 78 時，代表動能極強爆量突破，直接觸發 BUY/SELL（市價單進場），不等待回踩。
+# 當 65 <= 評分 < 78 時，代表溫和突破，觸發 WAIT_PULLBACK（掛限價單等待回踩）。
+STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
 # STRONG_BREAKOUT_EMA50_MAX_ATR_MULT：立即市價進場（StrongBreakout）專用的
 # 末端趨勢防護。市價進場沒有「等回踩」那段緩衝時間可以讓 confirm_pullback_
 # entry() 再確認一次，等於一有訊號就直接追價，最容易撞上「這波已經走到
@@ -146,11 +146,10 @@ STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_
 # PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
 # 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內
 # 就成交（7.2~9.7 秒），只有 1 筆例外撐了 67.4 秒；反觀逾時撤單的 22
-# 筆，全部卡滿 90~105 秒才放棄——代表 90 秒對「不會成交」的單只是白等，
-# 價格早就背離、動能已經轉向。20 秒給最快成交群約 2 倍緩衝，短線動能
+# 價格早就背離、動能已經轉向。45 秒給最快成交群約 4 倍緩衝，短線動能
 # 真的夠強會立刻回踩接到，等不到就代表這次動能偏單邊，繼續等大機率是
 # 在賭一個正在遠離的假訊號，不如撤單讓 engine.py 用最新資料重新判斷。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "0.3333"))
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "0.75"))
 # 移除連續掛單失敗冷卻（原 PENDING_REPOST_STREAK_LIMIT/PENDING_BACKOFF_
 # MINUTES）：原本連續撤單達門檻會強制冷卻一段時間，但這會讓一個
 # symbol 剛好在冷卻期間真的出現達標訊號時被錯過。改成不限次數重掛，
@@ -169,7 +168,7 @@ PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.2"))
 # PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
 # 55 -> 48：配合進場門檻放寬，同步調降回踩二次確認分級門檻。
-PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "55"))
+PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
 
 # --- 品質濾網控制參數 (對齊 7 大條件) ---
 # KELTNER_ATR_MULTIPLIER 調回 1.5：實測最早期(通道確實是1.5倍時)勝率
@@ -186,14 +185,14 @@ BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 POST_BREAKOUT_VOL_SUSTAIN_RATIO = float(os.getenv("POST_BREAKOUT_VOL_SUSTAIN_RATIO", "0.6"))
 # FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化。
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
-# MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單。設 22 分（翻轉要在 32 根K棒/約2.7小時內）。
-MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "22"))
+# MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單。設 15 分。
+MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "15"))
 # TREND_AGREE_EMA_MARGIN_PCT：強化 1h 大週期趨勢過濾的緩衝邊距。
 # 現有機制「price < EMA50」就允許空單，當市場橫盤時任何小回調都會讓
 # price 暫時低於 EMA50，導致空單被允許開倉。
 # 新增此邊距後，改為要求「price < EMA50 × (1 - MARGIN)」才算真正看跌，
-# 確保價格需要明顯跌破 EMA50 而不只是輕碰。設 0.003 = 需跌破 EMA50 的 0.3% 以下。
-TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.003"))
+# 確保價格需要明顯跌破 EMA50 而不只是輕碰。設 0.001 = 需跌破 EMA50 的 0.1% 以下。
+TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.001"))
 
 # --- ADX 趨勢強度濾網 ---
 # 兩層防線分開設計：
@@ -206,7 +205,7 @@ TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.00
 # 3. ADX_DECLINE 衰退擋單：ADX 現在比 N 根前低且已低於 ADX_QUALITY_MIN，
 #    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
-ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "12.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # ADX_DECLINE_LOOKBACK_BARS：實測 AAVE/USDT 07/28 14:48 這筆進場，往前
