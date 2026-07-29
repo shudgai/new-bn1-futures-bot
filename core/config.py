@@ -132,10 +132,12 @@ PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "0.3333")
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。
-# 0.0 = 只回踩到 KC 軌道（原本行為，等於進場價幾乎沒有比突破點低多少）；
-# 1.0 = 回踩到 EMA20 均價才進場（價格更低、空間更大，但等到的機率也更低）。
-# 設 0.5 取中間值：進場價往均價方向靠一半，換取更多上漲空間，同時不會太少訊號。
-PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.5"))
+# 0.0 = 只回踩到 KC 軌道（進場價最靠近突破點，成交率最高）；
+# 1.0 = 回踩到 EMA20 均價才進場（空間最大，但等到的機率最低）。
+# 0.5 → 0.2：實測 0.5 太深，突破後價格常無法回踩那麼遠，掛單超時撤單
+# 後機會就錯過了。改 0.2 讓掛單位置非常靠近 KC 軌道（只往 EMA20 靠 20%），
+# 大幅提升成交率，同時仍比「直接追在突破點」便宜一點點。
+PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.2"))
 # PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
 # 原本量能/RSI 是各自獨立的硬性關卡，任一項不過就整筆取消，太僵硬——
 # 量能爆量成長理應能補足 RSI 差一點點的缺口。改成跟 evaluate_signal() 同一套

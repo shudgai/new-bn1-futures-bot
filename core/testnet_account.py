@@ -78,6 +78,13 @@ class BinanceTestnetAccount:
         # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
         # 一個 symbol 同時最多一張掛單。
         self.pending_limit_orders: Dict[str, dict] = {}
+        # 同一 symbol 反覆掛單-撤單（見 place_limit_entry/cancel_pending_limit）
+        # 時，只印第一次「掛單中」，之後同一個 symbol 連續沒成交就不再重複
+        # 印掛單/撤銷——同一個 symbol 一直顯示卻沒有新結果，畫面上只是雜訊。
+        # 真正成交時一定會印（見 _finalize_new_position 的開倉成功訊息），
+        # 撤單/重掛的邏輯本身完全不受影響，只是省略中間重複的日誌行；
+        # 想看目前是不是還在等，「📊 12幣訊號進度」摘要裡本來就有顯示。
+        self._pending_retry_streak: Dict[str, int] = {}
         self._load_state()
 
     @staticmethod
@@ -798,10 +805,11 @@ class BinanceTestnetAccount:
             "signal_score": signal_score,
             "placed_at": time.time(),
         }
-        self.log(
-            f"📝 [限價掛單] {symbol} {side} 掛單 @ {price_str}（{leverage}x），等待成交",
-            "INFO",
-        )
+        if self._pending_retry_streak.get(symbol, 0) == 0:
+            self.log(
+                f"📝 [限價掛單] {symbol} {side} 掛單 @ {price_str}（{leverage}x），等待成交",
+                "INFO",
+            )
         return True
 
     async def check_pending_limit_orders(self) -> None:
@@ -832,6 +840,7 @@ class BinanceTestnetAccount:
                 # 跟這裡疊出重複止損止盈單。先佔位讓孤兒保護機制略過這個
                 # symbol，交給 _finalize_new_position 統一處理。
                 self._orphan_protection_attempted.add(symbol)
+                self._pending_retry_streak.pop(symbol, None)
                 await self._finalize_new_position(
                     symbol, info["side"], execution_price, filled_qty,
                     info["target_price"], info["sl"], info["tp"], info["reason"],
@@ -850,6 +859,7 @@ class BinanceTestnetAccount:
                         "WARNING",
                     )
                     self._orphan_protection_attempted.add(symbol)
+                    self._pending_retry_streak.pop(symbol, None)
                     await self._finalize_new_position(
                         symbol, info["side"], execution_price, filled_qty,
                         info["target_price"], info["sl"], info["tp"], info["reason"],
@@ -907,6 +917,7 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             self._orphan_protection_attempted.add(symbol)
+            self._pending_retry_streak.pop(symbol, None)
             await self._finalize_new_position(
                 symbol, info["side"], execution_price, filled_qty,
                 info["target_price"], info["sl"], info["tp"], info["reason"],
@@ -915,7 +926,10 @@ class BinanceTestnetAccount:
             )
             return
 
-        self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
+        streak = self._pending_retry_streak.get(symbol, 0)
+        if streak == 0:
+            self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
+        self._pending_retry_streak[symbol] = streak + 1
 
     async def close_position(
         self, symbol: str, current_price: float, close_reason: str
