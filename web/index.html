@@ -212,12 +212,12 @@
                                     {{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT
                                     <span style="font-size:11px; margin-left:4px;">({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}%/{{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)</span>
                                 </td>
-                                <td>
+                                <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
                                     <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
                                         {{ pos.trigger && pos.trigger.ma_ok === false ? '✗' : '✓' }}
                                     </span>
-                                    <span v-if="pos.trigger && pos.trigger.reasons && pos.trigger.reasons.some(r => r.includes('前低') || r.includes('前高'))" style="color:var(--down); font-weight:700; margin-left:4px; font-size:14px;" :title="pos.trigger.reasons.filter(r => r.includes('前低') || r.includes('前高')).join('、')">
-                                        !
+                                    <span v-if="pos.trigger && pos.trigger.reasons && pos.trigger.reasons.some(r => r.includes('前低') || r.includes('前高'))" :style="{color:'var(--down)', fontWeight:700, marginLeft:'4px', fontSize: pos.trigger.strong ? '16px' : '14px'}" :title="pos.trigger.reasons.filter(r => r.includes('前低') || r.includes('前高')).join('、')">
+                                        {{ pos.trigger.strong ? '⛔' : '!' }}
                                     </span>
                                 </td>
                                 <td>{{ pos.qty }}</td>

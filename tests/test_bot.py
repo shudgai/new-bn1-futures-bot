@@ -718,7 +718,8 @@ def _trigger_frame(closes, lows=None, highs=None):
 
 
 def test_position_trigger_long_flags_ma_cross_and_prior_low_break():
-    """多單：均線走平的情況下，最後一根K棒重挫，同時跌破均線也跌破前低。"""
+    """多單：均線走平的情況下，最後一根K棒重挫，同時跌破均線也跌破前低，
+    兩個角度一致，strong 應為 True。"""
     closes = [100.0] * 24 + [90.0]
     lows = [99.0] * 24 + [90.0]
     highs = [101.0] * 24 + [90.0]
@@ -726,6 +727,31 @@ def test_position_trigger_long_flags_ma_cross_and_prior_low_break():
     assert result["active"] is True
     assert "跌破均線" in result["reasons"]
     assert "跌破前低" in result["reasons"]
+    assert result["strong"] is True
+
+
+def test_position_trigger_not_strong_when_only_ma_broken():
+    """只有跌破均線、還沒跌破前低：單一角度，不算 strong。"""
+    closes = [100.0] * 24 + [99.0]
+    lows = [95.0] * 25  # 前低遠低於現價，不會被跌破
+    highs = [101.0] * 25
+    result = compute_position_trigger(_trigger_frame(closes, lows, highs), "LONG")
+    assert result["ma_ok"] is False
+    assert "跌破前低" not in result["reasons"]
+    assert result["strong"] is False
+
+
+def test_position_trigger_not_strong_when_only_prior_low_broken():
+    """只有跌破前低、均線本身還沒破：單一角度，不算 strong。收盤價維持
+    平盤（EMA20 剛好等於現價，ma_ok 成立），但歷史低點刻意設得比現價高，
+    製造「跌破前低但沒跌破均線」的情境（純數學建構，不追求真實 OHLC）。"""
+    closes = [100.0] * 25
+    lows = [101.0] * 24 + [100.0]
+    highs = [102.0] * 25
+    result = compute_position_trigger(_trigger_frame(closes, lows, highs), "LONG")
+    assert result["ma_ok"] is True
+    assert "跌破前低" in result["reasons"]
+    assert result["strong"] is False
 
 
 def test_position_trigger_long_inactive_when_price_healthy():

@@ -35,13 +35,14 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     站上前高），對稱處理。"""
     min_len = lookback_bars + 1
     if df is None or len(df) < min_len:
-        return {"active": False, "ma_ok": True, "reasons": []}
+        return {"active": False, "ma_ok": True, "reasons": [], "strong": False}
 
     ema = df["close"].ewm(span=ma_period, adjust=False).mean()
     curr_close = float(df["close"].iloc[-1])
     curr_ema = float(ema.iloc[-1])
 
     reasons = []
+    prior_break = False
     if side == "LONG":
         ma_ok = curr_close >= curr_ema
         if not ma_ok:
@@ -49,6 +50,7 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         prior_low = float(df["low"].iloc[-(lookback_bars + 1):-1].min())
         if curr_close < prior_low:
             reasons.append("跌破前低")
+            prior_break = True
     else:
         ma_ok = curr_close <= curr_ema
         if not ma_ok:
@@ -56,8 +58,15 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         prior_high = float(df["high"].iloc[-(lookback_bars + 1):-1].max())
         if curr_close > prior_high:
             reasons.append("站上前高")
+            prior_break = True
 
-    return {"active": bool(reasons), "ma_ok": ma_ok, "reasons": reasons}
+    # strong：均線（持續性狀態）+ 前低/前高（事件性突破）同時出現，代表
+    # 不只是短線貼在均線錯的一側，連近期支撐/壓力都真的跌破/站上了，
+    # 兩個角度一致才是比較有份量的參考訊號，跟只有其中一個單獨出現時
+    # （很常見、雜訊也高）分開顯示，方便使用者判斷要不要考慮平倉。
+    strong = (not ma_ok) and prior_break
+
+    return {"active": bool(reasons), "ma_ok": ma_ok, "reasons": reasons, "strong": strong}
 
 
 def bars_since_supertrend_flip(direction_series: pd.Series) -> int:
