@@ -14,9 +14,12 @@ from core.config import (
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
+    HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS,
 )
-from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
+from core.strategy import (
+    SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
+)
 from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import drop_unclosed_candle, compute_position_trigger
@@ -92,6 +95,15 @@ class TradingEngine:
         )
         action = signal.get("action", "HOLD")
         reason = signal.get("reason", "")
+        score_components = signal.get("score_components") or {}
+        component_text = ""
+        if score_components:
+            component_text = (
+                f"KC{score_components.get('kc', 0)}/量{score_components.get('volume', 0)}/"
+                f"RSI{score_components.get('rsi', 0)}/新鮮{score_components.get('freshness', 0)}/"
+                f"品質{score_components.get('quality', 0)}"
+            )
+        diagnostics = signal.get("diagnostics") or {}
         raw_score = signal.get("raw_score")
         btc_score = signal.get("btc_adjusted_score", score)
         history_score = signal.get("history_adjusted_score")
@@ -104,7 +116,10 @@ class TradingEngine:
         else:
             score_text = f"{int(score or 0)}分"
         if signal.get("history_blocked"):
-            stage = "歷史績效降分後取消"
+            stage = (
+                f"歷史績效降分後取消（{component_text}）"
+                if component_text else "歷史績效降分後取消"
+            )
         elif action in ("BUY", "SELL"):
             stage = "符合立即開倉"
         elif action == "WAIT_PULLBACK":
@@ -116,11 +131,19 @@ class TradingEngine:
         elif "BTC_Regime" in reason:
             stage = "BTC大盤方向不符"
         elif "Symbol_1h_ST" in reason:
-            stage = "個幣1h趨勢不符"
+            stage = (
+                f"個幣1h趨勢不符（5m={diagnostics.get('st_direction_5m')}/"
+                f"1h={diagnostics.get('st_direction_1h')}）"
+            )
+        elif "1h_EMA50" in reason:
+            stage = (
+                f"1h EMA50方向不符（價格{diagnostics.get('price', 0):.6g}/"
+                f"EMA50={diagnostics.get('ema_50_1h', 0):.6g}）"
+            )
         elif "ADX_Too_Low" in reason:
-            stage = "ADX過低過濾"
+            stage = f"ADX過低{diagnostics.get('adx', 0):.1f}<10過濾"
         elif "Score_Low" in reason:
-            stage = "分數不足"
+            stage = f"分數不足（{component_text}）" if component_text else "分數不足"
         elif "Entry_Quality_Too_Low" in reason:
             quality_match = re.search(r"Entry_Quality_Too_Low\(([\d.]+<[\d.]+)\)", reason)
             stage = (
@@ -136,6 +159,8 @@ class TradingEngine:
                 f"ADX {adx_match.group(1)}←{adx_match.group(2)}且低於{ADX_QUALITY_MIN:g}，動能衰退過濾"
                 if adx_match else "ADX低於品質底線且動能衰退過濾"
             )
+        elif "Pullback_Range_Too_Narrow" in reason:
+            stage = "KC至EMA20回踩空間不足0.10 ATR"
         elif "Price_Overextended" in reason:
             overext_match = re.search(r"Price_Overextended\(([\d.]+x_ATR)\)", reason)
             stage = f"價格乖離過大{overext_match.group(1)}" if overext_match else "價格乖離過大"
@@ -152,9 +177,13 @@ class TradingEngine:
             atr_match = re.search(r"ATR_Too_Low\(([\d.]+%)\)", reason)
             stage = f"波動過低{atr_match.group(1)}過濾" if atr_match else "波動過低過濾"
         elif "Volume" in reason:
-            stage = "量能不足"
+            stage = f"量能不足（現量/均量={diagnostics.get('volume_ratio', 0):.2f}）"
+        elif "RSI_Overbought" in reason:
+            stage = f"RSI過熱{diagnostics.get('rsi', 0):.1f}>68"
+        elif "RSI_Oversold" in reason:
+            stage = f"RSI過冷{diagnostics.get('rsi', 0):.1f}<32"
         elif "RSI" in reason:
-            stage = "RSI方向不足"
+            stage = f"RSI方向不足（RSI={diagnostics.get('rsi', 0):.1f}）"
         else:
             stage = "條件未完成"
         coin = symbol.replace("/USDT", "")
@@ -181,10 +210,93 @@ class TradingEngine:
         if not recent:
             return {"trades": 0, "avg_pnl": 0.0, "win_rate": 1.0}
         pnls = [float(t.get("pnl") or 0.0) for t in recent]
+        weights = [HISTORY_RECENCY_DECAY ** index for index in range(len(pnls))]
+        total_weight = sum(weights) or 1.0
         return {
             "trades": len(pnls),
-            "avg_pnl": sum(pnls) / len(pnls),
-            "win_rate": sum(p > 0 for p in pnls) / len(pnls),
+            "avg_pnl": sum(pnl * weight for pnl, weight in zip(pnls, weights)) / total_weight,
+            "win_rate": sum((pnl > 0) * weight for pnl, weight in zip(pnls, weights)) / total_weight,
+            "recency_decay": HISTORY_RECENCY_DECAY,
+        }
+
+    @staticmethod
+    def _entry_filter_outcome(signal: dict) -> str:
+        reason = str(signal.get("reason", ""))
+        if signal.get("history_blocked"):
+            return "history_score_block"
+        if signal.get("action") == "WAIT_PULLBACK":
+            return "pullback_candidate_ready"
+        mapping = (
+            ("BTC_1h_ST_JustFlipped", "btc_flip_block"),
+            ("Symbol_1h_ST", "symbol_1h_mismatch"),
+            ("1h_EMA50", "ema50_1h_mismatch"),
+            ("ADX_Too_Low", "adx_too_low"),
+            ("ATR_Too_High", "atr_too_high"),
+            ("ATR_Too_Low", "atr_too_low"),
+            ("RSI_Overbought", "rsi_overbought"),
+            ("RSI_Oversold", "rsi_oversold"),
+            ("KC_Breakout_Unconfirmed", "kc_unconfirmed"),
+            ("Entry_Quality_Too_Low", "quality_too_low"),
+            ("Freshness_Too_Stale", "freshness_too_stale"),
+            ("ADX_Declining_Exhaustion", "adx_declining_below_floor"),
+            ("Pullback_Range_Too_Narrow", "pullback_room_narrow"),
+            ("Price_Overextended", "price_overextended"),
+            ("1h_Trend_Declining", "trend_1h_declining"),
+            ("Score_Low", "score_low"),
+        )
+        for marker, outcome in mapping:
+            if marker in reason:
+                return outcome
+        return "other_hold"
+
+    def _record_entry_filter(
+        self, symbol: str, signal: dict, direction: str, outcome: str = None
+    ) -> None:
+        stats = getattr(self.account, "entry_filter_stats", None)
+        if not isinstance(stats, dict):
+            stats = {"evaluations": 0, "outcomes": {}, "components": {}, "adjustments": {}}
+            self.account.entry_filter_stats = stats
+        stats["evaluations"] = int(stats.get("evaluations", 0)) + 1
+        outcomes = stats.setdefault("outcomes", {})
+        outcome = outcome or self._entry_filter_outcome(signal)
+        outcomes[outcome] = int(outcomes.get(outcome, 0)) + 1
+
+        components = signal.get("score_components") or {}
+        for name in ("kc", "volume", "rsi", "freshness", "quality"):
+            if name not in components:
+                continue
+            threshold = (
+                5 if name == "quality"
+                else round(MIN_FRESHNESS_SCORE / 30 * ENTRY_FRESHNESS_SCORE_MAX)
+                if name == "freshness"
+                else 1
+            )
+            result = "pass" if float(components.get(name) or 0) >= threshold else "fail"
+            bucket = stats.setdefault("components", {}).setdefault(name, {"pass": 0, "fail": 0})
+            bucket[result] = int(bucket.get(result, 0)) + 1
+
+        adjustments = stats.setdefault("adjustments", {})
+        if int(signal.get("btc_score_penalty") or 0) > 0:
+            adjustments["btc_penalty"] = int(adjustments.get("btc_penalty", 0)) + 1
+        if float(signal.get("history_score_multiplier") or 1.0) < 0.99:
+            adjustments["history_penalty"] = int(adjustments.get("history_penalty", 0)) + 1
+
+        last = getattr(self.account, "entry_filter_last", None)
+        if not isinstance(last, dict):
+            last = {}
+            self.account.entry_filter_last = last
+        last[symbol] = {
+            "timestamp": time.time(),
+            "direction": direction,
+            "outcome": outcome,
+            "action": signal.get("action", "HOLD"),
+            "score": signal.get("score"),
+            "raw_score": signal.get("raw_score"),
+            "btc_adjusted_score": signal.get("btc_adjusted_score"),
+            "history_adjusted_score": signal.get("history_adjusted_score"),
+            "score_components": dict(components),
+            "diagnostics": dict(signal.get("diagnostics") or {}),
+            "reason": str(signal.get("reason", "")),
         }
 
     def _log_signal_progress(
@@ -475,14 +587,44 @@ class TradingEngine:
         curr = computed.iloc[-1]
         atr = float(curr["atr"])
         ema_20 = float(curr["ema_20"])
-        depth = get_pullback_target_depth(score)
-        if side == "LONG":
-            kc_edge = float(curr["kc_upper"])
-            target = kc_edge - (kc_edge - ema_20) * depth
-        else:
-            kc_edge = float(curr["kc_lower"])
-            target = kc_edge + (ema_20 - kc_edge) * depth
+        kc_edge = float(curr["kc_upper"] if side == "LONG" else curr["kc_lower"])
+        target, _distance, room_ok = compute_pullback_target(
+            kc_edge, ema_20, atr, side, score
+        )
+        if not room_ok:
+            return None, atr
         return target, atr
+
+    def _record_pullback_outcome(self, key: str) -> None:
+        stats = getattr(self.account, "pullback_outcome_stats", None)
+        if stats is None:
+            stats = {}
+            self.account.pullback_outcome_stats = stats
+        stats[key] = int(stats.get(key, 0)) + 1
+
+    @staticmethod
+    def _classify_pullback_drop(reason: str, candidate: dict) -> str:
+        if "等待回踩/反轉確認逾時" in reason:
+            return "reversal_timeout" if candidate.get("touched_at") else "touch_timeout"
+        if "回調總分不足" in reason:
+            return "score_low"
+        if "品質不足" in reason or "Quality_Too_Low" in reason:
+            return "quality_low"
+        if "目標漂移" in reason:
+            return "target_drift"
+        if "錯側" in reason:
+            return "reversal_wrong_side"
+        if "槽位" in reason:
+            return "slot_full"
+        if "保證金" in reason:
+            return "insufficient_balance"
+        if "熔斷" in reason:
+            return "daily_halt"
+        if "停止新倉" in reason or "移出牌面" in reason:
+            return "symbol_disabled"
+        if "條件已變差" in reason:
+            return "condition_changed"
+        return "other_cancel"
 
     def _drop_pullback_candidate(
         self, symbol: str, reason: str, now: float, cooldown: bool = True
@@ -492,6 +634,7 @@ class TradingEngine:
             return
         if cooldown:
             self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+        self._record_pullback_outcome(self._classify_pullback_drop(reason, candidate))
         self.account.log(f"↩️ [回踩候選取消] {symbol}：{reason}", "INFO")
 
     def _expired_pullback_still_active(
@@ -527,14 +670,17 @@ class TradingEngine:
                 continue
             pullback_depth = get_pullback_target_depth(score)
             target_price = float(sig["target_zone"])
+            pullback_distance_atr = float(sig.get("pullback_distance_atr") or 0.0)
             if sig.get("ema_20") is not None:
                 ema_20 = float(sig["ema_20"])
                 kc_edge = float(sig["kc_upper"] if sig["side"] == "LONG" else sig["kc_lower"])
-                target_price = (
-                    kc_edge - (kc_edge - ema_20) * pullback_depth
-                    if sig["side"] == "LONG"
-                    else kc_edge + (ema_20 - kc_edge) * pullback_depth
+                computed_target, computed_distance, room_ok = compute_pullback_target(
+                    kc_edge, ema_20, float(sig.get("atr") or real_atr), sig["side"], score
                 )
+                if not room_ok:
+                    continue
+                target_price = computed_target
+                pullback_distance_atr = computed_distance / max(float(sig.get("atr") or real_atr), 1e-12)
             base_amount = min(
                 max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
                 TRADE_AMOUNT_USDT,
@@ -548,6 +694,7 @@ class TradingEngine:
                 "quality": self._quality_bonus(sig.get("reason", "")),
                 "target_price": target_price,
                 "pullback_depth": pullback_depth,
+                "pullback_distance_atr": pullback_distance_atr,
                 "atr": float(sig.get("atr") or real_atr),
                 "reason": sig.get("reason", ""),
                 "amount_usdt": amount,
@@ -563,6 +710,7 @@ class TradingEngine:
                 "history_score_multiplier": sig.get("history_score_multiplier", 1.0),
                 "pullback_confirmation_score": None,
                 "volume_fade_logged": False,
+                "adverse_volume_logged": False,
                 "leverage": self.symbol_rotation.get_dynamic_leverage(symbol, score),
                 "created_at": now,
                 "touched_at": None,
@@ -593,9 +741,10 @@ class TradingEngine:
             self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
         for symbol in set(selected) - old_symbols:
             item = selected[symbol]
+            self._record_pullback_outcome("candidate_created")
             self.account.log(
                 f"🎯 [回踩候選] {symbol} {item['side']} {item['score']}分/品質{item['quality']} "
-                f"等待{item['pullback_depth']:.0%}回踩觸價 @ {item['target_price']:.8g}"
+                f"等待{item['pullback_depth']:.0%}回踩（實際{item['pullback_distance_atr']:.2f} ATR）觸價 @ {item['target_price']:.8g}"
                 f"（BTC={item['btc_regime_mode']}，倉位×{item['btc_allocation_factor']:.2f}）",
                 "INFO",
             )
@@ -630,6 +779,7 @@ class TradingEngine:
                 if not touched:
                     continue
                 candidate["touched_at"] = now
+                self._record_pullback_outcome("target_touched")
                 self.account.log(
                     f"👀 [回踩觸價] {symbol} {candidate['side']} @ {live_price:.8g}，"
                     "等待 1m 收盤反轉確認",
@@ -645,6 +795,14 @@ class TradingEngine:
                 btc_st_direction_1h=getattr(self, "btc_1h_st_direction", 0),
                 btc_st_flip_age=getattr(self, "btc_1h_st_flip_age", 999), symbol=symbol,
             )
+            if confirm.get("adverse_volume_spike") and not candidate.get("adverse_volume_logged"):
+                candidate["adverse_volume_logged"] = True
+                self._record_pullback_outcome("adverse_volume_observed")
+                self.account.log(
+                    f"⚠️ [逆向爆量觀察] {symbol} {candidate['side']} 回踩K量能 "
+                    f"{confirm.get('adverse_volume_ratio', 0):.2f}倍均量，目前僅記錄、不擋單",
+                    "WARNING",
+                )
             if confirm.get("volume_faded") and not candidate.get("volume_fade_logged"):
                 candidate["volume_fade_logged"] = True
                 self.account.log(
@@ -669,6 +827,9 @@ class TradingEngine:
             candidate["pullback_confirmation_score"] = confirm.get("pullback_score")
 
             fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, candidate["side"], candidate["score"])
+            if fresh_target is None:
+                self._drop_pullback_candidate(symbol, "最新KC至EMA20回踩空間不足0.10 ATR", now)
+                continue
             drift = abs(fresh_target - target)
             if drift > max(candidate["atr"], fresh_atr) * PULLBACK_TARGET_MAX_DRIFT_ATR:
                 self._drop_pullback_candidate(symbol, f"目標漂移 {drift / max(fresh_atr, 1e-12):.2f} ATR", now)
@@ -715,6 +876,7 @@ class TradingEngine:
                 },
             )
             if placed:
+                self._record_pullback_outcome("maker_placed")
                 self.account.log(
                     self._format_pullback_order_log(symbol, candidate, fresh_target),
                     "INFO",
@@ -736,6 +898,7 @@ class TradingEngine:
                 await self.account.cancel_pending_limit(symbol, "幣種已停止新倉或移出牌面")
                 continue
             if now - info["placed_at"] > ENTRY_LIMIT_TIMEOUT_SEC:
+                self._record_pullback_outcome("maker_timeout")
                 await self.account.cancel_pending_limit(
                     symbol, f"短效 Maker 掛單 {ENTRY_LIMIT_TIMEOUT_SEC:.0f} 秒未成交"
                 )
@@ -751,26 +914,39 @@ class TradingEngine:
                 btc_st_flip_age=getattr(self, "btc_1h_st_flip_age", 999), symbol=symbol,
             )
             if confirm["status"] != "PASS":
+                self._record_pullback_outcome("maker_condition_changed")
                 await self.account.cancel_pending_limit(symbol, f"條件已變差：{confirm['reason']}")
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
             current_factor = float(confirm.get("btc_allocation_factor", 1.0) or 1.0)
             placed_factor = float((info.get("entry_context") or {}).get("btc_allocation_factor", 1.0) or 1.0)
             if current_factor < placed_factor:
+                self._record_pullback_outcome("maker_btc_changed")
                 await self.account.cancel_pending_limit(
                     symbol, "BTC方向轉為背離，撤銷原倉位並按50%重新建立候選"
                 )
                 self._pullback_retry_after[symbol] = now
                 continue
             fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, info["side"], int(info.get("signal_score") or MIN_SCORE_THRESHOLD))
+            if fresh_target is None:
+                self._record_pullback_outcome("maker_pullback_room_narrow")
+                await self.account.cancel_pending_limit(symbol, "最新KC至EMA20回踩空間不足0.10 ATR")
+                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                continue
             drift_atr = abs(fresh_target - info["target_price"]) / max(fresh_atr, 1e-12)
             if drift_atr > PULLBACK_TARGET_MAX_DRIFT_ATR:
+                self._record_pullback_outcome("maker_target_drift")
                 await self.account.cancel_pending_limit(
                     symbol, f"掛單目標已漂移 {drift_atr:.2f} ATR"
                 )
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
 
+        pending_before_fill_check = set(self.account.pending_limit_orders)
         await self.account.check_pending_limit_orders()
+        for symbol in pending_before_fill_check - set(self.account.pending_limit_orders):
+            if symbol in self.account.positions:
+                self._record_pullback_outcome("maker_filled")
+                self.account.save_state()
 
     async def _main_loop(self):
         while self.is_running:
@@ -867,6 +1043,10 @@ class TradingEngine:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,回踩失效冷卻{int(retry_after - now_time)}秒"
                             )
+                            self._record_entry_filter(
+                                symbol, {"action": "HOLD", "reason": "回踩失效冷卻"},
+                                direction_text, "pullback_retry_cooldown",
+                            )
                             continue
 
                         # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
@@ -875,12 +1055,20 @@ class TradingEngine:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,暫停新倉"
                             )
+                            self._record_entry_filter(
+                                symbol, {"action": "HOLD", "reason": "暫停新倉"},
+                                direction_text, "symbol_disabled",
+                            )
                             continue
                         last_closed = self.account.last_closed_at.get(symbol)
                         if last_closed is not None and (now_time - last_closed) < 900:
                             remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,冷卻剩{remaining}分鐘"
+                            )
+                            self._record_entry_filter(
+                                symbol, {"action": "HOLD", "reason": "平倉冷卻"},
+                                direction_text, "post_close_cooldown",
                             )
                             continue
 
@@ -890,12 +1078,22 @@ class TradingEngine:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,24h流動性不足"
                             )
+                            self._record_entry_filter(
+                                symbol, {"action": "HOLD", "reason": "24h流動性不足",
+                                         "diagnostics": {"quote_volume_24h": float(vol_24h)}},
+                                direction_text, "liquidity_low",
+                            )
                             continue
 
                         df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
                         if df.empty or len(df) < 50:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,K線資料不足"
+                            )
+                            self._record_entry_filter(
+                                symbol, {"action": "HOLD", "reason": "K線資料不足",
+                                         "diagnostics": {"bars": int(len(df))}},
+                                direction_text, "kline_data_short",
                             )
                             continue
 
@@ -932,6 +1130,11 @@ class TradingEngine:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,防插針過濾"
                             )
+                            self._record_entry_filter(
+                                symbol, {"action": "HOLD", "reason": "防插針過濾",
+                                         "diagnostics": {"candle_spread_atr": float(candle_spread / real_atr)}},
+                                direction_text, "spike_filter",
+                            )
                             continue
 
                         # 計算指標以取得 rsi 與 kc 通道等欄位
@@ -954,6 +1157,9 @@ class TradingEngine:
                         ):
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,舊突破已逾時等待KC重置"
+                            )
+                            self._record_entry_filter(
+                                symbol, sig, current_direction, "expired_breakout_lock"
                             )
                             continue
                         if sig["action"] in ["BUY", "SELL", "WAIT_PULLBACK"]:
@@ -980,11 +1186,15 @@ class TradingEngine:
                             sig["score"] = adjusted_score
                             if adjusted_score < MIN_SCORE_THRESHOLD:
                                 sig["history_blocked"] = True
+                                self._record_entry_filter(
+                                    symbol, sig, current_direction, "history_score_block"
+                                )
                                 signal_progress.append(self._format_signal_progress(
                                     symbol, sig, current_direction
                                 ))
                                 continue
 
+                        self._record_entry_filter(symbol, sig, current_direction)
                         signal_progress.append(self._format_signal_progress(
                             symbol, sig, current_direction
                         ))

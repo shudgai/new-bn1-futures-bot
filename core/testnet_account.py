@@ -82,6 +82,13 @@ class BinanceTestnetAccount:
         # 被網頁輪詢（跟主迴圈完全不同步、各自獨立呼叫 update_positions）
         # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
         self.last_closed_at: Dict[str, float] = {}
+        # 回踩漏斗事件與未成交原因；保存於既有 state，重啟後持續累積。
+        self.pullback_outcome_stats: Dict[str, int] = {}
+        # 初始開倉漏斗與各幣最新斷點；與交易狀態一起保存，重啟不歸零。
+        self.entry_filter_stats: Dict[str, dict] = {
+            "evaluations": 0, "outcomes": {}, "components": {}, "adjustments": {},
+        }
+        self.entry_filter_last: Dict[str, dict] = {}
         # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
         # 範圍內的限價單而非市價單）可能因為價格跳空滑出緩衝範圍而遲遲
         # 無法成交，導致部位裸奔。記錄「標記價開始穿越止損」的時間點，
@@ -147,6 +154,15 @@ class BinanceTestnetAccount:
             self.last_closed_at = {
                 str(k): float(v) for k, v in data.get("last_closed_at", {}).items()
             }
+            self.pullback_outcome_stats = {
+                str(k): int(v) for k, v in data.get("pullback_outcome_stats", {}).items()
+            }
+            loaded_filter_stats = data.get("entry_filter_stats", {})
+            if isinstance(loaded_filter_stats, dict):
+                self.entry_filter_stats.update(loaded_filter_stats)
+            loaded_filter_last = data.get("entry_filter_last", {})
+            if isinstance(loaded_filter_last, dict):
+                self.entry_filter_last = loaded_filter_last
         except Exception:
             pass
 
@@ -168,6 +184,9 @@ class BinanceTestnetAccount:
             "daily_start_realized_pnl": self.daily_start_realized_pnl,
             "daily_halt_logged": self.daily_halt_logged,
             "last_closed_at": last_closed_at,
+            "pullback_outcome_stats": self.pullback_outcome_stats,
+            "entry_filter_stats": self.entry_filter_stats,
+            "entry_filter_last": self.entry_filter_last,
         }
         with open(STATE_FILE, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)

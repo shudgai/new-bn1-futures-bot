@@ -16,11 +16,135 @@ from core.config import (
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
-from core.strategy import SuperTrendKeltnerStrategy, compute_sl_tp_distance
+from core.strategy import (
+    SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
+)
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import compute_position_trigger
 from core.engine import TradingEngine
+
+def test_pullback_target_enforces_minimum_atr_distance_and_rejects_narrow_room():
+    target, distance, room_ok = compute_pullback_target(
+        kc_edge=100.0, ema_20=99.0, atr=2.0, side="LONG", score=90
+    )
+    assert room_ok is True
+    assert distance == pytest.approx(0.2)
+    assert target == pytest.approx(99.8)
+
+    target, distance, room_ok = compute_pullback_target(
+        kc_edge=100.0, ema_20=99.95, atr=1.0, side="LONG", score=90
+    )
+    assert room_ok is False
+    assert distance == pytest.approx(0.05)
+    assert target == pytest.approx(100.0)
+
+
+def test_recent_history_has_more_weight_than_older_trades():
+    engine = object.__new__(TradingEngine)
+    newest_win = [1.0, -1.0, -1.0, -1.0, -1.0]
+    oldest_win = list(reversed(newest_win))
+
+    class DummyAccount:
+        pass
+
+    engine.account = DummyAccount()
+    engine.account.trades = [
+        {"symbol": "INJ/USDT", "side": "LONG", "action": "CLOSE_LONG", "pnl": pnl}
+        for pnl in newest_win
+    ]
+    recent_result = engine._symbol_recent_performance("INJ/USDT", "LONG")
+    engine.account.trades = [
+        {"symbol": "INJ/USDT", "side": "LONG", "action": "CLOSE_LONG", "pnl": pnl}
+        for pnl in oldest_win
+    ]
+    old_result = engine._symbol_recent_performance("INJ/USDT", "LONG")
+
+    assert recent_result["win_rate"] > old_result["win_rate"]
+    assert recent_result["avg_pnl"] > old_result["avg_pnl"]
+
+
+def test_pullback_outcome_classifies_touched_timeout():
+    engine = object.__new__(TradingEngine)
+
+    class DummyAccount:
+        pullback_outcome_stats = {}
+        logs = []
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    engine.account = DummyAccount()
+    engine.pending_pullback_candidates = {
+        "XPL/USDT": {"side": "SHORT", "created_at": 0.0, "touched_at": 10.0}
+    }
+    engine._pullback_retry_after = {}
+
+    engine._drop_pullback_candidate(
+        "XPL/USDT", "等待回踩/反轉確認逾時，本波不再掛單，等待KC重置", 100.0
+    )
+
+    assert engine.account.pullback_outcome_stats["reversal_timeout"] == 1
+
+
+def test_entry_filter_stats_record_components_adjustments_and_last_snapshot():
+    engine = object.__new__(TradingEngine)
+
+    class DummyAccount:
+        entry_filter_stats = {"evaluations": 0, "outcomes": {}, "components": {}, "adjustments": {}}
+        entry_filter_last = {}
+
+    engine.account = DummyAccount()
+    signal = {
+        "action": "HOLD",
+        "reason": "Score_Low(53)",
+        "score": 53,
+        "raw_score": 65,
+        "btc_adjusted_score": 53,
+        "btc_score_penalty": 12,
+        "history_score_multiplier": 0.8,
+        "score_components": {"kc": 30, "volume": 20, "rsi": 0, "freshness": 2, "quality": 1},
+        "diagnostics": {"rsi": 50.0, "adx": 18.0, "atr_pct": 0.003},
+    }
+
+    engine._record_entry_filter("INJ/USDT", signal, "LONG")
+
+    stats = engine.account.entry_filter_stats
+    assert stats["evaluations"] == 1
+    assert stats["outcomes"]["score_low"] == 1
+    assert stats["components"]["kc"]["pass"] == 1
+    assert stats["components"]["rsi"]["fail"] == 1
+    assert stats["components"]["quality"]["fail"] == 1
+    assert stats["adjustments"]["btc_penalty"] == 1
+    assert stats["adjustments"]["history_penalty"] == 1
+    assert engine.account.entry_filter_last["INJ/USDT"]["diagnostics"]["adx"] == 18.0
+
+
+def test_score_low_progress_displays_component_breakdown():
+    signal = {
+        "action": "HOLD", "eligible": True, "score": 53, "raw_score": 65,
+        "btc_adjusted_score": 53, "reason": "Score_Low(53)",
+        "score_components": {"kc": 30, "volume": 20, "rsi": 0, "freshness": 2, "quality": 1},
+    }
+
+    text = TradingEngine._format_signal_progress("INJ/USDT", signal, "LONG")
+
+    assert "分數不足" in text
+    assert "KC30/量20/RSI0/新鮮2/品質1" in text
+
+
+def test_eligibility_failure_returns_numeric_diagnostics(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_MAX + 1, adx=35.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
+
+    assert result["eligible"] is False
+    assert result["diagnostics"]["rsi"] == pytest.approx(RSI_LONG_MAX + 1)
+    assert result["diagnostics"]["atr_pct"] > 0
+    assert result["diagnostics"]["st_direction_5m"] == 1
+
 
 def test_strategy_indicators():
     strategy = SuperTrendKeltnerStrategy()
@@ -267,7 +391,10 @@ def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
     assert result_high["action"] == "WAIT_PULLBACK"
     assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
     assert "MarketChase_Disabled" in result_high["reason"]
-    expected_target = 100.0 - (100.0 - 99.8) * get_pullback_target_depth(result_high["score"])
+    expected_target, _, room_ok = compute_pullback_target(
+        100.0, 99.8, float(frame_high["atr"].iloc[-1]), "LONG", result_high["score"]
+    )
+    assert room_ok is True
     assert result_high["target_zone"] == pytest.approx(expected_target)
 
     frame_mid = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
@@ -621,6 +748,21 @@ def test_pullback_reconfirmation_passes_when_price_still_on_correct_side_of_ema2
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "PASS"
+
+
+def test_adverse_pullback_volume_spike_is_observed_without_hard_block(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG", volume=1800.0)
+    frame["open"] = 101.0
+    frame["close"] = 100.0
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+
+    assert result["status"] == "PASS"
+    assert bool(result["adverse_volume_spike"]) is True
+    assert result["adverse_volume_ratio"] == pytest.approx(2.0)
 
 
 def test_pullback_reconfirmation_passes_when_volume_fades_but_other_signals_strong(monkeypatch):

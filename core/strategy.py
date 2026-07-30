@@ -12,11 +12,31 @@ from core.config import (
     ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
+    PULLBACK_TARGET_MIN_ATR_MULT, ADVERSE_PULLBACK_VOLUME_SPIKE_RATIO,
+    ADVERSE_PULLBACK_BODY_MIN_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
 )
 from core.indicators import bars_since_supertrend_flip
+
+def compute_pullback_target(
+    kc_edge: float, ema_20: float, atr: float, side: str, score: int
+) -> tuple[float, float, bool]:
+    """Return (target, pullback_distance, has_enough_room) using one shared rule."""
+    depth = get_pullback_target_depth(score)
+    span = abs(float(kc_edge) - float(ema_20))
+    min_distance = max(0.0, float(atr) * PULLBACK_TARGET_MIN_ATR_MULT)
+    if span + 1e-12 < min_distance:
+        return float(kc_edge), span, False
+    distance = min(span, max(span * depth, min_distance))
+    target = (
+        float(kc_edge) - distance
+        if str(side).upper() == "LONG"
+        else float(kc_edge) + distance
+    )
+    return target, distance, True
+
 
 def classify_btc_regime(st_direction: int, btc_direction: int, flip_age: int, symbol: str = None) -> dict:
     """Return the BTC entry adjustment without blocking healthy relative-strength trades."""
@@ -227,10 +247,27 @@ class SuperTrendKeltnerStrategy:
         ema_20 = curr['ema_20'] if not np.isnan(curr['ema_20']) else price
         ema_50 = curr['ema_50'] if not np.isnan(curr['ema_50']) else price
 
+        def signal_diagnostics() -> dict:
+            return {
+                "price": float(price),
+                "atr": float(atr),
+                "atr_pct": float(atr / price) if price > 0 else 0.0,
+                "rsi": float(rsi),
+                "adx": float(adx),
+                "volume_ratio": float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0,
+                "ema_20": float(ema_20),
+                "ema_50_1h": float(ema_50_1h) if ema_50_1h is not None else None,
+                "st_direction_5m": int(st_dir),
+                "st_direction_1h": int(st_direction_1h) if st_direction_1h is not None else None,
+                "btc_direction_1h": int(btc_st_direction_1h or 0),
+                "btc_flip_age": int(btc_st_flip_age),
+            }
+
         def eligibility_hold(reason: str) -> dict:
             return {
                 "action": "HOLD", "reason": reason,
                 "eligible": False, "score_stage": "ELIGIBILITY",
+                "diagnostics": signal_diagnostics(),
             }
 
         # --- 1. 底線防禦 (Mandatory Filters) ---
@@ -443,6 +480,7 @@ class SuperTrendKeltnerStrategy:
             "btc_score_penalty": btc_regime["score_penalty"],
             "btc_allocation_factor": btc_regime["allocation_factor"],
             "btc_pre_penalty_score": raw_score_before_btc,
+            "diagnostics": signal_diagnostics(),
         }
 
         def scored_hold(reason: str) -> dict:
@@ -496,6 +534,18 @@ class SuperTrendKeltnerStrategy:
 
         if score >= MIN_SCORE_THRESHOLD:
             pullback_depth = get_pullback_target_depth(score)
+            kc_edge = kc_upper if st_dir == 1 else kc_lower
+            side = "LONG" if st_dir == 1 else "SHORT"
+            pullback_target, pullback_distance, pullback_room_ok = compute_pullback_target(
+                kc_edge, ema_20, atr, side, score
+            )
+            if not pullback_room_ok:
+                return scored_hold(
+                    f"Mandatory_Fail: Pullback_Range_Too_Narrow"
+                    f"({pullback_distance / max(atr, 1e-12):.2f}ATR<"
+                    f"{PULLBACK_TARGET_MIN_ATR_MULT:.2f}ATR) | Score({score}) | "
+                    f"{', '.join(score_details)}"
+                )
             confirmation_reason = (
                 f"ADX {adx:.1f}←{adx_prior:.1f}仍高於{ADX_QUALITY_MIN:g}，品質-1，等待回調二次確認"
                 if adx_decline_soft_penalty
@@ -506,26 +556,26 @@ class SuperTrendKeltnerStrategy:
             downgrade_note = " | MarketChase_Disabled"
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
-                pullback_target = kc_upper - (kc_upper - ema_20) * pullback_depth
                 return {
                     "action": "WAIT_PULLBACK", "side": "LONG",
                     "price": price, "atr": atr,
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                     "target_zone": pullback_target, "ema_20": ema_20,
                     "pullback_depth": pullback_depth,
+                    "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
                     "confirmation_reason": confirmation_reason,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
             else:  # SHORT
                 dist = (kc_lower - price) / kc_lower
-                pullback_target = kc_lower + (ema_20 - kc_lower) * pullback_depth
                 return {
                     "action": "WAIT_PULLBACK", "side": "SHORT",
                     "price": price, "atr": atr,
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                     "target_zone": pullback_target, "ema_20": ema_20,
                     "pullback_depth": pullback_depth,
+                    "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
                     "confirmation_reason": confirmation_reason,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
@@ -670,6 +720,21 @@ class SuperTrendKeltnerStrategy:
             min_sustain_vol = float(vol_ma_20 * POST_BREAKOUT_VOL_SUSTAIN_RATIO)
             volume_faded = recent_vol_avg < min_sustain_vol
 
+        # 逆向爆量先觀察、不硬擋：多單的大陰K或空單的大陽K若達均量1.8倍，
+        # 回傳旗標讓引擎記錄，日後可用真實結果決定是否升級為硬性撤單。
+        candle_open = float(curr.get('open', curr['close']))
+        candle_close = float(curr['close'])
+        volume_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
+        adverse_candle = (
+            (side == "LONG" and candle_close < candle_open)
+            or (side == "SHORT" and candle_close > candle_open)
+        )
+        adverse_volume_spike = (
+            adverse_candle
+            and abs(candle_close - candle_open) >= atr * ADVERSE_PULLBACK_BODY_MIN_ATR_MULT
+            and volume_ratio >= ADVERSE_PULLBACK_VOLUME_SPIKE_RATIO
+        )
+
         # 回調總分（B量能+C RSI+D新鮮度+E品質加分，滿分79，跟 evaluate_signal()
         # 同一套加權）：量能/RSI 不再各自當硬性關卡、任一項不過就整筆取消，
         # 改成允許互相補償——量能爆量成長可以補足 RSI 差一點點的缺口，更貼近
@@ -717,6 +782,8 @@ class SuperTrendKeltnerStrategy:
             return {
                 "status": "CANCEL",
                 "reason": f"回調品質不足 Quality_Too_Low({score_e}<{ENTRY_MIN_QUALITY_BONUS})",
+                "adverse_volume_spike": adverse_volume_spike,
+                "adverse_volume_ratio": volume_ratio,
             }
 
         raw_pullback_score = score_b + score_c + score_d + score_e
@@ -729,6 +796,8 @@ class SuperTrendKeltnerStrategy:
                 "volume_faded": volume_faded,
                 "recent_volume_avg": recent_vol_avg,
                 "min_sustain_volume": min_sustain_vol,
+                "adverse_volume_spike": adverse_volume_spike,
+                "adverse_volume_ratio": volume_ratio,
                 "reason": (
                     f"回調總分不足 Pullback_Score({pullback_score}<{PULLBACK_SCORE_THRESHOLD}) | "
                     f"Volume+{score_b} RSI+{score_c} Freshness+{score_d} Quality+{score_e} "
@@ -750,6 +819,8 @@ class SuperTrendKeltnerStrategy:
             "volume_faded": volume_faded,
             "recent_volume_avg": recent_vol_avg,
             "min_sustain_volume": min_sustain_vol,
+            "adverse_volume_spike": adverse_volume_spike,
+            "adverse_volume_ratio": volume_ratio,
             "btc_regime_mode": btc_regime["mode"],
             "btc_direction_1h": int(btc_st_direction_1h or 0),
             "btc_score_penalty": btc_regime["score_penalty"],

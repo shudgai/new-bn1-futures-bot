@@ -150,6 +150,8 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
 # 因高分而直接市價追單，所有達標訊號一律等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
+# 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
+HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
 # 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。3 分鐘仍未完成就
@@ -157,6 +159,8 @@ STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_
 PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "3.0"))
 ENTRY_LIMIT_TIMEOUT_SEC = float(os.getenv("ENTRY_LIMIT_TIMEOUT_SEC", "15"))
 PULLBACK_TARGET_MAX_DRIFT_ATR = float(os.getenv("PULLBACK_TARGET_MAX_DRIFT_ATR", "0.25"))
+# 回踩距離至少為 0.10 ATR；若 KC 到 EMA20 的完整空間仍不足，該突破不建候選。
+PULLBACK_TARGET_MIN_ATR_MULT = float(os.getenv("PULLBACK_TARGET_MIN_ATR_MULT", "0.10"))
 PULLBACK_RECLAIM_MIN_ATR = float(os.getenv("PULLBACK_RECLAIM_MIN_ATR", "0.05"))
 PULLBACK_RETRY_COOLDOWN_SEC = float(os.getenv("PULLBACK_RETRY_COOLDOWN_SEC", "60"))
 # 觸價後至少等一根完整 1m K 棒，確認止跌/遇阻再送短效 maker 單。
@@ -194,6 +198,9 @@ KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  
 BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 # POST_BREAKOUT_VOL_SUSTAIN_RATIO：突破後量能持續性確認，用於 confirm_pullback_entry()。
 POST_BREAKOUT_VOL_SUSTAIN_RATIO = float(os.getenv("POST_BREAKOUT_VOL_SUSTAIN_RATIO", "0.6"))
+# 逆向大實體K搭配爆量先列入觀察，不硬擋單；累積結果後再決定是否升級為硬條件。
+ADVERSE_PULLBACK_VOLUME_SPIKE_RATIO = float(os.getenv("ADVERSE_PULLBACK_VOLUME_SPIKE_RATIO", "1.8"))
+ADVERSE_PULLBACK_BODY_MIN_ATR_MULT = float(os.getenv("ADVERSE_PULLBACK_BODY_MIN_ATR_MULT", "0.25"))
 # FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化。
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
 # 初始突破的新鮮度只占 18/100；回踩確認仍保留原本 30 分健康度尺度，
