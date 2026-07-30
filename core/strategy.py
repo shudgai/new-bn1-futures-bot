@@ -219,11 +219,33 @@ def detect_ma7_reversal(
                 f"MA7尚未峰頂轉彎（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}）"
             )
 
-    # KC 位置驗證：現價需在 EMA20 同側
-    if want_dir == 1 and price < ema_20 * (1 - TREND_AGREE_EMA_MARGIN_PCT):
-        return _no(f"現價低於EMA20，KC位置不合（{price:.6g}<{ema_20:.6g}）")
-    if want_dir == -1 and price > ema_20 * (1 + TREND_AGREE_EMA_MARGIN_PCT):
-        return _no(f"現價高於EMA20，KC位置不合（{price:.6g}>{ema_20:.6g}）")
+    # KC 位置驗證與防假突破
+    # 1. 簡化區間定位：現價需在 KC 中軌（EMA20）至通道回調側之間
+    #    多單：kc_lower <= price <= ema_20
+    #    空單：ema_20 <= price <= kc_upper
+    # 2. 歷史觸碰確認：前 2 根已收盤的 K 棒（iloc[-3:-1]，因為 iloc[-1] 尚未收盤）
+    #    多單：至少有一根 K 棒的最低價（low）碰觸或跌破過 kc_lower（下軌）
+    #    空單：至少有一根 K 棒的最高價（high）碰觸或突破過 kc_upper（上軌）
+    past_bars = df.iloc[-3:-1]
+    if len(past_bars) < 1:
+        return _no("歷史已收盤K棒不足，無法進行KC觸碰驗證")
+
+    if want_dir == 1:
+        # 區間判斷
+        if not (price <= ema_20):
+            return _no(f"價格高於EMA20，非回檔買點（{price:.6g}>{ema_20:.6g}）")
+        # 觸摸下軌確認
+        touched_lower = (past_bars['low'] <= past_bars['kc_lower']).any()
+        if not touched_lower:
+            return _no("前兩根K棒未曾觸碰或跌破KC下軌（無回踩確認）")
+    else:
+        # 區間判斷
+        if not (price >= ema_20):
+            return _no(f"價格低於EMA20，非反彈賣點（{price:.6g}<{ema_20:.6g}）")
+        # 觸摸上軌確認
+        touched_upper = (past_bars['high'] >= past_bars['kc_upper']).any()
+        if not touched_upper:
+            return _no("前兩根K棒未曾觸碰或突破KC上軌（無回踩確認）")
 
     # 計算品質分數（用於槽位分配優先排序，上限 89 避免誤觸 CURRENT_MAKER 路徑）
     score = MIN_SCORE_THRESHOLD  # 基礎 65 分

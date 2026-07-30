@@ -1693,21 +1693,31 @@ def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 
     - 建構 MA7 谷底（LONG）或峰頂（SHORT）拐頭樣式
     - price >= EMA20 (LONG) 或 price <= EMA20 (SHORT)
     """
-    price = 100.0
+    # 為了滿足簡化 KC 位置條件：
+    # 多單：price <= ema20。我們將現價（最新一根的 close）設為 99.8，ema20 設為 100.0。
+    # 並且前兩根 K 棒的最低價（low）需要碰觸/跌破過 kc_lower（99.0），我們將過去的 low 設為 98.8。
+    # 空單：price >= ema20。我們將最新 close 設為 100.2，ema20 設為 100.0。
+    # 並且前兩根 K 棒的最高價（high）需要碰觸/突破過 kc_upper（101.0），我們將過去的 high 設為 101.2。
+    price = 99.8 if side == "LONG" else 100.2
     st_dir = 1 if side == "LONG" else -1
     if rsi is None:
         rsi = 60.0 if side == "LONG" else 40.0
-    # MA7 拐頭樣式（最後 3 根有效值就是 detect_ma7_reversal 實際讀取的位置）:
-    # LONG:  ...prev2=100.10, prev=99.90 (谷底), curr=100.05 (已向上) → detected
-    # SHORT: ...prev2=99.90, prev=100.10 (峰頂), curr=99.95 (已向下) → detected
+
     if side == "LONG":
         ma7_vals = [100.0] * 47 + [100.10, 99.90, 100.05]
+        lows = [100.0] * 47 + [98.8, 98.8, 100.0]
+        highs = [101.0] * 50
     else:
         ma7_vals = [100.0] * 47 + [99.90, 100.10, 99.95]
+        lows = [99.0] * 50
+        highs = [100.0] * 47 + [101.2, 101.2, 100.0]
     ema20 = 100.0
+
     return pd.DataFrame({
         "close": [price] * 50,
         "close_price_spike_filtered": [price] * 50,
+        "high": highs,
+        "low": lows,
         "atr": [0.3] * 50,
         "rsi": [rsi] * 50,
         "volume": [volume] * 50,
