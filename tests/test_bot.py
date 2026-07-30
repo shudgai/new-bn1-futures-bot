@@ -5,6 +5,7 @@ import os
 import json
 import core.paper_account as pa_module
 import core.strategy as strategy_module
+import core.engine as engine_module
 from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
@@ -921,3 +922,115 @@ def test_trade_history_counts_only_classified_stop_losses():
     assert overview["sl_count"] == 1
     assert overview["stop_rate"] == pytest.approx(0.5)
     assert overview["protection_stop_rate"] == pytest.approx(0.5)
+
+def test_pullback_reversal_requires_a_closed_candle_after_touch():
+    candidate = {
+        "side": "LONG", "target_price": 100.0, "atr": 2.0, "touched_at": 100.0,
+    }
+    candle_before_close = pd.DataFrame([{
+        "timestamp": 40_000, "open": 99.8, "high": 100.3,
+        "low": 99.5, "close": 100.2, "volume": 1.0,
+    }])
+    assert TradingEngine._pullback_reversal_confirmed(candidate, candle_before_close) is False
+
+    candle_after_touch = candle_before_close.copy()
+    candle_after_touch.loc[0, "timestamp"] = 100_000
+    assert TradingEngine._pullback_reversal_confirmed(candidate, candle_after_touch) is True
+
+    weak_reclaim = candle_after_touch.copy()
+    weak_reclaim.loc[0, "close"] = 100.05
+    assert TradingEngine._pullback_reversal_confirmed(candidate, weak_reclaim) is False
+
+    short_candidate = dict(candidate, side="SHORT")
+    short_reversal = pd.DataFrame([{
+        "timestamp": 100_000, "open": 100.3, "high": 100.5,
+        "low": 99.7, "close": 99.8, "volume": 1.0,
+    }])
+    assert TradingEngine._pullback_reversal_confirmed(short_candidate, short_reversal) is True
+
+
+
+def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+        logs = []
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    class DummyRotation:
+        @staticmethod
+        def get_dynamic_leverage(symbol, score):
+            return 5
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.symbol_rotation = DummyRotation()
+    engine.pending_pullback_candidates = {}
+    engine._pullback_retry_after = {}
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["BTC/USDT", "DOGE/USDT"])
+    monkeypatch.setattr(engine_module, "MAX_SLOTS", 1)
+    signals = [
+        (80, "BTC/USDT", {
+            "side": "LONG", "target_zone": 100.0, "atr": 1.0,
+            "reason": "Quality+5",
+        }, 101.0, 1.0),
+        (90, "DOGE/USDT", {
+            "side": "LONG", "target_zone": 10.0, "atr": 0.1,
+            "reason": "Quality+9",
+        }, 10.1, 0.1),
+    ]
+
+    engine._admit_pullback_candidates(signals, available_balance=100.0, now=1000.0)
+
+    assert list(engine.pending_pullback_candidates) == ["DOGE/USDT"]
+
+
+@pytest.mark.anyio
+async def test_pending_limit_is_validated_for_drift_before_fill_check(monkeypatch):
+    events = []
+
+    class DummyAccount:
+        pending_limit_orders = {
+            "BTC/USDT": {
+                "side": "LONG", "target_price": 100.0, "atr": 1.0,
+                "placed_at": 99.0,
+            }
+        }
+
+        async def cancel_pending_limit(self, symbol, reason):
+            events.append(("cancel", reason))
+
+        async def check_pending_limit_orders(self):
+            events.append(("check", ""))
+
+        @staticmethod
+        def daily_loss_limit_hit():
+            return False, 0.0
+
+    class DummyStrategy:
+        @staticmethod
+        def confirm_pullback_entry(*args, **kwargs):
+            return {"status": "PASS", "reason": "ok"}
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.strategy = DummyStrategy()
+    engine.ema_50_1h_cache = {}
+    engine.adx_1h_declining_cache = {}
+    engine._pullback_retry_after = {}
+    engine.fetch_klines = lambda *args, **kwargs: None
+
+    async def fake_fetch(*args, **kwargs):
+        return pd.DataFrame({"close": [100.0] * 50})
+
+    engine.fetch_klines = fake_fetch
+    engine._fresh_pullback_target = lambda df, side: (100.30, 1.0)
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["BTC/USDT"])
+
+    await engine._validate_pending_limit_orders(now=100.0)
+
+    assert events[0][0] == "cancel"
+    assert "漂移" in events[0][1]
+    assert events[-1][0] == "check"

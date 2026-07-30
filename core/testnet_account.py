@@ -933,11 +933,10 @@ class BinanceTestnetAccount:
         atr: float = 0.0,
         leverage: int = None,
         signal_score: int = None,
+        post_only: bool = True,
     ) -> bool:
-        """在交易所掛真正的限價單進場，取代原本「軟體輪詢等到價再送市價單」
-        的做法：不用等主迴圈下一輪才發現價格到了，交易所直接幫忙盯著；
-        還沒成交、條件變差或超時的處理交給 check_pending_limit_orders()/
-        engine.py 每輪呼叫的條件重新檢查（見 engine._main_loop 第4步）。"""
+        """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
+        未成交、條件變差或超時由 engine.py 主動撤單。"""
         if symbol in self.positions or symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
@@ -970,9 +969,10 @@ class BinanceTestnetAccount:
         try:
             await self._prepare_leverage(symbol, leverage)
             price_str = self.exchange.price_to_precision(symbol, target_price)
+            order_params = {"timeInForce": "GTX" if post_only else "GTC"}
             order = await self.exchange.create_order(
                 symbol, "limit", order_side, qty, float(price_str),
-                {"timeInForce": "GTC"},
+                order_params,
             )
         except Exception as exc:
             self.log(
@@ -994,10 +994,11 @@ class BinanceTestnetAccount:
             "leverage": leverage,
             "signal_score": signal_score,
             "placed_at": time.time(),
+            "post_only": post_only,
         }
         if self._pending_retry_streak.get(symbol, 0) == 0:
             self.log(
-                f"📝 [限價掛單] {symbol} {side} 掛單 @ {price_str}（{leverage}x），等待成交",
+                f"📝 [短效 Maker 限價掛單] {symbol} {side} @ {price_str}（{leverage}x），等待成交",
                 "INFO",
             )
         return True

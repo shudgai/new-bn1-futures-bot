@@ -146,20 +146,15 @@ STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
-# PULLBACK_TIMEOUT_MINUTES：突破後等待回調的最長時間。
-# 25 分鐘→90 秒→20 秒：實測真正會成交的掛單，6 筆裡有 5 筆在 10 秒內
-# 就成交（7.2~9.7 秒），只有 1 筆例外撐了 67.4 秒；反觀逾時撤單的 22
-# 價格早就背離、動能已經轉向。45 秒給最快成交群約 4 倍緩衝，短線動能
-# 真的夠強會立刻回踩接到，等不到就代表這次動能偏單邊，繼續等大機率是
-# 在賭一個正在遠離的假訊號，不如撤單讓 engine.py 用最新資料重新判斷。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "0.75"))
-# 移除連續掛單失敗冷卻（原 PENDING_REPOST_STREAK_LIMIT/PENDING_BACKOFF_
-# MINUTES）：原本連續撤單達門檻會強制冷卻一段時間，但這會讓一個
-# symbol 剛好在冷卻期間真的出現達標訊號時被錯過。改成不限次數重掛，
-# 每次掛單前都要重新通過分數門檻（見 testnet_account.place_limit_entry
-# 的 MIN_OPEN_SIGNAL_SCORE 檢查），未成交/條件變差就撤單，下一輪分數
-# 夠不夠再決定要不要重掛，用分數本身當唯一守門，不用額外的次數/時間
-# 限制。
+# 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "3.0"))
+ENTRY_LIMIT_TIMEOUT_SEC = float(os.getenv("ENTRY_LIMIT_TIMEOUT_SEC", "15"))
+PULLBACK_TARGET_MAX_DRIFT_ATR = float(os.getenv("PULLBACK_TARGET_MAX_DRIFT_ATR", "0.25"))
+PULLBACK_RECLAIM_MIN_ATR = float(os.getenv("PULLBACK_RECLAIM_MIN_ATR", "0.05"))
+PULLBACK_RETRY_COOLDOWN_SEC = float(os.getenv("PULLBACK_RETRY_COOLDOWN_SEC", "60"))
+# 觸價後至少等一根完整 1m K 棒，確認止跌/遇阻再送短效 maker 單。
+# 失效或逾時撤單後短暫冷卻，避免同一個失效訊號每 5 秒重建候選/掛單。
+# 底層日誌節流仍保留，避免重複洗版。
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。

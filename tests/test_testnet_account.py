@@ -177,6 +177,7 @@ async def test_partial_fill_limit_entry_records_actual_margin(tmp_path, monkeypa
         "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
         reason="test", atr=1.0, leverage=5, signal_score=100,
     )
+    assert exchange.orders[0]["params"]["timeInForce"] == "GTX"
     await account.check_pending_limit_orders()
 
     open_trade = account.trades[0]

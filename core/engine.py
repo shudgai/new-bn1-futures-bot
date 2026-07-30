@@ -6,7 +6,10 @@ import pandas as pd
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
-    PULLBACK_TIMEOUT_MINUTES, SYMBOL_ROTATION_INTERVAL_SEC,
+    PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
+    PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
+    PULLBACK_RETRY_COOLDOWN_SEC, PULLBACK_TARGET_DEPTH,
+    SYMBOL_ROTATION_INTERVAL_SEC,
     UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET,
@@ -54,8 +57,10 @@ class TradingEngine:
         self.btc_1h_st_direction: int = 0      # 0=未知, 1=多頭, -1=空頭
         self.btc_1h_st_flip_age: int = 999     # 翻轉後已過幾根 1h K棒（999=尚未初始化）
         self.last_1h_cache_time: float = 0.0
-        # 回調進場改用真正掛在交易所的限價單（見 core/testnet_account.py
-        # 的 pending_limit_orders），不再用軟體輪詢價格的狀態機。
+        # 兩階段回踩：突破先進候選池，觸價後等待 1m 收盤反轉確認，才送
+        # 短效 Post-Only 限價單。候選與交易所掛單分開追蹤。
+        self.pending_pullback_candidates: Dict[str, dict] = {}
+        self._pullback_retry_after: Dict[str, float] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -396,6 +401,246 @@ class TradingEngine:
             await asyncio.sleep(0.1)
         self.last_1h_cache_time = now
 
+    @staticmethod
+    def _quality_bonus(reason: str) -> int:
+        match = re.search(r"Quality\+(\d+)", reason or "")
+        return int(match.group(1)) if match else 0
+
+    @staticmethod
+    def _pullback_reversal_confirmed(candidate: dict, candles_1m: pd.DataFrame) -> bool:
+        """觸價後必須等包含觸價時刻的 1m K 棒真正收盤，且收回目標外側。"""
+        if candles_1m is None or candles_1m.empty:
+            return False
+        candle = candles_1m.iloc[-1]
+        close_time_ms = float(candle["timestamp"]) + 60_000
+        if close_time_ms <= float(candidate.get("touched_at", 0.0)) * 1000:
+            return False
+        target = float(candidate["target_price"])
+        atr = max(float(candidate.get("atr") or 0.0), target * 1e-6)
+        reclaim = atr * PULLBACK_RECLAIM_MIN_ATR
+        open_price = float(candle["open"])
+        close_price = float(candle["close"])
+        if candidate["side"] == "LONG":
+            return (
+                close_price > open_price
+                and close_price >= target + reclaim
+            )
+        return (
+            close_price < open_price
+            and close_price <= target - reclaim
+        )
+
+    def _fresh_pullback_target(self, df: pd.DataFrame, side: str) -> tuple[float, float]:
+        computed = self.strategy.compute_indicators(df)
+        curr = computed.iloc[-1]
+        atr = float(curr["atr"])
+        ema_20 = float(curr["ema_20"])
+        if side == "LONG":
+            kc_edge = float(curr["kc_upper"])
+            target = kc_edge - (kc_edge - ema_20) * PULLBACK_TARGET_DEPTH
+        else:
+            kc_edge = float(curr["kc_lower"])
+            target = kc_edge + (ema_20 - kc_edge) * PULLBACK_TARGET_DEPTH
+        return target, atr
+
+    def _drop_pullback_candidate(
+        self, symbol: str, reason: str, now: float, cooldown: bool = True
+    ) -> None:
+        candidate = self.pending_pullback_candidates.pop(symbol, None)
+        if not candidate:
+            return
+        if cooldown:
+            self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+        self.account.log(f"↩️ [回踩候選取消] {symbol}：{reason}", "INFO")
+
+    def _admit_pullback_candidates(
+        self, signals: list, available_balance: float, now: float
+    ) -> None:
+        """把舊候選與本輪新訊號一起排序，只保留分數/品質最佳的可用槽位。"""
+        pool = {
+            symbol: info
+            for symbol, info in self.pending_pullback_candidates.items()
+            if symbol not in self.account.positions
+            and symbol not in self.account.pending_limit_orders
+            and symbol in DEFAULT_SYMBOLS
+            and symbol not in ENTRY_DISABLED_SYMBOLS
+            and now - info["created_at"] <= PULLBACK_TIMEOUT_MINUTES * 60
+        }
+        for score, symbol, sig, _price, real_atr in signals:
+            if symbol in pool or self._pullback_retry_after.get(symbol, 0.0) > now:
+                continue
+            amount = min(
+                max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
+                TRADE_AMOUNT_USDT,
+            )
+            pool[symbol] = {
+                "symbol": symbol,
+                "side": sig["side"],
+                "score": score,
+                "quality": self._quality_bonus(sig.get("reason", "")),
+                "target_price": float(sig["target_zone"]),
+                "atr": float(sig.get("atr") or real_atr),
+                "reason": sig.get("reason", ""),
+                "amount_usdt": amount,
+                "leverage": self.symbol_rotation.get_dynamic_leverage(symbol, score),
+                "created_at": now,
+                "touched_at": None,
+            }
+
+        capacity = (
+            max(0, MAX_SLOTS - len(self.account.positions) - len(self.account.pending_limit_orders))
+            if MAX_SLOTS > 0 else len(pool)
+        )
+        ranked = sorted(
+            pool.values(),
+            key=lambda item: (item["score"], item["quality"], -item["created_at"]),
+            reverse=True,
+        )
+        selected = {}
+        budget_used = 0.0
+        for item in ranked:
+            if len(selected) >= capacity:
+                break
+            if budget_used + item["amount_usdt"] > available_balance:
+                continue
+            selected[item["symbol"]] = item
+            budget_used += item["amount_usdt"]
+
+        old_symbols = set(self.pending_pullback_candidates)
+        self.pending_pullback_candidates = selected
+        for symbol in old_symbols - set(selected):
+            self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+        for symbol in set(selected) - old_symbols:
+            item = selected[symbol]
+            self.account.log(
+                f"🎯 [回踩候選] {symbol} {item['side']} {item['score']}分/品質{item['quality']} "
+                f"等待觸價 @ {item['target_price']:.8g}",
+                "INFO",
+            )
+
+    async def _monitor_pullback_candidates(self, now: float) -> None:
+        daily_halt, _ = self.account.daily_loss_limit_hit()
+        if daily_halt:
+            for symbol in list(self.pending_pullback_candidates):
+                self._drop_pullback_candidate(symbol, "每日虧損熔斷，停止新倉", now)
+            return
+
+        for symbol, candidate in list(self.pending_pullback_candidates.items()):
+            if symbol in ENTRY_DISABLED_SYMBOLS or symbol not in DEFAULT_SYMBOLS:
+                self._drop_pullback_candidate(symbol, "幣種已停止新倉或移出牌面", now)
+                continue
+            if symbol in self.account.positions or symbol in self.account.pending_limit_orders:
+                self.pending_pullback_candidates.pop(symbol, None)
+                continue
+            if now - candidate["created_at"] > PULLBACK_TIMEOUT_MINUTES * 60:
+                self._drop_pullback_candidate(symbol, "等待回踩/反轉確認逾時", now)
+                continue
+
+            live_price = self.tickers.get(symbol)
+            if not live_price:
+                continue
+            target = candidate["target_price"]
+            touched = live_price <= target if candidate["side"] == "LONG" else live_price >= target
+            if candidate.get("touched_at") is None:
+                if not touched:
+                    continue
+                candidate["touched_at"] = now
+                self.account.log(
+                    f"👀 [回踩觸價] {symbol} {candidate['side']} @ {live_price:.8g}，"
+                    "等待 1m 收盤反轉確認",
+                    "INFO",
+                )
+
+            confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+            if confirm_df.empty or len(confirm_df) < 50:
+                continue
+            confirm = self.strategy.confirm_pullback_entry(
+                confirm_df, candidate["side"], ema_1h=self.ema_50_1h_cache.get(symbol),
+                trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
+            )
+            if confirm["status"] != "PASS":
+                self._drop_pullback_candidate(symbol, f"條件已變差：{confirm['reason']}", now)
+                continue
+
+            fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, candidate["side"])
+            drift = abs(fresh_target - target)
+            if drift > max(candidate["atr"], fresh_atr) * PULLBACK_TARGET_MAX_DRIFT_ATR:
+                self._drop_pullback_candidate(symbol, f"目標漂移 {drift / max(fresh_atr, 1e-12):.2f} ATR", now)
+                continue
+
+            candles_1m = await self.fetch_klines(symbol, timeframe="1m", limit=5)
+            candidate_for_check = dict(candidate, target_price=fresh_target, atr=fresh_atr)
+            if not self._pullback_reversal_confirmed(candidate_for_check, candles_1m):
+                continue
+            live_price = self.tickers.get(symbol, live_price)
+            reclaimed = live_price >= fresh_target if candidate["side"] == "LONG" else live_price <= fresh_target
+            if not reclaimed:
+                self._drop_pullback_candidate(symbol, "反轉確認後又跌回/漲回目標錯側", now)
+                continue
+            committed = len(self.account.positions) + len(self.account.pending_limit_orders)
+            if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
+                self._drop_pullback_candidate(symbol, "可用持倉槽位已滿", now, cooldown=False)
+                continue
+            if self.account.get_available_balance() < candidate["amount_usdt"]:
+                self._drop_pullback_candidate(symbol, "可用保證金不足", now, cooldown=False)
+                continue
+
+            sl_distance, tp_distance = compute_sl_tp_distance(fresh_target, fresh_atr)
+            if candidate["side"] == "LONG":
+                sl, tp = fresh_target - sl_distance, fresh_target + tp_distance
+            else:
+                sl, tp = fresh_target + sl_distance, fresh_target - tp_distance
+            placed = await self.account.place_limit_entry(
+                symbol=symbol, side=candidate["side"], target_price=fresh_target,
+                amount_usdt=candidate["amount_usdt"], sl=sl, tp=tp,
+                reason=f"Pullback_Confirmed_Limit | {candidate['reason']}", atr=fresh_atr,
+                leverage=candidate["leverage"], signal_score=candidate["score"],
+                post_only=True,
+            )
+            if placed:
+                self.pending_pullback_candidates.pop(symbol, None)
+
+    async def _validate_pending_limit_orders(self, now: float) -> None:
+        """先驗證再查成交；最大限度縮小失效訊號被舊掛單接住的時間窗。"""
+        daily_halt, _ = self.account.daily_loss_limit_hit()
+        if daily_halt:
+            for symbol in list(self.account.pending_limit_orders):
+                await self.account.cancel_pending_limit(symbol, "每日虧損熔斷，停止新倉")
+                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+            await self.account.check_pending_limit_orders()
+            return
+
+        for symbol, info in list(self.account.pending_limit_orders.items()):
+            if symbol in ENTRY_DISABLED_SYMBOLS or symbol not in DEFAULT_SYMBOLS:
+                await self.account.cancel_pending_limit(symbol, "幣種已停止新倉或移出牌面")
+                continue
+            if now - info["placed_at"] > ENTRY_LIMIT_TIMEOUT_SEC:
+                await self.account.cancel_pending_limit(
+                    symbol, f"短效 Maker 掛單 {ENTRY_LIMIT_TIMEOUT_SEC:.0f} 秒未成交"
+                )
+                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                continue
+            confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+            if confirm_df.empty or len(confirm_df) < 50:
+                continue
+            confirm = self.strategy.confirm_pullback_entry(
+                confirm_df, info["side"], ema_1h=self.ema_50_1h_cache.get(symbol),
+                trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
+            )
+            if confirm["status"] != "PASS":
+                await self.account.cancel_pending_limit(symbol, f"條件已變差：{confirm['reason']}")
+                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                continue
+            fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, info["side"])
+            drift_atr = abs(fresh_target - info["target_price"]) / max(fresh_atr, 1e-12)
+            if drift_atr > PULLBACK_TARGET_MAX_DRIFT_ATR:
+                await self.account.cancel_pending_limit(
+                    symbol, f"掛單目標已漂移 {drift_atr:.2f} ATR"
+                )
+                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+
+        await self.account.check_pending_limit_orders()
+
     async def _main_loop(self):
         while self.is_running:
             try:
@@ -416,49 +661,12 @@ class TradingEngine:
                 # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
                 await self.update_1h_trend_cache()
 
-                # 4. 限價回調掛單監控：已暫停新倉的幣種必須在成交檢查前撤單，
-                # 避免舊掛單剛好先成交；其餘掛單再交由帳戶同步成交狀態。
-                for pb_symbol in list(self.account.pending_limit_orders):
-                    if pb_symbol in ENTRY_DISABLED_SYMBOLS:
-                        await self.account.cancel_pending_limit(
-                            pb_symbol, "幣種已列入暫停新倉名單"
-                        )
-
-                await self.account.check_pending_limit_orders()
+                # 4. 先等觸價與 1m 反轉確認，再驗證短效掛單，最後才查成交。
                 now_time = time.time()
-                for pb_symbol, pb_info in list(self.account.pending_limit_orders.items()):
-                    if pb_symbol not in DEFAULT_SYMBOLS:
-                        await self.account.cancel_pending_limit(
-                            pb_symbol, "已不在目前牌面名單"
-                        )
-                        continue
+                await self._monitor_pullback_candidates(now_time)
+                await self._validate_pending_limit_orders(now_time)
 
-                    # 4a. 超時撤單：實測真正成交的掛單都在 30 秒內成交，
-                    # PULLBACK_TIMEOUT_MINUTES 已經給了充分緩衝，超過還沒
-                    # 成交代表這次不會等到了，撤單放棄不要留著裸奔。
-                    elapsed_min = (now_time - pb_info["placed_at"]) / 60.0
-                    if elapsed_min > PULLBACK_TIMEOUT_MINUTES:
-                        await self.account.cancel_pending_limit(
-                            pb_symbol, f"掛單 {elapsed_min * 60:.0f} 秒未成交，放棄本次進場"
-                        )
-                        continue
 
-                    # 4b. 條件變差就撤單：掛單還沒成交的這段等待期間，用最新
-                    # K 線重新檢查核心條件是否還成立（複用回踩二次確認），
-                    # 避免掛著一張已經不合時宜的舊單被動成交在錯誤的時機——
-                    # 這正是原本「換成真限價單」會失去、現在補回來的安全網。
-                    confirm_df = await self.fetch_klines(pb_symbol, timeframe="5m", limit=100)
-                    if confirm_df.empty or len(confirm_df) < 50:
-                        continue
-                    confirm = self.strategy.confirm_pullback_entry(
-                        confirm_df, pb_info["side"], ema_1h=self.ema_50_1h_cache.get(pb_symbol),
-                        trend_1h_declining=self.adx_1h_declining_cache.get(pb_symbol, False),
-                    )
-                    if confirm["status"] != "PASS":
-                        await self.account.cancel_pending_limit(
-                            pb_symbol, f"條件已變差：{confirm['reason']}"
-                        )
-                        continue
 
                 # 5. 開倉訊號檢查 — 依可用餘額填充預算，用完為止
                 # 每日虧損熔斷：觸發時只跳過本段（不開新倉），上面的持倉管理
@@ -469,6 +677,7 @@ class TradingEngine:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
                 if not daily_halt and available_balance >= MIN_TRADE_USDT:
                     candidate_signals = []  # [(score, symbol, sig, price, atr)]
+                    pullback_signals = []
                     signal_progress = []
 
                     now_time = time.time()
@@ -487,6 +696,18 @@ class TradingEngine:
                             )
                             continue
 
+                        if symbol in self.pending_pullback_candidates:
+                            pending = self.pending_pullback_candidates[symbol]
+                            stage = (
+                                "已觸價，等待1m收盤反轉確認"
+                                if pending.get("touched_at")
+                                else f"等待回踩觸價 @ {pending.get('target_price'):.8g}"
+                            )
+                            signal_progress.append(
+                                f"{coin} {pending['side']} {pending['score']}分,{stage}"
+                            )
+                            continue
+
                         # 如果已經掛著限價單，跳過訊號偵測（避免重複掛單）
                         if symbol in self.account.pending_limit_orders:
                             pending = self.account.pending_limit_orders[symbol]
@@ -499,6 +720,13 @@ class TradingEngine:
                                 },
                                 pending.get("side"),
                             ))
+                            continue
+
+                        retry_after = self._pullback_retry_after.get(symbol, 0.0)
+                        if retry_after > now_time:
+                            signal_progress.append(
+                                f"{coin} {direction_text} 0分,回踩失效冷卻{int(retry_after - now_time)}秒"
+                            )
                             continue
 
                         # 冷卻時間檢查 (剛平倉 15 分鐘內禁止重複進場)
@@ -612,29 +840,11 @@ class TradingEngine:
                             candidate_signals.append((adjusted_score, symbol, sig, price, real_atr))
 
                         elif sig["action"] == "WAIT_PULLBACK":
-                            # ── 直接在交易所掛真正的限價單 ──────────────────
-                            # 掛單真的會佔用保證金，等同持倉，所以跟持倉數一起
-                            # 算 MAX_SLOTS，不是等成交那一刻才檢查。
-                            total_committed = len(self.account.positions) + len(self.account.pending_limit_orders)
-                            if MAX_SLOTS > 0 and total_committed >= MAX_SLOTS:
-                                continue
-                            target_price = sig["target_zone"]
-                            atr = sig.get("atr", real_atr)
-                            sl_distance, tp_distance = compute_sl_tp_distance(target_price, atr)
-                            if sig["side"] == "LONG":
-                                sl = target_price - sl_distance
-                                tp = target_price + tp_distance
-                            else:
-                                sl = target_price + sl_distance
-                                tp = target_price - tp_distance
-                            pb_amount = TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", 0))
-                            await self.account.place_limit_entry(
-                                symbol=symbol, side=sig["side"], target_price=target_price,
-                                amount_usdt=pb_amount, sl=sl, tp=tp,
-                                reason=f"Pullback_Limit | {sig['reason']}", atr=atr,
-                                leverage=self.symbol_rotation.get_dynamic_leverage(symbol, sig.get("score", 0)),
-                                signal_score=sig.get("score"),
+                            pullback_signals.append(
+                                (adjusted_score, symbol, sig, price, real_atr)
                             )
+
+                    self._admit_pullback_candidates(pullback_signals, available_balance, now_time)
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
 
@@ -646,7 +856,11 @@ class TradingEngine:
                     top_signals = []
                     budget_used = 0.0
                     open_slots = (
-                        max(0, MAX_SLOTS - len(self.account.positions))
+                        max(
+                            0, MAX_SLOTS - len(self.account.positions)
+                            - len(self.account.pending_limit_orders)
+                            - len(self.pending_pullback_candidates),
+                        )
                         if MAX_SLOTS > 0 else None
                     )
                     for sc, sym, sig, pr, atr_val in candidate_signals:
