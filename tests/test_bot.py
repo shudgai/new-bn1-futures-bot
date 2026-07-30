@@ -13,6 +13,7 @@ from core.config import (
     TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
+    DISABLE_TAKE_PROFIT,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer

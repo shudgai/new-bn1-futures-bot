@@ -23,6 +23,7 @@ from core.config import (
     PROFIT_ALERT_GIVEBACK_RATIO,
     get_leverage,
     get_signal_leverage,
+    DISABLE_TAKE_PROFIT,
 )
 from core.strategy import compute_sl_tp_distance
 from core.notifier import notify_email
@@ -627,10 +628,10 @@ class BinanceTestnetAccount:
         sl_distance, tp_distance = compute_sl_tp_distance(entry_p, atr)
         if side == "LONG":
             sl_price = float(self.exchange.price_to_precision(symbol, entry_p - sl_distance))
-            tp_price = float(self.exchange.price_to_precision(symbol, entry_p + tp_distance))
+            tp_price = float(self.exchange.price_to_precision(symbol, entry_p + tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         else:
             sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance))
-            tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance))
+            tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
@@ -638,14 +639,16 @@ class BinanceTestnetAccount:
                 symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 limit_price=self._stop_limit_price(sl_price, close_side),
             )
-            await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
+            if not DISABLE_TAKE_PROFIT:
+                await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
             meta["sl"] = sl_price
             meta["tp"] = tp_price
             meta["atr"] = atr
             self.position_meta[symbol] = meta
             self.save_state()
+            tp_msg = f" TP={tp_price}" if not DISABLE_TAKE_PROFIT else " (已停用初始止利)"
             self.log(
-                f"🔧 [補建保護單] {symbol} 偵測到無止損止盈持倉，已自動建立 SL={sl_price} TP={tp_price}",
+                f"🔧 [補建保護單] {symbol} 偵測到無止損保護持倉，已自動建立 SL={sl_price}{tp_msg}",
                 "WARNING",
             )
         except Exception as exc:
@@ -858,7 +861,7 @@ class BinanceTestnetAccount:
                 else execution_price - tp_distance
             )
             sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
-            tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp))
+            tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
             atr_value = atr if atr > 0 else execution_price * 0.015
             try:
                 # 限價單成交後，這裡跟主迴圈/網頁輪詢都可能同時偵測到「這個
@@ -870,9 +873,10 @@ class BinanceTestnetAccount:
                     symbol, close_side, "STOP_MARKET", qty, sl_price,
                     limit_price=self._stop_limit_price(sl_price, close_side),
                 )
-                await self._create_protection_order(
-                    symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
-                )
+                if not DISABLE_TAKE_PROFIT:
+                    await self._create_protection_order(
+                        symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
+                    )
             except Exception:
                 await self._cancel_all_orders(symbol)
                 await self._emergency_flatten(symbol, side, qty)

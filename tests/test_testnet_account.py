@@ -82,6 +82,7 @@ class FakeTestnetExchange:
 @pytest.mark.anyio
 async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(
         BinanceTestnetAccount,
         "credentials_configured",
@@ -408,3 +409,40 @@ async def test_external_close_classifies_exchange_tp_and_price_fallback_sl(
     )
     assert exit_type == "SL"
     assert "Stop-Loss" in reason
+
+
+@pytest.mark.anyio
+async def test_disable_take_profit_prevents_tp_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", True)
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+
+    await account.initialize()
+    success = await account.open_position(
+        "DOGE/USDT",
+        "LONG",
+        100.0,
+        50.0,
+        98.0,
+        103.0,
+        "Fast_Keltner_SuperTrend",
+        atr=1.0,
+        leverage=5,
+        signal_score=100,
+    )
+
+    assert success is True
+    # Should only place market entry and STOP (SL), no TAKE_PROFIT_MARKET
+    assert [order["type"] for order in exchange.orders] == [
+        "market",
+        "STOP",
+    ]
+    assert "DOGE/USDT" in account.positions
+    assert account.positions["DOGE/USDT"]["tp"] == 0.0
+
