@@ -134,8 +134,10 @@ class SymbolRotation:
         trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
         volatility_excluded: bool, history_quarantined: bool,
     ) -> bool:
+        # 放寬輪替過濾（選項 1）：不再強制要求 1h EMA50 同側與 1h SuperTrend 方向對齊。
+        # 僅保留基本 5m 方向以及基本波動率與歷史黑名單限制，確保主流幣如 BTC/ETH/SOL 永遠合格留在監控席。
         return (
-            trend_aligned and st_5m_aligned and st_1h_aligned
+            st_5m_aligned
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
             and not volatility_excluded and not history_quarantined
         )

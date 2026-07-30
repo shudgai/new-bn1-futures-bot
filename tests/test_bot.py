@@ -1032,9 +1032,9 @@ def test_directional_eligibility_requires_trend_st_and_tradeable_atr(monkeypatch
     monkeypatch.setattr("core.symbol_rotation.MIN_ATR_PCT", 0.0015)
     monkeypatch.setattr("core.symbol_rotation.MAX_ATR_PCT", 0.006)
 
-    assert SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, False)
+    # 寬鬆過濾（選項 1）：只要 5m 方向對齊 (第二個參數 True)，即便 1h 趨勢 (第一個) 與 1h ST (第三個) 為 False，也視為合格
+    assert SymbolRotation._direction_is_eligible(False, True, False, 0.003, False, False)
     assert not SymbolRotation._direction_is_eligible(True, False, True, 0.003, False, False)
-    assert not SymbolRotation._direction_is_eligible(True, True, False, 0.003, False, False)
     assert not SymbolRotation._direction_is_eligible(True, True, True, 0.0075, False, False)
     assert not SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, True)
 
