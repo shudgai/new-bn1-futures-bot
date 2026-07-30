@@ -28,6 +28,10 @@ from core.config import (
     SYMBOL_ROTATION_MAX_CHANGES,
     SYMBOL_MIN_LISTING_DAYS,
     SYMBOL_MAX_24H_CHANGE_PCT,
+    SYMBOL_HISTORY_QUARANTINE_MIN_TRADES,
+    SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL,
+    SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE,
+    ENTRY_DISABLED_SYMBOLS,
     TREND_FILTER_EMA_PERIOD,
     RAPID_MOVE_WINDOW,
     RAPID_MOVE_THRESHOLD,
@@ -115,6 +119,29 @@ class SymbolRotation:
 
 
     @staticmethod
+    def _history_quarantined(stat: dict) -> bool:
+        return (
+            stat.get("trades", 0) >= SYMBOL_HISTORY_QUARANTINE_MIN_TRADES
+            and (
+                stat.get("avg_pnl", 0.0) <= SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL
+                or stat.get("stop_rate", 0.0) >= SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE
+            )
+        )
+
+
+    @staticmethod
+    def _direction_is_eligible(
+        trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
+        volatility_excluded: bool, history_quarantined: bool,
+    ) -> bool:
+        return (
+            trend_aligned and st_5m_aligned and st_1h_aligned
+            and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
+            and not volatility_excluded and not history_quarantined
+        )
+
+
+    @staticmethod
     def market_candidates(tickers: dict, markets: dict = None) -> List[str]:
         normalized = SymbolRotation._normalize_tickers(tickers)
         allowed_crypto = None
@@ -134,7 +161,7 @@ class SymbolRotation:
         }
         ranked = []
         for symbol, ticker in normalized.items():
-            if not symbol.endswith("/USDT"):
+            if not symbol.endswith("/USDT") or symbol in ENTRY_DISABLED_SYMBOLS:
                 continue
             if allowed_crypto is not None and symbol not in allowed_crypto:
                 continue
@@ -209,6 +236,7 @@ class SymbolRotation:
         candidates = candidates or SYMBOL_CANDIDATE_POOL
         normalized = self._normalize_tickers(tickers)
         history = self._closed_trade_direction_stats(self.account.trades)
+        symbol_history = self._closed_trade_stats(self.account.trades)
         log_volumes = {
             symbol: math.log10(max(float(normalized.get(symbol, {}).get("quoteVolume") or 0.0), 1.0))
             for symbol in candidates
@@ -219,6 +247,8 @@ class SymbolRotation:
         results = []
 
         for symbol in candidates:
+            if symbol in ENTRY_DISABLED_SYMBOLS:
+                continue
             try:
                 raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="5m", limit=100)
                 raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=200)
@@ -232,7 +262,9 @@ class SymbolRotation:
                     continue
 
                 computed = self.strategy.compute_indicators(df)
+                computed_1h = self.strategy.compute_indicators(df_1h)
                 curr = computed.iloc[-1]
+                st_direction_1h = int(computed_1h.iloc[-1]["st_direction"])
                 price = float(curr["close"])
 
                 # 急升急降過濾：回看最近 N 根5分K，漲跌幅超標則跳過
@@ -306,10 +338,20 @@ class SymbolRotation:
                     "updated_at": time.time(),
                 }
 
+                overall_stat = symbol_history.get(
+                    symbol,
+                    {"trades": 0, "avg_pnl": 0.0, "win_rate": 0.5, "stop_rate": 0.0},
+                )
+                history_quarantined = self._history_quarantined(overall_stat)
+                atr_eligible = MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
+
                 for direction in ("LONG", "SHORT"):
                     is_long = direction == "LONG"
                     trend_aligned = price >= ema_1h if is_long else price <= ema_1h
-                    st_aligned = st_direction == (1 if is_long else -1)
+                    wanted_direction = 1 if is_long else -1
+                    st_5m_aligned = st_direction == wanted_direction
+                    st_1h_aligned = st_direction_1h == wanted_direction
+                    st_aligned = st_5m_aligned and st_1h_aligned
                     kc_target = float(curr["kc_upper"] if is_long else curr["kc_lower"])
                     kc_distance_atr = abs(price - kc_target) / atr
                     kc_score = max(0.0, 1.0 - kc_distance_atr / 2.0)
@@ -360,11 +402,23 @@ class SymbolRotation:
                         "symbol": symbol,
                         "direction": direction,
                         "quant_score": quant_score,
-                        "eligible": trend_aligned and not volatility_excluded,
+                        "eligible": self._direction_is_eligible(
+                            trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
+                            volatility_excluded, history_quarantined,
+                        ),
+                        "atr_eligible": atr_eligible,
+                        "atr_pct": atr_pct,
+                        "history_quarantined": history_quarantined,
+                        "history_trades": overall_stat["trades"],
+                        "history_avg_pnl": overall_stat["avg_pnl"],
+                        "history_stop_rate": overall_stat["stop_rate"],
                         "volatility_excluded": volatility_excluded,
                         "price": price,
                         "ema_1h": ema_1h,
                         "st_aligned": st_aligned,
+                        "st_5m_aligned": st_5m_aligned,
+                        "st_1h_aligned": st_1h_aligned,
+                        "st_direction_1h": st_direction_1h,
                         "kc_distance_atr": kc_distance_atr,
                         "rsi": rsi,
                         "volume_ratio": volume_ratio,
@@ -403,7 +457,11 @@ class SymbolRotation:
     ) -> tuple[List[str], Dict[str, str], List[dict]]:
         qualified = [
             item for item in metrics
-            if item.get("eligible") and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
+            if (
+                item.get("eligible")
+                and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
+                and item.get("symbol") not in ENTRY_DISABLED_SYMBOLS
+            )
         ]
         selected_items = []
         used_symbols = set()
@@ -432,20 +490,6 @@ class SymbolRotation:
                 reverse=True,
             )
             for item in mixed_backfill:
-                selected_items.append(item)
-                used_symbols.add(item["symbol"])
-                if len(selected_items) >= SYMBOL_ROTATION_COUNT:
-                    break
-
-        # 若達 60 分的候選仍不足，僅以其餘任一方向排名補足介面；
-        # 這不會繞過策略本身的 70 分實際開倉門檻。
-        if len(selected_items) < SYMBOL_ROTATION_COUNT:
-            display_backfill = sorted(
-                [item for item in metrics if item["symbol"] not in used_symbols],
-                key=lambda item: item.get("final_score", 0.0),
-                reverse=True,
-            )
-            for item in display_backfill:
                 selected_items.append(item)
                 used_symbols.add(item["symbol"])
                 if len(selected_items) >= SYMBOL_ROTATION_COUNT:
@@ -483,40 +527,36 @@ class SymbolRotation:
             if symbol not in best_by_symbol or item.get("final_score", 0.0) > best_by_symbol[symbol].get("final_score", 0.0):
                 best_by_symbol[symbol] = item
 
+        # 只保留本輪仍合格或已有持倉的幣；不合格幣立即退出，不再為了湊滿
+        # 固定數量留在牌面。空缺只由本輪完整合格的 desired_items 補上。
         changes = []
-        if len(current) >= SYMBOL_ROTATION_COUNT:
-            # 防抖：每輪最多換三幣，且新幣必須比被換幣至少高五分。
-            selected = list(current[:SYMBOL_ROTATION_COUNT])
-            incoming_items = sorted(
-                [item for item in desired_items if item["symbol"] not in selected],
-                key=lambda item: item.get("final_score", 0.0),
-                reverse=True,
-            )
-            for incoming_item in incoming_items:
-                if len(changes) >= SYMBOL_ROTATION_MAX_CHANGES:
-                    break
-                replaceable = [
-                    symbol for symbol in selected
-                    if symbol not in desired_by_symbol and symbol not in held_positions
-                ]
-                if not replaceable:
-                    break
-                outgoing = min(
-                    replaceable,
-                    key=lambda symbol: best_by_symbol.get(symbol, {}).get("final_score", 0.0),
-                )
-                outgoing_score = best_by_symbol.get(outgoing, {}).get("final_score", 0.0)
-                incoming_score = incoming_item.get("final_score", 0.0)
-                if incoming_score < outgoing_score + SYMBOL_ROTATION_MIN_SCORE_GAP:
-                    break
-                selected[selected.index(outgoing)] = incoming_item["symbol"]
+        current_slice = list(current[:SYMBOL_ROTATION_COUNT])
+        selected = [
+            symbol for symbol in current_slice
+            if symbol in held_positions
+            or (symbol in desired_by_symbol and symbol not in ENTRY_DISABLED_SYMBOLS)
+        ]
+        removed = [
+            symbol for symbol in current_slice
+            if symbol not in selected and symbol not in held_positions
+        ]
+        incoming_items = sorted(
+            [item for item in desired_items if item["symbol"] not in selected],
+            key=lambda item: item.get("final_score", 0.0),
+            reverse=True,
+        )
+        for incoming_item in incoming_items:
+            if len(selected) >= SYMBOL_ROTATION_COUNT:
+                break
+            selected.append(incoming_item["symbol"])
+            if removed:
                 changes.append({
-                    "out": outgoing,
+                    "out": removed.pop(0),
                     "in": incoming_item["symbol"],
                     "direction": incoming_item["direction"],
                 })
-        else:
-            selected = [item["symbol"] for item in desired_items]
+        for outgoing in removed:
+            changes.append({"out": outgoing, "in": "", "direction": ""})
 
         selected_items = [
             desired_by_symbol.get(symbol)
@@ -536,48 +576,35 @@ class SymbolRotation:
         normalized = self._normalize_tickers(tickers)
         held = set(self.account.positions.keys())
         changes: List[dict] = []
-        replacement_pool = None
-
         for symbol in list(DEFAULT_SYMBOLS):
             if symbol in held:
                 continue
-            ticker = normalized.get(symbol)
-            if not ticker:
-                continue
-            quote_volume = float(ticker.get("quoteVolume") or 0.0)
-            change_pct = abs(float(ticker.get("percentage") or 0.0))
-            volatility_excluded = bool(
-                self.volatility_stats.get(symbol, {}).get("volatility_excluded")
-            )
-
-            if quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
-                reason = f"流動性不足({quote_volume:.0f}<{SYMBOL_MIN_QUOTE_VOLUME:.0f})"
-            elif change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
-                reason = f"24h暴漲暴跌({change_pct:.1f}%>{SYMBOL_MAX_24H_CHANGE_PCT:.1f}%)"
-            elif volatility_excluded:
-                reason = "波動率長期偏離可交易區間"
+            if symbol in ENTRY_DISABLED_SYMBOLS:
+                reason = "已暫停新倉"
             else:
-                continue
+                ticker = normalized.get(symbol)
+                if not ticker:
+                    continue
+                quote_volume = float(ticker.get("quoteVolume") or 0.0)
+                change_pct = abs(float(ticker.get("percentage") or 0.0))
+                volatility_excluded = bool(
+                    self.volatility_stats.get(symbol, {}).get("volatility_excluded")
+                )
 
-            if replacement_pool is None:
-                replacement_pool = self.market_candidates(tickers, exchange.markets)
-            replacement = next(
-                (
-                    candidate for candidate in replacement_pool
-                    if candidate not in DEFAULT_SYMBOLS and candidate not in held
-                ),
-                None,
-            )
-            if replacement is None:
-                continue
+                if quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
+                    reason = f"流動性不足({quote_volume:.0f}<{SYMBOL_MIN_QUOTE_VOLUME:.0f})"
+                elif change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
+                    reason = f"24h暴漲暴跌({change_pct:.1f}%>{SYMBOL_MAX_24H_CHANGE_PCT:.1f}%)"
+                elif volatility_excluded:
+                    reason = "波動率長期偏離可交易區間"
+                else:
+                    continue
 
-            idx = DEFAULT_SYMBOLS.index(symbol)
-            DEFAULT_SYMBOLS[idx] = replacement
+            DEFAULT_SYMBOLS.remove(symbol)
             self.direction_map.pop(symbol, None)
-            self.direction_map[replacement] = "BOTH"
             self.atr_history.pop(symbol, None)
             self.volatility_stats.pop(symbol, None)
-            changes.append({"out": symbol, "in": replacement, "reason": reason})
+            changes.append({"out": symbol, "in": "", "reason": reason})
 
         if changes:
             self._save()
@@ -626,18 +653,13 @@ class SymbolRotation:
         long_count = sum(side == "LONG" for side in directions.values())
         short_count = sum(side == "SHORT" for side in directions.values())
         ai_text = "AI 正常輔助" if ai_ranking else "AI 不可用，已使用純量化回退"
-        display_backfill_count = sum(
-            not item.get("eligible") or item.get("final_score", 0.0) < DIRECTIONAL_MIN_SCORE
-            for item in self.last_metrics
-            if not item.get("protected_position")
-        )
-        backfill_text = (
-            f"；候選牌面補位 {display_backfill_count}"
-            if display_backfill_count else ""
+        shortfall_text = (
+            f"；僅 {len(selected)}/{SYMBOL_ROTATION_COUNT} 幣合格，不以不合格幣補位"
+            if len(selected) < SYMBOL_ROTATION_COUNT else ""
         )
         self.last_reason = (
             f"已掃描 Binance 合約市場 {len(candidates)} 幣；方向評分參考 多 {long_count}、空 {short_count}，入選後皆可雙向交易；"
-            f"{ai_text}{backfill_text}"
+            f"{ai_text}{shortfall_text}"
         )
         self._save()
         return changes

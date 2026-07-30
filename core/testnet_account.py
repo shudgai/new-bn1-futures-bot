@@ -36,6 +36,8 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
+    "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
+    "history_score_multiplier", "pullback_confirmation_score",
 )
 
 

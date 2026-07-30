@@ -3,6 +3,7 @@ import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
+    ENTRY_FRESHNESS_SCORE_MAX,
     MIN_FRESHNESS_SCORE,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     MIN_SCORE_THRESHOLD, ENTRY_MIN_QUALITY_BONUS, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
@@ -205,7 +206,10 @@ class SuperTrendKeltnerStrategy:
         symbol: str = None,
     ) -> dict:
         if len(df) < 50:
-            return {"action": "HOLD", "reason": "Not enough data"}
+            return {
+                "action": "HOLD", "reason": "Not enough data",
+                "eligible": False, "score_stage": "ELIGIBILITY",
+            }
 
         df = self.compute_indicators(df)
         curr = df.iloc[-1]
@@ -223,6 +227,12 @@ class SuperTrendKeltnerStrategy:
         ema_20 = curr['ema_20'] if not np.isnan(curr['ema_20']) else price
         ema_50 = curr['ema_50'] if not np.isnan(curr['ema_50']) else price
 
+        def eligibility_hold(reason: str) -> dict:
+            return {
+                "action": "HOLD", "reason": reason,
+                "eligible": False, "score_stage": "ELIGIBILITY",
+            }
+
         # --- 1. 底線防禦 (Mandatory Filters) ---
 
         st_dir = curr['st_direction']
@@ -233,19 +243,18 @@ class SuperTrendKeltnerStrategy:
             st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol
         )
         if btc_regime["hard_block"]:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
-            }
+            return eligibility_hold(
+                f"Mandatory_Fail: BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
+            )
 
         # 層 B：個幣自身 1h SuperTrend 方向對齊
         # 1h SuperTrend 翻轉需要較長時間，比 price vs EMA50 準確 3~5 倍。
         # 要求 5m SuperTrend 方向 == 個幣 1h SuperTrend 方向才允許開倉。
         if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
             if st_dir == 1 and st_direction_1h == -1:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: Symbol_1h_ST_Bearish(vs_5m_LONG)"}
+                return eligibility_hold("Mandatory_Fail: Symbol_1h_ST_Bearish(vs_5m_LONG)")
             if st_dir == -1 and st_direction_1h == 1:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: Symbol_1h_ST_Bullish(vs_5m_SHORT)"}
+                return eligibility_hold("Mandatory_Fail: Symbol_1h_ST_Bullish(vs_5m_SHORT)")
 
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），
@@ -255,16 +264,16 @@ class SuperTrendKeltnerStrategy:
         is_1h_bullish = (price >= ema_50_upper_band) if ema_50_upper_band is not None else True
         is_1h_bearish = (price <= ema_50_lower_band) if ema_50_lower_band is not None else True
         if st_dir == 1 and not is_1h_bullish:
-            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_EMA50_Bearish"}
+            return eligibility_hold("Mandatory_Fail: 1h_EMA50_Bearish")
         if st_dir == -1 and not is_1h_bearish:
-            return {"action": "HOLD", "reason": "Mandatory_Fail: 1h_EMA50_Bullish"}
+            return eligibility_hold("Mandatory_Fail: 1h_EMA50_Bullish")
 
         # 防線 3：ADX 硬性最低門檻 — ADX 低於此值代表市場完全無趨勢動能，
         # 盤整期假突破發生率最高，直接 HOLD 不進入評分系統。
         # 注意：ADX 衰退擋單（D2，見下方）是另一種機制，兩者互補不衝突：
         # 這裡擋「太低」，D2 擋「方向沒變但動能在退潮」。
         if adx < ADX_MANDATORY_MIN:
-            return {"action": "HOLD", "reason": f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{ADX_MANDATORY_MIN})"}
+            return eligibility_hold(f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{ADX_MANDATORY_MIN})")
 
         # 波動率過濾：ATR 佔價格比例太高或太低都不開倉。
         # 太高：SL/TP 用 ATR 倍數算出來的停損距離會被放大，同樣倉位金額下
@@ -274,15 +283,15 @@ class SuperTrendKeltnerStrategy:
         # 0.07%~0.21%）。兩者一起框出一個波動適中的可交易區間。
         atr_pct = atr / price if price > 0 else 0
         if atr_pct > MAX_ATR_PCT:
-            return {"action": "HOLD", "reason": f"Mandatory_Fail: ATR_Too_High({atr_pct:.2%})"}
+            return eligibility_hold(f"Mandatory_Fail: ATR_Too_High({atr_pct:.2%})")
         if atr_pct < MIN_ATR_PCT:
-            return {"action": "HOLD", "reason": f"Mandatory_Fail: ATR_Too_Low({atr_pct:.2%})"}
+            return eligibility_hold(f"Mandatory_Fail: ATR_Too_Low({atr_pct:.2%})")
 
         # 極端 RSI 代表行情已經過熱／過冷，不是更高品質的追價訊號。
         if st_dir == 1 and rsi > RSI_LONG_MAX:
-            return {"action": "HOLD", "reason": f"Mandatory_Fail: RSI_Overbought({rsi:.1f}>{RSI_LONG_MAX:.1f})"}
+            return eligibility_hold(f"Mandatory_Fail: RSI_Overbought({rsi:.1f}>{RSI_LONG_MAX:.1f})")
         if st_dir == -1 and rsi < RSI_SHORT_MIN:
-            return {"action": "HOLD", "reason": f"Mandatory_Fail: RSI_Oversold({rsi:.1f}<{RSI_SHORT_MIN:.1f})"}
+            return eligibility_hold(f"Mandatory_Fail: RSI_Oversold({rsi:.1f}<{RSI_SHORT_MIN:.1f})")
 
 
         # --- 2. 動態評分系統 (Scoring System) ---
@@ -334,11 +343,13 @@ class SuperTrendKeltnerStrategy:
         else:
             score_details.append("RSI_Fail")
 
-        # D. 訊號新鮮度分數 (連續淡化，滿分30分)：剛翻轉給滿分，隨根數線性
-        # 淡化，到 FRESHNESS_DECAY_BARS 掃到 0 分，不是硬門檻全有全無。
+        # D. 訊號新鮮度分數：初始突破只占 18/100，避免「方向尚未翻轉」
+        # 跟真正 KC 突破同為 30 分，把老趨勢灌成不具預測力的 91+ 高分。
+        # freshness_health_score 保留原本 30 分尺度，僅供老化硬門檻使用。
         st_flip_age = bars_since_supertrend_flip(df['st_direction'])
         freshness_ratio = max(0.0, 1.0 - st_flip_age / FRESHNESS_DECAY_BARS) if FRESHNESS_DECAY_BARS > 0 else 0.0
-        freshness_score = round(freshness_ratio * 30)
+        freshness_health_score = round(freshness_ratio * 30)
+        freshness_score = round(freshness_ratio * ENTRY_FRESHNESS_SCORE_MAX)
         score += freshness_score
         score_details.append(f"Freshness({st_flip_age}bars)+{freshness_score}")
 
@@ -363,9 +374,9 @@ class SuperTrendKeltnerStrategy:
         ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
         price_overextended = ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT
 
-        # E. 品質細分加分（0~9分）：讓同樣達標 70/80 分的訊號能再分出優劣，
+        # E. 品質細分加分（0~12分）：讓同樣達標 70/80 分的訊號能再分出優劣，
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
-        # 三項各佔 0~3 分，數值越好加分越多，實測跟虧損大小/勝率相關：
+        # 四項各佔 0~3 分，數值越好加分越多，實測跟虧損大小/勝率相關：
         quality_bonus = 0
         # E1. 波動品質：越接近 [MIN_ATR_PCT, MAX_ATR_PCT] 區間的中點分數越高，
         # 越靠近任一邊界（太安靜或太劇烈）分數越低。不能只獎勵「越低越好」，
@@ -399,13 +410,25 @@ class SuperTrendKeltnerStrategy:
         if quality_bonus > 0:
             score_details.append(f"Quality+{quality_bonus}")
 
-        raw_score_before_btc = score
+        raw_score_before_btc = min(100, score)
+        score = raw_score_before_btc
         if btc_regime["score_penalty"] > 0:
             score = max(0, score - btc_regime["score_penalty"])
             score_details.append(
                 f"BTC_Contrary-{btc_regime['score_penalty']}({raw_score_before_btc}→{score})"
             )
         btc_context = {
+            "eligible": True,
+            "score_stage": "INITIAL",
+            "raw_score": raw_score_before_btc,
+            "btc_adjusted_score": score,
+            "score_components": {
+                "kc": 30 if kc_breakout_passed else 0,
+                "volume": 20 if "Volume_Pass" in score_details else 0,
+                "rsi": 20 if "RSI_Pass" in score_details else 0,
+                "freshness": freshness_score,
+                "quality": quality_bonus,
+            },
             "btc_regime_mode": btc_regime["mode"],
             "btc_direction_1h": int(btc_st_direction_1h or 0),
             "btc_score_penalty": btc_regime["score_penalty"],
@@ -413,60 +436,55 @@ class SuperTrendKeltnerStrategy:
             "btc_pre_penalty_score": raw_score_before_btc,
         }
 
+        def scored_hold(reason: str) -> dict:
+            return {"action": "HOLD", "score": score, "reason": reason, **btc_context}
+
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
-        # 進場門檻：總分 >= MIN_SCORE_THRESHOLD (90 分)
+        # 進場門檻：總分 >= MIN_SCORE_THRESHOLD（預設 65 分）
         # 額外防線：新鮮度子分數太低（趨勢已經很舊）直接擋單，不管總分靠
         # 其他項目湊得多高——避免「已經開始老化、快要反轉的趨勢尾端，
         # 靠其他項目湊夠分數壓線擠進場」這種樣貌。
         if score >= MIN_SCORE_THRESHOLD and not kc_breakout_passed:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: KC_Breakout_Unconfirmed | Score({score}) | {', '.join(score_details)}",
-            }
+            return scored_hold(
+                f"Mandatory_Fail: KC_Breakout_Unconfirmed | Score({score}) | {', '.join(score_details)}"
+            )
 
         if score >= MIN_SCORE_THRESHOLD and quality_bonus < ENTRY_MIN_QUALITY_BONUS:
-            return {
-                "action": "HOLD",
-                "reason": (
-                    f"Mandatory_Fail: Entry_Quality_Too_Low"
-                    f"({quality_bonus}<{ENTRY_MIN_QUALITY_BONUS}) | Score({score}) | "
-                    f"{', '.join(score_details)}"
-                ),
-            }
+            return scored_hold(
+                f"Mandatory_Fail: Entry_Quality_Too_Low"
+                f"({quality_bonus}<{ENTRY_MIN_QUALITY_BONUS}) | Score({score}) | "
+                f"{', '.join(score_details)}"
+            )
 
-        if score >= MIN_SCORE_THRESHOLD and freshness_score < MIN_FRESHNESS_SCORE:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: Freshness_Too_Stale({st_flip_age}bars) | Score({score}) | {', '.join(score_details)}",
-            }
+        if score >= MIN_SCORE_THRESHOLD and freshness_health_score < MIN_FRESHNESS_SCORE:
+            return scored_hold(
+                f"Mandatory_Fail: Freshness_Too_Stale({st_flip_age}bars) | Score({score}) | {', '.join(score_details)}"
+            )
 
         # 額外防線：ADX 動能已經在衰退（見上面 D2）直接擋單，不管總分靠
         # 其他項目湊得多高——這種「方向沒變、新鮮度分數也不低，但 ADX
         # 連續下滑」正是新鮮度抓不到的另一種末端趨勢樣貌。
         if score >= MIN_SCORE_THRESHOLD and adx_declining_exhausted:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}",
-            }
+            return scored_hold(
+                f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}"
+            )
 
         # 額外防線：價格已經乖離 EMA20 太遠（見上面 D3），代表這波已經漲/
         # 跌很多才追進場，均值回歸風險高，不管總分靠其他項目湊得多高。
         if score >= MIN_SCORE_THRESHOLD and price_overextended:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: Price_Overextended({ema20_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}",
-            }
+            return scored_hold(
+                f"Mandatory_Fail: Price_Overextended({ema20_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}"
+            )
 
         # 額外防線：大週期（1h）本身的動能也在衰退（見 engine.py
         # update_1h_trend_cache 用同一批1h K線算的 ADX 衰退判斷），代表
         # 不只是5分K的小趨勢要提防，連大方向本身都已經在做頭/做底，
         # 這是5分K的新鮮度/ADX檢查看不到的更高層級末端訊號。
         if score >= MIN_SCORE_THRESHOLD and trend_1h_declining:
-            return {
-                "action": "HOLD",
-                "reason": f"Mandatory_Fail: 1h_Trend_Declining | Score({score}) | {', '.join(score_details)}",
-            }
+            return scored_hold(
+                f"Mandatory_Fail: 1h_Trend_Declining | Score({score}) | {', '.join(score_details)}"
+            )
 
         if score >= MIN_SCORE_THRESHOLD:
             # 不再因高分直接市價追突破；達標訊號全部等待 50% 回踩，成交前再
@@ -495,7 +513,7 @@ class SuperTrendKeltnerStrategy:
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
 
-        return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
+        return scored_hold(f"Score_Low({score}) | {', '.join(score_details)}")
 
     def confirm_pullback_entry(
         self, df: pd.DataFrame, side: str, ema_1h: float = None, trend_1h_declining: bool = False,
@@ -679,6 +697,8 @@ class SuperTrendKeltnerStrategy:
         if pullback_score < PULLBACK_SCORE_THRESHOLD:
             return {
                 "status": "CANCEL",
+                "raw_pullback_score": raw_pullback_score,
+                "pullback_score": pullback_score,
                 "reason": (
                     f"回調總分不足 Pullback_Score({pullback_score}<{PULLBACK_SCORE_THRESHOLD}) | "
                     f"Volume+{score_b} RSI+{score_c} Freshness+{score_d} Quality+{score_e} "
@@ -689,6 +709,8 @@ class SuperTrendKeltnerStrategy:
         return {
             "status": "PASS",
             "reason": f"二次確認通過 Pullback_Score({pullback_score})",
+            "raw_pullback_score": raw_pullback_score,
+            "pullback_score": pullback_score,
             "btc_regime_mode": btc_regime["mode"],
             "btc_direction_1h": int(btc_st_direction_1h or 0),
             "btc_score_penalty": btc_regime["score_penalty"],

@@ -141,9 +141,10 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
 
 # --- 精準狙擊進場門檻 ---
-# MIN_SCORE_THRESHOLD：4 項評分為 30/20/20/30，90 分等於強制要求 4 項全過，訊號極少。
-# 71 分 = 至少要 3 項條件通過（基礎70分）再加上品質細分加分至少 1 分才能進場，
-# 排除掉品質加分完全是 0 分、勉強壓線過關的最弱訊號。
+# MIN_SCORE_THRESHOLD：初始突破評分固定為 100 分制：
+# KC 30 + 量能 20 + RSI 20 + 新鮮度 18 + 品質 12。
+# 不再讓新鮮度跟真正突破同為 30 分，避免只有「方向還沒翻轉」的舊趨勢
+# 靠新鮮度灌成 91+ 高分。65 分門檻維持不變，不用降門檻強迫開倉。
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表與測試辨識高分訊號；進場策略不再
 # 因高分而直接市價追單，所有達標訊號一律等待回踩。
@@ -186,6 +187,9 @@ BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 POST_BREAKOUT_VOL_SUSTAIN_RATIO = float(os.getenv("POST_BREAKOUT_VOL_SUSTAIN_RATIO", "0.6"))
 # FRESHNESS_DECAY_BARS：訊號新鮮度改成連續淡化。
 FRESHNESS_DECAY_BARS = int(os.getenv("FRESHNESS_DECAY_BARS", "120"))
+# 初始突破的新鮮度只占 18/100；回踩確認仍保留原本 30 分健康度尺度，
+# 避免修改初始評分時意外放寬或封死成交前的二次確認。
+ENTRY_FRESHNESS_SCORE_MAX = int(os.getenv("ENTRY_FRESHNESS_SCORE_MAX", "18"))
 # MIN_FRESHNESS_SCORE：新鮮度子分數（滿分30）低於這個值直接擋單。設 15 分。
 MIN_FRESHNESS_SCORE = int(os.getenv("MIN_FRESHNESS_SCORE", "15"))
 # TREND_AGREE_EMA_MARGIN_PCT：強化 1h 大週期趨勢過濾的緩衝邊距。
@@ -403,9 +407,9 @@ def get_position_multiplier(score: int) -> float:
 # 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
 # Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
 SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "18"))
-SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "3600"))
+SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "900"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
-# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設1小時）才會換牌，尚未持倉的候選觀察
+# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設15分鐘）才會換牌，尚未持倉的候選觀察
 # 名單如果在這段期間變得明顯不健康（流動性枯竭、24h暴漲暴跌、波動率長期
 # 偏離可交易區間），不用等到下一次整點輪替才處理——只用當下 ticker 資料
 # 判斷（不用額外呼叫 AI/抓K線，成本很低），每隔這個秒數就檢查一次，發現
@@ -420,6 +424,11 @@ SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP",
 SYMBOL_ROTATION_MAX_CHANGES = int(os.getenv("SYMBOL_ROTATION_MAX_CHANGES", "3"))
 SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "7"))
 SYMBOL_MAX_24H_CHANGE_PCT = float(os.getenv("SYMBOL_MAX_24H_CHANGE_PCT", "30.0"))
+# 最近 20 筆中樣本已足且持續負期望的幣，先退出新倉輪替；這不是永久黑名單，
+# 新資料改善或調整環境變數後即可重新入選。
+SYMBOL_HISTORY_QUARANTINE_MIN_TRADES = int(os.getenv("SYMBOL_HISTORY_QUARANTINE_MIN_TRADES", "8"))
+SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL = float(os.getenv("SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL", "-0.20"))
+SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE = float(os.getenv("SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE", "0.40"))
 AI_ADVISOR_ENABLED = os.getenv("AI_ADVISOR_ENABLED", "true").lower() == "true"
 AI_ADVISOR_URL = os.getenv("AI_ADVISOR_URL", "http://127.0.0.1:8888/v1/chat/completions")
 AI_ADVISOR_TIMEOUT_SEC = float(os.getenv("AI_ADVISOR_TIMEOUT_SEC", "30"))
@@ -445,6 +454,11 @@ ENTRY_DISABLED_SYMBOLS = {
     if symbol.strip()
 }
 
+# 停用幣不可再占候選池名額；環境變數新增的停用幣也同步生效。
+SYMBOL_CANDIDATE_POOL[:] = [
+    symbol for symbol in SYMBOL_CANDIDATE_POOL if symbol not in ENTRY_DISABLED_SYMBOLS
+]
+
 # 可新開倉牌面：正績效幣種搭配高流動性主流合約。
 # TAO 與近期反覆停損幣種不列入；已退出牌面的既有持倉仍會被管理。
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
@@ -469,6 +483,9 @@ DEFAULT_SYMBOLS = [
     "TRX/USDT",
     "XLM/USDT",
     "XRP/USDT",
+]
+DEFAULT_SYMBOLS[:] = [
+    symbol for symbol in DEFAULT_SYMBOLS if symbol not in ENTRY_DISABLED_SYMBOLS
 ]
 
 # --- 真實/測試網切換 ---

@@ -80,6 +80,7 @@ class TradingEngine:
         current_direction: str,
     ) -> str:
         """將策略結果壓縮成適合系統日誌的一行進度。"""
+        eligible = signal.get("eligible")
         score = signal.get("score")
         if score is None:
             match = re.search(r"Score\((\d+)\)", signal.get("reason", ""))
@@ -89,7 +90,20 @@ class TradingEngine:
         )
         action = signal.get("action", "HOLD")
         reason = signal.get("reason", "")
-        if action in ("BUY", "SELL"):
+        raw_score = signal.get("raw_score")
+        btc_score = signal.get("btc_adjusted_score", score)
+        history_score = signal.get("history_adjusted_score")
+        if eligible is False:
+            score_text = "資格未通過"
+        elif history_score is not None and history_score != btc_score:
+            score_text = f"原{raw_score}→BTC{btc_score}→歷史{history_score}分"
+        elif raw_score is not None and btc_score != raw_score:
+            score_text = f"原{raw_score}→BTC{btc_score}分"
+        else:
+            score_text = f"{int(score or 0)}分"
+        if signal.get("history_blocked"):
+            stage = "歷史績效降分後取消"
+        elif action in ("BUY", "SELL"):
             stage = "符合立即開倉"
         elif action == "WAIT_PULLBACK":
             stage = signal.get(
@@ -103,6 +117,8 @@ class TradingEngine:
             stage = "個幣1h趨勢不符"
         elif "ADX_Too_Low" in reason:
             stage = "ADX過低過濾"
+        elif "Score_Low" in reason:
+            stage = "分數不足"
         elif "KC_Breakout" in reason:
             stage = "待KC突破"
         elif "SuperTrend_Stale" in reason:
@@ -127,12 +143,10 @@ class TradingEngine:
             stage = "量能不足"
         elif "RSI" in reason:
             stage = "RSI方向不足"
-        elif "Score_Low" in reason:
-            stage = "分數不足"
         else:
             stage = "條件未完成"
         coin = symbol.replace("/USDT", "")
-        return f"{coin} {direction_text} {int(score)}分,{stage}"
+        return f"{coin} {direction_text} {score_text},{stage}"
 
 
     @staticmethod
@@ -170,7 +184,7 @@ class TradingEngine:
             return
         if not entries or now_time - self.last_signal_progress_log_at < 60:
             return
-        self.account.log("📊 [12幣訊號進度]\n" + "\n".join(f"• {entry}" for entry in entries), "INFO")
+        self.account.log(f"📊 [{len(symbols_snapshot)}幣訊號進度]\n" + "\n".join(f"• {entry}" for entry in entries), "INFO")
         self.last_signal_progress_log_at = now_time
 
     async def start(self):
@@ -179,7 +193,7 @@ class TradingEngine:
         await self.account.initialize()
         self.is_running = True
         if USE_TESTNET:
-            self.account.log("▶️ 8006 Binance Futures Testnet 機器人啟動（達標訊號全數回踩確認 / 12幣雙向交易）")
+            self.account.log(f"▶️ 8006 Binance Futures Testnet 機器人啟動（達標訊號全數回踩確認 / {len(DEFAULT_SYMBOLS)}幣雙向交易）")
         else:
             self.account.log(
                 "🔴🔴🔴 正式實盤模式已啟用（USE_TESTNET=false）：本次啟動將用真實資金下單！",
@@ -265,17 +279,23 @@ class TradingEngine:
                 if now_time - self.symbol_rotation.last_rotation_at >= SYMBOL_ROTATION_INTERVAL_SEC:
                     changes = await self.symbol_rotation.rotate(self.exchange)
                     if changes:
-                        change_text = "、".join(f"{item['out']}→{item['in']}" for item in changes)
+                        change_text = "、".join(
+                            f"{item['out']}→{item['in']}" if item.get("in")
+                            else f"{item['out']}→移除"
+                            for item in changes
+                        )
                         self.account.log(f"🔄 [幣種輪替] {change_text}；{self.symbol_rotation.last_reason}", "INFO")
                     else:
-                        self.account.log(f"✅ [幣種輪替] 目前 12 幣仍為較優組合；{self.symbol_rotation.last_reason}", "INFO")
+                        self.account.log(f"✅ [幣種輪替] 目前 {len(DEFAULT_SYMBOLS)} 幣仍為合格組合；{self.symbol_rotation.last_reason}", "INFO")
                     last_unhealthy_check_at = now_time
                 elif now_time - last_unhealthy_check_at >= UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC:
                     last_unhealthy_check_at = now_time
                     purge_changes = await self.symbol_rotation.purge_unhealthy(self.exchange)
                     if purge_changes:
                         change_text = "、".join(
-                            f"{item['out']}→{item['in']}（{item['reason']}）" for item in purge_changes
+                            f"{item['out']}→{item['in']}（{item['reason']}）" if item.get("in")
+                            else f"{item['out']}→移除（{item['reason']}）"
+                            for item in purge_changes
                         )
                         self.account.log(f"🚨 [不健康幣種淘汰] {change_text}", "WARNING")
                 await asyncio.sleep(30)  # 30 秒檢查一次是否到了下次輪替/健康檢查時間
@@ -490,6 +510,11 @@ class TradingEngine:
                 "btc_score_penalty": sig.get("btc_score_penalty", 0),
                 "btc_allocation_factor": allocation_factor,
                 "btc_pre_penalty_score": sig.get("btc_pre_penalty_score", score),
+                "raw_signal_score": sig.get("raw_score", sig.get("btc_pre_penalty_score", score)),
+                "btc_adjusted_score": sig.get("btc_adjusted_score", score),
+                "history_adjusted_score": sig.get("history_adjusted_score", score),
+                "history_score_multiplier": sig.get("history_score_multiplier", 1.0),
+                "pullback_confirmation_score": None,
                 "leverage": self.symbol_rotation.get_dynamic_leverage(symbol, score),
                 "created_at": now,
                 "touched_at": None,
@@ -581,6 +606,7 @@ class TradingEngine:
             candidate["btc_direction_1h"] = confirm.get("btc_direction_1h", 0)
             candidate["btc_score_penalty"] = confirm.get("btc_score_penalty", 0)
             candidate["btc_allocation_factor"] = final_btc_factor
+            candidate["pullback_confirmation_score"] = confirm.get("pullback_score")
 
             fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, candidate["side"])
             drift = abs(fresh_target - target)
@@ -621,6 +647,11 @@ class TradingEngine:
                     "btc_score_penalty": candidate["btc_score_penalty"],
                     "btc_allocation_factor": candidate["btc_allocation_factor"],
                     "btc_pre_penalty_score": candidate["btc_pre_penalty_score"],
+                    "raw_signal_score": candidate["raw_signal_score"],
+                    "btc_adjusted_score": candidate["btc_adjusted_score"],
+                    "history_adjusted_score": candidate["history_adjusted_score"],
+                    "history_score_multiplier": candidate["history_score_multiplier"],
+                    "pullback_confirmation_score": candidate["pullback_confirmation_score"],
                 },
             )
             if placed:
@@ -761,7 +792,7 @@ class TradingEngine:
                         retry_after = self._pullback_retry_after.get(symbol, 0.0)
                         if retry_after > now_time:
                             signal_progress.append(
-                                f"{coin} {direction_text} 0分,回踩失效冷卻{int(retry_after - now_time)}秒"
+                                f"{coin} {direction_text} 資格未通過,回踩失效冷卻{int(retry_after - now_time)}秒"
                             )
                             continue
 
@@ -769,14 +800,14 @@ class TradingEngine:
 
                         if symbol in ENTRY_DISABLED_SYMBOLS:
                             signal_progress.append(
-                                f"{coin} {direction_text} 0分,暫停新倉"
+                                f"{coin} {direction_text} 資格未通過,暫停新倉"
                             )
                             continue
                         last_closed = self.account.last_closed_at.get(symbol)
                         if last_closed is not None and (now_time - last_closed) < 900:
                             remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
                             signal_progress.append(
-                                f"{coin} {direction_text} 0分,冷卻剩{remaining}分鐘"
+                                f"{coin} {direction_text} 資格未通過,冷卻剩{remaining}分鐘"
                             )
                             continue
 
@@ -784,14 +815,14 @@ class TradingEngine:
                         vol_24h = self.ticker_volumes.get(symbol, 0.0)
                         if vol_24h > 0 and vol_24h < 500000.0:
                             signal_progress.append(
-                                f"{coin} {direction_text} 0分,24h流動性不足"
+                                f"{coin} {direction_text} 資格未通過,24h流動性不足"
                             )
                             continue
 
                         df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
                         if df.empty or len(df) < 50:
                             signal_progress.append(
-                                f"{coin} {direction_text} 0分,K線資料不足"
+                                f"{coin} {direction_text} 資格未通過,K線資料不足"
                             )
                             continue
 
@@ -826,7 +857,7 @@ class TradingEngine:
                         if candle_spread > (real_atr * 5.0):
                             self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x 真實ATR)，過濾潛在假突破訊號", "WARNING")
                             signal_progress.append(
-                                f"{coin} {direction_text} 0分,防插針過濾"
+                                f"{coin} {direction_text} 資格未通過,防插針過濾"
                             )
                             continue
 
@@ -844,9 +875,6 @@ class TradingEngine:
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
                         )
-                        signal_progress.append(self._format_signal_progress(
-                            symbol, sig, current_direction
-                        ))
                         if sig["action"] in ["BUY", "SELL", "WAIT_PULLBACK"]:
                             perf = self._symbol_recent_performance(symbol, sig["side"])
                             adjusted_score, history_mult = self._history_adjusted_score(
@@ -866,12 +894,19 @@ class TradingEngine:
                                         f"係數 x{history_mult:.2f}，分數 {sig.get('score', 0)}→{adjusted_score}",
                                         "INFO",
                                     )
+                            sig["history_score_multiplier"] = history_mult
+                            sig["history_adjusted_score"] = adjusted_score
                             sig["score"] = adjusted_score
                             if adjusted_score < MIN_SCORE_THRESHOLD:
-                                signal_progress.append(
-                                    f"{coin} {sig['side']} {adjusted_score}分,歷史績效降分後取消"
-                                )
+                                sig["history_blocked"] = True
+                                signal_progress.append(self._format_signal_progress(
+                                    symbol, sig, current_direction
+                                ))
                                 continue
+
+                        signal_progress.append(self._format_signal_progress(
+                            symbol, sig, current_direction
+                        ))
 
                         if sig["action"] in ["BUY", "SELL"]:
                             candidate_signals.append((adjusted_score, symbol, sig, price, real_atr))

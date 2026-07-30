@@ -146,8 +146,56 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
     assert result["action"] == "HOLD"
-    # Score_Low 分支的 dict 沒有獨立的 "score" 欄位，分數只嵌在 reason 文字裡
     assert "Score_Low" in result["reason"]
+    assert result["eligible"] is True
+    assert result["score"] == result["btc_adjusted_score"]
+    assert sum(result["score_components"].values()) == result["raw_score"]
+
+
+def test_hard_filter_is_reported_as_eligibility_not_zero_score(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+
+    result = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, st_direction_1h=-1
+    )
+
+    assert result["action"] == "HOLD"
+    assert result["eligible"] is False
+    assert result["score_stage"] == "ELIGIBILITY"
+    assert "資格未通過" in TradingEngine._format_signal_progress(
+        "BTC/USDT", result, "LONG"
+    )
+
+
+def test_initial_score_is_capped_at_100_and_stage_scores_are_explicit(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=2500.0, rsi=60.0, adx=50.0)
+    frame["atr"] = frame["close"] * 0.00375
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 0)
+
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
+
+    assert result["action"] == "WAIT_PULLBACK"
+    assert result["raw_score"] == 100
+    assert result["btc_adjusted_score"] == 100
+    assert result["score_components"]["freshness"] == 18
+
+
+def test_signal_progress_shows_history_adjustment_chain():
+    text = TradingEngine._format_signal_progress(
+        "DOGE/USDT",
+        {
+            "action": "WAIT_PULLBACK", "score": 54, "eligible": True,
+            "raw_score": 90, "btc_adjusted_score": 78,
+            "history_adjusted_score": 54, "history_blocked": True,
+        },
+        "LONG",
+    )
+    assert "原90→BTC78→歷史54分" in text
+    assert "歷史績效降分後取消" in text
 
 
 def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
@@ -271,6 +319,7 @@ def test_history_penalty_can_cancel_an_otherwise_high_score_signal():
 
 def test_known_negative_expectancy_symbols_are_paused():
     assert {"BNB/USDT", "HYPE/USDT", "SUI/USDT", "SOL/USDT"} <= ENTRY_DISABLED_SYMBOLS
+    assert ENTRY_DISABLED_SYMBOLS.isdisjoint(engine_module.DEFAULT_SYMBOLS)
 
 
 def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
@@ -655,17 +704,49 @@ def test_trade_history_ai_analysis_is_sanitized_cached_and_persisted(tmp_path):
     assert restored.status()["summary"] == "一筆交易樣本，暫以風控觀察為主。"
 
 
+def test_directional_eligibility_requires_trend_st_and_tradeable_atr(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.MIN_ATR_PCT", 0.0015)
+    monkeypatch.setattr("core.symbol_rotation.MAX_ATR_PCT", 0.006)
+
+    assert SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, False)
+    assert not SymbolRotation._direction_is_eligible(True, False, True, 0.003, False, False)
+    assert not SymbolRotation._direction_is_eligible(True, True, False, 0.003, False, False)
+    assert not SymbolRotation._direction_is_eligible(True, True, True, 0.0075, False, False)
+    assert not SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, True)
+
+
+def test_negative_expectancy_quarantine_needs_enough_samples(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_HISTORY_QUARANTINE_MIN_TRADES", 8)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL", -0.20)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE", 0.40)
+
+    assert not SymbolRotation._history_quarantined(
+        {"trades": 7, "avg_pnl": -1.0, "stop_rate": 1.0}
+    )
+    assert SymbolRotation._history_quarantined(
+        {"trades": 8, "avg_pnl": -0.21, "stop_rate": 0.10}
+    )
+    assert SymbolRotation._history_quarantined(
+        {"trades": 8, "avg_pnl": 0.10, "stop_rate": 0.40}
+    )
+
+
 def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 20_000_000.0)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 40)
     tickers = {
         "BTC/USDT:USDT": {"quoteVolume": 100_000_000.0},
+        "BNB/USDT:USDT": {"quoteVolume": 300_000_000.0},
         "SKHY/USDT:USDT": {"quoteVolume": 200_000_000.0},
         "LOW/USDT:USDT": {"quoteVolume": 10_000_000.0},
     }
     markets = {
         "BTC/USDT:USDT": {
             "symbol": "BTC/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+            "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+        },
+        "BNB/USDT:USDT": {
+            "symbol": "BNB/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
             "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
         },
         "SKHY/USDT:USDT": {
@@ -680,8 +761,8 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
     assert SymbolRotation.market_candidates(tickers, markets) == ["BTC/USDT"]
 
 
-def test_purge_unhealthy_swaps_illiquid_candidate_but_protects_held_position(monkeypatch):
-    """觀察名單裡流動性枯竭的候選幣種要立刻換掉，不用等下一次整點輪替；
+def test_purge_unhealthy_removes_illiquid_candidate_but_protects_held_position(monkeypatch):
+    """觀察名單裡流動性枯竭的候選幣種要立刻移除，不用等下一次整點輪替；
     已經有持倉的幣種即使一樣流動性枯竭，也不能被這個輕量健康檢查動到。"""
     import asyncio
 
@@ -719,11 +800,11 @@ def test_purge_unhealthy_swaps_illiquid_candidate_but_protects_held_position(mon
     changes = asyncio.run(rotation.purge_unhealthy(_FakeExchange()))
 
     assert changes == [{
-        "out": "ILLIQUID/USDT", "in": "REPLACEMENT/USDT",
+        "out": "ILLIQUID/USDT", "in": "",
         "reason": "流動性不足(1000000<20000000)",
     }]
     assert "ILLIQUID/USDT" not in watchlist
-    assert "REPLACEMENT/USDT" in watchlist
+    assert "REPLACEMENT/USDT" not in watchlist
     assert "HELDLOW/USDT" in watchlist  # 持倉中，即使流動性也差，不能被換掉
 
 
@@ -761,7 +842,7 @@ def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch
     assert all(change["out"] != held_symbol for change in changes)
 
 
-def test_directional_rotation_limits_each_scan_to_three_changes(monkeypatch):
+def test_directional_rotation_removes_all_ineligible_old_symbols(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
@@ -783,8 +864,8 @@ def test_directional_rotation_limits_each_scan_to_three_changes(monkeypatch):
     )
 
     assert len(selected) == 12
-    assert len(changes) == 3
-    assert sum(symbol.startswith("NEW") for symbol in selected) == 3
+    assert len(changes) == 12
+    assert all(symbol.startswith("NEW") for symbol in selected)
 
 
 def test_directional_rotation_backfills_missing_shorts_with_longs(monkeypatch):
@@ -817,7 +898,7 @@ def test_directional_rotation_backfills_missing_shorts_with_longs(monkeypatch):
     assert sum(side == "LONG" for side in directions.values()) == 10
 
 
-def test_directional_rotation_uses_lower_score_longs_only_to_fill_display(monkeypatch):
+def test_directional_rotation_does_not_fill_with_ineligible_symbols(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
     metrics = [
@@ -841,9 +922,8 @@ def test_directional_rotation_uses_lower_score_longs_only_to_fill_display(monkey
 
     selected, directions, _ = SymbolRotation.choose_directional_symbols([], {}, metrics)
 
-    assert len(selected) == 12
-    assert sum(side == "SHORT" for side in directions.values()) == 2
-    assert sum(side == "LONG" for side in directions.values()) == 10
+    assert len(selected) == 2
+    assert set(directions.values()) == {"SHORT"}
 
 
 def test_trade_amount_multiplier_uses_tiered_size_for_score_70():
