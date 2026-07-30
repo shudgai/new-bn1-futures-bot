@@ -129,6 +129,8 @@ async def get_status():
         "pullback_outcome_stats": dict(engine.account.pullback_outcome_stats),
         "entry_filter_stats": dict(engine.account.entry_filter_stats),
         "entry_filter_last": dict(engine.account.entry_filter_last),
+        "shadow_parameter_stats": dict(engine.account.shadow_parameter_stats),
+        "shadow_parameter_last": dict(engine.account.shadow_parameter_last),
         "taker_fee_rate": TAKER_FEE_RATE,
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},

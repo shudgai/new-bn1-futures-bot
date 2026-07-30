@@ -199,12 +199,14 @@ def test_configured_trade_amount_uses_75_usdt_per_slot():
     assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(375.0)
 
 
-def test_pullback_depth_is_score_tiered_without_reenabling_market_chase():
-    assert get_pullback_target_depth(100) == pytest.approx(0.05)
-    assert get_pullback_target_depth(90) == pytest.approx(0.05)
-    assert get_pullback_target_depth(89) == pytest.approx(0.08)
-    assert get_pullback_target_depth(80) == pytest.approx(0.08)
-    assert get_pullback_target_depth(79) == pytest.approx(0.15)
+def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
+    assert get_pullback_target_depth(100) == pytest.approx(0.00)
+    assert get_pullback_target_depth(90) == pytest.approx(0.00)
+    assert get_pullback_target_depth(89) == pytest.approx(0.05)
+    assert get_pullback_target_depth(80) == pytest.approx(0.05)
+    assert get_pullback_target_depth(79) == pytest.approx(0.08)
+    assert get_pullback_target_depth(70) == pytest.approx(0.08)
+    assert get_pullback_target_depth(69) == pytest.approx(0.15)
     assert get_pullback_target_depth(65) == pytest.approx(0.15)
     assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(3.0)
 
@@ -381,8 +383,8 @@ def test_signal_progress_reports_only_true_unconfirmed_kc_as_waiting():
     assert "待KC突破" in text
 
 
-def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
-    """高分與中分突破都不得市價追單，一律等待深回踩。"""
+def test_high_score_uses_current_post_only_and_mid_score_waits_for_pullback(monkeypatch):
+    """90+ 走現價 Post-Only；中分突破仍等待分層回踩。"""
     strategy = SuperTrendKeltnerStrategy()
     frame_high = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
@@ -390,12 +392,9 @@ def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
     result_high = strategy.evaluate_signal(frame_high, ema_50_1h=95.0)
     assert result_high["action"] == "WAIT_PULLBACK"
     assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
-    assert "MarketChase_Disabled" in result_high["reason"]
-    expected_target, _, room_ok = compute_pullback_target(
-        100.0, 99.8, float(frame_high["atr"].iloc[-1]), "LONG", result_high["score"]
-    )
-    assert room_ok is True
-    assert result_high["target_zone"] == pytest.approx(expected_target)
+    assert "CurrentPrice_PostOnly" in result_high["reason"]
+    assert result_high["entry_mode"] == "CURRENT_MAKER"
+    assert result_high["target_zone"] == pytest.approx(float(frame_high["close"].iloc[-1]))
 
     frame_mid = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
     result_mid = strategy.evaluate_signal(frame_mid, ema_50_1h=95.0)
@@ -422,6 +421,94 @@ def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
     assert contrary["score"] == aligned["score"] - 12
     assert contrary["btc_regime_mode"] == "CONTRARY"
     assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
+
+
+def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    low_volume = _entry_score_frame(volume=700.0, rsi=60.0, adx=35.0)
+    live_volume = strategy.evaluate_signal(low_volume, ema_50_1h=95.0)
+    shadow_volume = strategy.evaluate_signal(
+        low_volume, ema_50_1h=95.0,
+        parameter_overrides={"volume_min_ratio": 0.6},
+    )
+    live_volume_again = strategy.evaluate_signal(low_volume, ema_50_1h=95.0)
+    assert shadow_volume["score_components"]["volume"] == 20
+    assert live_volume["score_components"]["volume"] == 0
+    assert live_volume_again["score_components"] == live_volume["score_components"]
+
+    low_atr = _entry_score_frame(volume=1500.0, rsi=60.0, adx=25.0)
+    low_atr["atr"] = low_atr["close"] * 0.0013
+    live_atr = strategy.evaluate_signal(low_atr, ema_50_1h=95.0)
+    shadow_atr = strategy.evaluate_signal(
+        low_atr, ema_50_1h=95.0,
+        parameter_overrides={"atr_min_pct": 0.0012},
+    )
+    assert "ATR_Too_Low" in live_atr["reason"]
+    assert "ATR_Too_Low" not in shadow_atr["reason"]
+
+    hot_rsi = _entry_score_frame(volume=1500.0, rsi=69.0, adx=35.0)
+    live_rsi = strategy.evaluate_signal(hot_rsi, ema_50_1h=95.0)
+    shadow_rsi = strategy.evaluate_signal(
+        hot_rsi, ema_50_1h=95.0,
+        parameter_overrides={"rsi_long_max": 70.0, "rsi_short_min": 30.0},
+    )
+    assert "RSI_Overbought" in live_rsi["reason"]
+    assert "RSI_Overbought" not in shadow_rsi["reason"]
+
+    btc_contrary = _entry_score_frame(volume=1500.0, rsi=60.0, adx=35.0)
+    live_btc = strategy.evaluate_signal(
+        btc_contrary, ema_50_1h=95.0, btc_st_direction_1h=-1,
+        btc_st_flip_age=3, symbol="DOGE/USDT",
+    )
+    shadow_btc = strategy.evaluate_signal(
+        btc_contrary, ema_50_1h=95.0, btc_st_direction_1h=-1,
+        btc_st_flip_age=3, symbol="DOGE/USDT",
+        parameter_overrides={"btc_score_penalty": 8},
+    )
+    assert shadow_btc["score"] == live_btc["score"] + 4
+    assert live_btc["btc_score_penalty"] == 12
+    assert shadow_btc["btc_score_penalty"] == 8
+
+
+def test_engine_records_four_shadow_profiles_without_changing_baseline(monkeypatch):
+    engine = object.__new__(TradingEngine)
+
+    class DummyAccount:
+        trades = []
+        shadow_parameter_stats = {"evaluations": 0, "profiles": {}}
+        shadow_parameter_last = {}
+
+    engine.account = DummyAccount()
+    engine.strategy = SuperTrendKeltnerStrategy()
+    engine.ema_50_1h_cache = {"DOGE/USDT": 95.0}
+    engine.adx_1h_declining_cache = {"DOGE/USDT": False}
+    engine.st_direction_1h_cache = {"DOGE/USDT": 1}
+    engine.btc_1h_st_direction = -1
+    engine.btc_1h_st_flip_age = 3
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    frame = _entry_score_frame(volume=700.0, rsi=69.0, adx=35.0)
+    baseline = engine.strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, btc_st_direction_1h=-1,
+        btc_st_flip_age=3, symbol="DOGE/USDT", indicators_precomputed=True,
+    )
+    baseline_snapshot = dict(baseline)
+
+    engine._record_shadow_parameter_comparison(
+        "DOGE/USDT", frame, baseline, "LONG"
+    )
+
+    stats = engine.account.shadow_parameter_stats
+    assert stats["evaluations"] == 1
+    assert set(stats["profiles"]) == {
+        "volume_adx25_06", "atr_adx20_012", "rsi_70_30", "btc_penalty_8",
+    }
+    assert all(profile["evaluations"] == 1 for profile in stats["profiles"].values())
+    assert engine.account.shadow_parameter_last["rsi_70_30"]["DOGE/USDT"]["condition_met"] is True
+    assert baseline == baseline_snapshot
 
 
 def test_btc_fresh_flip_still_blocks_and_btc_itself_is_not_penalized(monkeypatch):
@@ -555,19 +642,36 @@ def test_price_overextended_blocks_entry_even_with_qualifying_score(monkeypatch)
     assert "Mandatory_Fail: Price_Overextended" in result["reason"]
 
 
-def test_1h_trend_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
-    """大週期（1h）本身動能也在衰退時（engine.py 用同一批1h K線算好傳
-    進來），就算5分K的分數/條件都達標，也要擋單——這是5分K的新鮮度/
-    ADX檢查看不到的更高層級末端訊號。"""
+def test_1h_trend_declining_still_blocks_below_90(monkeypatch):
+    """未達 90 分仍不得略過 1h 動能衰退。"""
     strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
+    frame = _entry_score_frame(volume=700.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
 
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0, trend_1h_declining=True)
 
+    assert result["score"] < 90
     assert result["action"] == "HOLD"
     assert "Mandatory_Fail: 1h_Trend_Declining" in result["reason"]
+
+
+def test_90_plus_can_use_current_maker_despite_1h_adx_decline(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(
+        volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0
+    )
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, trend_1h_declining=True
+    )
+
+    assert result["score"] >= 90
+    assert result["action"] == "WAIT_PULLBACK"
+    assert result["entry_mode"] == "CURRENT_MAKER"
+    assert "1h_Trend_Declining_90Plus_Allowed" in result["reason"]
 
 
 def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, atr=0.3):
@@ -1392,7 +1496,7 @@ def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):
 
 
 
-def test_candidate_target_uses_history_adjusted_score_tier(monkeypatch):
+def test_90_plus_candidate_uses_current_price_maker_mode(monkeypatch):
     class DummyAccount:
         positions = {}
         pending_limit_orders = {}
@@ -1422,8 +1526,61 @@ def test_candidate_target_uses_history_adjusted_score_tier(monkeypatch):
     )
 
     candidate = engine.pending_pullback_candidates["XPL/USDT"]
-    assert candidate["pullback_depth"] == pytest.approx(0.05)
-    assert candidate["target_price"] == pytest.approx(101.0)
+    assert candidate["pullback_depth"] == pytest.approx(0.0)
+    assert candidate["target_price"] == pytest.approx(99.0)
+    assert candidate["entry_mode"] == "CURRENT_MAKER"
+
+
+@pytest.mark.anyio
+async def test_90_plus_current_maker_places_post_only_without_pullback_wait():
+    placed = {}
+
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+        logs = []
+
+        @staticmethod
+        def get_available_balance():
+            return 1000.0
+
+        async def place_limit_entry(self, **kwargs):
+            placed.update(kwargs)
+            self.pending_limit_orders[kwargs["symbol"]] = {
+                "side": kwargs["side"], "entry_context": kwargs["entry_context"],
+            }
+            return True
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.pending_pullback_candidates = {
+        "XPL/USDT": {
+            "symbol": "XPL/USDT", "side": "SHORT", "score": 93,
+            "entry_mode": "CURRENT_MAKER", "amount_usdt": 75.0,
+            "atr": 0.001, "reason": "Quality+9", "leverage": 5,
+            "btc_regime_mode": "ALIGNED", "btc_direction_1h": -1,
+            "btc_score_penalty": 0, "btc_allocation_factor": 1.0,
+            "btc_pre_penalty_score": 93, "raw_signal_score": 93,
+            "btc_adjusted_score": 93, "history_adjusted_score": 93,
+            "history_score_multiplier": 1.0,
+        }
+    }
+    engine._pullback_retry_after = {}
+
+    result = await engine._place_current_maker_candidate(
+        "XPL/USDT", engine.pending_pullback_candidates["XPL/USDT"],
+        live_price=0.07616, now=1000.0,
+    )
+
+    assert result is True
+    assert placed["target_price"] == pytest.approx(0.07616)
+    assert placed["post_only"] is True
+    assert placed["signal_score"] == 93
+    assert placed["entry_context"]["entry_mode"] == "CURRENT_MAKER"
+    assert "XPL/USDT" not in engine.pending_pullback_candidates
 
 
 def test_btc_contrary_candidate_uses_half_position(monkeypatch):

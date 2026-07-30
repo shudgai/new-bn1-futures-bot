@@ -37,7 +37,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
-    "history_score_multiplier", "pullback_confirmation_score",
+    "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
 )
 
 
@@ -89,6 +89,9 @@ class BinanceTestnetAccount:
             "evaluations": 0, "outcomes": {}, "components": {}, "adjustments": {},
         }
         self.entry_filter_last: Dict[str, dict] = {}
+        # 影子參數只比較候選資格，不下單；統計與每幣最新結果跨重啟保存。
+        self.shadow_parameter_stats: Dict[str, dict] = {"evaluations": 0, "profiles": {}}
+        self.shadow_parameter_last: Dict[str, dict] = {}
         # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
         # 範圍內的限價單而非市價單）可能因為價格跳空滑出緩衝範圍而遲遲
         # 無法成交，導致部位裸奔。記錄「標記價開始穿越止損」的時間點，
@@ -163,6 +166,12 @@ class BinanceTestnetAccount:
             loaded_filter_last = data.get("entry_filter_last", {})
             if isinstance(loaded_filter_last, dict):
                 self.entry_filter_last = loaded_filter_last
+            loaded_shadow_stats = data.get("shadow_parameter_stats", {})
+            if isinstance(loaded_shadow_stats, dict):
+                self.shadow_parameter_stats.update(loaded_shadow_stats)
+            loaded_shadow_last = data.get("shadow_parameter_last", {})
+            if isinstance(loaded_shadow_last, dict):
+                self.shadow_parameter_last = loaded_shadow_last
         except Exception:
             pass
 
@@ -187,6 +196,8 @@ class BinanceTestnetAccount:
             "pullback_outcome_stats": self.pullback_outcome_stats,
             "entry_filter_stats": self.entry_filter_stats,
             "entry_filter_last": self.entry_filter_last,
+            "shadow_parameter_stats": self.shadow_parameter_stats,
+            "shadow_parameter_last": self.shadow_parameter_last,
         }
         with open(STATE_FILE, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -989,6 +1000,19 @@ class BinanceTestnetAccount:
             self.log(f"🛑 {symbol} 掛單金額為 0，拒絕掛單", "WARNING")
             return False
         await self._ensure_markets()
+        # 現價 Post-Only 必須留在 maker 一側：多單最多掛最佳買價，空單
+        # 最少掛最佳賣價。回踩目標若本來更保守，則維持原目標不追價。
+        if post_only and hasattr(self.exchange, "fetch_order_book"):
+            try:
+                book = await self.exchange.fetch_order_book(symbol, limit=5)
+                if side == "LONG" and book.get("bids"):
+                    target_price = min(float(target_price), float(book["bids"][0][0]))
+                elif side == "SHORT" and book.get("asks"):
+                    target_price = max(float(target_price), float(book["asks"][0][0]))
+            except Exception:
+                # 深度查詢失敗仍可依呼叫端價格送 GTX；交易所若判定會吃單，
+                # 會直接拒絕而不會意外變成 taker。
+                pass
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)
             if signal_score is not None

@@ -77,6 +77,8 @@ class TradingEngine:
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
         # 有變化時才印，同樣的狀態只顯示一次。
         self._history_coeff_logged: Dict[str, tuple] = {}
+        # 診斷與影子比較每分鐘落盤一次，避免每 5 秒主迴圈造成過度寫檔。
+        self._last_diagnostic_stats_save_at: float = 0.0
 
     @staticmethod
     def _format_signal_progress(
@@ -174,7 +176,7 @@ class TradingEngine:
             atr_match = re.search(r"ATR_Too_High\(([\d.]+%)\)", reason)
             stage = f"波動過大{atr_match.group(1)}過濾" if atr_match else "波動過大過濾"
         elif "ATR_Too_Low" in reason:
-            atr_match = re.search(r"ATR_Too_Low\(([\d.]+%)\)", reason)
+            atr_match = re.search(r"ATR_Too_Low\(([\d.]+%)", reason)
             stage = f"波動過低{atr_match.group(1)}過濾" if atr_match else "波動過低過濾"
         elif "Volume" in reason:
             stage = f"量能不足（現量/均量={diagnostics.get('volume_ratio', 0):.2f}）"
@@ -298,6 +300,119 @@ class TradingEngine:
             "diagnostics": dict(signal.get("diagnostics") or {}),
             "reason": str(signal.get("reason", "")),
         }
+
+    @staticmethod
+    def _shadow_ready(signal: dict) -> bool:
+        return (
+            signal.get("action") == "WAIT_PULLBACK"
+            and not signal.get("history_blocked")
+            and int(signal.get("score") or 0) >= MIN_SCORE_THRESHOLD
+        )
+
+    def _record_shadow_parameter_comparison(
+        self, symbol: str, df: pd.DataFrame, baseline: dict, direction: str
+    ) -> None:
+        current_adx = float(df.iloc[-1].get("adx") or 0.0)
+        profiles = {
+            "volume_adx25_06": {
+                "label": "ADX>=25時量能0.8→0.6",
+                "condition_met": current_adx >= 25.0,
+                "overrides": {"volume_min_ratio": 0.6},
+            },
+            "atr_adx20_012": {
+                "label": "ADX>=20時ATR下限0.15%→0.12%",
+                "condition_met": current_adx >= 20.0,
+                "overrides": {"atr_min_pct": 0.0012},
+            },
+            "rsi_70_30": {
+                "label": "RSI極限68/32→70/30",
+                "condition_met": True,
+                "overrides": {"rsi_long_max": 70.0, "rsi_short_min": 30.0},
+            },
+            "btc_penalty_8": {
+                "label": "BTC背離扣分12→8",
+                "condition_met": True,
+                "overrides": {"btc_score_penalty": 8},
+            },
+        }
+        stats = getattr(self.account, "shadow_parameter_stats", None)
+        if not isinstance(stats, dict):
+            stats = {"evaluations": 0, "baseline_ready": 0, "profiles": {}}
+            self.account.shadow_parameter_stats = stats
+        stats["evaluations"] = int(stats.get("evaluations", 0)) + 1
+        baseline_ready = self._shadow_ready(baseline)
+        if baseline_ready:
+            stats["baseline_ready"] = int(stats.get("baseline_ready", 0)) + 1
+
+        last = getattr(self.account, "shadow_parameter_last", None)
+        if not isinstance(last, dict):
+            last = {}
+            self.account.shadow_parameter_last = last
+
+        common_kwargs = {
+            "ema_50_1h": self.ema_50_1h_cache.get(symbol),
+            "trend_1h_declining": self.adx_1h_declining_cache.get(symbol, False),
+            "st_direction_1h": self.st_direction_1h_cache.get(symbol),
+            "btc_st_direction_1h": self.btc_1h_st_direction,
+            "btc_st_flip_age": self.btc_1h_st_flip_age,
+            "symbol": symbol,
+            "indicators_precomputed": True,
+        }
+        for name, profile in profiles.items():
+            if profile["condition_met"]:
+                shadow = self.strategy.evaluate_signal(
+                    df, parameter_overrides=profile["overrides"], **common_kwargs
+                )
+                if shadow.get("action") == "WAIT_PULLBACK":
+                    perf = self._symbol_recent_performance(symbol, shadow["side"])
+                    adjusted_score, history_mult = self._history_adjusted_score(
+                        int(shadow.get("score") or 0), perf
+                    )
+                    shadow["history_score_multiplier"] = history_mult
+                    shadow["history_adjusted_score"] = adjusted_score
+                    shadow["score"] = adjusted_score
+                    if adjusted_score < MIN_SCORE_THRESHOLD:
+                        shadow["history_blocked"] = True
+            else:
+                shadow = dict(baseline)
+
+            shadow_ready = self._shadow_ready(shadow)
+            profile_stats = stats.setdefault("profiles", {}).setdefault(name, {
+                "label": profile["label"], "evaluations": 0, "condition_met": 0,
+                "ready": 0, "incremental_ready": 0, "outcomes": {},
+                "score_gain_total": 0.0, "score_gain_samples": 0,
+            })
+            profile_stats["evaluations"] = int(profile_stats.get("evaluations", 0)) + 1
+            if profile["condition_met"]:
+                profile_stats["condition_met"] = int(profile_stats.get("condition_met", 0)) + 1
+            if shadow_ready:
+                profile_stats["ready"] = int(profile_stats.get("ready", 0)) + 1
+            if shadow_ready and not baseline_ready:
+                profile_stats["incremental_ready"] = int(profile_stats.get("incremental_ready", 0)) + 1
+            outcome = self._entry_filter_outcome(shadow)
+            outcomes = profile_stats.setdefault("outcomes", {})
+            outcomes[outcome] = int(outcomes.get(outcome, 0)) + 1
+            baseline_score = baseline.get("score")
+            shadow_score = shadow.get("score")
+            if baseline_score is not None and shadow_score is not None:
+                profile_stats["score_gain_total"] = float(profile_stats.get("score_gain_total", 0.0)) + (
+                    float(shadow_score) - float(baseline_score)
+                )
+                profile_stats["score_gain_samples"] = int(profile_stats.get("score_gain_samples", 0)) + 1
+            last.setdefault(name, {})[symbol] = {
+                "timestamp": time.time(),
+                "label": profile["label"],
+                "condition_met": bool(profile["condition_met"]),
+                "direction": direction,
+                "baseline_ready": baseline_ready,
+                "baseline_score": baseline_score,
+                "baseline_outcome": self._entry_filter_outcome(baseline),
+                "shadow_ready": shadow_ready,
+                "shadow_score": shadow_score,
+                "shadow_outcome": outcome,
+                "incremental_ready": shadow_ready and not baseline_ready,
+                "reason": str(shadow.get("reason", "")),
+            }
 
     def _log_signal_progress(
         self, entries: List[str], now_time: float, symbols_snapshot: List[str]
@@ -668,10 +783,11 @@ class TradingEngine:
         for score, symbol, sig, _price, real_atr in signals:
             if symbol in pool or self._pullback_retry_after.get(symbol, 0.0) > now:
                 continue
+            entry_mode = sig.get("entry_mode", "CURRENT_MAKER" if score >= 90 else "PULLBACK")
             pullback_depth = get_pullback_target_depth(score)
-            target_price = float(sig["target_zone"])
+            target_price = float(_price if entry_mode == "CURRENT_MAKER" else sig["target_zone"])
             pullback_distance_atr = float(sig.get("pullback_distance_atr") or 0.0)
-            if sig.get("ema_20") is not None:
+            if entry_mode != "CURRENT_MAKER" and sig.get("ema_20") is not None:
                 ema_20 = float(sig["ema_20"])
                 kc_edge = float(sig["kc_upper"] if sig["side"] == "LONG" else sig["kc_lower"])
                 computed_target, computed_distance, room_ok = compute_pullback_target(
@@ -694,6 +810,7 @@ class TradingEngine:
                 "quality": self._quality_bonus(sig.get("reason", "")),
                 "target_price": target_price,
                 "pullback_depth": pullback_depth,
+                "entry_mode": entry_mode,
                 "pullback_distance_atr": pullback_distance_atr,
                 "atr": float(sig.get("atr") or real_atr),
                 "reason": sig.get("reason", ""),
@@ -742,12 +859,68 @@ class TradingEngine:
         for symbol in set(selected) - old_symbols:
             item = selected[symbol]
             self._record_pullback_outcome("candidate_created")
+            if item["entry_mode"] == "CURRENT_MAKER":
+                self.account.log(
+                    f"⚡ [現價Maker候選] {symbol} {item['side']} {item['score']}分/品質{item['quality']} "
+                    f"現價限價 @ {item['target_price']:.8g}（BTC={item['btc_regime_mode']}，倉位×{item['btc_allocation_factor']:.2f}）",
+                    "INFO",
+                )
+                continue
             self.account.log(
                 f"🎯 [回踩候選] {symbol} {item['side']} {item['score']}分/品質{item['quality']} "
                 f"等待{item['pullback_depth']:.0%}回踩（實際{item['pullback_distance_atr']:.2f} ATR）觸價 @ {item['target_price']:.8g}"
                 f"（BTC={item['btc_regime_mode']}，倉位×{item['btc_allocation_factor']:.2f}）",
                 "INFO",
             )
+
+    async def _place_current_maker_candidate(
+        self, symbol: str, candidate: dict, live_price: float, now: float
+    ) -> bool:
+        """90+ 試行模式：以最新價送 Post-Only，不等待回踩或 1m 反轉。"""
+        committed = len(self.account.positions) + len(self.account.pending_limit_orders)
+        if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
+            self._drop_pullback_candidate(symbol, "可用持倉槽位已滿", now, cooldown=False)
+            return False
+        if self.account.get_available_balance() < candidate["amount_usdt"]:
+            self._drop_pullback_candidate(symbol, "可用保證金不足", now, cooldown=False)
+            return False
+
+        atr = max(float(candidate.get("atr") or 0.0), live_price * 1e-6)
+        sl_distance, tp_distance = compute_sl_tp_distance(live_price, atr)
+        if candidate["side"] == "LONG":
+            sl, tp = live_price - sl_distance, live_price + tp_distance
+        else:
+            sl, tp = live_price + sl_distance, live_price - tp_distance
+        placed = await self.account.place_limit_entry(
+            symbol=symbol, side=candidate["side"], target_price=live_price,
+            amount_usdt=candidate["amount_usdt"], sl=sl, tp=tp,
+            reason=f"CurrentPrice_PostOnly_90Plus | {candidate['reason']}", atr=atr,
+            leverage=candidate["leverage"], signal_score=candidate["score"],
+            post_only=True, entry_context={
+                "entry_mode": "CURRENT_MAKER",
+                "btc_regime_at_entry": candidate["btc_regime_mode"],
+                "btc_direction_1h_at_entry": candidate["btc_direction_1h"],
+                "btc_score_penalty": candidate["btc_score_penalty"],
+                "btc_allocation_factor": candidate["btc_allocation_factor"],
+                "btc_pre_penalty_score": candidate["btc_pre_penalty_score"],
+                "raw_signal_score": candidate["raw_signal_score"],
+                "btc_adjusted_score": candidate["btc_adjusted_score"],
+                "history_adjusted_score": candidate["history_adjusted_score"],
+                "history_score_multiplier": candidate["history_score_multiplier"],
+                "pullback_confirmation_score": None,
+            },
+        )
+        if placed:
+            self._record_pullback_outcome("current_maker_placed")
+            self.account.log(
+                f"⚡ [90+現價Maker掛單] {symbol} {candidate['side']} "
+                f"{candidate['score']}分 @ {live_price:.8g}",
+                "INFO",
+            )
+            self.pending_pullback_candidates.pop(symbol, None)
+            return True
+        self._drop_pullback_candidate(symbol, "現價 Post-Only 掛單失敗", now)
+        return False
 
     async def _monitor_pullback_candidates(self, now: float) -> None:
         daily_halt, _ = self.account.daily_loss_limit_hit()
@@ -773,6 +946,10 @@ class TradingEngine:
             live_price = self.tickers.get(symbol)
             if not live_price:
                 continue
+            if candidate.get("entry_mode") == "CURRENT_MAKER":
+                await self._place_current_maker_candidate(symbol, candidate, live_price, now)
+                continue
+
             target = candidate["target_price"]
             touched = live_price <= target if candidate["side"] == "LONG" else live_price >= target
             if candidate.get("touched_at") is None:
@@ -904,6 +1081,11 @@ class TradingEngine:
                 )
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
+            entry_mode = (info.get("entry_context") or {}).get("entry_mode")
+            if entry_mode == "CURRENT_MAKER":
+                # 90+ 現價單只短暫存活 15 秒，不再誤套回踩二次確認與目標漂移。
+                # 每日熔斷、幣種停用及掛單逾時仍在上方保留。
+                continue
             confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
             if confirm_df.empty or len(confirm_df) < 50:
                 continue
@@ -1006,7 +1188,9 @@ class TradingEngine:
                         if symbol in self.pending_pullback_candidates:
                             pending = self.pending_pullback_candidates[symbol]
                             stage = (
-                                "已觸價，等待1m收盤反轉確認"
+                                f"等待現價Maker掛單 @ {pending.get('target_price'):.8g}"
+                                if pending.get("entry_mode") == "CURRENT_MAKER"
+                                else "已觸價，等待1m收盤反轉確認"
                                 if pending.get("touched_at")
                                 else f"等待{pending.get('pullback_depth', 0):.0%}回踩觸價 @ {pending.get('target_price'):.8g}"
                             )
@@ -1147,6 +1331,7 @@ class TradingEngine:
                             btc_st_direction_1h=self.btc_1h_st_direction,
                             btc_st_flip_age=self.btc_1h_st_flip_age,
                             symbol=symbol,
+                            indicators_precomputed=True,
                         )
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
@@ -1186,6 +1371,9 @@ class TradingEngine:
                             sig["score"] = adjusted_score
                             if adjusted_score < MIN_SCORE_THRESHOLD:
                                 sig["history_blocked"] = True
+                                self._record_shadow_parameter_comparison(
+                                    symbol, df, sig, current_direction
+                                )
                                 self._record_entry_filter(
                                     symbol, sig, current_direction, "history_score_block"
                                 )
@@ -1194,6 +1382,9 @@ class TradingEngine:
                                 ))
                                 continue
 
+                        self._record_shadow_parameter_comparison(
+                            symbol, df, sig, current_direction
+                        )
                         self._record_entry_filter(symbol, sig, current_direction)
                         signal_progress.append(self._format_signal_progress(
                             symbol, sig, current_direction
@@ -1210,6 +1401,9 @@ class TradingEngine:
                     self._admit_pullback_candidates(pullback_signals, available_balance, now_time)
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
+                    if now_time - self._last_diagnostic_stats_save_at >= 60.0:
+                        self.account.save_state()
+                        self._last_diagnostic_stats_save_at = now_time
 
                     # 按評分排序，逐個填充，直到預算用完或同時持倉數達到 MAX_SLOTS
                     # 上限為止——避免行情同時觸發多個高度相關的訊號時（同一波

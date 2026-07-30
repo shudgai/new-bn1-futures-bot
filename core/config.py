@@ -146,8 +146,8 @@ SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").l
 # 不再讓新鮮度跟真正突破同為 30 分，避免只有「方向還沒翻轉」的舊趨勢
 # 靠新鮮度灌成 91+ 高分。65 分門檻維持不變，不用降門檻強迫開倉。
 MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
-# STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表與測試辨識高分訊號；進場策略不再
-# 因高分而直接市價追單，所有達標訊號一律等待回踩。
+# STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
+# 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
@@ -168,11 +168,12 @@ PULLBACK_RETRY_COOLDOWN_SEC = float(os.getenv("PULLBACK_RETRY_COOLDOWN_SEC", "60
 # 底層日誌節流仍保留，避免重複洗版。
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
-# 分數越高代表突破品質越完整，可等待較淺的回踩；仍至少回到 KC 軌道附近，
-# 不使用現價追單。depth=0 為 KC 軌道，1 為 EMA20。
+# 試行分層：90+ 不等待回踩，改送現價 Post-Only Maker；其餘分數越高，
+# 等待的 KC→EMA20 回踩比例越淺。65–69 暫時保留原本 15%。
 PULLBACK_TARGET_DEPTH_TIERS = [
-    (90, float(os.getenv("PULLBACK_TARGET_DEPTH_90", "0.05"))),
-    (80, float(os.getenv("PULLBACK_TARGET_DEPTH_80", "0.08"))),
+    (90, float(os.getenv("PULLBACK_TARGET_DEPTH_90", "0.00"))),
+    (80, float(os.getenv("PULLBACK_TARGET_DEPTH_80", "0.05"))),
+    (70, float(os.getenv("PULLBACK_TARGET_DEPTH_70", "0.08"))),
     (MIN_SCORE_THRESHOLD, float(os.getenv("PULLBACK_TARGET_DEPTH_65", "0.15"))),
 ]
 

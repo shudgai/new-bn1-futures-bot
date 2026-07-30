@@ -38,7 +38,10 @@ def compute_pullback_target(
     return target, distance, True
 
 
-def classify_btc_regime(st_direction: int, btc_direction: int, flip_age: int, symbol: str = None) -> dict:
+def classify_btc_regime(
+    st_direction: int, btc_direction: int, flip_age: int, symbol: str = None,
+    score_penalty: int = None,
+) -> dict:
     """Return the BTC entry adjustment without blocking healthy relative-strength trades."""
     context = {
         "mode": "UNKNOWN",
@@ -60,7 +63,9 @@ def classify_btc_regime(st_direction: int, btc_direction: int, flip_age: int, sy
     if contrary:
         context.update(
             mode="CONTRARY",
-            score_penalty=BTC_REGIME_SCORE_PENALTY,
+            score_penalty=(
+                BTC_REGIME_SCORE_PENALTY if score_penalty is None else max(0, int(score_penalty))
+            ),
             allocation_factor=BTC_REGIME_ALLOCATION_FACTOR,
         )
     else:
@@ -95,7 +100,7 @@ class SuperTrendKeltnerStrategy:
     核心邏輯：
     1. 底線防禦 (Mandatory)：大週期趨勢 (1h EMA50) 與 SuperTrend 方向必須一致。
     2. 動態評分 (Scoring)：Keltner 突破、量能、RSI、訊號新鮮度 進行加權評分。
-    3. 所有達標訊號一律 WAIT_PULLBACK，等待 50% 回踩與成交前二次確認。
+    3. 90+ 使用現價 Post-Only Maker；其餘達標訊號按分數等待回踩與二次確認。
     KC 突破後動量可能已接近末段，不因分數高而在突破高點市價追入。
     """
     def __init__(self, atr_period=10, atr_multiplier=3.0, adx_period=ADX_PERIOD):
@@ -224,6 +229,8 @@ class SuperTrendKeltnerStrategy:
         btc_st_direction_1h: int = 0,
         btc_st_flip_age: int = 999,
         symbol: str = None,
+        parameter_overrides: dict = None,
+        indicators_precomputed: bool = False,
     ) -> dict:
         if len(df) < 50:
             return {
@@ -231,8 +238,15 @@ class SuperTrendKeltnerStrategy:
                 "eligible": False, "score_stage": "ELIGIBILITY",
             }
 
-        df = self.compute_indicators(df)
+        if not indicators_precomputed:
+            df = self.compute_indicators(df)
         curr = df.iloc[-1]
+        overrides = dict(parameter_overrides or {})
+        volume_min_ratio = float(overrides.get("volume_min_ratio", KELTNER_MIN_VOLUME_RATIO))
+        atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
+        rsi_long_max = float(overrides.get("rsi_long_max", RSI_LONG_MAX))
+        rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
+        btc_score_penalty = overrides.get("btc_score_penalty")
 
         # --- 基本數據提取 ---
         price = curr['close_price_spike_filtered'] if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered'])) else curr['close']
@@ -277,7 +291,8 @@ class SuperTrendKeltnerStrategy:
         # 層 A：BTC 大盤風險調整。剛翻轉仍暫停；方向相反改為扣分與縮倉，
         # 讓真正相對強勢的個幣仍可在通過其餘品質與回踩確認後進場。
         btc_regime = classify_btc_regime(
-            st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol
+            st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol,
+            score_penalty=btc_score_penalty,
         )
         if btc_regime["hard_block"]:
             return eligibility_hold(
@@ -321,14 +336,14 @@ class SuperTrendKeltnerStrategy:
         atr_pct = atr / price if price > 0 else 0
         if atr_pct > MAX_ATR_PCT:
             return eligibility_hold(f"Mandatory_Fail: ATR_Too_High({atr_pct:.2%})")
-        if atr_pct < MIN_ATR_PCT:
-            return eligibility_hold(f"Mandatory_Fail: ATR_Too_Low({atr_pct:.2%})")
+        if atr_pct < atr_min_pct:
+            return eligibility_hold(f"Mandatory_Fail: ATR_Too_Low({atr_pct:.2%}<{atr_min_pct:.2%})")
 
         # 極端 RSI 代表行情已經過熱／過冷，不是更高品質的追價訊號。
-        if st_dir == 1 and rsi > RSI_LONG_MAX:
-            return eligibility_hold(f"Mandatory_Fail: RSI_Overbought({rsi:.1f}>{RSI_LONG_MAX:.1f})")
-        if st_dir == -1 and rsi < RSI_SHORT_MIN:
-            return eligibility_hold(f"Mandatory_Fail: RSI_Oversold({rsi:.1f}<{RSI_SHORT_MIN:.1f})")
+        if st_dir == 1 and rsi > rsi_long_max:
+            return eligibility_hold(f"Mandatory_Fail: RSI_Overbought({rsi:.1f}>{rsi_long_max:.1f})")
+        if st_dir == -1 and rsi < rsi_short_min:
+            return eligibility_hold(f"Mandatory_Fail: RSI_Oversold({rsi:.1f}<{rsi_short_min:.1f})")
 
 
         # --- 2. 動態評分系統 (Scoring System) ---
@@ -364,7 +379,7 @@ class SuperTrendKeltnerStrategy:
             score_details.append("KC_Breakout_Fail")
 
         # B. 量能確認分數 (20分)
-        if vol_ma_20 > 0 and vol >= (vol_ma_20 * KELTNER_MIN_VOLUME_RATIO):
+        if vol_ma_20 > 0 and vol >= (vol_ma_20 * volume_min_ratio):
             score += 20
             score_details.append("Volume_Pass")
         else:
@@ -419,8 +434,8 @@ class SuperTrendKeltnerStrategy:
         # E1. 波動品質：越接近 [MIN_ATR_PCT, MAX_ATR_PCT] 區間的中點分數越高，
         # 越靠近任一邊界（太安靜或太劇烈）分數越低。不能只獎勵「越低越好」，
         # 因為太低的 ATR 反而是假突破風險（見上面的 Mandatory_Fail 說明）。
-        atr_mid = (MIN_ATR_PCT + MAX_ATR_PCT) / 2.0
-        atr_half_range = (MAX_ATR_PCT - MIN_ATR_PCT) / 2.0
+        atr_mid = (atr_min_pct + MAX_ATR_PCT) / 2.0
+        atr_half_range = (MAX_ATR_PCT - atr_min_pct) / 2.0
         atr_quality = (
             max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
             if atr_half_range > 0 else 0.0
@@ -436,7 +451,7 @@ class SuperTrendKeltnerStrategy:
         quality_bonus += round(rsi_quality * 3)
         # E3. 量能強度：超過門檻越多代表確認度越高（多 1 倍視為滿分）
         vol_ratio = (vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
-        vol_margin = max(0.0, vol_ratio - KELTNER_MIN_VOLUME_RATIO)
+        vol_margin = max(0.0, vol_ratio - volume_min_ratio)
         quality_bonus += round(min(vol_margin / 1.0, 1.0) * 3)
         # E4. 趨勢強度（ADX）：ADX 越高代表越像真的有趨勢動能撐著，越低越像
         # 盤整期雜訊——KC 突破配上低 ADX，正是假突破最常見的樣貌之一。
@@ -527,33 +542,42 @@ class SuperTrendKeltnerStrategy:
         # update_1h_trend_cache 用同一批1h K線算的 ADX 衰退判斷），代表
         # 不只是5分K的小趨勢要提防，連大方向本身都已經在做頭/做底，
         # 這是5分K的新鮮度/ADX檢查看不到的更高層級末端訊號。
-        if score >= MIN_SCORE_THRESHOLD and trend_1h_declining:
+        if MIN_SCORE_THRESHOLD <= score < 90 and trend_1h_declining:
             return scored_hold(
                 f"Mandatory_Fail: 1h_Trend_Declining | Score({score}) | {', '.join(score_details)}"
             )
+        if score >= 90 and trend_1h_declining:
+            # 90+ 現價 Maker 試行：高完整度突破不再被 1h ADX 衰退單獨否決。
+            # 方向、ATR、RSI、KC、品質等前置資格仍已全部通過。
+            score_details.append("1h_Trend_Declining_90Plus_Allowed")
 
         if score >= MIN_SCORE_THRESHOLD:
             pullback_depth = get_pullback_target_depth(score)
             kc_edge = kc_upper if st_dir == 1 else kc_lower
             side = "LONG" if st_dir == 1 else "SHORT"
-            pullback_target, pullback_distance, pullback_room_ok = compute_pullback_target(
-                kc_edge, ema_20, atr, side, score
-            )
-            if not pullback_room_ok:
-                return scored_hold(
-                    f"Mandatory_Fail: Pullback_Range_Too_Narrow"
-                    f"({pullback_distance / max(atr, 1e-12):.2f}ATR<"
-                    f"{PULLBACK_TARGET_MIN_ATR_MULT:.2f}ATR) | Score({score}) | "
-                    f"{', '.join(score_details)}"
+            current_maker = score >= 90
+            if current_maker:
+                pullback_target = float(price)
+                pullback_distance = 0.0
+            else:
+                pullback_target, pullback_distance, pullback_room_ok = compute_pullback_target(
+                    kc_edge, ema_20, atr, side, score
                 )
+                if not pullback_room_ok:
+                    return scored_hold(
+                        f"Mandatory_Fail: Pullback_Range_Too_Narrow"
+                        f"({pullback_distance / max(atr, 1e-12):.2f}ATR<"
+                        f"{PULLBACK_TARGET_MIN_ATR_MULT:.2f}ATR) | Score({score}) | "
+                        f"{', '.join(score_details)}"
+                    )
             confirmation_reason = (
                 f"ADX {adx:.1f}←{adx_prior:.1f}仍高於{ADX_QUALITY_MIN:g}，品質-1，等待回調二次確認"
                 if adx_decline_soft_penalty
+                else "90+分現價Maker掛單" if current_maker
                 else "等待回調至KC區後二次確認"
             )
-            # 達標訊號依分數等待 5%/8%/15% 回踩，成交前再用最新 K 線做
-            # 二次確認；高分只縮短等待距離，仍不得市價追突破。
-            downgrade_note = " | MarketChase_Disabled"
+            entry_mode = "CURRENT_MAKER" if current_maker else "PULLBACK"
+            downgrade_note = " | CurrentPrice_PostOnly" if current_maker else " | MarketChase_Disabled"
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
                 return {
@@ -563,6 +587,7 @@ class SuperTrendKeltnerStrategy:
                     "target_zone": pullback_target, "ema_20": ema_20,
                     "pullback_depth": pullback_depth,
                     "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
+                    "entry_mode": entry_mode,
                     "confirmation_reason": confirmation_reason,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
@@ -576,6 +601,7 @@ class SuperTrendKeltnerStrategy:
                     "target_zone": pullback_target, "ema_20": ema_20,
                     "pullback_depth": pullback_depth,
                     "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
+                    "entry_mode": entry_mode,
                     "confirmation_reason": confirmation_reason,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
