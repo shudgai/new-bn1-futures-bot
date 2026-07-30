@@ -130,6 +130,11 @@ BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower
 # BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
 # 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
 BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "2"))
+# 方向相反不再直接擋單：先扣分，仍達標者以較小倉位等待回踩確認。
+BTC_REGIME_SCORE_PENALTY = max(0, int(os.getenv("BTC_REGIME_SCORE_PENALTY", "12")))
+BTC_REGIME_ALLOCATION_FACTOR = min(
+    1.0, max(0.0, float(os.getenv("BTC_REGIME_ALLOCATION_FACTOR", "0.5")))
+)
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。

@@ -176,6 +176,13 @@ async def test_partial_fill_limit_entry_records_actual_margin(tmp_path, monkeypa
     await account.place_limit_entry(
         "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
         reason="test", atr=1.0, leverage=5, signal_score=100,
+        entry_context={
+            "btc_regime_at_entry": "CONTRARY",
+            "btc_direction_1h_at_entry": -1,
+            "btc_score_penalty": 12,
+            "btc_allocation_factor": 0.5,
+            "btc_pre_penalty_score": 102,
+        },
     )
     assert exchange.orders[0]["params"]["timeInForce"] == "GTX"
     await account.check_pending_limit_orders()
@@ -185,6 +192,10 @@ async def test_partial_fill_limit_entry_records_actual_margin(tmp_path, monkeypa
     assert open_trade["qty"] == 1.5
     # 實際金額 = 1.5 * 100 / 5 = 30，不是原本打算的 50
     assert open_trade["amount"] == pytest.approx(30.0)
+    assert open_trade["btc_regime_at_entry"] == "CONTRARY"
+    assert open_trade["btc_direction_1h_at_entry"] == -1
+    assert open_trade["btc_score_penalty"] == 12
+    assert open_trade["btc_allocation_factor"] == pytest.approx(0.5)
 
 
 @pytest.mark.anyio

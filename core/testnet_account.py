@@ -33,6 +33,10 @@ from core.notifier import notify_email
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+ENTRY_CONTEXT_KEYS = (
+    "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
+    "btc_allocation_factor", "btc_pre_penalty_score",
+)
 
 
 def get_taipei_now_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
@@ -301,6 +305,7 @@ class BinanceTestnetAccount:
                 "open_time": meta.get("open_time") or get_taipei_now_str(),
                 "reason": meta.get("reason") or "Binance Testnet existing position",
                 "signal_score": meta.get("signal_score"),
+                **{key: meta.get(key) for key in ENTRY_CONTEXT_KEYS},
                 "mark_price": mark_price,
                 "unrealized_pnl": float(row.get("unRealizedProfit") or 0.0),
                 "peak_pnl_pct": peak_pnl_pct,
@@ -455,6 +460,7 @@ class BinanceTestnetAccount:
                 "status": "CLOSED",
                 "reason": exit_reason,
                 "exit_type": exit_type,
+                **{key: position.get(key) for key in ENTRY_CONTEXT_KEYS},
             })
             self.log(
                 f"🏁 Binance Testnet 已平倉 [{position['side']}] {symbol} | {exit_reason} | "
@@ -732,6 +738,7 @@ class BinanceTestnetAccount:
         atr: float = 0.0,
         leverage: int = None,
         signal_score: int = None,
+        entry_context: dict = None,
     ) -> bool:
         """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
         訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
@@ -795,6 +802,7 @@ class BinanceTestnetAccount:
         return await self._finalize_new_position(
             symbol, side, execution_price, qty, price, sl, tp, reason, atr,
             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
+            entry_context=entry_context,
         )
 
     async def _prepare_leverage(self, symbol: str, leverage: int) -> None:
@@ -825,6 +833,7 @@ class BinanceTestnetAccount:
         close_side: str,
         entry_order_id,
         amount_usdt: float,
+        entry_context: dict = None,
     ) -> bool:
         """開倉單成交後的收尾：建立SL/TP保護單、寫入meta、記錄交易。
         market（open_position）與 limit（place_limit_entry 成交後）兩條
@@ -833,6 +842,10 @@ class BinanceTestnetAccount:
         再套用到實際成交價上，讓成交價比預期更好時，止損止盈距離維持
         原本規劃的寬度，不會因為成交價落差而跟著偏移。"""
         try:
+            entry_context = {
+                key: value for key, value in dict(entry_context or {}).items()
+                if key in ENTRY_CONTEXT_KEYS
+            }
             sl_distance = abs(price_ref - sl)
             tp_distance = abs(tp - price_ref)
             adjusted_sl = (
@@ -876,6 +889,7 @@ class BinanceTestnetAccount:
                 "open_time": get_taipei_now_str(),
                 "reason": reason,
                 "signal_score": signal_score,
+                **entry_context,
             }
             self.position_meta[symbol] = meta
             # 「金額」用實際成交的 qty×成交價÷槓桿算，不要直接沿用呼叫端
@@ -904,6 +918,7 @@ class BinanceTestnetAccount:
                 "sl": sl_price,
                 "tp": tp_price,
                 "exchange_order_id": entry_order_id,
+                **entry_context,
             })
             await self.refresh(force=True)
             self.log(
@@ -934,6 +949,7 @@ class BinanceTestnetAccount:
         leverage: int = None,
         signal_score: int = None,
         post_only: bool = True,
+        entry_context: dict = None,
     ) -> bool:
         """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
         未成交、條件變差或超時由 engine.py 主動撤單。"""
@@ -995,6 +1011,10 @@ class BinanceTestnetAccount:
             "signal_score": signal_score,
             "placed_at": time.time(),
             "post_only": post_only,
+            "entry_context": {
+                key: value for key, value in dict(entry_context or {}).items()
+                if key in ENTRY_CONTEXT_KEYS
+            },
         }
         if self._pending_retry_streak.get(symbol, 0) == 0:
             self.log(
@@ -1037,6 +1057,7 @@ class BinanceTestnetAccount:
                     info["target_price"], info["sl"], info["tp"], info["reason"],
                     info["atr"], info["leverage"], info["signal_score"], close_side,
                     info["order_id"], info["amount_usdt"],
+                    entry_context=info.get("entry_context"),
                 )
             elif status in ("canceled", "rejected", "expired"):
                 del self.pending_limit_orders[symbol]
@@ -1056,6 +1077,7 @@ class BinanceTestnetAccount:
                         info["target_price"], info["sl"], info["tp"], info["reason"],
                         info["atr"], info["leverage"], info["signal_score"], close_side,
                         info["order_id"], info["amount_usdt"],
+                        entry_context=info.get("entry_context"),
                     )
                 else:
                     self.log(f"↩️ {symbol} 限價單已被取消/拒絕，放棄本次進場", "INFO")
@@ -1114,6 +1136,7 @@ class BinanceTestnetAccount:
                 info["target_price"], info["sl"], info["tp"], info["reason"],
                 info["atr"], info["leverage"], info["signal_score"], close_side,
                 info["order_id"], info["amount_usdt"],
+                entry_context=info.get("entry_context"),
             )
             return
 
@@ -1167,6 +1190,7 @@ class BinanceTestnetAccount:
                 "status": "CLOSED",
                 "reason": close_reason,
                 "exchange_order_id": order.get("id"),
+                **{key: position.get(key) for key in ENTRY_CONTEXT_KEYS},
             })
             self.position_meta.pop(symbol, None)
             self.positions.pop(symbol, None)

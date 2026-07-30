@@ -469,10 +469,12 @@ class TradingEngine:
         for score, symbol, sig, _price, real_atr in signals:
             if symbol in pool or self._pullback_retry_after.get(symbol, 0.0) > now:
                 continue
-            amount = min(
+            base_amount = min(
                 max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
                 TRADE_AMOUNT_USDT,
             )
+            allocation_factor = float(sig.get("btc_allocation_factor", 1.0) or 1.0)
+            amount = base_amount * allocation_factor
             pool[symbol] = {
                 "symbol": symbol,
                 "side": sig["side"],
@@ -482,6 +484,12 @@ class TradingEngine:
                 "atr": float(sig.get("atr") or real_atr),
                 "reason": sig.get("reason", ""),
                 "amount_usdt": amount,
+                "base_amount_usdt": base_amount,
+                "btc_regime_mode": sig.get("btc_regime_mode", "UNKNOWN"),
+                "btc_direction_1h": sig.get("btc_direction_1h", 0),
+                "btc_score_penalty": sig.get("btc_score_penalty", 0),
+                "btc_allocation_factor": allocation_factor,
+                "btc_pre_penalty_score": sig.get("btc_pre_penalty_score", score),
                 "leverage": self.symbol_rotation.get_dynamic_leverage(symbol, score),
                 "created_at": now,
                 "touched_at": None,
@@ -514,7 +522,8 @@ class TradingEngine:
             item = selected[symbol]
             self.account.log(
                 f"🎯 [回踩候選] {symbol} {item['side']} {item['score']}分/品質{item['quality']} "
-                f"等待觸價 @ {item['target_price']:.8g}",
+                f"等待觸價 @ {item['target_price']:.8g}"
+                f"（BTC={item['btc_regime_mode']}，倉位×{item['btc_allocation_factor']:.2f}）",
                 "INFO",
             )
 
@@ -557,10 +566,21 @@ class TradingEngine:
             confirm = self.strategy.confirm_pullback_entry(
                 confirm_df, candidate["side"], ema_1h=self.ema_50_1h_cache.get(symbol),
                 trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
+                btc_st_direction_1h=getattr(self, "btc_1h_st_direction", 0),
+                btc_st_flip_age=getattr(self, "btc_1h_st_flip_age", 999), symbol=symbol,
             )
             if confirm["status"] != "PASS":
                 self._drop_pullback_candidate(symbol, f"條件已變差：{confirm['reason']}", now)
                 continue
+
+            final_btc_factor = float(confirm.get("btc_allocation_factor", 1.0) or 1.0)
+            candidate["amount_usdt"] = min(
+                candidate["amount_usdt"], candidate["base_amount_usdt"] * final_btc_factor
+            )
+            candidate["btc_regime_mode"] = confirm.get("btc_regime_mode", "UNKNOWN")
+            candidate["btc_direction_1h"] = confirm.get("btc_direction_1h", 0)
+            candidate["btc_score_penalty"] = confirm.get("btc_score_penalty", 0)
+            candidate["btc_allocation_factor"] = final_btc_factor
 
             fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, candidate["side"])
             drift = abs(fresh_target - target)
@@ -595,7 +615,13 @@ class TradingEngine:
                 amount_usdt=candidate["amount_usdt"], sl=sl, tp=tp,
                 reason=f"Pullback_Confirmed_Limit | {candidate['reason']}", atr=fresh_atr,
                 leverage=candidate["leverage"], signal_score=candidate["score"],
-                post_only=True,
+                post_only=True, entry_context={
+                    "btc_regime_at_entry": candidate["btc_regime_mode"],
+                    "btc_direction_1h_at_entry": candidate["btc_direction_1h"],
+                    "btc_score_penalty": candidate["btc_score_penalty"],
+                    "btc_allocation_factor": candidate["btc_allocation_factor"],
+                    "btc_pre_penalty_score": candidate["btc_pre_penalty_score"],
+                },
             )
             if placed:
                 self.pending_pullback_candidates.pop(symbol, None)
@@ -626,10 +652,20 @@ class TradingEngine:
             confirm = self.strategy.confirm_pullback_entry(
                 confirm_df, info["side"], ema_1h=self.ema_50_1h_cache.get(symbol),
                 trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
+                btc_st_direction_1h=getattr(self, "btc_1h_st_direction", 0),
+                btc_st_flip_age=getattr(self, "btc_1h_st_flip_age", 999), symbol=symbol,
             )
             if confirm["status"] != "PASS":
                 await self.account.cancel_pending_limit(symbol, f"條件已變差：{confirm['reason']}")
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                continue
+            current_factor = float(confirm.get("btc_allocation_factor", 1.0) or 1.0)
+            placed_factor = float((info.get("entry_context") or {}).get("btc_allocation_factor", 1.0) or 1.0)
+            if current_factor < placed_factor:
+                await self.account.cancel_pending_limit(
+                    symbol, "BTC方向轉為背離，撤銷原倉位並按50%重新建立候選"
+                )
+                self._pullback_retry_after[symbol] = now
                 continue
             fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, info["side"])
             drift_atr = abs(fresh_target - info["target_price"]) / max(fresh_atr, 1e-12)
@@ -803,6 +839,7 @@ class TradingEngine:
                             st_direction_1h=self.st_direction_1h_cache.get(symbol),
                             btc_st_direction_1h=self.btc_1h_st_direction,
                             btc_st_flip_age=self.btc_1h_st_flip_age,
+                            symbol=symbol,
                         )
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"

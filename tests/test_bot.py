@@ -168,6 +168,50 @@ def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
     assert result_mid["action"] == "WAIT_PULLBACK"
     assert "target_zone" in result_mid
 
+def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
+
+    aligned = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, btc_st_direction_1h=1, btc_st_flip_age=3,
+        symbol="DOGE/USDT",
+    )
+    contrary = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=3,
+        symbol="DOGE/USDT",
+    )
+
+    assert aligned["action"] == "WAIT_PULLBACK"
+    assert contrary["action"] == "WAIT_PULLBACK"
+    assert contrary["score"] == aligned["score"] - 12
+    assert contrary["btc_regime_mode"] == "CONTRARY"
+    assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
+
+
+def test_btc_fresh_flip_still_blocks_and_btc_itself_is_not_penalized(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
+
+    fresh = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=1,
+        symbol="DOGE/USDT",
+    )
+    own_market = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=3,
+        symbol="BTC/USDT",
+    )
+
+    assert fresh["action"] == "HOLD"
+    assert "BTC_1h_ST_JustFlipped" in fresh["reason"]
+    assert own_market["action"] == "WAIT_PULLBACK"
+    assert own_market["btc_regime_mode"] == "SELF"
+    assert own_market["btc_score_penalty"] == 0
+
+
 def test_unconfirmed_kc_breakout_cannot_qualify_on_other_scores(monkeypatch):
     """量能/RSI/新鮮度再高，也不能補掉沒有已收盤 KC 突破的缺口。"""
     strategy = SuperTrendKeltnerStrategy()
@@ -322,6 +366,28 @@ def test_pullback_reconfirmation_passes_when_conditions_still_hold(monkeypatch):
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "PASS"
+
+
+def test_pullback_reconfirmation_rechecks_btc_regime(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    contrary = strategy.confirm_pullback_entry(
+        frame, side="LONG", ema_1h=95.0, btc_st_direction_1h=-1,
+        btc_st_flip_age=3, symbol="DOGE/USDT",
+    )
+    fresh_flip = strategy.confirm_pullback_entry(
+        frame, side="LONG", ema_1h=95.0, btc_st_direction_1h=-1,
+        btc_st_flip_age=1, symbol="DOGE/USDT",
+    )
+
+    assert contrary["status"] == "PASS"
+    assert contrary["btc_regime_mode"] == "CONTRARY"
+    assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
+    assert fresh_flip["status"] == "CANCEL"
+    assert "緩衝期" in fresh_flip["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_supertrend_reversed(monkeypatch):
@@ -985,6 +1051,42 @@ def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):
     engine._admit_pullback_candidates(signals, available_balance=100.0, now=1000.0)
 
     assert list(engine.pending_pullback_candidates) == ["DOGE/USDT"]
+
+
+def test_btc_contrary_candidate_uses_half_position(monkeypatch):
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+        logs = []
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    class DummyRotation:
+        @staticmethod
+        def get_dynamic_leverage(symbol, score):
+            return 5
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.symbol_rotation = DummyRotation()
+    engine.pending_pullback_candidates = {}
+    engine._pullback_retry_after = {}
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["DOGE/USDT"])
+    monkeypatch.setattr(engine_module, "MAX_SLOTS", 1)
+    signal = {
+        "side": "LONG", "target_zone": 10.0, "atr": 0.1, "reason": "Quality+9",
+        "btc_regime_mode": "CONTRARY", "btc_direction_1h": -1,
+        "btc_score_penalty": 12, "btc_allocation_factor": 0.5,
+        "btc_pre_penalty_score": 102,
+    }
+
+    engine._admit_pullback_candidates(
+        [(90, "DOGE/USDT", signal, 10.1, 0.1)], available_balance=100.0, now=1000.0
+    )
+
+    candidate = engine.pending_pullback_candidates["DOGE/USDT"]
+    assert candidate["amount_usdt"] == pytest.approx(candidate["base_amount_usdt"] * 0.5)
 
 
 @pytest.mark.anyio

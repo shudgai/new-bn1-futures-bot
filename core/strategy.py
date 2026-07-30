@@ -12,9 +12,39 @@ from core.config import (
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
     TREND_AGREE_EMA_MARGIN_PCT,
-    BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, SYMBOL_1H_ST_FILTER_ENABLED,
+    BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
+    BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
 )
 from core.indicators import bars_since_supertrend_flip
+
+def classify_btc_regime(st_direction: int, btc_direction: int, flip_age: int, symbol: str = None) -> dict:
+    """Return the BTC entry adjustment without blocking healthy relative-strength trades."""
+    context = {
+        "mode": "UNKNOWN",
+        "score_penalty": 0,
+        "allocation_factor": 1.0,
+        "hard_block": False,
+    }
+    if not BTC_REGIME_FILTER_ENABLED or btc_direction == 0:
+        return context
+    if flip_age < BTC_REGIME_FLIP_BUFFER_BARS:
+        context.update(mode="JUST_FLIPPED", hard_block=True)
+        return context
+    if str(symbol or "").replace("/", "").upper() == "BTCUSDT":
+        context["mode"] = "SELF"
+        return context
+    contrary = (st_direction == 1 and btc_direction == -1) or (
+        st_direction == -1 and btc_direction == 1
+    )
+    if contrary:
+        context.update(
+            mode="CONTRARY",
+            score_penalty=BTC_REGIME_SCORE_PENALTY,
+            allocation_factor=BTC_REGIME_ALLOCATION_FACTOR,
+        )
+    else:
+        context["mode"] = "ALIGNED"
+    return context
 
 
 def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
@@ -172,6 +202,7 @@ class SuperTrendKeltnerStrategy:
         st_direction_1h: int = None,
         btc_st_direction_1h: int = 0,
         btc_st_flip_age: int = 999,
+        symbol: str = None,
     ) -> dict:
         if len(df) < 50:
             return {"action": "HOLD", "reason": "Not enough data"}
@@ -196,21 +227,16 @@ class SuperTrendKeltnerStrategy:
 
         st_dir = curr['st_direction']
 
-        # 層 A：BTC 大盤守門員（最高優先級）
-        # BTC 1h SuperTrend 代表整體市場大方向，多數山寨幣跟著 BTC 走。
-        # BTC 多頭時開空單、BTC 空頭時開多單，都是在跟大盤對抗。
-        if BTC_REGIME_FILTER_ENABLED and btc_st_direction_1h != 0:
-            # BTC 剛翻轉（< N 根 1h K棒），方向尚不確定，禁止開新倉
-            if btc_st_flip_age < BTC_REGIME_FLIP_BUFFER_BARS:
-                return {
-                    "action": "HOLD",
-                    "reason": f"Mandatory_Fail: BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
-                }
-            # BTC 大盤方向與訊號方向不一致 → 擋單
-            if st_dir == 1 and btc_st_direction_1h == -1:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: BTC_Regime_Bearish(vs_LONG_signal)"}
-            if st_dir == -1 and btc_st_direction_1h == 1:
-                return {"action": "HOLD", "reason": "Mandatory_Fail: BTC_Regime_Bullish(vs_SHORT_signal)"}
+        # 層 A：BTC 大盤風險調整。剛翻轉仍暫停；方向相反改為扣分與縮倉，
+        # 讓真正相對強勢的個幣仍可在通過其餘品質與回踩確認後進場。
+        btc_regime = classify_btc_regime(
+            st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol
+        )
+        if btc_regime["hard_block"]:
+            return {
+                "action": "HOLD",
+                "reason": f"Mandatory_Fail: BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
+            }
 
         # 層 B：個幣自身 1h SuperTrend 方向對齊
         # 1h SuperTrend 翻轉需要較長時間，比 price vs EMA50 準確 3~5 倍。
@@ -373,6 +399,20 @@ class SuperTrendKeltnerStrategy:
         if quality_bonus > 0:
             score_details.append(f"Quality+{quality_bonus}")
 
+        raw_score_before_btc = score
+        if btc_regime["score_penalty"] > 0:
+            score = max(0, score - btc_regime["score_penalty"])
+            score_details.append(
+                f"BTC_Contrary-{btc_regime['score_penalty']}({raw_score_before_btc}→{score})"
+            )
+        btc_context = {
+            "btc_regime_mode": btc_regime["mode"],
+            "btc_direction_1h": int(btc_st_direction_1h or 0),
+            "btc_score_penalty": btc_regime["score_penalty"],
+            "btc_allocation_factor": btc_regime["allocation_factor"],
+            "btc_pre_penalty_score": raw_score_before_btc,
+        }
+
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
         # 進場門檻：總分 >= MIN_SCORE_THRESHOLD (90 分)
@@ -440,6 +480,7 @@ class SuperTrendKeltnerStrategy:
                     "price": price, "atr": atr,
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                     "target_zone": pullback_target,
+                    **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
             else:  # SHORT
@@ -450,13 +491,15 @@ class SuperTrendKeltnerStrategy:
                     "price": price, "atr": atr,
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                     "target_zone": pullback_target,
+                    **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
 
         return {"action": "HOLD", "reason": f"Score_Low({score}) | {', '.join(score_details)}"}
 
     def confirm_pullback_entry(
-        self, df: pd.DataFrame, side: str, ema_1h: float = None, trend_1h_declining: bool = False
+        self, df: pd.DataFrame, side: str, ema_1h: float = None, trend_1h_declining: bool = False,
+        btc_st_direction_1h: int = 0, btc_st_flip_age: int = 999, symbol: str = None,
     ) -> dict:
         """回踩觸發當下的二次確認。
 
@@ -485,6 +528,15 @@ class SuperTrendKeltnerStrategy:
             return {
                 "status": "CANCEL",
                 "reason": f"SuperTrend 方向已反轉（現為{'多頭' if st_dir == 1 else '空頭'}）",
+            }
+
+        btc_regime = classify_btc_regime(
+            want_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol
+        )
+        if btc_regime["hard_block"]:
+            return {
+                "status": "CANCEL",
+                "reason": f"BTC 1h 剛翻轉，仍在 {btc_st_flip_age}/{BTC_REGIME_FLIP_BUFFER_BARS} 根緩衝期",
             }
 
         if side == "LONG" and rsi > RSI_LONG_MAX:
@@ -622,14 +674,23 @@ class SuperTrendKeltnerStrategy:
                 "reason": f"回調品質不足 Quality_Too_Low({score_e}<{ENTRY_MIN_QUALITY_BONUS})",
             }
 
-        pullback_score = score_b + score_c + score_d + score_e
+        raw_pullback_score = score_b + score_c + score_d + score_e
+        pullback_score = max(0, raw_pullback_score - btc_regime["score_penalty"])
         if pullback_score < PULLBACK_SCORE_THRESHOLD:
             return {
                 "status": "CANCEL",
                 "reason": (
                     f"回調總分不足 Pullback_Score({pullback_score}<{PULLBACK_SCORE_THRESHOLD}) | "
-                    f"Volume+{score_b} RSI+{score_c} Freshness+{score_d} Quality+{score_e}"
+                    f"Volume+{score_b} RSI+{score_c} Freshness+{score_d} Quality+{score_e} "
+                    f"BTC-{btc_regime['score_penalty']}"
                 ),
             }
 
-        return {"status": "PASS", "reason": f"二次確認通過 Pullback_Score({pullback_score})"}
+        return {
+            "status": "PASS",
+            "reason": f"二次確認通過 Pullback_Score({pullback_score})",
+            "btc_regime_mode": btc_regime["mode"],
+            "btc_direction_1h": int(btc_st_direction_1h or 0),
+            "btc_score_penalty": btc_regime["score_penalty"],
+            "btc_allocation_factor": btc_regime["allocation_factor"],
+        }
