@@ -126,12 +126,12 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.5"))
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
 # 全體幣種的開倉方向守門——BTC 多頭只允許多單，BTC 空頭只允許空單。
 # 這是防止「大盤偏多但 bot 大量開空」最有效的單一機制。
-BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower() == "true"
+BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "false").lower() == "true"
 # BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
 # 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
 BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "2"))
 # 方向相反不再直接擋單：先扣分，仍達標者以較小倉位等待回踩確認。
-BTC_REGIME_SCORE_PENALTY = max(0, int(os.getenv("BTC_REGIME_SCORE_PENALTY", "12")))
+BTC_REGIME_SCORE_PENALTY = max(0, int(os.getenv("BTC_REGIME_SCORE_PENALTY", "6")))
 BTC_REGIME_ALLOCATION_FACTOR = min(
     1.0, max(0.0, float(os.getenv("BTC_REGIME_ALLOCATION_FACTOR", "0.5")))
 )
@@ -254,8 +254,8 @@ EMA_EXTENSION_MAX_ATR_MULT = float(os.getenv("EMA_EXTENSION_MAX_ATR_MULT", "2.5"
 # --- 動態 RSI 濾網 ---
 RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
 RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
-RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "68"))
-RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "32"))
+RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "75"))
+RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "25"))
 
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")

@@ -406,6 +406,8 @@ def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
     frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_SCORE_PENALTY", 12)
 
     aligned = strategy.evaluate_signal(
         frame, ema_50_1h=95.0, btc_st_direction_1h=1, btc_st_flip_age=3,
@@ -427,6 +429,10 @@ def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch)
     strategy = SuperTrendKeltnerStrategy()
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+    monkeypatch.setattr(strategy_module, "RSI_LONG_MAX", 68.0)
+    monkeypatch.setattr(strategy_module, "RSI_SHORT_MIN", 32.0)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_SCORE_PENALTY", 12)
 
     low_volume = _entry_score_frame(volume=700.0, rsi=60.0, adx=35.0)
     live_volume = strategy.evaluate_signal(low_volume, ema_50_1h=95.0)
@@ -516,6 +522,7 @@ def test_btc_fresh_flip_still_blocks_and_btc_itself_is_not_penalized(monkeypatch
     frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
 
     fresh = strategy.evaluate_signal(
         frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=1,
@@ -713,6 +720,7 @@ def test_pullback_reconfirmation_rechecks_btc_regime(monkeypatch):
     frame = _reconfirm_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
 
     contrary = strategy.confirm_pullback_entry(
         frame, side="LONG", ema_1h=95.0, btc_st_direction_1h=-1,
