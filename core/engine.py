@@ -19,6 +19,7 @@ from core.config import (
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
+    detect_ma7_reversal,
 )
 from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
@@ -929,6 +930,55 @@ class TradingEngine:
         self._drop_pullback_candidate(symbol, "現價 Post-Only 掛單失敗", now)
         return False
 
+    async def _place_ma7_reversal_entry(
+        self, symbol: str, side: str, ma7_sig: dict, live_price: float, now: float
+    ) -> bool:
+        """MA7 谷底/峰頂拐頭確認後，直接以現價送 Post-Only 限價單進場。不進回踩候選池。"""
+        committed = len(self.account.positions) + len(self.account.pending_limit_orders)
+        if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
+            return False
+        score = int(ma7_sig.get("score") or MIN_SCORE_THRESHOLD)
+        base_amount = min(
+            max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
+            TRADE_AMOUNT_USDT,
+        )
+        allocation_factor = float(ma7_sig.get("btc_allocation_factor", 1.0) or 1.0)
+        amount_usdt = base_amount * allocation_factor
+        if self.account.get_available_balance() < amount_usdt:
+            return False
+        atr = max(float(ma7_sig.get("atr") or 0.0), live_price * 1e-6)
+        sl_distance, tp_distance = compute_sl_tp_distance(live_price, atr)
+        if side == "LONG":
+            sl, tp = live_price - sl_distance, live_price + tp_distance
+        else:
+            sl, tp = live_price + sl_distance, live_price - tp_distance
+        placed = await self.account.place_limit_entry(
+            symbol=symbol, side=side, target_price=live_price,
+            amount_usdt=amount_usdt, sl=sl, tp=tp,
+            reason=ma7_sig.get("reason", "MA7_Reversal_Entry"),
+            atr=atr,
+            leverage=self.symbol_rotation.get_dynamic_leverage(symbol, score),
+            signal_score=score,
+            post_only=True,
+            entry_context={
+                "entry_mode": "MA7_REVERSAL",
+                "btc_regime_at_entry": ma7_sig.get("btc_regime_mode", "UNKNOWN"),
+                "btc_allocation_factor": allocation_factor,
+                "ma7_curr": ma7_sig.get("ma7_curr"),
+                "ma7_prev": ma7_sig.get("ma7_prev"),
+                "ma7_prev2": ma7_sig.get("ma7_prev2"),
+            },
+        )
+        if placed:
+            self._record_pullback_outcome("ma7_reversal_placed")
+            direction_note = "MA7谷底轉彎向上" if side == "LONG" else "MA7峰頂轉彎向下"
+            self.account.log(
+                f"⚡ [MA7拐頭進場] {symbol} {side} {score}分 @ {live_price:.8g}（{direction_note}，KC位置確認）",
+                "INFO",
+            )
+            return True
+        return False
+
     async def _monitor_pullback_candidates(self, now: float) -> None:
         daily_halt, _ = self.account.daily_loss_limit_hit()
         if daily_halt:
@@ -1334,6 +1384,34 @@ class TradingEngine:
 
                         # 計算指標以取得 rsi 與 kc 通道等欄位
                         df = self.strategy.compute_indicators(df)
+
+                        # MA7 拐頭側道一：直接現價進場（並行於 KC 回踩模式）
+                        current_direction = (
+                            "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
+                        )
+                        ma7_sig = detect_ma7_reversal(
+                            df,
+                            side=current_direction,
+                            ema_50_1h=self.ema_50_1h_cache.get(symbol),
+                            st_direction_1h=self.st_direction_1h_cache.get(symbol),
+                            btc_st_direction_1h=self.btc_1h_st_direction,
+                            btc_st_flip_age=self.btc_1h_st_flip_age,
+                            symbol=symbol,
+                            indicators_precomputed=True,
+                        )
+                        if ma7_sig["detected"]:
+                            daily_halt_now, _ = self.account.daily_loss_limit_hit()
+                            if not daily_halt_now:
+                                ma7_placed = await self._place_ma7_reversal_entry(
+                                    symbol, ma7_sig["side"], ma7_sig, price, now_time
+                                )
+                                if ma7_placed:
+                                    signal_progress.append(
+                                        f"{symbol.replace('/USDT', '')} {current_direction} "
+                                        f"{ma7_sig.get('score', 65)}分,MA7拐頭進場"
+                                    )
+                                    continue
+
                         sig = self.strategy.evaluate_signal(
                             df,
                             ema_50_1h=ema_50_1h,

@@ -94,6 +94,173 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     tp_distance = max(configured_tp_distance, min_tp_distance)
     return sl_distance, tp_distance
 
+
+def detect_ma7_reversal(
+    df: pd.DataFrame,
+    side: str,
+    ema_50_1h: float = None,
+    st_direction_1h: int = None,
+    btc_st_direction_1h: int = 0,
+    btc_st_flip_age: int = 999,
+    symbol: str = None,
+    parameter_overrides: dict = None,
+    indicators_precomputed: bool = False,
+) -> dict:
+    """5m MA7 谷底（多單）或峰頂（空單）拐頭偵測。
+
+    觸發條件（以多單為例）：
+      ma7[-3] > ma7[-2] and ma7[-1] > ma7[-2]
+    即前一根 MA7 低於兩根前（確立谷底），且當前 MA7 已向上翻。
+
+    需同時通過：
+      - SuperTrend 方向對齊
+      - 1h ST 方向對齊（若啟用）
+      - ADX / ATR / RSI 基礎品質過濾
+      - BTC 大盤守門員
+      - KC 位置驗證：現價在 EMA20 同側（不能整個跑到通道另一邊）
+
+    回傳 {"detected": True/False, "reason": str, ...}
+    """
+    if len(df) < 20:
+        return {"detected": False, "reason": "K線資料不足"}
+
+    if not indicators_precomputed:
+        df = SuperTrendKeltnerStrategy().compute_indicators(df)
+
+    overrides = dict(parameter_overrides or {})
+    atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
+    rsi_long_max = float(overrides.get("rsi_long_max", RSI_LONG_MAX))
+    rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
+
+    curr = df.iloc[-1]
+    price = (
+        curr['close_price_spike_filtered']
+        if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered']))
+        else curr['close']
+    )
+    atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
+    rsi = curr['rsi']
+    adx = curr['adx'] if not np.isnan(curr['adx']) else 0.0
+    vol = curr['volume']
+    vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
+    ema_20 = curr['ema_20'] if not pd.isna(curr['ema_20']) else price
+    kc_upper = curr['kc_upper']
+    kc_lower = curr['kc_lower']
+    st_dir = int(curr['st_direction'])
+    want_dir = 1 if str(side).upper() == "LONG" else -1
+
+    def _no(reason: str) -> dict:
+        return {"detected": False, "reason": reason, "side": side}
+
+    # SuperTrend 方向對齊
+    if st_dir != want_dir:
+        return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
+
+    # 1h SuperTrend 方向
+    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
+        if want_dir == 1 and st_direction_1h == -1:
+            return _no("1h_ST_Bearish vs LONG")
+        if want_dir == -1 and st_direction_1h == 1:
+            return _no("1h_ST_Bullish vs SHORT")
+
+    # BTC 大盤守門員
+    btc_regime = classify_btc_regime(
+        st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol,
+    )
+    if btc_regime["hard_block"]:
+        return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
+
+    # 1h EMA50 方向
+    if ema_50_1h is not None:
+        ema_50_upper = ema_50_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT)
+        ema_50_lower = ema_50_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT)
+        if want_dir == 1 and price < ema_50_lower:
+            return _no("1h_EMA50_Bearish")
+        if want_dir == -1 and price > ema_50_upper:
+            return _no("1h_EMA50_Bullish")
+
+    # ADX 硬性最低門檻
+    if adx < ADX_MANDATORY_MIN:
+        return _no(f"ADX太低({adx:.1f}<{ADX_MANDATORY_MIN})")
+
+    # ATR 波動範圍
+    atr_pct = atr / price if price > 0 else 0
+    if atr_pct > MAX_ATR_PCT:
+        return _no(f"ATR過高({atr_pct:.2%})")
+    if atr_pct < atr_min_pct:
+        return _no(f"ATR過低({atr_pct:.2%})")
+
+    # RSI 過熱/過冷
+    if want_dir == 1 and rsi > rsi_long_max:
+        return _no(f"RSI過熱({rsi:.1f}>{rsi_long_max:.1f})")
+    if want_dir == -1 and rsi < rsi_short_min:
+        return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
+
+    # MA7 谷底/峰頂拐頭判定（需要至少 3 根有效 MA7 值）
+    if 'ma7' not in df.columns:
+        return _no("ma7欄位缺失")
+    ma7_series = df['ma7'].dropna()
+    if len(ma7_series) < 3:
+        return _no("MA7有效值不足3根")
+    ma7_curr = float(ma7_series.iloc[-1])
+    ma7_prev = float(ma7_series.iloc[-2])
+    ma7_prev2 = float(ma7_series.iloc[-3])
+
+    if want_dir == 1:
+        # 多單：前一根是谷底（prev <= prev2），且當前已向上翻（curr > prev）
+        if not (ma7_prev <= ma7_prev2 and ma7_curr > ma7_prev):
+            return _no(
+                f"MA7尚未谷底轉彎（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}）"
+            )
+    else:
+        # 空單：前一根是峰頂（prev >= prev2），且當前已向下翻（curr < prev）
+        if not (ma7_prev >= ma7_prev2 and ma7_curr < ma7_prev):
+            return _no(
+                f"MA7尚未峰頂轉彎（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}）"
+            )
+
+    # KC 位置驗證：現價需在 EMA20 同側
+    if want_dir == 1 and price < ema_20 * (1 - TREND_AGREE_EMA_MARGIN_PCT):
+        return _no(f"現價低於EMA20，KC位置不合（{price:.6g}<{ema_20:.6g}）")
+    if want_dir == -1 and price > ema_20 * (1 + TREND_AGREE_EMA_MARGIN_PCT):
+        return _no(f"現價高於EMA20，KC位置不合（{price:.6g}>{ema_20:.6g}）")
+
+    # 計算品質分數（用於槽位分配優先排序，上限 89 避免誤觸 CURRENT_MAKER 路徑）
+    score = MIN_SCORE_THRESHOLD  # 基礎 65 分
+    if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
+        score += 10  # 量能確認
+    if want_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
+        score += 5
+    elif want_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
+        score += 5
+    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
+    score += round(min(max(adx_ratio, 0.0), 1.0) * 9)  # ADX 品質最多 +9
+    score = min(score, 89)
+
+    direction_note = "谷底轉彎向上" if want_dir == 1 else "峰頂轉彎向下"
+    return {
+        "detected": True,
+        "side": side,
+        "score": score,
+        "price": float(price),
+        "atr": float(atr),
+        "ema_20": float(ema_20),
+        "kc_upper": float(kc_upper),
+        "kc_lower": float(kc_lower),
+        "ma7_curr": ma7_curr,
+        "ma7_prev": ma7_prev,
+        "ma7_prev2": ma7_prev2,
+        "rsi": float(rsi),
+        "adx": float(adx),
+        "btc_regime_mode": btc_regime["mode"],
+        "btc_allocation_factor": btc_regime["allocation_factor"],
+        "reason": (
+            f"MA7_Reversal_{side}｜{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}｜"
+            f"{direction_note}｜score={score}"
+        ),
+    }
+
+
 class SuperTrendKeltnerStrategy:
     """
     高精度量化引擎 - 回調狙擊版本 (Pullback Sniper Mode)
@@ -132,6 +299,8 @@ class SuperTrendKeltnerStrategy:
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
+        # MA7
+        df['ma7'] = close.rolling(window=7).mean()
 
         # 成交量均線
         df['vol_ma_20'] = volume.rolling(window=20).mean()

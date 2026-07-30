@@ -18,6 +18,7 @@ from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
+    detect_ma7_reversal,
 )
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
@@ -1682,3 +1683,93 @@ async def test_pending_limit_is_validated_for_drift_before_fill_check(monkeypatc
     assert events[0][0] == "cancel"
     assert "漂移" in events[0][1]
     assert events[-1][0] == "check"
+
+
+# --- detect_ma7_reversal 拐頭偵測單元測試 ---
+
+def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):
+    """for detect_ma7_reversal tests:
+    - SuperTrend 方向與 side 一致
+    - 建構 MA7 谷底（LONG）或峰頂（SHORT）拐頭樣式
+    - price >= EMA20 (LONG) 或 price <= EMA20 (SHORT)
+    """
+    price = 100.0
+    st_dir = 1 if side == "LONG" else -1
+    if rsi is None:
+        rsi = 60.0 if side == "LONG" else 40.0
+    # MA7 拐頭樣式（最後 3 根有效值就是 detect_ma7_reversal 實際讀取的位置）:
+    # LONG:  ...prev2=100.10, prev=99.90 (谷底), curr=100.05 (已向上) → detected
+    # SHORT: ...prev2=99.90, prev=100.10 (峰頂), curr=99.95 (已向下) → detected
+    if side == "LONG":
+        ma7_vals = [100.0] * 47 + [100.10, 99.90, 100.05]
+    else:
+        ma7_vals = [100.0] * 47 + [99.90, 100.10, 99.95]
+    ema20 = 100.0
+    return pd.DataFrame({
+        "close": [price] * 50,
+        "close_price_spike_filtered": [price] * 50,
+        "atr": [0.3] * 50,
+        "rsi": [rsi] * 50,
+        "volume": [volume] * 50,
+        "vol_ma_20": [900.0] * 50,
+        "kc_upper": [101.0] * 50,
+        "kc_lower": [99.0] * 50,
+        "ema_20": [ema20] * 50,
+        "ema_50": [ema20] * 50,
+        "st_direction": [st_dir] * 50,
+        "adx": [adx] * 50,
+        "ma7": ma7_vals,
+        "supertrend": [price] * 50,
+        "kc_width": [2.0] * 50,
+    })
+
+
+def test_detect_ma7_reversal_long():
+    """MA7 谷底拐頭向上，應正確偵測多單拐頭。"""
+    frame = _ma7_frame("LONG")
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    assert result["detected"] is True, f"預期 detected=True, 卿因: {result.get('reason')}"
+    assert result["side"] == "LONG"
+    assert result["score"] >= MIN_SCORE_THRESHOLD
+    # MA7 谷底樣式: prev 是最低點，curr 已向上
+    assert result["ma7_curr"] > result["ma7_prev"]
+    assert result["ma7_prev"] <= result["ma7_prev2"]
+
+
+def test_detect_ma7_reversal_short():
+    """MA7 峰頂轉彎向下，應正確偵測空單拐頭。"""
+    frame = _ma7_frame("SHORT")
+    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    assert result["detected"] is True, f"預期 detected=True, 卿因: {result.get('reason')}"
+    assert result["side"] == "SHORT"
+    assert result["score"] >= MIN_SCORE_THRESHOLD
+    # MA7 峰頂樣式: prev 是最高點，curr 已向下
+    assert result["ma7_curr"] < result["ma7_prev"]
+    assert result["ma7_prev"] >= result["ma7_prev2"]
+
+
+def test_detect_ma7_reversal_no_signal_flat_ma7():
+    """MA7 完全平坦時，不應觸發拐頭訊號。"""
+    price = 100.0
+    # LONG 平坦 MA7: 無谷底轉彎
+    flat_ma7 = [100.0] * 50
+    frame = pd.DataFrame({
+        "close": [price] * 50,
+        "close_price_spike_filtered": [price] * 50,
+        "atr": [0.3] * 50,
+        "rsi": [60.0] * 50,
+        "volume": [1000.0] * 50,
+        "vol_ma_20": [900.0] * 50,
+        "kc_upper": [101.0] * 50,
+        "kc_lower": [99.0] * 50,
+        "ema_20": [price] * 50,
+        "ema_50": [price] * 50,
+        "st_direction": [1] * 50,
+        "adx": [25.0] * 50,
+        "ma7": flat_ma7,
+        "supertrend": [price] * 50,
+        "kc_width": [2.0] * 50,
+    })
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    assert result["detected"] is False, f"預期 detected=False, 卿因: {result.get('reason')}"
+    assert "谷底轉彎" in result["reason"]
