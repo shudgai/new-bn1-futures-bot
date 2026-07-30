@@ -152,8 +152,9 @@ STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
-# 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "3.0"))
+# 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。至少覆蓋一根完整
+# 5m 訊號K，避免候選還沒等到正常反彈就先在 3 分鐘內逾時。
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "5.0"))
 ENTRY_LIMIT_TIMEOUT_SEC = float(os.getenv("ENTRY_LIMIT_TIMEOUT_SEC", "15"))
 PULLBACK_TARGET_MAX_DRIFT_ATR = float(os.getenv("PULLBACK_TARGET_MAX_DRIFT_ATR", "0.25"))
 PULLBACK_RECLAIM_MIN_ATR = float(os.getenv("PULLBACK_RECLAIM_MIN_ATR", "0.05"))
@@ -163,11 +164,19 @@ PULLBACK_RETRY_COOLDOWN_SEC = float(os.getenv("PULLBACK_RETRY_COOLDOWN_SEC", "60
 # 底層日誌節流仍保留，避免重複洗版。
 # PULLBACK_ZONE_PCT：回調到距 KC 通道 ±0.3% 範圍內才觸發進場（稍微放寬以提高成交率）
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
-# PULLBACK_TARGET_DEPTH：回調進場目標價，從 KC 上/下軌往 EMA20 均價再靠攏的比例。
-# 0.0 = 只回踩到 KC 軌道（進場價最靠近突破點，成交率最高）；
-# 1.0 = 回踩到 EMA20 均價才進場（空間最大，但等到的機率最低）。
-# 固定等待 50% 回踩，避免只回到 KC 軌附近就接到仍在背離均線的價格。
-PULLBACK_TARGET_DEPTH = float(os.getenv("PULLBACK_TARGET_DEPTH", "0.5"))
+# 分數越高代表突破品質越完整，可等待較淺的回踩；仍至少回到 KC 軌道附近，
+# 不使用現價追單。depth=0 為 KC 軌道，1 為 EMA20。
+PULLBACK_TARGET_DEPTH_TIERS = [
+    (90, float(os.getenv("PULLBACK_TARGET_DEPTH_90", "0.05"))),
+    (80, float(os.getenv("PULLBACK_TARGET_DEPTH_80", "0.08"))),
+    (MIN_SCORE_THRESHOLD, float(os.getenv("PULLBACK_TARGET_DEPTH_65", "0.15"))),
+]
+
+def get_pullback_target_depth(score: int) -> float:
+    for threshold, depth in PULLBACK_TARGET_DEPTH_TIERS:
+        if score >= threshold:
+            return min(max(depth, 0.0), 1.0)
+    return PULLBACK_TARGET_DEPTH_TIERS[-1][1]
 # PULLBACK_SCORE_THRESHOLD：回調二次確認（confirm_pullback_entry）用的總分門檻。
 # 55 -> 48：配合進場門檻放寬，同步調降回踩二次確認分級門檻。
 PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
@@ -176,7 +185,7 @@ PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
 # KELTNER_ATR_MULTIPLIER 調回 1.5：實測最早期(通道確實是1.5倍時)勝率
 # 53~63%，通道被誤降到1.0倍之後勝率掉到13~17%——通道太窄代表「真突破」
 # 的確認門檻變低，容易讓假突破混進來。進場價不再靠通道變窄來壓低，
-# 改由下方 evaluate_signal() 一律用回踩機制決定（見 PULLBACK_TARGET_DEPTH）。
+# 改由下方 evaluate_signal() 一律用回踩機制決定（見 PULLBACK_TARGET_DEPTH_TIERS）。
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))

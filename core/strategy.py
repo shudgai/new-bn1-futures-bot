@@ -7,7 +7,7 @@ from core.config import (
     MIN_FRESHNESS_SCORE,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     MIN_SCORE_THRESHOLD, ENTRY_MIN_QUALITY_BONUS, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
-    KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
+    KELTNER_ATR_MULTIPLIER, get_pullback_target_depth, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
     ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
@@ -487,28 +487,31 @@ class SuperTrendKeltnerStrategy:
             )
 
         if score >= MIN_SCORE_THRESHOLD:
-            # 不再因高分直接市價追突破；達標訊號全部等待 50% 回踩，成交前再
-            # 用最新 K 線做二次確認，避免開在趨勢末端與均線背離的位置。
+            pullback_depth = get_pullback_target_depth(score)
+            # 達標訊號依分數等待 5%/8%/15% 回踩，成交前再用最新 K 線做
+            # 二次確認；高分只縮短等待距離，仍不得市價追突破。
             downgrade_note = " | MarketChase_Disabled"
             if st_dir == 1:
                 dist = (price - kc_upper) / kc_upper
-                pullback_target = kc_upper - (kc_upper - ema_20) * PULLBACK_TARGET_DEPTH
+                pullback_target = kc_upper - (kc_upper - ema_20) * pullback_depth
                 return {
                     "action": "WAIT_PULLBACK", "side": "LONG",
                     "price": price, "atr": atr,
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                    "target_zone": pullback_target,
+                    "target_zone": pullback_target, "ema_20": ema_20,
+                    "pullback_depth": pullback_depth,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
             else:  # SHORT
                 dist = (kc_lower - price) / kc_lower
-                pullback_target = kc_lower + (ema_20 - kc_lower) * PULLBACK_TARGET_DEPTH
+                pullback_target = kc_lower + (ema_20 - kc_lower) * pullback_depth
                 return {
                     "action": "WAIT_PULLBACK", "side": "SHORT",
                     "price": price, "atr": atr,
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                    "target_zone": pullback_target,
+                    "target_zone": pullback_target, "ema_20": ema_20,
+                    "pullback_depth": pullback_depth,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }

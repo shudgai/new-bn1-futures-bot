@@ -12,7 +12,7 @@ from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, DISASTER_STOP_MULTIPLIER,
     TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
-    PULLBACK_TARGET_DEPTH, ENTRY_DISABLED_SYMBOLS,
+    get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -73,6 +73,16 @@ def test_configured_trade_amount_uses_75_usdt_per_slot():
     assert engine_module.TRADE_AMOUNT_USDT == pytest.approx(75.0)
     assert engine_module.MAX_SLOTS == 5
     assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(375.0)
+
+
+def test_pullback_depth_is_score_tiered_without_reenabling_market_chase():
+    assert get_pullback_target_depth(100) == pytest.approx(0.05)
+    assert get_pullback_target_depth(90) == pytest.approx(0.05)
+    assert get_pullback_target_depth(89) == pytest.approx(0.08)
+    assert get_pullback_target_depth(80) == pytest.approx(0.08)
+    assert get_pullback_target_depth(79) == pytest.approx(0.15)
+    assert get_pullback_target_depth(65) == pytest.approx(0.15)
+    assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(5.0)
 
 
 def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
@@ -205,6 +215,18 @@ def test_signal_progress_shows_history_adjustment_chain():
 
 
 
+
+def test_pullback_order_log_shows_initial_and_confirmation_scores():
+    text = TradingEngine._format_pullback_order_log(
+        "XPL/USDT",
+        {"side": "SHORT", "score": 93, "pullback_confirmation_score": 56},
+        0.076552365,
+    )
+
+    assert "XPL/USDT SHORT 原始93分 → 回踩確認56分，掛單" in text
+    assert "0.076552365" in text
+
+
 def test_signal_progress_does_not_mislabel_passed_kc_as_waiting():
     signal = {
         "action": "HOLD",
@@ -245,7 +267,7 @@ def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
     assert result_high["action"] == "WAIT_PULLBACK"
     assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
     assert "MarketChase_Disabled" in result_high["reason"]
-    expected_target = 100.0 - (100.0 - 99.8) * PULLBACK_TARGET_DEPTH
+    expected_target = 100.0 - (100.0 - 99.8) * get_pullback_target_depth(result_high["score"])
     assert result_high["target_zone"] == pytest.approx(expected_target)
 
     frame_mid = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
@@ -1170,6 +1192,41 @@ def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):
     assert list(engine.pending_pullback_candidates) == ["DOGE/USDT"]
 
 
+
+def test_candidate_target_uses_history_adjusted_score_tier(monkeypatch):
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+        logs = []
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    class DummyRotation:
+
+        def get_dynamic_leverage(self, symbol, score):
+            return 5
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.symbol_rotation = DummyRotation()
+    engine.pending_pullback_candidates = {}
+    engine._pullback_retry_after = {}
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["XPL/USDT"])
+    signal = {
+        "side": "SHORT", "target_zone": 105.0, "atr": 1.0,
+        "kc_lower": 100.0, "ema_20": 120.0, "reason": "Quality+9",
+    }
+
+    engine._admit_pullback_candidates(
+        [(93, "XPL/USDT", signal, 99.0, 1.0)], available_balance=100.0, now=1000.0
+    )
+
+    candidate = engine.pending_pullback_candidates["XPL/USDT"]
+    assert candidate["pullback_depth"] == pytest.approx(0.05)
+    assert candidate["target_price"] == pytest.approx(101.0)
+
+
 def test_btc_contrary_candidate_uses_half_position(monkeypatch):
     class DummyAccount:
         positions = {}
@@ -1245,7 +1302,7 @@ async def test_pending_limit_is_validated_for_drift_before_fill_check(monkeypatc
         return pd.DataFrame({"close": [100.0] * 50})
 
     engine.fetch_klines = fake_fetch
-    engine._fresh_pullback_target = lambda df, side: (100.30, 1.0)
+    engine._fresh_pullback_target = lambda df, side, score: (100.30, 1.0)
     monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["BTC/USDT"])
 
     await engine._validate_pending_limit_orders(now=100.0)

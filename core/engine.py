@@ -8,7 +8,7 @@ from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
     PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
-    PULLBACK_RETRY_COOLDOWN_SEC, PULLBACK_TARGET_DEPTH,
+    PULLBACK_RETRY_COOLDOWN_SEC, get_pullback_target_depth,
     SYMBOL_ROTATION_INTERVAL_SEC,
     UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
@@ -433,6 +433,14 @@ class TradingEngine:
         return int(match.group(1)) if match else 0
 
     @staticmethod
+    def _format_pullback_order_log(symbol: str, candidate: dict, target: float) -> str:
+        return (
+            f"📝 [回踩掛單] {symbol} {candidate['side']} "
+            f"原始{candidate['score']}分 → 回踩確認"
+            f"{candidate['pullback_confirmation_score']}分，掛單 @ {target:.8g}"
+        )
+
+    @staticmethod
     def _pullback_reversal_confirmed(candidate: dict, candles_1m: pd.DataFrame) -> bool:
         """觸價後必須等包含觸價時刻的 1m K 棒真正收盤，且收回目標外側。"""
         if candles_1m is None or candles_1m.empty:
@@ -456,17 +464,18 @@ class TradingEngine:
             and close_price <= target - reclaim
         )
 
-    def _fresh_pullback_target(self, df: pd.DataFrame, side: str) -> tuple[float, float]:
+    def _fresh_pullback_target(self, df: pd.DataFrame, side: str, score: int) -> tuple[float, float]:
         computed = self.strategy.compute_indicators(df)
         curr = computed.iloc[-1]
         atr = float(curr["atr"])
         ema_20 = float(curr["ema_20"])
+        depth = get_pullback_target_depth(score)
         if side == "LONG":
             kc_edge = float(curr["kc_upper"])
-            target = kc_edge - (kc_edge - ema_20) * PULLBACK_TARGET_DEPTH
+            target = kc_edge - (kc_edge - ema_20) * depth
         else:
             kc_edge = float(curr["kc_lower"])
-            target = kc_edge + (ema_20 - kc_edge) * PULLBACK_TARGET_DEPTH
+            target = kc_edge + (ema_20 - kc_edge) * depth
         return target, atr
 
     def _drop_pullback_candidate(
@@ -495,6 +504,16 @@ class TradingEngine:
         for score, symbol, sig, _price, real_atr in signals:
             if symbol in pool or self._pullback_retry_after.get(symbol, 0.0) > now:
                 continue
+            pullback_depth = get_pullback_target_depth(score)
+            target_price = float(sig["target_zone"])
+            if sig.get("ema_20") is not None:
+                ema_20 = float(sig["ema_20"])
+                kc_edge = float(sig["kc_upper"] if sig["side"] == "LONG" else sig["kc_lower"])
+                target_price = (
+                    kc_edge - (kc_edge - ema_20) * pullback_depth
+                    if sig["side"] == "LONG"
+                    else kc_edge + (ema_20 - kc_edge) * pullback_depth
+                )
             base_amount = min(
                 max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
                 TRADE_AMOUNT_USDT,
@@ -506,7 +525,8 @@ class TradingEngine:
                 "side": sig["side"],
                 "score": score,
                 "quality": self._quality_bonus(sig.get("reason", "")),
-                "target_price": float(sig["target_zone"]),
+                "target_price": target_price,
+                "pullback_depth": pullback_depth,
                 "atr": float(sig.get("atr") or real_atr),
                 "reason": sig.get("reason", ""),
                 "amount_usdt": amount,
@@ -553,7 +573,7 @@ class TradingEngine:
             item = selected[symbol]
             self.account.log(
                 f"🎯 [回踩候選] {symbol} {item['side']} {item['score']}分/品質{item['quality']} "
-                f"等待觸價 @ {item['target_price']:.8g}"
+                f"等待{item['pullback_depth']:.0%}回踩觸價 @ {item['target_price']:.8g}"
                 f"（BTC={item['btc_regime_mode']}，倉位×{item['btc_allocation_factor']:.2f}）",
                 "INFO",
             )
@@ -614,7 +634,7 @@ class TradingEngine:
             candidate["btc_allocation_factor"] = final_btc_factor
             candidate["pullback_confirmation_score"] = confirm.get("pullback_score")
 
-            fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, candidate["side"])
+            fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, candidate["side"], candidate["score"])
             drift = abs(fresh_target - target)
             if drift > max(candidate["atr"], fresh_atr) * PULLBACK_TARGET_MAX_DRIFT_ATR:
                 self._drop_pullback_candidate(symbol, f"目標漂移 {drift / max(fresh_atr, 1e-12):.2f} ATR", now)
@@ -661,6 +681,10 @@ class TradingEngine:
                 },
             )
             if placed:
+                self.account.log(
+                    self._format_pullback_order_log(symbol, candidate, fresh_target),
+                    "INFO",
+                )
                 self.pending_pullback_candidates.pop(symbol, None)
 
     async def _validate_pending_limit_orders(self, now: float) -> None:
@@ -704,7 +728,7 @@ class TradingEngine:
                 )
                 self._pullback_retry_after[symbol] = now
                 continue
-            fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, info["side"])
+            fresh_target, fresh_atr = self._fresh_pullback_target(confirm_df, info["side"], int(info.get("signal_score") or MIN_SCORE_THRESHOLD))
             drift_atr = abs(fresh_target - info["target_price"]) / max(fresh_atr, 1e-12)
             if drift_atr > PULLBACK_TARGET_MAX_DRIFT_ATR:
                 await self.account.cancel_pending_limit(
@@ -774,7 +798,7 @@ class TradingEngine:
                             stage = (
                                 "已觸價，等待1m收盤反轉確認"
                                 if pending.get("touched_at")
-                                else f"等待回踩觸價 @ {pending.get('target_price'):.8g}"
+                                else f"等待{pending.get('pullback_depth', 0):.0%}回踩觸價 @ {pending.get('target_price'):.8g}"
                             )
                             signal_progress.append(
                                 f"{coin} {pending['side']} {pending['score']}分,{stage}"
@@ -784,12 +808,21 @@ class TradingEngine:
                         # 如果已經掛著限價單，跳過訊號偵測（避免重複掛單）
                         if symbol in self.account.pending_limit_orders:
                             pending = self.account.pending_limit_orders[symbol]
+                            entry_context = pending.get("entry_context") or {}
+                            pullback_score = entry_context.get("pullback_confirmation_score")
+                            confirmation_reason = (
+                                f"原始{pending.get('signal_score', 0)}分 → "
+                                f"回踩確認{pullback_score}分，掛單等待成交 @ "
+                                f"{pending.get('target_price')}"
+                                if pullback_score is not None
+                                else f"限價單等待成交 @ {pending.get('target_price')}"
+                            )
                             signal_progress.append(self._format_signal_progress(
                                 symbol,
                                 {
                                     "action": "WAIT_PULLBACK",
                                     "score": pending.get("signal_score", 0),
-                                    "confirmation_reason": f"限價單等待成交 @ {pending.get('target_price')}",
+                                    "confirmation_reason": confirmation_reason,
                                 },
                                 pending.get("side"),
                             ))
