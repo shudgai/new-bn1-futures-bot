@@ -98,7 +98,7 @@ def visible_system_logs():
     )
     return [
         log for index, log in enumerate(logs)
-        if not log.get("text", "").startswith(progress_prefix)
+        if "幣訊號進度]" not in log.get("text", "")
         or index == latest_progress_index
     ][-50:]
 
