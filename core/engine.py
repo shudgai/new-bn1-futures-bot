@@ -1226,8 +1226,6 @@ class TradingEngine:
                 if TEST_BUDGET_CAP_USDT > 0:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
                 if not daily_halt and available_balance >= MIN_TRADE_USDT:
-                    candidate_signals = []  # [(score, symbol, sig, price, atr)]
-                    pullback_signals = []
                     signal_progress = []
 
                     now_time = time.time()
@@ -1385,7 +1383,7 @@ class TradingEngine:
                         # 計算指標以取得 rsi 與 kc 通道等欄位
                         df = self.strategy.compute_indicators(df)
 
-                        # MA7 拐頭側道一：直接現價進場（並行於 KC 回踩模式）
+                        # MA7 拐頭主觸發路徑：符合直接以現價進場，其餘狀態均視為 HOLD。
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
                         )
@@ -1399,6 +1397,7 @@ class TradingEngine:
                             symbol=symbol,
                             indicators_precomputed=True,
                         )
+                        
                         if ma7_sig["detected"]:
                             daily_halt_now, _ = self.account.daily_loss_limit_hit()
                             if not daily_halt_now:
@@ -1411,141 +1410,58 @@ class TradingEngine:
                                         f"{ma7_sig.get('score', 65)}分,MA7拐頭進場"
                                     )
                                     continue
-
-                        sig = self.strategy.evaluate_signal(
-                            df,
-                            ema_50_1h=ema_50_1h,
-                            trend_1h_declining=self.adx_1h_declining_cache.get(symbol, False),
-                            st_direction_1h=self.st_direction_1h_cache.get(symbol),
-                            btc_st_direction_1h=self.btc_1h_st_direction,
-                            btc_st_flip_age=self.btc_1h_st_flip_age,
-                            symbol=symbol,
-                            indicators_precomputed=True,
-                        )
-                        current_direction = (
-                            "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
-                        )
-                        if self._expired_pullback_still_active(
-                            symbol, current_direction, price,
-                            float(df.iloc[-1]["kc_upper"]), float(df.iloc[-1]["kc_lower"]),
-                        ):
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,舊突破已逾時等待KC重置"
-                            )
-                            self._record_entry_filter(
-                                symbol, sig, current_direction, "expired_breakout_lock"
-                            )
-                            continue
-                        if sig["action"] in ["BUY", "SELL", "WAIT_PULLBACK"]:
-                            perf = self._symbol_recent_performance(symbol, sig["side"])
-                            adjusted_score, history_mult = self._history_adjusted_score(
-                                sig.get("score", 0), perf
-                            )
-                            if history_mult < 0.99:
-                                log_key = (
-                                    sig["side"], perf["trades"], round(perf["win_rate"], 2),
-                                    round(perf["avg_pnl"], 3), round(history_mult, 2),
-                                    sig.get("score", 0), adjusted_score,
-                                )
-                                if self._history_coeff_logged.get(symbol) != log_key:
-                                    self._history_coeff_logged[symbol] = log_key
-                                    self.account.log(
-                                        f"📉 [歷史係數] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
-                                        f"勝率 {perf['win_rate']:.0%}、平均損益 {perf['avg_pnl']:+.3f} → "
-                                        f"係數 x{history_mult:.2f}，分數 {sig.get('score', 0)}→{adjusted_score}",
-                                        "INFO",
-                                    )
-                            sig["history_score_multiplier"] = history_mult
-                            sig["history_adjusted_score"] = adjusted_score
-                            sig["score"] = adjusted_score
-                            if adjusted_score < MIN_SCORE_THRESHOLD:
-                                sig["history_blocked"] = True
-                                self._record_shadow_parameter_comparison(
-                                    symbol, df, sig, current_direction
-                                )
-                                self._record_entry_filter(
-                                    symbol, sig, current_direction, "history_score_block"
-                                )
-                                signal_progress.append(self._format_signal_progress(
-                                    symbol, sig, current_direction
-                                ))
-                                continue
-
-                        self._record_shadow_parameter_comparison(
-                            symbol, df, sig, current_direction
-                        )
-                        self._record_entry_filter(symbol, sig, current_direction)
-                        signal_progress.append(self._format_signal_progress(
-                            symbol, sig, current_direction
-                        ))
-
-                        if sig["action"] in ["BUY", "SELL"]:
-                            candidate_signals.append((adjusted_score, symbol, sig, price, real_atr))
-
-                        elif sig["action"] == "WAIT_PULLBACK":
-                            pullback_signals.append(
-                                (adjusted_score, symbol, sig, price, real_atr)
-                            )
-
-                    self._admit_pullback_candidates(pullback_signals, available_balance, now_time)
+                        
+                        # 未觸發拐頭進場，日誌進度顯示 HOLD 理由
+                        reason = ma7_sig.get("reason", "等待MA7拐頭及KC回踩")
+                        score = ma7_sig.get("score", 0)
+                        
+                        # 模擬 evaluate_signal 回傳結構，以正確記錄日誌和影子指標
+                        holding_sig = {
+                            "action": "HOLD",
+                            "score": score,
+                            "reason": reason,
+                            "eligible": False,
+                            "diagnostics": {
+                                "st_direction_5m": current_direction,
+                                "st_direction_1h": self.st_direction_1h_cache.get(symbol),
+                                "price": price,
+                                "ema_50_1h": ema_50_1h,
+                                "adx": float(df.iloc[-1].get("adx") or 0.0),
+                                "rsi": float(df.iloc[-1].get("rsi") or 50.0),
+                            }
+                        }
+                        self._record_shadow_parameter_comparison(symbol, df, holding_sig, current_direction)
+                        self._record_entry_filter(symbol, holding_sig, current_direction)
+                        
+                        direction_text = {"LONG": "多單", "SHORT": "空單"}.get(current_direction, "雙向")
+                        coin = symbol.replace("/USDT", "")
+                        
+                        # 簡化日誌進度顯示
+                        if "SuperTrend方向不符" in reason:
+                            stage = "SuperTrend方向不符"
+                        elif "1h_ST" in reason:
+                            stage = "個幣1h趨勢不符"
+                        elif "1h_EMA50" in reason:
+                            stage = "1h EMA50方向不符"
+                        elif "ADX" in reason:
+                            stage = "ADX過低過濾"
+                        elif "ATR" in reason:
+                            stage = "波動過濾"
+                        elif "RSI" in reason:
+                            stage = "RSI方向不合"
+                        elif "MA7" in reason:
+                            stage = "等待MA7拐頭轉彎"
+                        elif "KC" in reason or "K棒未曾觸碰" in reason:
+                            stage = "待碰觸KC軌道回踩確認"
+                        else:
+                            stage = "條件未完成"
+                            
+                        signal_progress.append(f"{coin} {direction_text} {score}分,{stage}")
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:
                         self.account.save_state()
                         self._last_diagnostic_stats_save_at = now_time
-
-                    # 按評分排序，逐個填充，直到預算用完或同時持倉數達到 MAX_SLOTS
-                    # 上限為止——避免行情同時觸發多個高度相關的訊號時（同一波
-                    # 市場方向）一次開一堆單，一旦反轉就一次全部停損。訊號一次
-                    # 多於剩餘槽位時，依評分排序只挑最優的填滿槽位。
-                    candidate_signals.sort(key=lambda x: x[0], reverse=True)
-                    top_signals = []
-                    budget_used = 0.0
-                    open_slots = (
-                        max(
-                            0, MAX_SLOTS - len(self.account.positions)
-                            - len(self.account.pending_limit_orders)
-                            - len(self.pending_pullback_candidates),
-                        )
-                        if MAX_SLOTS > 0 else None
-                    )
-                    for sc, sym, sig, pr, atr_val in candidate_signals:
-                        if open_slots is not None and len(top_signals) >= open_slots:
-                            break
-                        slot_amount = min(
-                            TRADE_AMOUNT_USDT * get_position_multiplier(sig.get("score", sc)),
-                            TRADE_AMOUNT_USDT
-                        )
-                        slot_amount = max(slot_amount, MIN_TRADE_USDT)
-                        if budget_used + slot_amount > available_balance:
-                            break
-                        top_signals.append((sc, sym, sig, pr, atr_val, slot_amount))
-                        budget_used += slot_amount
-
-                    if len(candidate_signals) > len(top_signals):
-                        skipped = [s[1] for s in candidate_signals[len(top_signals):]]
-                        slot_note = (
-                            f"，同時持倉上限 {MAX_SLOTS} 槽（目前持倉 {len(self.account.positions)}）"
-                            if MAX_SLOTS > 0 else ""
-                        )
-                        self.account.log(
-                            f"🏆 [訊號篩選] 本輪 {len(candidate_signals)} 個訊號，預算 {available_balance:.0f}U 入場 {len(top_signals)} 個（{budget_used:.0f}U）{slot_note}，跳過: {', '.join(skipped)}",
-                            "INFO",
-                        )
-
-                    for score, symbol, sig, price, real_atr, amount_usdt in top_signals:
-                        await self.account.open_position(
-                            symbol=symbol,
-                            side=sig["side"],
-                            price=price,
-                            amount_usdt=amount_usdt,
-                            sl=sig["sl"],
-                            tp=sig["tp"],
-                            reason=sig["reason"],
-                            atr=sig.get("atr", real_atr),
-                            signal_score=sig.get("score"),
-                            leverage=self.symbol_rotation.get_dynamic_leverage(symbol, sig.get("score")),
-                        )
 
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
