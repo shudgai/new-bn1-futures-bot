@@ -586,8 +586,8 @@ def test_history_penalty_can_cancel_an_otherwise_high_score_signal():
     adjusted, multiplier = TradingEngine._history_adjusted_score(
         106, {"trades": 5, "win_rate": 0.30, "avg_pnl": -0.10}
     )
-    assert multiplier == pytest.approx(0.51)
-    assert adjusted < MIN_SCORE_THRESHOLD
+    assert multiplier == 1.0
+    assert adjusted == 106
 
 
 def test_known_negative_expectancy_symbols_are_paused():

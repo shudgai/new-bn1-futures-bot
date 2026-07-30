@@ -194,12 +194,8 @@ class TradingEngine:
 
     @staticmethod
     def _history_adjusted_score(raw_score: int, performance: dict) -> tuple[int, float]:
-        if performance["trades"] < 3:
-            return int(raw_score), 1.0
-        win_rate_mult = max(0.4, min(1.0, 0.3 + performance["win_rate"]))
-        pnl_mult = 1.0 if performance["avg_pnl"] >= 0 else 0.85
-        multiplier = win_rate_mult * pnl_mult
-        return round(raw_score * multiplier), multiplier
+        # 歷史績效降分功能已關閉，一律不降分
+        return int(raw_score), 1.0
 
     def _symbol_recent_performance(self, symbol: str, side: str) -> dict:
         """取這個幣種+方向最近 10 筆已平倉交易的勝率與平均損益，用來過濾歷史表現差的訊號。"""
