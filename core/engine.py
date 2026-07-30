@@ -131,7 +131,11 @@ class TradingEngine:
             stale = re.search(r"(?:Freshness_Too_Stale|SuperTrend_Stale)\((\d+)(?:bars)?\)", reason)
             stage = f"訊號新鮮度不足{stale.group(1)}根" if stale else "訊號新鮮度不足"
         elif "ADX_Declining_Exhaustion" in reason:
-            stage = "ADX動能衰退過濾"
+            adx_match = re.search(r"ADX_Declining_Exhaustion\(([\d.]+)<([\d.]+)\)", reason)
+            stage = (
+                f"ADX {adx_match.group(1)}←{adx_match.group(2)}且低於{ADX_QUALITY_MIN:g}，動能衰退過濾"
+                if adx_match else "ADX低於品質底線且動能衰退過濾"
+            )
         elif "Price_Overextended" in reason:
             overext_match = re.search(r"Price_Overextended\(([\d.]+x_ATR)\)", reason)
             stage = f"價格乖離過大{overext_match.group(1)}" if overext_match else "價格乖離過大"

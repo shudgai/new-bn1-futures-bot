@@ -398,7 +398,7 @@ def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
 
 
-def test_adx_decline_blocks_even_before_adx_falls_below_quality_floor(monkeypatch):
+def test_adx_decline_above_quality_floor_is_soft_penalty(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=30.0)
     frame.loc[43:49, "adx"] = [35.0, 34.0, 33.0, 32.0, 31.0, 30.5, 30.0]
@@ -407,8 +407,9 @@ def test_adx_decline_blocks_even_before_adx_falls_below_quality_floor(monkeypatc
 
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
-    assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
+    assert result["action"] == "WAIT_PULLBACK"
+    assert "ADX_Declining_Soft-1(30.0<35.0;floor=15.0)" in result["reason"]
+    assert "Mandatory_Fail: ADX_Declining_Exhaustion" not in result["reason"]
 
 
 
@@ -537,6 +538,19 @@ def test_pullback_reconfirmation_cancels_when_adx_declining(monkeypatch):
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
     assert "ADX 動能持續衰退" in result["reason"]
+
+
+def test_pullback_reconfirmation_softens_adx_decline_above_quality_floor(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _reconfirm_frame("LONG")
+    frame["adx"] = [35.0] * 43 + [35.0, 34.0, 33.0, 32.0, 31.0, 30.5, 30.0]
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+
+    result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
+
+    assert result["status"] == "PASS"
+    assert result["pullback_score"] == result["raw_pullback_score"]
 
 
 def test_pullback_reconfirmation_cancels_when_1h_trend_declining(monkeypatch):

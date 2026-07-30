@@ -362,10 +362,11 @@ class SuperTrendKeltnerStrategy:
         adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
         adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
         adx_drop = (adx_prior - adx) if not pd.isna(adx_prior) else 0.0
-        adx_declining_exhausted = (
+        adx_declining = (
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
+        adx_declining_exhausted = adx_declining and adx < ADX_QUALITY_MIN
 
         # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
         # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。
@@ -405,6 +406,14 @@ class SuperTrendKeltnerStrategy:
         # ADX_QUALITY_MIN 以下不加分，ADX_QUALITY_FULL 以上視為滿分。
         adx_ratio = (adx - ADX_QUALITY_MIN) / (ADX_QUALITY_FULL - ADX_QUALITY_MIN)
         quality_bonus += round(min(max(adx_ratio, 0.0), 1.0) * 3)
+        # ADX 仍高於品質底線時，下降只代表趨勢強度轉弱，不能直接取消；
+        # 輕扣 1 分品質，保留高分訊號進入回踩確認。低於底線才由硬性規則攔截。
+        adx_decline_soft_penalty = 1 if adx_declining and not adx_declining_exhausted else 0
+        if adx_decline_soft_penalty:
+            quality_bonus = max(0, quality_bonus - adx_decline_soft_penalty)
+            score_details.append(
+                f"ADX_Declining_Soft-1({adx:.1f}<{adx_prior:.1f};floor={ADX_QUALITY_MIN:.1f})"
+            )
 
         score += quality_bonus
         if quality_bonus > 0:
@@ -462,9 +471,8 @@ class SuperTrendKeltnerStrategy:
                 f"Mandatory_Fail: Freshness_Too_Stale({st_flip_age}bars) | Score({score}) | {', '.join(score_details)}"
             )
 
-        # 額外防線：ADX 動能已經在衰退（見上面 D2）直接擋單，不管總分靠
-        # 其他項目湊得多高——這種「方向沒變、新鮮度分數也不低，但 ADX
-        # 連續下滑」正是新鮮度抓不到的另一種末端趨勢樣貌。
+        # 額外防線：只有 ADX 已跌破品質底線且持續衰退才硬擋。ADX 仍在
+        # 品質底線以上時已於品質分輕扣 1 分，不取消仍具強度的趨勢訊號。
         if score >= MIN_SCORE_THRESHOLD and adx_declining_exhausted:
             return scored_hold(
                 f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}"
@@ -488,6 +496,11 @@ class SuperTrendKeltnerStrategy:
 
         if score >= MIN_SCORE_THRESHOLD:
             pullback_depth = get_pullback_target_depth(score)
+            confirmation_reason = (
+                f"ADX {adx:.1f}←{adx_prior:.1f}仍高於{ADX_QUALITY_MIN:g}，品質-1，等待回調二次確認"
+                if adx_decline_soft_penalty
+                else "等待回調至KC區後二次確認"
+            )
             # 達標訊號依分數等待 5%/8%/15% 回踩，成交前再用最新 K 線做
             # 二次確認；高分只縮短等待距離，仍不得市價追突破。
             downgrade_note = " | MarketChase_Disabled"
@@ -500,6 +513,7 @@ class SuperTrendKeltnerStrategy:
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                     "target_zone": pullback_target, "ema_20": ema_20,
                     "pullback_depth": pullback_depth,
+                    "confirmation_reason": confirmation_reason,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
@@ -512,6 +526,7 @@ class SuperTrendKeltnerStrategy:
                     "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
                     "target_zone": pullback_target, "ema_20": ema_20,
                     "pullback_depth": pullback_depth,
+                    "confirmation_reason": confirmation_reason,
                     **btc_context,
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
@@ -619,13 +634,18 @@ class SuperTrendKeltnerStrategy:
         adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
         adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
         adx_drop = (adx_prior - adx) if not pd.isna(adx_prior) else 0.0
-        if (
+        adx_declining = (
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
-        ):
+        )
+        adx_declining_exhausted = adx_declining and adx < ADX_QUALITY_MIN
+        if adx_declining_exhausted:
             return {
                 "status": "CANCEL",
-                "reason": f"ADX 動能持續衰退 {adx:.1f}<{adx_prior:.1f}（{ADX_DECLINE_LOOKBACK_BARS}根K棒前）",
+                "reason": (
+                    f"ADX 動能持續衰退 {adx:.1f}<{adx_prior:.1f}"
+                    f"（{ADX_DECLINE_LOOKBACK_BARS}根K棒前）且低於品質底線 {ADX_QUALITY_MIN:.1f}"
+                ),
             }
 
         if ema_1h is not None:
@@ -689,6 +709,9 @@ class SuperTrendKeltnerStrategy:
             + round(min(vol_margin / 1.0, 1.0) * 3)
             + round(min(max(adx_ratio, 0.0), 1.0) * 3)
         )
+        adx_decline_soft_penalty = 1 if adx_declining and not adx_declining_exhausted else 0
+        if adx_decline_soft_penalty:
+            score_e = max(0, score_e - adx_decline_soft_penalty)
 
         if score_e < ENTRY_MIN_QUALITY_BONUS:
             return {
@@ -715,7 +738,13 @@ class SuperTrendKeltnerStrategy:
 
         return {
             "status": "PASS",
-            "reason": f"二次確認通過 Pullback_Score({pullback_score})",
+            "reason": (
+                f"二次確認通過 Pullback_Score({pullback_score})"
+                + (
+                    f" | ADX {adx:.1f}←{adx_prior:.1f}仍高於{ADX_QUALITY_MIN:g}，品質-1"
+                    if adx_decline_soft_penalty else ""
+                )
+            ),
             "raw_pullback_score": raw_pullback_score,
             "pullback_score": pullback_score,
             "volume_faded": volume_faded,
