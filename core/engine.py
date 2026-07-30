@@ -933,7 +933,7 @@ class TradingEngine:
     async def _place_ma7_reversal_entry(
         self, symbol: str, side: str, ma7_sig: dict, live_price: float, now: float
     ) -> bool:
-        """MA7 谷底/峰頂拐頭確認後，直接以現價送 Post-Only 限價單進場。不進回踩候選池。"""
+        """MA7 谷底/峰頂拐頭確認後，以對手價（LONG 用 Ask, SHORT 用 Bid）送出限價單直接吃單成交。不進回踩候選池。"""
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
             return False
@@ -946,20 +946,34 @@ class TradingEngine:
         amount_usdt = base_amount * allocation_factor
         if self.account.get_available_balance() < amount_usdt:
             return False
-        atr = max(float(ma7_sig.get("atr") or 0.0), live_price * 1e-6)
-        sl_distance, tp_distance = compute_sl_tp_distance(live_price, atr)
+
+        # 獲取對手價，確保能立刻成交
+        target_price = live_price
+        if hasattr(self.exchange, "fetch_order_book"):
+            try:
+                book = await self.exchange.fetch_order_book(symbol, limit=3)
+                if side == "LONG" and book.get("asks") and len(book["asks"]) > 0:
+                    target_price = float(book["asks"][0][0])
+                elif side == "SHORT" and book.get("bids") and len(book["bids"]) > 0:
+                    target_price = float(book["bids"][0][0])
+            except Exception:
+                pass
+
+        atr = max(float(ma7_sig.get("atr") or 0.0), target_price * 1e-6)
+        sl_distance, tp_distance = compute_sl_tp_distance(target_price, atr)
         if side == "LONG":
-            sl, tp = live_price - sl_distance, live_price + tp_distance
+            sl, tp = target_price - sl_distance, target_price + tp_distance
         else:
-            sl, tp = live_price + sl_distance, live_price - tp_distance
+            sl, tp = target_price + sl_distance, target_price - tp_distance
+
         placed = await self.account.place_limit_entry(
-            symbol=symbol, side=side, target_price=live_price,
+            symbol=symbol, side=side, target_price=target_price,
             amount_usdt=amount_usdt, sl=sl, tp=tp,
             reason=ma7_sig.get("reason", "MA7_Reversal_Entry"),
             atr=atr,
             leverage=self.symbol_rotation.get_dynamic_leverage(symbol, score),
             signal_score=score,
-            post_only=True,
+            post_only=False, # 不啟用 Post-Only，允許直接吃單
             entry_context={
                 "entry_mode": "MA7_REVERSAL",
                 "btc_regime_at_entry": ma7_sig.get("btc_regime_mode", "UNKNOWN"),
@@ -973,11 +987,12 @@ class TradingEngine:
             self._record_pullback_outcome("ma7_reversal_placed")
             direction_note = "MA7谷底轉彎向上" if side == "LONG" else "MA7峰頂轉彎向下"
             self.account.log(
-                f"⚡ [MA7拐頭進場] {symbol} {side} {score}分 @ {live_price:.8g}（{direction_note}，KC位置確認）",
+                f"⚡ [MA7拐頭進場] {symbol} {side} {score}分 @ {target_price:.8g}（{direction_note}，對手價直接成交）",
                 "INFO",
             )
             return True
         return False
+
 
     async def _monitor_pullback_candidates(self, now: float) -> None:
         daily_halt, _ = self.account.daily_loss_limit_hit()
