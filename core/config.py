@@ -87,15 +87,19 @@ STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
 MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.8"))
+# 訊號即使總分達標，也必須具備足夠的波動/RSI/量能/ADX品質。
+# 避免只靠新鮮度與基礎分數湊到門檻的低品質突破。
+ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "5"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
-# 觸發門檻改用每筆進場 ATR：1 ATR 保本、2 ATR 鎖住 1 ATR、3 ATR 啟動追蹤。
-TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.0"))
-TRAILING_TIER2_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER2_TRIGGER_ATR_MULT", "2.0"))
-TRAILING_TIER3_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER3_TRIGGER_ATR_MULT", "3.0"))
-TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "1.0"))
+# 觸發門檻改用每筆進場 ATR：2 ATR 保本、3.5 ATR 轉 runner 並鎖住
+# 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早掃掉剛起跑的部位。
+TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "2.0"))
+TRAILING_TIER2_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER2_TRIGGER_ATR_MULT", "3.5"))
+TRAILING_TIER3_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER3_TRIGGER_ATR_MULT", "5.0"))
+TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "1.5"))
 # Tier 1 保本價除覆蓋雙邊 taker fee 外，再多留這段緩衝吸收價格精度誤差。
 TRAILING_BREAK_EVEN_EXTRA_PCT = float(os.getenv("TRAILING_BREAK_EVEN_EXTRA_PCT", "0.0001"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))

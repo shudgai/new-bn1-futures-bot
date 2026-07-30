@@ -117,7 +117,11 @@ class BinanceTestnetAccount:
             "tier2_trigger": atr_pct * TRAILING_TIER2_TRIGGER_ATR_MULT,
             "tier3_trigger": atr_pct * TRAILING_TIER3_TRIGGER_ATR_MULT,
             "tier2_lock_distance": max(float(atr), 0.0) * TRAILING_TIER2_LOCK_ATR_MULT,
-            "breakeven_buffer_pct": 2 * TAKER_FEE_RATE + TRAILING_BREAK_EVEN_EXTRA_PCT,
+            "breakeven_buffer_pct": (
+                2 * TAKER_FEE_RATE
+                + STOP_LIMIT_SLIPPAGE_GUARD_PCT
+                + TRAILING_BREAK_EVEN_EXTRA_PCT
+            ),
         }
 
     def _load_state(self) -> None:
@@ -537,7 +541,8 @@ class BinanceTestnetAccount:
                     entry_p, pos.get("atr") or meta.get("atr") or 0.0
                 )
 
-                # Tier 1: 達 1 ATR，止損移到覆蓋雙邊手續費後的保本價。
+                # Tier 1: 達設定 ATR 門檻，止損移到覆蓋雙邊手續費與
+                # stop-limit 滑價緩衝後的保本價。
                 if tier < 1 and highest_pnl >= levels["tier1_trigger"]:
                     buffer_pct = levels["breakeven_buffer_pct"]
                     new_sl = (
@@ -548,7 +553,7 @@ class BinanceTestnetAccount:
                     meta["sl"] = new_sl_price
                     meta["trailing_tier"] = 1
                     pos["sl"] = new_sl_price
-                    self.log(f"🛡️ [ATR保本鎖] {symbol} 浮盈達 {highest_pnl:.2%}（1 ATR={levels['tier1_trigger']:.2%}），止損移至含費保本價 {new_sl_price}", "SUCCESS")
+                    self.log(f"🛡️ [ATR保本鎖] {symbol} 浮盈達 {highest_pnl:.2%}（{TRAILING_TIER1_TRIGGER_ATR_MULT:g} ATR={levels['tier1_trigger']:.2%}），止損移至含費及滑價保本價 {new_sl_price}", "SUCCESS")
                     # 重新向交易所更新止損單
                     try:
                         close_side = "sell" if side == "LONG" else "buy"
@@ -562,7 +567,8 @@ class BinanceTestnetAccount:
                     except Exception as e:
                         self.log(f"⚠️ {symbol} 更新保本止損單失敗: {e}", "WARNING")
 
-                # Tier 2: 達 2 ATR，鎖住 1 ATR 的價格距離。
+                # Tier 2: 動能證明後轉成 runner，取消固定 TP，只保留移動 SL，
+                # 讓強趨勢可以跑過原本的固定止盈。
                 elif tier < 2 and highest_pnl >= levels["tier2_trigger"]:
                     lock_distance = levels["tier2_lock_distance"]
                     new_sl = (
@@ -572,8 +578,9 @@ class BinanceTestnetAccount:
                     new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
                     meta["sl"] = new_sl_price
                     meta["trailing_tier"] = 2
-                    pos["sl"] = new_sl_price
-                    self.log(f"🔒 [ATR鎖利 T2] {symbol} 浮盈達 {highest_pnl:.2%}（2 ATR={levels['tier2_trigger']:.2%}），止損鎖住 1 ATR @ {new_sl_price}", "SUCCESS")
+                    meta["tp"] = 0.0
+                    pos["sl"], pos["tp"] = new_sl_price, 0.0
+                    self.log(f"🔒 [ATR鎖利 T2 / Runner] {symbol} 浮盈達 {highest_pnl:.2%}（{TRAILING_TIER2_TRIGGER_ATR_MULT:g} ATR={levels['tier2_trigger']:.2%}），取消固定止盈並鎖住 {TRAILING_TIER2_LOCK_ATR_MULT:g} ATR @ {new_sl_price}", "SUCCESS")
                     try:
                         close_side = "sell" if side == "LONG" else "buy"
                         await self._cancel_all_orders(symbol)
@@ -581,16 +588,14 @@ class BinanceTestnetAccount:
                             symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
                             limit_price=self._stop_limit_price(new_sl_price, close_side)
                         )
-                        if pos.get("tp"):
-                            await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], pos["tp"])
                     except Exception as e:
                         self.log(f"⚠️ {symbol} 更新 T2 止損單失敗: {e}", "WARNING")
 
-                # Tier 3: 達 3 ATR 啟動高點回撤追蹤。
+                # Tier 3: 達設定 ATR 門檻後啟動高點回撤追蹤。
                 elif highest_pnl >= levels["tier3_trigger"]:
                     if tier < 3:
                         meta["trailing_tier"] = 3
-                        self.log(f"🚀 [ATR高點追蹤 T3] {symbol} 浮盈達 {highest_pnl:.2%}（3 ATR={levels['tier3_trigger']:.2%}），開啟高點回撤 {TRAILING_TIER3_CALLBACK_RATIO:.0%}", "SUCCESS")
+                        self.log(f"🚀 [ATR高點追蹤 T3] {symbol} 浮盈達 {highest_pnl:.2%}（{TRAILING_TIER3_TRIGGER_ATR_MULT:g} ATR={levels['tier3_trigger']:.2%}），開啟高點回撤 {TRAILING_TIER3_CALLBACK_RATIO:.0%}", "SUCCESS")
                     
                     callback_drop = highest_pnl * TRAILING_TIER3_CALLBACK_RATIO
                     target_pnl = highest_pnl - callback_drop

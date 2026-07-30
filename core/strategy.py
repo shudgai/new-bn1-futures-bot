@@ -5,7 +5,7 @@ from core.config import (
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
     MIN_FRESHNESS_SCORE,
     RSI_LONG_THRESHOLD, RSI_SHORT_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
-    MIN_SCORE_THRESHOLD, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
+    MIN_SCORE_THRESHOLD, ENTRY_MIN_QUALITY_BONUS, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, PULLBACK_TARGET_DEPTH, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
     ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
@@ -277,11 +277,14 @@ class SuperTrendKeltnerStrategy:
         else:
             closed_confirmed = False  # 資料不足，保守處理視為未確認
 
+        kc_breakout_passed = False
         if st_dir == 1 and price >= (kc_upper + kc_breakout_buffer) and closed_confirmed:
             score += 30
+            kc_breakout_passed = True
             score_details.append("KC_Breakout_Pass")
         elif st_dir == -1 and price <= (kc_lower - kc_breakout_buffer) and closed_confirmed:
             score += 30
+            kc_breakout_passed = True
             score_details.append("KC_Breakout_Pass")
         elif not closed_confirmed:
             score_details.append(f"KC_Breakout_NoClose({BREAKOUT_CONFIRM_BARS}bar_required)")
@@ -376,6 +379,22 @@ class SuperTrendKeltnerStrategy:
         # 額外防線：新鮮度子分數太低（趨勢已經很舊）直接擋單，不管總分靠
         # 其他項目湊得多高——避免「已經開始老化、快要反轉的趨勢尾端，
         # 靠其他項目湊夠分數壓線擠進場」這種樣貌。
+        if score >= MIN_SCORE_THRESHOLD and not kc_breakout_passed:
+            return {
+                "action": "HOLD",
+                "reason": f"Mandatory_Fail: KC_Breakout_Unconfirmed | Score({score}) | {', '.join(score_details)}",
+            }
+
+        if score >= MIN_SCORE_THRESHOLD and quality_bonus < ENTRY_MIN_QUALITY_BONUS:
+            return {
+                "action": "HOLD",
+                "reason": (
+                    f"Mandatory_Fail: Entry_Quality_Too_Low"
+                    f"({quality_bonus}<{ENTRY_MIN_QUALITY_BONUS}) | Score({score}) | "
+                    f"{', '.join(score_details)}"
+                ),
+            }
+
         if score >= MIN_SCORE_THRESHOLD and freshness_score < MIN_FRESHNESS_SCORE:
             return {
                 "action": "HOLD",
@@ -596,6 +615,12 @@ class SuperTrendKeltnerStrategy:
             + round(min(vol_margin / 1.0, 1.0) * 3)
             + round(min(max(adx_ratio, 0.0), 1.0) * 3)
         )
+
+        if score_e < ENTRY_MIN_QUALITY_BONUS:
+            return {
+                "status": "CANCEL",
+                "reason": f"回調品質不足 Quality_Too_Low({score_e}<{ENTRY_MIN_QUALITY_BONUS})",
+            }
 
         pullback_score = score_b + score_c + score_d + score_e
         if pullback_score < PULLBACK_SCORE_THRESHOLD:

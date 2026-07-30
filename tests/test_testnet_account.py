@@ -345,11 +345,49 @@ def test_atr_trailing_levels_scale_with_each_positions_atr(tmp_path, monkeypatch
 
     levels = account._atr_trailing_levels(entry_price=100.0, atr=0.5)
 
-    assert levels["tier1_trigger"] == pytest.approx(0.005)
-    assert levels["tier2_trigger"] == pytest.approx(0.010)
-    assert levels["tier3_trigger"] == pytest.approx(0.015)
-    assert levels["tier2_lock_distance"] == pytest.approx(0.5)
-    assert levels["breakeven_buffer_pct"] > 2 * testnet_module.TAKER_FEE_RATE
+    assert levels["tier1_trigger"] == pytest.approx(0.010)
+    assert levels["tier2_trigger"] == pytest.approx(0.0175)
+    assert levels["tier3_trigger"] == pytest.approx(0.025)
+    assert levels["tier2_lock_distance"] == pytest.approx(0.75)
+    assert levels["breakeven_buffer_pct"] == pytest.approx(
+        2 * testnet_module.TAKER_FEE_RATE
+        + testnet_module.STOP_LIMIT_SLIPPAGE_GUARD_PCT
+        + testnet_module.TRAILING_BREAK_EVEN_EXTRA_PCT
+    )
+
+
+@pytest.mark.anyio
+async def test_tier2_converts_position_to_runner_without_fixed_tp(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    account.position_meta["DOGE/USDT"] = {
+        "sl": 100.2,
+        "tp": 108.0,
+        "atr": 1.0,
+        "trailing_tier": 1,
+        "highest_pnl_pct": 0.036,
+    }
+    exchange.positions = [{
+        "symbol": "DOGEUSDT",
+        "positionAmt": "10",
+        "entryPrice": "100",
+        "markPrice": "103.6",
+        "leverage": "5",
+        "unRealizedProfit": "36",
+    }]
+    account.last_sync_at = 0
+    previous_order_count = len(exchange.orders)
+
+    await account.update_positions({"DOGE/USDT": 103.6})
+
+    meta = account.position_meta["DOGE/USDT"]
+    assert meta["trailing_tier"] == 2
+    assert meta["tp"] == 0.0
+    assert account.positions["DOGE/USDT"]["tp"] == 0.0
+    assert [order["type"] for order in exchange.orders[previous_order_count:]] == ["STOP"]
 
 
 @pytest.mark.anyio

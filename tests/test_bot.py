@@ -162,10 +162,38 @@ def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
     expected_target = 100.0 - (100.0 - 99.8) * PULLBACK_TARGET_DEPTH
     assert result_high["target_zone"] == pytest.approx(expected_target)
 
-    frame_mid = _entry_score_frame(volume=1000.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
+    frame_mid = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
     result_mid = strategy.evaluate_signal(frame_mid, ema_50_1h=95.0)
     assert result_mid["action"] == "WAIT_PULLBACK"
     assert "target_zone" in result_mid
+
+def test_unconfirmed_kc_breakout_cannot_qualify_on_other_scores(monkeypatch):
+    """量能/RSI/新鮮度再高，也不能補掉沒有已收盤 KC 突破的缺口。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
+    frame.loc[frame.index[-3:-1], "close"] = 99.5
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
+
+    assert result["action"] == "HOLD"
+    assert "Mandatory_Fail: KC_Breakout_Unconfirmed" in result["reason"]
+
+
+def test_low_quality_breakout_is_rejected_even_when_total_score_qualifies(monkeypatch):
+    """避免只靠 KC/量能/RSI/新鮮度湊分，品質細項太低仍不得登記回踩。"""
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1000.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
+
+    assert result["action"] == "HOLD"
+    assert "Mandatory_Fail: Entry_Quality_Too_Low" in result["reason"]
+
+
 
 
 def test_extreme_rsi_blocks_chasing_both_directions(monkeypatch):
