@@ -119,11 +119,15 @@ class TradingEngine:
             stage = "ADX過低過濾"
         elif "Score_Low" in reason:
             stage = "分數不足"
-        elif "KC_Breakout" in reason:
-            stage = "待KC突破"
-        elif "SuperTrend_Stale" in reason:
-            stale = re.search(r"SuperTrend_Stale\((\d+)\)", reason)
-            stage = f"SuperTrend過期{stale.group(1)}根" if stale else "SuperTrend過期"
+        elif "Entry_Quality_Too_Low" in reason:
+            quality_match = re.search(r"Entry_Quality_Too_Low\(([\d.]+<[\d.]+)\)", reason)
+            stage = (
+                f"進場品質不足{quality_match.group(1)}"
+                if quality_match else "進場品質不足"
+            )
+        elif "Freshness_Too_Stale" in reason or "SuperTrend_Stale" in reason:
+            stale = re.search(r"(?:Freshness_Too_Stale|SuperTrend_Stale)\((\d+)(?:bars)?\)", reason)
+            stage = f"訊號新鮮度不足{stale.group(1)}根" if stale else "訊號新鮮度不足"
         elif "ADX_Declining_Exhaustion" in reason:
             stage = "ADX動能衰退過濾"
         elif "Price_Overextended" in reason:
@@ -131,6 +135,8 @@ class TradingEngine:
             stage = f"價格乖離過大{overext_match.group(1)}" if overext_match else "價格乖離過大"
         elif "1h_Trend_Declining" in reason:
             stage = "大週期動能衰退過濾"
+        elif "Mandatory_Fail: KC_Breakout_Unconfirmed" in reason:
+            stage = "待KC突破"
         elif "EMA20" in reason or "1h_Trend" in reason:
             stage = "趨勢方向不符"
         elif "ATR_Too_High" in reason:

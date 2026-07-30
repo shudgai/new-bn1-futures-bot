@@ -60,7 +60,7 @@ def get_atr_based_leverage(atr_pct: float) -> int:
             return lev
     return 3
 
-TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
+TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "75.0"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
@@ -376,7 +376,7 @@ MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
 # 給予更高倍數的下單金額（以 TRADE_AMOUNT_USDT 為基準，而非總資金比例，避免部位隨餘額增長滾雪球）。
-# 每筆金額硬上限 = TRADE_AMOUNT_USDT（預設50）：原本 90 分以上會給到 1.5x
+# 每筆金額硬上限 = TRADE_AMOUNT_USDT（預設75）：原本 90 分以上會給到 1.5x
 # （75U），但配合高分訊號常同時給到的高槓桿（6~10x），單筆虧損金額被
 # 放大不少。改成滿分也只給 1.0x，槓桿仍照分數/實測波動率分級，但下單
 # 本金一律不超過 TRADE_AMOUNT_USDT。

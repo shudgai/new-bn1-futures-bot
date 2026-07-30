@@ -69,6 +69,12 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("APT/USDT", 70) == 3
 
 
+def test_configured_trade_amount_uses_75_usdt_per_slot():
+    assert engine_module.TRADE_AMOUNT_USDT == pytest.approx(75.0)
+    assert engine_module.MAX_SLOTS == 5
+    assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(375.0)
+
+
 def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
@@ -196,6 +202,37 @@ def test_signal_progress_shows_history_adjustment_chain():
     )
     assert "原90→BTC78→歷史54分" in text
     assert "歷史績效降分後取消" in text
+
+
+
+def test_signal_progress_does_not_mislabel_passed_kc_as_waiting():
+    signal = {
+        "action": "HOLD",
+        "score": 91,
+        "eligible": True,
+        "reason": (
+            "Mandatory_Fail: Entry_Quality_Too_Low(4<5) | Score(91) | "
+            "KC_Breakout_Pass, Volume_Pass, RSI_Pass"
+        ),
+    }
+
+    text = TradingEngine._format_signal_progress("ZIL/USDT", signal, "SHORT")
+
+    assert "進場品質不足4<5" in text
+    assert "待KC突破" not in text
+
+
+def test_signal_progress_reports_only_true_unconfirmed_kc_as_waiting():
+    signal = {
+        "action": "HOLD",
+        "score": 70,
+        "eligible": True,
+        "reason": "Mandatory_Fail: KC_Breakout_Unconfirmed | Score(70)",
+    }
+
+    text = TradingEngine._format_signal_progress("ZIL/USDT", signal, "SHORT")
+
+    assert "待KC突破" in text
 
 
 def test_all_qualifying_breakouts_wait_for_pullback(monkeypatch):
