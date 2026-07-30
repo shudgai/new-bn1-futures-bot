@@ -264,7 +264,7 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 為舊版百分比制移動止利，
 # 只剩 core/paper_account.py（未上線使用的模擬帳戶）在用，
 # BinanceTestnetAccount 的正式交易已改用上面的 ATR 移動停利。---
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.005"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
 # TRAILING_MODE: 預設止利模式 (conservative / balanced / aggressive)
 #   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
 #   balanced:     回吐 30% 平倉（70%）— 平衡鎖利與空間

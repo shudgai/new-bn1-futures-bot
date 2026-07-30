@@ -351,55 +351,38 @@ async def test_refresh_no_profit_alert_when_still_near_peak(tmp_path, monkeypatc
     assert pos["profit_alert"] is False
 
 
-def test_atr_trailing_levels_scale_with_each_positions_atr(tmp_path, monkeypatch):
-    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
-    account = BinanceTestnetAccount(FakeTestnetExchange())
-
-    levels = account._atr_trailing_levels(entry_price=100.0, atr=0.5)
-
-    assert levels["tier1_trigger"] == pytest.approx(0.010)
-    assert levels["tier2_trigger"] == pytest.approx(0.0175)
-    assert levels["tier3_trigger"] == pytest.approx(0.025)
-    assert levels["tier2_lock_distance"] == pytest.approx(0.75)
-    assert levels["breakeven_buffer_pct"] == pytest.approx(
-        2 * testnet_module.TAKER_FEE_RATE
-        + testnet_module.STOP_LIMIT_SLIPPAGE_GUARD_PCT
-        + testnet_module.TRAILING_BREAK_EVEN_EXTRA_PCT
-    )
-
-
 @pytest.mark.anyio
-async def test_tier2_converts_position_to_runner_without_fixed_tp(tmp_path, monkeypatch):
+async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     exchange = FakeTestnetExchange()
     account = BinanceTestnetAccount(exchange)
     await account.initialize()
 
     account.position_meta["DOGE/USDT"] = {
-        "sl": 100.2,
-        "tp": 108.0,
+        "sl": 98.0,
+        "tp": 105.0,
         "atr": 1.0,
-        "trailing_tier": 1,
-        "highest_pnl_pct": 0.036,
+        "highest_pnl_pct": 0.0,
     }
     exchange.positions = [{
         "symbol": "DOGEUSDT",
         "positionAmt": "10",
-        "entryPrice": "100",
-        "markPrice": "103.6",
+        "entryPrice": "100.0",
+        "markPrice": "101.0",
         "leverage": "5",
-        "unRealizedProfit": "36",
+        "unRealizedProfit": "10",
     }]
     account.last_sync_at = 0
     previous_order_count = len(exchange.orders)
 
-    await account.update_positions({"DOGE/USDT": 103.6})
+    await account.update_positions({"DOGE/USDT": 101.0})
 
     meta = account.position_meta["DOGE/USDT"]
-    assert meta["trailing_tier"] == 2
+    assert meta["highest_pnl_pct"] == pytest.approx(0.01)
+    assert meta["is_breakeven_moved"] is True
     assert meta["tp"] == 0.0
     assert account.positions["DOGE/USDT"]["tp"] == 0.0
-    assert [order["type"] for order in exchange.orders[previous_order_count:]] == ["STOP"]
+    assert any(order["type"] == "STOP" for order in exchange.orders[previous_order_count:])
 
 
 @pytest.mark.anyio

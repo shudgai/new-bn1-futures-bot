@@ -16,12 +16,10 @@ from core.config import (
     STOP_LIMIT_SLIPPAGE_GUARD_PCT,
     STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
     ENABLE_TRAILING_STOP,
-    TRAILING_TIER1_TRIGGER_ATR_MULT,
-    TRAILING_TIER2_TRIGGER_ATR_MULT,
-    TRAILING_TIER3_TRIGGER_ATR_MULT,
-    TRAILING_TIER2_LOCK_ATR_MULT,
-    TRAILING_BREAK_EVEN_EXTRA_PCT,
-    TRAILING_TIER3_CALLBACK_RATIO,
+    TRAILING_TRIGGER_PCT,
+    TRAILING_PULLBACK_PCT,
+    NET_PROFIT_GUARANTEE_BUFFER,
+    get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
     get_leverage,
     get_signal_leverage,
@@ -124,21 +122,7 @@ class BinanceTestnetAccount:
         raw = str(symbol).upper().replace("/", "").replace(":USDT", "")
         return f"{raw[:-4]}/USDT" if raw.endswith("USDT") else raw
 
-    @staticmethod
-    def _atr_trailing_levels(entry_price: float, atr: float) -> dict:
-        """把每筆進場 ATR 換算成無槓桿價格百分比，供三階段鎖利使用。"""
-        atr_pct = max(float(atr), 0.0) / max(float(entry_price), 1e-12)
-        return {
-            "tier1_trigger": atr_pct * TRAILING_TIER1_TRIGGER_ATR_MULT,
-            "tier2_trigger": atr_pct * TRAILING_TIER2_TRIGGER_ATR_MULT,
-            "tier3_trigger": atr_pct * TRAILING_TIER3_TRIGGER_ATR_MULT,
-            "tier2_lock_distance": max(float(atr), 0.0) * TRAILING_TIER2_LOCK_ATR_MULT,
-            "breakeven_buffer_pct": (
-                2 * TAKER_FEE_RATE
-                + STOP_LIMIT_SLIPPAGE_GUARD_PCT
-                + TRAILING_BREAK_EVEN_EXTRA_PCT
-            ),
-        }
+
 
     def _load_state(self) -> None:
         if not os.path.exists(STATE_FILE):
@@ -566,81 +550,66 @@ class BinanceTestnetAccount:
                 else:
                     self._stop_breach_since.pop(symbol, None)
 
-            # ── 三階段移動停利與保本鎖邏輯 ──
+            # ── 無槓桿百分比制動態移動停利 ──
             if ENABLE_TRAILING_STOP:
                 pnl_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
                 highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
                 if pnl_pct > highest_pnl:
                     highest_pnl = pnl_pct
                     meta["highest_pnl_pct"] = highest_pnl
+                    meta["peak_profit_updated_at"] = now_ts
 
-                tier = meta.get("trailing_tier", 0)
-                levels = self._atr_trailing_levels(
-                    entry_p, pos.get("atr") or meta.get("atr") or 0.0
-                )
+                if "peak_profit_updated_at" not in meta:
+                    meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-                # Tier 1: 達設定 ATR 門檻，止損移到覆蓋雙邊手續費與
-                # stop-limit 滑價緩衝後的保本價。
-                if tier < 1 and highest_pnl >= levels["tier1_trigger"]:
-                    buffer_pct = levels["breakeven_buffer_pct"]
-                    new_sl = (
-                        entry_p * (1 + buffer_pct) if side == "LONG"
-                        else entry_p * (1 - buffer_pct)
-                    )
-                    new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
-                    meta["sl"] = new_sl_price
-                    meta["trailing_tier"] = 1
-                    pos["sl"] = new_sl_price
-                    self.log(f"🛡️ [ATR保本鎖] {symbol} 浮盈達 {highest_pnl:.2%}（{TRAILING_TIER1_TRIGGER_ATR_MULT:g} ATR={levels['tier1_trigger']:.2%}），止損移至含費及滑價保本價 {new_sl_price}", "SUCCESS")
-                    # 重新向交易所更新止損單
-                    try:
-                        close_side = "sell" if side == "LONG" else "buy"
-                        await self._cancel_all_orders(symbol)
-                        await self._create_protection_order(
-                            symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
-                            limit_price=self._stop_limit_price(new_sl_price, close_side)
-                        )
-                        if pos.get("tp"):
-                            await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], pos["tp"])
-                    except Exception as e:
-                        self.log(f"⚠️ {symbol} 更新保本止損單失敗: {e}", "WARNING")
-
-                # Tier 2: 動能證明後轉成 runner，取消固定 TP，只保留移動 SL，
-                # 讓強趨勢可以跑過原本的固定止盈。
-                elif tier < 2 and highest_pnl >= levels["tier2_trigger"]:
-                    lock_distance = levels["tier2_lock_distance"]
-                    new_sl = (
-                        entry_p + lock_distance if side == "LONG"
-                        else entry_p - lock_distance
-                    )
-                    new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl))
-                    meta["sl"] = new_sl_price
-                    meta["trailing_tier"] = 2
-                    meta["tp"] = 0.0
-                    pos["sl"], pos["tp"] = new_sl_price, 0.0
-                    self.log(f"🔒 [ATR鎖利 T2 / Runner] {symbol} 浮盈達 {highest_pnl:.2%}（{TRAILING_TIER2_TRIGGER_ATR_MULT:g} ATR={levels['tier2_trigger']:.2%}），取消固定止盈並鎖住 {TRAILING_TIER2_LOCK_ATR_MULT:g} ATR @ {new_sl_price}", "SUCCESS")
-                    try:
-                        close_side = "sell" if side == "LONG" else "buy"
-                        await self._cancel_all_orders(symbol)
-                        await self._create_protection_order(
-                            symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
-                            limit_price=self._stop_limit_price(new_sl_price, close_side)
-                        )
-                    except Exception as e:
-                        self.log(f"⚠️ {symbol} 更新 T2 止損單失敗: {e}", "WARNING")
-
-                # Tier 3: 達設定 ATR 門檻後啟動高點回撤追蹤。
-                elif highest_pnl >= levels["tier3_trigger"]:
-                    if tier < 3:
-                        meta["trailing_tier"] = 3
-                        self.log(f"🚀 [ATR高點追蹤 T3] {symbol} 浮盈達 {highest_pnl:.2%}（{TRAILING_TIER3_TRIGGER_ATR_MULT:g} ATR={levels['tier3_trigger']:.2%}），開啟高點回撤 {TRAILING_TIER3_CALLBACK_RATIO:.0%}", "SUCCESS")
-                    
-                    callback_drop = highest_pnl * TRAILING_TIER3_CALLBACK_RATIO
-                    target_pnl = highest_pnl - callback_drop
-                    if pnl_pct <= target_pnl:
-                        self.log(f"🎯 [高點回撤平倉] {symbol} 最高浮盈 {highest_pnl:.2%}，已回撤至 {pnl_pct:.2%}（回撤達 {TRAILING_TIER3_CALLBACK_RATIO:.0%}），市價平倉獲利", "SUCCESS")
-                        await self.close_position(symbol, curr_p, f"移動停利 (高點回撤 {TRAILING_TIER3_CALLBACK_RATIO:.0%})")
-                        continue
+                if highest_pnl >= TRAILING_TRIGGER_PCT:
+                    pullback = get_trailing_pullback_pct(highest_pnl, meta["peak_profit_updated_at"])
+                    if side == "LONG":
+                        trail_sl = entry_p * (1.0 + highest_pnl * pullback)
+                        npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
+                        trail_sl = max(trail_sl, npg_floor)
+                        new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
+                        if new_sl_price > old_sl:
+                            meta["sl"] = new_sl_price
+                            pos["sl"] = new_sl_price
+                            meta["is_breakeven_moved"] = True
+                            pos["is_breakeven_moved"] = True
+                            self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
+                            try:
+                                close_side = "sell"
+                                await self._cancel_all_orders(symbol)
+                                await self._create_protection_order(
+                                    symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
+                                    limit_price=self._stop_limit_price(new_sl_price, close_side)
+                                )
+                                if pos.get("tp"):
+                                    pos["tp"] = 0.0
+                                    meta["tp"] = 0.0
+                            except Exception as e:
+                                self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
+                    else:  # SHORT
+                        trail_sl = entry_p * (1.0 - highest_pnl * pullback)
+                        npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
+                        trail_sl = min(trail_sl, npg_ceiling)
+                        new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
+                        if new_sl_price < old_sl or old_sl == 0.0:
+                            meta["sl"] = new_sl_price
+                            pos["sl"] = new_sl_price
+                            meta["is_breakeven_moved"] = True
+                            pos["is_breakeven_moved"] = True
+                            self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
+                            try:
+                                close_side = "buy"
+                                await self._cancel_all_orders(symbol)
+                                await self._create_protection_order(
+                                    symbol, close_side, "STOP_MARKET", pos["qty"], new_sl_price,
+                                    limit_price=self._stop_limit_price(new_sl_price, close_side)
+                                )
+                                if pos.get("tp"):
+                                    pos["tp"] = 0.0
+                                    meta["tp"] = 0.0
+                            except Exception as e:
+                                self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
 
             if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
