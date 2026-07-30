@@ -88,12 +88,12 @@ async def get_index():
 
 
 def visible_system_logs():
-    """保留一般歷史日誌，但12幣訊號進度只顯示最新一組。"""
+    """保留一般歷史日誌，但幣訊號進度只顯示最新一組。"""
     logs = engine.account.logs[-200:]
-    progress_prefix = "📊 [12幣訊號進度]"
+    # 改用通用包含關係，支持 12, 16, 18 幣動態更新
     latest_progress_index = next(
         (index for index in range(len(logs) - 1, -1, -1)
-         if logs[index].get("text", "").startswith(progress_prefix)),
+         if "幣訊號進度]" in logs[index].get("text", "")),
         None,
     )
     return [
