@@ -1343,7 +1343,7 @@ class TradingEngine:
                             )
                             continue
 
-                        df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+                        df = await self.fetch_klines(symbol, timeframe="1m", limit=100)
                         if df.empty or len(df) < 50:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,K線資料不足"
