@@ -82,7 +82,7 @@ def test_pullback_depth_is_score_tiered_without_reenabling_market_chase():
     assert get_pullback_target_depth(80) == pytest.approx(0.08)
     assert get_pullback_target_depth(79) == pytest.approx(0.15)
     assert get_pullback_target_depth(65) == pytest.approx(0.15)
-    assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(5.0)
+    assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(3.0)
 
 
 def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
@@ -609,28 +609,25 @@ def test_pullback_reconfirmation_passes_when_price_still_on_correct_side_of_ema2
     assert result["status"] == "PASS"
 
 
-def test_pullback_reconfirmation_passes_when_volume_weak_but_other_signals_strong(monkeypatch):
-    """量能單項不再是硬性關卡：新鮮度/RSI/ADX 都還強的情況下，總分
-    （B量能+C RSI+D新鮮度+E品質，滿分79）足以覆蓋 PULLBACK_SCORE_THRESHOLD，
-    量能偏弱不再單獨否決這筆回踩進場——這是本次改動要達成的補償式判斷。
-    volume=600 落在 vol_ma_20(900) × POST_BREAKOUT_VOL_SUSTAIN_RATIO(0.6)=540 以上（通過衰退門檻），
-    但低於 KELTNER_MIN_VOLUME_RATIO(0.8)×900=720（B量能評分仍為 0），
-    確認即使量能評分零分，其餘訊號可補足到總分門檻。"""
+def test_pullback_reconfirmation_passes_when_volume_fades_but_other_signals_strong(monkeypatch):
+    """回踩總量低於均量 60% 只讓量能項記 0 分；RSI、新鮮度與品質仍強時，
+    不得再用 Vol_Fade 硬取消，應由回踩總分決定。"""
     strategy = SuperTrendKeltnerStrategy()
-    frame = _reconfirm_frame("LONG", volume=600.0)  # 通過衰退門檻但低於量能加分門檻
+    frame = _reconfirm_frame("LONG", volume=100.0)
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "PASS"
-
+    assert result["volume_faded"] is True
+    assert result["recent_volume_avg"] == pytest.approx(100.0)
+    assert result["pullback_score"] >= 48
+    assert "Vol_Fade" not in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_pullback_score_insufficient(monkeypatch):
-    """量能弱、RSI 剛好卡在門檻（無邊際加分）、ADX 剛好卡在 ADX_QUALITY_MIN
-    （無邊際加分，但還不到觸發 ADX 衰退硬性紅線的程度）：
-    量能極低（100 < vol_ma_20×0.6=540）時，量能衰退門檻（Vol_Fade）會在計分前先觸發，
-    兩種 CANCEL 路徑都代表訊號不夠強，任一路徑都應取消進場。"""
+    """縮量不再單獨硬取消；但量能 0 分且其他品質也不足時，仍應由
+    品質或回踩總分門檻取消。"""
     strategy = SuperTrendKeltnerStrategy()
     frame = _reconfirm_frame("LONG", volume=100.0, rsi=RSI_LONG_THRESHOLD)
     frame["adx"] = [ADX_QUALITY_MIN] * 50
@@ -639,9 +636,8 @@ def test_pullback_reconfirmation_cancels_when_pullback_score_insufficient(monkey
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
-    # 量能極低時 vol-fade 門檻（上游）或回調總分不足（下游）均為正確取消理由
-    assert "CANCEL" == result["status"]
-    assert any(kw in result["reason"] for kw in ("回調總分不足", "Vol_Fade", "突破後量能萎縮"))
+    assert any(kw in result["reason"] for kw in ("回調品質不足", "回調總分不足"))
+    assert "Vol_Fade" not in result["reason"]
 
 
 
@@ -1153,6 +1149,53 @@ def test_pullback_reversal_requires_a_closed_candle_after_touch():
     }])
     assert TradingEngine._pullback_reversal_confirmed(short_candidate, short_reversal) is True
 
+
+
+
+def test_expired_pullback_blocks_same_breakout_until_kc_resets():
+    engine = object.__new__(TradingEngine)
+    engine._expired_pullback_sides = {"XPL/USDT": "SHORT"}
+
+    assert engine._expired_pullback_still_active(
+        "XPL/USDT", "SHORT", price=99.0, kc_upper=102.0, kc_lower=100.0
+    ) is True
+    assert engine._expired_pullback_sides["XPL/USDT"] == "SHORT"
+
+    assert engine._expired_pullback_still_active(
+        "XPL/USDT", "SHORT", price=100.1, kc_upper=102.0, kc_lower=100.0
+    ) is False
+    assert "XPL/USDT" not in engine._expired_pullback_sides
+
+
+@pytest.mark.anyio
+async def test_pullback_timeout_locks_old_breakout_instead_of_recreating(monkeypatch):
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+        logs = []
+
+
+        def daily_loss_limit_hit(self):
+            return False, 0.0
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.pending_pullback_candidates = {
+        "XPL/USDT": {"side": "SHORT", "created_at": 0.0}
+    }
+    engine._pullback_retry_after = {}
+    engine._expired_pullback_sides = {}
+    engine.tickers = {}
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["XPL/USDT"])
+
+    await engine._monitor_pullback_candidates(PULLBACK_TIMEOUT_MINUTES * 60 + 1)
+
+    assert "XPL/USDT" not in engine.pending_pullback_candidates
+    assert engine._expired_pullback_sides["XPL/USDT"] == "SHORT"
+    assert any("本波不再掛單" in text for text, _ in engine.account.logs)
 
 
 def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):

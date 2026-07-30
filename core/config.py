@@ -152,9 +152,9 @@ STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD
 MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
-# 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。至少覆蓋一根完整
-# 5m 訊號K，避免候選還沒等到正常反彈就先在 3 分鐘內逾時。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "5.0"))
+# 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。3 分鐘仍未完成就
+# 視為本波時效已過；同方向 KC 突破重置前不得重新建立候選或掛單。
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "3.0"))
 ENTRY_LIMIT_TIMEOUT_SEC = float(os.getenv("ENTRY_LIMIT_TIMEOUT_SEC", "15"))
 PULLBACK_TARGET_MAX_DRIFT_ATR = float(os.getenv("PULLBACK_TARGET_MAX_DRIFT_ATR", "0.25"))
 PULLBACK_RECLAIM_MIN_ATR = float(os.getenv("PULLBACK_RECLAIM_MIN_ATR", "0.05"))

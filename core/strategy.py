@@ -640,27 +640,28 @@ class SuperTrendKeltnerStrategy:
         if atr_pct < MIN_ATR_PCT:
             return {"status": "CANCEL", "reason": f"波動率轉為過低 ATR_Too_Low({atr_pct:.2%})"}
 
-        # 防線 2：突破後量能持續性確認 — 假突破特徵之一是「突破當根量大，
-        # 後續量立刻萎縮」，代表突破動能已耗盡，接下來的回踩是真正反轉。
-        # 取倒數第 2、3 根 K 棒（iloc[-3:-1]）的平均量能；最新那根（iloc[-1]）
-        # 當前 K 棒尚未收盤、量能仍在累積，不用於穩定性判斷。
+        # 回踩縮量使用多空合計成交量，無法辨識是順勢量或逆勢量；尤其
+        # 回踩時縮量常屬正常型態，因此只讓量能項記 0 分，不再硬取消。
+        volume_faded = False
+        recent_vol_avg = None
+        min_sustain_vol = None
         if vol_ma_20 > 0 and len(df) >= 3:
-            recent_vol_avg = df['volume'].iloc[-3:-1].mean()
-            min_sustain_vol = vol_ma_20 * POST_BREAKOUT_VOL_SUSTAIN_RATIO
-            if recent_vol_avg < min_sustain_vol:
-                return {
-                    "status": "CANCEL",
-                    "reason": (
-                        f"突破後量能萎縮 Vol_Fade({recent_vol_avg:.0f}<{min_sustain_vol:.0f}=均量×{POST_BREAKOUT_VOL_SUSTAIN_RATIO})"
-                    ),
-                }
+            recent_vol_avg = float(df['volume'].iloc[-3:-1].mean())
+            min_sustain_vol = float(vol_ma_20 * POST_BREAKOUT_VOL_SUSTAIN_RATIO)
+            volume_faded = recent_vol_avg < min_sustain_vol
 
         # 回調總分（B量能+C RSI+D新鮮度+E品質加分，滿分79，跟 evaluate_signal()
         # 同一套加權）：量能/RSI 不再各自當硬性關卡、任一項不過就整筆取消，
         # 改成允許互相補償——量能爆量成長可以補足 RSI 差一點點的缺口，更貼近
         # 真實交易判斷。上面的方向反轉/大趨勢衰退/新鮮度太舊/ADX動能衰退/
         # 價格乖離過大/ATR%範圍 是絕對紅線，不受總分補償影響，維持硬性取消。
-        score_b = 20 if (vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO) else 0
+        score_b = (
+            20
+            if not volume_faded
+            and vol_ma_20 > 0
+            and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO
+            else 0
+        )
         score_c = 20 if (
             (side == "LONG" and rsi >= RSI_LONG_THRESHOLD)
             or (side == "SHORT" and rsi <= RSI_SHORT_THRESHOLD)
@@ -702,6 +703,9 @@ class SuperTrendKeltnerStrategy:
                 "status": "CANCEL",
                 "raw_pullback_score": raw_pullback_score,
                 "pullback_score": pullback_score,
+                "volume_faded": volume_faded,
+                "recent_volume_avg": recent_vol_avg,
+                "min_sustain_volume": min_sustain_vol,
                 "reason": (
                     f"回調總分不足 Pullback_Score({pullback_score}<{PULLBACK_SCORE_THRESHOLD}) | "
                     f"Volume+{score_b} RSI+{score_c} Freshness+{score_d} Quality+{score_e} "
@@ -714,6 +718,9 @@ class SuperTrendKeltnerStrategy:
             "reason": f"二次確認通過 Pullback_Score({pullback_score})",
             "raw_pullback_score": raw_pullback_score,
             "pullback_score": pullback_score,
+            "volume_faded": volume_faded,
+            "recent_volume_avg": recent_vol_avg,
+            "min_sustain_volume": min_sustain_vol,
             "btc_regime_mode": btc_regime["mode"],
             "btc_direction_1h": int(btc_st_direction_1h or 0),
             "btc_score_penalty": btc_regime["score_penalty"],

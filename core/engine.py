@@ -61,6 +61,8 @@ class TradingEngine:
         # 短效 Post-Only 限價單。候選與交易所掛單分開追蹤。
         self.pending_pullback_candidates: Dict[str, dict] = {}
         self._pullback_retry_after: Dict[str, float] = {}
+        # 候選逾時後鎖住同方向舊 KC 突破，直到價格先回到通道內重置。
+        self._expired_pullback_sides: Dict[str, str] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -488,6 +490,21 @@ class TradingEngine:
             self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
         self.account.log(f"↩️ [回踩候選取消] {symbol}：{reason}", "INFO")
 
+    def _expired_pullback_still_active(
+        self, symbol: str, side: str, price: float, kc_upper: float, kc_lower: float
+    ) -> bool:
+        expired_side = self._expired_pullback_sides.get(symbol)
+        if expired_side is None:
+            return False
+        if expired_side != side:
+            self._expired_pullback_sides.pop(symbol, None)
+            return False
+        still_outside_kc = price >= kc_upper if side == "LONG" else price <= kc_lower
+        if still_outside_kc:
+            return True
+        self._expired_pullback_sides.pop(symbol, None)
+        return False
+
     def _admit_pullback_candidates(
         self, signals: list, available_balance: float, now: float
     ) -> None:
@@ -541,6 +558,7 @@ class TradingEngine:
                 "history_adjusted_score": sig.get("history_adjusted_score", score),
                 "history_score_multiplier": sig.get("history_score_multiplier", 1.0),
                 "pullback_confirmation_score": None,
+                "volume_fade_logged": False,
                 "leverage": self.symbol_rotation.get_dynamic_leverage(symbol, score),
                 "created_at": now,
                 "touched_at": None,
@@ -593,7 +611,10 @@ class TradingEngine:
                 self.pending_pullback_candidates.pop(symbol, None)
                 continue
             if now - candidate["created_at"] > PULLBACK_TIMEOUT_MINUTES * 60:
-                self._drop_pullback_candidate(symbol, "等待回踩/反轉確認逾時", now)
+                self._expired_pullback_sides[symbol] = candidate["side"]
+                self._drop_pullback_candidate(
+                    symbol, "等待回踩/反轉確認逾時，本波不再掛單，等待KC重置", now
+                )
                 continue
 
             live_price = self.tickers.get(symbol)
@@ -620,6 +641,15 @@ class TradingEngine:
                 btc_st_direction_1h=getattr(self, "btc_1h_st_direction", 0),
                 btc_st_flip_age=getattr(self, "btc_1h_st_flip_age", 999), symbol=symbol,
             )
+            if confirm.get("volume_faded") and not candidate.get("volume_fade_logged"):
+                candidate["volume_fade_logged"] = True
+                self.account.log(
+                    f"📉 [回踩縮量] {symbol} 總量 "
+                    f"{confirm.get('recent_volume_avg', 0):.0f}<"
+                    f"{confirm.get('min_sustain_volume', 0):.0f}，"
+                    f"量能+0，繼續評分（回踩確認{confirm.get('pullback_score', '-')}分）",
+                    "INFO",
+                )
             if confirm["status"] != "PASS":
                 self._drop_pullback_candidate(symbol, f"條件已變差：{confirm['reason']}", now)
                 continue
@@ -914,6 +944,14 @@ class TradingEngine:
                         current_direction = (
                             "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
                         )
+                        if self._expired_pullback_still_active(
+                            symbol, current_direction, price,
+                            float(df.iloc[-1]["kc_upper"]), float(df.iloc[-1]["kc_lower"]),
+                        ):
+                            signal_progress.append(
+                                f"{coin} {direction_text} 資格未通過,舊突破已逾時等待KC重置"
+                            )
+                            continue
                         if sig["action"] in ["BUY", "SELL", "WAIT_PULLBACK"]:
                             perf = self._symbol_recent_performance(symbol, sig["side"])
                             adjusted_score, history_mult = self._history_adjusted_score(
