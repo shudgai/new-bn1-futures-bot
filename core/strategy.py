@@ -223,29 +223,32 @@ def detect_ma7_reversal(
     # 1. 簡化區間定位：現價需在 KC 中軌（EMA20）至通道回調側之間
     #    多單：kc_lower <= price <= ema_20
     #    空單：ema_20 <= price <= kc_upper
-    # 2. 歷史觸碰確認：前 2 根已收盤的 K 棒（iloc[-3:-1]，因為 iloc[-1] 尚未收盤）
-    #    多單：至少有一根 K 棒的最低價（low）碰觸或跌破過 kc_lower（下軌）
-    #    空單：至少有一根 K 棒的最高價（high）碰觸或突破過 kc_upper（上軌）
-    past_bars = df.iloc[-3:-1]
+    # 2. 歷史觸碰確認（放寬）：前 6 根已收盤的 K 棒（iloc[-7:-1]，因為 iloc[-1] 尚未收盤）
+    #    多單：至少有一根 K 棒的最低價（low）碰觸或跌破過 kc_lower（下軌），容許 0.15x ATR 的微小誤差
+    #    空單：至少有一根 K 棒的最高價（high）碰觸或突破過 kc_upper（上軌），容許 0.15x ATR 的微小誤差
+    past_bars = df.iloc[-7:-1]
     if len(past_bars) < 1:
         return _no("歷史已收盤K棒不足，無法進行KC觸碰驗證")
+
+    # 碰觸門檻容差：加/減 0.15 ATR 的寬鬆度，避免因些微差距被過濾
+    touch_buffer = atr * 0.15
 
     if want_dir == 1:
         # 區間判斷
         if not (price <= ema_20):
             return _no(f"價格高於EMA20，非回檔買點（{price:.6g}>{ema_20:.6g}）")
-        # 觸摸下軌確認
-        touched_lower = (past_bars['low'] <= past_bars['kc_lower']).any()
+        # 觸摸下軌確認 (低點 <= 下軌 + 容差)
+        touched_lower = (past_bars['low'] <= (past_bars['kc_lower'] + touch_buffer)).any()
         if not touched_lower:
-            return _no("前兩根K棒未曾觸碰或跌破KC下軌（無回踩確認）")
+            return _no("前六根K棒未曾靠近或跌破KC下軌（無回踩確認）")
     else:
         # 區間判斷
         if not (price >= ema_20):
             return _no(f"價格低於EMA20，非反彈賣點（{price:.6g}<{ema_20:.6g}）")
-        # 觸摸上軌確認
-        touched_upper = (past_bars['high'] >= past_bars['kc_upper']).any()
+        # 觸摸上軌確認 (高點 >= 上軌 - 容差)
+        touched_upper = (past_bars['high'] >= (past_bars['kc_upper'] - touch_buffer)).any()
         if not touched_upper:
-            return _no("前兩根K棒未曾觸碰或突破KC上軌（無回踩確認）")
+            return _no("前六根K棒未曾靠近或突破KC上軌（無回踩確認）")
 
     # 計算品質分數（用於槽位分配優先排序，上限 89 避免誤觸 CURRENT_MAKER 路徑）
     score = MIN_SCORE_THRESHOLD  # 基礎 65 分
