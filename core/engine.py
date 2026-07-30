@@ -1141,8 +1141,8 @@ class TradingEngine:
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
             entry_mode = (info.get("entry_context") or {}).get("entry_mode")
-            if entry_mode == "CURRENT_MAKER":
-                # 90+ 現價單只短暫存活 15 秒，不再誤套回踩二次確認與目標漂移。
+            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL"):
+                # 90+ 現價單與 MA7 拐頭現價單只短暫存活 15 秒，不套用回踩二次確認與目標漂移。
                 # 每日熔斷、幣種停用及掛單逾時仍在上方保留。
                 continue
             confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
