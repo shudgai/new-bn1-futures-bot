@@ -565,12 +565,39 @@
                         // silent
                     }
                 },
+                async authorizedFetch(url, options = {}) {
+                    let token = sessionStorage.getItem('binance_api_token') || '';
+                    if (!token) {
+                        token = window.prompt('請輸入 8006 API Token') || '';
+                        if (!token) return null;
+                        sessionStorage.setItem('binance_api_token', token);
+                    }
+                    const headers = new Headers(options.headers || {});
+                    headers.set('Authorization', `Bearer ${token}`);
+                    const res = await fetch(url, { ...options, headers });
+                    if (res.status === 401) {
+                        sessionStorage.removeItem('binance_api_token');
+                        window.alert('API Token 錯誤或已更新，請重新輸入。');
+                        return null;
+                    }
+                    if (!res.ok) {
+                        let detail = `操作失敗（HTTP ${res.status}）`;
+                        try {
+                            const payload = await res.json();
+                            detail = payload.detail || detail;
+                        } catch (e) {}
+                        window.alert(detail);
+                        return null;
+                    }
+                    return res;
+                },
                 async toggleBot() {
-                    await fetch('/api/toggle', { method: 'POST' });
+                    const res = await this.authorizedFetch('/api/toggle', { method: 'POST' });
+                    if (!res) return;
                     await this.fetchStatus();
                 },
                 async placeOrder(side) {
-                    await fetch('/api/manual_order', {
+                    const res = await this.authorizedFetch('/api/manual_order', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -579,14 +606,16 @@
                             amount: this.manualOrder.amount
                         })
                     });
+                    if (!res) return;
                     await this.fetchStatus();
                 },
                 async closePos(symbol) {
-                    await fetch('/api/manual_close', {
+                    const res = await this.authorizedFetch('/api/manual_close', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ symbol })
                     });
+                    if (!res) return;
                     await this.fetchStatus();
                 }
             },
