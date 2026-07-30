@@ -62,6 +62,11 @@ class TradingEngine:
         # 止損/止利/24h時間過濾等既有的自動平倉邏輯。
         self.position_triggers: Dict[str, dict] = {}
         self.trigger_task: asyncio.Task = None
+        # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
+        # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
+        # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
+        # 有變化時才印，同樣的狀態只顯示一次。
+        self._history_coeff_logged: Dict[str, tuple] = {}
 
     @staticmethod
     def _format_signal_progress(
@@ -583,12 +588,19 @@ class TradingEngine:
                                 sig.get("score", 0), perf
                             )
                             if history_mult < 0.99:
-                                self.account.log(
-                                    f"📉 [歷史係數] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
-                                    f"勝率 {perf['win_rate']:.0%}、平均損益 {perf['avg_pnl']:+.3f} → "
-                                    f"係數 x{history_mult:.2f}，分數 {sig.get('score', 0)}→{adjusted_score}",
-                                    "INFO",
+                                log_key = (
+                                    sig["side"], perf["trades"], round(perf["win_rate"], 2),
+                                    round(perf["avg_pnl"], 3), round(history_mult, 2),
+                                    sig.get("score", 0), adjusted_score,
                                 )
+                                if self._history_coeff_logged.get(symbol) != log_key:
+                                    self._history_coeff_logged[symbol] = log_key
+                                    self.account.log(
+                                        f"📉 [歷史係數] {symbol} {sig['side']} 近期 {perf['trades']} 筆"
+                                        f"勝率 {perf['win_rate']:.0%}、平均損益 {perf['avg_pnl']:+.3f} → "
+                                        f"係數 x{history_mult:.2f}，分數 {sig.get('score', 0)}→{adjusted_score}",
+                                        "INFO",
+                                    )
                             sig["score"] = adjusted_score
                             if adjusted_score < MIN_SCORE_THRESHOLD:
                                 signal_progress.append(
