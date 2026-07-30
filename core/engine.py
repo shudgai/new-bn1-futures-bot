@@ -15,7 +15,7 @@ from core.config import (
     MIN_SCORE_THRESHOLD, USE_TESTNET,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
-    ENTRY_DISABLED_SYMBOLS,
+    ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -961,10 +961,31 @@ class TradingEngine:
 
         atr = max(float(ma7_sig.get("atr") or 0.0), target_price * 1e-6)
         sl_distance, tp_distance = compute_sl_tp_distance(target_price, atr)
-        if side == "LONG":
-            sl, tp = target_price - sl_distance, target_price + tp_distance
+
+        # 結構性止損與風險界限保護
+        structural_sl = ma7_sig.get("structural_sl")
+        if structural_sl is not None:
+            if side == "LONG":
+                # 限制止損距離：最小不能低於 MIN_SL_DISTANCE_PCT，最大不能超過 2.0 * ATR
+                min_sl = target_price - (target_price * MIN_SL_DISTANCE_PCT)
+                max_sl = target_price - (2.0 * atr)
+                sl = min(min_sl, max(max_sl, structural_sl))
+                sl_dist = target_price - sl
+                # 確保 TP 滿足最少盈虧比 (MIN_NET_REWARD_RISK)
+                tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
+                tp = target_price + max(tp_distance, tp_dist_needed)
+            else:
+                min_sl = target_price + (target_price * MIN_SL_DISTANCE_PCT)
+                max_sl = target_price + (2.0 * atr)
+                sl = max(min_sl, min(max_sl, structural_sl))
+                sl_dist = sl - target_price
+                tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
+                tp = target_price - max(tp_distance, tp_dist_needed)
         else:
-            sl, tp = target_price + sl_distance, target_price - tp_distance
+            if side == "LONG":
+                sl, tp = target_price - sl_distance, target_price + tp_distance
+            else:
+                sl, tp = target_price + sl_distance, target_price - tp_distance
 
         placed = await self.account.place_limit_entry(
             symbol=symbol, side=side, target_price=target_price,

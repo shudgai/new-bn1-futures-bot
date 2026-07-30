@@ -191,16 +191,24 @@ def detect_ma7_reversal(
         if want_dir == -1 and price > ema_50_upper:
             return _no("1h_EMA50_Bullish")
 
-    # ADX 硬性最低門檻
-    if adx < ADX_MANDATORY_MIN:
-        return _no(f"ADX太低({adx:.1f}<{ADX_MANDATORY_MIN})")
+    # ADX 硬性最低門檻 (動態調整：若 1h 趨勢對齊，放寬至 8.0)
+    dynamic_adx_min = ADX_MANDATORY_MIN
+    if st_direction_1h == want_dir:
+        dynamic_adx_min = max(8.0, ADX_MANDATORY_MIN - 2.0)
+    if adx < dynamic_adx_min:
+        return _no(f"ADX太低({adx:.1f}<{dynamic_adx_min})")
 
     # ATR 波動範圍
     atr_pct = atr / price if price > 0 else 0
     if atr_pct > MAX_ATR_PCT:
         return _no(f"ATR過高({atr_pct:.2%})")
-    if atr_pct < atr_min_pct:
-        return _no(f"ATR過低({atr_pct:.2%})")
+    
+    # 計算最近 6 小時（72 根 5m K棒）的平均 ATR% 作為動態底線參考，防週末/低波動期漏單，最低下探至 0.0008
+    atr_pct_series = df['atr'] / df['close']
+    rolling_atr_pct = float(atr_pct_series.rolling(window=72, min_periods=12).mean().iloc[-1])
+    dynamic_atr_min = min(atr_min_pct, max(0.0008, rolling_atr_pct * 0.7))
+    if atr_pct < dynamic_atr_min:
+        return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
 
     # RSI 過熱/過冷
     if want_dir == 1 and rsi > rsi_long_max:
@@ -235,10 +243,10 @@ def detect_ma7_reversal(
     # 1. 簡化區間定位：現價需在 KC 中軌（EMA20）至通道回調側之間
     #    多單：kc_lower <= price <= ema_20
     #    空單：ema_20 <= price <= kc_upper
-    # 2. 歷史觸碰確認（放寬）：前 6 根已收盤的 K 棒（iloc[-7:-1]，因為 iloc[-1] 尚未收盤）
+    # 2. 歷史觸碰確認：前 3 根已收盤的 K 棒（iloc[-4:-1]，限制時效性，防止拿很久以前的回調來當現在的轉彎）
     #    多單：至少有一根 K 棒的最低價（low）碰觸或跌破過 kc_lower（下軌），容許 0.15x ATR 的微小誤差
     #    空單：至少有一根 K 棒的最高價（high）碰觸或突破過 kc_upper（上軌），容許 0.15x ATR 的微小誤差
-    past_bars = df.iloc[-7:-1]
+    past_bars = df.iloc[-4:-1]
     if len(past_bars) < 1:
         return _no("歷史已收盤K棒不足，無法進行KC觸碰驗證")
 
@@ -252,7 +260,7 @@ def detect_ma7_reversal(
         # 觸摸下軌確認 (低點 <= 下軌 + 容差)
         touched_lower = (past_bars['low'] <= (past_bars['kc_lower'] + touch_buffer)).any()
         if not touched_lower:
-            return _no("前六根K棒未曾靠近或跌破KC下軌（無回踩確認）")
+            return _no("前三根K棒未曾靠近或跌破KC下軌（無回踩確認）")
     else:
         # 區間判斷
         if not (price >= ema_20):
@@ -260,7 +268,18 @@ def detect_ma7_reversal(
         # 觸摸上軌確認 (高點 >= 上軌 - 容差)
         touched_upper = (past_bars['high'] >= (past_bars['kc_upper'] - touch_buffer)).any()
         if not touched_upper:
-            return _no("前六根K棒未曾靠近或突破KC上軌（無回踩確認）")
+            return _no("前三根K棒未曾靠近或突破KC上軌（無回踩確認）")
+
+    # 計算結構性止損位（參考過去 6 根已收盤 K 棒的波段高低點與 KC 軌道，外加 0.05 * ATR 緩衝避免精準掃單）
+    past_6_bars = df.iloc[-7:-1]
+    if want_dir == 1:
+        swing_low = float(past_6_bars['low'].min())
+        kc_lower_val = float(past_6_bars['kc_lower'].min())
+        structural_sl = min(swing_low, kc_lower_val) - 0.05 * atr
+    else:
+        swing_high = float(past_6_bars['high'].max())
+        kc_upper_val = float(past_6_bars['kc_upper'].max())
+        structural_sl = max(swing_high, kc_upper_val) + 0.05 * atr
 
     direction_note = "谷底轉彎向上" if want_dir == 1 else "峰頂轉彎向下"
     return {
@@ -279,6 +298,7 @@ def detect_ma7_reversal(
         "adx": float(adx),
         "btc_regime_mode": btc_regime["mode"],
         "btc_allocation_factor": btc_regime["allocation_factor"],
+        "structural_sl": structural_sl,
         "reason": (
             f"MA7_Reversal_{side}｜{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}｜"
             f"{direction_note}｜score={score}"

@@ -1783,3 +1783,30 @@ def test_detect_ma7_reversal_no_signal_flat_ma7():
     result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is False, f"預期 detected=False, 卿因: {result.get('reason')}"
     assert "谷底轉彎" in result["reason"]
+
+
+def test_detect_ma7_reversal_recency_and_dynamic_filters():
+    # Test 1: KC 下軌觸碰時效性 (前3根已收盤未觸碰但更早以前有觸碰，應該被過濾)
+    frame = _ma7_frame("LONG")
+    # 將過去 K 棒的最低價改為最後 4 根（含最新未收盤）都是 100.0（沒有碰觸下軌 99.0），但更早之前有碰過
+    frame.loc[frame.index[45], "low"] = 98.8
+    for idx in [46, 47, 48, 49]:
+        frame.loc[frame.index[idx], "low"] = 100.0
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    assert result["detected"] is False
+    assert "前三根K棒未曾靠近或跌破KC下軌" in result["reason"]
+
+    # Test 2: 動態 ADX 門檻放寬
+    # 一般情況下 ADX = 9.0 會因為低於 10.0 而被過濾
+    frame_low_adx = _ma7_frame("LONG", adx=9.0)
+    result_fail = detect_ma7_reversal(frame_low_adx, side="LONG", indicators_precomputed=True)
+    assert result_fail["detected"] is False
+    assert "ADX太低" in result_fail["reason"]
+
+    # 當 1h 趨勢方向對齊時，門檻放寬至 8.0，ADX = 9.0 應該能通過，且會計算出 structural_sl
+    result_pass = detect_ma7_reversal(frame_low_adx, side="LONG", st_direction_1h=1, indicators_precomputed=True)
+    assert result_pass["detected"] is True
+    assert result_pass["structural_sl"] is not None
+    assert result_pass["structural_sl"] < result_pass["price"]
+
