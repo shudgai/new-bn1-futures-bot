@@ -672,25 +672,36 @@ class TradingEngine:
     @staticmethod
     def _pullback_reversal_confirmed(candidate: dict, candles_1m: pd.DataFrame) -> bool:
         """觸價後必須等包含觸價時刻的 1m K 棒真正收盤，且收回目標外側。"""
-        if candles_1m is None or candles_1m.empty:
+        if candles_1m is None or candles_1m.empty or len(candles_1m) < 8:
             return False
         candle = candles_1m.iloc[-1]
         close_time_ms = float(candle["timestamp"]) + 60_000
         if close_time_ms <= float(candidate.get("touched_at", 0.0)) * 1000:
             return False
+
+        # 1m MA7 拐頭向上/向下確認
+        closes = candles_1m["close"].astype(float)
+        ma7 = closes.rolling(window=7).mean()
+        if pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]):
+            return False
+        ma7_curr = ma7.iloc[-1]
+        ma7_prev = ma7.iloc[-2]
+
         target = float(candidate["target_price"])
         atr = max(float(candidate.get("atr") or 0.0), target * 1e-6)
         reclaim = atr * PULLBACK_RECLAIM_MIN_ATR
         open_price = float(candle["open"])
         close_price = float(candle["close"])
         if candidate["side"] == "LONG":
-            return (
+            return bool(
                 close_price > open_price
                 and close_price >= target + reclaim
+                and ma7_curr > ma7_prev
             )
-        return (
+        return bool(
             close_price < open_price
             and close_price <= target - reclaim
+            and ma7_curr < ma7_prev
         )
 
     def _fresh_pullback_target(self, df: pd.DataFrame, side: str, score: int) -> tuple[float, float]:
@@ -1010,7 +1021,7 @@ class TradingEngine:
                 self._drop_pullback_candidate(symbol, f"目標漂移 {drift / max(fresh_atr, 1e-12):.2f} ATR", now)
                 continue
 
-            candles_1m = await self.fetch_klines(symbol, timeframe="1m", limit=5)
+            candles_1m = await self.fetch_klines(symbol, timeframe="1m", limit=20)
             candidate_for_check = dict(candidate, target_price=fresh_target, atr=fresh_atr)
             if not self._pullback_reversal_confirmed(candidate_for_check, candles_1m):
                 continue

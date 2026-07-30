@@ -208,7 +208,7 @@ def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
     assert get_pullback_target_depth(70) == pytest.approx(0.08)
     assert get_pullback_target_depth(69) == pytest.approx(0.15)
     assert get_pullback_target_depth(65) == pytest.approx(0.15)
-    assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(3.0)
+    assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(10.0)
 
 
 def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
@@ -690,16 +690,9 @@ def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, at
     if rsi is None:
         rsi = 60.0 if side == "LONG" else 40.0
     price = 100.0
-    prices = [price] * 50
-    ma7_vals = [price] * 50
-    if side == "LONG":
-        ma7_vals[-1] = price + 0.1
-    else:
-        ma7_vals[-1] = price - 0.1
-
     return pd.DataFrame({
-        "close": prices,
-        "close_price_spike_filtered": prices,
+        "close": [price] * 50,
+        "close_price_spike_filtered": [price] * 50,
         "atr": [atr] * 50,
         "rsi": [rsi] * 50,
         "volume": [volume] * 50,
@@ -709,7 +702,6 @@ def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, at
         "ema_20": [price] * 50,
         "st_direction": [st_direction] * 50,
         "adx": [25.0] * 50,
-        "ma7": ma7_vals,
     })
 
 
@@ -1404,25 +1396,33 @@ def test_pullback_reversal_requires_a_closed_candle_after_touch():
     candidate = {
         "side": "LONG", "target_price": 100.0, "atr": 2.0, "touched_at": 100.0,
     }
-    candle_before_close = pd.DataFrame([{
-        "timestamp": 40_000, "open": 99.8, "high": 100.3,
-        "low": 99.5, "close": 100.2, "volume": 1.0,
-    }])
+    closes = [99.8] * 6 + [99.8, 100.2]
+    timestamps = [40_000] * 8
+    candle_before_close = pd.DataFrame([
+        {
+            "timestamp": timestamps[i], "open": 99.8, "high": 100.3,
+            "low": 99.5, "close": closes[i], "volume": 1.0,
+        } for i in range(8)
+    ])
     assert TradingEngine._pullback_reversal_confirmed(candidate, candle_before_close) is False
 
     candle_after_touch = candle_before_close.copy()
-    candle_after_touch.loc[0, "timestamp"] = 100_000
+    for i in range(8):
+        candle_after_touch.loc[i, "timestamp"] = 100_000
     assert TradingEngine._pullback_reversal_confirmed(candidate, candle_after_touch) is True
 
     weak_reclaim = candle_after_touch.copy()
-    weak_reclaim.loc[0, "close"] = 100.05
+    weak_reclaim.loc[7, "close"] = 100.05
     assert TradingEngine._pullback_reversal_confirmed(candidate, weak_reclaim) is False
 
     short_candidate = dict(candidate, side="SHORT")
-    short_reversal = pd.DataFrame([{
-        "timestamp": 100_000, "open": 100.3, "high": 100.5,
-        "low": 99.7, "close": 99.8, "volume": 1.0,
-    }])
+    short_closes = [100.2] * 6 + [100.2, 99.8]
+    short_reversal = pd.DataFrame([
+        {
+            "timestamp": 100_000, "open": 100.3, "high": 100.5,
+            "low": 99.7, "close": short_closes[i], "volume": 1.0,
+        } for i in range(8)
+    ])
     assert TradingEngine._pullback_reversal_confirmed(short_candidate, short_reversal) is True
 
 

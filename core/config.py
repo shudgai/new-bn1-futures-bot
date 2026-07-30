@@ -156,7 +156,7 @@ HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
 # 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。3 分鐘仍未完成就
 # 視為本波時效已過；同方向 KC 突破重置前不得重新建立候選或掛單。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "3.0"))
+PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10.0"))
 ENTRY_LIMIT_TIMEOUT_SEC = float(os.getenv("ENTRY_LIMIT_TIMEOUT_SEC", "15"))
 PULLBACK_TARGET_MAX_DRIFT_ATR = float(os.getenv("PULLBACK_TARGET_MAX_DRIFT_ATR", "0.25"))
 # 回踩距離至少為 0.10 ATR；若 KC 到 EMA20 的完整空間仍不足，該突破不建候選。
