@@ -149,8 +149,20 @@ def detect_ma7_reversal(
     st_dir = int(curr['st_direction'])
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
+    # 提前計算品質分數（用於狀態待命時顯示預估分數，上限 89 避免誤觸 CURRENT_MAKER 路徑）
+    score = MIN_SCORE_THRESHOLD  # 基礎 65 分
+    if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
+        score += 10  # 量能確認
+    if want_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
+        score += 5
+    elif want_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
+        score += 5
+    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
+    score += round(min(max(adx_ratio, 0.0), 1.0) * 9)  # ADX 品質最多 +9
+    score = min(score, 89)
+
     def _no(reason: str) -> dict:
-        return {"detected": False, "reason": reason, "side": side}
+        return {"detected": False, "reason": reason, "side": side, "score": score}
 
     # SuperTrend 方向對齊
     if st_dir != want_dir:
@@ -249,18 +261,6 @@ def detect_ma7_reversal(
         touched_upper = (past_bars['high'] >= (past_bars['kc_upper'] - touch_buffer)).any()
         if not touched_upper:
             return _no("前六根K棒未曾靠近或突破KC上軌（無回踩確認）")
-
-    # 計算品質分數（用於槽位分配優先排序，上限 89 避免誤觸 CURRENT_MAKER 路徑）
-    score = MIN_SCORE_THRESHOLD  # 基礎 65 分
-    if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
-        score += 10  # 量能確認
-    if want_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
-        score += 5
-    elif want_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
-        score += 5
-    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
-    score += round(min(max(adx_ratio, 0.0), 1.0) * 9)  # ADX 品質最多 +9
-    score = min(score, 89)
 
     direction_note = "谷底轉彎向上" if want_dir == 1 else "峰頂轉彎向下"
     return {
