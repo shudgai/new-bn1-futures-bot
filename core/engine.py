@@ -985,6 +985,8 @@ class TradingEngine:
                     f"量能+0，繼續評分（回踩確認{confirm.get('pullback_score', '-')}分）",
                     "INFO",
                 )
+            if confirm["status"] == "WAIT_REVERSAL":
+                continue
             if confirm["status"] != "PASS":
                 self._drop_pullback_candidate(symbol, f"條件已變差：{confirm['reason']}", now)
                 continue
@@ -1091,7 +1093,9 @@ class TradingEngine:
                 btc_st_direction_1h=getattr(self, "btc_1h_st_direction", 0),
                 btc_st_flip_age=getattr(self, "btc_1h_st_flip_age", 999), symbol=symbol,
             )
-            if confirm["status"] != "PASS":
+            if confirm["status"] == "WAIT_REVERSAL":
+                pass
+            elif confirm["status"] != "PASS":
                 self._record_pullback_outcome("maker_condition_changed")
                 await self.account.cancel_pending_limit(symbol, f"條件已變差：{confirm['reason']}")
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC

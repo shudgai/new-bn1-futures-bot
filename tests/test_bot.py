@@ -690,9 +690,16 @@ def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, at
     if rsi is None:
         rsi = 60.0 if side == "LONG" else 40.0
     price = 100.0
+    prices = [price] * 50
+    ma7_vals = [price] * 50
+    if side == "LONG":
+        ma7_vals[-1] = price + 0.1
+    else:
+        ma7_vals[-1] = price - 0.1
+
     return pd.DataFrame({
-        "close": [price] * 50,
-        "close_price_spike_filtered": [price] * 50,
+        "close": prices,
+        "close_price_spike_filtered": prices,
         "atr": [atr] * 50,
         "rsi": [rsi] * 50,
         "volume": [volume] * 50,
@@ -702,6 +709,7 @@ def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, at
         "ema_20": [price] * 50,
         "st_direction": [st_direction] * 50,
         "adx": [25.0] * 50,
+        "ma7": ma7_vals,
     })
 
 

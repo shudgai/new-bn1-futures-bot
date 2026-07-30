@@ -132,6 +132,9 @@ class SuperTrendKeltnerStrategy:
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
+        # MA7
+        df['ma7'] = close.rolling(window=7).mean()
+
         # 成交量均線
         df['vol_ma_20'] = volume.rolling(window=20).mean()
 
@@ -830,6 +833,22 @@ class SuperTrendKeltnerStrategy:
                     f"BTC-{btc_regime['score_penalty']}"
                 ),
             }
+
+        # MA7 谷底/峰頂轉彎向上/向下確認
+        ma7 = df['ma7']
+        if len(ma7) >= 2:
+            ma7_curr = float(ma7.iloc[-1])
+            ma7_prev = float(ma7.iloc[-2])
+            if side == "LONG" and ma7_curr <= ma7_prev:
+                return {
+                    "status": "WAIT_REVERSAL",
+                    "reason": f"等待 5m MA7 谷底轉彎向上 (MA7={ma7_curr:.8g} <= 前值={ma7_prev:.8g})",
+                }
+            if side == "SHORT" and ma7_curr >= ma7_prev:
+                return {
+                    "status": "WAIT_REVERSAL",
+                    "reason": f"等待 5m MA7 峰頂轉彎向下 (MA7={ma7_curr:.8g} >= 前值={ma7_prev:.8g})",
+                }
 
         return {
             "status": "PASS",
