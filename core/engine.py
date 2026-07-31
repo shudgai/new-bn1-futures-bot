@@ -15,7 +15,7 @@ from core.config import (
     MIN_SCORE_THRESHOLD, USE_TESTNET,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
-    ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT,
+    ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -562,6 +562,13 @@ class TradingEngine:
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
                     self.position_triggers[symbol] = trigger
+                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong"):
+                        self.account.log(
+                            f"🚨 [雙重防線失守] {symbol} 均線與結構防線(前低/前高)同時失守，執行自動平倉",
+                            "DANGER"
+                        )
+                        curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
+                        await self.account.close_position(symbol, curr_p, "5m收線均線與結構防線同時失守")
                 for symbol in set(self.position_triggers) - set(self.account.positions):
                     self.position_triggers.pop(symbol, None)
                 await asyncio.sleep(30)

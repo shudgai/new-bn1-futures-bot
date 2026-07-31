@@ -87,6 +87,7 @@ STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
+ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
 MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.8"))
 # 訊號即使總分達標，也必須具備足夠的波動/RSI/量能/ADX品質。

@@ -1890,3 +1890,55 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     assert "DOGE/USDT" not in account.positions
 
 
+@pytest.mark.anyio
+async def test_auto_close_on_strong_trigger(monkeypatch):
+    from tests.test_testnet_account import FakeTestnetExchange
+    from core.testnet_account import BinanceTestnetAccount
+    from core.engine import TradingEngine
+    import pandas as pd
+    import asyncio
+
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # Open a LONG position at 100
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=105.0, reason="test", leverage=5
+    )
+
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    engine.tickers = {"DOGE/USDT": 100.0}
+
+    # Mock fetch_klines to return a DataFrame that breaches both EMA20 and Swing Low
+    async def mock_fetch_klines(symbol, timeframe, limit):
+        closes = [100.0] * 29 + [90.0]
+        lows = [98.0] * 29 + [88.0]
+        highs = [102.0] * 30
+        return pd.DataFrame({
+            "timestamp": [0] * 30,
+            "open": closes,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": [0] * 30
+        })
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+
+    # Let _position_trigger_loop run once and stop
+    original_sleep = asyncio.sleep
+    async def mock_sleep_stop(secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
+    monkeypatch.setattr("core.engine.ENABLE_STRONG_TRIGGER_AUTO_CLOSE", True)
+
+    await engine._position_trigger_loop()
+
+    # The position should be closed because of the strong breach (both X and no-entry/⛔ are true)
+    assert "DOGE/USDT" not in account.positions
+
+
+
