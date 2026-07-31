@@ -1199,9 +1199,14 @@ class BinanceTestnetAccount:
             self.log(f"🛑 {symbol} 掛單數量低於交易所最小精度", "WARNING")
             return False
 
+        # price_to_precision 純本地格式化（不會打 API），在 try 之外先算好，
+        # 確保就算下面 _prepare_leverage/create_order 逾時，except 區塊裡
+        # 查詢孤兒單要用的 price_str 一定已經有值，不會是未賦值狀態
+        # （實測曾在 _prepare_leverage 逾時時觸發 UnboundLocalError，把
+        # 整個主迴圈拖垮）。
+        price_str = self.exchange.price_to_precision(symbol, target_price)
         try:
             await self._prepare_leverage(symbol, leverage)
-            price_str = self.exchange.price_to_precision(symbol, target_price)
             order_params = {"timeInForce": "GTX" if post_only else "GTC"}
             order = await self.exchange.create_order(
                 symbol, "limit", order_side, qty, float(price_str),

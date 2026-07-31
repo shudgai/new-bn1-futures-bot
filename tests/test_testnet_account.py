@@ -338,6 +338,41 @@ async def test_place_limit_entry_fails_after_timeout_when_no_order_found(tmp_pat
 
 
 @pytest.mark.anyio
+async def test_place_limit_entry_timeout_before_price_str_assigned_does_not_crash(tmp_path, monkeypatch):
+    """set_leverage（_prepare_leverage 內部）逾時時，price_str 這時還沒
+    賦值——實測曾在這裡觸發 UnboundLocalError（'cannot access local
+    variable price_str where it is not associated with a value'），把
+    整個主迴圈拖垮。price_str 現在移到 try 區塊外先算好，這裡確保逾時
+    發生在 create_order 之前也不會炸掉。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(testnet_module.asyncio, "sleep", lambda *_a, **_k: asyncio_sleep_stub())
+
+    class LeverageTimeoutExchange(FakeTestnetExchange):
+        async def set_leverage(self, leverage, symbol):
+            raise ccxt.RequestTimeout("binanceusdm timeout, unknown execution status")
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+    exchange = LeverageTimeoutExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    placed = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
+        reason="test", atr=1.0, leverage=5, signal_score=100,
+    )
+
+    assert placed is False
+    assert any("查無成交紀錄" in entry["text"] for entry in account.logs)
+
+
+@pytest.mark.anyio
 async def test_place_limit_entry_rejects_zero_amount(tmp_path, monkeypatch):
     """amount_usdt<=0 時要提早拒絕、印出警告，不能讓 qty=0 一路送進
     exchange.amount_to_precision() 炸出未捕捉的交易所例外——實測
