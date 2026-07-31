@@ -1970,11 +1970,11 @@ async def test_trailing_sl_moves_up_for_long(monkeypatch):
         await original_sleep(0.001)
     monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
     monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
-    monkeypatch.setattr("core.engine.TRAILING_SL_PCT", 0.02)
+    monkeypatch.setattr("core.engine.TRAILING_SL_ATR_MULT", 3.0)
 
     await engine._run_trailing_sl_loop()
 
-    # SL should have moved up (new_sl = 108 * (1-0.02) = 105.84 > original 95)
+    # SL should have moved up (new_sl = 108 - 3 * 1.5 = 103.5 > original 95)
     new_sl = account.position_meta["DOGE/USDT"]["sl"]
     assert new_sl > original_sl
 
@@ -1999,7 +1999,7 @@ async def test_trailing_sl_does_not_move_back(monkeypatch):
     engine = TradingEngine()
     engine.account = account
     engine.is_running = True
-    # Price drops to 99 — trail would compute new_sl = 99*(1-0.02) = 97.02 < 98
+    # Price drops to 99 — trail would compute new_sl = 99 - 3 * 1.5 = 94.5 < 98
     engine.tickers = {"DOGE/USDT": 99.0}
 
     original_sleep = asyncio.sleep
@@ -2008,7 +2008,7 @@ async def test_trailing_sl_does_not_move_back(monkeypatch):
         await original_sleep(0.001)
     monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
     monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
-    monkeypatch.setattr("core.engine.TRAILING_SL_PCT", 0.02)
+    monkeypatch.setattr("core.engine.TRAILING_SL_ATR_MULT", 3.0)
 
     await engine._run_trailing_sl_loop()
 

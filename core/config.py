@@ -89,8 +89,8 @@ DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
 ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"
-# 移動止損距離（以最新市場高/低點的百分比計算，預設 2%）
-TRAILING_SL_PCT = float(os.getenv("TRAILING_SL_PCT", "0.02"))
+# 移動止損的 ATR 倍數（預設 3 倍 ATR，動態適應市場波動範圍）
+TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
 MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.8"))
 # 訊號即使總分達標，也必須具備足夠的波動/RSI/量能/ADX品質。

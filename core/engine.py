@@ -16,7 +16,7 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
-    ENABLE_TRAILING_SL, TRAILING_SL_PCT,
+    ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -669,10 +669,10 @@ class TradingEngine:
                 await asyncio.sleep(30)
 
     async def _run_trailing_sl_loop(self):
-        """背景任務：每 5 分鐘重新計算移動止損位置（只往有利方向移動）。
+        """背景任務：每 1 分鐘重新計算移動止損位置（只往有利方向移動）。
         多單：止損線 = 當前價 - trail_dist（只有新止損 > 現止損才更新）
         空單：止損線 = 當前價 + trail_dist（只有新止損 < 現止損才更新）
-        trail_dist = max(當前價 × TRAILING_SL_PCT, 1.5 × ATR)"""
+        trail_dist = TRAILING_SL_ATR_MULT × ATR (動態根據市場真實波幅)"""
         while self.is_running:
             try:
                 if ENABLE_TRAILING_SL:
@@ -685,7 +685,7 @@ class TradingEngine:
                         if not current_sl:
                             continue
                         atr_value = meta.get("atr", curr_p * 0.015)
-                        trail_dist = max(curr_p * TRAILING_SL_PCT, 1.5 * atr_value)
+                        trail_dist = TRAILING_SL_ATR_MULT * atr_value
                         side = position["side"]
                         if side == "LONG":
                             new_sl = curr_p - trail_dist
@@ -695,12 +695,12 @@ class TradingEngine:
                             new_sl = curr_p + trail_dist
                             if new_sl < current_sl:
                                 await self.account.trail_stop_loss(symbol, new_sl)
-                await asyncio.sleep(300)  # 每 5 分鐘執行一次
+                await asyncio.sleep(60)  # 每 1 分鐘執行一次
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self.account.log(f"⚠️ [移動止損] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
-                await asyncio.sleep(300)
+                await asyncio.sleep(60)
 
 
 
