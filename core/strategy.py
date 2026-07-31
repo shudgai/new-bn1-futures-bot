@@ -258,12 +258,23 @@ def detect_ma7_reversal(
     atr_pct_series = df['atr'] / df['close']
     rolling_atr_pct = float(atr_pct_series.rolling(window=72, min_periods=12).mean().iloc[-1])
     dynamic_atr_min = min(atr_min_pct, max(0.0008, rolling_atr_pct * 0.7))
+    is_contrarian_bottom_buy = False
     if atr_pct < dynamic_atr_min:
         # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯
         # 萎縮，代表主力收手動能耗盡準備反轉，不是無動能的雜訊盤整，
         # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
         if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir):
             pass
+        elif want_dir == -1:
+            # 逆勢承接：原本要空的方向剛好遇到波動過低，改成反手承接的
+            # 多單買點——此時價格便宜，不等5m/1h趨勢翻多才進場，直接把
+            # want_dir/side翻成LONG，讓後面MA7谷底型態、KC下軌回踩確認、
+            # 結構性止損等既有多單邏輯接手判斷（不是另開一條路徑，重用
+            # 同一套多單品質把關，只是不要求SuperTrend/1h趨勢對齊）。
+            # 全部幣種適用，跟主流幣限定的量縮背離繞過是兩條獨立規則。
+            is_contrarian_bottom_buy = True
+            want_dir = 1
+            side = "LONG"
         else:
             return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
 
@@ -365,8 +376,10 @@ def detect_ma7_reversal(
         "btc_regime_mode": btc_regime["mode"],
         "btc_allocation_factor": btc_regime["allocation_factor"],
         "structural_sl": structural_sl,
+        "is_contrarian_bottom_buy": is_contrarian_bottom_buy,
         "reason": (
-            f"MA7_Reversal_{side}｜{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}｜"
+            (f"MA7_ContrarianBottomBuy_{side}｜" if is_contrarian_bottom_buy else f"MA7_Reversal_{side}｜")
+            + f"{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}｜"
             f"{direction_note}｜score={score}"
         ),
     }

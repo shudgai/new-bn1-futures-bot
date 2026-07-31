@@ -17,6 +17,7 @@ from core.config import (
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
+    TAKER_FEE_RATE,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -654,7 +655,23 @@ class TradingEngine:
                     # 5m防線只負責「還沒鎖利」的部位快速停損，避免鎖利後的
                     # 正常拉回被誤判成反轉提早出場。
                     is_profit_locked = bool(position_meta.get("is_breakeven_moved")) or has_native_trailing
-                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not is_profit_locked:
+                    # 反轉幅度門檻：現價相對進場價的逆向幅度若還不到來回手續費
+                    # 成本（開倉+平倉各收一次），代表行情根本還沒真的動，此時
+                    # 平倉幾乎純虧手續費（實測 ETH/USDT 08/01 00:10~00:25 這筆，
+                    # 價格只逆向移動0.08%就觸發，0.68虧損裡0.37是手續費）。
+                    # 這種微幅震盪讓SL/移動停利/24h時間過濾接手即可，不必5m
+                    # 防線搶著在還沒真的動的時候認賠出場。
+                    entry_p = float(position.get("entry_price") or 0.0)
+                    mark_p = float(df['close'].iloc[-1]) if not df.empty else (self.tickers.get(symbol) or entry_p)
+                    if entry_p > 0:
+                        adverse_pct = (
+                            (entry_p - mark_p) / entry_p if position.get("side") == "LONG"
+                            else (mark_p - entry_p) / entry_p
+                        )
+                    else:
+                        adverse_pct = 0.0
+                    reversal_too_small = adverse_pct < (2 * TAKER_FEE_RATE)
+                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not is_profit_locked and not reversal_too_small:
                         close_reason = "5m MA7轉彎反轉平倉" if trigger.get("ma7_reversed") else "5m收線均線與結構防線同時失守"
                         self.account.log(
                             f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",

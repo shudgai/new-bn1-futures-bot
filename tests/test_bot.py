@@ -1813,6 +1813,59 @@ def test_detect_ma7_reversal_recency_and_dynamic_filters():
     assert result_pass["structural_sl"] < result_pass["price"]
 
 
+def test_detect_ma7_reversal_contrarian_bottom_buy_on_low_atr_short():
+    """原本要空（SHORT context）但波動過低，且MA7呈現真正的谷底型態時，
+    應翻轉成逆勢承接的多單買點（不需5m/1h趨勢對齊）。"""
+    frame = _ma7_frame("LONG")  # LONG 樣式：谷底型態 + KC下軌回踩 + price<=ema20
+    frame["st_direction"] = -1  # 但 SuperTrend 方向是 SHORT（原本要空）
+    frame["atr"] = 0.05  # 刻意壓低 ATR，觸發波動過低
+
+    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    assert result["detected"] is True, f"預期 detected=True, 原因: {result.get('reason')}"
+    assert result["side"] == "LONG"
+    assert result["is_contrarian_bottom_buy"] is True
+    assert "MA7_ContrarianBottomBuy_LONG" in result["reason"]
+    assert result["structural_sl"] is not None
+
+
+def test_detect_ma7_reversal_no_contrarian_flip_without_real_bottom_shape():
+    """波動過低但MA7沒有真正谷底型態（平坦）時，不應誤翻轉成多單。"""
+    price = 100.0
+    frame = pd.DataFrame({
+        "close": [price] * 50,
+        "close_price_spike_filtered": [price] * 50,
+        "high": [101.0] * 50,
+        "low": [100.0] * 50,
+        "atr": [0.05] * 50,
+        "rsi": [60.0] * 50,
+        "volume": [1000.0] * 50,
+        "vol_ma_20": [900.0] * 50,
+        "kc_upper": [101.0] * 50,
+        "kc_lower": [99.0] * 50,
+        "ema_20": [price] * 50,
+        "ema_50": [price] * 50,
+        "st_direction": [-1] * 50,
+        "adx": [25.0] * 50,
+        "ma7": [100.0] * 50,
+        "supertrend": [price] * 50,
+        "kc_width": [2.0] * 50,
+    })
+    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    assert result["detected"] is False
+    assert "谷底轉彎" in result["reason"]
+
+
+def test_detect_ma7_reversal_no_contrarian_flip_for_long_context():
+    """波動過低發生在 LONG context（want_dir=1）時不翻轉，只處理
+    SHORT->LONG（逆勢承接底部買點）這一種情況。"""
+    frame = _ma7_frame("LONG")
+    frame["st_direction"] = 1
+    frame["atr"] = 0.05
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    assert result["detected"] is False
+    assert "ATR過低" in result["reason"]
+
+
 @pytest.mark.anyio
 async def test_trend_follow_exits_and_partial_close(monkeypatch):
     from tests.test_testnet_account import FakeTestnetExchange
