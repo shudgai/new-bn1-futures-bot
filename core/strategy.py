@@ -1,3 +1,4 @@
+import math
 import pandas as pd
 import numpy as np
 from core.config import (
@@ -19,6 +20,7 @@ from core.config import (
     BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
 )
 from core.indicators import bars_since_supertrend_flip
+from core.config import ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO
 
 def compute_pullback_target(
     kc_edge: float, ema_20: float, atr: float, side: str, score: int
@@ -197,6 +199,26 @@ def detect_ma7_reversal(
         dynamic_adx_min = max(8.0, ADX_MANDATORY_MIN - 2.0)
     if adx < dynamic_adx_min:
         return _no(f"ADX太低({adx:.1f}<{dynamic_adx_min})")
+
+    # SuperTrend 翻轉後已過根數 — 防趨勢尾部進場
+    # FRESHNESS_DECAY_BARS 是新鮮度衰減到 0 的根數上限，若超過其 70%
+    # 代表這根 ST 翻轉已相當陳舊，MA7 拐頭很可能只是尾部震盪，不再進場。
+    st_flip_age = bars_since_supertrend_flip(df['st_direction'])
+    max_allowed_flip_age = int(FRESHNESS_DECAY_BARS * 0.70)
+    if st_flip_age > max_allowed_flip_age:
+        return _no(f"SuperTrend翻轉過舊({st_flip_age}根>{max_allowed_flip_age}根)，趨勢尾部不進場")
+
+    # ADX 衰退且已低於品質底線 — 動能退潮，硬性擋單（與主路徑 ADX_DECLINING_EXHAUSTED 對齊）
+    adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
+    adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else float('nan')
+    adx_drop = (float(adx_prior) - float(adx)) if not math.isnan(float(adx_prior)) else 0.0
+    adx_declining_exhausted = (
+        not math.isnan(float(adx_prior))
+        and adx_drop >= max(ADX_DECLINE_MIN_DROP, float(adx_prior) * ADX_DECLINE_MIN_DROP_RATIO)
+        and adx < ADX_QUALITY_MIN
+    )
+    if adx_declining_exhausted:
+        return _no(f"ADX動能衰退({adx:.1f}<{ADX_QUALITY_MIN},跌{adx_drop:.1f})，趨勢尾部不進場")
 
     # ATR 波動範圍
     atr_pct = atr / price if price > 0 else 0
