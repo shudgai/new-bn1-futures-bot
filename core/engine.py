@@ -571,12 +571,13 @@ class TradingEngine:
                     position_meta = self.account.position_meta.get(symbol, {})
                     has_native_trailing = position_meta.get("native_trailing_tier", 0) > 0
                     if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not has_native_trailing:
+                        close_reason = "5m MA7轉彎反轉平倉" if trigger.get("ma7_reversed") else "5m收線均線與結構防線同時失守"
                         self.account.log(
-                            f"🚨 [雙重防線失守] {symbol} 均線與結構防線(前低/前高)同時失守，執行自動平倉",
+                            f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
                             "DANGER"
                         )
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
-                        await self.account.close_position(symbol, curr_p, "5m收線均線與結構防線同時失守")
+                        await self.account.close_position(symbol, curr_p, close_reason)
                 for symbol in set(self.position_triggers) - set(self.account.positions):
                     self.position_triggers.pop(symbol, None)
                 await asyncio.sleep(30)

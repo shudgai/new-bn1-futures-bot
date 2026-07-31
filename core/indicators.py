@@ -23,50 +23,59 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
-    """持倉手動平倉參考指標：用 EMA20 判斷目前收盤價站在均線哪一側
-    （ma_ok），用近 lookback_bars 根K棒（不含當前這根）的前低/前高判斷
-    「跌破前低/站上前高」。純粹是給使用者按網頁「平倉」按鈕前參考用的
-    視覺提示，不是自動出場條件。
-
-    ma_ok 用「目前收盤價在均線哪一側」的持續性狀態判斷，不是只在剛好
-    穿越的那一根K棒才觸發——如果只看穿越瞬間，均線只是緩慢貼近、沒有
-    整根跨過的情況會一直顯示沒事，其實已經很接近甚至貼在錯的一側。
-    多單看下檔風險（跌破均線／跌破前低），空單看上檔風險（站上均線／
-    站上前高），對稱處理。"""
-    min_len = lookback_bars + 1
+    """持倉手動與自動平倉參考指標：用 EMA20 與 MA7 拐頭判斷。
+    - 多單 (LONG)：MA7 轉彎向下 (ma7_prev > ma7_prev2 且 ma7_curr < ma7_prev) 觸發拐頭平倉警告。
+    - 空單 (SHORT)：MA7 轉彎向上 (ma7_prev < ma7_prev2 且 ma7_curr > ma7_prev) 觸發拐頭平倉警告。
+    """
+    min_len = max(lookback_bars + 1, 10)
     if df is None or len(df) < min_len:
-        return {"active": False, "ma_ok": True, "reasons": [], "strong": False}
+        return {"active": False, "ma_ok": True, "reasons": [], "strong": False, "ma7_reversed": False}
 
     ema = df["close"].ewm(span=ma_period, adjust=False).mean()
+    ma7 = df["close"].rolling(window=7).mean()
+
     curr_close = float(df["close"].iloc[-1])
     curr_ema = float(ema.iloc[-1])
 
+    ma7_curr = float(ma7.iloc[-1])
+    ma7_prev = float(ma7.iloc[-2])
+    ma7_prev2 = float(ma7.iloc[-3])
+
     reasons = []
     prior_break = False
+    ma7_reversed = False
+
     if side == "LONG":
-        ma_ok = curr_close >= curr_ema
-        if not ma_ok:
+        # MA7 峰頂轉彎向下
+        if ma7_prev > ma7_prev2 and ma7_curr < ma7_prev:
+            ma7_reversed = True
+            reasons.append("MA7轉彎向下")
+
+        ma_ok = curr_close >= curr_ema and not ma7_reversed
+        if curr_close < curr_ema:
             reasons.append("跌破均線")
         prior_low = float(df["low"].iloc[-(lookback_bars + 1):-1].min())
         if curr_close < prior_low:
             reasons.append("跌破前低")
             prior_break = True
     else:
-        ma_ok = curr_close <= curr_ema
-        if not ma_ok:
+        # MA7 谷底轉彎向上
+        if ma7_prev < ma7_prev2 and ma7_curr > ma7_prev:
+            ma7_reversed = True
+            reasons.append("MA7轉彎向上")
+
+        ma_ok = curr_close <= curr_ema and not ma7_reversed
+        if curr_close > curr_ema:
             reasons.append("站上均線")
         prior_high = float(df["high"].iloc[-(lookback_bars + 1):-1].max())
         if curr_close > prior_high:
             reasons.append("站上前高")
             prior_break = True
 
-    # strong：均線（持續性狀態）+ 前低/前高（事件性突破）同時出現，代表
-    # 不只是短線貼在均線錯的一側，連近期支撐/壓力都真的跌破/站上了，
-    # 兩個角度一致才是比較有份量的參考訊號，跟只有其中一個單獨出現時
-    # （很常見、雜訊也高）分開顯示，方便使用者判斷要不要考慮平倉。
-    strong = (not ma_ok) and prior_break
+    strong = ma7_reversed or ((curr_close < curr_ema if side == "LONG" else curr_close > curr_ema) and prior_break)
 
-    return {"active": bool(reasons), "ma_ok": ma_ok, "reasons": reasons, "strong": strong}
+    return {"active": bool(reasons), "ma_ok": ma_ok, "reasons": reasons, "strong": strong, "ma7_reversed": ma7_reversed}
+
 
 
 def bars_since_supertrend_flip(direction_series: pd.Series) -> int:
