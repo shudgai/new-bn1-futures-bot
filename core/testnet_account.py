@@ -1345,3 +1345,46 @@ class BinanceTestnetAccount:
             return False
         finally:
             self.closing_lock.discard(symbol)
+
+    async def trail_stop_loss(self, symbol: str, new_sl_price: float) -> bool:
+        """移動限價止損：取消舊止損單，在新位置重新掛保護單。
+        止損線只往有利方向移動，呼叫端負責確認 new_sl_price 已經比 current_sl 更好。"""
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        position = self.positions[symbol]
+        meta = self.position_meta.get(symbol, {})
+        close_side = "sell" if position["side"] == "LONG" else "buy"
+        qty = position["qty"]
+        try:
+            new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl_price))
+            # 取消所有現有保護單
+            await self._cancel_all_orders(symbol)
+            # 重新掛新止損單
+            await self._create_protection_order(
+                symbol, close_side, "STOP_MARKET", qty, new_sl_price,
+                limit_price=self._stop_limit_price(new_sl_price, close_side),
+            )
+            # 如果止利仍啟用，同步重建止利單
+            tp_price = meta.get("tp", 0.0)
+            if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                await self._create_protection_order(
+                    symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
+                )
+            # 更新本地 meta 和 position 的 sl 紀錄
+            meta["sl"] = new_sl_price
+            self.position_meta[symbol] = meta
+            position["sl"] = new_sl_price
+            self.positions[symbol] = position
+            self.save_state()
+            self.log(
+                f"🔼 [移動止損] {symbol} 止損線移至 {new_sl_price:.6g}",
+                "INFO",
+            )
+            return True
+        except Exception as exc:
+            self.log(
+                f"⚠️ [移動止損] {symbol} 更新止損單失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+            return False
+

@@ -16,6 +16,7 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
+    ENABLE_TRAILING_SL, TRAILING_SL_PCT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -74,6 +75,7 @@ class TradingEngine:
         self.position_triggers: Dict[str, dict] = {}
         self.trigger_task: asyncio.Task = None
         self.trend_follow_task: asyncio.Task = None
+        self.trailing_sl_task: asyncio.Task = None
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -446,6 +448,8 @@ class TradingEngine:
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
         # 15m EMA20 趨勢止損與分批止盈背景任務
         self.trend_follow_task = asyncio.create_task(self._run_trend_follow_exits())
+        # 移動限價止損背景任務（每 5 分鐘更新一次止損位置）
+        self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -463,6 +467,8 @@ class TradingEngine:
             self.trigger_task.cancel()
         if self.trend_follow_task:
             self.trend_follow_task.cancel()
+        if self.trailing_sl_task:
+            self.trailing_sl_task.cancel()
         await self.exchange.close()
         await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
@@ -661,6 +667,42 @@ class TradingEngine:
             except Exception as exc:
                 self.account.log(f"⚠️ [大週期趨勢止損] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(30)
+
+    async def _run_trailing_sl_loop(self):
+        """背景任務：每 5 分鐘重新計算移動止損位置（只往有利方向移動）。
+        多單：止損線 = 當前價 - trail_dist（只有新止損 > 現止損才更新）
+        空單：止損線 = 當前價 + trail_dist（只有新止損 < 現止損才更新）
+        trail_dist = max(當前價 × TRAILING_SL_PCT, 1.5 × ATR)"""
+        while self.is_running:
+            try:
+                if ENABLE_TRAILING_SL:
+                    for symbol, position in list(self.account.positions.items()):
+                        meta = self.account.position_meta.get(symbol, {})
+                        curr_p = self.tickers.get(symbol)
+                        if not curr_p:
+                            continue
+                        current_sl = meta.get("sl", 0.0)
+                        if not current_sl:
+                            continue
+                        atr_value = meta.get("atr", curr_p * 0.015)
+                        trail_dist = max(curr_p * TRAILING_SL_PCT, 1.5 * atr_value)
+                        side = position["side"]
+                        if side == "LONG":
+                            new_sl = curr_p - trail_dist
+                            if new_sl > current_sl:
+                                await self.account.trail_stop_loss(symbol, new_sl)
+                        elif side == "SHORT":
+                            new_sl = curr_p + trail_dist
+                            if new_sl < current_sl:
+                                await self.account.trail_stop_loss(symbol, new_sl)
+                await asyncio.sleep(300)  # 每 5 分鐘執行一次
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.account.log(f"⚠️ [移動止損] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
+                await asyncio.sleep(300)
+
+
 
 
     async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:

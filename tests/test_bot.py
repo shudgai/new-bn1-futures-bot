@@ -1941,4 +1941,80 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
     assert "DOGE/USDT" not in account.positions
 
 
+@pytest.mark.anyio
+async def test_trailing_sl_moves_up_for_long(monkeypatch):
+    from tests.test_testnet_account import FakeTestnetExchange
+    from core.testnet_account import BinanceTestnetAccount
+    from core.engine import TradingEngine
+    import asyncio
+
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # Open LONG at 100, initial SL = 95
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=110.0, reason="test", leverage=5
+    )
+    original_sl = account.position_meta["DOGE/USDT"]["sl"]
+
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    # Price moves up to 108
+    engine.tickers = {"DOGE/USDT": 108.0}
+
+    original_sleep = asyncio.sleep
+    async def mock_sleep_stop(secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
+    monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
+    monkeypatch.setattr("core.engine.TRAILING_SL_PCT", 0.02)
+
+    await engine._run_trailing_sl_loop()
+
+    # SL should have moved up (new_sl = 108 * (1-0.02) = 105.84 > original 95)
+    new_sl = account.position_meta["DOGE/USDT"]["sl"]
+    assert new_sl > original_sl
+
+
+@pytest.mark.anyio
+async def test_trailing_sl_does_not_move_back(monkeypatch):
+    from tests.test_testnet_account import FakeTestnetExchange
+    from core.testnet_account import BinanceTestnetAccount
+    from core.engine import TradingEngine
+    import asyncio
+
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # Open LONG at 100, initial SL = 98 (already close)
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=110.0, reason="test", leverage=5
+    )
+    original_sl = account.position_meta["DOGE/USDT"]["sl"]
+
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    # Price drops to 99 — trail would compute new_sl = 99*(1-0.02) = 97.02 < 98
+    engine.tickers = {"DOGE/USDT": 99.0}
+
+    original_sleep = asyncio.sleep
+    async def mock_sleep_stop(secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
+    monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
+    monkeypatch.setattr("core.engine.TRAILING_SL_PCT", 0.02)
+
+    await engine._run_trailing_sl_loop()
+
+    # SL should NOT have moved back (still original_sl)
+    assert account.position_meta["DOGE/USDT"]["sl"] == original_sl
+
+
+
 
