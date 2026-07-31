@@ -532,26 +532,7 @@ SYMBOL_CANDIDATE_POOL[:] = [
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
 # SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（18）覆寫，這裡先湊到
 # 18 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
-DEFAULT_SYMBOLS = [
-    "ADA/USDT",
-    "ARB/USDT",
-    "AVAX/USDT",
-    "BCH/USDT",
-    "BNB/USDT",
-    "BTC/USDT",
-    "DOGE/USDT",
-    "DOT/USDT",
-    "ETC/USDT",
-    "FIL/USDT",
-    "LINK/USDT",
-    "LTC/USDT",
-    "OP/USDT",
-    "SOL/USDT",
-    "SUI/USDT",
-    "TRX/USDT",
-    "XLM/USDT",
-    "XRP/USDT",
-]
+DEFAULT_SYMBOLS = sorted(MAINSTREAM_SYMBOLS)
 DEFAULT_SYMBOLS[:] = [
     symbol for symbol in DEFAULT_SYMBOLS if symbol not in ENTRY_DISABLED_SYMBOLS
 ]

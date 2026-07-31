@@ -1264,11 +1264,12 @@ def _trigger_frame(closes, lows=None, highs=None):
 
 
 def test_position_trigger_long_flags_ma_cross_and_prior_low_break():
-    """多單：均線走平的情況下，最後一根K棒重挫，同時跌破均線也跌破前低，
-    兩個角度一致，strong 應為 True。"""
-    closes = [100.0] * 24 + [90.0]
-    lows = [99.0] * 24 + [90.0]
-    highs = [101.0] * 24 + [90.0]
+    """多單：均線走平的情況下，連續兩根K棒重挫並跌破EMA20緩衝帶，同時
+    跌破前低，兩個角度一致，strong 應為 True。（EMA20判斷需連續兩根收線
+    確認，避免單根雜訊誤判，見 compute_position_trigger 註解）"""
+    closes = [100.0] * 23 + [92.0, 88.0]
+    lows = [99.0] * 23 + [91.0, 87.0]
+    highs = [101.0] * 23 + [93.0, 89.0]
     result = compute_position_trigger(_trigger_frame(closes, lows, highs), "LONG")
     assert result["active"] is True
     assert "跌破均線" in result["reasons"]
@@ -1912,10 +1913,12 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
     engine.is_running = True
     engine.tickers = {"DOGE/USDT": 100.0}
 
-    # Mock fetch_klines to return a DataFrame that breaches both EMA20 and Swing Low
+    # Mock fetch_klines to return a DataFrame that breaches both EMA20 (two
+    # consecutive bars, per compute_position_trigger's confirmation window)
+    # and Swing Low
     async def mock_fetch_klines(symbol, timeframe, limit):
-        closes = [100.0] * 29 + [90.0]
-        lows = [98.0] * 29 + [88.0]
+        closes = [100.0] * 28 + [92.0, 88.0]
+        lows = [98.0] * 28 + [90.0, 86.0]
         highs = [102.0] * 30
         return pd.DataFrame({
             "timestamp": [0] * 30,

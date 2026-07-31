@@ -40,6 +40,7 @@ from core.config import (
     get_atr_based_leverage,
     get_signal_leverage,
     SIGNAL_LEVERAGE_CAPS,
+    MAINSTREAM_SYMBOLS,
 )
 
 
@@ -158,12 +159,19 @@ class SymbolRotation:
                 and market.get("info", {}).get("underlyingType") == "COIN"
             }
         excluded_bases = {
-            "1000PEPE", "APT", "ETH", "FET", "TAO", "WIF",
+            "1000PEPE", "APT", "FET", "TAO", "WIF",
             "USDC", "FDUSD", "TUSD", "USDP",
         }
         ranked = []
         for symbol, ticker in normalized.items():
             if not symbol.endswith("/USDT") or symbol in ENTRY_DISABLED_SYMBOLS:
+                continue
+            # 只交易市值前段的主流幣：測試網對冷門/小型幣的報價、成交深度
+            # 常跟真實行情脫節（實測 KAITO/RLC 這類幣種曾出現測試網報價
+            # 凍結、跟訊號偵測用的主網價格差了好幾%的情況，導致下單成交
+            # 價格失真），限縮到流動性/知名度都足夠的主流幣，避免測試網
+            # 報價品質問題污染交易結果。
+            if symbol not in MAINSTREAM_SYMBOLS:
                 continue
             if allowed_crypto is not None and symbol not in allowed_crypto:
                 continue

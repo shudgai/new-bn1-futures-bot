@@ -650,7 +650,11 @@ class TradingEngine:
                     # Tier 1（本地保本，仍是靜態單）不算真正接管，5m強防線要繼續生效；
                     # 只有 Tier 2+（交易所原生毫秒級追蹤）才屏蔽，理由同15m趨勢止損。
                     has_native_trailing = position_meta.get("native_trailing_tier", 0) >= 2
-                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not has_native_trailing:
+                    # 已經靠移動停利鎖到保本以上的部位，交給移動停利自己顧，
+                    # 5m防線只負責「還沒鎖利」的部位快速停損，避免鎖利後的
+                    # 正常拉回被誤判成反轉提早出場。
+                    is_profit_locked = bool(position_meta.get("is_breakeven_moved")) or has_native_trailing
+                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not is_profit_locked:
                         close_reason = "5m MA7轉彎反轉平倉" if trigger.get("ma7_reversed") else "5m收線均線與結構防線同時失守"
                         self.account.log(
                             f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
