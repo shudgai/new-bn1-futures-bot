@@ -638,7 +638,9 @@ class TradingEngine:
                     trigger["updated_at"] = time.time()
                     self.position_triggers[symbol] = trigger
                     position_meta = self.account.position_meta.get(symbol, {})
-                    has_native_trailing = position_meta.get("native_trailing_tier", 0) > 0
+                    # Tier 1（本地保本，仍是靜態單）不算真正接管，5m強防線要繼續生效；
+                    # 只有 Tier 2+（交易所原生毫秒級追蹤）才屏蔽，理由同15m趨勢止損。
+                    has_native_trailing = position_meta.get("native_trailing_tier", 0) >= 2
                     if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not has_native_trailing:
                         close_reason = "5m MA7轉彎反轉平倉" if trigger.get("ma7_reversed") else "5m收線均線與結構防線同時失守"
                         self.account.log(
@@ -664,8 +666,12 @@ class TradingEngine:
                     for symbol, position in list(self.account.positions.items()):
                         position_meta = self.account.position_meta.get(symbol, {})
                         
-                        # 0a. 若已由 Binance 原生毫秒級 Trailing Stop 接管，屏蔽微觀趨勢平倉，放手博取大波段
-                        if position_meta.get("native_trailing_tier", 0) > 0:
+                        # 0a. 若已由 Binance 原生毫秒級 Trailing Stop 接管（Tier 2+），
+                        # 屏蔽微觀趨勢平倉，放手博取大波段。Tier 1 只是本地移到保本價
+                        # （仍是靜態單，不是交易所主動追蹤），不算「已接管」，這裡不能
+                        # 跳過，否則 Tier 1 到 Tier 2 之間的空窗期會完全沒有 15m 趨勢
+                        # 止損防護。
+                        if position_meta.get("native_trailing_tier", 0) >= 2:
                             continue
                             
                         # 0b. 1H 大週期趨勢過濾器：大級別方向與持倉不一致時，跳過 15m EMA20 止損以防橫盤雙巴

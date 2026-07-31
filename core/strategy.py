@@ -20,7 +20,36 @@ from core.config import (
     BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
 )
 from core.indicators import bars_since_supertrend_flip
-from core.config import ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO
+from core.config import (
+    ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
+    MA7_REVERSAL_LOOKBACK_BARS,
+    MAINSTREAM_SYMBOLS, VOLUME_DIVERGENCE_LOOKBACK_BARS, VOLUME_DIVERGENCE_MAX_RATIO,
+)
+
+
+def _has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
+    """價格仍創新高/新低，但成交量較前段明顯萎縮 -> 量縮背離（主力收手）。
+
+    把最近 VOLUME_DIVERGENCE_LOOKBACK_BARS 根拆成前後兩半：
+      多單（探底）：後半段的最低價 <= 前半段最低價，但後半段平均量能
+      明顯低於前半段 -> 底部量縮，賣壓竭盡。
+      空單（探頂）：後半段的最高價 >= 前半段最高價，但後半段平均量能
+      明顯低於前半段 -> 頂部量縮，買盤竭盡。
+    """
+    if len(df) < VOLUME_DIVERGENCE_LOOKBACK_BARS:
+        return False
+    window = df.iloc[-VOLUME_DIVERGENCE_LOOKBACK_BARS:]
+    half = VOLUME_DIVERGENCE_LOOKBACK_BARS // 2
+    early, recent = window.iloc[:half], window.iloc[half:]
+    early_volume = float(early['volume'].mean())
+    if early_volume <= 0:
+        return False
+    volume_shrinking = float(recent['volume'].mean()) <= early_volume * VOLUME_DIVERGENCE_MAX_RATIO
+    if not volume_shrinking:
+        return False
+    if want_dir == 1:
+        return float(recent['low'].min()) <= float(early['low'].min())
+    return float(recent['high'].max()) >= float(early['high'].max())
 
 def compute_pullback_target(
     kc_edge: float, ema_20: float, atr: float, side: str, score: int
@@ -230,7 +259,13 @@ def detect_ma7_reversal(
     rolling_atr_pct = float(atr_pct_series.rolling(window=72, min_periods=12).mean().iloc[-1])
     dynamic_atr_min = min(atr_min_pct, max(0.0008, rolling_atr_pct * 0.7))
     if atr_pct < dynamic_atr_min:
-        return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
+        # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯
+        # 萎縮，代表主力收手動能耗盡準備反轉，不是無動能的雜訊盤整，
+        # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
+        if symbol in MAINSTREAM_SYMBOLS and _has_volume_divergence(df, want_dir):
+            pass
+        else:
+            return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
 
     # RSI 過熱/過冷
     if want_dir == 1 and rsi > rsi_long_max:
@@ -238,27 +273,36 @@ def detect_ma7_reversal(
     if want_dir == -1 and rsi < rsi_short_min:
         return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
 
-    # MA7 谷底/峰頂拐頭判定（需要至少 3 根有效 MA7 值）
+    # MA7 谷底/峰頂拐頭判定：在最近 MA7_REVERSAL_LOOKBACK_BARS 根裡找谷底
+    # （多單）/峰頂（空單），只要現在已經比那個谷底/峰頂高/低就算轉彎成立
+    # ——不再只鎖死「剛好上一根」那個精確視窗，避免因輪替/掃描時機錯過
+    # 轉彎那一根K棒後就得等下一次全新回踩才會重新觸發。
     if 'ma7' not in df.columns:
         return _no("ma7欄位缺失")
     ma7_series = df['ma7'].dropna()
-    if len(ma7_series) < 3:
-        return _no("MA7有效值不足3根")
+    min_bars_needed = MA7_REVERSAL_LOOKBACK_BARS + 1
+    if len(ma7_series) < min_bars_needed:
+        return _no(f"MA7有效值不足{min_bars_needed}根")
     ma7_curr = float(ma7_series.iloc[-1])
     ma7_prev = float(ma7_series.iloc[-2])
     ma7_prev2 = float(ma7_series.iloc[-3])
+    lookback_window = ma7_series.iloc[-min_bars_needed:-1]  # 不含當前這一根
 
     if want_dir == 1:
-        # 多單：前一根是谷底（prev <= prev2），且當前已向上翻（curr > prev）
-        if not (ma7_prev <= ma7_prev2 and ma7_curr > ma7_prev):
+        # 多單：近 N 根內的谷底，且現在已經高於谷底（已翻上去）
+        trough_val = float(lookback_window.min())
+        if not (ma7_curr > trough_val):
             return _no(
-                f"MA7尚未谷底轉彎（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}）"
+                f"MA7近{MA7_REVERSAL_LOOKBACK_BARS}根內未見谷底轉彎"
+                f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}，谷底{trough_val:.6g}）"
             )
     else:
-        # 空單：前一根是峰頂（prev >= prev2），且當前已向下翻（curr < prev）
-        if not (ma7_prev >= ma7_prev2 and ma7_curr < ma7_prev):
+        # 空單：近 N 根內的峰頂，且現在已經低於峰頂（已翻下去）
+        peak_val = float(lookback_window.max())
+        if not (ma7_curr < peak_val):
             return _no(
-                f"MA7尚未峰頂轉彎（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}）"
+                f"MA7近{MA7_REVERSAL_LOOKBACK_BARS}根內未見峰頂轉彎"
+                f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}，峰頂{peak_val:.6g}）"
             )
 
     # KC 位置驗證與防假突破

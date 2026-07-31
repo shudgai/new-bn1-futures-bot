@@ -265,6 +265,13 @@ ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 ADX_DECLINE_LOOKBACK_BARS = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS", "6"))
 ADX_DECLINE_MIN_DROP = float(os.getenv("ADX_DECLINE_MIN_DROP", "2.0"))
 ADX_DECLINE_MIN_DROP_RATIO = float(os.getenv("ADX_DECLINE_MIN_DROP_RATIO", "0.08"))
+# MA7_REVERSAL_LOOKBACK_BARS：MA7谷底/峰頂拐頭原本只認「剛好上一根」那個
+# 精確視窗（prev<=prev2 且 curr>prev），若該幣剛好在轉彎那一根1分K時還沒
+# 被監控到（例如剛被輪替/全市場掃描換入名單），就會永久錯過那次轉彎，
+# 得等下一次全新回踩才會重新觸發。改成在最近 N 根裡找谷底/峰頂，只要現在
+# 已經比那個谷底/峰頂高/低就算轉彎成立；新鮮度上限已有 SuperTrend翻轉根數
+# 上限與 ADX 衰退硬性擋單把關，這裡放寬視窗不會變成無限期追價。
+MA7_REVERSAL_LOOKBACK_BARS = int(os.getenv("MA7_REVERSAL_LOOKBACK_BARS", "8"))
 # ADX_DECLINE_LOOKBACK_BARS_1H：同一套「ADX 現在比 N 根K棒前低，且已經
 # 低於 ADX_QUALITY_MIN」邏輯，但改看 1h K線——5分K的新鮮度/ADX檢查只能
 # 看到「這根5分K的小趨勢夠不夠新」，看不出「大週期本身是不是也已經在
@@ -414,6 +421,25 @@ MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
 # 更可能是假突破（盤整區間的雜訊），沒有真實動能支撐，容易一進場就
 # 反轉。跟 MAX_ATR_PCT 一起框出一個「波動適中」的可交易區間。
 MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
+
+# --- 量縮背離繞過波動過低限制（僅限主流幣）---
+# 主流幣在窄幅盤整前常見「價格仍創新高/新低，但成交量明顯萎縮」的量價
+# 背離型態——主力收手、動能耗盡準備反轉的訊號，此時 ATR% 雖然偏低，
+# 但不是「無真實動能的假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是
+# 同一種情況，故允許繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件
+# 不受影響）。只套用在流動性/市值前段的主流幣，避免小型迷因幣的量價
+# 關係本來就不穩定，誤用這條件放大假訊號。
+MAINSTREAM_SYMBOLS = {
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
+    "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
+    "BCH/USDT", "LTC/USDT", "ARB/USDT", "ATOM/USDT", "NEAR/USDT",
+}
+# VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
+# 價格極值。
+VOLUME_DIVERGENCE_LOOKBACK_BARS = int(os.getenv("VOLUME_DIVERGENCE_LOOKBACK_BARS", "16"))
+# VOLUME_DIVERGENCE_MAX_RATIO：後段平均量能 <= 前段平均量能的此比例，才算
+# 明顯萎縮（避免量能只是正常小幅波動就誤判為背離）。
+VOLUME_DIVERGENCE_MAX_RATIO = float(os.getenv("VOLUME_DIVERGENCE_MAX_RATIO", "0.7"))
 
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
