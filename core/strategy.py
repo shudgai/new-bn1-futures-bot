@@ -171,7 +171,7 @@ def detect_ma7_reversal(
         return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
 
     # 1h SuperTrend 方向
-    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
+    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None and score < 89:
         if want_dir == 1 and st_direction_1h == -1:
             return _no("1h_ST_Bearish vs LONG")
         if want_dir == -1 and st_direction_1h == 1:
