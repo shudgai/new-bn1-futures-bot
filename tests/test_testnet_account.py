@@ -56,7 +56,18 @@ class FakeTestnetExchange:
             }]
             order["average"] = 100.0
         elif str(order_type).lower() == "market" and (params or {}).get("reduceOnly"):
-            self.positions = []
+            if self.positions:
+                pos = dict(self.positions[0])
+                current_amt = float(pos["positionAmt"])
+                reduce_amt = qty if side == "sell" else -qty
+                new_amt = current_amt - reduce_amt
+                if abs(new_amt) < 1e-4:
+                    self.positions = []
+                else:
+                    pos["positionAmt"] = str(new_amt)
+                    self.positions = [pos]
+            else:
+                self.positions = []
             order["average"] = 101.0
         return order
 
@@ -445,4 +456,40 @@ async def test_disable_take_profit_prevents_tp_order(tmp_path, monkeypatch):
     ]
     assert "DOGE/USDT" in account.positions
     assert account.positions["DOGE/USDT"]["tp"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_partial_close_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # Open LONG position
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=105.0, reason="test", leverage=5
+    )
+
+    pos = account.positions["DOGE/USDT"]
+    qty_before = pos["qty"]
+
+    # Partial close 50%
+    success = await account.partial_close_position("DOGE/USDT", current_price=101.0, close_reason="ROE達5%減倉一半", fraction=0.5)
+    assert success is True
+
+    # Check that position still exists but qty is halved
+    assert "DOGE/USDT" in account.positions
+    pos_after = account.positions["DOGE/USDT"]
+    assert pos_after["qty"] == qty_before * 0.5
+    assert account.position_meta["DOGE/USDT"]["is_half_closed"] is True
+
+    # Check that last trade is PARTIAL_CLOSE_LONG
+    assert account.trades[0]["action"] == "PARTIAL_CLOSE_LONG"
+    assert account.trades[0]["status"] == "PARTIAL_CLOSED"
+
 

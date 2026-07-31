@@ -15,7 +15,7 @@ from core.config import (
     MIN_SCORE_THRESHOLD, USE_TESTNET,
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
-    ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK,
+    ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -73,6 +73,7 @@ class TradingEngine:
         # 止損/止利/24h時間過濾等既有的自動平倉邏輯。
         self.position_triggers: Dict[str, dict] = {}
         self.trigger_task: asyncio.Task = None
+        self.trend_follow_task: asyncio.Task = None
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -443,6 +444,8 @@ class TradingEngine:
         self.analysis_task = asyncio.create_task(self._analysis_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
+        # 15m EMA20 趨勢止損與分批止盈背景任務
+        self.trend_follow_task = asyncio.create_task(self._run_trend_follow_exits())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -458,6 +461,8 @@ class TradingEngine:
             self.analysis_task.cancel()
         if self.trigger_task:
             self.trigger_task.cancel()
+        if self.trend_follow_task:
+            self.trend_follow_task.cancel()
         await self.exchange.close()
         await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
@@ -565,6 +570,66 @@ class TradingEngine:
             except Exception as exc:
                 self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(30)
+
+    async def _run_trend_follow_exits(self):
+        """背景任務：大週期 (15m) EMA20 收線確認趨勢移動止損與分批止盈。"""
+        while self.is_running:
+            try:
+                if ENABLE_TREND_FOLLOW_EXIT:
+                    for symbol, position in list(self.account.positions.items()):
+                        # 1. 檢查 5% ROE 分批止盈減倉 (5% ROE)
+                        position_meta = self.account.position_meta.get(symbol, {})
+                        if not position_meta.get("is_half_closed"):
+                            curr_p = self.tickers.get(symbol)
+                            if curr_p:
+                                side = position["side"]
+                                entry_p = position["entry_price"]
+                                leverage = position.get("leverage") or self.symbol_rotation.get_dynamic_leverage(symbol, position.get("signal_score", 85))
+                                pnl_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
+                                roe = pnl_pct * leverage
+                                if roe >= 0.05:
+                                    self.account.log(
+                                        f"💰 [分批止盈] {symbol} 達到 ROE +5.0% (當前約 {roe:.2%})，自動平倉一半鎖定利潤",
+                                        "SUCCESS"
+                                    )
+                                    await self.account.partial_close_position(symbol, curr_p, "ROE達5%減倉一半", fraction=0.5)
+                                    continue # 本輪不再作EMA20收盤跌破判斷，等待下一輪更新
+
+                        # 2. 檢查大週期 (15m) EMA20 收線跌破/突破
+                        df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
+                        if df.empty or len(df) < 20:
+                            continue
+                        
+                        # 計算 EMA20
+                        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+                        
+                        # 取最後一根已收盤的 K 棒
+                        last_bar = df.iloc[-1]
+                        close_p = float(last_bar['close'])
+                        ema20_val = float(last_bar['ema_20'])
+                        side = position["side"]
+                        curr_p = self.tickers.get(symbol) or close_p
+                        
+                        if side == "LONG" and close_p < ema20_val:
+                            self.account.log(
+                                f"📉 [EMA20趨勢止損] {symbol} 15m收線價 ({close_p:.6g}) 跌破 EMA20 ({ema20_val:.6g})，執行平倉離場",
+                                "WARNING"
+                            )
+                            await self.account.close_position(symbol, curr_p, "15m收線實體跌破EMA20")
+                        elif side == "SHORT" and close_p > ema20_val:
+                            self.account.log(
+                                f"📈 [EMA20趨勢止損] {symbol} 15m收線價 ({close_p:.6g}) 突破 EMA20 ({ema20_val:.6g})，執行平倉離場",
+                                "WARNING"
+                            )
+                            await self.account.close_position(symbol, curr_p, "15m收線實體突破EMA20")
+                
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.account.log(f"⚠️ [大週期趨勢止損] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
+                await asyncio.sleep(30)
+
 
     async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:
         try:

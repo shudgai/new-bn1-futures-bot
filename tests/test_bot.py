@@ -1811,3 +1811,81 @@ def test_detect_ma7_reversal_recency_and_dynamic_filters():
     assert result_pass["structural_sl"] is not None
     assert result_pass["structural_sl"] < result_pass["price"]
 
+
+@pytest.mark.anyio
+async def test_trend_follow_exits_and_partial_close(monkeypatch):
+    from tests.test_testnet_account import FakeTestnetExchange
+    from core.testnet_account import BinanceTestnetAccount
+    from core.engine import TradingEngine
+    import pandas as pd
+    import asyncio
+
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    # Open a position LONG at 100
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=105.0, reason="test", leverage=5
+    )
+
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    engine.tickers = {"DOGE/USDT": 100.0}
+
+    # 1. Test Partial Close at ROE >= 5%
+    # Price moves to 101.5 (ROE = 1.5% * 5 = 7.5% >= 5%)
+    engine.tickers["DOGE/USDT"] = 101.5
+    
+    # We mock fetch_klines to return prices that do not breach EMA20
+    async def mock_fetch_klines_no_breach(symbol, timeframe, limit):
+        return pd.DataFrame({
+            "timestamp": [0] * 30,
+            "open": [100.0] * 30,
+            "high": [100.0] * 30,
+            "low": [100.0] * 30,
+            "close": [100.0] * 30,
+            "volume": [0] * 30
+        })
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines_no_breach)
+
+    # Let _run_trend_follow_exits run once and stop
+    original_sleep = asyncio.sleep
+    async def mock_sleep_stop(secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
+    monkeypatch.setattr("core.engine.ENABLE_TREND_FOLLOW_EXIT", True)
+
+    await engine._run_trend_follow_exits()
+
+    # Should have triggered partial close (qty becomes half)
+    assert account.positions["DOGE/USDT"]["qty"] == 1.25 # 2.5 * 0.5
+    assert account.position_meta["DOGE/USDT"]["is_half_closed"] is True
+
+    # 2. Test EMA20 Breach Exit (close < EMA20)
+    # Reset engine and tickers
+    engine.is_running = True
+    engine.tickers["DOGE/USDT"] = 95.0
+    
+    async def mock_fetch_klines_breach(symbol, timeframe, limit):
+        # 29 bars at 105.0, last bar at 95.0 -> EMA20 will be > 95.0
+        return pd.DataFrame({
+            "timestamp": [0] * 30,
+            "open": [105.0] * 30,
+            "high": [105.0] * 30,
+            "low": [105.0] * 30,
+            "close": [105.0] * 29 + [95.0],
+            "volume": [0] * 30
+        })
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines_breach)
+
+    # Run once again
+    engine.is_running = True
+    await engine._run_trend_follow_exits()
+
+    # The position should be fully closed now
+    assert "DOGE/USDT" not in account.positions
+
+

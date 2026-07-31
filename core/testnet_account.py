@@ -1233,3 +1233,115 @@ class BinanceTestnetAccount:
             return False
         finally:
             self.closing_lock.discard(symbol)
+
+    async def partial_close_position(
+        self, symbol: str, current_price: float, close_reason: str, fraction: float = 0.5
+    ) -> bool:
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        self.closing_lock.add(symbol)
+        position = dict(self.positions[symbol])
+        meta = self.position_meta.get(symbol, {})
+        try:
+            qty = position["qty"]
+            close_qty = float(self.exchange.amount_to_precision(symbol, qty * fraction))
+            if close_qty <= 0:
+                return False
+
+            # 1. 撤銷所有現有止損止盈單
+            await self._cancel_all_orders(symbol)
+
+            # 2. 市價單平倉一半
+            close_side = "sell" if position["side"] == "LONG" else "buy"
+            order = await self.exchange.create_order(
+                symbol,
+                "market",
+                close_side,
+                close_qty,
+                None,
+                {"reduceOnly": True, "newOrderRespType": "RESULT"},
+            )
+            execution_price = float(order.get("average") or current_price)
+
+            # 3. 計算部分平倉的損益與手續費
+            raw_pnl = (
+                (execution_price - position["entry_price"]) * close_qty
+                if position["side"] == "LONG"
+                else (position["entry_price"] - execution_price) * close_qty
+            )
+            open_fee = position["entry_price"] * close_qty * TAKER_FEE_RATE
+            close_fee = execution_price * close_qty * TAKER_FEE_RATE
+            total_fee = open_fee + close_fee
+            net_pnl = raw_pnl - total_fee
+            self.realized_pnl += net_pnl
+
+            # 4. 記錄部分平倉交易
+            self.trades.insert(0, {
+                "id": int(time.time() * 1000),
+                "time": get_taipei_now_str("%m/%d %H:%M:%S"),
+                "symbol": symbol,
+                "action": f"PARTIAL_CLOSE_{position['side']}",
+                "side": position["side"],
+                "price": execution_price,
+                "qty": close_qty,
+                "amount": position.get("margin", 0.0) * fraction,
+                "fee": round(total_fee, 4),
+                "pnl": round(net_pnl, 4),
+                "status": "PARTIAL_CLOSED",
+                "reason": close_reason,
+                "exchange_order_id": order.get("id"),
+                **{key: position.get(key) for key in ENTRY_CONTEXT_KEYS},
+            })
+
+            # 5. 更新本地持倉狀態
+            remaining_qty = float(self.exchange.amount_to_precision(symbol, qty - close_qty))
+            if remaining_qty > 0:
+                position["qty"] = remaining_qty
+                position["margin"] = position.get("margin", 0.0) * (1 - fraction)
+                self.positions[symbol] = position
+                meta["is_half_closed"] = True
+                self.position_meta[symbol] = meta
+
+                # 6. 重建剩餘部位的保護單
+                sl_price = position.get("sl", 0.0)
+                tp_price = position.get("tp", 0.0)
+                if sl_price > 0:
+                    await self._create_protection_order(
+                        symbol, close_side, "STOP_MARKET", remaining_qty, sl_price,
+                        limit_price=self._stop_limit_price(sl_price, close_side),
+                    )
+                if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                    await self._create_protection_order(
+                        symbol, close_side, "TAKE_PROFIT_MARKET", remaining_qty, tp_price
+                    )
+                self.log(
+                    f"🏁 Binance Testnet 部分平倉 [{position['side']}] {symbol} 減倉 {close_qty} @ "
+                    f"{execution_price:.6g} | 淨損益: {net_pnl:+.2f} USDT (剩餘數量: {remaining_qty})",
+                    "SUCCESS" if net_pnl >= 0 else "DANGER",
+                )
+            else:
+                self.position_meta.pop(symbol, None)
+                self.positions.pop(symbol, None)
+                self.log(
+                    f"🏁 Binance Testnet 部分平倉後無剩餘倉位 {symbol}",
+                    "SUCCESS"
+                )
+
+            await self.refresh(force=True)
+            self.save_state()
+
+            if self.on_trade_closed:
+                try:
+                    self.on_trade_closed()
+                except Exception:
+                    pass
+            return True
+        except Exception as exc:
+            self.log(
+                f"🚨 Binance Testnet 部分平倉失敗 {symbol}："
+                f"{type(exc).__name__}: {exc}",
+                "DANGER",
+            )
+            return False
+        finally:
+            self.closing_lock.discard(symbol)
