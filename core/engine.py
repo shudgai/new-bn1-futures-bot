@@ -76,6 +76,7 @@ class TradingEngine:
         self.trigger_task: asyncio.Task = None
         self.trend_follow_task: asyncio.Task = None
         self.trailing_sl_task: asyncio.Task = None
+        self.market_scan_task: asyncio.Task = None
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -450,6 +451,9 @@ class TradingEngine:
         self.trend_follow_task = asyncio.create_task(self._run_trend_follow_exits())
         # 移動限價止損背景任務（每 5 分鐘更新一次止損位置）
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
+        # 全市場 MA7 拐頭掃描：DEFAULT_SYMBOLS 之外的合約幣種若已達標，
+        # 直接納入監控名單讓主迴圈接手，不用等下一輪輪替。
+        self.market_scan_task = asyncio.create_task(self._run_market_wide_ma7_scan_loop())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -469,6 +473,8 @@ class TradingEngine:
             self.trend_follow_task.cancel()
         if self.trailing_sl_task:
             self.trailing_sl_task.cancel()
+        if self.market_scan_task:
+            self.market_scan_task.cancel()
         await self.exchange.close()
         await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
@@ -554,6 +560,69 @@ class TradingEngine:
                 self.symbol_rotation.last_reason = f"輪替失敗，保留原牌面：{type(exc).__name__}"
                 self.account.log(f"⚠️ [幣種輪替] 暫時失敗，保留原牌面並繼續交易：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(30)
+
+    async def _run_market_wide_ma7_scan_loop(self):
+        """每 5 分鐘掃一次 DEFAULT_SYMBOLS 之外的合約候選幣，用跟主迴圈
+        完全相同的 detect_ma7_reversal 判斷；一旦掃到已經達標（detected=
+        True）但還沒被監控的幣，直接加入 DEFAULT_SYMBOLS，讓主迴圈下一輪
+        (5秒內) 用正常流程（結構性SL/動態槓桿/KC驗證）接手進場，不用等
+        15分鐘一次的幣種輪替（那邊排的是綜合品質分數，不是「現在有沒有
+        拐頭」）。跟 bot process 生命週期綁在一起，沒有排程時間上限。"""
+        SCAN_INTERVAL_SEC = 300
+        while self.is_running:
+            try:
+                await self.exchange.load_markets()
+                tickers = await self.exchange.fetch_tickers()
+                candidates = self.symbol_rotation.market_candidates(tickers, self.exchange.markets)
+                watched = set(DEFAULT_SYMBOLS) | set(self.account.positions.keys())
+                to_scan = [s for s in candidates if s not in watched]
+
+                for symbol in to_scan:
+                    try:
+                        df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=100)
+                        if df_1m.empty or len(df_1m) < 50:
+                            continue
+                        df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=150)
+                        if df_1h.empty or len(df_1h) < 30:
+                            continue
+
+                        df_1m = self.strategy.compute_indicators(df_1m)
+                        computed_1h = self.strategy.compute_indicators(df_1h)
+                        ema_50_1h = float(
+                            df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False)
+                            .mean().iloc[-1]
+                        )
+                        st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
+                        current_direction = "LONG" if int(df_1m.iloc[-1]["st_direction"]) == 1 else "SHORT"
+
+                        sig = detect_ma7_reversal(
+                            df_1m,
+                            side=current_direction,
+                            ema_50_1h=ema_50_1h,
+                            st_direction_1h=st_direction_1h,
+                            btc_st_direction_1h=self.btc_1h_st_direction,
+                            btc_st_flip_age=self.btc_1h_st_flip_age,
+                            symbol=symbol,
+                            indicators_precomputed=True,
+                        )
+                        if sig["detected"] and symbol not in DEFAULT_SYMBOLS:
+                            DEFAULT_SYMBOLS.append(symbol)
+                            self.account.log(
+                                f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
+                                f"{sig.get('score', 65)}分已符合MA7拐頭條件（原本不在監控名單內），"
+                                f"已加入監控，交由主迴圈接手進場｜{sig['reason']}",
+                                "SUCCESS",
+                            )
+                    except Exception:
+                        continue
+                    await asyncio.sleep(0.05)
+
+                await asyncio.sleep(SCAN_INTERVAL_SEC)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.account.log(f"⚠️ [全市場掃描] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
+                await asyncio.sleep(SCAN_INTERVAL_SEC)
 
     async def _position_trigger_loop(self):
         """持倉手動平倉參考指標：用 EMA20（策略本身 Keltner 通道用的同一條
@@ -1435,6 +1504,7 @@ class TradingEngine:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
                 if not daily_halt and available_balance >= MIN_TRADE_USDT:
                     signal_progress = []
+                    detected_candidates = []
 
                     now_time = time.time()
                     # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
@@ -1607,17 +1677,18 @@ class TradingEngine:
                         )
                         
                         if ma7_sig["detected"]:
-                            daily_halt_now, _ = self.account.daily_loss_limit_hit()
-                            if not daily_halt_now:
-                                ma7_placed = await self._place_ma7_reversal_entry(
-                                    symbol, ma7_sig["side"], ma7_sig, price, now_time
-                                )
-                                if ma7_placed:
-                                    signal_progress.append(
-                                        f"{symbol.replace('/USDT', '')} {current_direction} "
-                                        f"{ma7_sig.get('score', 65)}分,MA7拐頭進場"
-                                    )
-                                    continue
+                            st_direction_1h = self.st_direction_1h_cache.get(symbol)
+                            want_dir = 1 if ma7_sig["side"] == "LONG" else -1
+                            trend_aligned = 1 if (st_direction_1h is None or st_direction_1h == want_dir) else 0
+                            detected_candidates.append({
+                                "symbol": symbol,
+                                "side": ma7_sig["side"],
+                                "ma7_sig": ma7_sig,
+                                "price": price,
+                                "score": ma7_sig.get("score", 65),
+                                "trend_aligned": trend_aligned
+                            })
+                            continue
                         
                         # 未觸發拐頭進場，日誌進度顯示 HOLD 理由
                         reason = ma7_sig.get("reason", "等待MA7拐頭及KC回踩")
@@ -1665,6 +1736,26 @@ class TradingEngine:
                             stage = "條件未完成"
                             
                         signal_progress.append(f"{coin} {direction_text} {score}分,{stage}")
+
+                    if detected_candidates:
+                        # 依分數高低排序，同分則優先進場 1H 趨勢對齊的訊號
+                        detected_candidates.sort(
+                            key=lambda item: (item["score"], item["trend_aligned"]),
+                            reverse=True
+                        )
+                        for cand in detected_candidates:
+                            daily_halt_now, _ = self.account.daily_loss_limit_hit()
+                            if daily_halt_now:
+                                break
+                            ma7_placed = await self._place_ma7_reversal_entry(
+                                cand["symbol"], cand["side"], cand["ma7_sig"], cand["price"], now_time
+                            )
+                            if ma7_placed:
+                                alignment_note = "" if cand["trend_aligned"] else " (1H趨勢不符,拐頭繞過)"
+                                signal_progress.append(
+                                    f"{cand['symbol'].replace('/USDT', '')} {cand['side']} "
+                                    f"{cand['score']}分,MA7拐頭進場{alignment_note}"
+                                )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:
