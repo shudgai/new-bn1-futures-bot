@@ -110,6 +110,7 @@ async def get_status():
         "strategy": "Keltner + SuperTrend 混合模式 (12幣雙向)",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
+        "api_token_configured": bool(API_TOKEN),
         "available_balance": round(engine.account.available_balance, 2),
         "port": PORT,
         "balance": round(engine.account.balance, 2),

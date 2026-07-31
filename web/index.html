@@ -421,6 +421,7 @@
                             recommendations: [],
                             risk_flags: []
                         },
+                        api_token_configured: false,
                         logs: []
                     },
                     manualOrder: {
@@ -573,6 +574,19 @@
                     }
                 },
                 async authorizedFetch(url, options = {}) {
+                    if (!this.bot.api_token_configured) {
+                        const res = await fetch(url, options);
+                        if (!res.ok) {
+                            let detail = `操作失敗（HTTP ${res.status}）`;
+                            try {
+                                const payload = await res.json();
+                                detail = payload.detail || detail;
+                            } catch (e) {}
+                            window.alert(detail);
+                            return null;
+                        }
+                        return res;
+                    }
                     let token = sessionStorage.getItem('binance_api_token') || '';
                     if (!token) {
                         token = window.prompt('請輸入 8006 API Token') || '';
