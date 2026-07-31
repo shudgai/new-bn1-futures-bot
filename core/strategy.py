@@ -27,7 +27,7 @@ from core.config import (
 )
 
 
-def _has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
+def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
     """價格仍創新高/新低，但成交量較前段明顯萎縮 -> 量縮背離（主力收手）。
 
     把最近 VOLUME_DIVERGENCE_LOOKBACK_BARS 根拆成前後兩半：
@@ -262,7 +262,7 @@ def detect_ma7_reversal(
         # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯
         # 萎縮，代表主力收手動能耗盡準備反轉，不是無動能的雜訊盤整，
         # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
-        if symbol in MAINSTREAM_SYMBOLS and _has_volume_divergence(df, want_dir):
+        if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir):
             pass
         else:
             return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")

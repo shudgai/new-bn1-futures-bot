@@ -222,6 +222,7 @@
                                             ({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}% / {{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)
                                         </span>
                                         <span v-if="pos.profit_alert" style="font-size: 11px;">💰⚠️</span>
+                                        <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
                                     </button>
                                 </td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">

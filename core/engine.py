@@ -20,7 +20,7 @@ from core.config import (
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
-    detect_ma7_reversal,
+    detect_ma7_reversal, has_volume_divergence,
 )
 from core.testnet_account import BinanceTestnetAccount
 from core.symbol_rotation import SymbolRotation
@@ -636,6 +636,15 @@ class TradingEngine:
                     df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
+                    # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
+                    # 反轉警訊。純顯示用（UI 用愛心圖示提示），不觸發任何平倉。
+                    # 警訊方向跟持倉方向相反：多單看「量縮頂背離」(want_dir=-1)，
+                    # 空單看「量縮底背離」(want_dir=1)。
+                    is_profitable = float(position.get("unrealized_pnl") or 0.0) > 0
+                    warn_dir = -1 if position.get("side") == "LONG" else 1
+                    trigger["volume_divergence_alert"] = bool(
+                        is_profitable and not df.empty and has_volume_divergence(df, warn_dir)
+                    )
                     self.position_triggers[symbol] = trigger
                     position_meta = self.account.position_meta.get(symbol, {})
                     # Tier 1（本地保本，仍是靜態單）不算真正接管，5m強防線要繼續生效；
