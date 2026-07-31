@@ -577,6 +577,14 @@ class TradingEngine:
             try:
                 if ENABLE_TREND_FOLLOW_EXIT:
                     for symbol, position in list(self.account.positions.items()):
+                        # 0. 1H 大週期趨勢過濾器：大級別方向與持倉不一致時，跳過 15m EMA20 止損以防橫盤雙巴
+                        st_dir_1h = self.st_direction_1h_cache.get(symbol)
+                        if st_dir_1h is not None:
+                            side = position["side"]
+                            is_aligned = (side == "LONG" and st_dir_1h == 1) or (side == "SHORT" and st_dir_1h == -1)
+                            if not is_aligned:
+                                continue
+
                         # 1. 檢查 5% ROE 分批止盈減倉 (5% ROE)
                         position_meta = self.account.position_meta.get(symbol, {})
                         if not position_meta.get("is_half_closed"):
@@ -593,35 +601,52 @@ class TradingEngine:
                                         "SUCCESS"
                                     )
                                     await self.account.partial_close_position(symbol, curr_p, "ROE達5%減倉一半", fraction=0.5)
-                                    continue # 本輪不再作EMA20收盤跌破判斷，等待下一輪更新
+                                    continue # 本輪縮小部位後暫不作止損判斷，等待下一輪
 
-                        # 2. 檢查大週期 (15m) EMA20 收線跌破/突破
+                        # 2. 檢查大週期 (15m) EMA20 收線與 ATR 緩衝帶跌破/突破 (連續兩根 K 棒收線確認)
                         df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
                         if df.empty or len(df) < 20:
                             continue
                         
-                        # 計算 EMA20
+                        # 計算 15m ATR 肯特納帶狀緩衝
+                        high_low = df['high'] - df['low']
+                        high_cp = (df['high'] - df['close'].shift()).abs()
+                        low_cp = (df['low'] - df['close'].shift()).abs()
+                        df['tr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+                        df['atr'] = df['tr'].rolling(window=14).mean()
                         df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
                         
-                        # 取最後一根已收盤的 K 棒
+                        # 取最後兩根已收盤的 K 棒
                         last_bar = df.iloc[-1]
-                        close_p = float(last_bar['close'])
-                        ema20_val = float(last_bar['ema_20'])
-                        side = position["side"]
-                        curr_p = self.tickers.get(symbol) or close_p
+                        prev_bar = df.iloc[-2]
                         
-                        if side == "LONG" and close_p < ema20_val:
-                            self.account.log(
-                                f"📉 [EMA20趨勢止損] {symbol} 15m收線價 ({close_p:.6g}) 跌破 EMA20 ({ema20_val:.6g})，執行平倉離場",
-                                "WARNING"
-                            )
-                            await self.account.close_position(symbol, curr_p, "15m收線實體跌破EMA20")
-                        elif side == "SHORT" and close_p > ema20_val:
-                            self.account.log(
-                                f"📈 [EMA20趨勢止損] {symbol} 15m收線價 ({close_p:.6g}) 突破 EMA20 ({ema20_val:.6g})，執行平倉離場",
-                                "WARNING"
-                            )
-                            await self.account.close_position(symbol, curr_p, "15m收線實體突破EMA20")
+                        close_p1 = float(last_bar['close'])
+                        ema20_val1 = float(last_bar['ema_20'])
+                        atr_val1 = float(last_bar['atr']) if not pd.isna(last_bar['atr']) else close_p1 * 0.015
+                        buffer1 = max(close_p1 * 0.003, 0.5 * atr_val1)
+                        
+                        close_p2 = float(prev_bar['close'])
+                        ema20_val2 = float(prev_bar['ema_20'])
+                        atr_val2 = float(prev_bar['atr']) if not pd.isna(prev_bar['atr']) else close_p2 * 0.015
+                        buffer2 = max(close_p2 * 0.003, 0.5 * atr_val2)
+                        
+                        side = position["side"]
+                        curr_p = self.tickers.get(symbol) or close_p1
+                        
+                        if side == "LONG":
+                            if close_p1 < (ema20_val1 - buffer1) and close_p2 < (ema20_val2 - buffer2):
+                                self.account.log(
+                                    f"📉 [EMA20趨勢止損] {symbol} 連續兩根 15m 收線跌破 EMA20 緩衝帶 (收盤={close_p2:.6g}/{close_p1:.6g}, 均線={ema20_val2:.6g}/{ema20_val1:.6g}, 緩衝={buffer2:.6g}/{buffer1:.6g})，執行平倉",
+                                    "WARNING"
+                                )
+                                await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體跌破EMA20緩衝")
+                        elif side == "SHORT":
+                            if close_p1 > (ema20_val1 + buffer1) and close_p2 > (ema20_val2 + buffer2):
+                                self.account.log(
+                                    f"📈 [EMA20趨勢止損] {symbol} 連續兩根 15m 收線突破 EMA20 緩衝帶 (收盤={close_p2:.6g}/{close_p1:.6g}, 均線={ema20_val2:.6g}/{ema20_val1:.6g}, 緩衝={buffer2:.6g}/{buffer1:.6g})，執行平倉",
+                                    "WARNING"
+                                )
+                                await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體突破EMA20緩衝")
                 
                 await asyncio.sleep(30)
             except asyncio.CancelledError:

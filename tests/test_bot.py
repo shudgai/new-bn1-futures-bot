@@ -1833,6 +1833,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     engine.account = account
     engine.is_running = True
     engine.tickers = {"DOGE/USDT": 100.0}
+    engine.st_direction_1h_cache = {"DOGE/USDT": 1} # 1H trend aligned
 
     # 1. Test Partial Close at ROE >= 5%
     # Price moves to 101.5 (ROE = 1.5% * 5 = 7.5% >= 5%)
@@ -1864,19 +1865,19 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     assert account.positions["DOGE/USDT"]["qty"] == 1.25 # 2.5 * 0.5
     assert account.position_meta["DOGE/USDT"]["is_half_closed"] is True
 
-    # 2. Test EMA20 Breach Exit (close < EMA20)
+    # 2. Test EMA20 Breach Exit (both closes < EMA20 - buffer)
     # Reset engine and tickers
     engine.is_running = True
-    engine.tickers["DOGE/USDT"] = 95.0
+    engine.tickers["DOGE/USDT"] = 90.0
     
     async def mock_fetch_klines_breach(symbol, timeframe, limit):
-        # 29 bars at 105.0, last bar at 95.0 -> EMA20 will be > 95.0
+        # 28 bars at 105.0, last 2 bars at 90.0 -> EMA20 will be > 90.0 (and breach will be verified for last 2 closes)
         return pd.DataFrame({
             "timestamp": [0] * 30,
             "open": [105.0] * 30,
             "high": [105.0] * 30,
             "low": [105.0] * 30,
-            "close": [105.0] * 29 + [95.0],
+            "close": [105.0] * 28 + [90.0, 90.0],
             "volume": [0] * 30
         })
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines_breach)
