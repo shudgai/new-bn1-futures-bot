@@ -211,7 +211,7 @@
                                 <td style="padding: 6px;">
                                     <button 
                                         :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-success' : 'btn-danger']" 
-                                        style="padding: 8px 12px; font-size: 13px; font-weight: 700; border-radius: 8px; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 2px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); transition: transform 0.1s; border: none; cursor: pointer;"
+                                        style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); transition: transform 0.1s; border: none; cursor: pointer; white-space: nowrap;"
                                         @click="closePos(pos.symbol)"
                                         title="點擊以手動平倉此部位"
                                     >
@@ -233,15 +233,9 @@
                                 <td>{{ pos.qty }}</td>
                                 <td style="color:var(--down)">
                                     {{ formatPrice(pos.sl) }}
-                                    <span style="font-size:11px; display:block;" title="打到止損的預估淨損益（已扣估計手續費，實際成交可能因滑價略有落差）">
-                                        {{ getEstimatedLossAtSL(pos).toFixed(2) }}U
-                                    </span>
                                 </td>
                                 <td style="color:var(--up)">
                                     {{ formatPrice(pos.tp) }}
-                                    <span style="font-size:11px; display:block;" title="打到止利的預估淨損益（已扣估計手續費，實際成交可能因滑價略有落差）">
-                                        +{{ getEstimatedProfitAtTP(pos).toFixed(2) }}U
-                                    </span>
                                 </td>
                                 <td style="white-space:nowrap;">
                                     <button class="btn btn-stop" style="padding:4px 12px; font-size:12px; white-space:nowrap; display:inline-block;" @click="closePos(pos.symbol)">平倉</button>
