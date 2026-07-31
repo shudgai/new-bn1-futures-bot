@@ -16,7 +16,7 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
-    ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT,
+    ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -568,7 +568,9 @@ class TradingEngine:
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
                     self.position_triggers[symbol] = trigger
-                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong"):
+                    position_meta = self.account.position_meta.get(symbol, {})
+                    has_native_trailing = position_meta.get("native_trailing_tier", 0) > 0
+                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not has_native_trailing:
                         self.account.log(
                             f"🚨 [雙重防線失守] {symbol} 均線與結構防線(前低/前高)同時失守，執行自動平倉",
                             "DANGER"
@@ -590,7 +592,13 @@ class TradingEngine:
             try:
                 if ENABLE_TREND_FOLLOW_EXIT:
                     for symbol, position in list(self.account.positions.items()):
-                        # 0. 1H 大週期趨勢過濾器：大級別方向與持倉不一致時，跳過 15m EMA20 止損以防橫盤雙巴
+                        position_meta = self.account.position_meta.get(symbol, {})
+                        
+                        # 0a. 若已由 Binance 原生毫秒級 Trailing Stop 接管，屏蔽微觀趨勢平倉，放手博取大波段
+                        if position_meta.get("native_trailing_tier", 0) > 0:
+                            continue
+                            
+                        # 0b. 1H 大週期趨勢過濾器：大級別方向與持倉不一致時，跳過 15m EMA20 止損以防橫盤雙巴
                         st_dir_1h = self.st_direction_1h_cache.get(symbol)
                         if st_dir_1h is not None:
                             side = position["side"]
@@ -669,37 +677,61 @@ class TradingEngine:
                 await asyncio.sleep(30)
 
     async def _run_trailing_sl_loop(self):
-        """背景任務：每 1 分鐘重新計算移動止損位置（只往有利方向移動）。
-        多單：止損線 = 當前價 - trail_dist（只有新止損 > 現止損才更新）
-        空單：止損線 = 當前價 + trail_dist（只有新止損 < 現止損才更新）
-        trail_dist = TRAILING_SL_ATR_MULT × ATR (動態根據市場真實波幅)"""
+        """背景任務（雙模式）：
+
+        USE_NATIVE_TRAILING_STOP = True（預設，實盤）：
+          此 loop 退化為「孤兒保護監控」。
+          Trailing Stop 由 Binance 伺服器端毫秒級即時追蹤（TRAILING_STOP_MARKET），
+          機器人不再主動撤單重掛，此 loop 只做安全網：
+          若偵測到有持倉但既無本地 SL 紀錄、又沒有 native_trailing_tier（代表
+          初始保護單可能未建立），記錄警告讓 _create_orphan_protection 接手。
+
+        USE_NATIVE_TRAILING_STOP = False（Testnet / fallback）：
+          維持原本每 60 秒 ATR 倍數輪詢移動止損邏輯，適合 Testnet 環境。
+          trail_dist = TRAILING_SL_ATR_MULT × ATR（只往有利方向移動）
+        """
         while self.is_running:
             try:
-                if ENABLE_TRAILING_SL:
-                    for symbol, position in list(self.account.positions.items()):
-                        meta = self.account.position_meta.get(symbol, {})
-                        curr_p = self.tickers.get(symbol)
-                        if not curr_p:
-                            continue
-                        current_sl = meta.get("sl", 0.0)
-                        if not current_sl:
-                            continue
-                        atr_value = meta.get("atr", curr_p * 0.015)
-                        trail_dist = TRAILING_SL_ATR_MULT * atr_value
-                        side = position["side"]
-                        if side == "LONG":
-                            new_sl = curr_p - trail_dist
-                            if new_sl > current_sl:
-                                await self.account.trail_stop_loss(symbol, new_sl)
-                        elif side == "SHORT":
-                            new_sl = curr_p + trail_dist
-                            if new_sl < current_sl:
-                                await self.account.trail_stop_loss(symbol, new_sl)
+                if USE_NATIVE_TRAILING_STOP:
+                    # 原生模式：僅監控異常孤兒情況（有倉無任何保護）
+                    if ENABLE_TRAILING_SL:
+                        for symbol, position in list(self.account.positions.items()):
+                            meta = self.account.position_meta.get(symbol, {})
+                            has_local_sl = meta.get("sl", 0.0) > 0
+                            has_native_trailing = meta.get("native_trailing_tier", 0) > 0
+                            if not has_local_sl and not has_native_trailing:
+                                self.account.log(
+                                    f"⚠️ [孤兒監控] {symbol} 有持倉但無任何保護單（SL=0, native_tier=0），"
+                                    f"等待 _create_orphan_protection 補建",
+                                    "WARNING",
+                                )
+                else:
+                    # Fallback 模式：每 60 秒 ATR 倍數輪詢移動止損
+                    if ENABLE_TRAILING_SL:
+                        for symbol, position in list(self.account.positions.items()):
+                            meta = self.account.position_meta.get(symbol, {})
+                            curr_p = self.tickers.get(symbol)
+                            if not curr_p:
+                                continue
+                            current_sl = meta.get("sl", 0.0)
+                            if not current_sl:
+                                continue
+                            atr_value = meta.get("atr", curr_p * 0.015)
+                            trail_dist = TRAILING_SL_ATR_MULT * atr_value
+                            side = position["side"]
+                            if side == "LONG":
+                                new_sl = curr_p - trail_dist
+                                if new_sl > current_sl:
+                                    await self.account.trail_stop_loss(symbol, new_sl)
+                            elif side == "SHORT":
+                                new_sl = curr_p + trail_dist
+                                if new_sl < current_sl:
+                                    await self.account.trail_stop_loss(symbol, new_sl)
                 await asyncio.sleep(60)  # 每 1 分鐘執行一次
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                self.account.log(f"⚠️ [移動止損] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
+                self.account.log(f"⚠️ [移動止損Loop] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(60)
 
 

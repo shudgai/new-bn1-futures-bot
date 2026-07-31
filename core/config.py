@@ -100,15 +100,34 @@ ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "5"))
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
-# 觸發門檻改用每筆進場 ATR：2 ATR 保本、3.5 ATR 轉 runner 並鎖住
+# 觸發門檻改用每筆進場 ATR：1.2 ATR 保本、3.5 ATR 轉 runner 並鎖住
 # 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早掃掉剛起跑的部位。
-TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "2.0"))
+TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.2"))
 TRAILING_TIER2_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER2_TRIGGER_ATR_MULT", "3.5"))
 TRAILING_TIER3_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER3_TRIGGER_ATR_MULT", "5.0"))
 TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "1.5"))
 # Tier 1 保本價除覆蓋雙邊 taker fee 外，再多留這段緩衝吸收價格精度誤差。
 TRAILING_BREAK_EVEN_EXTRA_PCT = float(os.getenv("TRAILING_BREAK_EVEN_EXTRA_PCT", "0.0001"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
+
+# --- 交易所原生毫秒級 Trailing Stop 設定 ---
+# USE_NATIVE_TRAILING_STOP: True = 用 Binance TRAILING_STOP_MARKET（伺服器端即時追蹤）
+#   False = fallback 至舊版百分比制輪詢移動止利（Testnet/Paper 環境建議設 false）
+USE_NATIVE_TRAILING_STOP = os.getenv("USE_NATIVE_TRAILING_STOP", "true").lower() == "true"
+# CallbackRate 動態計算：callbackRate = atr_pct * 100 * NATIVE_TRAILING_ATR_RATE_FACTOR
+# 例：ATR% = 1.0% → callbackRate = 1.0 * 100 * 0.015 * 10 ≈ 1.5%
+# 實際公式：max(MIN, min(MAX, round(atr_pct * 100 * FACTOR, 1)))
+NATIVE_TRAILING_ATR_RATE_FACTOR = float(os.getenv("NATIVE_TRAILING_ATR_RATE_FACTOR", "1.5"))
+# Tier1 (保本起步)：callbackRate 寬一點，讓正常回踩有空間
+NATIVE_TRAILING_TIER1_CALLBACK_MIN = float(os.getenv("NATIVE_TRAILING_TIER1_CALLBACK_MIN", "0.3"))
+NATIVE_TRAILING_TIER1_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER1_CALLBACK_MAX", "3.0"))
+# Tier2 (鎖利)：收緊一點，保住更多獲利
+NATIVE_TRAILING_TIER2_CALLBACK_MIN = float(os.getenv("NATIVE_TRAILING_TIER2_CALLBACK_MIN", "0.2"))
+NATIVE_TRAILING_TIER2_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER2_CALLBACK_MAX", "2.0"))
+# Tier3 (極致追蹤)：最緊，只允許小幅回撤
+NATIVE_TRAILING_TIER3_CALLBACK_MIN = float(os.getenv("NATIVE_TRAILING_TIER3_CALLBACK_MIN", "0.1"))
+NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALLBACK_MAX", "1.5"))
+
 # PROFIT_ALERT_GIVEBACK_RATIO：獲利了結參考提醒，純顯示用，不會自動平倉
 # ——上面的三階段移動停利維持原樣、自動執行不受影響，這個是額外疊加的
 # 「純提醒」版本。只要目前還有獲利（不管有沒有到 Tier1 門檻），且從進場
@@ -150,12 +169,12 @@ SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").l
 # MIN_SCORE_THRESHOLD：初始突破評分固定為 100 分制：
 # KC 30 + 量能 20 + RSI 20 + 新鮮度 18 + 品質 12。
 # 不再讓新鮮度跟真正突破同為 30 分，避免只有「方向還沒翻轉」的舊趨勢
-# 靠新鮮度灌成 91+ 高分。65 分門檻維持不變，不用降門檻強迫開倉。
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "65"))
+# 靠新鮮度灌成 91+ 高分。調高至 75 分以精簡開倉，避免弱信號磨損。
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "75"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "65"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "75"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
