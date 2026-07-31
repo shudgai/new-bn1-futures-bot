@@ -1446,14 +1446,20 @@ class TradingEngine:
             if symbol in ENTRY_DISABLED_SYMBOLS or symbol not in DEFAULT_SYMBOLS:
                 await self.account.cancel_pending_limit(symbol, "幣種已停止新倉或移出牌面")
                 continue
+            entry_mode = (info.get("entry_context") or {}).get("entry_mode")
             if now - info["placed_at"] > ENTRY_LIMIT_TIMEOUT_SEC:
                 self._record_pullback_outcome("maker_timeout")
                 await self.account.cancel_pending_limit(
                     symbol, f"短效 Maker 掛單 {ENTRY_LIMIT_TIMEOUT_SEC:.0f} 秒未成交"
                 )
-                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                # MA7拐頭進場逾時未成交不設冷卻：下一輪(5秒後)detect_ma7_reversal
+                # 會用當下最新K線重新判斷，谷底/峰頂型態若還成立就會立刻再掛一次；
+                # 若價格已經走遠、型態不再成立，策略本身自然回HOLD，不需要額外
+                # 冷卻機制硬擋——避免因為冷卻而錯過還在成立的真實訊號，也不會
+                # 變成無腦追價，追不追完全看MA7型態當下是否仍然成立。
+                if entry_mode != "MA7_REVERSAL":
+                    self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
-            entry_mode = (info.get("entry_context") or {}).get("entry_mode")
             if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL"):
                 # 90+ 現價單與 MA7 拐頭現價單只短暫存活 15 秒，不套用回踩二次確認與目標漂移。
                 # 每日熔斷、幣種停用及掛單逾時仍在上方保留。

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import time
+import ccxt.async_support as ccxt
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -279,6 +280,28 @@ class BinanceTestnetAccount:
                 except Exception as exc:
                     self.log(f"⚠️ 清理孤兒掛單失敗 {symbol}：{type(exc).__name__}: {exc}", "WARNING")
             await asyncio.sleep(0.05)
+
+    async def _recover_order_after_timeout(
+        self, symbol: str, order_side: str, price_str: str
+    ) -> Optional[dict]:
+        """create_order 逾時（執行狀態未知）後，查詢交易所目前掛單，確認
+        這筆訂單究竟有沒有真的送出去。重試幾次是因為交易所端處理延遲的單
+        可能要一兩秒才會出現在 fetch_open_orders() 裡，不是查一次沒有就
+        代表真的沒掛上。"""
+        for _ in range(3):
+            await asyncio.sleep(1.0)
+            try:
+                open_orders = await self.exchange.fetch_open_orders(symbol)
+            except Exception:
+                continue
+            for order in open_orders:
+                if (
+                    order.get("type") == "limit"
+                    and str(order.get("side", "")).lower() == order_side
+                    and abs(float(order.get("price") or 0.0) - float(price_str)) < 1e-9
+                ):
+                    return order
+        return None
 
     async def refresh(self, force: bool = False) -> float:
         now = time.time()
@@ -1184,6 +1207,21 @@ class BinanceTestnetAccount:
                 symbol, "limit", order_side, qty, float(price_str),
                 order_params,
             )
+        except (ccxt.NetworkError, ccxt.RequestTimeout) as exc:
+            # 逾時（例如幣安 -1007："執行狀態未知"）不能直接當失敗結束——
+            # 單子有可能其實已經在交易所端掛成功，只是回應沒送到。若貿然
+            # 回傳 False，主迴圈下一輪（5秒後）會用同一份訊號重新掛單，
+            # 在交易所端疊出好幾張不受 pending_limit_orders 追蹤的孤兒
+            # 限價單。掛完後主動查詢交易所目前掛單，撈到吻合的單就接手
+            # 追蹤，查無此單才真的算失敗。
+            order = await self._recover_order_after_timeout(symbol, order_side, price_str)
+            if order is None:
+                self.log(
+                    f"🛑 {symbol} 限價掛單失敗（逾時且查無成交紀錄）：{type(exc).__name__}: {exc}",
+                    "WARNING",
+                )
+                return False
+            self.log(f"✅ {symbol} 限價掛單逾時但查詢確認已成功掛上，接手追蹤", "SUCCESS")
         except Exception as exc:
             self.log(
                 f"🛑 {symbol} 限價掛單失敗：{type(exc).__name__}: {exc}",

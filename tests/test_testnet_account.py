@@ -1,7 +1,12 @@
 import pytest
+import ccxt.async_support as ccxt
 
 import core.testnet_account as testnet_module
 from core.testnet_account import BinanceTestnetAccount
+
+
+async def asyncio_sleep_stub(*_args, **_kwargs):
+    return None
 
 
 @pytest.fixture
@@ -257,6 +262,79 @@ async def test_repeated_pending_limit_retries_log_only_once(tmp_path, monkeypatc
     cancel_logs = [entry for entry in account.logs if "限價單撤銷" in entry["text"]]
     assert len(place_logs) == 1
     assert len(cancel_logs) == 1
+
+
+@pytest.mark.anyio
+async def test_place_limit_entry_recovers_after_timeout_when_order_actually_placed(tmp_path, monkeypatch):
+    """create_order 逾時（執行狀態未知，例如幣安 -1007）時不能直接當失敗
+    結束——單子可能其實已經在交易所端掛成功了。查詢 fetch_open_orders()
+    如果真的撈到吻合的單，要接手追蹤（回傳True），不能讓主迴圈下一輪
+    用同一份訊號重複掛單，在交易所端疊出孤兒限價單。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(testnet_module.asyncio, "sleep", lambda *_a, **_k: asyncio_sleep_stub())
+
+    class TimeoutButActuallyPlacedExchange(FakeTestnetExchange):
+        async def create_order(self, symbol, order_type, side, qty, price=None, params=None):
+            if order_type == "limit":
+                raise ccxt.RequestTimeout("binanceusdm timeout, unknown execution status")
+            return await super().create_order(symbol, order_type, side, qty, price, params)
+
+        async def fetch_open_orders(self, symbol):
+            return [{"id": "999", "symbol": symbol, "type": "limit", "side": "buy", "price": 100.0}]
+
+    exchange = TimeoutButActuallyPlacedExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    placed = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
+        reason="test", atr=1.0, leverage=5, signal_score=100,
+    )
+
+    assert placed is True
+    assert "DOGE/USDT" in account.pending_limit_orders
+    assert account.pending_limit_orders["DOGE/USDT"]["order_id"] == "999"
+    assert any("查詢確認已成功掛上" in entry["text"] for entry in account.logs)
+
+
+@pytest.mark.anyio
+async def test_place_limit_entry_fails_after_timeout_when_no_order_found(tmp_path, monkeypatch):
+    """逾時後查詢交易所也真的查無此單，才能算失敗結束，安全地讓下一輪
+    重新掛單。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(testnet_module.asyncio, "sleep", lambda *_a, **_k: asyncio_sleep_stub())
+
+    class TimeoutAndNeverPlacedExchange(FakeTestnetExchange):
+        async def create_order(self, symbol, order_type, side, qty, price=None, params=None):
+            if order_type == "limit":
+                raise ccxt.RequestTimeout("binanceusdm timeout, unknown execution status")
+            return await super().create_order(symbol, order_type, side, qty, price, params)
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+    exchange = TimeoutAndNeverPlacedExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    placed = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
+        reason="test", atr=1.0, leverage=5, signal_score=100,
+    )
+
+    assert placed is False
+    assert "DOGE/USDT" not in account.pending_limit_orders
+    assert any("查無成交紀錄" in entry["text"] for entry in account.logs)
 
 
 @pytest.mark.anyio

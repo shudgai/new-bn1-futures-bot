@@ -422,17 +422,27 @@ MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
 # 反轉。跟 MAX_ATR_PCT 一起框出一個「波動適中」的可交易區間。
 MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
 
-# --- 量縮背離繞過波動過低限制（僅限主流幣）---
-# 主流幣在窄幅盤整前常見「價格仍創新高/新低，但成交量明顯萎縮」的量價
-# 背離型態——主力收手、動能耗盡準備反轉的訊號，此時 ATR% 雖然偏低，
-# 但不是「無真實動能的假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是
-# 同一種情況，故允許繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件
-# 不受影響）。只套用在流動性/市值前段的主流幣，避免小型迷因幣的量價
-# 關係本來就不穩定，誤用這條件放大假訊號。
+# --- 主流幣名單：交易範圍限縮 + 量縮背離繞過波動過低限制 ---
+# market_candidates() 只會從這份名單裡挑選候選幣（見 symbol_rotation.py），
+# 目的是避開測試網對冷門幣報價/成交深度常跟真實行情脫節的問題（實測
+# KAITO/RLC 這類幣種曾出現測試網報價凍結、跟訊號偵測用的主網價格差了
+# 好幾%的情況）。名單原本只有15個市值最前段的幣，範圍太窄導致候選池
+# 常常只剩個位數合格，擴大到市值/知名度足夠、一般認知裡流動性沒問題
+# 的35個主流幣，兼顧「避開測試網報價爛的冷門幣」與「候選池不要太窄」。
+#
+# 同一份名單也用在量縮背離繞過波動過低限制：主流幣在窄幅盤整前常見
+# 「價格仍創新高/新低，但成交量明顯萎縮」的量價背離型態——主力收手、
+# 動能耗盡準備反轉的訊號，此時 ATR% 雖然偏低，但不是「無真實動能的
+# 假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是同一種情況，故允許
+# 繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件不受影響）。
 MAINSTREAM_SYMBOLS = {
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
     "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
     "BCH/USDT", "LTC/USDT", "ARB/USDT", "ATOM/USDT", "NEAR/USDT",
+    "TRX/USDT", "ETC/USDT", "FIL/USDT", "OP/USDT", "UNI/USDT",
+    "AAVE/USDT", "ICP/USDT", "HBAR/USDT", "INJ/USDT", "SUI/USDT",
+    "SEI/USDT", "RENDER/USDT", "WLD/USDT", "1000SHIB/USDT", "GALA/USDT",
+    "SAND/USDT", "MANA/USDT", "APE/USDT", "CRV/USDT", "LDO/USDT",
 }
 # VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
 # 價格極值。
