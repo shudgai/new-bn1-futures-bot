@@ -128,12 +128,14 @@ NATIVE_TRAILING_TIER2_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER2_CALL
 NATIVE_TRAILING_TIER3_CALLBACK_MIN = float(os.getenv("NATIVE_TRAILING_TIER3_CALLBACK_MIN", "0.1"))
 NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALLBACK_MAX", "1.5"))
 
-# PROFIT_ALERT_GIVEBACK_RATIO：獲利了結參考提醒，純顯示用，不會自動平倉
-# ——上面的三階段移動停利維持原樣、自動執行不受影響，這個是額外疊加的
-# 「純提醒」版本。只要目前還有獲利（不管有沒有到 Tier1 門檻），且從進場
-# 至今的最高浮盈回吐超過這個比例，介面就會提示「已經從高點回落不少」，
-# 門檻刻意設在比 Tier3 的回撤比例（30%）更早／更敏感一點，讓使用者能在
-# 自動機制真的動手之前就先看到，自己判斷要不要提前手動平倉。
+# PROFIT_ALERT_GIVEBACK_RATIO：獲利了結參考提醒（💰⚠️圖示）——上面的三
+# 階段移動停利維持原樣、自動執行不受影響，這個是額外疊加的提醒機制。
+# 只要目前還有獲利（不管有沒有到 Tier1 門檻），且從進場至今的最高浮盈
+# 回吐超過這個比例，就標記警訊，門檻刻意設在比 Tier3 的回撤比例（30%）
+# 更早／更敏感一點。紙上交易帳戶（PaperAccount）會在警訊亮起後，抓
+# 「下一次浮盈比前一次檢查回升」的那個瞬間立刻平倉——警訊亮起代表利潤
+# 正在被侵蝕，與其等它繼續吐回去，不如把握警訊後難得的一次反彈把獲利
+# 鎖住；BinanceTestnetAccount 目前這個旗標仍是純顯示，不會自動平倉。
 PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
 # SOFT_WARNING_PERSIST_SEC：持倉持續處於「✗」（現價站上/跌破EMA20，但
 # 還沒同時跌破/站上前低前高升級成「⛔」強訊號）超過這個秒數，代表方向
@@ -264,9 +266,14 @@ ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
 ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
-# WEAK_ENERGY_LEVERAGE_CAP：進場當下 ADX < ADX_QUALITY_MIN（動能偏弱，
+# WEAK_ENERGY_ADX_THRESHOLD：進場當下 ADX 低於這個門檻（動能偏弱/中等，
 # 可能已經在這波行情的末端）時，槓桿不管分數/波動率算出來的上限多高，
-# 一律封頂在這個倍數，避免用高槓桿賭一個動能已經在衰退的訊號。
+# 一律封頂在 WEAK_ENERGY_LEVERAGE_CAP，避免用高槓桿賭一個動能不夠強的
+# 訊號。原本用 ADX_QUALITY_MIN(15) 當門檻，但實測 ONDO/USDT ADX=20.0
+# 這種「勉強及格但不算強勢」（ADX_QUALITY_FULL是30，20只是剛過及格線）
+# 一樣遇到窄幅雜訊盤整停損，故獨立成專屬常數並提高到22，跟只影響評分
+# 公式的 ADX_QUALITY_MIN 脫鉤，才能單獨往上調不影響評分。
+WEAK_ENERGY_ADX_THRESHOLD = float(os.getenv("WEAK_ENERGY_ADX_THRESHOLD", "22"))
 WEAK_ENERGY_LEVERAGE_CAP = int(os.getenv("WEAK_ENERGY_LEVERAGE_CAP", "3"))
 # ADX_DECLINE_LOOKBACK_BARS：實測 AAVE/USDT 07/28 14:48 這筆進場，往前
 # 回看 8 根 5 分K，ADX 從 19.51 一路降到 14.67 才進場——SuperTrend 方向

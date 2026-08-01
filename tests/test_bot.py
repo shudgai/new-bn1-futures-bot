@@ -14,7 +14,7 @@ from core.config import (
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
     DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
-    CONTRARIAN_POSITION_SIZE_MULTIPLIER, ADX_QUALITY_MIN, WEAK_ENERGY_LEVERAGE_CAP,
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER, WEAK_ENERGY_LEVERAGE_CAP, WEAK_ENERGY_ADX_THRESHOLD,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -249,6 +249,65 @@ async def test_paper_account_trailing_sl_gap_through_labels_as_stop_loss_not_pro
     assert trade["symbol"] == "BTC/USDT"
     assert trade["pnl"] < 0
     assert trade["reason"] == "觸發止損 (Stop-Loss)"
+
+
+@pytest.mark.anyio
+async def test_paper_account_closes_on_rebound_after_profit_giveback_alert(tmp_path, monkeypatch):
+    """獲利回吐警訊（💰⚠️，從高點回吐超過PROFIT_ALERT_GIVEBACK_RATIO）亮起
+    後，下一次檢查若浮盈比前一次回升（哪怕只回升一點點），代表這是警訊
+    亮起後難得的一次反彈，要把握住立刻平倉鎖住獲利，不要繼續放著賭它
+    會一路反彈回去，導致利潤被侵蝕更多甚至轉虧。關掉移動停利避免SL
+    價位干擾，單純測試這個回升即平倉的邏輯。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    account = PaperAccount()
+
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, sl=50.0, tp=500.0, reason="test", signal_score=80)
+
+    # 推高到峰值 pnl=10%
+    await account.update_positions({"BTC/USDT": 110.0})
+    assert "BTC/USDT" in account.positions
+    assert account.positions["BTC/USDT"]["profit_alert"] is False
+
+    # 從高點回吐超過20%（10% -> 7.5%以下），警訊亮起，但這一次還沒回升，不平倉
+    await account.update_positions({"BTC/USDT": 107.0})
+    assert "BTC/USDT" in account.positions
+    assert account.positions["BTC/USDT"]["profit_alert"] is True
+
+    # 下一次浮盈比前一次(107)回升，警訊仍亮著 -> 立刻平倉
+    await account.update_positions({"BTC/USDT": 108.0})
+
+    assert "BTC/USDT" not in account.positions
+    trade = account.trades[0]
+    assert trade["symbol"] == "BTC/USDT"
+    assert trade["pnl"] > 0
+    assert trade["reason"] == "獲利回吐警訊後反彈，把握回升即刻平倉"
+
+
+@pytest.mark.anyio
+async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost(tmp_path, monkeypatch):
+    """回升即平倉不能只看「浮盈比前一次高」，還要蓋過來回成本（2x手續費+
+    平倉滑價）才值得把握——實測ADA/USDT 08/01 17:01這筆就是抓到只有
+    0.001%的極小反彈就平倉，扣完成本後淨損-0.20，「把握回升鎖住獲利」
+    變成「連成本都不夠付」。這裡用極小的價格波動模擬同樣情境，驗證
+    這種微小反彈不該觸發平倉，部位要繼續留著等真正夠大的獲利。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    account = PaperAccount()
+
+    await account.open_position("ADA/USDT", "LONG", 100.0, 50.0, sl=50.0, tp=500.0, reason="test", signal_score=80)
+
+    # 推高到峰值 pnl=0.10%，本身就已經低於來回成本(2x手續費+滑價≈0.13%)
+    await account.update_positions({"ADA/USDT": 100.10})
+    # 回吐超過20%（0.10% -> 0.07%），警訊亮起
+    await account.update_positions({"ADA/USDT": 100.07})
+    assert account.positions["ADA/USDT"]["profit_alert"] is True
+
+    # 回升到0.075%，比前一次(0.07%)高，但依然低於來回成本門檻，
+    # 不該被當成「值得把握的反彈」而平倉
+    await account.update_positions({"ADA/USDT": 100.075})
+
+    assert "ADA/USDT" in account.positions
 
 
 @pytest.mark.anyio
@@ -738,7 +797,7 @@ def test_adx_decline_above_quality_floor_is_soft_penalty(monkeypatch):
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
     assert result["action"] == "WAIT_PULLBACK"
-    assert "ADX_Declining_Soft-1(30.0<35.0;floor=15.0)" in result["reason"]
+    assert "ADX_Declining_Soft-1(30.0<35.0;floor=22.0)" in result["reason"]
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" not in result["reason"]
 
 
@@ -1241,9 +1300,12 @@ def test_purge_unhealthy_removes_illiquid_candidate_but_protects_held_position(m
 
 
 def test_get_dynamic_leverage_caps_at_3x_when_adx_energy_weak():
-    """進場當下ADX動能太弱（低於ADX_QUALITY_MIN）時，不管分數/波動率算出
-    來的上限多高，槓桿都要封頂在WEAK_ENERGY_LEVERAGE_CAP(3x)——避免對一個
-    可能已經在趨勢末端、動能衰退的訊號套用高槓桿。"""
+    """進場當下ADX動能太弱（低於WEAK_ENERGY_ADX_THRESHOLD）時，不管分數/
+    波動率算出來的上限多高，槓桿都要封頂在WEAK_ENERGY_LEVERAGE_CAP(3x)
+    ——避免對一個可能已經在趨勢末端、動能不夠強的訊號套用高槓桿。門檻
+    獨立於只影響評分公式的ADX_QUALITY_MIN，實測ONDO/USDT ADX=20.0
+    （高於ADX_QUALITY_MIN但仍算中等）一樣遇到窄幅雜訊盤整停損，才把
+    這個門檻提高到22、跟評分公式的常數脫鉤。"""
     rotation = SymbolRotation(None)
     rotation.volatility_stats["BTC/USDT"] = {"atr_pct": 0.15}  # 低ATR% -> 原本可以到6x
 
@@ -1252,11 +1314,11 @@ def test_get_dynamic_leverage_caps_at_3x_when_adx_energy_weak():
     assert normal_leverage == 6
 
     # 同樣的分數/波動率，但ADX動能低於門檻 -> 封頂3x
-    weak_energy_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89, adx=ADX_QUALITY_MIN - 1)
+    weak_energy_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89, adx=WEAK_ENERGY_ADX_THRESHOLD - 1)
     assert weak_energy_leverage == WEAK_ENERGY_LEVERAGE_CAP
 
     # ADX達到門檻 -> 不受影響，維持原本上限
-    strong_energy_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89, adx=ADX_QUALITY_MIN)
+    strong_energy_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89, adx=WEAK_ENERGY_ADX_THRESHOLD)
     assert strong_energy_leverage == 6
 
 

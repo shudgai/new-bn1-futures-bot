@@ -10,6 +10,7 @@ from core.config import (
     MIN_SCORE_THRESHOLD, ENTRY_MIN_QUALITY_BONUS, PULLBACK_ZONE_PCT, MAX_ATR_PCT, MIN_ATR_PCT,
     KELTNER_ATR_MULTIPLIER, get_pullback_target_depth, MIN_SL_DISTANCE_PCT,
     ADX_PERIOD, ADX_QUALITY_MIN, ADX_QUALITY_FULL, ADX_DECLINE_LOOKBACK_BARS,
+    WEAK_ENERGY_ADX_THRESHOLD,
     ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     EMA_EXTENSION_MAX_ATR_MULT, PULLBACK_SCORE_THRESHOLD, DISASTER_STOP_MULTIPLIER,
     ADX_MANDATORY_MIN, BREAKOUT_CONFIRM_BARS, POST_BREAKOUT_VOL_SUSTAIN_RATIO,
@@ -241,17 +242,22 @@ def detect_ma7_reversal(
     if st_flip_age > max_allowed_flip_age:
         return _no(f"SuperTrend翻轉過舊({st_flip_age}根>{max_allowed_flip_age}根)，趨勢尾部不進場")
 
-    # ADX 衰退且已低於品質底線 — 動能退潮，硬性擋單（與主路徑 ADX_DECLINING_EXHAUSTED 對齊）
+    # ADX 衰退且已低於能量門檻 — 動能退潮，硬性擋單（與主路徑 ADX_DECLINING_EXHAUSTED 對齊）。
+    # 絕對門檻原本用 ADX_QUALITY_MIN(15)，但實測 ONDO/USDT 這筆 ADX 從
+    # 36.3 一路衰退到 20 左右進場，衰退幅度很明顯（跌43%）卻因為還沒
+    # 低於15分而完全沒被擋到，進場後就遇到窄幅雜訊盤整停損。改用
+    # WEAK_ENERGY_ADX_THRESHOLD(22)，跟槓桿封頂門檻共用同一套「能量」
+    # 標準，衰退到這個中等能量區間就直接擋單，不再只是降槓桿了事。
     adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
     adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else float('nan')
     adx_drop = (float(adx_prior) - float(adx)) if not math.isnan(float(adx_prior)) else 0.0
     adx_declining_exhausted = (
         not math.isnan(float(adx_prior))
         and adx_drop >= max(ADX_DECLINE_MIN_DROP, float(adx_prior) * ADX_DECLINE_MIN_DROP_RATIO)
-        and adx < ADX_QUALITY_MIN
+        and adx < WEAK_ENERGY_ADX_THRESHOLD
     )
     if adx_declining_exhausted:
-        return _no(f"ADX動能衰退({adx:.1f}<{ADX_QUALITY_MIN},跌{adx_drop:.1f})，趨勢尾部不進場")
+        return _no(f"ADX動能衰退({adx:.1f}<{WEAK_ENERGY_ADX_THRESHOLD},跌{adx_drop:.1f})，趨勢尾部不進場")
 
     # ATR 波動範圍
     atr_pct = atr / price if price > 0 else 0
@@ -714,8 +720,11 @@ class SuperTrendKeltnerStrategy:
         # 實測 AAVE/USDT 進場前 8 根 5 分K，ADX 從 19.51 一路降到 14.67 才
         # 進場，方向沒變、新鮮度分數也還高，但這正是「末端趨勢」的典型樣貌：
         # 動能已經在衰退，只是方向還沒真的反轉。ADX 現在比 N 根K棒前低，
-        # 且已經低於 ADX_QUALITY_MIN，代表這不是「本來就安靜」而是「正在
-        # 退潮」，直接擋單。
+        # 且已經低於 WEAK_ENERGY_ADX_THRESHOLD，代表這不是「本來就安靜」
+        # 而是「正在退潮」，直接擋單。絕對門檻原本用 ADX_QUALITY_MIN(15)，
+        # 但實測 ONDO/USDT 這筆 ADX 從 36.3 衰退到 20 左右進場，衰退幅度
+        # 很明顯卻因為還沒低於15分而沒被擋到，改用 WEAK_ENERGY_ADX_THRESHOLD
+        # (22)，跟槓桿封頂共用同一套「能量」標準。
         adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
         adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
         adx_drop = (adx_prior - adx) if not pd.isna(adx_prior) else 0.0
@@ -723,7 +732,7 @@ class SuperTrendKeltnerStrategy:
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
-        adx_declining_exhausted = adx_declining and adx < ADX_QUALITY_MIN
+        adx_declining_exhausted = adx_declining and adx < WEAK_ENERGY_ADX_THRESHOLD
 
         # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
         # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。
@@ -769,7 +778,7 @@ class SuperTrendKeltnerStrategy:
         if adx_decline_soft_penalty:
             quality_bonus = max(0, quality_bonus - adx_decline_soft_penalty)
             score_details.append(
-                f"ADX_Declining_Soft-1({adx:.1f}<{adx_prior:.1f};floor={ADX_QUALITY_MIN:.1f})"
+                f"ADX_Declining_Soft-1({adx:.1f}<{adx_prior:.1f};floor={WEAK_ENERGY_ADX_THRESHOLD:.1f})"
             )
 
         score += quality_bonus
@@ -876,7 +885,7 @@ class SuperTrendKeltnerStrategy:
                         f"{', '.join(score_details)}"
                     )
             confirmation_reason = (
-                f"ADX {adx:.1f}←{adx_prior:.1f}仍高於{ADX_QUALITY_MIN:g}，品質-1，等待回調二次確認"
+                f"ADX {adx:.1f}←{adx_prior:.1f}仍高於{WEAK_ENERGY_ADX_THRESHOLD:g}，品質-1，等待回調二次確認"
                 if adx_decline_soft_penalty
                 else "90+分現價Maker掛單" if current_maker
                 else "等待回調至KC區後二次確認"
@@ -1009,8 +1018,9 @@ class SuperTrendKeltnerStrategy:
             }
 
         # ADX 動能衰退檢查（跟 evaluate_signal() 同一套邏輯）：方向沒反轉、
-        # 新鮮度也還夠，但 ADX 現在比 N 根K棒前低且已經低於 ADX_QUALITY_MIN，
-        # 代表動能在等待回踩的這段時間持續衰退，一樣是末端趨勢的樣貌。
+        # 新鮮度也還夠，但 ADX 現在比 N 根K棒前低且已經低於
+        # WEAK_ENERGY_ADX_THRESHOLD，代表動能在等待回踩的這段時間持續
+        # 衰退，一樣是末端趨勢的樣貌。
         adx = curr['adx'] if not pd.isna(curr['adx']) else 0.0
         adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
         adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else np.nan
@@ -1019,13 +1029,13 @@ class SuperTrendKeltnerStrategy:
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
-        adx_declining_exhausted = adx_declining and adx < ADX_QUALITY_MIN
+        adx_declining_exhausted = adx_declining and adx < WEAK_ENERGY_ADX_THRESHOLD
         if adx_declining_exhausted:
             return {
                 "status": "CANCEL",
                 "reason": (
                     f"ADX 動能持續衰退 {adx:.1f}<{adx_prior:.1f}"
-                    f"（{ADX_DECLINE_LOOKBACK_BARS}根K棒前）且低於品質底線 {ADX_QUALITY_MIN:.1f}"
+                    f"（{ADX_DECLINE_LOOKBACK_BARS}根K棒前）且低於能量門檻 {WEAK_ENERGY_ADX_THRESHOLD:.1f}"
                 ),
             }
 
@@ -1141,7 +1151,7 @@ class SuperTrendKeltnerStrategy:
             "reason": (
                 f"二次確認通過 Pullback_Score({pullback_score})"
                 + (
-                    f" | ADX {adx:.1f}←{adx_prior:.1f}仍高於{ADX_QUALITY_MIN:g}，品質-1"
+                    f" | ADX {adx:.1f}←{adx_prior:.1f}仍高於{WEAK_ENERGY_ADX_THRESHOLD:g}，品質-1"
                     if adx_decline_soft_penalty else ""
                 )
             ),

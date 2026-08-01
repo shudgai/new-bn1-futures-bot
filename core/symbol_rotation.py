@@ -41,7 +41,7 @@ from core.config import (
     get_signal_leverage,
     SIGNAL_LEVERAGE_CAPS,
     MAINSTREAM_SYMBOLS,
-    ADX_QUALITY_MIN,
+    WEAK_ENERGY_ADX_THRESHOLD,
     WEAK_ENERGY_LEVERAGE_CAP,
 )
 
@@ -725,6 +725,6 @@ class SymbolRotation:
                 if score_value >= threshold:
                     result = symbol_cap if cap is None else min(symbol_cap, cap)
                     break
-        if adx is not None and adx < ADX_QUALITY_MIN:
+        if adx is not None and adx < WEAK_ENERGY_ADX_THRESHOLD:
             result = min(result, WEAK_ENERGY_LEVERAGE_CAP)
         return result

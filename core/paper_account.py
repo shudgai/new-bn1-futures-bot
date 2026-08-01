@@ -558,10 +558,31 @@ class PaperAccount:
                     await self.close_position(symbol, curr_p, reason)
                     continue
 
-            # 獲利了結參考提醒（純顯示，邏輯跟 BinanceTestnetAccount 一致）
+            # 獲利了結參考提醒（跟 BinanceTestnetAccount 邏輯一致）：從高點
+            # 回吐超過門檻時亮警訊。警訊亮起後，只要下一次檢查浮盈比前一次
+            # 高（哪怕只有一點點反彈回升），代表這是警訊亮起後難得的一次
+            # 回升機會，把握住立刻平倉，不賭它會繼續反彈。
+            #
+            # 這裡的 pnl_pct 是價格原始漲跌幅（未扣手續費/滑價），實測
+            # ADA/USDT 17:01 這筆就是抓到一個只有 0.001% 的極小反彈就平倉，
+            # 扣掉開平倉手續費(2×TAKER_FEE_RATE)+平倉滑價(SLIPPAGE_PCT)後
+            # 實際是淨損-0.20——「把握回升鎖住獲利」變成「連成本都不夠付」。
+            # 加上最低獲利門檻，回升幅度要先蓋過來回成本才值得把握。
+            round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
             peak_pnl_pct = highest_pnl
             profit_giveback_ratio = (peak_pnl_pct - pnl_pct) / peak_pnl_pct if peak_pnl_pct > 0 else 0.0
             profit_alert = pnl_pct > 0 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
+
+            prev_pnl_pct = meta.get("prev_pnl_pct")
+            meta["prev_pnl_pct"] = pnl_pct
+            if (
+                profit_alert
+                and prev_pnl_pct is not None
+                and pnl_pct > prev_pnl_pct
+                and pnl_pct > round_trip_cost_pct
+            ):
+                await self.close_position(symbol, curr_p, "獲利回吐警訊後反彈，把握回升即刻平倉")
+                continue
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p
