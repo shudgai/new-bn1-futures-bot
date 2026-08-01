@@ -18,7 +18,7 @@ from core.config import (
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
     TAKER_FEE_RATE, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC,
-    CONTRARIAN_POSITION_SIZE_MULTIPLIER,
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -437,10 +437,42 @@ class TradingEngine:
         self.account.log(f"📊 [{len(symbols_snapshot)}幣訊號進度]\n" + "\n".join(f"• {entry}" for entry in entries), "INFO")
         self.last_signal_progress_log_at = now_time
 
+    async def _validate_mainstream_symbols(self):
+        """啟動時核對 MAINSTREAM_SYMBOLS 是否都是幣安合約市場真實存在、
+        有效的永續合約——之前 ICP/USDT 明明不在名單該有的幣種裡卻混進來，
+        導致下單時才炸 BadSymbol。self.exchange 不論什麼模式都是連接
+        真實主網，用它的市場資料當作真相來源，只警示不中斷啟動（單一
+        幣種異常不該影響其他幣種正常交易）。"""
+        try:
+            await self.exchange.load_markets()
+        except Exception as exc:
+            self.account.log(f"⚠️ [幣種名單核對] 無法載入市場資料，略過本次核對：{exc}", "WARNING")
+            return
+        invalid = []
+        for sym in sorted(MAINSTREAM_SYMBOLS):
+            try:
+                market = self.exchange.market(sym)
+                if not market.get("active", True) or not market.get("swap"):
+                    invalid.append(f"{sym}（已下架或非永續合約）")
+            except Exception:
+                invalid.append(f"{sym}（市場不存在）")
+        if invalid:
+            self.account.log(
+                f"🚨 [幣種名單核對] MAINSTREAM_SYMBOLS 內有 {len(invalid)} 個幣種異常，"
+                f"請檢查並從名單移除：{', '.join(invalid)}",
+                "DANGER",
+            )
+        else:
+            self.account.log(
+                f"✅ [幣種名單核對] MAINSTREAM_SYMBOLS 共 {len(MAINSTREAM_SYMBOLS)} 個幣種"
+                f"皆為真實有效的幣安永續合約"
+            )
+
     async def start(self):
         if self.is_running:
             return
         await self.account.initialize()
+        await self._validate_mainstream_symbols()
         self.is_running = True
         if PAPER_TRADING:
             self.account.log(f"▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（{len(DEFAULT_SYMBOLS)}幣雙向交易）")
@@ -1336,7 +1368,7 @@ class TradingEngine:
             amount_usdt=amount_usdt, sl=sl, tp=tp,
             reason=ma7_sig.get("reason", "MA7_Reversal_Entry"),
             atr=atr,
-            leverage=self.symbol_rotation.get_dynamic_leverage(symbol, score),
+            leverage=self.symbol_rotation.get_dynamic_leverage(symbol, score, adx=ma7_sig.get("adx")),
             signal_score=score,
             post_only=False, # 不啟用 Post-Only，允許直接吃單
             entry_context={

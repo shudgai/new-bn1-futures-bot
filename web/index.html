@@ -55,6 +55,10 @@
 
         /* Main Container */
         .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+        /* grid item 預設 min-width:auto，內容（例如coin-grid）撐開多寬，
+           格子就不會縮小到比那個寬——手機版單欄時會把整個容器往外撐開
+           造成橫向捲動，加 min-width:0 讓格子可以縮小到容器寬度內。 */
+        .container > * { min-width: 0; }
         .right-panel { display: flex; flex-direction: column; }
         .bot-control-card { order: 1; }
         .system-log-card { order: 2; }
@@ -77,14 +81,27 @@
 
         /* Stats Grid */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stats-grid-6 { grid-template-columns: repeat(6, 1fr); }
         .stat-box { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
         .stat-label { font-size: 11px; color: var(--muted); font-weight: 600; }
         .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; margin-top: 4px; }
 
         /* Tables */
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); }
+        th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
         td { padding: 12px; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; }
+        /* 表格欄位在窄螢幕容易被壓縮到重疊，改成只在自己的容器內橫向捲動 */
+        .table-scroll { overflow-x: auto; }
+
+        /* 手機版：右側面板改到內容下方、統計格數減少、表格橫向捲動避免整頁被撐開 */
+        @media (max-width: 860px) {
+            .container { grid-template-columns: 1fr; margin: 12px auto; padding: 0 10px; }
+            .stats-grid, .stats-grid-6 { grid-template-columns: repeat(2, 1fr); }
+            .coin-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+            .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+            table { font-size: 12px; }
+            th, td { padding: 8px; }
+        }
 
         .up { color: var(--up); font-weight: 700; }
         .down { color: var(--down); font-weight: 700; }
@@ -149,7 +166,7 @@
                 </div>
 
                 <!-- STATS OVERVIEW -->
-                <div class="stats-grid" style="grid-template-columns: repeat(6, 1fr);">
+                <div class="stats-grid stats-grid-6">
                     <div class="stat-box">
                         <div class="stat-label">帳戶餘額 (USDT)</div>
                         <div class="stat-val">{{ bot.balance.toFixed(2) }}</div>
@@ -188,6 +205,7 @@
                         <span>📊 當前持倉 (Active Positions)</span>
                         <span style="font-size:11px; color:var(--muted)">{{ bot.positions.length }} 個部位</span>
                     </div>
+                    <div class="table-scroll">
                     <table>
                         <thead>
                             <tr>
@@ -244,6 +262,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    </div>
                 </div>
 
                 <!-- TRADE HISTORY TABLE -->
@@ -258,7 +277,7 @@
                             <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
                         </div>
                     </div>
-                    <div style="max-height:220px; overflow-y:auto;">
+                    <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
                         <table>
                             <thead>
                                 <tr>
@@ -294,7 +313,8 @@
                         <span><span class="collapse-arrow" :class="{ open: volatilityExpanded }">▶</span> 📈 幣種波動率統計 (每小時輪替時更新)</span>
                         <span style="font-size:11px; color:var(--muted)">幣種本身市場價格，跟持倉損益無關</span>
                     </div>
-                    <table v-show="volatilityExpanded">
+                    <div class="table-scroll" v-show="volatilityExpanded">
+                    <table>
                         <thead>
                             <tr>
                                 <th>幣種</th>
@@ -326,6 +346,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    </div>
                 </div>
             </div>
 

@@ -17,7 +17,7 @@ from core.config import (
     ADVERSE_PULLBACK_BODY_MIN_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
-    BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED, SYMBOL_1H_ST_FILTER_BYPASS_SCORE,
+    BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -199,11 +199,11 @@ def detect_ma7_reversal(
     if st_dir != want_dir:
         return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
 
-    # 1h SuperTrend 方向：分數達 SYMBOL_1H_ST_FILTER_BYPASS_SCORE 代表其餘
-    # 品質條件都已經很扎實，允許繞過1H個幣趨勢不符——這是目前卡住訊號裡
-    # 佔比最高的一關（約半數）。低於此分數仍必須順著1H大方向，保留順勢
-    # 交易的底線防護，不是全部開放。
-    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None and score < SYMBOL_1H_ST_FILTER_BYPASS_SCORE:
+    # 1h SuperTrend 方向：曾經允許高分訊號繞過1H個幣趨勢不符，但實測
+    # 繞過後逆勢進場的勝率明顯偏低（FIL/AAVE兩筆都是靠繞過門檻才逆勢
+    # 開倉，結果雙雙虧損），改成不論分數高低一律要求順著1H大方向，
+    # 取消繞過機制。
+    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
         if want_dir == 1 and st_direction_1h == -1:
             return _no("1h_ST_Bearish vs LONG")
         if want_dir == -1 and st_direction_1h == 1:
@@ -216,9 +216,9 @@ def detect_ma7_reversal(
     if btc_regime["hard_block"]:
         return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
 
-    # 1h EMA50 方向：跟1h SuperTrend用同一個高分繞過門檻，分數達標代表
-    # 其餘品質條件都已經很扎實，允許繞過；低於門檻仍要順著1H均線方向。
-    if ema_50_1h is not None and score < SYMBOL_1H_ST_FILTER_BYPASS_SCORE:
+    # 1h EMA50 方向：跟1h SuperTrend一樣取消高分繞過，一律要求順著
+    # 1H均線方向。
+    if ema_50_1h is not None:
         ema_50_upper = ema_50_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT)
         ema_50_lower = ema_50_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT)
         if want_dir == 1 and price < ema_50_lower:

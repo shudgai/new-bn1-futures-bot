@@ -41,6 +41,8 @@ from core.config import (
     get_signal_leverage,
     SIGNAL_LEVERAGE_CAPS,
     MAINSTREAM_SYMBOLS,
+    ADX_QUALITY_MIN,
+    WEAK_ENERGY_LEVERAGE_CAP,
 )
 
 
@@ -702,17 +704,27 @@ class SymbolRotation:
             "volatility_stats": self.volatility_stats,
         }
 
-    def get_dynamic_leverage(self, symbol: str, score) -> int:
+    def get_dynamic_leverage(self, symbol: str, score, adx: float = None) -> int:
         """依實測 ATR% 決定槓桿上限，取代原本用市值猜的 SYMBOL_LEVERAGE；
         該幣種還沒有實測資料時（例如剛啟動、還沒跑過第一次輪替），
-        退回原本的靜態表，行為不變。"""
+        退回原本的靜態表，行為不變。
+
+        adx 是這次訊號當下的動能強度（不是幣種歷史波動率）：ADX越低代表
+        趨勢動能越弱、越可能已經走到這波行情的末端，不管分數/波動率算出
+        來的上限多高，一律不套用高槓桿，避免用6x去賭一個動能已經在衰退
+        的訊號。"""
         stats = self.volatility_stats.get(symbol)
         if not stats or not stats.get("atr_pct"):
-            return get_signal_leverage(symbol, score)
-        atr_pct = stats["atr_pct"] / 100.0
-        symbol_cap = get_atr_based_leverage(atr_pct)
-        score_value = score or 0
-        for threshold, cap in SIGNAL_LEVERAGE_CAPS:
-            if score_value >= threshold:
-                return symbol_cap if cap is None else min(symbol_cap, cap)
-        return 1
+            result = get_signal_leverage(symbol, score)
+        else:
+            atr_pct = stats["atr_pct"] / 100.0
+            symbol_cap = get_atr_based_leverage(atr_pct)
+            score_value = score or 0
+            result = 1
+            for threshold, cap in SIGNAL_LEVERAGE_CAPS:
+                if score_value >= threshold:
+                    result = symbol_cap if cap is None else min(symbol_cap, cap)
+                    break
+        if adx is not None and adx < ADX_QUALITY_MIN:
+            result = min(result, WEAK_ENERGY_LEVERAGE_CAP)
+        return result

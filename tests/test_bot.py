@@ -14,7 +14,7 @@ from core.config import (
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
     DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
-    CONTRARIAN_POSITION_SIZE_MULTIPLIER,
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER, ADX_QUALITY_MIN, WEAK_ENERGY_LEVERAGE_CAP,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -299,10 +299,10 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("APT/USDT", 70) == 3
 
 
-def test_configured_trade_amount_uses_75_usdt_per_slot():
-    assert engine_module.TRADE_AMOUNT_USDT == pytest.approx(75.0)
+def test_configured_trade_amount_uses_50_usdt_per_slot():
+    assert engine_module.TRADE_AMOUNT_USDT == pytest.approx(50.0)
     assert engine_module.MAX_SLOTS == 5
-    assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(375.0)
+    assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(250.0)
 
 
 def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
@@ -1238,6 +1238,26 @@ def test_purge_unhealthy_removes_illiquid_candidate_but_protects_held_position(m
     assert "ILLIQUID/USDT" not in watchlist
     assert "REPLACEMENT/USDT" not in watchlist
     assert "HELDLOW/USDT" in watchlist  # 持倉中，即使流動性也差，不能被換掉
+
+
+def test_get_dynamic_leverage_caps_at_3x_when_adx_energy_weak():
+    """進場當下ADX動能太弱（低於ADX_QUALITY_MIN）時，不管分數/波動率算出
+    來的上限多高，槓桿都要封頂在WEAK_ENERGY_LEVERAGE_CAP(3x)——避免對一個
+    可能已經在趨勢末端、動能衰退的訊號套用高槓桿。"""
+    rotation = SymbolRotation(None)
+    rotation.volatility_stats["BTC/USDT"] = {"atr_pct": 0.15}  # 低ATR% -> 原本可以到6x
+
+    # 高分 + 低波動 -> 沒有ADX資訊時維持原本的高槓桿上限
+    normal_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89)
+    assert normal_leverage == 6
+
+    # 同樣的分數/波動率，但ADX動能低於門檻 -> 封頂3x
+    weak_energy_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89, adx=ADX_QUALITY_MIN - 1)
+    assert weak_energy_leverage == WEAK_ENERGY_LEVERAGE_CAP
+
+    # ADX達到門檻 -> 不受影響，維持原本上限
+    strong_energy_leverage = rotation.get_dynamic_leverage("BTC/USDT", score=89, adx=ADX_QUALITY_MIN)
+    assert strong_energy_leverage == 6
 
 
 def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch):
@@ -2219,6 +2239,60 @@ async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, mon
     assert placed is False
     assert "DOGE/USDT" not in engine.account.positions
     assert any("5分鐘週期已對LONG方向亮警訊" in entry["text"] for entry in engine.account.logs)
+
+
+@pytest.mark.anyio
+async def test_validate_mainstream_symbols_warns_on_invalid_symbol(tmp_path, monkeypatch):
+    """啟動時核對 MAINSTREAM_SYMBOLS：之前 ICP/USDT 明明不存在於幣安
+    合約市場卻混進名單，導致下單時才炸 BadSymbol。這裡驗證只要有一個
+    幣種在交易所市場資料裡找不到（或非永續合約/已下架），就要記一筆
+    DANGER等級的警示日誌，列出異常的幣種。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    engine = TradingEngine()
+
+    class FakeExchange:
+        async def load_markets(self):
+            return {}
+
+        def market(self, symbol):
+            if symbol == "BAD/USDT":
+                raise Exception("does not exist")
+            if symbol == "DELISTED/USDT":
+                return {"active": False, "swap": True}
+            return {"active": True, "swap": True}
+
+    engine.exchange = FakeExchange()
+    monkeypatch.setattr(engine_module, "MAINSTREAM_SYMBOLS", {"BTC/USDT", "BAD/USDT", "DELISTED/USDT"})
+
+    await engine._validate_mainstream_symbols()
+
+    danger_logs = [e["text"] for e in engine.account.logs if e["level"] == "DANGER"]
+    assert len(danger_logs) == 1
+    assert "BAD/USDT" in danger_logs[0]
+    assert "DELISTED/USDT" in danger_logs[0]
+    assert "BTC/USDT" not in danger_logs[0]
+
+
+@pytest.mark.anyio
+async def test_validate_mainstream_symbols_passes_when_all_valid(tmp_path, monkeypatch):
+    """所有幣種都是有效永續合約時，只記錄一筆成功訊息，不應有DANGER警示。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    engine = TradingEngine()
+
+    class FakeExchange:
+        async def load_markets(self):
+            return {}
+
+        def market(self, symbol):
+            return {"active": True, "swap": True}
+
+    engine.exchange = FakeExchange()
+    monkeypatch.setattr(engine_module, "MAINSTREAM_SYMBOLS", {"BTC/USDT", "ETH/USDT"})
+
+    await engine._validate_mainstream_symbols()
+
+    assert not any(e["level"] == "DANGER" for e in engine.account.logs)
+    assert any("皆為真實有效的幣安永續合約" in e["text"] for e in engine.account.logs)
 
 
 @pytest.mark.anyio

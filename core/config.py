@@ -169,12 +169,10 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
+# 曾經允許高分訊號繞過此過濾（SYMBOL_1H_ST_FILTER_BYPASS_SCORE），但實測
+# 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
+# 順著1H大方向。
 SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
-# SYMBOL_1H_ST_FILTER_BYPASS_SCORE：分數達到此門檻可繞過1H個幣趨勢過濾
-# （曾經降到80分讓更多中高分訊號繞過，但實測繞過1H趨勢對齊後違逆大
-# 方向進場的勝率明顯偏低，改回只有89分頂分才能繞過，低於此分數的訊號
-# 仍必須順著1H大方向，保留順勢交易的底線防護）。
-SYMBOL_1H_ST_FILTER_BYPASS_SCORE = int(os.getenv("SYMBOL_1H_ST_FILTER_BYPASS_SCORE", "89"))
 
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：初始突破評分固定為 100 分制：
@@ -266,6 +264,10 @@ ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
 ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
+# WEAK_ENERGY_LEVERAGE_CAP：進場當下 ADX < ADX_QUALITY_MIN（動能偏弱，
+# 可能已經在這波行情的末端）時，槓桿不管分數/波動率算出來的上限多高，
+# 一律封頂在這個倍數，避免用高槓桿賭一個動能已經在衰退的訊號。
+WEAK_ENERGY_LEVERAGE_CAP = int(os.getenv("WEAK_ENERGY_LEVERAGE_CAP", "3"))
 # ADX_DECLINE_LOOKBACK_BARS：實測 AAVE/USDT 07/28 14:48 這筆進場，往前
 # 回看 8 根 5 分K，ADX 從 19.51 一路降到 14.67 才進場——SuperTrend 方向
 # 還沒翻轉、新鮮度分數也還算高，但 ADX 連續下滑代表動能早就在退潮，是
