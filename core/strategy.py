@@ -17,7 +17,7 @@ from core.config import (
     ADVERSE_PULLBACK_BODY_MIN_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
-    BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
+    BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED, SYMBOL_1H_ST_FILTER_BYPASS_SCORE,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -199,10 +199,11 @@ def detect_ma7_reversal(
     if st_dir != want_dir:
         return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
 
-    # 1h SuperTrend 方向：89分（頂分）代表其餘品質條件都已經很扎實，允許
-    # 繞過1H個幣趨勢不符——這是目前卡住訊號裡佔比最高的一關（約半數），
-    # 重新開放讓開倉機會不要卡在這裡。
-    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None and score < 89:
+    # 1h SuperTrend 方向：分數達 SYMBOL_1H_ST_FILTER_BYPASS_SCORE 代表其餘
+    # 品質條件都已經很扎實，允許繞過1H個幣趨勢不符——這是目前卡住訊號裡
+    # 佔比最高的一關（約半數）。低於此分數仍必須順著1H大方向，保留順勢
+    # 交易的底線防護，不是全部開放。
+    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None and score < SYMBOL_1H_ST_FILTER_BYPASS_SCORE:
         if want_dir == 1 and st_direction_1h == -1:
             return _no("1h_ST_Bearish vs LONG")
         if want_dir == -1 and st_direction_1h == 1:

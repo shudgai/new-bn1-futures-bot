@@ -164,6 +164,11 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
 SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
+# SYMBOL_1H_ST_FILTER_BYPASS_SCORE：分數達到此門檻可繞過1H個幣趨勢過濾
+# （原本只有89分頂分能繞過，1H趨勢不符是實測目前卡住訊號裡佔比最高的
+# 一關，約半數，降低門檻讓更多中高分訊號也能繞過；低於此分數的訊號
+# 仍必須順著1H大方向，保留順勢交易的底線防護，不是全部開放）。
+SYMBOL_1H_ST_FILTER_BYPASS_SCORE = int(os.getenv("SYMBOL_1H_ST_FILTER_BYPASS_SCORE", "80"))
 
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：初始突破評分固定為 100 分制：
