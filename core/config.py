@@ -451,12 +451,15 @@ MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
 MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
 
 # --- 主流幣名單：交易範圍限縮 + 量縮背離繞過波動過低限制 ---
-# market_candidates() 只會從這份名單裡挑選候選幣（見 symbol_rotation.py），
-# 目的是避開測試網對冷門幣報價/成交深度常跟真實行情脫節的問題（實測
-# KAITO/RLC 這類幣種曾出現測試網報價凍結、跟訊號偵測用的主網價格差了
-# 好幾%的情況）。名單原本只有15個市值最前段的幣，範圍太窄導致候選池
-# 常常只剩個位數合格，擴大到市值/知名度足夠、一般認知裡流動性沒問題
-# 的35個主流幣，兼顧「避開測試網報價爛的冷門幣」與「候選池不要太窄」。
+# market_candidates() 只會從這份名單裡挑選候選幣（見 symbol_rotation.py）。
+# 名單原本是為了避開測試網對冷門幣報價/成交深度常跟真實行情脫節的問題
+# （實測 KAITO/RLC 這類幣種曾出現測試網報價凍結、跟訊號偵測用的主網
+# 價格差了好幾%的情況）；現在已經切到紙上交易模式，self.exchange 全程
+# 都是真實主網行情，這個測試網報價問題不存在了，但「候選池不要太窄」
+# 這點仍然成立，故擴大名單掃更多幣種：新增市值/知名度足夠的 ZEC、ONDO、
+# ENA、ORDI、XMR、CFX、COTI 共7個，從35個增加到42個。仍然只挑基本面
+# 有一定認知度的主流幣，不納入新上市/迷因幣（例如當時24h成交量前段的
+# GIGGLE、KOMA、1000RATS、BANK 等），避免價格行為不穩定污染訊號品質。
 #
 # 同一份名單也用在量縮背離繞過波動過低限制：主流幣在窄幅盤整前常見
 # 「價格仍創新高/新低，但成交量明顯萎縮」的量價背離型態——主力收手、
@@ -471,6 +474,8 @@ MAINSTREAM_SYMBOLS = {
     "AAVE/USDT", "XLM/USDT", "HBAR/USDT", "INJ/USDT", "SUI/USDT",
     "SEI/USDT", "RENDER/USDT", "WLD/USDT", "1000SHIB/USDT", "GALA/USDT",
     "SAND/USDT", "MANA/USDT", "APE/USDT", "CRV/USDT", "LDO/USDT",
+    "ZEC/USDT", "ONDO/USDT", "ENA/USDT", "ORDI/USDT", "XMR/USDT",
+    "CFX/USDT", "COTI/USDT",
 }
 # VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
 # 價格極值。
