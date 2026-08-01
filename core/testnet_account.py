@@ -1165,9 +1165,17 @@ class BinanceTestnetAccount:
         entry_context: dict = None,
     ) -> bool:
         """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
-        未成交、條件變差或超時由 engine.py 主動撤單。"""
+        post_only=False 代表要求立即成交，改走 open_position() 市價單，不建立
+        會在 15 秒後被撤銷的 GTC 限價單。"""
         if symbol in self.positions or symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False
+        if not post_only:
+            return await self.open_position(
+                symbol=symbol, side=side, price=target_price,
+                amount_usdt=amount_usdt, sl=sl, tp=tp, reason=reason,
+                atr=atr, leverage=leverage, signal_score=signal_score,
+                entry_context=entry_context,
+            )
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(
                 f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕掛單",

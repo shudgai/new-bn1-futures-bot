@@ -4,6 +4,7 @@ import numpy as np
 import os
 import json
 import core.paper_account as pa_module
+import core.testnet_account as testnet_account_module
 import core.strategy as strategy_module
 import core.engine as engine_module
 from core.config import (
@@ -26,6 +27,15 @@ from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import compute_position_trigger
 from core.engine import TradingEngine
+
+
+@pytest.fixture(autouse=True)
+def isolate_testnet_account_state(tmp_path, monkeypatch):
+    """任何單元測試都不得寫入正式 Binance Testnet 本地帳本。"""
+    monkeypatch.setattr(engine_module, "PAPER_TRADING", True)
+    monkeypatch.setattr(
+        testnet_account_module, "STATE_FILE", str(tmp_path / "testnet_account.json")
+    )
 
 def test_pullback_target_enforces_minimum_atr_distance_and_rejects_narrow_room():
     target, distance, room_ok = compute_pullback_target(

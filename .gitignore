@@ -17,6 +17,7 @@ data/paper_account.json
 data/ai_trade_analysis.json
 data/testnet_account.json
 data/symbol_selection.json
+data/backups/
 nohup.out
 
 # IDE

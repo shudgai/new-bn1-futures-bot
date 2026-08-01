@@ -134,6 +134,31 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
     assert exchange.orders[2]["params"]["reduceOnly"] == "true"
 
 
+
+@pytest.mark.anyio
+async def test_non_post_only_entry_executes_immediately_as_market(tmp_path, monkeypatch):
+    """MA7 指定 post_only=False 時必須立即成交，不可留下 GTC 掛單。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
+    monkeypatch.setattr(
+        BinanceTestnetAccount, "credentials_configured", staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    success = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
+        reason="MA7_Reversal_LONG", atr=1.0, leverage=5, signal_score=89,
+        post_only=False, entry_context={"entry_mode": "MA7_REVERSAL"},
+    )
+
+    assert success is True
+    assert exchange.orders[0]["type"] == "market"
+    assert "DOGE/USDT" in account.positions
+    assert account.pending_limit_orders == {}
+
+
 @pytest.mark.anyio
 async def test_testnet_account_manual_close_is_reduce_only(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
