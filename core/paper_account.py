@@ -340,6 +340,19 @@ class PaperAccount:
             self.realized_pnl += net_pnl
             self.last_closed_at[symbol] = time.time()
 
+            # 移動止利的SL可能是在價格觸發時「回吐前一波峰值」推上去的，
+            # 但下一次檢查價格已跳空穿越（含滑點/手續費），實際平倉價
+            # 反而落到成本價以下——這時若仍標示「移動止利」會誤導使用者
+            # 以為是獲利了結。用實際淨損益結果覆寫標籤，才能反映真相。
+            if close_reason in (
+                "觸發移動止利 (Trailing Take-Profit)",
+                "觸發止損 (Stop-Loss)",
+            ):
+                close_reason = (
+                    "觸發移動止利 (Trailing Take-Profit)" if net_pnl >= 0
+                    else "觸發止損 (Stop-Loss)"
+                )
+
             self.trades.insert(0, {
                 "id": int(time.time() * 1000),
                 "time": get_taipei_now_str("%m/%d %H:%M:%S"),

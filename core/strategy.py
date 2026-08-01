@@ -269,20 +269,12 @@ def detect_ma7_reversal(
         # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
         if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir):
             pass
-        elif want_dir == -1 and vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
-            # 逆勢承接：原本要空的方向剛好遇到波動過低，改成反手承接的
-            # 多單買點——此時價格便宜，不等5m/1h趨勢翻多才進場，直接把
-            # want_dir/side翻成LONG，讓後面MA7谷底型態、KC下軌回踩確認、
-            # 結構性止損等既有多單邏輯接手判斷（不是另開一條路徑，重用
-            # 同一套多單品質把關，只是不要求SuperTrend/1h趨勢對齊）。
-            # 全部幣種適用，跟主流幣限定的量縮背離繞過是兩條獨立規則。
-            # 要求量能達均量門檻（跟評分的量能加分同一個標準），確認底部
-            # 是真的有買盤介入撐住，不是隨機雜訊彈一下，降低進場後被打回
-            # 原本大趨勢方向（反巴）的機率。
-            is_contrarian_bottom_buy = True
-            want_dir = 1
-            side = "LONG"
         else:
+            # 逆勢承接（MA7_ContrarianBottomBuy）已停用：實測17%勝率、
+            # 12筆虧損7.18U，就算加上量能確認/縮小倉位/2根K棒確認等風控，
+            # 依然是跟1h趨勢對作，方向判斷本身不準的問題無法靠風控修正。
+            # 保留 is_contrarian_bottom_buy 相關的下游程式碼（分數/倉位/
+            # 移動停利觸發門檻），未來若要重新啟用只需在這裡恢復翻轉邏輯。
             return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
 
     # RSI 過熱/過冷

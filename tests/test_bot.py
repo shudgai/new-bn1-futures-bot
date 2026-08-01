@@ -225,6 +225,33 @@ async def test_paper_account_trailing_stop_moves_sl_favorably(tmp_path, monkeypa
 
 
 @pytest.mark.anyio
+async def test_paper_account_trailing_sl_gap_through_labels_as_stop_loss_not_profit(tmp_path, monkeypatch):
+    """移動停利已把SL推到成本價以上後(is_breakeven_moved=True)，若下一次
+    檢查價格直接跳空跌破SL、跌到成本價以下(含手續費後淨損益為負)，
+    平倉原因必須顯示「觸發止損」而不是「觸發移動止利」，因為使用者
+    看到的其實是一筆虧損，不是真正鎖利的獲利了結。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
+
+    # 先把利潤推高到遠超過TRAILING_TRIGGER_PCT，觸發移動止利、SL推到成本價以上
+    await account.update_positions({"BTC/USDT": 101.0})
+    assert account.positions["BTC/USDT"]["is_breakeven_moved"] is True
+    moved_sl = account.positions["BTC/USDT"]["sl"]
+    assert moved_sl > 100.0
+
+    # 下一次檢查價格直接跳空跌破新SL、且跌破成本價，實際平倉會是虧損
+    await account.update_positions({"BTC/USDT": moved_sl - 1.0})
+
+    assert "BTC/USDT" not in account.positions
+    trade = account.trades[0]
+    assert trade["symbol"] == "BTC/USDT"
+    assert trade["pnl"] < 0
+    assert trade["reason"] == "觸發止損 (Stop-Loss)"
+
+
+@pytest.mark.anyio
 async def test_paper_account_daily_loss_limit_blocks_new_entries_only(tmp_path, monkeypatch):
     """今日虧損達門檻只擋新開倉，既有持倉不受影響（daily_loss_limit_hit
     本身不平倉，只回傳旗標給呼叫端判斷）。"""
@@ -1896,28 +1923,26 @@ def test_detect_ma7_reversal_recency_and_dynamic_filters():
     assert result_pass["structural_sl"] < result_pass["price"]
 
 
-def test_detect_ma7_reversal_contrarian_bottom_buy_on_low_atr_short():
-    """原本要空（SHORT context）但波動過低，且MA7呈現真正的谷底型態時，
-    應翻轉成逆勢承接的多單買點（不需5m/1h趨勢對齊）。"""
+def test_detect_ma7_reversal_contrarian_bottom_buy_disabled_on_low_atr_short():
+    """逆勢承接(MA7_ContrarianBottomBuy)已停用：實測12筆17%勝率、虧損
+    7.18U，就算有量能確認/縮小倉位/2根K棒確認等風控，方向判斷本身不準
+    的問題無法用風控修正。即使MA7呈現真正的谷底型態，波動過低時也應該
+    直接跳過，不再翻轉成逆勢承接的多單買點。"""
     frame = _ma7_frame("LONG")  # LONG 樣式：谷底型態 + KC下軌回踩 + price<=ema20
     frame["st_direction"] = -1  # 但 SuperTrend 方向是 SHORT（原本要空）
     frame["atr"] = 0.05  # 刻意壓低 ATR，觸發波動過低
-    # 逆勢承接要求連續2根站上谷底：谷底(prev2)在更早的位置，prev跟curr
-    # 都要站在谷底之上，不能只有curr這一根剛好翻上去。
     frame.loc[frame.index[47], "ma7"] = 99.85  # prev2（谷底）
     frame.loc[frame.index[48], "ma7"] = 99.95  # prev（已站上谷底）
     frame.loc[frame.index[49], "ma7"] = 100.05  # curr（繼續站上谷底）
 
     result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
-    assert result["detected"] is True, f"預期 detected=True, 原因: {result.get('reason')}"
-    assert result["side"] == "LONG"
-    assert result["is_contrarian_bottom_buy"] is True
-    assert "MA7_ContrarianBottomBuy_LONG" in result["reason"]
-    assert result["structural_sl"] is not None
+    assert result["detected"] is False
+    assert result.get("is_contrarian_bottom_buy") is not True
+    assert "ATR過低" in result["reason"]
 
 
 def test_detect_ma7_reversal_no_contrarian_flip_without_real_bottom_shape():
-    """波動過低但MA7沒有真正谷底型態（平坦）時，不應誤翻轉成多單。"""
+    """波動過低但MA7沒有真正谷底型態（平坦）時，不應翻轉成多單。"""
     price = 100.0
     frame = pd.DataFrame({
         "close": [price] * 50,
@@ -1940,7 +1965,7 @@ def test_detect_ma7_reversal_no_contrarian_flip_without_real_bottom_shape():
     })
     result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
     assert result["detected"] is False
-    assert "谷底轉彎" in result["reason"]
+    assert "ATR過低" in result["reason"]
 
 
 def test_detect_ma7_reversal_no_contrarian_flip_for_long_context():
