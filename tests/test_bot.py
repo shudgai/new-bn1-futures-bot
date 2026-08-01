@@ -252,12 +252,11 @@ async def test_paper_account_trailing_sl_gap_through_labels_as_stop_loss_not_pro
 
 
 @pytest.mark.anyio
-async def test_paper_account_closes_on_rebound_after_profit_giveback_alert(tmp_path, monkeypatch):
+async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_path, monkeypatch):
     """獲利回吐警訊（💰⚠️，從高點回吐超過PROFIT_ALERT_GIVEBACK_RATIO）亮起
-    後，下一次檢查若浮盈比前一次回升（哪怕只回升一點點），代表這是警訊
-    亮起後難得的一次反彈，要把握住立刻平倉鎖住獲利，不要繼續放著賭它
-    會一路反彈回去，導致利潤被侵蝕更多甚至轉虧。關掉移動停利避免SL
-    價位干擾，單純測試這個回升即平倉的邏輯。"""
+    後，不是一有反彈就立刻平倉——只要浮盈還在持續往上爬，就繼續讓它跑；
+    只有等反彈自己也開始回落（找到這次反彈的高點）時，才把握那個高點
+    平倉。關掉移動停利避免SL價位干擾，單純測試這個邏輯。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
     account = PaperAccount()
@@ -274,23 +273,29 @@ async def test_paper_account_closes_on_rebound_after_profit_giveback_alert(tmp_p
     assert "BTC/USDT" in account.positions
     assert account.positions["BTC/USDT"]["profit_alert"] is True
 
-    # 下一次浮盈比前一次(107)回升，警訊仍亮著 -> 立刻平倉
+    # 反彈持續往上爬（108 -> 109），還沒觸頂，應該繼續持有讓它跑，不平倉
     await account.update_positions({"BTC/USDT": 108.0})
+    assert "BTC/USDT" in account.positions
+    await account.update_positions({"BTC/USDT": 109.0})
+    assert "BTC/USDT" in account.positions
+
+    # 反彈本身開始回落（109 -> 108.5），找到這次反彈的高點了 -> 平倉
+    await account.update_positions({"BTC/USDT": 108.5})
 
     assert "BTC/USDT" not in account.positions
     trade = account.trades[0]
     assert trade["symbol"] == "BTC/USDT"
     assert trade["pnl"] > 0
-    assert trade["reason"] == "獲利回吐警訊後反彈，把握回升即刻平倉"
+    assert trade["reason"] == "獲利回吐警訊後反彈觸頂回落，把握高點平倉"
 
 
 @pytest.mark.anyio
 async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost(tmp_path, monkeypatch):
-    """回升即平倉不能只看「浮盈比前一次高」，還要蓋過來回成本（2x手續費+
-    平倉滑價）才值得把握——實測ADA/USDT 08/01 17:01這筆就是抓到只有
-    0.001%的極小反彈就平倉，扣完成本後淨損-0.20，「把握回升鎖住獲利」
-    變成「連成本都不夠付」。這裡用極小的價格波動模擬同樣情境，驗證
-    這種微小反彈不該觸發平倉，部位要繼續留著等真正夠大的獲利。"""
+    """反彈觸頂回落平倉不能只看「有沒有從反彈高點回落」，還要蓋過來回
+    成本（2x手續費+平倉滑價）才值得把握——實測ADA/USDT 08/01 17:01這筆
+    就是抓到只有0.001%的極小反彈就平倉，扣完成本後淨損-0.20。這裡用
+    極小的價格波動模擬同樣情境，驗證這種微小反彈觸頂不該觸發平倉，
+    部位要繼續留著等真正夠大的獲利。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
     account = PaperAccount()
@@ -303,9 +308,13 @@ async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost
     await account.update_positions({"ADA/USDT": 100.07})
     assert account.positions["ADA/USDT"]["profit_alert"] is True
 
-    # 回升到0.075%，比前一次(0.07%)高，但依然低於來回成本門檻，
-    # 不該被當成「值得把握的反彈」而平倉
+    # 反彈到0.075%，比前一次(0.07%)高，還在往上爬，繼續持有
     await account.update_positions({"ADA/USDT": 100.075})
+    assert "ADA/USDT" in account.positions
+
+    # 反彈本身開始回落（0.075% -> 0.073%），找到反彈高點了，但獲利依然
+    # 低於來回成本門檻，不該被當成「值得把握的高點」而平倉
+    await account.update_positions({"ADA/USDT": 100.073})
 
     assert "ADA/USDT" in account.positions
 
