@@ -501,6 +501,36 @@ async def test_refresh_no_profit_alert_when_still_near_peak(tmp_path, monkeypatc
     assert pos["profit_alert"] is False
 
 
+
+@pytest.mark.anyio
+async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
+    monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", False)
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.position_meta["DOGE/USDT"] = {
+        "sl": 98.0, "tp": 105.0, "atr": 1.0, "highest_pnl_pct": 0.0,
+    }
+    exchange.positions = [{
+        "symbol": "DOGEUSDT", "positionAmt": "10", "entryPrice": "100.0",
+        "markPrice": "100.26", "leverage": "5", "unRealizedProfit": "2.6",
+    }]
+    account.last_sync_at = 0
+    await account.update_positions({"DOGE/USDT": 100.26})
+    assert account.position_meta["DOGE/USDT"]["early_profit_guard_armed"] is True
+    assert account.position_meta["DOGE/USDT"].get("is_breakeven_moved") is not True
+
+    exchange.positions[0]["markPrice"] = "100.14"
+    exchange.positions[0]["unRealizedProfit"] = "1.4"
+    account.last_sync_at = 0
+    await account.update_positions({"DOGE/USDT": 100.14})
+
+    assert "DOGE/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
+
+
 @pytest.mark.anyio
 async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))

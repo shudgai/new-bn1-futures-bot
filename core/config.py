@@ -326,35 +326,37 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 是百分比制移動止利：
 # USE_NATIVE_TRAILING_STOP=false 時 BinanceTestnetAccount 用這套，
 # PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.005"))
+EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0025"))
+EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.0015"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.004"))
 # CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
 # 專用、更早啟動的移動停利觸發門檻。逆勢單本來就是在跟原本大趨勢對作，
 # 反彈站不站得住沒把握，用更低的門檻讓移動停利盡快接手保護獲利——一旦
 # 觸發只是把止損往有利方向移動、不會限制往上的空間，利潤持續往上一樣
 # 會繼續跟著推移，不是設一個近的固定止盈就出場。
-CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.005"))
+CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.004"))
 # CONTRARIAN_POSITION_SIZE_MULTIPLIER：逆勢承接單的信心水準本來就比一般
 # 順勢MA7拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
 # 就算反彈失敗被打回原趨勢方向，虧損金額也比較小。
 CONTRARIAN_POSITION_SIZE_MULTIPLIER = float(os.getenv("CONTRARIAN_POSITION_SIZE_MULTIPLIER", "0.5"))
-# TRAILING_MODE: 預設止利模式 (conservative / balanced / aggressive)
-#   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
-#   balanced:     回吐 30% 平倉（70%）— 平衡鎖利與空間
-#   aggressive:   回吐 40% 平倉（60%）— 給行情最大呼吸空間
+# TRAILING_MODE: 正式移動停利初期的峰值鎖定比例
+#   conservative: 鎖60%（回吐40%）
+#   balanced:     鎖55%（回吐45%）
+#   aggressive:   鎖50%（回吐50%）
 TRAILING_MODE = os.getenv("TRAILING_MODE", "balanced")
-_TRAILING_PULLBACK_MAP = {"conservative": 0.75, "balanced": 0.70, "aggressive": 0.60}
-TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", str(_TRAILING_PULLBACK_MAP.get(TRAILING_MODE, 0.70))))
+_TRAILING_PULLBACK_MAP = {"conservative": 0.60, "balanced": 0.55, "aggressive": 0.50}
+TRAILING_PULLBACK_PCT = float(os.getenv("TRAILING_PULLBACK_PCT", str(_TRAILING_PULLBACK_MAP.get(TRAILING_MODE, 0.55))))
 
 # --- 動態止利：依增利速度 + 利潤分級自動選擇回吐比例 ---
-# 增利速度快 → aggressive（60%）：給行情更多空間
-# 增利速度慢 → conservative（75%）：鎖緊一點
+# 增利速度快 → aggressive（鎖50%）：給行情更多空間
+# 增利速度慢 → conservative（鎖60%）：收緊保護
 # SPEED_FAST_THRESHOLD: 增利速度 >= 此值（%/分鐘）判定為快
 SPEED_FAST_THRESHOLD = float(os.getenv("SPEED_FAST_THRESHOLD", "0.0005"))   # 0.05%/min
 # SPEED_SLOW_THRESHOLD: 增利速度 <= 此值（%/分鐘）判定為慢
 SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.01%/min
 
 # --- 利潤分級鎖倉：利潤越高，鎖越緊，避免大幅回吐 ---
-# 剛觸發（預設0.50%）時不強制套用分級門檻，只看增利速度（60~75%），
+# 正式觸發（預設0.40%）時先依增利速度鎖50~60%，
 # 保留較大的回檔空間，避免剛觸發就被雜訊掃出；觸發點本身
 # 不拉高——拉高觸發點只會讓更多小賺的單子連鎖都鎖不到、直接變虧損，
 # 讓「贏小賠大」更嚴重。真正該調的是觸發之後的鎖定爬升速度：
@@ -362,11 +364,11 @@ SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.0
 # ATR），讓利潤有更多空間往上跑，不要一點漲幅就被鎖死出場。
 # (最低利潤%, 最低鎖倉比例) — 從高到低匹配，命中即停
 _PROFIT_TIER_FLOOR = [
-    (TRAILING_TRIGGER_PCT * 12, 0.95),  # ≥3.00% 無槓桿利潤 → 至少鎖 95%（僅回吐5%）
-    (TRAILING_TRIGGER_PCT * 8, 0.88),   # ≥2.00% → 至少鎖 88%
-    (TRAILING_TRIGGER_PCT * 6, 0.82),   # ≥1.50% → 至少鎖 82%
-    (TRAILING_TRIGGER_PCT * 4, 0.75),   # ≥1.00% → 至少鎖 75%
-    (TRAILING_TRIGGER_PCT * 2, 0.65),   # ≥0.50% → 至少鎖 65%
+    (0.0300, 0.95),  # ≥3.00% 無槓桿利潤 → 至少鎖 95%
+    (0.0200, 0.88),  # ≥2.00% → 至少鎖 88%
+    (0.0150, 0.82),  # ≥1.50% → 至少鎖 82%
+    (0.0100, 0.75),  # ≥1.00% → 至少鎖 75%
+    (0.0060, 0.70),  # ≥0.60% → 至少鎖 70%
 ]
 
 # --- 分批止盈參數 ---

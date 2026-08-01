@@ -12,6 +12,8 @@ from core.config import (
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, DISASTER_STOP_MULTIPLIER,
     TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
+    EARLY_PROFIT_GUARD_TRIGGER_PCT, EARLY_PROFIT_GUARD_EXIT_PCT,
+    get_trailing_pullback_pct,
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
     DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
@@ -212,6 +214,41 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
     await account.update_positions({"ETH/USDT": 95.0})  # 跌破TP(96，空單獲利方向)
     assert "ETH/USDT" not in account.positions
     assert "止盈" in account.trades[0]["reason"]
+
+
+
+@pytest.mark.anyio
+async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
+    entry = account.positions["BTC/USDT"]["entry_price"]
+
+    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_TRIGGER_PCT + 0.0001)})
+    assert account.position_meta["BTC/USDT"]["early_profit_guard_armed"] is True
+    assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is False
+
+    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_EXIT_PCT - 0.0001)})
+    assert "BTC/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
+    assert account.trades[0]["pnl"] > 0
+
+
+@pytest.mark.anyio
+async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
+    entry = account.positions["BTC/USDT"]["entry_price"]
+
+    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_TRIGGER_PCT - 0.0001)})
+    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_EXIT_PCT - 0.0001)})
+    assert "BTC/USDT" in account.positions
+    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
+
+
+def test_trailing_locks_at_least_seventy_percent_from_point_six_pct():
+    assert get_trailing_pullback_pct(0.006, 0.0) >= 0.70
 
 
 @pytest.mark.anyio

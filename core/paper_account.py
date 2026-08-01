@@ -12,6 +12,8 @@ from core.config import (
     MAX_DAILY_LOSS_PCT,
     MIN_OPEN_SIGNAL_SCORE,
     ENABLE_TRAILING_STOP,
+    EARLY_PROFIT_GUARD_TRIGGER_PCT,
+    EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
     get_trailing_pullback_pct,
@@ -558,6 +560,26 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
+            if ENABLE_TRAILING_STOP:
+                if highest_pnl >= EARLY_PROFIT_GUARD_TRIGGER_PCT and not meta.get("early_profit_guard_armed"):
+                    meta["early_profit_guard_armed"] = True
+                    pos["early_profit_guard_armed"] = True
+                    self.log(
+                        f"🛡️ [紙上交易/早期獲利保護] {symbol} 峰值達 {highest_pnl:.4%}，"
+                        f"回吐至 {EARLY_PROFIT_GUARD_EXIT_PCT:.2%} 將市價離場", "SUCCESS"
+                    )
+                if (
+                    meta.get("early_profit_guard_armed")
+                    and not meta.get("is_breakeven_moved")
+                    and pnl_pct <= EARLY_PROFIT_GUARD_EXIT_PCT
+                ):
+                    self.log(
+                        f"🏁 [紙上交易/早期獲利保護] {symbol} 從峰值 {highest_pnl:.4%} "
+                        f"回吐至 {pnl_pct:.4%}，執行平倉", "SUCCESS"
+                    )
+                    await self.close_position(symbol, curr_p, "早期獲利保護回吐平倉")
+                    continue
+
             # 移動停利（百分比制，跟 USE_NATIVE_TRAILING_STOP=false 時的
             # testnet 邏輯相同——紙上帳戶沒有真實交易所可以掛原生
             # TRAILING_STOP_MARKET，統一用這一套）。逆勢承接單用更早/更低
@@ -567,11 +589,9 @@ class PaperAccount:
                 CONTRARIAN_TRAILING_TRIGGER_PCT if meta.get("is_contrarian_bottom_buy")
                 else TRAILING_TRIGGER_PCT
             )
-            # 門檻必須涵蓋鎖利緩衝與平倉成本，否則止損會被推到現價前方。
-            trailing_trigger = max(
-                configured_trigger,
-                NET_PROFIT_GUARANTEE_BUFFER + SLIPPAGE_PCT + TAKER_FEE_RATE,
-            )
+            # 正式移動停利在0.40%啟動；止利線本身仍由
+            # NET_PROFIT_GUARANTEE_BUFFER保證至少鎖在安全獲利區。
+            trailing_trigger = configured_trigger
             if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:
                 opened_at = meta.get("open_timestamp") or pos.get("open_timestamp") or now_ts
                 pullback = get_trailing_pullback_pct(highest_pnl, opened_at)

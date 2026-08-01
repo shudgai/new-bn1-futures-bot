@@ -17,6 +17,8 @@ from core.config import (
     STOP_LIMIT_SLIPPAGE_GUARD_PCT,
     STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
     ENABLE_TRAILING_STOP,
+    EARLY_PROFIT_GUARD_TRIGGER_PCT,
+    EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_PULLBACK_PCT,
@@ -599,6 +601,25 @@ class BinanceTestnetAccount:
 
                 if "peak_profit_updated_at" not in meta:
                     meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
+
+                if highest_pnl >= EARLY_PROFIT_GUARD_TRIGGER_PCT and not meta.get("early_profit_guard_armed"):
+                    meta["early_profit_guard_armed"] = True
+                    pos["early_profit_guard_armed"] = True
+                    self.log(
+                        f"🛡️ [早期獲利保護] {symbol} 峰值達 {highest_pnl:.4%}，"
+                        f"回吐至 {EARLY_PROFIT_GUARD_EXIT_PCT:.2%} 將市價離場", "SUCCESS"
+                    )
+                if (
+                    meta.get("early_profit_guard_armed")
+                    and not meta.get("is_breakeven_moved")
+                    and pnl_pct <= EARLY_PROFIT_GUARD_EXIT_PCT
+                ):
+                    self.log(
+                        f"🏁 [早期獲利保護] {symbol} 從峰值 {highest_pnl:.4%} "
+                        f"回吐至 {pnl_pct:.4%}，執行市價平倉", "SUCCESS"
+                    )
+                    await self.close_position(symbol, curr_p, "早期獲利保護回吐平倉")
+                    continue
 
                 # 浮盈換算為 ATR 倍數（無槓桿）
                 profit_in_atr = (highest_pnl / atr_pct) if atr_pct > 0 else 0.0
