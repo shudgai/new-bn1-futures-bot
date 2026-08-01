@@ -1220,6 +1220,23 @@ class TradingEngine:
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
             return False
+
+        # 進場前先確認5分鐘週期沒有已經在反對這個方向——1分鐘MA7訊號跟
+        # 5分鐘出場防線是兩個獨立時間週期各自判斷，可能出現「1分鐘剛要
+        # 轉彎，但5分鐘早就已經跌破/站上防線」的情況，這種單一進場就會
+        # 立刻被5m強出場防線打掉（實測 NEAR/USDT 進場僅8秒就被5m防線
+        # 關倉）。這裡用跟出場防線同一套 compute_position_trigger 邏輯
+        # 先擋一次，避免進場即出場的無效交易。
+        trigger_df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
+        pre_entry_trigger = compute_position_trigger(trigger_df, side)
+        if pre_entry_trigger.get("strong"):
+            self.account.log(
+                f"🛑 {symbol} MA7拐頭訊號成立但5分鐘週期已對{side}方向亮警訊"
+                f"（{', '.join(pre_entry_trigger.get('reasons', []))}），跳過本次進場",
+                "WARNING",
+            )
+            return False
+
         score = int(ma7_sig.get("score") or MIN_SCORE_THRESHOLD)
         base_amount = min(
             max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),

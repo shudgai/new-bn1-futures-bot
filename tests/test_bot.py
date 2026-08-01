@@ -2154,5 +2154,41 @@ async def test_trailing_sl_does_not_move_back(monkeypatch):
     assert account.position_meta["DOGE/USDT"]["sl"] == original_sl
 
 
+@pytest.mark.anyio
+async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, monkeypatch):
+    """1分鐘MA7訊號成立，但5分鐘週期已經對同方向亮出強警訊（跟5m出場
+    防線同一套判斷）時，進場前應該先擋下來，不要進了馬上被5m防線打掉
+    （實測 NEAR/USDT 09:49:07 進場，09:49:15 僅8秒後就被5m防線關倉）。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+
+    # 5m資料：連續兩根收線跌破EMA20緩衝帶 + 跌破前低 -> strong=True
+    # (跟 core/indicators.py compute_position_trigger 的邏輯一致)
+    closes = [100.0] * 23 + [92.0, 88.0]
+    lows = [99.0] * 23 + [90.0, 86.0]
+    highs = [101.0] * 25
+
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+        return pd.DataFrame({
+            "timestamp": list(range(len(closes))),
+            "open": closes, "high": highs, "low": lows, "close": closes,
+            "volume": [100.0] * len(closes),
+        })
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+
+    ma7_sig = {
+        "score": 89, "atr": 1.0, "structural_sl": None,
+        "reason": "MA7_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
+        "btc_allocation_factor": 1.0,
+        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+    }
+    placed = await engine._place_ma7_reversal_entry("DOGE/USDT", "LONG", ma7_sig, 88.0, 0.0)
+
+    assert placed is False
+    assert "DOGE/USDT" not in engine.account.positions
+    assert any("5分鐘週期已對LONG方向亮警訊" in entry["text"] for entry in engine.account.logs)
+
+
 
 
