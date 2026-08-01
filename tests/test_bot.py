@@ -13,7 +13,7 @@ from core.config import (
     TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
-    DISABLE_TAKE_PROFIT,
+    DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -1788,16 +1788,19 @@ def test_detect_ma7_reversal_no_signal_flat_ma7():
 
 
 def test_detect_ma7_reversal_recency_and_dynamic_filters():
-    # Test 1: KC 下軌觸碰時效性 (前3根已收盤未觸碰但更早以前有觸碰，應該被過濾)
+    # Test 1: KC 下軌觸碰時效性 (前 KC_TOUCH_LOOKBACK_BARS 根已收盤未觸碰
+    # 但更早以前有觸碰，應該被過濾)
     frame = _ma7_frame("LONG")
-    # 將過去 K 棒的最低價改為最後 4 根（含最新未收盤）都是 100.0（沒有碰觸下軌 99.0），但更早之前有碰過
-    frame.loc[frame.index[45], "low"] = 98.8
-    for idx in [46, 47, 48, 49]:
+    # 視窗外（更舊）的一根有觸碰過，但視窗內（最後 KC_TOUCH_LOOKBACK_BARS
+    # 根已收盤）都沒有觸碰下軌
+    window_start_idx = 49 - KC_TOUCH_LOOKBACK_BARS  # iloc[-(N+1):-1] 的起點
+    frame.loc[frame.index[window_start_idx - 2], "low"] = 98.8
+    for idx in range(window_start_idx, 50):
         frame.loc[frame.index[idx], "low"] = 100.0
 
     result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is False
-    assert "前三根K棒未曾靠近或跌破KC下軌" in result["reason"]
+    assert f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或跌破KC下軌" in result["reason"]
 
     # Test 2: 動態 ADX 門檻放寬
     # 一般情況下 ADX = 9.0 會因為低於 10.0 而被過濾

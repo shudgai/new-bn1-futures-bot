@@ -271,7 +271,12 @@ ADX_DECLINE_MIN_DROP_RATIO = float(os.getenv("ADX_DECLINE_MIN_DROP_RATIO", "0.08
 # 得等下一次全新回踩才會重新觸發。改成在最近 N 根裡找谷底/峰頂，只要現在
 # 已經比那個谷底/峰頂高/低就算轉彎成立；新鮮度上限已有 SuperTrend翻轉根數
 # 上限與 ADX 衰退硬性擋單把關，這裡放寬視窗不會變成無限期追價。
-MA7_REVERSAL_LOOKBACK_BARS = int(os.getenv("MA7_REVERSAL_LOOKBACK_BARS", "8"))
+MA7_REVERSAL_LOOKBACK_BARS = int(os.getenv("MA7_REVERSAL_LOOKBACK_BARS", "14"))
+# KC_TOUCH_LOOKBACK_BARS：KC回踩觸碰確認原本只認前3根已收盤K棒（防止拿
+# 很久以前的回調來當現在的轉彎），開倉機會太少時可以放寬時效視窗，讓
+# 稍微久一點的回踩也算數，跟MA7_REVERSAL_LOOKBACK_BARS放寬轉彎視窗是
+# 同一個方向的調整。
+KC_TOUCH_LOOKBACK_BARS = int(os.getenv("KC_TOUCH_LOOKBACK_BARS", "6"))
 # ADX_DECLINE_LOOKBACK_BARS_1H：同一套「ADX 現在比 N 根K棒前低，且已經
 # 低於 ADX_QUALITY_MIN」邏輯，但改看 1h K線——5分K的新鮮度/ADX檢查只能
 # 看到「這根5分K的小趨勢夠不夠新」，看不出「大週期本身是不是也已經在
@@ -495,7 +500,10 @@ SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "90
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
 # 跟著 SYMBOL_ROTATION_COUNT 等比放大（12→6 是 1:2），維持多空對稱席次。
 DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "9"))
-DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "60"))
+# 實測輪替候選池常常只剩個位數合格（60分門檻+ATR範圍雙重過濾下，31個
+# 候選常態只剩4~10個能進監控名單），降到45分讓中等評分的候選也能進來，
+# 同時仍濾掉評分明顯偏弱（30分以下）的。
+DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "45"))
 SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "60"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "5000000"))
 SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "5.0"))

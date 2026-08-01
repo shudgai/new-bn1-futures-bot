@@ -22,7 +22,7 @@ from core.config import (
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
-    MA7_REVERSAL_LOOKBACK_BARS,
+    MA7_REVERSAL_LOOKBACK_BARS, KC_TOUCH_LOOKBACK_BARS,
     MAINSTREAM_SYMBOLS, VOLUME_DIVERGENCE_LOOKBACK_BARS, VOLUME_DIVERGENCE_MAX_RATIO,
 )
 
@@ -199,8 +199,10 @@ def detect_ma7_reversal(
     if st_dir != want_dir:
         return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
 
-    # 1h SuperTrend 方向：不管分數多高都要對齊，89分不再繞過
-    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
+    # 1h SuperTrend 方向：89分（頂分）代表其餘品質條件都已經很扎實，允許
+    # 繞過1H個幣趨勢不符——這是目前卡住訊號裡佔比最高的一關（約半數），
+    # 重新開放讓開倉機會不要卡在這裡。
+    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None and score < 89:
         if want_dir == 1 and st_direction_1h == -1:
             return _no("1h_ST_Bearish vs LONG")
         if want_dir == -1 and st_direction_1h == 1:
@@ -320,10 +322,10 @@ def detect_ma7_reversal(
     # 1. 簡化區間定位：現價需在 KC 中軌（EMA20）至通道回調側之間
     #    多單：kc_lower <= price <= ema_20
     #    空單：ema_20 <= price <= kc_upper
-    # 2. 歷史觸碰確認：前 3 根已收盤的 K 棒（iloc[-4:-1]，限制時效性，防止拿很久以前的回調來當現在的轉彎）
+    # 2. 歷史觸碰確認：前 KC_TOUCH_LOOKBACK_BARS 根已收盤的 K 棒（限制時效性，防止拿很久以前的回調來當現在的轉彎）
     #    多單：至少有一根 K 棒的最低價（low）碰觸或跌破過 kc_lower（下軌），容許 0.15x ATR 的微小誤差
     #    空單：至少有一根 K 棒的最高價（high）碰觸或突破過 kc_upper（上軌），容許 0.15x ATR 的微小誤差
-    past_bars = df.iloc[-4:-1]
+    past_bars = df.iloc[-(KC_TOUCH_LOOKBACK_BARS + 1):-1]
     if len(past_bars) < 1:
         return _no("歷史已收盤K棒不足，無法進行KC觸碰驗證")
 
@@ -337,7 +339,7 @@ def detect_ma7_reversal(
         # 觸摸下軌確認 (低點 <= 下軌 + 容差)
         touched_lower = (past_bars['low'] <= (past_bars['kc_lower'] + touch_buffer)).any()
         if not touched_lower:
-            return _no("前三根K棒未曾靠近或跌破KC下軌（無回踩確認）")
+            return _no(f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或跌破KC下軌（無回踩確認）")
     else:
         # 區間判斷
         if not (price >= ema_20):
@@ -345,7 +347,7 @@ def detect_ma7_reversal(
         # 觸摸上軌確認 (高點 >= 上軌 - 容差)
         touched_upper = (past_bars['high'] >= (past_bars['kc_upper'] - touch_buffer)).any()
         if not touched_upper:
-            return _no("前三根K棒未曾靠近或突破KC上軌（無回踩確認）")
+            return _no(f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或突破KC上軌（無回踩確認）")
 
     # 計算結構性止損位（參考過去 6 根已收盤 K 棒的波段高低點與 KC 軌道，外加 0.05 * ATR 緩衝避免精準掃單）
     past_6_bars = df.iloc[-7:-1]
