@@ -14,6 +14,7 @@ from core.config import (
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
     DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -1901,6 +1902,11 @@ def test_detect_ma7_reversal_contrarian_bottom_buy_on_low_atr_short():
     frame = _ma7_frame("LONG")  # LONG 樣式：谷底型態 + KC下軌回踩 + price<=ema20
     frame["st_direction"] = -1  # 但 SuperTrend 方向是 SHORT（原本要空）
     frame["atr"] = 0.05  # 刻意壓低 ATR，觸發波動過低
+    # 逆勢承接要求連續2根站上谷底：谷底(prev2)在更早的位置，prev跟curr
+    # 都要站在谷底之上，不能只有curr這一根剛好翻上去。
+    frame.loc[frame.index[47], "ma7"] = 99.85  # prev2（谷底）
+    frame.loc[frame.index[48], "ma7"] = 99.95  # prev（已站上谷底）
+    frame.loc[frame.index[49], "ma7"] = 100.05  # curr（繼續站上谷底）
 
     result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
     assert result["detected"] is True, f"預期 detected=True, 原因: {result.get('reason')}"
@@ -2188,6 +2194,139 @@ async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, mon
     assert placed is False
     assert "DOGE/USDT" not in engine.account.positions
     assert any("5分鐘週期已對LONG方向亮警訊" in entry["text"] for entry in engine.account.logs)
+
+
+@pytest.mark.anyio
+async def test_soft_warning_tightens_sl_after_persist_threshold(tmp_path, monkeypatch):
+    """持續處於✗警訊（ma_ok=false）超過 SOFT_WARNING_PERSIST_SEC（這裡
+    monkeypatch成0秒方便測試立即觸發）、但還沒升級成⛔（strong）時，
+    應該把止損收緊到「目前止損與進場價的中點」，只會變緊不會變鬆，
+    且不會直接平倉。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+    await account.open_position("DOGE/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=200.0, reason="test", signal_score=80)
+    entry_price = account.positions["DOGE/USDT"]["entry_price"]
+
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    engine.tickers = {"DOGE/USDT": 99.0}
+
+    # 5m資料：只跌破均線(ma_ok=false)，最後一根才跌破、沒有連續兩根確認
+    # 也沒跌破前低 -> active=True, ma_ok=False, strong=False
+    closes = [100.0] * 24 + [99.0]
+    lows = [95.0] * 25
+    highs = [101.0] * 25
+
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+        return pd.DataFrame({
+            "timestamp": list(range(len(closes))),
+            "open": closes, "high": highs, "low": lows, "close": closes,
+            "volume": [100.0] * len(closes),
+        })
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+    monkeypatch.setattr("core.engine.SOFT_WARNING_PERSIST_SEC", 0.0)
+
+    import asyncio
+    original_sleep = asyncio.sleep
+    async def mock_sleep_stop(secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
+
+    await engine._position_trigger_loop()
+
+    assert "DOGE/USDT" in account.positions  # 不會直接平倉
+    new_sl = account.positions["DOGE/USDT"]["sl"]
+    assert new_sl == pytest.approx((90.0 + entry_price) / 2)
+    assert new_sl > 90.0
+    assert account.position_meta["DOGE/USDT"]["soft_warning_tightened"] is True
+    # 軟性收緊不代表已經鎖到保本以上的獲利（這裡新止損90~entry_price之間
+    # 仍是虧損區間），不能誤標記is_breakeven_moved，否則平倉原因會誤顯示
+    # 「移動止利」，5m出場防線也會誤判成「已經保護過」而提早放行
+    # （實測 LINK/USDT、AVAX/USDT 08/01這兩筆就是這樣被誤標記）。
+    assert account.position_meta["DOGE/USDT"].get("is_breakeven_moved") is False
+    assert account.positions["DOGE/USDT"].get("is_breakeven_moved") is not True
+
+    # 再跑一輪，止損不應該被再次收緊（已經標記過，避免每輪都收緊到貼死）
+    engine.is_running = True
+    await engine._position_trigger_loop()
+    assert account.positions["DOGE/USDT"]["sl"] == pytest.approx(new_sl)
+
+    # 之後真的跌破這個收緊過的止損時，平倉原因要正確顯示「止損」，不是
+    # 「移動止利」
+    await account.update_positions({"DOGE/USDT": new_sl - 1.0})
+    assert "DOGE/USDT" not in account.positions
+    assert "止損" in account.trades[0]["reason"]
+    assert "移動止利" not in account.trades[0]["reason"]
+
+
+@pytest.mark.anyio
+async def test_contrarian_bottom_buy_uses_smaller_position_size(tmp_path, monkeypatch):
+    """逆勢承接（is_contrarian_bottom_buy）信心水準較低，下單金額應該用
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER 縮小，比同分數的一般順勢單小。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+
+    async def mock_fetch_klines_not_strong(symbol, timeframe="5m", limit=30):
+        return pd.DataFrame({
+            "timestamp": list(range(25)),
+            "open": [100.0] * 25, "high": [101.0] * 25,
+            "low": [99.0] * 25, "close": [100.0] * 25,
+            "volume": [100.0] * 25,
+        })
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines_not_strong)
+
+    base_ma7_sig = {
+        "score": 82, "atr": 1.0, "structural_sl": None,
+        "reason": "test", "btc_regime_mode": "UNKNOWN", "btc_allocation_factor": 1.0,
+        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+    }
+
+    await engine._place_ma7_reversal_entry(
+        "BTC/USDT", "LONG", {**base_ma7_sig, "is_contrarian_bottom_buy": False}, 100.0, 0.0
+    )
+    normal_margin = engine.account.positions["BTC/USDT"]["margin"]
+    await engine.account.close_position("BTC/USDT", 100.0, "cleanup")
+
+    await engine._place_ma7_reversal_entry(
+        "BTC/USDT", "LONG", {**base_ma7_sig, "is_contrarian_bottom_buy": True}, 100.0, 0.0
+    )
+    contrarian_margin = engine.account.positions["BTC/USDT"]["margin"]
+
+    assert contrarian_margin == pytest.approx(normal_margin * CONTRARIAN_POSITION_SIZE_MULTIPLIER)
+    assert engine.account.position_meta["BTC/USDT"]["is_contrarian_bottom_buy"] is True
+
+
+@pytest.mark.anyio
+async def test_contrarian_bottom_buy_trailing_stop_triggers_earlier(tmp_path, monkeypatch):
+    """逆勢承接單應該用 CONTRARIAN_TRAILING_TRIGGER_PCT（比一般
+    TRAILING_TRIGGER_PCT低）更早啟動移動停利保護——同樣幅度的小幅利潤，
+    一般單完全不受影響，逆勢單已經有保護動作介入（移動止損，或因為利潤
+    還不夠覆蓋 NET_PROFIT_GUARANTEE_BUFFER 而提早鎖利平倉，兩種都代表
+    比一般單更早介入保護，只是行情夠不夠力決定是哪一種結果）。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=200.0, reason="normal", signal_score=80)
+    await account.open_position("ETH/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=200.0, reason="contrarian", signal_score=80)
+    account.position_meta["ETH/USDT"]["is_contrarian_bottom_buy"] = True
+
+    # 利潤幅度介於 CONTRARIAN_TRAILING_TRIGGER_PCT(0.1%) 與
+    # TRAILING_TRIGGER_PCT(0.25%) 之間 -> 逆勢單應該觸發，一般單不該觸發
+    mid_price = 100.0 * 1.0015
+    await account.update_positions({"BTC/USDT": mid_price, "ETH/USDT": mid_price})
+
+    # 一般單完全沒被影響：利潤還沒到0.25%門檻
+    assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is False
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(90.0)
+
+    # 逆勢單已經有保護動作：不是還留著原封不動的sl=90.0
+    if "ETH/USDT" in account.positions:
+        assert account.position_meta["ETH/USDT"]["is_breakeven_moved"] is True
+    else:
+        assert account.trades[0]["symbol"] == "ETH/USDT"
 
 
 

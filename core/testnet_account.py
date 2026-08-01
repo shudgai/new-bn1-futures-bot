@@ -18,6 +18,7 @@ from core.config import (
     STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
     ENABLE_TRAILING_STOP,
     TRAILING_TRIGGER_PCT,
+    CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_PULLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
     get_trailing_pullback_pct,
@@ -49,6 +50,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
+    "is_contrarian_bottom_buy",
 )
 
 
@@ -700,7 +702,13 @@ class BinanceTestnetAccount:
 
                 else:
                     # ── 路徑 B：舊版百分比制輪詢移動止利（Testnet / fallback）──
-                    if highest_pnl >= TRAILING_TRIGGER_PCT:
+                    # 逆勢承接單（MA7_ContrarianBottomBuy）用更早/更低的觸發
+                    # 門檻，一旦有利潤就盡快接手保護，不限制往上空間。
+                    trailing_trigger = (
+                        CONTRARIAN_TRAILING_TRIGGER_PCT if meta.get("is_contrarian_bottom_buy")
+                        else TRAILING_TRIGGER_PCT
+                    )
+                    if highest_pnl >= trailing_trigger:
                         pullback = get_trailing_pullback_pct(highest_pnl, meta["peak_profit_updated_at"])
                         if side == "LONG":
                             trail_sl = entry_p * (1.0 + highest_pnl * pullback)
@@ -1565,9 +1573,16 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
 
-    async def trail_stop_loss(self, symbol: str, new_sl_price: float) -> bool:
+    async def trail_stop_loss(
+        self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
+    ) -> bool:
         """移動限價止損：取消舊止損單，在新位置重新掛保護單。
-        止損線只往有利方向移動，呼叫端負責確認 new_sl_price 已經比 current_sl 更好。"""
+        止損線只往有利方向移動，呼叫端負責確認 new_sl_price 已經比 current_sl 更好。
+        mark_profit_locked 預設True（真正的移動停利，止損已經鎖到保本以上）；
+        軟性警訊收緊止損只是把止損往進場價方向拉近、不保證已經是正的，
+        呼叫時要傳 mark_profit_locked=False，避免誤標記 is_breakeven_moved
+        （會讓平倉原因誤顯示「移動止利」，還會讓5m出場防線誤判成「已經
+        保護過」而提早放行）。"""
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
         position = self.positions[symbol]
@@ -1591,6 +1606,9 @@ class BinanceTestnetAccount:
                 )
             # 更新本地 meta 和 position 的 sl 紀錄
             meta["sl"] = new_sl_price
+            if mark_profit_locked:
+                meta["is_breakeven_moved"] = True
+                position["is_breakeven_moved"] = True
             self.position_meta[symbol] = meta
             position["sl"] = new_sl_price
             self.positions[symbol] = position

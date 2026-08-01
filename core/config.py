@@ -135,6 +135,12 @@ NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALL
 # 門檻刻意設在比 Tier3 的回撤比例（30%）更早／更敏感一點，讓使用者能在
 # 自動機制真的動手之前就先看到，自己判斷要不要提前手動平倉。
 PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
+# SOFT_WARNING_PERSIST_SEC：持倉持續處於「✗」（現價站上/跌破EMA20，但
+# 還沒同時跌破/站上前低前高升級成「⛔」強訊號）超過這個秒數，代表方向
+# 持續不利但還沒觸發5m強出場防線，此時把止損往進場價方向收緊一次
+# （移到目前止損與進場價的中點，只會變緊不會變鬆），降低風險但不直接
+# 平倉——介於「完全不管」跟「5m防線直接關倉」之間的折衷處理。
+SOFT_WARNING_PERSIST_SEC = float(os.getenv("SOFT_WARNING_PERSIST_SEC", "300"))
 # MIN_SL_DISTANCE_PCT：止損距離下限（佔進場價的比例），不管 ATR 倍數設多寬，
 # 波動率本身很低的時候（實測 BTC/LINK/LTC/BNB/XRP 反推 ATR 只有 0.07%~0.21%），
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
@@ -303,10 +309,20 @@ RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "25"))
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
 TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 
-# --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 為舊版百分比制移動止利，
-# 只剩 core/paper_account.py（未上線使用的模擬帳戶）在用，
-# BinanceTestnetAccount 的正式交易已改用上面的 ATR 移動停利。---
+# --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 是百分比制移動止利：
+# USE_NATIVE_TRAILING_STOP=false 時 BinanceTestnetAccount 用這套，
+# PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
 TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
+# CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
+# 專用、更早啟動的移動停利觸發門檻。逆勢單本來就是在跟原本大趨勢對作，
+# 反彈站不站得住沒把握，用更低的門檻讓移動停利盡快接手保護獲利——一旦
+# 觸發只是把止損往有利方向移動、不會限制往上的空間，利潤持續往上一樣
+# 會繼續跟著推移，不是設一個近的固定止盈就出場。
+CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.001"))
+# CONTRARIAN_POSITION_SIZE_MULTIPLIER：逆勢承接單的信心水準本來就比一般
+# 順勢MA7拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
+# 就算反彈失敗被打回原趨勢方向，虧損金額也比較小。
+CONTRARIAN_POSITION_SIZE_MULTIPLIER = float(os.getenv("CONTRARIAN_POSITION_SIZE_MULTIPLIER", "0.5"))
 # TRAILING_MODE: 預設止利模式 (conservative / balanced / aggressive)
 #   conservative: 回吐 25% 平倉（75%）— 穩健鎖利，適合低波動
 #   balanced:     回吐 30% 平倉（70%）— 平衡鎖利與空間

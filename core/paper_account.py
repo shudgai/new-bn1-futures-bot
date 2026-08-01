@@ -20,6 +20,7 @@ from core.config import (
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
     PARTIAL_CLOSE_THRESHOLDS,
+    CONTRARIAN_TRAILING_TRIGGER_PCT,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -32,6 +33,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
+    "is_contrarian_bottom_buy",
 )
 
 
@@ -424,17 +426,24 @@ class PaperAccount:
         finally:
             self.closing_lock.discard(symbol)
 
-    async def trail_stop_loss(self, symbol: str, new_sl_price: float) -> bool:
+    async def trail_stop_loss(
+        self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
+    ) -> bool:
         """移動限價止損：只往有利方向移動，呼叫端負責確認 new_sl_price
-        已經比目前SL更好。"""
+        已經比目前SL更好。mark_profit_locked 預設True（真正的移動停利，
+        止損已經鎖到保本以上）；軟性警訊收緊止損只是把止損往進場價方向
+        拉近、不保證已經是正的，呼叫時要傳 mark_profit_locked=False，
+        否則會誤標記is_breakeven_moved，導致平倉原因誤顯示「移動止利」，
+        還會讓5m出場防線誤判成「已經保護過」而提早放行。"""
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
         pos = self.positions[symbol]
         meta = self.position_meta.setdefault(symbol, {})
         pos["sl"] = new_sl_price
-        pos["is_breakeven_moved"] = True
         meta["sl"] = new_sl_price
-        meta["is_breakeven_moved"] = True
+        if mark_profit_locked:
+            pos["is_breakeven_moved"] = True
+            meta["is_breakeven_moved"] = True
         self.save_state()
         return True
 
@@ -467,8 +476,14 @@ class PaperAccount:
 
             # 移動停利（百分比制，跟 USE_NATIVE_TRAILING_STOP=false 時的
             # testnet 邏輯相同——紙上帳戶沒有真實交易所可以掛原生
-            # TRAILING_STOP_MARKET，統一用這一套）。
-            if ENABLE_TRAILING_STOP and highest_pnl >= TRAILING_TRIGGER_PCT:
+            # TRAILING_STOP_MARKET，統一用這一套）。逆勢承接單用更早/更低
+            # 的觸發門檻，一旦有利潤就盡快接手保護（不限制往上空間，利潤
+            # 持續走高一樣會繼續推移，只是啟動得比一般順勢單早）。
+            trailing_trigger = (
+                CONTRARIAN_TRAILING_TRIGGER_PCT if meta.get("is_contrarian_bottom_buy")
+                else TRAILING_TRIGGER_PCT
+            )
+            if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:
                 pullback = get_trailing_pullback_pct(highest_pnl, meta["peak_profit_updated_at"])
                 old_sl = pos.get("sl", 0.0)
                 if side == "LONG":

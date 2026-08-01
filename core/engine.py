@@ -17,7 +17,8 @@ from core.config import (
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
-    TAKER_FEE_RATE, PAPER_TRADING,
+    TAKER_FEE_RATE, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC,
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -78,6 +79,10 @@ class TradingEngine:
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
         # 止損/止利/24h時間過濾等既有的自動平倉邏輯。
         self.position_triggers: Dict[str, dict] = {}
+        # 持倉持續處於「✗」（ma_ok=false）但還沒升級成「⛔」（strong）的
+        # 起始時間；持續超過 SOFT_WARNING_PERSIST_SEC 會收緊一次止損（見
+        # _position_trigger_loop）。ma_ok恢復True時清空，讓下次重新計時。
+        self._soft_warning_since: Dict[str, float] = {}
         self.trigger_task: asyncio.Task = None
         self.trend_follow_task: asyncio.Task = None
         self.trailing_sl_task: asyncio.Task = None
@@ -685,8 +690,43 @@ class TradingEngine:
                         )
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
                         await self.account.close_position(symbol, curr_p, close_reason)
+                        self._soft_warning_since.pop(symbol, None)
+                    elif not is_profit_locked:
+                        # 軟性警訊收緊止損：持續處於「✗」（ma_ok=false）但還沒
+                        # 升級成「⛔」超過 SOFT_WARNING_PERSIST_SEC，把止損往
+                        # 進場價方向收緊到「目前止損與進場價的中點」（只會變緊
+                        # 不會變鬆），降低風險但不直接平倉，介於「完全不管」跟
+                        # 「5m防線直接關倉」之間。
+                        if trigger.get("ma_ok") is False:
+                            since = self._soft_warning_since.setdefault(symbol, time.time())
+                            already_tightened = bool(position_meta.get("soft_warning_tightened"))
+                            if time.time() - since >= SOFT_WARNING_PERSIST_SEC and not already_tightened:
+                                side = position.get("side")
+                                current_sl = float(position.get("sl") or 0.0)
+                                entry_p2 = float(position.get("entry_price") or 0.0)
+                                if current_sl > 0 and entry_p2 > 0:
+                                    new_sl = (current_sl + entry_p2) / 2
+                                    improved = (
+                                        (side == "LONG" and new_sl > current_sl)
+                                        or (side == "SHORT" and new_sl < current_sl)
+                                    )
+                                    if improved and await self.account.trail_stop_loss(
+                                        symbol, new_sl, mark_profit_locked=False
+                                    ):
+                                        position_meta["soft_warning_tightened"] = True
+                                        self.account.log(
+                                            f"⚠️ [軟性警訊收緊止損] {symbol} 持續{SOFT_WARNING_PERSIST_SEC:.0f}秒"
+                                            f"未解除✗警訊，止損從{current_sl:.6g}收緊到{new_sl:.6g}",
+                                            "WARNING",
+                                        )
+                        else:
+                            # ma_ok恢復True，清空計時與旗標，允許下次重新觸發
+                            self._soft_warning_since.pop(symbol, None)
+                            if position_meta.get("soft_warning_tightened"):
+                                position_meta["soft_warning_tightened"] = False
                 for symbol in set(self.position_triggers) - set(self.account.positions):
                     self.position_triggers.pop(symbol, None)
+                    self._soft_warning_since.pop(symbol, None)
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
                 break
@@ -1243,6 +1283,10 @@ class TradingEngine:
             TRADE_AMOUNT_USDT,
         )
         allocation_factor = float(ma7_sig.get("btc_allocation_factor", 1.0) or 1.0)
+        is_contrarian_bottom_buy = bool(ma7_sig.get("is_contrarian_bottom_buy"))
+        # 逆勢承接信心水準比一般順勢單低，縮小下單金額控制風險。
+        if is_contrarian_bottom_buy:
+            allocation_factor *= CONTRARIAN_POSITION_SIZE_MULTIPLIER
         amount_usdt = base_amount * allocation_factor
         if self.account.get_available_balance() < amount_usdt:
             return False
@@ -1302,6 +1346,7 @@ class TradingEngine:
                 "ma7_curr": ma7_sig.get("ma7_curr"),
                 "ma7_prev": ma7_sig.get("ma7_prev"),
                 "ma7_prev2": ma7_sig.get("ma7_prev2"),
+                "is_contrarian_bottom_buy": is_contrarian_bottom_buy,
             },
         )
         if placed:
