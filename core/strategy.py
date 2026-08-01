@@ -216,8 +216,9 @@ def detect_ma7_reversal(
     if btc_regime["hard_block"]:
         return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
 
-    # 1h EMA50 方向
-    if ema_50_1h is not None:
+    # 1h EMA50 方向：跟1h SuperTrend用同一個高分繞過門檻，分數達標代表
+    # 其餘品質條件都已經很扎實，允許繞過；低於門檻仍要順著1H均線方向。
+    if ema_50_1h is not None and score < SYMBOL_1H_ST_FILTER_BYPASS_SCORE:
         ema_50_upper = ema_50_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT)
         ema_50_lower = ema_50_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT)
         if want_dir == 1 and price < ema_50_lower:
