@@ -122,7 +122,8 @@
             <div class="logo">
                 <span>🚀</span> Binance Bot 2.0
                 <span class="badge badge-port">PORT {{ bot.port }}</span>
-                <span class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
+                <span v-if="bot.paper_trading" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
+                <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
             </div>
             <div style="display:flex; align-items:center; gap:16px;">
                 <span style="font-size:12px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
@@ -388,6 +389,7 @@
                         is_running: false,
                         strategy: '',
                         environment: 'binance_testnet',
+                        paper_trading: false,
                         port: 8006,
                         balance: 0,
                         realized_pnl: 0,

@@ -17,19 +17,23 @@ from core.config import (
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
-    TAKER_FEE_RATE,
+    TAKER_FEE_RATE, PAPER_TRADING,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
     detect_ma7_reversal, has_volume_divergence,
 )
 from core.testnet_account import BinanceTestnetAccount
+from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import drop_unclosed_candle, compute_position_trigger
 
 class TradingEngine:
     def __init__(self):
-        # 真實市場公開行情與8006獨立Testnet執行帳戶分流。
+        # 真實市場公開行情永遠連線（訊號偵測用，讀取公開資料不受
+        # PAPER_TRADING 影響）；執行帳戶依 PAPER_TRADING 決定是否真的
+        # 連上 Binance Testnet 下單，還是完全本地模擬（不受測試網伺服器
+        # 穩不穩定影響）。
         self.exchange = ccxt.binanceusdm({"enableRateLimit": True})
         self.execution_exchange = ccxt.binanceusdm({
             "apiKey": BINANCE_API_KEY,
@@ -39,7 +43,7 @@ class TradingEngine:
         })
         self.execution_exchange.set_sandbox_mode(USE_TESTNET)
         self.strategy = SuperTrendKeltnerStrategy()
-        self.account = BinanceTestnetAccount(self.execution_exchange)
+        self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
         self.is_running = False
         self.task: asyncio.Task = None
@@ -433,11 +437,13 @@ class TradingEngine:
             return
         await self.account.initialize()
         self.is_running = True
-        if USE_TESTNET:
-            self.account.log(f"▶️ 8006 Binance Futures Testnet 機器人啟動（達標訊號全數回踩確認 / {len(DEFAULT_SYMBOLS)}幣雙向交易）")
+        if PAPER_TRADING:
+            self.account.log(f"▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（{len(DEFAULT_SYMBOLS)}幣雙向交易）")
+        elif USE_TESTNET:
+            self.account.log(f"▶️ 8006 機器人啟動【Binance Testnet 測試網模式】達標訊號全數回踩確認 / {len(DEFAULT_SYMBOLS)}幣雙向交易")
         else:
             self.account.log(
-                "🔴🔴🔴 正式實盤模式已啟用（USE_TESTNET=false）：本次啟動將用真實資金下單！",
+                "🔴🔴🔴 【正式實盤模式已啟用】（USE_TESTNET=false）：本次啟動將用真實資金下單！",
                 "DANGER",
             )
         self.task = asyncio.create_task(self._main_loop())

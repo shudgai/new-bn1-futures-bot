@@ -165,21 +165,97 @@ def test_strategy_indicators():
     assert "st_direction" in res.columns
     assert "atr" in res.columns
 
-def test_paper_account_open_close(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_paper_account_open_close(tmp_path, monkeypatch):
     # 隔離測試：使用臨時空白狀態檔，不受真實持倉影響
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
     close_notifications = []
     account.on_trade_closed = lambda: close_notifications.append("closed")
     initial_bal = account.balance
-    success = account.open_position("BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0, "Test Entry")
+    success = await account.open_position("BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0, "Test Entry")
     assert success is True
     assert "BTC/USDT" in account.positions
 
-    close_success = account.close_position("BTC/USDT", 51000.0, "Test Exit")
+    close_success = await account.close_position("BTC/USDT", 51000.0, "Test Exit")
     assert close_success is True
     assert "BTC/USDT" not in account.positions
     assert close_notifications == ["closed"]
+
+
+@pytest.mark.anyio
+async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypatch):
+    """紙上帳戶沒有真實交易所保護單，SL/TP要靠update_positions()逐輪
+    比對現價才會觸發平倉。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 95.0, 110.0, "test", signal_score=80)
+    await account.update_positions({"BTC/USDT": 94.0})  # 跌破SL(95)
+    assert "BTC/USDT" not in account.positions
+    assert "止損" in account.trades[0]["reason"]
+
+    # TP設在離進場價5%的距離內（低於分批止盈第一階門檻10%），避免這筆
+    # 測試同時踩到分批止盈邏輯，單純驗證TP觸發平倉。
+    await account.open_position("ETH/USDT", "SHORT", 100.0, 50.0, 105.0, 96.0, "test", signal_score=80)
+    await account.update_positions({"ETH/USDT": 95.0})  # 跌破TP(96，空單獲利方向)
+    assert "ETH/USDT" not in account.positions
+    assert "止盈" in account.trades[0]["reason"]
+
+
+@pytest.mark.anyio
+async def test_paper_account_trailing_stop_moves_sl_favorably(tmp_path, monkeypatch):
+    """無槓桿利潤超過TRAILING_TRIGGER_PCT後，SL要往有利方向移動（多單
+    上移），且標記is_breakeven_moved。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+
+    await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
+    original_sl = account.positions["BTC/USDT"]["sl"]
+
+    # 無槓桿利潤 1%，遠超過 TRAILING_TRIGGER_PCT(0.25%)，應觸發移動停利
+    await account.update_positions({"BTC/USDT": 101.0})
+
+    assert "BTC/USDT" in account.positions  # 還沒真的碰到新SL，不會平倉
+    new_sl = account.positions["BTC/USDT"]["sl"]
+    assert new_sl > original_sl
+    assert account.positions["BTC/USDT"]["is_breakeven_moved"] is True
+    assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is True
+
+
+@pytest.mark.anyio
+async def test_paper_account_daily_loss_limit_blocks_new_entries_only(tmp_path, monkeypatch):
+    """今日虧損達門檻只擋新開倉，既有持倉不受影響（daily_loss_limit_hit
+    本身不平倉，只回傳旗標給呼叫端判斷）。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+    account.daily_start_balance = 1000.0
+    account.daily_start_realized_pnl = 0.0
+    account.daily_date = pa_module.get_taipei_now_str("%Y-%m-%d")
+
+    hit, loss_pct = account.daily_loss_limit_hit()
+    assert hit is False
+
+    account.realized_pnl = -150.0  # 15% 虧損，超過 MAX_DAILY_LOSS_PCT(10%)
+    hit, loss_pct = account.daily_loss_limit_hit()
+    assert hit is True
+    assert loss_pct == pytest.approx(15.0)
+
+
+@pytest.mark.anyio
+async def test_paper_account_place_limit_entry_fills_immediately(tmp_path, monkeypatch):
+    """MA7拐頭進場用的是對手價直接成交，紙上帳戶沒有真實委託簿要排隊，
+    place_limit_entry應該直接視為立即成交，不會留在pending狀態。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+
+    placed = await account.place_limit_entry(
+        "SOL/USDT", "SHORT", 150.0, 50.0, sl=155.0, tp=140.0,
+        reason="MA7_Reversal_SHORT", signal_score=89, post_only=False,
+    )
+    assert placed is True
+    assert "SOL/USDT" in account.positions
+    assert account.pending_limit_orders == {}
 
 def test_low_score_signal_caps_eth_leverage():
     """最低檔門檻用 MIN_SCORE_THRESHOLD 本身，避免它跟這裡的最低檔位置
@@ -213,18 +289,21 @@ def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
     assert PULLBACK_TIMEOUT_MINUTES == pytest.approx(10.0)
 
 
-def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
-    assert account.open_position(
+    # signal_score 必須 >= MIN_OPEN_SIGNAL_SCORE(75) 才會真的開倉，75分仍
+    # 落在跟70分相同的3x槓桿檔位。
+    assert await account.open_position(
         "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
-        "Score70 test", signal_score=70
+        "Score75 test", signal_score=75
     )
     assert account.positions["ETH/USDT"]["leverage"] == 3
     trade = account.trades[0]
     assert trade["leverage"] == 3
-    assert trade["signal_score"] == 70
-    assert trade["reason"] == "Score70 test"
+    assert trade["signal_score"] == 75
+    assert trade["reason"] == "Score75 test"
 
 def test_atr_range_filter_is_mandatory(monkeypatch):
     """1h 大趨勢之外，ATR 波動率範圍是目前唯一還會直接 HOLD 的強制門檻
