@@ -2052,13 +2052,13 @@ def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 
         rsi = 60.0 if side == "LONG" else 40.0
 
     if side == "LONG":
-        ma7_vals = [100.0] * 47 + [100.10, 99.90, 100.05]
-        lows = [100.0] * 47 + [98.8, 98.8, 100.0]
+        ma7_vals = [100.0] * 46 + [100.10, 99.90, 99.98, 100.05]
+        lows = [100.0] * 46 + [98.8, 98.8, 100.0, 100.0]
         highs = [101.0] * 50
     else:
-        ma7_vals = [100.0] * 47 + [99.90, 100.10, 99.95]
+        ma7_vals = [100.0] * 46 + [99.90, 100.10, 100.02, 99.95]
         lows = [99.0] * 50
-        highs = [100.0] * 47 + [101.2, 101.2, 100.0]
+        highs = [100.0] * 46 + [101.2, 101.2, 100.0, 100.0]
     ema20 = 100.0
 
     return pd.DataFrame({
@@ -2089,13 +2089,36 @@ def test_detect_ma7_reversal_long():
     assert result["detected"] is True, f"預期 detected=True, 卿因: {result.get('reason')}"
     assert result["side"] == "LONG"
     assert result["score"] >= MIN_SCORE_THRESHOLD
-    # MA7 谷底樣式: prev 是最低點，curr 已向上
+    # MA7 谷底樣式: prev2 是最低點，後面兩根連續向上
     assert result["ma7_curr"] > result["ma7_prev"]
-    assert result["ma7_prev"] <= result["ma7_prev2"]
+    assert result["ma7_prev"] > result["ma7_prev2"]
 
 
-def test_detect_ma7_reversal_early_long_uses_live_projection():
-    """前兩個已收盤MA7仍下降，但即時價已讓下一個MA7上彎超過0.02 ATR。"""
+def test_detect_ma7_reversal_requires_two_closed_bars_after_turn():
+    """峰谷後只有第一根反向收線仍不進場，避免一個小反彈就被當成反轉。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.20, 99.90, 100.05, 100.04]
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is False
+    assert "連續兩根確認" in result["reason"]
+
+
+def test_detect_ma7_reversal_rejects_tiny_closed_turn():
+    """即使已連續兩根向上，累計拐幅不足 0.05 ATR 仍屬價格雜訊。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.010, 100.000, 100.006, 100.012]
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is False
+    assert "MA7轉彎幅度不足" in result["reason"]
+
+
+def test_detect_ma7_reversal_early_long_uses_live_projection(monkeypatch):
+    """前兩個已收盤MA7仍下降，但即時價已讓下一個MA7上彎超過0.05 ATR。"""
+    monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
 
@@ -2109,8 +2132,9 @@ def test_detect_ma7_reversal_early_long_uses_live_projection():
     assert "盤中投影提前確認" in result["reason"]
 
 
-def test_detect_ma7_reversal_early_short_uses_live_projection():
+def test_detect_ma7_reversal_early_short_uses_live_projection(monkeypatch):
     """空單盤中投影與多單對稱：已收盤MA7上升、即時投影明顯下彎。"""
+    monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
     frame = _ma7_frame("SHORT")
     frame.loc[frame.index[-3:], "ma7"] = [99.80, 99.90, 100.10]
 
@@ -2123,8 +2147,9 @@ def test_detect_ma7_reversal_early_short_uses_live_projection():
     assert result["ma7_curr"] < result["ma7_prev"]
 
 
-def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer():
-    """即時投影雖微幅翻向，但不足0.02 ATR時仍等待，避免單一tick假轉彎。"""
+def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer(monkeypatch):
+    """即時投影雖微幅翻向，但不足0.05 ATR時仍等待，避免單一tick假轉彎。"""
+    monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
 
@@ -2163,9 +2188,9 @@ def test_detect_ma7_reversal_short():
     assert result["detected"] is True, f"預期 detected=True, 卿因: {result.get('reason')}"
     assert result["side"] == "SHORT"
     assert result["score"] >= MIN_SCORE_THRESHOLD
-    # MA7 峰頂樣式: prev 是最高點，curr 已向下
+    # MA7 峰頂樣式: prev2 是最高點，後面兩根連續向下
     assert result["ma7_curr"] < result["ma7_prev"]
-    assert result["ma7_prev"] >= result["ma7_prev2"]
+    assert result["ma7_prev"] < result["ma7_prev2"]
 
 
 def test_detect_ma7_reversal_rejects_stale_short_peak():
@@ -2176,18 +2201,18 @@ def test_detect_ma7_reversal_rejects_stale_short_peak():
     result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
 
     assert result["detected"] is False
-    assert "最新三根未形成局部峰頂轉彎" in result["reason"]
+    assert "最新四根未形成局部峰頂轉彎後連續兩根確認" in result["reason"]
 
 
 def test_detect_ma7_reversal_rejects_stale_long_trough():
     """多單同樣必須是上一根剛形成局部谷底，不接受舊谷底。"""
     frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-3:], "ma7"] = [99.90, 99.95, 100.05]
+    frame.loc[frame.index[-4:], "ma7"] = [99.90, 99.95, 100.00, 100.05]
 
     result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is False
-    assert "最新三根未形成局部谷底轉彎" in result["reason"]
+    assert "最新四根未形成局部谷底轉彎後連續兩根確認" in result["reason"]
 
 
 def test_detect_ma7_reversal_no_signal_flat_ma7():
@@ -2545,6 +2570,41 @@ async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, mon
 
 
 @pytest.mark.anyio
+async def test_ma7_entry_skipped_when_5m_is_on_adverse_ema_side(tmp_path, monkeypatch):
+    """5m 尚未成為 strong，但價格已在 EMA20 不利側時也不逆向開新倉。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+
+    closes = [100.0] * 24 + [99.0]
+
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+        return pd.DataFrame({
+            "timestamp": list(range(len(closes))),
+            "open": closes,
+            "high": [101.0] * len(closes),
+            "low": [98.5] * len(closes),
+            "close": closes,
+            "volume": [100.0] * len(closes),
+        })
+
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+    ma7_sig = {
+        "score": 89, "atr": 1.0, "structural_sl": None,
+        "reason": "MA7_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
+        "btc_allocation_factor": 1.0,
+        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+    }
+
+    placed = await engine._place_ma7_reversal_entry(
+        "DOGE/USDT", "LONG", ma7_sig, 99.0, 0.0
+    )
+
+    assert placed is False
+    assert "DOGE/USDT" not in engine.account.positions
+
+
+@pytest.mark.anyio
 async def test_validate_mainstream_symbols_warns_on_invalid_symbol(tmp_path, monkeypatch):
     """啟動時核對 MAINSTREAM_SYMBOLS：之前 ICP/USDT 明明不存在於幣安
     合約市場卻混進名單，導致下單時才炸 BadSymbol。這裡驗證只要有一個
@@ -2721,7 +2781,3 @@ async def test_contrarian_bottom_buy_trailing_respects_safety_floor(tmp_path, mo
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(90.0)
     assert account.position_meta["ETH/USDT"]["is_breakeven_moved"] is False
     assert account.positions["ETH/USDT"]["sl"] == pytest.approx(90.0)
-
-
-
-

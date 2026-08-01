@@ -91,10 +91,15 @@ ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE",
 # 單根5m K在EMA20錯誤側停留300秒，並不是新增第二根收盤確認；舊邏輯
 # 還可能把止損移到市價後方而等同立即平倉。預設停用，保留開關供影子測試。
 ENABLE_SOFT_WARNING_TIGHTEN = os.getenv("ENABLE_SOFT_WARNING_TIGHTEN", "false").lower() == "true"
-# 1m尚未收盤時，用即時價投影MA7；需達ATR幅度並連續多輪成立才提前進場。
-MA7_EARLY_ENTRY_ENABLED = os.getenv("MA7_EARLY_ENTRY_ENABLED", "true").lower() == "true"
-MA7_EARLY_MIN_ATR_MULT = float(os.getenv("MA7_EARLY_MIN_ATR_MULT", "0.02"))
+# 盤中投影在 08/01~08/02 的 7 筆樣本中佔 4 筆，全部都在尚未收線時用極小
+# MA7 斜率搶跑，之後不是碰 SL 就是被 5m 反向防線關倉。預設只接受已收盤
+# 訊號；若日後影子測試重新開啟，投影也必須有較明顯的 ATR 幅度。
+MA7_EARLY_ENTRY_ENABLED = os.getenv("MA7_EARLY_ENTRY_ENABLED", "false").lower() == "true"
+MA7_EARLY_MIN_ATR_MULT = float(os.getenv("MA7_EARLY_MIN_ATR_MULT", "0.05"))
 MA7_EARLY_CONFIRM_SCANS = int(os.getenv("MA7_EARLY_CONFIRM_SCANS", "2"))
+# 已收盤 MA7 必須在峰谷後連續兩根同向，且峰谷到最新值至少移動此 ATR
+# 倍數；排除 BABY/NEAR 等只有最後幾個小數位變化的假轉彎。
+MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.05"))
 # 非紙上模式下，主網訊號價與執行交易所最佳價偏差超過此比例即拒絕下單。
 EXECUTION_PRICE_MAX_DEVIATION_PCT = float(os.getenv("EXECUTION_PRICE_MAX_DEVIATION_PCT", "0.005"))
 ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"

@@ -19,7 +19,7 @@ from core.config import (
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
-    MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT,
+    MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -292,24 +292,34 @@ def detect_ma7_reversal(
     if want_dir == -1 and rsi < rsi_short_min:
         return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
 
-    # MA7 谷底/峰頂拐頭必須由最新三根已收盤K棒當場確立。
+    # MA7 谷底/峰頂拐頭必須由最新四根已收盤K棒當場確立：峰谷後還要有
+    # 兩根同方向延續。只確認第一根會把最後幾個小數位的抖動當成反轉，
+    # 實測 BABY/SYN/NEAR 都因此在趨勢尚未成立時進場。
     # 不接受「當前 MA7 低於/高於過去某個舊峰谷」，否則同一個舊拐點
     # 會在後續多根K棒重複觸發，把已經展開或失效的趨勢誤報為新轉彎。
     if 'ma7' not in df.columns:
         return _no("ma7欄位缺失")
     ma7_series = df['ma7'].dropna()
-    min_bars_needed = 3
+    min_bars_needed = 4
     if len(ma7_series) < min_bars_needed:
         return _no(f"MA7有效值不足{min_bars_needed}根")
     ma7_curr = float(ma7_series.iloc[-1])
     ma7_prev = float(ma7_series.iloc[-2])
     ma7_prev2 = float(ma7_series.iloc[-3])
+    ma7_prev3 = float(ma7_series.iloc[-4])
 
     confirmed_reversal = (
-        ma7_prev < ma7_prev2 and ma7_curr > ma7_prev
+        ma7_prev2 < ma7_prev3 and ma7_prev > ma7_prev2 and ma7_curr > ma7_prev
         if want_dir == 1
-        else ma7_prev > ma7_prev2 and ma7_curr < ma7_prev
+        else ma7_prev2 > ma7_prev3 and ma7_prev < ma7_prev2 and ma7_curr < ma7_prev
     )
+    confirmed_turn = abs(ma7_curr - ma7_prev2)
+    min_confirmed_turn = max(float(atr) * MA7_REVERSAL_MIN_ATR_MULT, 1e-12)
+    if confirmed_reversal and confirmed_turn < min_confirmed_turn:
+        return _no(
+            f"MA7轉彎幅度不足（{confirmed_turn:.6g}<{min_confirmed_turn:.6g}，"
+            f"需達{MA7_REVERSAL_MIN_ATR_MULT:.2f} ATR）"
+        )
     early_projection = False
     projected_ma7 = None
     if (
@@ -342,8 +352,8 @@ def detect_ma7_reversal(
             f"，盤中投影={projected_ma7:.6g}" if projected_ma7 is not None else ""
         )
         return _no(
-            f"MA7最新三根未形成局部{shape}轉彎"
-            f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}{projection_note}）"
+            f"MA7最新四根未形成局部{shape}轉彎後連續兩根確認"
+            f"（{ma7_prev3:.6g}→{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}{projection_note}）"
         )
 
     if early_projection:

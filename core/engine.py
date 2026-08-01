@@ -1390,7 +1390,9 @@ class TradingEngine:
         # 先擋一次，避免進場即出場的無效交易。
         trigger_df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
         pre_entry_trigger = compute_position_trigger(trigger_df, side)
-        if pre_entry_trigger.get("strong"):
+        # strong 是已確認反轉；ma_ok=False 則代表 5m 價格已站在 EMA20 的
+        # 不利側，即使尚未湊滿強制出場條件也不該用 1m 訊號逆著進場。
+        if pre_entry_trigger.get("strong") or pre_entry_trigger.get("ma_ok") is False:
             self.account.log(
                 f"🛑 {symbol} MA7拐頭訊號成立但5分鐘週期已對{side}方向亮警訊"
                 f"（{', '.join(pre_entry_trigger.get('reasons', []))}），跳過本次進場",
@@ -2031,4 +2033,3 @@ class TradingEngine:
 
 # Singleton global instance
 engine = TradingEngine()
-
