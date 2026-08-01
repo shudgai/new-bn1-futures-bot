@@ -137,17 +137,21 @@ class SymbolRotation:
         trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
         volatility_excluded: bool, history_quarantined: bool,
     ) -> bool:
-        # 放寬輪替過濾（選項 1）：不再強制要求 1h EMA50 同側與 1h SuperTrend 方向對齊。
-        # 僅保留基本 5m 方向以及基本波動率與歷史黑名單限制，確保主流幣如 BTC/ETH/SOL 永遠合格留在監控席。
+        # 輪替資格必須與實際進場一致，避免選入後才被1h ST/EMA擋住、
+        # 白白占用監控席位。
         return (
-            st_5m_aligned
+            trend_aligned
+            and st_5m_aligned
+            and st_1h_aligned
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
             and not volatility_excluded and not history_quarantined
         )
 
 
     @staticmethod
-    def market_candidates(tickers: dict, markets: dict = None) -> List[str]:
+    def market_candidates(
+        tickers: dict, markets: dict = None, execution_symbols: set = None
+    ) -> List[str]:
         normalized = SymbolRotation._normalize_tickers(tickers)
         allowed_crypto = None
         if markets:
@@ -162,25 +166,27 @@ class SymbolRotation:
             }
         excluded_bases = {
             "1000PEPE", "APT", "FET", "TAO", "WIF",
-            "USDC", "FDUSD", "TUSD", "USDP",
+            "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
+            "USD1", "BUSD", "USTC",
         }
         ranked = []
         for symbol, ticker in normalized.items():
             if not symbol.endswith("/USDT") or symbol in ENTRY_DISABLED_SYMBOLS:
                 continue
-            # 只交易市值前段的主流幣：測試網對冷門/小型幣的報價、成交深度
-            # 常跟真實行情脫節（實測 KAITO/RLC 這類幣種曾出現測試網報價
-            # 凍結、跟訊號偵測用的主網價格差了好幾%的情況，導致下單成交
-            # 價格失真），限縮到流動性/知名度都足夠的主流幣，避免測試網
-            # 報價品質問題污染交易結果。
-            if symbol not in MAINSTREAM_SYMBOLS:
+            # 所有模式都可從主網全市場挑選；非紙上模式由 execution_symbols
+            # 再限制為執行交易所實際存在且可下單的合約交集。
+            if execution_symbols is not None and symbol not in execution_symbols:
                 continue
             if allowed_crypto is not None and symbol not in allowed_crypto:
                 continue
             base = symbol.split("/", 1)[0]
             quote_volume = float(ticker.get("quoteVolume") or 0.0)
             change_pct = abs(float(ticker.get("percentage") or 0.0))
-            if base in excluded_bases or quote_volume < SYMBOL_MIN_QUOTE_VOLUME or change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
+            if (
+                base in excluded_bases
+                or base.endswith(("UP", "DOWN", "BULL", "BEAR"))
+                or quote_volume < SYMBOL_MIN_QUOTE_VOLUME or change_pct > SYMBOL_MAX_24H_CHANGE_PCT
+            ):
                 continue
             ranked.append((quote_volume, symbol))
         ranked.sort(reverse=True)
@@ -622,10 +628,18 @@ class SymbolRotation:
             self._save()
         return changes
 
-    async def rotate(self, exchange) -> List[dict]:
+    async def rotate(self, exchange, execution_symbols: set = None) -> List[dict]:
         await exchange.load_markets()
         tickers = await exchange.fetch_tickers()
-        candidates = self.market_candidates(tickers, exchange.markets)
+        active_usdt_perpetuals = sum(
+            1 for market in exchange.markets.values()
+            if market.get("active")
+            and market.get("swap")
+            and market.get("quote") == "USDT"
+            and market.get("info", {}).get("contractType") == "PERPETUAL"
+            and market.get("info", {}).get("underlyingType") == "COIN"
+        )
+        candidates = self.market_candidates(tickers, exchange.markets, execution_symbols)
         market_metrics = self.build_metrics(tickers, candidates)
         quant_ranked = sorted(market_metrics, key=lambda item: item["quant_score"], reverse=True)
         ai_ranking = await self.ai.rank_symbols(quant_ranked)
@@ -670,7 +684,7 @@ class SymbolRotation:
             if len(selected) < SYMBOL_ROTATION_COUNT else ""
         )
         self.last_reason = (
-            f"已掃描 Binance 合約市場 {len(candidates)} 幣；方向評分參考 多 {long_count}、空 {short_count}，入選後皆可雙向交易；"
+            f"已讀取 Binance 活躍USDT永續 {active_usdt_perpetuals} 幣；成交量初篩後深度掃描 {len(candidates)} 幣；方向評分參考 多 {long_count}、空 {short_count}，入選後皆可雙向交易；"
             f"{ai_text}{shortfall_text}"
         )
         self._save()

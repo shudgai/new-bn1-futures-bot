@@ -709,7 +709,8 @@ class BinanceTestnetAccount:
                         else TRAILING_TRIGGER_PCT
                     )
                     if highest_pnl >= trailing_trigger:
-                        pullback = get_trailing_pullback_pct(highest_pnl, meta["peak_profit_updated_at"])
+                        opened_at = meta.get("open_timestamp") or pos.get("open_timestamp") or now_ts
+                        pullback = get_trailing_pullback_pct(highest_pnl, opened_at)
                         if side == "LONG":
                             trail_sl = entry_p * (1.0 + highest_pnl * pullback)
                             npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)

@@ -214,7 +214,7 @@ async def test_paper_account_trailing_stop_moves_sl_favorably(tmp_path, monkeypa
     await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
     original_sl = account.positions["BTC/USDT"]["sl"]
 
-    # 無槓桿利潤 1%，遠超過 TRAILING_TRIGGER_PCT(0.25%)，應觸發移動停利
+    # 無槓桿利潤 1%，遠超過 TRAILING_TRIGGER_PCT（預設0.50%），應觸發移動停利
     await account.update_positions({"BTC/USDT": 101.0})
 
     assert "BTC/USDT" in account.positions  # 還沒真的碰到新SL，不會平倉
@@ -306,7 +306,7 @@ async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost
     await account.update_positions({"ADA/USDT": 100.10})
     # 回吐超過20%（0.10% -> 0.07%），警訊亮起
     await account.update_positions({"ADA/USDT": 100.07})
-    assert account.positions["ADA/USDT"]["profit_alert"] is True
+    assert account.positions["ADA/USDT"]["profit_alert"] is False
 
     # 反彈到0.075%，比前一次(0.07%)高，還在往上爬，繼續持有
     await account.update_positions({"ADA/USDT": 100.075})
@@ -352,6 +352,31 @@ async def test_paper_account_place_limit_entry_fills_immediately(tmp_path, monke
     assert placed is True
     assert "SOL/USDT" in account.positions
     assert account.pending_limit_orders == {}
+
+
+@pytest.mark.anyio
+async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_path, monkeypatch):
+    """Post-Only掛單未觸價前保留pending；觸價後按原限價成交且不加Taker滑點。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+
+    placed = await account.place_limit_entry(
+        "SOL/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=110.0,
+        reason="maker_test", signal_score=89, post_only=True,
+    )
+    assert placed is True
+    assert "SOL/USDT" not in account.positions
+    assert "SOL/USDT" in account.pending_limit_orders
+
+    await account.update_positions({"SOL/USDT": 101.0})
+    await account.check_pending_limit_orders()
+    assert "SOL/USDT" in account.pending_limit_orders
+
+    await account.update_positions({"SOL/USDT": 99.9})
+    await account.check_pending_limit_orders()
+    assert "SOL/USDT" not in account.pending_limit_orders
+    assert account.positions["SOL/USDT"]["entry_price"] == pytest.approx(100.0)
+
 
 def test_low_score_signal_caps_eth_leverage():
     """最低檔門檻用 MIN_SCORE_THRESHOLD 本身，避免它跟這裡的最低檔位置
@@ -728,7 +753,8 @@ def test_unconfirmed_kc_breakout_cannot_qualify_on_other_scores(monkeypatch):
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
     assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: KC_Breakout_Unconfirmed" in result["reason"]
+    assert "Score_Low" in result["reason"]
+    assert "KC_Breakout_NoClose" in result["reason"]
 
 
 def test_low_quality_breakout_is_rejected_even_when_total_score_qualifies(monkeypatch):
@@ -1208,8 +1234,9 @@ def test_directional_eligibility_requires_trend_st_and_tradeable_atr(monkeypatch
     monkeypatch.setattr("core.symbol_rotation.MIN_ATR_PCT", 0.0015)
     monkeypatch.setattr("core.symbol_rotation.MAX_ATR_PCT", 0.006)
 
-    # 寬鬆過濾（選項 1）：只要 5m 方向對齊 (第二個參數 True)，即便 1h 趨勢 (第一個) 與 1h ST (第三個) 為 False，也視為合格
-    assert SymbolRotation._direction_is_eligible(False, True, False, 0.003, False, False)
+    # 輪替資格與實際進場一致：1h EMA、5m ST、1h ST 必須全部對齊。
+    assert not SymbolRotation._direction_is_eligible(False, True, False, 0.003, False, False)
+    assert SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, False)
     assert not SymbolRotation._direction_is_eligible(True, False, True, 0.003, False, False)
     assert not SymbolRotation._direction_is_eligible(True, True, True, 0.0075, False, False)
     assert not SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, True)
@@ -1238,6 +1265,7 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
         "BTC/USDT:USDT": {"quoteVolume": 100_000_000.0},
         "BNB/USDT:USDT": {"quoteVolume": 300_000_000.0},
         "SKHY/USDT:USDT": {"quoteVolume": 200_000_000.0},
+        "ALT/USDT:USDT": {"quoteVolume": 150_000_000.0},
         "LOW/USDT:USDT": {"quoteVolume": 10_000_000.0},
     }
     markets = {
@@ -1253,15 +1281,56 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
             "symbol": "SKHY/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
             "info": {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY"},
         },
+        "ALT/USDT:USDT": {
+            "symbol": "ALT/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
+            "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+        },
         "LOW/USDT:USDT": {
             "symbol": "LOW/USDT:USDT", "active": True, "swap": True, "quote": "USDT",
             "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
         },
     }
-    assert SymbolRotation.market_candidates(tickers, markets) == ["BTC/USDT"]
+    assert SymbolRotation.market_candidates(tickers, markets) == ["ALT/USDT", "BTC/USDT"]
+
+    # 指定執行交易所合約集合時，只保留兩邊都可交易的交集。
+    assert SymbolRotation.market_candidates(
+        tickers, markets, {"BTC/USDT"}
+    ) == ["BTC/USDT"]
 
 
-def test_purge_unhealthy_removes_illiquid_candidate_but_protects_held_position(monkeypatch):
+@pytest.mark.anyio
+async def test_execution_price_guard_accepts_close_market_and_rejects_deviation(monkeypatch):
+    monkeypatch.setattr(engine_module, "PAPER_TRADING", False)
+    monkeypatch.setattr(engine_module, "EXECUTION_PRICE_MAX_DEVIATION_PCT", 0.005)
+
+    class FakeBookExchange:
+        def __init__(self, price):
+            self.price = price
+        async def fetch_order_book(self, symbol, limit=5):
+            return {"asks": [[self.price, 1.0]], "bids": [[self.price, 1.0]]}
+
+    class FakeAccount:
+        def __init__(self):
+            self.logs = []
+        def log(self, text, level="INFO"):
+            self.logs.append((text, level))
+
+    engine = object.__new__(TradingEngine)
+    engine.exchange = FakeBookExchange(100.0)
+    engine.execution_exchange = FakeBookExchange(100.4)
+    engine.execution_symbols = {"BTC/USDT"}
+    engine.account = FakeAccount()
+    assert await engine._execution_price_is_safe("BTC/USDT", "LONG") is True
+
+    engine.execution_exchange = FakeBookExchange(100.6)
+    assert await engine._execution_price_is_safe("BTC/USDT", "LONG") is False
+    assert any("最佳價偏差" in text for text, _ in engine.account.logs)
+
+    assert await engine._execution_price_is_safe("ALT/USDT", "LONG") is False
+    assert any("不在執行交易所" in text for text, _ in engine.account.logs)
+
+
+def test_purge_unhealthy_removes_illiquid_candidate_but_protects_held_position(tmp_path, monkeypatch):
     """觀察名單裡流動性枯竭的候選幣種要立刻移除，不用等下一次整點輪替；
     已經有持倉的幣種即使一樣流動性枯竭，也不能被這個輕量健康檢查動到。"""
     import asyncio
@@ -1269,6 +1338,7 @@ def test_purge_unhealthy_removes_illiquid_candidate_but_protects_held_position(m
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 20_000_000.0)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MAX_24H_CHANGE_PCT", 30.0)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 40)
+    monkeypatch.setattr("core.symbol_rotation.SELECTION_FILE", str(tmp_path / "symbol_selection.json"))
     watchlist = ["ILLIQUID/USDT", "HELDLOW/USDT", "GOOD/USDT"]
     monkeypatch.setattr("core.symbol_rotation.DEFAULT_SYMBOLS", watchlist)
 
@@ -1545,6 +1615,37 @@ def test_position_trigger_short_ma_ok_true_when_price_still_below_ma():
     assert result["ma_ok"] is True
     assert "站上均線" not in result["reasons"]
     assert result["reasons"] == []
+
+
+
+def test_position_trigger_long_single_ma7_turn_is_not_strong():
+    """峰頂後只有第一根 MA7 向下時，不得直接把多單強制平倉。"""
+    closes = [100.0] * 22 + [101.0, 99.0]
+    result = compute_position_trigger(_trigger_frame(closes), "LONG")
+
+    assert result["ma7_reversed"] is False
+    assert not any("MA7" in reason for reason in result["reasons"])
+    assert result["strong"] is False
+
+
+def test_position_trigger_long_two_closed_ma7_turns_are_strong():
+    """峰頂後連續兩根已收盤 MA7 向下，才確認多單反轉強警訊。"""
+    closes = [100.0] * 22 + [101.0, 99.0, 98.0]
+    result = compute_position_trigger(_trigger_frame(closes), "LONG")
+
+    assert result["ma7_reversed"] is True
+    assert "MA7連續兩根轉彎向下" in result["reasons"]
+    assert result["strong"] is True
+
+
+def test_position_trigger_short_two_closed_ma7_turns_are_strong():
+    """空單採對稱規則：谷底後連續兩根已收盤 MA7 向上才確認反轉。"""
+    closes = [100.0] * 22 + [99.0, 101.0, 102.0]
+    result = compute_position_trigger(_trigger_frame(closes), "SHORT")
+
+    assert result["ma7_reversed"] is True
+    assert "MA7連續兩根轉彎向上" in result["reasons"]
+    assert result["strong"] is True
 
 
 def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
@@ -1946,6 +2047,68 @@ def test_detect_ma7_reversal_long():
     assert result["ma7_prev"] <= result["ma7_prev2"]
 
 
+def test_detect_ma7_reversal_early_long_uses_live_projection():
+    """前兩個已收盤MA7仍下降，但即時價已讓下一個MA7上彎超過0.02 ATR。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
+
+    result = detect_ma7_reversal(
+        frame, side="LONG", indicators_precomputed=True, live_price=100.0,
+    )
+
+    assert result["detected"] is True
+    assert result["early_projection"] is True
+    assert result["ma7_curr"] > result["ma7_prev"]
+    assert "盤中投影提前確認" in result["reason"]
+
+
+def test_detect_ma7_reversal_early_short_uses_live_projection():
+    """空單盤中投影與多單對稱：已收盤MA7上升、即時投影明顯下彎。"""
+    frame = _ma7_frame("SHORT")
+    frame.loc[frame.index[-3:], "ma7"] = [99.80, 99.90, 100.10]
+
+    result = detect_ma7_reversal(
+        frame, side="SHORT", indicators_precomputed=True, live_price=100.0,
+    )
+
+    assert result["detected"] is True
+    assert result["early_projection"] is True
+    assert result["ma7_curr"] < result["ma7_prev"]
+
+
+def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer():
+    """即時投影雖微幅翻向，但不足0.02 ATR時仍等待，避免單一tick假轉彎。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
+
+    result = detect_ma7_reversal(
+        frame, side="LONG", indicators_precomputed=True, live_price=99.82,
+    )
+
+    assert result["detected"] is False
+    assert "盤中投影" in result["reason"]
+
+
+def test_ma7_early_timing_requires_two_consecutive_scans(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA7_EARLY_CONFIRM_SCANS", 2)
+    engine = object.__new__(TradingEngine)
+    engine._ma7_early_confirmations = {}
+    early = {"detected": True, "side": "LONG", "early_projection": True}
+
+    assert engine._ma7_timing_ready("BTC/USDT", early, 1.0) == (False, 1, 2)
+    assert engine._ma7_timing_ready("BTC/USDT", early, 2.0) == (True, 2, 2)
+
+    # 一輪失效後必須重新從1開始，不得把不連續訊號累加。
+    assert engine._ma7_timing_ready("BTC/USDT", early, 3.0) == (False, 1, 2)
+    failed = {"detected": False, "side": "LONG"}
+    assert engine._ma7_timing_ready("BTC/USDT", failed, 4.0) == (False, 0, 2)
+    assert engine._ma7_timing_ready("BTC/USDT", early, 5.0) == (False, 1, 2)
+
+    # 已收盤三點轉彎不需等待盤中連續確認。
+    closed = {"detected": True, "side": "LONG", "early_projection": False}
+    assert engine._ma7_timing_ready("BTC/USDT", closed, 6.0) == (True, 2, 2)
+
+
 def test_detect_ma7_reversal_short():
     """MA7 峰頂轉彎向下，應正確偵測空單拐頭。"""
     frame = _ma7_frame("SHORT")
@@ -1956,6 +2119,28 @@ def test_detect_ma7_reversal_short():
     # MA7 峰頂樣式: prev 是最高點，curr 已向下
     assert result["ma7_curr"] < result["ma7_prev"]
     assert result["ma7_prev"] >= result["ma7_prev2"]
+
+
+def test_detect_ma7_reversal_rejects_stale_short_peak():
+    """空單不得因為當前 MA7 仍低於舊峰頂就重複進場。"""
+    frame = _ma7_frame("SHORT")
+    frame.loc[frame.index[-3:], "ma7"] = [0.0413900, 0.0413814, 0.0413786]
+
+    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+
+    assert result["detected"] is False
+    assert "最新三根未形成局部峰頂轉彎" in result["reason"]
+
+
+def test_detect_ma7_reversal_rejects_stale_long_trough():
+    """多單同樣必須是上一根剛形成局部谷底，不接受舊谷底。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-3:], "ma7"] = [99.90, 99.95, 100.05]
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is False
+    assert "最新三根未形成局部谷底轉彎" in result["reason"]
 
 
 def test_detect_ma7_reversal_no_signal_flat_ma7():
@@ -2396,6 +2581,7 @@ async def test_soft_warning_tightens_sl_after_persist_threshold(tmp_path, monkey
         })
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
     monkeypatch.setattr("core.engine.SOFT_WARNING_PERSIST_SEC", 0.0)
+    monkeypatch.setattr("core.engine.ENABLE_SOFT_WARNING_TIGHTEN", True)
 
     import asyncio
     original_sleep = asyncio.sleep
@@ -2470,12 +2656,9 @@ async def test_contrarian_bottom_buy_uses_smaller_position_size(tmp_path, monkey
 
 
 @pytest.mark.anyio
-async def test_contrarian_bottom_buy_trailing_stop_triggers_earlier(tmp_path, monkeypatch):
-    """逆勢承接單應該用 CONTRARIAN_TRAILING_TRIGGER_PCT（比一般
-    TRAILING_TRIGGER_PCT低）更早啟動移動停利保護——同樣幅度的小幅利潤，
-    一般單完全不受影響，逆勢單已經有保護動作介入（移動止損，或因為利潤
-    還不夠覆蓋 NET_PROFIT_GUARANTEE_BUFFER 而提早鎖利平倉，兩種都代表
-    比一般單更早介入保護，只是行情夠不夠力決定是哪一種結果）。"""
+async def test_contrarian_bottom_buy_trailing_respects_safety_floor(tmp_path, monkeypatch):
+    """小幅浮盈不足以涵蓋鎖利緩衝與交易成本時，一般單與逆勢單都不應
+    提早啟動移動止利，避免把止損推到現價前方後立即掃出。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
 
@@ -2483,20 +2666,14 @@ async def test_contrarian_bottom_buy_trailing_stop_triggers_earlier(tmp_path, mo
     await account.open_position("ETH/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=200.0, reason="contrarian", signal_score=80)
     account.position_meta["ETH/USDT"]["is_contrarian_bottom_buy"] = True
 
-    # 利潤幅度介於 CONTRARIAN_TRAILING_TRIGGER_PCT(0.1%) 與
-    # TRAILING_TRIGGER_PCT(0.25%) 之間 -> 逆勢單應該觸發，一般單不該觸發
+    # 0.15%小幅波動尚不足以支付鎖利安全帶與成本。
     mid_price = 100.0 * 1.0015
     await account.update_positions({"BTC/USDT": mid_price, "ETH/USDT": mid_price})
 
-    # 一般單完全沒被影響：利潤還沒到0.25%門檻
     assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is False
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(90.0)
-
-    # 逆勢單已經有保護動作：不是還留著原封不動的sl=90.0
-    if "ETH/USDT" in account.positions:
-        assert account.position_meta["ETH/USDT"]["is_breakeven_moved"] is True
-    else:
-        assert account.trades[0]["symbol"] == "ETH/USDT"
+    assert account.position_meta["ETH/USDT"]["is_breakeven_moved"] is False
+    assert account.positions["ETH/USDT"]["sl"] == pytest.approx(90.0)
 
 
 

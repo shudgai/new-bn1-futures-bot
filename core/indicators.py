@@ -25,8 +25,9 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
     """持倉手動與自動平倉參考指標：用 EMA20（含ATR緩衝帶、需連續兩根收線
     確認）與 MA7 拐頭判斷。
-    - 多單 (LONG)：MA7 轉彎向下 (ma7_prev > ma7_prev2 且 ma7_curr < ma7_prev) 觸發拐頭平倉警告。
-    - 空單 (SHORT)：MA7 轉彎向上 (ma7_prev < ma7_prev2 且 ma7_curr > ma7_prev) 觸發拐頭平倉警告。
+    - 多單 (LONG)：MA7 峰頂後連續兩根已收盤 K 棒向下才觸發拐頭平倉警告。
+    - 空單 (SHORT)：MA7 谷底後連續兩根已收盤 K 棒向上才觸發拐頭平倉警告。
+    MA7 不再把峰谷後第一根反向 K 棒直接視為強制出場。
     EMA20 判斷跟15m趨勢止損用同一套「ATR緩衝帶 + 連續兩根收線確認」，
     避免窄幅盤整時單一根雜訊貼著均線來回就誤判為反轉（實測 RLC/USDT
     07/31 20:30~21:08 這種原地雜訊晃動，單根判斷會頻繁觸發但根本沒有
@@ -57,16 +58,17 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     ma7_curr = float(ma7.iloc[-1])
     ma7_prev = float(ma7.iloc[-2])
     ma7_prev2 = float(ma7.iloc[-3])
+    ma7_prev3 = float(ma7.iloc[-4])
 
     reasons = []
     prior_break = False
     ma7_reversed = False
 
     if side == "LONG":
-        # MA7 峰頂轉彎向下
-        if ma7_prev > ma7_prev2 and ma7_curr < ma7_prev:
+        # MA7 峰頂後連續兩根已收盤 K 棒向下，排除第一根假轉彎。
+        if ma7_prev2 > ma7_prev3 and ma7_prev < ma7_prev2 and ma7_curr < ma7_prev:
             ma7_reversed = True
-            reasons.append("MA7轉彎向下")
+            reasons.append("MA7連續兩根轉彎向下")
 
         ema_breach_confirmed = (
             curr_close < (curr_ema - curr_buffer) and prev_close < (prev_ema - prev_buffer)
@@ -81,10 +83,10 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
             reasons.append("跌破前低")
             prior_break = True
     else:
-        # MA7 谷底轉彎向上
-        if ma7_prev < ma7_prev2 and ma7_curr > ma7_prev:
+        # MA7 谷底後連續兩根已收盤 K 棒向上，排除第一根假轉彎。
+        if ma7_prev2 < ma7_prev3 and ma7_prev > ma7_prev2 and ma7_curr > ma7_prev:
             ma7_reversed = True
-            reasons.append("MA7轉彎向上")
+            reasons.append("MA7連續兩根轉彎向上")
 
         ema_breach_confirmed = (
             curr_close > (curr_ema + curr_buffer) and prev_close > (prev_ema + prev_buffer)

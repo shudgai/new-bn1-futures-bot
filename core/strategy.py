@@ -19,11 +19,12 @@ from core.config import (
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
+    MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
-    MA7_REVERSAL_LOOKBACK_BARS, KC_TOUCH_LOOKBACK_BARS,
+    KC_TOUCH_LOOKBACK_BARS,
     MAINSTREAM_SYMBOLS, VOLUME_DIVERGENCE_LOOKBACK_BARS, VOLUME_DIVERGENCE_MAX_RATIO,
 )
 
@@ -137,8 +138,9 @@ def detect_ma7_reversal(
     symbol: str = None,
     parameter_overrides: dict = None,
     indicators_precomputed: bool = False,
+    live_price: float = None,
 ) -> dict:
-    """5m MA7 谷底（多單）或峰頂（空單）拐頭偵測。
+    """1m MA7 谷底（多單）或峰頂（空單）拐頭偵測。
 
     觸發條件（以多單為例）：
       ma7[-3] > ma7[-2] and ma7[-1] > ma7[-2]
@@ -165,11 +167,12 @@ def detect_ma7_reversal(
     rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
 
     curr = df.iloc[-1]
-    price = (
+    closed_price = (
         curr['close_price_spike_filtered']
         if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered']))
         else curr['close']
     )
+    price = float(live_price) if live_price is not None and float(live_price) > 0 else float(closed_price)
     atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
     rsi = curr['rsi']
     adx = curr['adx'] if not np.isnan(curr['adx']) else 0.0
@@ -289,49 +292,64 @@ def detect_ma7_reversal(
     if want_dir == -1 and rsi < rsi_short_min:
         return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
 
-    # MA7 谷底/峰頂拐頭判定：在最近 MA7_REVERSAL_LOOKBACK_BARS 根裡找谷底
-    # （多單）/峰頂（空單），只要現在已經比那個谷底/峰頂高/低就算轉彎成立
-    # ——不再只鎖死「剛好上一根」那個精確視窗，避免因輪替/掃描時機錯過
-    # 轉彎那一根K棒後就得等下一次全新回踩才會重新觸發。
+    # MA7 谷底/峰頂拐頭必須由最新三根已收盤K棒當場確立。
+    # 不接受「當前 MA7 低於/高於過去某個舊峰谷」，否則同一個舊拐點
+    # 會在後續多根K棒重複觸發，把已經展開或失效的趨勢誤報為新轉彎。
     if 'ma7' not in df.columns:
         return _no("ma7欄位缺失")
     ma7_series = df['ma7'].dropna()
-    min_bars_needed = MA7_REVERSAL_LOOKBACK_BARS + 1
+    min_bars_needed = 3
     if len(ma7_series) < min_bars_needed:
         return _no(f"MA7有效值不足{min_bars_needed}根")
     ma7_curr = float(ma7_series.iloc[-1])
     ma7_prev = float(ma7_series.iloc[-2])
     ma7_prev2 = float(ma7_series.iloc[-3])
-    lookback_window = ma7_series.iloc[-min_bars_needed:-1]  # 不含當前這一根
 
-    if want_dir == 1:
-        # 多單：近 N 根內的谷底，且現在已經高於谷底（已翻上去）
-        trough_val = float(lookback_window.min())
-        if not (ma7_curr > trough_val):
-            return _no(
-                f"MA7近{MA7_REVERSAL_LOOKBACK_BARS}根內未見谷底轉彎"
-                f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}，谷底{trough_val:.6g}）"
+    confirmed_reversal = (
+        ma7_prev < ma7_prev2 and ma7_curr > ma7_prev
+        if want_dir == 1
+        else ma7_prev > ma7_prev2 and ma7_curr < ma7_prev
+    )
+    early_projection = False
+    projected_ma7 = None
+    if (
+        not confirmed_reversal
+        and MA7_EARLY_ENTRY_ENABLED
+        and live_price is not None
+        and float(live_price) > 0
+        and len(df['close'].dropna()) >= 7
+    ):
+        closes = df['close'].dropna()
+        # 下一個1m MA7 = 最近6根已收盤價 + 當下即時價。
+        projected_ma7 = float(ma7_curr + (price - float(closes.iloc[-7])) / 7.0)
+        min_turn = max(float(atr) * MA7_EARLY_MIN_ATR_MULT, 1e-12)
+        if want_dir == 1:
+            early_projection = (
+                ma7_curr < ma7_prev
+                and projected_ma7 > ma7_curr
+                and projected_ma7 - ma7_curr >= min_turn
             )
-        if is_contrarian_bottom_buy:
-            # 逆勢承接額外要求連續2根都站在谷底之上（不是只有最新這一根
-            # 剛好翻上去），確認反彈有撐住一下，不是單一根雜訊就進場，
-            # 犧牲一點進場價格換取更高的確認度，降低反巴機率。谷底要從
-            # 「prev之前」的區間找，排除prev本身，否則prev必為區間內
-            # 最小值時，「prev > 谷底」恆假，永遠無法通過。
-            earlier_trough = float(lookback_window.iloc[:-1].min()) if len(lookback_window) > 1 else trough_val
-            if not (ma7_prev > earlier_trough and ma7_curr > earlier_trough):
-                return _no(
-                    f"逆勢承接需連續2根站上谷底"
-                    f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}，谷底{earlier_trough:.6g}）"
-                )
+        else:
+            early_projection = (
+                ma7_curr > ma7_prev
+                and projected_ma7 < ma7_curr
+                and ma7_curr - projected_ma7 >= min_turn
+            )
+
+    if not confirmed_reversal and not early_projection:
+        shape = "谷底" if want_dir == 1 else "峰頂"
+        projection_note = (
+            f"，盤中投影={projected_ma7:.6g}" if projected_ma7 is not None else ""
+        )
+        return _no(
+            f"MA7最新三根未形成局部{shape}轉彎"
+            f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}{projection_note}）"
+        )
+
+    if early_projection:
+        signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev, ma7_curr, projected_ma7
     else:
-        # 空單：近 N 根內的峰頂，且現在已經低於峰頂（已翻下去）
-        peak_val = float(lookback_window.max())
-        if not (ma7_curr < peak_val):
-            return _no(
-                f"MA7近{MA7_REVERSAL_LOOKBACK_BARS}根內未見峰頂轉彎"
-                f"（{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}，峰頂{peak_val:.6g}）"
-            )
+        signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev2, ma7_prev, ma7_curr
 
     # KC 位置驗證與防假突破
     # 1. 簡化區間定位：現價需在 KC 中軌（EMA20）至通道回調側之間
@@ -385,9 +403,11 @@ def detect_ma7_reversal(
         "ema_20": float(ema_20),
         "kc_upper": float(kc_upper),
         "kc_lower": float(kc_lower),
-        "ma7_curr": ma7_curr,
-        "ma7_prev": ma7_prev,
-        "ma7_prev2": ma7_prev2,
+        "ma7_curr": signal_ma7_curr,
+        "ma7_prev": signal_ma7_prev,
+        "ma7_prev2": signal_ma7_prev2,
+        "ma7_projected": projected_ma7,
+        "early_projection": early_projection,
         "rsi": float(rsi),
         "adx": float(adx),
         "btc_regime_mode": btc_regime["mode"],
@@ -396,8 +416,9 @@ def detect_ma7_reversal(
         "is_contrarian_bottom_buy": is_contrarian_bottom_buy,
         "reason": (
             (f"MA7_ContrarianBottomBuy_{side}｜" if is_contrarian_bottom_buy else f"MA7_Reversal_{side}｜")
-            + f"{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}｜"
-            f"{direction_note}｜score={score}"
+            + f"{signal_ma7_prev2:.6g}→{signal_ma7_prev:.6g}→{signal_ma7_curr:.6g}｜"
+            + ("盤中投影提前確認｜" if early_projection else "")
+            + f"{direction_note}｜score={score}"
         ),
     }
 
@@ -817,7 +838,7 @@ class SuperTrendKeltnerStrategy:
 
         # --- 3. 回調狙擊最終決策 (Pullback Sniper Mode) ---
         # 修正核心：KC 突破是「訊號觸發」，等價格回踩 KC 軌道後才是「進場時機」
-        # 進場門檻：總分 >= MIN_SCORE_THRESHOLD（預設 65 分）
+        # 進場門檻：總分 >= MIN_SCORE_THRESHOLD（預設 75 分）
         # 額外防線：新鮮度子分數太低（趨勢已經很舊）直接擋單，不管總分靠
         # 其他項目湊得多高——避免「已經開始老化、快要反轉的趨勢尾端，
         # 靠其他項目湊夠分數壓線擠進場」這種樣貌。

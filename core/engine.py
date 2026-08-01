@@ -17,8 +17,9 @@ from core.config import (
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
-    TAKER_FEE_RATE, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC,
-    CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS,
+    TAKER_FEE_RATE, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
+    CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA7_EARLY_CONFIRM_SCANS,
+    EXECUTION_PRICE_MAX_DEVIATION_PCT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -54,6 +55,8 @@ class TradingEngine:
         self.account.on_trade_closed = self.request_trade_analysis
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
+        # 非紙上模式可下單合約集合；None代表紙上模式不需執行市場交集。
+        self.execution_symbols = None
         self.last_ticker_success_ts: float = time.time()
         self._last_stale_ticker_log: float = 0.0
         self.ema_50_1h_cache: Dict[str, float] = {}
@@ -74,6 +77,8 @@ class TradingEngine:
         self._pullback_retry_after: Dict[str, float] = {}
         # 候選逾時後鎖住同方向舊 KC 突破，直到價格先回到通道內重置。
         self._expired_pullback_sides: Dict[str, str] = {}
+        # 盤中投影MA7必須連續多輪成立；任何一輪失效即清零。
+        self._ma7_early_confirmations: Dict[tuple, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -94,6 +99,27 @@ class TradingEngine:
         self._history_coeff_logged: Dict[str, tuple] = {}
         # 診斷與影子比較每分鐘落盤一次，避免每 5 秒主迴圈造成過度寫檔。
         self._last_diagnostic_stats_save_at: float = 0.0
+
+    def _ma7_timing_ready(self, symbol: str, signal: dict, now: float) -> tuple:
+        """已收盤轉彎直接放行；盤中投影須連續多輪成立，失效即清零。"""
+        required = max(2, MA7_EARLY_CONFIRM_SCANS)
+        side = signal.get("side")
+        key = (symbol, side)
+        for stale_key in [item for item in self._ma7_early_confirmations if item[0] == symbol and item != key]:
+            self._ma7_early_confirmations.pop(stale_key, None)
+        if not signal.get("detected"):
+            self._ma7_early_confirmations.pop(key, None)
+            return False, 0, required
+        if not signal.get("early_projection"):
+            self._ma7_early_confirmations.pop(key, None)
+            return True, required, required
+        state = self._ma7_early_confirmations.get(key, {})
+        count = int(state.get("count", 0)) + 1
+        self._ma7_early_confirmations[key] = {"count": count, "last_seen": now}
+        if count >= required:
+            self._ma7_early_confirmations.pop(key, None)
+            return True, count, required
+        return False, count, required
 
     @staticmethod
     def _format_signal_progress(
@@ -468,10 +494,68 @@ class TradingEngine:
                 f"皆為真實有效的幣安永續合約"
             )
 
+    async def _load_execution_symbols(self) -> None:
+        if PAPER_TRADING:
+            self.execution_symbols = None
+            return
+        try:
+            markets = await self.execution_exchange.load_markets()
+            self.execution_symbols = {
+                market["symbol"].replace(":USDT", "")
+                for market in markets.values()
+                if market.get("active") and market.get("swap")
+                and market.get("quote") == "USDT"
+            }
+            mode = "Testnet" if USE_TESTNET else "實盤"
+            self.account.log(
+                f"✅ [{mode}執行市場] 可下單USDT永續 {len(self.execution_symbols)} 幣，"
+                "全市場候選將取主網與執行市場交集"
+            )
+        except Exception as exc:
+            self.execution_symbols = set()
+            self.account.log(
+                f"🛑 無法載入執行交易所合約，為避免錯誤下單已停用新倉：{exc}",
+                "DANGER",
+            )
+
+    async def _execution_price_is_safe(self, symbol: str, side: str) -> bool:
+        """確認執行合約存在，且主網與執行市場最佳價偏差不超標。"""
+        if PAPER_TRADING:
+            return True
+        if self.execution_symbols is None or symbol not in self.execution_symbols:
+            self.account.log(f"🛑 {symbol} 不在執行交易所可下單合約交集，拒絕下單", "WARNING")
+            return False
+        try:
+            main_book, execution_book = await asyncio.gather(
+                self.exchange.fetch_order_book(symbol, limit=5),
+                self.execution_exchange.fetch_order_book(symbol, limit=5),
+            )
+            book_side = "asks" if str(side).upper() == "LONG" else "bids"
+            main_rows = main_book.get(book_side) or []
+            execution_rows = execution_book.get(book_side) or []
+            if not main_rows or not execution_rows:
+                raise ValueError(f"{book_side}深度為空")
+            main_price = float(main_rows[0][0])
+            execution_price = float(execution_rows[0][0])
+            deviation = abs(execution_price - main_price) / max(main_price, 1e-12)
+            if deviation > EXECUTION_PRICE_MAX_DEVIATION_PCT:
+                self.account.log(
+                    f"🛑 {symbol} 主網與執行市場最佳價偏差 {deviation:.2%}>"
+                    f"{EXECUTION_PRICE_MAX_DEVIATION_PCT:.2%}，拒絕下單"
+                    f"（主網={main_price:.8g}，執行={execution_price:.8g}）",
+                    "WARNING",
+                )
+                return False
+            return True
+        except Exception as exc:
+            self.account.log(f"🛑 {symbol} 執行市場價差驗證失敗，拒絕下單：{exc}", "WARNING")
+            return False
+
     async def start(self):
         if self.is_running:
             return
         await self.account.initialize()
+        await self._load_execution_symbols()
         await self._validate_mainstream_symbols()
         self.is_running = True
         if PAPER_TRADING:
@@ -574,7 +658,7 @@ class TradingEngine:
             try:
                 now_time = time.time()
                 if now_time - self.symbol_rotation.last_rotation_at >= SYMBOL_ROTATION_INTERVAL_SEC:
-                    changes = await self.symbol_rotation.rotate(self.exchange)
+                    changes = await self.symbol_rotation.rotate(self.exchange, self.execution_symbols)
                     if changes:
                         change_text = "、".join(
                             f"{item['out']}→{item['in']}" if item.get("in")
@@ -617,7 +701,9 @@ class TradingEngine:
             try:
                 await self.exchange.load_markets()
                 tickers = await self.exchange.fetch_tickers()
-                candidates = self.symbol_rotation.market_candidates(tickers, self.exchange.markets)
+                candidates = self.symbol_rotation.market_candidates(
+                    tickers, self.exchange.markets, self.execution_symbols
+                )
                 watched = set(DEFAULT_SYMBOLS) | set(self.account.positions.keys())
                 to_scan = [s for s in candidates if s not in watched]
 
@@ -723,7 +809,7 @@ class TradingEngine:
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
                         await self.account.close_position(symbol, curr_p, close_reason)
                         self._soft_warning_since.pop(symbol, None)
-                    elif not is_profit_locked:
+                    elif not is_profit_locked and ENABLE_SOFT_WARNING_TIGHTEN:
                         # 軟性警訊收緊止損：持續處於「✗」（ma_ok=false）但還沒
                         # 升級成「⛔」超過 SOFT_WARNING_PERSIST_SEC，把止損往
                         # 進場價方向收緊到「目前止損與進場價的中點」（只會變緊
@@ -1254,6 +1340,9 @@ class TradingEngine:
             sl, tp = live_price - sl_distance, live_price + tp_distance
         else:
             sl, tp = live_price + sl_distance, live_price - tp_distance
+        if not await self._execution_price_is_safe(symbol, candidate["side"]):
+            self._drop_pullback_candidate(symbol, "執行市場合約或價差驗證未通過", now)
+            return False
         placed = await self.account.place_limit_entry(
             symbol=symbol, side=candidate["side"], target_price=live_price,
             amount_usdt=candidate["amount_usdt"], sl=sl, tp=tp,
@@ -1323,6 +1412,9 @@ class TradingEngine:
         if self.account.get_available_balance() < amount_usdt:
             return False
 
+        if not await self._execution_price_is_safe(symbol, side):
+            return False
+
         # 獲取對手價，確保能立刻成交
         target_price = live_price
         if hasattr(self.exchange, "fetch_order_book"):
@@ -1384,8 +1476,9 @@ class TradingEngine:
         if placed:
             self._record_pullback_outcome("ma7_reversal_placed")
             direction_note = "MA7谷底轉彎向上" if side == "LONG" else "MA7峰頂轉彎向下"
+            timing_note = "盤中投影連續確認，" if ma7_sig.get("early_projection") else ""
             self.account.log(
-                f"⚡ [MA7拐頭進場] {symbol} {side} {score}分 @ {target_price:.8g}（{direction_note}，對手價直接成交）",
+                f"⚡ [MA7拐頭進場] {symbol} {side} {score}分 @ {target_price:.8g}（{direction_note}，{timing_note}對手價直接成交）",
                 "INFO",
             )
             return True
@@ -1506,6 +1599,9 @@ class TradingEngine:
                 sl, tp = fresh_target - sl_distance, fresh_target + tp_distance
             else:
                 sl, tp = fresh_target + sl_distance, fresh_target - tp_distance
+            if not await self._execution_price_is_safe(symbol, candidate["side"]):
+                self._drop_pullback_candidate(symbol, "執行市場合約或價差驗證未通過", now)
+                continue
             placed = await self.account.place_limit_entry(
                 symbol=symbol, side=candidate["side"], target_price=fresh_target,
                 amount_usdt=candidate["amount_usdt"], sl=sl, tp=tp,
@@ -1748,6 +1844,7 @@ class TradingEngine:
                             )
                             continue
 
+                        live_price = float(self.tickers.get(symbol) or 0.0)
                         df = await self.fetch_klines(symbol, timeframe="1m", limit=100)
                         if df.empty or len(df) < 50:
                             signal_progress.append(
@@ -1769,7 +1866,9 @@ class TradingEngine:
                         else:
                             price = float(df.iloc[-1]['close'])
 
-                        self.tickers[symbol] = price
+                        if live_price <= 0:
+                            live_price = price
+                            self.tickers[symbol] = price
 
                         # 4.2 計算真實動態 ATR (非固定 1.5%)
                         high = df['high']
@@ -1816,9 +1915,20 @@ class TradingEngine:
                             btc_st_flip_age=self.btc_1h_st_flip_age,
                             symbol=symbol,
                             indicators_precomputed=True,
+                            live_price=live_price,
                         )
                         
                         if ma7_sig["detected"]:
+                            timing_ready, early_count, required_scans = self._ma7_timing_ready(
+                                symbol, ma7_sig, now_time
+                            )
+                            if not timing_ready:
+                                signal_progress.append(
+                                    f"{coin} {ma7_sig['side']} {ma7_sig.get('score', 0)}分,"
+                                    f"盤中MA7提前確認 {early_count}/{required_scans}"
+                                )
+                                continue
+
                             st_direction_1h = self.st_direction_1h_cache.get(symbol)
                             want_dir = 1 if ma7_sig["side"] == "LONG" else -1
                             trend_aligned = 1 if (st_direction_1h is None or st_direction_1h == want_dir) else 0
@@ -1826,12 +1936,14 @@ class TradingEngine:
                                 "symbol": symbol,
                                 "side": ma7_sig["side"],
                                 "ma7_sig": ma7_sig,
-                                "price": price,
+                                "price": float(ma7_sig.get("price") or live_price or price),
                                 "score": ma7_sig.get("score", 65),
                                 "trend_aligned": trend_aligned
                             })
                             continue
-                        
+
+                        self._ma7_timing_ready(symbol, ma7_sig, now_time)
+
                         # 未觸發拐頭進場，日誌進度顯示 HOLD 理由
                         reason = ma7_sig.get("reason", "等待MA7拐頭及KC回踩")
                         score = ma7_sig.get("score", 0)

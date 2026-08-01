@@ -88,6 +88,15 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
+# 單根5m K在EMA20錯誤側停留300秒，並不是新增第二根收盤確認；舊邏輯
+# 還可能把止損移到市價後方而等同立即平倉。預設停用，保留開關供影子測試。
+ENABLE_SOFT_WARNING_TIGHTEN = os.getenv("ENABLE_SOFT_WARNING_TIGHTEN", "false").lower() == "true"
+# 1m尚未收盤時，用即時價投影MA7；需達ATR幅度並連續多輪成立才提前進場。
+MA7_EARLY_ENTRY_ENABLED = os.getenv("MA7_EARLY_ENTRY_ENABLED", "true").lower() == "true"
+MA7_EARLY_MIN_ATR_MULT = float(os.getenv("MA7_EARLY_MIN_ATR_MULT", "0.02"))
+MA7_EARLY_CONFIRM_SCANS = int(os.getenv("MA7_EARLY_CONFIRM_SCANS", "2"))
+# 非紙上模式下，主網訊號價與執行交易所最佳價偏差超過此比例即拒絕下單。
+EXECUTION_PRICE_MAX_DEVIATION_PCT = float(os.getenv("EXECUTION_PRICE_MAX_DEVIATION_PCT", "0.005"))
 ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"
 # 移動止損的 ATR 倍數（預設 3 倍 ATR，動態適應市場波動範圍）
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
@@ -137,6 +146,10 @@ NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALL
 # 正在被侵蝕，與其等它繼續吐回去，不如把握警訊後難得的一次反彈把獲利
 # 鎖住；BinanceTestnetAccount 目前這個旗標仍是純顯示，不會自動平倉。
 PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
+# 小於0.5%的歷史峰值不啟動「回吐後反彈平倉」，避免剛蓋過手續費就把
+# 部位關掉；平倉當下另要求至少保留0.10%無槓桿淨空間。
+PROFIT_ALERT_MIN_PEAK_PCT = float(os.getenv("PROFIT_ALERT_MIN_PEAK_PCT", "0.005"))
+PROFIT_ALERT_MIN_NET_PCT = float(os.getenv("PROFIT_ALERT_MIN_NET_PCT", "0.001"))
 # SOFT_WARNING_PERSIST_SEC：持倉持續處於「✗」（現價站上/跌破EMA20，但
 # 還沒同時跌破/站上前低前高升級成「⛔」強訊號）超過這個秒數，代表方向
 # 持續不利但還沒觸發5m強出場防線，此時把止損往進場價方向收緊一次
@@ -285,17 +298,9 @@ WEAK_ENERGY_LEVERAGE_CAP = int(os.getenv("WEAK_ENERGY_LEVERAGE_CAP", "3"))
 ADX_DECLINE_LOOKBACK_BARS = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS", "6"))
 ADX_DECLINE_MIN_DROP = float(os.getenv("ADX_DECLINE_MIN_DROP", "2.0"))
 ADX_DECLINE_MIN_DROP_RATIO = float(os.getenv("ADX_DECLINE_MIN_DROP_RATIO", "0.08"))
-# MA7_REVERSAL_LOOKBACK_BARS：MA7谷底/峰頂拐頭原本只認「剛好上一根」那個
-# 精確視窗（prev<=prev2 且 curr>prev），若該幣剛好在轉彎那一根1分K時還沒
-# 被監控到（例如剛被輪替/全市場掃描換入名單），就會永久錯過那次轉彎，
-# 得等下一次全新回踩才會重新觸發。改成在最近 N 根裡找谷底/峰頂，只要現在
-# 已經比那個谷底/峰頂高/低就算轉彎成立；新鮮度上限已有 SuperTrend翻轉根數
-# 上限與 ADX 衰退硬性擋單把關，這裡放寬視窗不會變成無限期追價。
-MA7_REVERSAL_LOOKBACK_BARS = int(os.getenv("MA7_REVERSAL_LOOKBACK_BARS", "14"))
 # KC_TOUCH_LOOKBACK_BARS：KC回踩觸碰確認原本只認前3根已收盤K棒（防止拿
-# 很久以前的回調來當現在的轉彎），開倉機會太少時可以放寬時效視窗，讓
-# 稍微久一點的回踩也算數，跟MA7_REVERSAL_LOOKBACK_BARS放寬轉彎視窗是
-# 同一個方向的調整。
+# 很久以前的回調來當現在的轉彎），只允許有時效的 KC 回踩支持當前
+# 剛確立的 MA7 局部峰谷。
 KC_TOUCH_LOOKBACK_BARS = int(os.getenv("KC_TOUCH_LOOKBACK_BARS", "6"))
 # ADX_DECLINE_LOOKBACK_BARS_1H：同一套「ADX 現在比 N 根K棒前低，且已經
 # 低於 ADX_QUALITY_MIN」邏輯，但改看 1h K線——5分K的新鮮度/ADX檢查只能
@@ -321,13 +326,13 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 是百分比制移動止利：
 # USE_NATIVE_TRAILING_STOP=false 時 BinanceTestnetAccount 用這套，
 # PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.005"))
 # CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
 # 專用、更早啟動的移動停利觸發門檻。逆勢單本來就是在跟原本大趨勢對作，
 # 反彈站不站得住沒把握，用更低的門檻讓移動停利盡快接手保護獲利——一旦
 # 觸發只是把止損往有利方向移動、不會限制往上的空間，利潤持續往上一樣
 # 會繼續跟著推移，不是設一個近的固定止盈就出場。
-CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.001"))
+CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.005"))
 # CONTRARIAN_POSITION_SIZE_MULTIPLIER：逆勢承接單的信心水準本來就比一般
 # 順勢MA7拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
 # 就算反彈失敗被打回原趨勢方向，虧損金額也比較小。
@@ -349,8 +354,8 @@ SPEED_FAST_THRESHOLD = float(os.getenv("SPEED_FAST_THRESHOLD", "0.0005"))   # 0.
 SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.01%/min
 
 # --- 利潤分級鎖倉：利潤越高，鎖越緊，避免大幅回吐 ---
-# 剛觸發（0.25%）時不強制套用分級門檻，只看增利速度（60~75%），
-# 保留較大的回檔空間，避免一碰到 0.25% 就被雜訊掃出；觸發點本身
+# 剛觸發（預設0.50%）時不強制套用分級門檻，只看增利速度（60~75%），
+# 保留較大的回檔空間，避免剛觸發就被雜訊掃出；觸發點本身
 # 不拉高——拉高觸發點只會讓更多小賺的單子連鎖都鎖不到、直接變虧損，
 # 讓「贏小賠大」更嚴重。真正該調的是觸發之後的鎖定爬升速度：
 # 門檻整體拉開、封頂拉到 3.0%，配合今天拉寬的止損止盈（2.0x/4.0x
@@ -374,7 +379,7 @@ PARTIAL_CLOSE_THRESHOLDS = [
 
 import time as _time
 
-def get_trailing_pullback_pct(peak_profit_pct: float, peak_updated_at: float) -> float:
+def get_trailing_pullback_pct(peak_profit_pct: float, position_opened_at: float) -> float:
     """根據增利速度 + 利潤分級動態回傳止利回吐比例。
 
     先依增利速度決定基礎回吐比例，再用利潤分級下限收緊，
@@ -382,12 +387,14 @@ def get_trailing_pullback_pct(peak_profit_pct: float, peak_updated_at: float) ->
 
     Args:
         peak_profit_pct: 歷史最高無槓桿利潤百分比
-        peak_updated_at: 上次 peak 更新時的 timestamp（秒）
+        position_opened_at: 持倉建立 timestamp（秒），用整段持倉時間計算
+            平均增利速度；不能使用剛更新的峰值時間，否則 elapsed 幾乎為0，
+            每次都會被誤判為快速增利。
     Returns:
         鎖倉比例（0.85 / 0.80 / 0.75 / 0.70 / 0.60）
     """
     # 1. 依增利速度決定基礎回吐比例
-    elapsed_min = (_time.time() - peak_updated_at) / 60.0
+    elapsed_min = (_time.time() - position_opened_at) / 60.0
     if elapsed_min <= 0 or peak_profit_pct <= 0:
         base = TRAILING_PULLBACK_PCT
     else:
@@ -519,12 +526,12 @@ def get_position_multiplier(score: int) -> float:
     return 0.0
 
 # --- 動態幣種輪替與本機 AI 輔助 ---
-# 12→16→18 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會出現達標
+# 12→16→18→24 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會出現達標
 # 訊號），而不是放寬同一批幣的評分門檻（那樣會直接增加假突破機率）。
 # API 負擔：報價是一次批次拿全部幣種，不隨幣數增加；K 線只對還沒進場/
 # 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
 # Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "18"))
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "24"))
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "900"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
 # 等 SYMBOL_ROTATION_INTERVAL_SEC（預設15分鐘）才會換牌，尚未持倉的候選觀察
@@ -533,8 +540,8 @@ SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "90
 # 判斷（不用額外呼叫 AI/抓K線，成本很低），每隔這個秒數就檢查一次，發現
 # 就立刻換掉。已經有持倉的幣種不受影響，維持只等SL/TP/24h時間過濾出場。
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
-# 跟著 SYMBOL_ROTATION_COUNT 等比放大（12→6 是 1:2），維持多空對稱席次。
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "9"))
+# 跟著 SYMBOL_ROTATION_COUNT 等比放大（24→12 是 1:2），維持多空對稱席次。
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "12"))
 # 實測輪替候選池常常只剩個位數合格（60分門檻+ATR範圍雙重過濾下，31個
 # 候選常態只剩4~10個能進監控名單），降到45分讓中等評分的候選也能進來，
 # 同時仍濾掉評分明顯偏弱（30分以下）的。
@@ -583,8 +590,8 @@ SYMBOL_CANDIDATE_POOL[:] = [
 # 可新開倉牌面：正績效幣種搭配高流動性主流合約。
 # TAO 與近期反覆停損幣種不列入；已退出牌面的既有持倉仍會被管理。
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
-# SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（18）覆寫，這裡先湊到
-# 18 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
+# SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（24）覆寫，這裡先湊到
+# 24 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
 DEFAULT_SYMBOLS = sorted(MAINSTREAM_SYMBOLS)
 DEFAULT_SYMBOLS[:] = [
     symbol for symbol in DEFAULT_SYMBOLS if symbol not in ENTRY_DISABLED_SYMBOLS

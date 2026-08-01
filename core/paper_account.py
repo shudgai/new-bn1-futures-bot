@@ -16,6 +16,8 @@ from core.config import (
     NET_PROFIT_GUARANTEE_BUFFER,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
+    PROFIT_ALERT_MIN_PEAK_PCT,
+    PROFIT_ALERT_MIN_NET_PCT,
     get_leverage,
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
@@ -52,9 +54,9 @@ class PaperAccount:
     services/api.py 完全不用改就能切換，也讓網頁UI顯示邏輯一致。
 
     跟真實下單最大的差異：
-    - place_limit_entry() 直接視為立即成交（不用真的排隊等撮合），因為
-      MA7拐頭進場本來就是設計成「對手價直接成交」，在真實環境裡也幾乎
-      是瞬間成交。
+    - MA7 的非 Post-Only 對手價單立即成交並計入滑點；Post-Only/Maker
+      限價單則保留在 pending，只有最新價穿越目標價才按掛單價成交，避免
+      把Maker掛單錯算成較差價格的Taker成交。
     - 移動停利只實作百分比制（跟 USE_NATIVE_TRAILING_STOP=false 時的
       testnet 邏輯相同公式），沒有「原生Trailing Stop」這種需要真實
       交易所撮合引擎才有意義的分級——紙上帳戶沒有真正的交易所可以掛
@@ -71,6 +73,7 @@ class PaperAccount:
         self.positions: Dict[str, dict] = {}
         self.position_meta: Dict[str, dict] = {}
         self.pending_limit_orders: Dict[str, dict] = {}
+        self.latest_prices: Dict[str, float] = {}
         self.trades: List[dict] = []
         self.logs: List[dict] = []
         self.closing_lock: set = set()
@@ -110,6 +113,7 @@ class PaperAccount:
         self.realized_pnl = float(data.get("realized_pnl", 0.0))
         self.positions = data.get("positions", {})
         self.position_meta = data.get("position_meta", {})
+        self.pending_limit_orders = data.get("pending_limit_orders", {})
         self.trades = data.get("trades", [])
         self.logs = data.get("logs", [])
         self.last_closed_at = {
@@ -132,6 +136,7 @@ class PaperAccount:
             "realized_pnl": self.realized_pnl,
             "positions": self.positions,
             "position_meta": self.position_meta,
+            "pending_limit_orders": self.pending_limit_orders,
             "trades": self.trades[:500],
             "logs": self.logs[-200:],
             "last_closed_at": self.last_closed_at,
@@ -201,6 +206,7 @@ class PaperAccount:
         leverage: int = None,
         signal_score: int = None,
         entry_context: dict = None,
+        apply_slippage: bool = True,
     ) -> bool:
         if symbol in self.positions or symbol in self.closing_lock:
             return False
@@ -214,8 +220,11 @@ class PaperAccount:
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score) if signal_score is not None else get_leverage(symbol)
         )
-        # 模擬市價單滑點成本
-        execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
+        # 市價/對手價單計入不利滑點；Maker限價成交使用原掛單價。
+        if apply_slippage:
+            execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
+        else:
+            execution_price = price
         qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
         fee = qty * execution_price * TAKER_FEE_RATE
         self.balance -= (amount_usdt + fee)
@@ -275,9 +284,10 @@ class PaperAccount:
             "tp": pos["tp"],
             **entry_context,
         })
+        fill_note = "含滑點" if apply_slippage else "Maker限價成交"
         self.log(
             f"🚀 [紙上交易] 開倉成功 [{side}] {symbol} @ {execution_price:.6g} "
-            f"({leverage}x，含滑點，SL={sl:.6g}, TP={pos['tp']:.6g})",
+            f"({leverage}x，{fill_note}，SL={sl:.6g}, TP={pos['tp']:.6g})",
             "SUCCESS",
         )
         self.save_state()
@@ -298,22 +308,79 @@ class PaperAccount:
         post_only: bool = True,
         entry_context: dict = None,
     ) -> bool:
-        """紙上帳戶沒有真實委託簿要排隊撮合，直接視為立即以目標價成交
-        （對手價直接成交本來在真實環境也幾乎是瞬間成交，這裡忠實模擬
-        同樣的「馬上進場」結果，不用另外維護一份pending狀態機）。"""
-        return await self.open_position(
-            symbol, side, target_price, amount_usdt, sl, tp, reason,
-            atr=atr, leverage=leverage, signal_score=signal_score,
-            entry_context=entry_context,
+        """非Post-Only對手價單立即成交；Post-Only保留至市價穿越掛單價。"""
+        if not post_only:
+            return await self.open_position(
+                symbol, side, target_price, amount_usdt, sl, tp, reason,
+                atr=atr, leverage=leverage, signal_score=signal_score,
+                entry_context=entry_context,
+            )
+
+        if symbol in self.positions or symbol in self.pending_limit_orders or symbol in self.closing_lock:
+            return False
+        if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
+            self.log(
+                f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕掛單",
+                "WARNING",
+            )
+            return False
+        if amount_usdt <= 0 or self.get_available_balance() < amount_usdt:
+            return False
+
+        leverage = leverage or (
+            get_signal_leverage(symbol, signal_score)
+            if signal_score is not None else get_leverage(symbol)
         )
+        self.pending_limit_orders[symbol] = {
+            "side": side,
+            "target_price": float(target_price),
+            "amount_usdt": float(amount_usdt),
+            "sl": float(sl),
+            "tp": float(tp),
+            "reason": reason,
+            "atr": float(atr),
+            "leverage": leverage,
+            "signal_score": signal_score,
+            "placed_at": time.time(),
+            "post_only": True,
+            "entry_context": {
+                key: value for key, value in dict(entry_context or {}).items()
+                if key in ENTRY_CONTEXT_KEYS
+            },
+        }
+        self.log(f"📝 [紙上Maker掛單] {symbol} {side} @ {target_price:.8g}，等待觸價", "INFO")
+        self.save_state()
+        return True
 
     async def check_pending_limit_orders(self) -> None:
-        """紙上帳戶沒有真的待成交限價單（place_limit_entry立即成交），
-        維持空實作只是為了介面相容。"""
-        return None
+        """用最新成交價模擬Maker觸價；成交價固定為原掛單價且不加Taker滑點。"""
+        for symbol, info in list(self.pending_limit_orders.items()):
+            current_price = self.latest_prices.get(symbol)
+            if current_price is None:
+                continue
+            side = info["side"]
+            target = float(info["target_price"])
+            touched = (
+                (side == "LONG" and current_price <= target)
+                or (side == "SHORT" and current_price >= target)
+            )
+            if not touched:
+                continue
+
+            self.pending_limit_orders.pop(symbol, None)
+            opened = await self.open_position(
+                symbol, side, target, info["amount_usdt"], info["sl"], info["tp"],
+                info["reason"], atr=info["atr"], leverage=info["leverage"],
+                signal_score=info["signal_score"], entry_context=info.get("entry_context"),
+                apply_slippage=False,
+            )
+            if opened:
+                self.log(f"✅ [紙上Maker成交] {symbol} {side} @ {target:.8g}", "SUCCESS")
 
     async def cancel_pending_limit(self, symbol: str, reason: str) -> None:
-        self.pending_limit_orders.pop(symbol, None)
+        if self.pending_limit_orders.pop(symbol, None) is not None:
+            self.log(f"↩️ [紙上Maker撤單] {symbol}：{reason}", "INFO")
+            self.save_state()
 
     async def close_position(self, symbol: str, current_price: float, close_reason: str) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
@@ -464,6 +531,10 @@ class PaperAccount:
         self._check_daily_reset()
         total_unrealized = 0.0
         now_ts = time.time()
+        # 即使目前沒有持倉，也要保留最新價供 Post-Only 掛單判斷是否觸價。
+        for symbol, price in ticker_prices.items():
+            if price is not None:
+                self.latest_prices[str(symbol)] = float(price)
 
         for symbol, pos in list(self.positions.items()):
             curr_p = (
@@ -492,12 +563,18 @@ class PaperAccount:
             # TRAILING_STOP_MARKET，統一用這一套）。逆勢承接單用更早/更低
             # 的觸發門檻，一旦有利潤就盡快接手保護（不限制往上空間，利潤
             # 持續走高一樣會繼續推移，只是啟動得比一般順勢單早）。
-            trailing_trigger = (
+            configured_trigger = (
                 CONTRARIAN_TRAILING_TRIGGER_PCT if meta.get("is_contrarian_bottom_buy")
                 else TRAILING_TRIGGER_PCT
             )
+            # 門檻必須涵蓋鎖利緩衝與平倉成本，否則止損會被推到現價前方。
+            trailing_trigger = max(
+                configured_trigger,
+                NET_PROFIT_GUARANTEE_BUFFER + SLIPPAGE_PCT + TAKER_FEE_RATE,
+            )
             if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:
-                pullback = get_trailing_pullback_pct(highest_pnl, meta["peak_profit_updated_at"])
+                opened_at = meta.get("open_timestamp") or pos.get("open_timestamp") or now_ts
+                pullback = get_trailing_pullback_pct(highest_pnl, opened_at)
                 old_sl = pos.get("sl", 0.0)
                 if side == "LONG":
                     trail_sl = entry_p * (1.0 + highest_pnl * pullback)
@@ -570,9 +647,16 @@ class PaperAccount:
             # 實際是淨損-0.20——加上最低獲利門檻，反彈高點的獲利要先蓋過
             # 來回成本才值得把握。
             round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
+            min_rebound_exit_pct = round_trip_cost_pct + PROFIT_ALERT_MIN_NET_PCT
             peak_pnl_pct = highest_pnl
             profit_giveback_ratio = (peak_pnl_pct - pnl_pct) / peak_pnl_pct if peak_pnl_pct > 0 else 0.0
-            profit_alert = pnl_pct > 0 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
+            profit_alert = (
+                peak_pnl_pct >= PROFIT_ALERT_MIN_PEAK_PCT
+                and pnl_pct > 0
+                and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
+            )
+            if peak_pnl_pct < PROFIT_ALERT_MIN_PEAK_PCT:
+                meta["rebound_peak_pnl_pct"] = None
 
             # 警訊亮起後只要開始反彈，就持續追蹤「這波反彈自己的高點」，
             # 不能只看 profit_alert 這個當下的旗標——反彈只要回升夠多，
@@ -588,7 +672,7 @@ class PaperAccount:
                 elif rebound_peak_pnl_pct is None or pnl_pct > rebound_peak_pnl_pct:
                     # 反彈還在持續往上爬，還沒觸頂，記錄目前反彈高點繼續持有
                     meta["rebound_peak_pnl_pct"] = pnl_pct
-                elif pnl_pct > round_trip_cost_pct:
+                elif pnl_pct > min_rebound_exit_pct:
                     # 反彈本身開始回落（找到高點了），且獲利仍蓋過來回成本，
                     # 把握這個反彈高點平倉
                     await self.close_position(symbol, curr_p, "獲利回吐警訊後反彈觸頂回落，把握高點平倉")
