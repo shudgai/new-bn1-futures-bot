@@ -591,6 +591,30 @@ async def test_external_close_classifies_exchange_tp_and_price_fallback_sl(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("position", "close_price"),
+    [
+        ({"side": "LONG", "entry_price": 100.0, "sl": 100.5, "tp": 104.0}, 100.4),
+        ({"side": "SHORT", "entry_price": 100.0, "sl": 99.5, "tp": 96.0}, 99.6),
+    ],
+)
+async def test_external_stop_on_favorable_side_is_profit_protection(
+    tmp_path, monkeypatch, position, close_price
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    account = BinanceTestnetAccount(FakeTestnetExchange())
+
+    exit_type, reason = await account._classify_external_close(
+        "DOGE/USDT", position,
+        [{"type": "STOP", "price": close_price, "amount": 1.0}],
+        close_price,
+    )
+
+    assert exit_type == "PROFIT_PROTECT"
+    assert "Profit-Protect" in reason
+
+
+@pytest.mark.anyio
 async def test_disable_take_profit_prevents_tp_order(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", True)

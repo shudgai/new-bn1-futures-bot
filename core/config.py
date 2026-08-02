@@ -73,7 +73,7 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "3"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
@@ -105,11 +105,11 @@ MA7_EARLY_MIN_ATR_MULT = float(os.getenv("MA7_EARLY_MIN_ATR_MULT", "0.05"))
 MA7_EARLY_CONFIRM_SCANS = int(os.getenv("MA7_EARLY_CONFIRM_SCANS", "2"))
 # 已收盤 MA7 必須在峰谷後連續兩根同向，且峰谷到最新值至少移動此 ATR
 # 倍數；排除 BABY/NEAR 等只有最後幾個小數位變化的假轉彎。
-MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.05"))
+MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.10"))
 # 爆量微拐幅快速入口：仍只使用已收盤K棒，但峰谷後第一根確認即可進場。
 # 必須同時有 1.5 倍均量，且拐幅限制在 0.02~0.20 ATR；一般低量訊號仍走
 # 上面的兩根收線確認。這只放鬆觸發時機，不改 SL/TP、槓桿或倉位風控。
-MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "true").lower() == "true"
+MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "false").lower() == "true"
 MA7_FAST_MIN_ATR_MULT = float(os.getenv("MA7_FAST_MIN_ATR_MULT", "0.02"))
 MA7_FAST_MAX_ATR_MULT = float(os.getenv("MA7_FAST_MAX_ATR_MULT", "0.20"))
 MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
@@ -190,7 +190,7 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.5"))
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
 # 全體幣種的開倉方向守門——BTC 多頭只允許多單，BTC 空頭只允許空單。
 # 這是防止「大盤偏多但 bot 大量開空」最有效的單一機制。
-BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "false").lower() == "true"
+BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower() == "true"
 # BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
 # 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
 BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "2"))

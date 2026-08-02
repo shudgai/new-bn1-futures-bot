@@ -437,9 +437,28 @@ class BinanceTestnetAccount:
                 elif sl > 0 and close_price >= sl - tolerance:
                     exit_type = "SL"
 
+        # 移動保本／移動停利仍是透過 STOP 類訂單成交，但它不是原始虧損
+        # 止損。只要保護線已移到進場價有利側，或實際成交價仍在有利側，
+        # 就獨立標記為獲利保護，避免停損率把正收益出場算成策略失敗。
+        if exit_type == "SL":
+            side = str(position.get("side") or "").upper()
+            entry_price = float(position.get("entry_price") or 0.0)
+            sl = float(position.get("sl") or 0.0)
+            favorable_stop = (
+                (side == "LONG" and sl > entry_price)
+                or (side == "SHORT" and 0 < sl < entry_price)
+            ) if entry_price > 0 else False
+            favorable_fill = (
+                (side == "LONG" and close_price > entry_price)
+                or (side == "SHORT" and 0 < close_price < entry_price)
+            ) if entry_price > 0 else False
+            if favorable_stop or favorable_fill:
+                exit_type = "PROFIT_PROTECT"
+
         reasons = {
             "TP": "Binance Testnet 止盈單成交 (Take-Profit)",
             "SL": "Binance Testnet 止損單成交 (Stop-Loss)",
+            "PROFIT_PROTECT": "Binance Testnet 獲利保護單成交 (Profit-Protect)",
         }
         return exit_type or "OTHER", reasons.get(exit_type, "Binance Testnet 外部平倉（類型未識別）")
 

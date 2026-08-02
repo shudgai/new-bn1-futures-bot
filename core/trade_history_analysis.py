@@ -53,7 +53,7 @@ class TradeHistoryAnalyzer:
     @staticmethod
     def _infer_exit_type(trade: dict, opened: dict) -> str:
         explicit = str(trade.get("exit_type") or "").upper()
-        if explicit in {"TP", "SL", "OTHER", "UNKNOWN"}:
+        if explicit in {"TP", "SL", "PROFIT_PROTECT", "OTHER", "UNKNOWN"}:
             return explicit
         reason = str(trade.get("reason") or "")
         if "Take-Profit" in reason or "止盈" in reason:
@@ -205,6 +205,9 @@ class TradeHistoryAnalyzer:
         count = len(records)
         stop_count = sum(cls._is_stop(row) for row in records)
         tp_count = sum(row.get("exit_type") == "TP" for row in records)
+        profit_protect_count = sum(
+            row.get("exit_type") == "PROFIT_PROTECT" for row in records
+        )
         classified_protection_count = stop_count + tp_count
         overview = {
             "closed_trades": count,
@@ -217,6 +220,7 @@ class TradeHistoryAnalyzer:
             "protection_stop_rate": round(stop_count / classified_protection_count, 4) if classified_protection_count else 0.0,
             "tp_count": tp_count,
             "sl_count": stop_count,
+            "profit_protect_count": profit_protect_count,
             "unknown_exit_count": sum(row.get("exit_type") == "UNKNOWN" for row in records),
         }
         digest_source = json.dumps(records, ensure_ascii=False, sort_keys=True).encode("utf-8")

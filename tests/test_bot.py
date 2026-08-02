@@ -474,8 +474,8 @@ def test_low_score_signal_caps_eth_leverage():
 
 def test_configured_trade_amount_uses_50_usdt_per_slot():
     assert engine_module.TRADE_AMOUNT_USDT == pytest.approx(50.0)
-    assert engine_module.MAX_SLOTS == 5
-    assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(250.0)
+    assert engine_module.MAX_SLOTS == 3
+    assert engine_module.TRADE_AMOUNT_USDT * engine_module.MAX_SLOTS == pytest.approx(150.0)
 
 
 def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
@@ -1811,13 +1811,24 @@ def test_trade_history_counts_only_classified_stop_losses():
             "action": "OPEN_LONG", "symbol": "BBB/USDT", "side": "LONG",
             "price": 100.0, "sl": 98.0, "tp": 104.0,
         },
+        {
+            "action": "CLOSE_LONG", "symbol": "CCC/USDT", "side": "LONG",
+            "price": 101.0, "pnl": 0.8, "fee": 0.2,
+            "reason": "Binance Testnet 獲利保護單成交 (Profit-Protect)",
+            "exit_type": "PROFIT_PROTECT",
+        },
+        {
+            "action": "OPEN_LONG", "symbol": "CCC/USDT", "side": "LONG",
+            "price": 100.0, "sl": 100.5, "tp": 104.0,
+        },
     ]
 
     overview = TradeHistoryAnalyzer.build_history(trades)["overview"]
 
     assert overview["tp_count"] == 1
     assert overview["sl_count"] == 1
-    assert overview["stop_rate"] == pytest.approx(0.5)
+    assert overview["profit_protect_count"] == 1
+    assert overview["stop_rate"] == pytest.approx(0.3333)
     assert overview["protection_stop_rate"] == pytest.approx(0.5)
 
 def test_pullback_reversal_requires_a_closed_candle_after_touch():
@@ -2185,7 +2196,7 @@ def test_detect_ma7_reversal_requires_two_closed_bars_after_turn():
 
 
 def test_detect_ma7_reversal_rejects_tiny_closed_turn():
-    """即使已連續兩根向上，累計拐幅不足 0.05 ATR 仍屬價格雜訊。"""
+    """即使已連續兩根向上，累計拐幅不足 0.10 ATR 仍屬價格雜訊。"""
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-4:], "ma7"] = [100.010, 100.000, 100.006, 100.012]
 
@@ -2195,8 +2206,9 @@ def test_detect_ma7_reversal_rejects_tiny_closed_turn():
     assert "MA7轉彎幅度不足" in result["reason"]
 
 
-def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume():
+def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume(monkeypatch):
     """第一根收線微拐幅只有在1.5倍爆量時才可走快速入口。"""
+    monkeypatch.setattr(strategy_module, "MA7_FAST_ENTRY_ENABLED", True)
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.93]
     frame.loc[frame.index[-1], "volume"] = 1500.0
@@ -2210,8 +2222,9 @@ def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume():
     assert "爆量微拐幅提前確認" in result["reason"]
 
 
-def test_detect_ma7_reversal_fast_entry_rejects_low_volume():
+def test_detect_ma7_reversal_fast_entry_rejects_low_volume(monkeypatch):
     """相同單根微拐幅若未達1.5倍均量，仍須等待第二根收線。"""
+    monkeypatch.setattr(strategy_module, "MA7_FAST_ENTRY_ENABLED", True)
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.93]
     frame.loc[frame.index[-1], "volume"] = 1349.0
@@ -2222,8 +2235,9 @@ def test_detect_ma7_reversal_fast_entry_rejects_low_volume():
     assert "連續兩根確認" in result["reason"]
 
 
-def test_detect_ma7_reversal_fast_entry_rejects_turn_over_point_two_atr():
+def test_detect_ma7_reversal_fast_entry_rejects_turn_over_point_two_atr(monkeypatch):
     """爆量也不能追超過0.20 ATR的轉彎，避免快速入口變成追價。"""
+    monkeypatch.setattr(strategy_module, "MA7_FAST_ENTRY_ENABLED", True)
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.97]
     frame.loc[frame.index[-1], "volume"] = 1800.0
