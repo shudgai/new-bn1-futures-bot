@@ -1478,7 +1478,11 @@ class TradingEngine:
         if placed:
             self._record_pullback_outcome("ma7_reversal_placed")
             direction_note = "MA7谷底轉彎向上" if side == "LONG" else "MA7峰頂轉彎向下"
-            timing_note = "盤中投影連續確認，" if ma7_sig.get("early_projection") else ""
+            timing_note = (
+                "盤中投影連續確認，" if ma7_sig.get("early_projection")
+                else "爆量微拐幅收線確認，" if ma7_sig.get("fast_entry")
+                else ""
+            )
             self.account.log(
                 f"⚡ [MA7拐頭進場] {symbol} {side} {score}分 @ {target_price:.8g}（{direction_note}，{timing_note}對手價直接成交）",
                 "INFO",

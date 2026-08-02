@@ -2116,6 +2116,45 @@ def test_detect_ma7_reversal_rejects_tiny_closed_turn():
     assert "MA7轉彎幅度不足" in result["reason"]
 
 
+def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume():
+    """第一根收線微拐幅只有在1.5倍爆量時才可走快速入口。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.93]
+    frame.loc[frame.index[-1], "volume"] = 1500.0
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is True
+    assert result["fast_entry"] is True
+    assert result["early_projection"] is False
+    assert result["volume_ratio"] >= 1.5
+    assert "爆量微拐幅提前確認" in result["reason"]
+
+
+def test_detect_ma7_reversal_fast_entry_rejects_low_volume():
+    """相同單根微拐幅若未達1.5倍均量，仍須等待第二根收線。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.93]
+    frame.loc[frame.index[-1], "volume"] = 1349.0
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is False
+    assert "連續兩根確認" in result["reason"]
+
+
+def test_detect_ma7_reversal_fast_entry_rejects_turn_over_point_two_atr():
+    """爆量也不能追超過0.20 ATR的轉彎，避免快速入口變成追價。"""
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.97]
+    frame.loc[frame.index[-1], "volume"] = 1800.0
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is False
+    assert "連續兩根確認" in result["reason"]
+
+
 def test_detect_ma7_reversal_early_long_uses_live_projection(monkeypatch):
     """前兩個已收盤MA7仍下降，但即時價已讓下一個MA7上彎超過0.05 ATR。"""
     monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)

@@ -100,6 +100,13 @@ MA7_EARLY_CONFIRM_SCANS = int(os.getenv("MA7_EARLY_CONFIRM_SCANS", "2"))
 # 已收盤 MA7 必須在峰谷後連續兩根同向，且峰谷到最新值至少移動此 ATR
 # 倍數；排除 BABY/NEAR 等只有最後幾個小數位變化的假轉彎。
 MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.05"))
+# 爆量微拐幅快速入口：仍只使用已收盤K棒，但峰谷後第一根確認即可進場。
+# 必須同時有 1.5 倍均量，且拐幅限制在 0.02~0.20 ATR；一般低量訊號仍走
+# 上面的兩根收線確認。這只放鬆觸發時機，不改 SL/TP、槓桿或倉位風控。
+MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "true").lower() == "true"
+MA7_FAST_MIN_ATR_MULT = float(os.getenv("MA7_FAST_MIN_ATR_MULT", "0.02"))
+MA7_FAST_MAX_ATR_MULT = float(os.getenv("MA7_FAST_MAX_ATR_MULT", "0.20"))
+MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
 # 非紙上模式下，主網訊號價與執行交易所最佳價偏差超過此比例即拒絕下單。
 EXECUTION_PRICE_MAX_DEVIATION_PCT = float(os.getenv("EXECUTION_PRICE_MAX_DEVIATION_PCT", "0.005"))
 ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"

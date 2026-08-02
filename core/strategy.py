@@ -20,6 +20,8 @@ from core.config import (
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
     MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
+    MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
+    MA7_FAST_MIN_VOLUME_RATIO,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -308,18 +310,38 @@ def detect_ma7_reversal(
     ma7_prev2 = float(ma7_series.iloc[-3])
     ma7_prev3 = float(ma7_series.iloc[-4])
 
-    confirmed_reversal = (
+    regular_reversal = (
         ma7_prev2 < ma7_prev3 and ma7_prev > ma7_prev2 and ma7_curr > ma7_prev
         if want_dir == 1
         else ma7_prev2 > ma7_prev3 and ma7_prev < ma7_prev2 and ma7_curr < ma7_prev
     )
     confirmed_turn = abs(ma7_curr - ma7_prev2)
     min_confirmed_turn = max(float(atr) * MA7_REVERSAL_MIN_ATR_MULT, 1e-12)
-    if confirmed_reversal and confirmed_turn < min_confirmed_turn:
+    if regular_reversal and confirmed_turn < min_confirmed_turn:
         return _no(
             f"MA7轉彎幅度不足（{confirmed_turn:.6g}<{min_confirmed_turn:.6g}，"
             f"需達{MA7_REVERSAL_MIN_ATR_MULT:.2f} ATR）"
         )
+
+    # 快速入口仍以收盤資料判斷，只把「峰谷後需再等第二根」放寬為第一根
+    # 即可；用爆量與拐幅上下限換取速度，避免恢復無條件的微小抖動搶進。
+    first_closed_turn = (
+        ma7_prev < ma7_prev2 and ma7_curr > ma7_prev
+        if want_dir == 1
+        else ma7_prev > ma7_prev2 and ma7_curr < ma7_prev
+    )
+    fast_turn = abs(ma7_curr - ma7_prev)
+    fast_min_turn = max(float(atr) * MA7_FAST_MIN_ATR_MULT, 1e-12)
+    fast_max_turn = max(float(atr) * MA7_FAST_MAX_ATR_MULT, fast_min_turn)
+    volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
+    fast_entry = bool(
+        MA7_FAST_ENTRY_ENABLED
+        and not regular_reversal
+        and first_closed_turn
+        and fast_min_turn <= fast_turn <= fast_max_turn
+        and volume_ratio >= MA7_FAST_MIN_VOLUME_RATIO
+    )
+    confirmed_reversal = regular_reversal or fast_entry
     early_projection = False
     projected_ma7 = None
     if (
@@ -418,6 +440,8 @@ def detect_ma7_reversal(
         "ma7_prev2": signal_ma7_prev2,
         "ma7_projected": projected_ma7,
         "early_projection": early_projection,
+        "fast_entry": fast_entry,
+        "volume_ratio": volume_ratio,
         "rsi": float(rsi),
         "adx": float(adx),
         "btc_regime_mode": btc_regime["mode"],
@@ -428,6 +452,7 @@ def detect_ma7_reversal(
             (f"MA7_ContrarianBottomBuy_{side}｜" if is_contrarian_bottom_buy else f"MA7_Reversal_{side}｜")
             + f"{signal_ma7_prev2:.6g}→{signal_ma7_prev:.6g}→{signal_ma7_curr:.6g}｜"
             + ("盤中投影提前確認｜" if early_projection else "")
+            + ("爆量微拐幅提前確認｜" if fast_entry else "")
             + f"{direction_note}｜score={score}"
         ),
     }
