@@ -391,7 +391,7 @@
                     <div class="card-title">💻 系統日誌 (System Logs)</div>
                     <div class="console">
                         <template v-for="(log, i) in bot.logs" :key="i">
-                            <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': i === bot.logs.length - 1 }">
+                            <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': line.startsWith('⚡') }">
                                 <span class="log-time">[{{ log.time }}]</span>
                                 <span>{{ line }}</span>
                             </div>
