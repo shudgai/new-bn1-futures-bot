@@ -148,6 +148,39 @@ def test_score_low_progress_displays_component_breakdown():
     assert "KC30/量20/RSI0/新鮮2/品質1" in text
 
 
+def test_ma7_wait_detail_reports_retracing_values_volume_and_rsi():
+    frame = pd.DataFrame({
+        "ma7": [1.69886, 1.69943, 1.70071, 1.70043],
+        "atr": [0.01] * 4,
+        "volume": [900.0, 900.0, 900.0, 1200.0],
+        "vol_ma_20": [1000.0] * 4,
+        "rsi": [47.1] * 4,
+    })
+
+    text = TradingEngine._format_ma7_wait_detail(frame, "LONG")
+
+    assert "回撤中，等待向上轉彎" in text
+    assert "MA7 1.69886→1.69943→1.70071→1.70043" in text
+    assert "量1.20x/快線1.50x" in text
+    assert "RSI 47.1" in text
+
+
+def test_ma7_wait_detail_reports_first_turn_low_volume():
+    frame = pd.DataFrame({
+        "ma7": [100.3, 100.2, 99.9, 99.93],
+        "atr": [0.3] * 4,
+        "volume": [900.0, 900.0, 900.0, 1200.0],
+        "vol_ma_20": [1000.0] * 4,
+        "rsi": [55.0] * 4,
+    })
+
+    text = TradingEngine._format_ma7_wait_detail(frame, "LONG")
+
+    assert "已轉向第1根" in text
+    assert "量能1.20x<1.50x" in text
+    assert "等待第2根" in text
+
+
 def test_eligibility_failure_returns_numeric_diagnostics(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_MAX + 1, adx=35.0)
@@ -1695,6 +1728,52 @@ def test_position_trigger_short_two_closed_ma7_turns_are_strong():
     assert result["strong"] is True
 
 
+def test_ma7_exit_gate_requires_ten_minute_hold(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
+    position = {
+        "side": "LONG", "entry_price": 100.0, "open_timestamp": 500.0,
+    }
+
+    ready, reason = TradingEngine._ma7_exit_ready(
+        position, {"atr": 0.4}, mark_price=99.0, now=1000.0
+    )
+
+    assert ready is False
+    assert "8.3分<10分" in reason
+
+
+def test_ma7_exit_gate_requires_adverse_price_move(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_PCT", 0.002)
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_ATR_MULT", 0.5)
+    position = {
+        "side": "LONG", "entry_price": 100.0, "open_timestamp": 0.0,
+    }
+
+    ready, reason = TradingEngine._ma7_exit_ready(
+        position, {"atr": 1.0}, mark_price=99.7, now=700.0
+    )
+
+    assert ready is False
+    assert "逆向0.30%<門檻0.50%" in reason
+
+
+def test_ma7_exit_gate_allows_mature_meaningful_reversal(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_PCT", 0.002)
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_ATR_MULT", 0.5)
+    position = {
+        "side": "SHORT", "entry_price": 100.0, "open_timestamp": 0.0,
+    }
+
+    ready, reason = TradingEngine._ma7_exit_ready(
+        position, {"atr": 0.4}, mark_price=100.25, now=700.0
+    )
+
+    assert ready is True
+    assert "逆向0.25%" in reason
+
+
 def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
     """止損放寬後，TP 必須同步拉遠，使扣除雙邊 taker fee 後仍達最低風報比。"""
     price, atr = 100.0, 2.0  # atr*1.5=3.0 > price*MIN_SL_DISTANCE_PCT，取ATR倍數為基準
@@ -2495,6 +2574,56 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
 
     # The position should be closed because of the strong breach (both X and no-entry/⛔ are true)
     assert "DOGE/USDT" not in account.positions
+
+
+@pytest.mark.anyio
+async def test_ma7_only_trigger_does_not_close_during_minimum_hold(tmp_path, monkeypatch):
+    """MA7單獨反轉即使strong=True，持倉未滿10分鐘仍交給固定SL保護。"""
+    import asyncio
+
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0,
+        sl=95.0, tp=110.0, reason="test", signal_score=80,
+    )
+
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    engine.tickers = {"DOGE/USDT": 99.0}
+
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+        return pd.DataFrame({
+            "timestamp": list(range(25)),
+            "open": [99.0] * 25, "high": [100.0] * 25,
+            "low": [98.0] * 25, "close": [99.0] * 25,
+            "volume": [100.0] * 25,
+        })
+
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+    monkeypatch.setattr(
+        engine_module,
+        "compute_position_trigger",
+        lambda df, side: {
+            "active": True, "ma_ok": False, "reasons": ["MA7連續兩根轉彎向下"],
+            "strong": True, "ma7_reversed": True,
+            "ema_breach_confirmed": False, "structure_broken": False, "atr": 0.4,
+        },
+    )
+    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
+
+    original_sleep = asyncio.sleep
+    async def mock_sleep_stop(secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
+
+    await engine._position_trigger_loop()
+
+    assert "DOGE/USDT" in account.positions
+    assert engine.position_triggers["DOGE/USDT"]["ma7_exit_ready"] is False
+    assert "持倉0.0分<10分" in engine.position_triggers["DOGE/USDT"]["ma7_exit_gate"]
 
 
 @pytest.mark.anyio

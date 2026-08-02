@@ -35,7 +35,11 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     """
     min_len = max(lookback_bars + 1, 15)
     if df is None or len(df) < min_len:
-        return {"active": False, "ma_ok": True, "reasons": [], "strong": False, "ma7_reversed": False}
+        return {
+            "active": False, "ma_ok": True, "reasons": [], "strong": False,
+            "ma7_reversed": False, "ema_breach_confirmed": False,
+            "structure_broken": False, "atr": None,
+        }
 
     ema = df["close"].ewm(span=ma_period, adjust=False).mean()
     ma7 = df["close"].rolling(window=7).mean()
@@ -103,7 +107,16 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
 
     strong = ma7_reversed or (ema_breach_confirmed and prior_break)
 
-    return {"active": bool(reasons), "ma_ok": ma_ok, "reasons": reasons, "strong": strong, "ma7_reversed": ma7_reversed}
+    return {
+        "active": bool(reasons),
+        "ma_ok": ma_ok,
+        "reasons": reasons,
+        "strong": strong,
+        "ma7_reversed": ma7_reversed,
+        "ema_breach_confirmed": ema_breach_confirmed,
+        "structure_broken": prior_break,
+        "atr": curr_atr,
+    }
 
 
 

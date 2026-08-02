@@ -88,6 +88,12 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
+# 5m MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
+# 「非結構性」出場需要先持倉滿10分鐘，且逆向幅度達0.20%或0.5倍5m ATR
+# （取較大者）才執行；EMA20緩衝帶＋前低/前高同時失守仍立即退出。
+MA7_EXIT_MIN_HOLD_SEC = float(os.getenv("MA7_EXIT_MIN_HOLD_SEC", "600"))
+MA7_EXIT_MIN_ADVERSE_PCT = float(os.getenv("MA7_EXIT_MIN_ADVERSE_PCT", "0.002"))
+MA7_EXIT_MIN_ADVERSE_ATR_MULT = float(os.getenv("MA7_EXIT_MIN_ADVERSE_ATR_MULT", "0.5"))
 # 單根5m K在EMA20錯誤側停留300秒，並不是新增第二根收盤確認；舊邏輯
 # 還可能把止損移到市價後方而等同立即平倉。預設停用，保留開關供影子測試。
 ENABLE_SOFT_WARNING_TIGHTEN = os.getenv("ENABLE_SOFT_WARNING_TIGHTEN", "false").lower() == "true"

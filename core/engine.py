@@ -16,9 +16,12 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
+    MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
     TAKER_FEE_RATE, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA7_EARLY_CONFIRM_SCANS,
+    MA7_REVERSAL_MIN_ATR_MULT, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
+    MA7_FAST_MIN_VOLUME_RATIO,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
 )
 from core.strategy import (
@@ -231,6 +234,106 @@ class TradingEngine:
             stage = "條件未完成"
         coin = symbol.replace("/USDT", "")
         return f"{coin} {direction_text} {score_text},{stage}"
+
+    @staticmethod
+    def _format_ma7_wait_detail(df: pd.DataFrame, side: str) -> str:
+        """把「等待MA7」拆成可行動的階段、四點、量能與RSI資訊。"""
+        if df is None or df.empty or "ma7" not in df.columns:
+            return "等待MA7拐頭轉彎"
+        ma7 = df["ma7"].dropna()
+        if len(ma7) < 4:
+            return f"等待MA7有效資料（{len(ma7)}/4根）"
+
+        values = [float(value) for value in ma7.iloc[-4:]]
+        prev3, prev2, prev, curr = values
+        row = df.iloc[-1]
+        atr = max(float(row.get("atr") or 0.0), 1e-12)
+        volume = float(row.get("volume") or 0.0)
+        volume_ma = float(row.get("vol_ma_20") or 0.0)
+        volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
+        rsi = float(row.get("rsi") or 0.0)
+
+        if side == "LONG":
+            regular_shape = prev2 < prev3 and prev > prev2 and curr > prev
+            first_turn = prev < prev2 and curr > prev
+            still_retracing = curr <= prev
+            no_pullback = prev3 <= prev2 <= prev <= curr
+            turn_distance = curr - prev
+            retrace_label = "回撤中，等待向上轉彎"
+        else:
+            regular_shape = prev2 > prev3 and prev < prev2 and curr < prev
+            first_turn = prev > prev2 and curr < prev
+            still_retracing = curr >= prev
+            no_pullback = prev3 >= prev2 >= prev >= curr
+            turn_distance = prev - curr
+            retrace_label = "反彈中，等待向下轉彎"
+
+        if regular_shape:
+            regular_turn_atr = abs(curr - prev2) / atr
+            stage = (
+                f"兩根已轉向但拐幅{regular_turn_atr:.2f}ATR"
+                f"<{MA7_REVERSAL_MIN_ATR_MULT:.2f}ATR"
+            )
+        elif first_turn:
+            fast_turn_atr = max(0.0, turn_distance) / atr
+            if fast_turn_atr < MA7_FAST_MIN_ATR_MULT:
+                stage = (
+                    f"已轉向第1根，但拐幅{fast_turn_atr:.2f}ATR"
+                    f"<{MA7_FAST_MIN_ATR_MULT:.2f}ATR"
+                )
+            elif fast_turn_atr > MA7_FAST_MAX_ATR_MULT:
+                stage = (
+                    f"已轉向第1根，但拐幅{fast_turn_atr:.2f}ATR"
+                    f">{MA7_FAST_MAX_ATR_MULT:.2f}ATR，等待第2根"
+                )
+            else:
+                stage = (
+                    f"已轉向第1根，但量能{volume_ratio:.2f}x"
+                    f"<{MA7_FAST_MIN_VOLUME_RATIO:.2f}x，等待第2根"
+                )
+        elif still_retracing:
+            stage = retrace_label
+        elif no_pullback:
+            stage = "尚未回撤，MA7仍沿原方向"
+        else:
+            stage = "峰谷型態尚未完成"
+
+        ma_text = "→".join(f"{value:.6g}" for value in values)
+        return (
+            f"{stage}｜MA7 {ma_text}｜量{volume_ratio:.2f}x/"
+            f"快線{MA7_FAST_MIN_VOLUME_RATIO:.2f}x｜RSI {rsi:.1f}"
+        )
+
+    @staticmethod
+    def _ma7_exit_ready(
+        position: dict, trigger: dict, mark_price: float, now: float
+    ) -> tuple[bool, str]:
+        """MA7單獨反轉的時間與幅度閘門；交易所SL及結構失守不走這裡。"""
+        entry_price = float(position.get("entry_price") or 0.0)
+        raw_opened_at = position.get("open_timestamp")
+        opened_at = float(raw_opened_at if raw_opened_at is not None else now)
+        age_sec = max(0.0, now - opened_at)
+        if age_sec < MA7_EXIT_MIN_HOLD_SEC:
+            return False, f"持倉{age_sec / 60:.1f}分<{MA7_EXIT_MIN_HOLD_SEC / 60:.0f}分"
+        if entry_price <= 0:
+            return False, "缺少進場價"
+
+        adverse_pct = (
+            (entry_price - mark_price) / entry_price
+            if position.get("side") == "LONG"
+            else (mark_price - entry_price) / entry_price
+        )
+        atr_pct = max(0.0, float(trigger.get("atr") or 0.0) / entry_price)
+        required_pct = max(
+            MA7_EXIT_MIN_ADVERSE_PCT,
+            atr_pct * MA7_EXIT_MIN_ADVERSE_ATR_MULT,
+        )
+        if adverse_pct < required_pct:
+            return (
+                False,
+                f"逆向{max(adverse_pct, 0.0):.2%}<門檻{required_pct:.2%}",
+            )
+        return True, f"持倉{age_sec / 60:.1f}分，逆向{adverse_pct:.2%}"
 
 
     @staticmethod
@@ -784,24 +887,30 @@ class TradingEngine:
                     # 5m防線只負責「還沒鎖利」的部位快速停損，避免鎖利後的
                     # 正常拉回被誤判成反轉提早出場。
                     is_profit_locked = bool(position_meta.get("is_breakeven_moved")) or has_native_trailing
-                    # 反轉幅度門檻：現價相對進場價的逆向幅度若還不到來回手續費
-                    # 成本（開倉+平倉各收一次），代表行情根本還沒真的動，此時
-                    # 平倉幾乎純虧手續費（實測 ETH/USDT 08/01 00:10~00:25 這筆，
-                    # 價格只逆向移動0.08%就觸發，0.68虧損裡0.37是手續費）。
-                    # 這種微幅震盪讓SL/移動停利/24h時間過濾接手即可，不必5m
-                    # 防線搶著在還沒真的動的時候認賠出場。
+                    # MA7單獨反轉需通過「持倉時間＋逆向ATR幅度」閘門，避免
+                    # 4~8分鐘內的正常震盪造成純手續費磨損；EMA20緩衝帶與
+                    # 前低/前高同時失守屬結構破壞，仍立即退出。
                     entry_p = float(position.get("entry_price") or 0.0)
                     mark_p = float(df['close'].iloc[-1]) if not df.empty else (self.tickers.get(symbol) or entry_p)
-                    if entry_p > 0:
-                        adverse_pct = (
-                            (entry_p - mark_p) / entry_p if position.get("side") == "LONG"
-                            else (mark_p - entry_p) / entry_p
+                    structural_strong = bool(
+                        trigger.get("ema_breach_confirmed")
+                        and trigger.get("structure_broken")
+                    )
+                    ma7_exit_ready, ma7_exit_gate = self._ma7_exit_ready(
+                        position, trigger, mark_p, time.time()
+                    )
+                    trigger["ma7_exit_ready"] = ma7_exit_ready
+                    trigger["ma7_exit_gate"] = ma7_exit_gate
+                    should_auto_close = bool(
+                        structural_strong
+                        or (trigger.get("ma7_reversed") and ma7_exit_ready)
+                    )
+                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not is_profit_locked and should_auto_close:
+                        close_reason = (
+                            "5m收線均線與結構防線同時失守"
+                            if structural_strong
+                            else "5m MA7轉彎反轉平倉"
                         )
-                    else:
-                        adverse_pct = 0.0
-                    reversal_too_small = adverse_pct < (2 * TAKER_FEE_RATE)
-                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not is_profit_locked and not reversal_too_small:
-                        close_reason = "5m MA7轉彎反轉平倉" if trigger.get("ma7_reversed") else "5m收線均線與結構防線同時失守"
                         self.account.log(
                             f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
                             "DANGER"
@@ -1989,7 +2098,7 @@ class TradingEngine:
                         elif "RSI" in reason:
                             stage = "RSI方向不合"
                         elif "MA7" in reason:
-                            stage = "等待MA7拐頭轉彎"
+                            stage = self._format_ma7_wait_detail(df, current_direction)
                         elif "KC" in reason or "K棒未曾觸碰" in reason:
                             stage = "待碰觸KC軌道回踩確認"
                         else:
