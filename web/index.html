@@ -114,6 +114,7 @@
         .collapse-arrow { display: inline-block; transition: transform 0.2s; font-size: 10px; margin-left: 6px; }
         .collapse-arrow.open { transform: rotate(90deg); }
         .log-item { margin-bottom: 6px; opacity: 0.9; }
+        .log-item-latest { background: rgba(245, 158, 11, 0.18); border-radius: 4px; padding: 2px 4px; margin-left: -4px; }
         .log-item span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
         .signal-progress-line span:last-child { white-space: nowrap; }
         .log-time { color: var(--muted); margin-right: 8px; }
@@ -390,7 +391,7 @@
                     <div class="card-title">💻 系統日誌 (System Logs)</div>
                     <div class="console">
                         <template v-for="(log, i) in bot.logs" :key="i">
-                            <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• ') }">
+                            <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': i === bot.logs.length - 1 }">
                                 <span class="log-time">[{{ log.time }}]</span>
                                 <span>{{ line }}</span>
                             </div>
