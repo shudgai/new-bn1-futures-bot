@@ -22,6 +22,7 @@ from core.config import (
     MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO, MA7_DYNAMIC_ATR_FLOOR_PCT,
+    MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -142,7 +143,7 @@ def detect_ma7_reversal(
     indicators_precomputed: bool = False,
     live_price: float = None,
 ) -> dict:
-    """1m MA7 谷底（多單）或峰頂（空單）拐頭偵測。
+    """1m MA7 回撤底部預掛與谷底（多單）/峰頂（空單）拐頭偵測。
 
     觸發條件（以多單為例）：
       ma7[-3] > ma7[-2] and ma7[-1] > ma7[-2]
@@ -356,7 +357,21 @@ def detect_ma7_reversal(
                 and ma7_curr - projected_ma7 >= min_turn
             )
 
-    if not confirmed_reversal and not early_projection:
+    # 不等MA7真正拐頭：同方向連續兩根回撤時先通過後續KC/風險驗證，
+    # 再在KC回撤側估算底部掛Maker單。只接受「連續」回撤，避免一根雜訊
+    # 就提早接刀；趨勢、ADX、ATR、RSI等前置濾網仍全部保留。
+    pullback_bottom_order = bool(
+        MA7_BOTTOM_ENTRY_ENABLED
+        and not confirmed_reversal
+        and not early_projection
+        and (
+            (ma7_prev2 > ma7_prev > ma7_curr)
+            if want_dir == 1
+            else (ma7_prev2 < ma7_prev < ma7_curr)
+        )
+    )
+
+    if not confirmed_reversal and not early_projection and not pullback_bottom_order:
         shape = "谷底" if want_dir == 1 else "峰頂"
         projection_note = (
             f"，盤中投影={projected_ma7:.6g}" if projected_ma7 is not None else ""
@@ -366,7 +381,9 @@ def detect_ma7_reversal(
             f"（{ma7_prev3:.6g}→{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}{projection_note}）"
         )
 
-    if early_projection:
+    if pullback_bottom_order:
+        signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev2, ma7_prev, ma7_curr
+    elif early_projection:
         signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev, ma7_curr, projected_ma7
     else:
         signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev2, ma7_prev, ma7_curr
@@ -391,7 +408,9 @@ def detect_ma7_reversal(
             return _no(f"價格高於EMA20，非回檔買點（{price:.6g}>{ema_20:.6g}）")
         # 觸摸下軌確認 (低點 <= 下軌 + 容差)
         touched_lower = (past_bars['low'] <= (past_bars['kc_lower'] + touch_buffer)).any()
-        if not touched_lower:
+        # 回撤底部單本來就是預掛在KC下軌附近，不能要求價格先碰過下軌，
+        # 否則又會退化成到達底部後才開始掛單。已拐頭的舊路徑仍保留觸碰驗證。
+        if not touched_lower and not pullback_bottom_order:
             return _no(f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或跌破KC下軌（無回踩確認）")
     else:
         # 區間判斷
@@ -399,7 +418,7 @@ def detect_ma7_reversal(
             return _no(f"價格低於EMA20，非反彈賣點（{price:.6g}<{ema_20:.6g}）")
         # 觸摸上軌確認 (高點 >= 上軌 - 容差)
         touched_upper = (past_bars['high'] >= (past_bars['kc_upper'] - touch_buffer)).any()
-        if not touched_upper:
+        if not touched_upper and not pullback_bottom_order:
             return _no(f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或突破KC上軌（無回踩確認）")
 
     # 計算結構性止損位（參考過去 6 根已收盤 K 棒的波段高低點與 KC 軌道，外加 0.05 * ATR 緩衝避免精準掃單）
@@ -412,6 +431,16 @@ def detect_ma7_reversal(
         swing_high = float(past_6_bars['high'].max())
         kc_upper_val = float(past_6_bars['kc_upper'].max())
         structural_sl = max(swing_high, kc_upper_val) + 0.05 * atr
+
+    bottom_target = None
+    if pullback_bottom_order:
+        offset = max(float(atr) * MA7_BOTTOM_OFFSET_ATR_MULT, float(price) * 1e-6)
+        if want_dir == 1:
+            # KC下軌是順勢回撤最可重複計算的支撐估值；若價格已穿越下軌，
+            # 則將掛單放到現價再低一個小偏移，確保仍是Maker而非追價成交。
+            bottom_target = min(float(kc_lower) + offset, float(price) - offset)
+        else:
+            bottom_target = max(float(kc_upper) - offset, float(price) + offset)
 
     direction_note = "谷底轉彎向上" if want_dir == 1 else "峰頂轉彎向下"
     return {
@@ -429,6 +458,9 @@ def detect_ma7_reversal(
         "ma7_projected": projected_ma7,
         "early_projection": early_projection,
         "fast_entry": fast_entry,
+        "pullback_bottom_order": pullback_bottom_order,
+        "entry_mode": "MA7_BOTTOM_LIMIT" if pullback_bottom_order else "MA7_REVERSAL",
+        "target_price": bottom_target,
         "volume_ratio": volume_ratio,
         "rsi": float(rsi),
         "adx": float(adx),
@@ -437,8 +469,13 @@ def detect_ma7_reversal(
         "structural_sl": structural_sl,
         "is_contrarian_bottom_buy": is_contrarian_bottom_buy,
         "reason": (
-            (f"MA7_ContrarianBottomBuy_{side}｜" if is_contrarian_bottom_buy else f"MA7_Reversal_{side}｜")
+            (
+                f"MA7_PullbackBottom_{side}｜" if pullback_bottom_order
+                else f"MA7_ContrarianBottomBuy_{side}｜" if is_contrarian_bottom_buy
+                else f"MA7_Reversal_{side}｜"
+            )
             + f"{signal_ma7_prev2:.6g}→{signal_ma7_prev:.6g}→{signal_ma7_curr:.6g}｜"
+            + (f"回撤中預掛底點@{bottom_target:.6g}｜" if pullback_bottom_order else "")
             + ("盤中投影提前確認｜" if early_projection else "")
             + ("爆量微拐幅提前確認｜" if fast_entry else "")
             + f"{direction_note}｜score={score}"

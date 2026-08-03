@@ -253,15 +253,24 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
 @pytest.mark.anyio
 async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
     account = PaperAccount()
     await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
     entry = account.positions["BTC/USDT"]["entry_price"]
 
-    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_TRIGGER_PCT + 0.0001)})
+    effective_trigger = max(
+        EARLY_PROFIT_GUARD_TRIGGER_PCT,
+        pa_module.NET_PROFIT_GUARANTEE_BUFFER + pa_module.TAKER_FEE_RATE,
+    )
+    effective_exit = max(
+        EARLY_PROFIT_GUARD_EXIT_PCT,
+        pa_module.NET_PROFIT_GUARANTEE_BUFFER,
+    )
+    await account.update_positions({"BTC/USDT": entry * (1 + effective_trigger + 0.0001)})
     assert account.position_meta["BTC/USDT"]["early_profit_guard_armed"] is True
     assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is False
 
-    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_EXIT_PCT - 0.0001)})
+    await account.update_positions({"BTC/USDT": entry * (1 + effective_exit)})
     assert "BTC/USDT" not in account.positions
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
     assert account.trades[0]["pnl"] > 0
@@ -270,11 +279,16 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
 @pytest.mark.anyio
 async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
     account = PaperAccount()
     await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
     entry = account.positions["BTC/USDT"]["entry_price"]
 
-    await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_TRIGGER_PCT - 0.0001)})
+    effective_trigger = max(
+        EARLY_PROFIT_GUARD_TRIGGER_PCT,
+        pa_module.NET_PROFIT_GUARANTEE_BUFFER + pa_module.TAKER_FEE_RATE,
+    )
+    await account.update_positions({"BTC/USDT": entry * (1 + effective_trigger - 0.0001)})
     await account.update_positions({"BTC/USDT": entry * (1 + EARLY_PROFIT_GUARD_EXIT_PCT - 0.0001)})
     assert "BTC/USDT" in account.positions
     assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
@@ -1774,6 +1788,65 @@ def test_ma7_exit_gate_allows_mature_meaningful_reversal(monkeypatch):
     assert "逆向0.25%" in reason
 
 
+def test_bottom_entry_has_thirty_minute_soft_exit_grace(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA7_BOTTOM_MIN_HOLD_SEC", 1800.0)
+    position = {
+        "entry_mode": "MA7_BOTTOM_LIMIT", "open_timestamp": 1000.0,
+    }
+
+    active, age = TradingEngine._bottom_entry_grace(position, now=1600.0)
+    expired, expired_age = TradingEngine._bottom_entry_grace(position, now=2801.0)
+
+    assert active is True
+    assert age == pytest.approx(600.0)
+    assert expired is False
+    assert expired_age == pytest.approx(1801.0)
+
+
+@pytest.mark.anyio
+async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monkeypatch):
+    """底點單剛成交時即使5m結構仍偏弱，也交給原始SL而不立即軟平倉。"""
+    import asyncio
+
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(engine_module, "MA7_BOTTOM_MIN_HOLD_SEC", 1800.0)
+    account = PaperAccount()
+    await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0,
+        sl=95.0, tp=110.0, reason="bottom", signal_score=80,
+        entry_context={"entry_mode": "MA7_BOTTOM_LIMIT"},
+    )
+    engine = TradingEngine()
+    engine.account = account
+    engine.is_running = True
+    engine.tickers = {"DOGE/USDT": 99.0}
+
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+        return pd.DataFrame({
+            "timestamp": list(range(25)), "open": [99.0] * 25,
+            "high": [100.0] * 25, "low": [98.0] * 25,
+            "close": [99.0] * 25, "volume": [100.0] * 25,
+        })
+
+    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+    monkeypatch.setattr(engine_module, "compute_position_trigger", lambda df, side: {
+        "active": True, "ma_ok": False, "reasons": ["均線與結構失守"],
+        "strong": True, "ma7_reversed": True,
+        "ema_breach_confirmed": True, "structure_broken": True, "atr": 0.4,
+    })
+    original_sleep = asyncio.sleep
+
+    async def stop_after_one_loop(_secs):
+        engine.is_running = False
+        await original_sleep(0.001)
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_one_loop)
+    await engine._position_trigger_loop()
+
+    assert "DOGE/USDT" in account.positions
+    assert engine.position_triggers["DOGE/USDT"]["bottom_entry_grace"] is True
+
+
 def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
     """止損放寬後，TP 必須同步拉遠，使扣除雙邊 taker fee 後仍達最低風報比。"""
     price, atr = 100.0, 2.0  # atr*1.5=3.0 > price*MIN_SL_DISTANCE_PCT，取ATR倍數為基準
@@ -2309,6 +2382,8 @@ def test_detect_ma7_reversal_early_short_uses_live_projection(monkeypatch):
 def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer(monkeypatch):
     """即時投影雖微幅翻向，但不足0.05 ATR時仍等待，避免單一tick假轉彎。"""
     monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
+    # 此案例只驗證盤中投影門檻，關閉新的回撤底點預掛分支避免混入。
+    monkeypatch.setattr("core.strategy.MA7_BOTTOM_ENTRY_ENABLED", False)
     frame = _ma7_frame("LONG")
     frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
 
@@ -2318,6 +2393,48 @@ def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer(monkeypatch):
 
     assert result["detected"] is False
     assert "盤中投影" in result["reason"]
+
+
+def test_detect_ma7_pullback_long_places_bottom_limit_before_turn(monkeypatch):
+    """多單MA7連續回撤時，不等向上轉彎，先算出低於現價的KC底部掛單。"""
+    monkeypatch.setattr(strategy_module, "MA7_BOTTOM_ENTRY_ENABLED", True)
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 100.10, 99.90]
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is True, result.get("reason")
+    assert result["pullback_bottom_order"] is True
+    assert result["entry_mode"] == "MA7_BOTTOM_LIMIT"
+    assert result["target_price"] < result["price"]
+    assert "回撤中預掛底點" in result["reason"]
+
+
+def test_ma7_pullback_bottom_limit_does_not_wait_for_kc_touch(monkeypatch):
+    """底點預掛應在抵達KC下軌前送出，不能先要求歷史K棒已經觸底。"""
+    monkeypatch.setattr(strategy_module, "MA7_BOTTOM_ENTRY_ENABLED", True)
+    frame = _ma7_frame("LONG")
+    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 100.10, 99.90]
+    frame["low"] = 100.0  # 全部尚未碰到 kc_lower=99
+
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is True, result.get("reason")
+    assert result["pullback_bottom_order"] is True
+    assert result["target_price"] < result["price"]
+
+
+def test_detect_ma7_pullback_short_places_top_limit_before_turn(monkeypatch):
+    """空單對稱處理：MA7連續反彈時預掛高於現價的頂部賣單。"""
+    monkeypatch.setattr(strategy_module, "MA7_BOTTOM_ENTRY_ENABLED", True)
+    frame = _ma7_frame("SHORT")
+    frame.loc[frame.index[-4:], "ma7"] = [99.70, 99.80, 99.90, 100.10]
+
+    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+
+    assert result["detected"] is True, result.get("reason")
+    assert result["pullback_bottom_order"] is True
+    assert result["target_price"] > result["price"]
 
 
 def test_ma7_early_timing_requires_two_consecutive_scans(monkeypatch):

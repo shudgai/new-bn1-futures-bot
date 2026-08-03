@@ -507,6 +507,7 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", False)
+    monkeypatch.setattr(testnet_module, "TRAILING_TRIGGER_PCT", 1.0)
     exchange = FakeTestnetExchange()
     account = BinanceTestnetAccount(exchange)
     await account.initialize()
@@ -515,20 +516,51 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
     }
     exchange.positions = [{
         "symbol": "DOGEUSDT", "positionAmt": "10", "entryPrice": "100.0",
-        "markPrice": "100.26", "leverage": "5", "unRealizedProfit": "2.6",
+        "markPrice": "100.41", "leverage": "5", "unRealizedProfit": "4.1",
     }]
     account.last_sync_at = 0
-    await account.update_positions({"DOGE/USDT": 100.26})
+    await account.update_positions({"DOGE/USDT": 100.41})
     assert account.position_meta["DOGE/USDT"]["early_profit_guard_armed"] is True
     assert account.position_meta["DOGE/USDT"].get("is_breakeven_moved") is not True
 
-    exchange.positions[0]["markPrice"] = "100.14"
-    exchange.positions[0]["unRealizedProfit"] = "1.4"
+    exchange.positions[0]["markPrice"] = "100.35"
+    exchange.positions[0]["unRealizedProfit"] = "3.5"
     account.last_sync_at = 0
-    await account.update_positions({"DOGE/USDT": 100.14})
+    await account.update_positions({"DOGE/USDT": 100.35})
 
     assert "DOGE/USDT" not in account.positions
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
+
+
+@pytest.mark.anyio
+async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
+    tmp_path, monkeypatch
+):
+    """US/USDT型案例：0.28%毛利雖已超過1.2 ATR，仍不足以覆蓋
+    雙邊費用+STOP限價滑價，不得啟動早期保護或把SL推進淨虧區。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
+    monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", True)
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.position_meta["US/USDT"] = {
+        "sl": 101.0, "tp": 95.0, "atr": 0.10, "highest_pnl_pct": 0.0,
+    }
+    exchange.positions = [{
+        "symbol": "USUSDT", "positionAmt": "-10", "entryPrice": "100.0",
+        "markPrice": "99.72", "leverage": "2", "unRealizedProfit": "2.8",
+    }]
+    account.last_sync_at = 0
+    previous_order_count = len(exchange.orders)
+
+    await account.update_positions({"US/USDT": 99.72})
+
+    meta = account.position_meta["US/USDT"]
+    assert meta.get("early_profit_guard_armed") is not True
+    assert meta.get("is_breakeven_moved") is not True
+    assert meta["sl"] == pytest.approx(101.0)
+    assert not any(order["type"] == "STOP" for order in exchange.orders[previous_order_count:])
 
 
 @pytest.mark.anyio

@@ -22,6 +22,7 @@ from core.config import (
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA7_EARLY_CONFIRM_SCANS,
     MA7_REVERSAL_MIN_ATR_MULT, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO,
+    MA7_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
 )
 from core.strategy import (
@@ -80,7 +81,8 @@ class TradingEngine:
         self._pullback_retry_after: Dict[str, float] = {}
         # 候選逾時後鎖住同方向舊 KC 突破，直到價格先回到通道內重置。
         self._expired_pullback_sides: Dict[str, str] = {}
-        # 盤中投影MA7必須連續多輪成立；任何一輪失效即清零。
+        # 盤中投影MA7必須連續多輪成立；任何一輪失效即清零。回撤底部
+        # Maker預掛不是盤中投影，不需等待轉彎確認。
         self._ma7_early_confirmations: Dict[tuple, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
@@ -334,6 +336,15 @@ class TradingEngine:
                 f"逆向{max(adverse_pct, 0.0):.2%}<門檻{required_pct:.2%}",
             )
         return True, f"持倉{age_sec / 60:.1f}分，逆向{adverse_pct:.2%}"
+
+    @staticmethod
+    def _bottom_entry_grace(position: dict, now: float) -> tuple[bool, float]:
+        """底點預掛成交後給軟退出寬限；固定交易所SL不受此函式影響。"""
+        if position.get("entry_mode") != "MA7_BOTTOM_LIMIT":
+            return False, 0.0
+        opened_at = float(position.get("open_timestamp") or now)
+        age_sec = max(0.0, now - opened_at)
+        return age_sec < MA7_BOTTOM_MIN_HOLD_SEC, age_sec
 
 
     @staticmethod
@@ -905,7 +916,20 @@ class TradingEngine:
                         structural_strong
                         or (trigger.get("ma7_reversed") and ma7_exit_ready)
                     )
-                    if ENABLE_STRONG_TRIGGER_AUTO_CLOSE and trigger.get("strong") and not is_profit_locked and should_auto_close:
+                    bottom_grace, bottom_age = self._bottom_entry_grace(
+                        position, time.time()
+                    )
+                    trigger["bottom_entry_grace"] = bottom_grace
+                    trigger["bottom_entry_age_sec"] = bottom_age
+                    if bottom_grace:
+                        self._soft_warning_since.pop(symbol, None)
+                    if (
+                        ENABLE_STRONG_TRIGGER_AUTO_CLOSE
+                        and trigger.get("strong")
+                        and not is_profit_locked
+                        and not bottom_grace
+                        and should_auto_close
+                    ):
                         close_reason = (
                             "5m收線均線與結構防線同時失守"
                             if structural_strong
@@ -918,7 +942,11 @@ class TradingEngine:
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
                         await self.account.close_position(symbol, curr_p, close_reason)
                         self._soft_warning_since.pop(symbol, None)
-                    elif not is_profit_locked and ENABLE_SOFT_WARNING_TIGHTEN:
+                    elif (
+                        not is_profit_locked
+                        and not bottom_grace
+                        and ENABLE_SOFT_WARNING_TIGHTEN
+                    ):
                         # 軟性警訊收緊止損：持續處於「✗」（ma_ok=false）但還沒
                         # 升級成「⛔」超過 SOFT_WARNING_PERSIST_SEC，把止損往
                         # 進場價方向收緊到「目前止損與進場價的中點」（只會變緊
@@ -1002,6 +1030,14 @@ class TradingEngine:
                                     )
                                     await self.account.partial_close_position(symbol, curr_p, "ROE達5%減倉一半", fraction=0.5)
                                     continue # 本輪縮小部位後暫不作止損判斷，等待下一輪
+
+                        # 底點預掛在轉彎前承接，前30分鐘的15m EMA逆向通常仍是
+                        # 原回撤的一部分；讓固定交易所SL控風險，不用軟退出砍掉。
+                        bottom_grace, _bottom_age = self._bottom_entry_grace(
+                            position, time.time()
+                        )
+                        if bottom_grace:
+                            continue
 
                         # 2. 檢查大週期 (15m) EMA20 收線與 ATR 緩衝帶跌破/突破 (連續兩根 K 棒收線確認)
                         df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
@@ -1486,7 +1522,7 @@ class TradingEngine:
     async def _place_ma7_reversal_entry(
         self, symbol: str, side: str, ma7_sig: dict, live_price: float, now: float
     ) -> bool:
-        """MA7 谷底/峰頂拐頭確認後，以對手價（LONG 用 Ask, SHORT 用 Bid）送出限價單直接吃單成交。不進回踩候選池。"""
+        """MA7回撤時預掛底部Maker；已拐頭的舊路徑則仍以對手價成交。"""
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
             return False
@@ -1499,9 +1535,12 @@ class TradingEngine:
         # 先擋一次，避免進場即出場的無效交易。
         trigger_df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
         pre_entry_trigger = compute_position_trigger(trigger_df, side)
-        # strong 是已確認反轉；ma_ok=False 則代表 5m 價格已站在 EMA20 的
-        # 不利側，即使尚未湊滿強制出場條件也不該用 1m 訊號逆著進場。
-        if pre_entry_trigger.get("strong") or pre_entry_trigger.get("ma_ok") is False:
+        # strong 是5m已確認反轉，一律擋單。ma_ok=False 對已轉彎追價單仍
+        # 擋下；回撤底部Maker則容許短暫落在EMA不利側，否則無法低接。
+        is_bottom_order = bool(ma7_sig.get("pullback_bottom_order"))
+        if pre_entry_trigger.get("strong") or (
+            not is_bottom_order and pre_entry_trigger.get("ma_ok") is False
+        ):
             self.account.log(
                 f"🛑 {symbol} MA7拐頭訊號成立但5分鐘週期已對{side}方向亮警訊"
                 f"（{', '.join(pre_entry_trigger.get('reasons', []))}），跳過本次進場",
@@ -1526,9 +1565,10 @@ class TradingEngine:
         if not await self._execution_price_is_safe(symbol, side):
             return False
 
-        # 獲取對手價，確保能立刻成交
-        target_price = live_price
-        if hasattr(self.exchange, "fetch_order_book"):
+        # 回撤底單使用策略估出的KC底部價並保持Maker；只有已轉彎路徑才取
+        # 對手價立即成交。
+        target_price = float(ma7_sig.get("target_price") or live_price)
+        if not is_bottom_order and hasattr(self.exchange, "fetch_order_book"):
             try:
                 book = await self.exchange.fetch_order_book(symbol, limit=3)
                 if side == "LONG" and book.get("asks") and len(book["asks"]) > 0:
@@ -1573,9 +1613,9 @@ class TradingEngine:
             atr=atr,
             leverage=self.symbol_rotation.get_dynamic_leverage(symbol, score, adx=ma7_sig.get("adx")),
             signal_score=score,
-            post_only=False, # 不啟用 Post-Only，允許直接吃單
+            post_only=is_bottom_order,
             entry_context={
-                "entry_mode": "MA7_REVERSAL",
+                "entry_mode": "MA7_BOTTOM_LIMIT" if is_bottom_order else "MA7_REVERSAL",
                 "btc_regime_at_entry": ma7_sig.get("btc_regime_mode", "UNKNOWN"),
                 "btc_allocation_factor": allocation_factor,
                 "ma7_curr": ma7_sig.get("ma7_curr"),
@@ -1585,7 +1625,17 @@ class TradingEngine:
             },
         )
         if placed:
-            self._record_pullback_outcome("ma7_reversal_placed")
+            self._record_pullback_outcome(
+                "ma7_bottom_limit_placed" if is_bottom_order else "ma7_reversal_placed"
+            )
+            if is_bottom_order:
+                direction_note = "回撤中預估底點" if side == "LONG" else "反彈中預估頂點"
+                self.account.log(
+                    f"🎯 [MA7回撤底點掛單] {symbol} {side} {score}分 @ {target_price:.8g}"
+                    f"（{direction_note}，不等MA7轉彎）",
+                    "INFO",
+                )
+                return True
             direction_note = "MA7谷底轉彎向上" if side == "LONG" else "MA7峰頂轉彎向下"
             timing_note = (
                 "盤中投影連續確認，" if ma7_sig.get("early_projection")
@@ -1763,16 +1813,17 @@ class TradingEngine:
                 await self.account.cancel_pending_limit(
                     symbol, f"短效 Maker 掛單 {ENTRY_LIMIT_TIMEOUT_SEC:.0f} 秒未成交"
                 )
-                # MA7拐頭進場逾時未成交不設冷卻：下一輪(5秒後)detect_ma7_reversal
-                # 會用當下最新K線重新判斷，谷底/峰頂型態若還成立就會立刻再掛一次；
+                # MA7拐頭/回撤底單逾時未成交不設冷卻：下一輪(5秒後)
+                # detect_ma7_reversal會用最新K線與KC重新估價，型態若仍成立便再掛；
                 # 若價格已經走遠、型態不再成立，策略本身自然回HOLD，不需要額外
                 # 冷卻機制硬擋——避免因為冷卻而錯過還在成立的真實訊號，也不會
                 # 變成無腦追價，追不追完全看MA7型態當下是否仍然成立。
-                if entry_mode != "MA7_REVERSAL":
+                if entry_mode not in ("MA7_REVERSAL", "MA7_BOTTOM_LIMIT"):
                     self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
-            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL"):
-                # 90+ 現價單與 MA7 拐頭現價單只短暫存活 15 秒，不套用回踩二次確認與目標漂移。
+            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT"):
+                # 90+現價單、MA7拐頭單與回撤底單只短暫存活15秒；底單逾時後
+                # 由下一輪重算KC底價，不在舊單上套用回踩二次確認與目標漂移。
                 # 每日熔斷、幣種停用及掛單逾時仍在上方保留。
                 continue
             confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
@@ -1893,8 +1944,12 @@ class TradingEngine:
                         if symbol in self.account.pending_limit_orders:
                             pending = self.account.pending_limit_orders[symbol]
                             entry_context = pending.get("entry_context") or {}
+                            entry_mode = entry_context.get("entry_mode")
                             pullback_score = entry_context.get("pullback_confirmation_score")
                             confirmation_reason = (
+                                f"回撤中底點掛單等待成交 @ {pending.get('target_price')}"
+                                if entry_mode == "MA7_BOTTOM_LIMIT"
+                                else
                                 f"原始{pending.get('signal_score', 0)}分 → "
                                 f"回踩確認{pullback_score}分，掛單等待成交 @ "
                                 f"{pending.get('target_price')}"
@@ -2120,10 +2175,12 @@ class TradingEngine:
                                 cand["symbol"], cand["side"], cand["ma7_sig"], cand["price"], now_time
                             )
                             if ma7_placed:
+                                bottom_order = bool(cand["ma7_sig"].get("pullback_bottom_order"))
                                 alignment_note = "" if cand["trend_aligned"] else " (1H趨勢不符,拐頭繞過)"
+                                entry_note = "回撤底點已掛單" if bottom_order else "MA7拐頭進場"
                                 signal_progress.append(
                                     f"{cand['symbol'].replace('/USDT', '')} {cand['side']} "
-                                    f"{cand['score']}分,MA7拐頭進場{alignment_note}"
+                                    f"{cand['score']}分,{entry_note}{alignment_note}"
                                 )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)

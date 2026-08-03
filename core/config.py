@@ -121,6 +121,13 @@ MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
 # 低波動時 MA7 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
 MA7_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA7_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
+# MA7仍在回撤/反彈時，不等拐頭便預掛在KC邊緣附近。偏移量讓限價位
+# 稍微留在通道內側，同時由策略端保證LONG低於現價、SHORT高於現價。
+MA7_BOTTOM_ENTRY_ENABLED = os.getenv("MA7_BOTTOM_ENTRY_ENABLED", "true").lower() == "true"
+MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05"))
+# 底點/頂點預掛是在轉彎前承接，成交後需要時間消化正常回撤。寬限期內
+# 屏蔽MA7、5m結構、15m EMA軟退出與軟性收緊；交易所原始SL仍持續有效。
+MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
 # 非紙上模式下，主網訊號價與執行交易所最佳價偏差超過此比例即拒絕下單。
 EXECUTION_PRICE_MAX_DEVIATION_PCT = float(os.getenv("EXECUTION_PRICE_MAX_DEVIATION_PCT", "0.005"))
 ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"

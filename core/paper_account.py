@@ -561,17 +561,27 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
             if ENABLE_TRAILING_STOP:
-                if highest_pnl >= EARLY_PROFIT_GUARD_TRIGGER_PCT and not meta.get("early_profit_guard_armed"):
+                early_guard_trigger = max(
+                    EARLY_PROFIT_GUARD_TRIGGER_PCT,
+                    NET_PROFIT_GUARANTEE_BUFFER + TAKER_FEE_RATE,
+                )
+                early_guard_exit = max(
+                    EARLY_PROFIT_GUARD_EXIT_PCT,
+                    NET_PROFIT_GUARANTEE_BUFFER,
+                )
+                if highest_pnl >= early_guard_trigger and not meta.get("early_profit_guard_armed"):
                     meta["early_profit_guard_armed"] = True
                     pos["early_profit_guard_armed"] = True
                     self.log(
                         f"🛡️ [紙上交易/早期獲利保護] {symbol} 峰值達 {highest_pnl:.4%}，"
-                        f"回吐至 {EARLY_PROFIT_GUARD_EXIT_PCT:.2%} 將市價離場", "SUCCESS"
+                        f"回吐至淨利安全線 {early_guard_exit:.2%} 將市價離場", "SUCCESS"
                     )
                 if (
                     meta.get("early_profit_guard_armed")
                     and not meta.get("is_breakeven_moved")
-                    and pnl_pct <= EARLY_PROFIT_GUARD_EXIT_PCT
+                    and NET_PROFIT_GUARANTEE_BUFFER - 1e-9
+                    <= pnl_pct
+                    <= early_guard_exit + 1e-9
                 ):
                     self.log(
                         f"🏁 [紙上交易/早期獲利保護] {symbol} 從峰值 {highest_pnl:.4%} "

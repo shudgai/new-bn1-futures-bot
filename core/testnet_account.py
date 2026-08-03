@@ -639,17 +639,30 @@ class BinanceTestnetAccount:
                 if "peak_profit_updated_at" not in meta:
                     meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-                if highest_pnl >= EARLY_PROFIT_GUARD_TRIGGER_PCT and not meta.get("early_profit_guard_armed"):
+                # 「獲利保護」必須先覆蓋雙邊費用、STOP限價滑價與安全利潤。
+                # 舊門檻0.25%低於NET_PROFIT_GUARANTEE_BUFFER(預設0.35%)，
+                # 實測US/USDT峰值0.2748%便啟動，最後扣費後反而-0.0591U。
+                early_guard_trigger = max(
+                    EARLY_PROFIT_GUARD_TRIGGER_PCT,
+                    NET_PROFIT_GUARANTEE_BUFFER + TAKER_FEE_RATE,
+                )
+                early_guard_exit = max(
+                    EARLY_PROFIT_GUARD_EXIT_PCT,
+                    NET_PROFIT_GUARANTEE_BUFFER,
+                )
+                if highest_pnl >= early_guard_trigger and not meta.get("early_profit_guard_armed"):
                     meta["early_profit_guard_armed"] = True
                     pos["early_profit_guard_armed"] = True
                     self.log(
                         f"🛡️ [早期獲利保護] {symbol} 峰值達 {highest_pnl:.4%}，"
-                        f"回吐至 {EARLY_PROFIT_GUARD_EXIT_PCT:.2%} 將市價離場", "SUCCESS"
+                        f"回吐至淨利安全線 {early_guard_exit:.2%} 將市價離場", "SUCCESS"
                     )
                 if (
                     meta.get("early_profit_guard_armed")
                     and not meta.get("is_breakeven_moved")
-                    and pnl_pct <= EARLY_PROFIT_GUARD_EXIT_PCT
+                    and NET_PROFIT_GUARANTEE_BUFFER - 1e-9
+                    <= pnl_pct
+                    <= early_guard_exit + 1e-9
                 ):
                     self.log(
                         f"🏁 [早期獲利保護] {symbol} 從峰值 {highest_pnl:.4%} "
@@ -671,9 +684,16 @@ class BinanceTestnetAccount:
                     
                     # 1. 前段：本地精準保本 (達 1.2 ATR)
                     # 補償約 0.15% (進出場 Taker 手續費 + 微利)
-                    if profit_in_atr >= TRAILING_TIER1_TRIGGER_ATR_MULT and not meta.get("is_breakeven_moved"):
+                    tier1_profit_ready = (
+                        pnl_pct >= NET_PROFIT_GUARANTEE_BUFFER + TAKER_FEE_RATE
+                    )
+                    if (
+                        profit_in_atr >= TRAILING_TIER1_TRIGGER_ATR_MULT
+                        and tier1_profit_ready
+                        and not meta.get("is_breakeven_moved")
+                    ):
                         if side == "LONG":
-                            breakeven_sl = entry_p * (1.0 + 0.0015)
+                            breakeven_sl = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                             new_sl_price = float(self.exchange.price_to_precision(symbol, breakeven_sl))
                             if new_sl_price > old_sl:
                                 meta["sl"] = new_sl_price
@@ -694,7 +714,7 @@ class BinanceTestnetAccount:
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 設置本地保本單失敗: {e}", "WARNING")
                         else:  # SHORT
-                            breakeven_sl = entry_p * (1.0 - 0.0015)
+                            breakeven_sl = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                             new_sl_price = float(self.exchange.price_to_precision(symbol, breakeven_sl))
                             if new_sl_price < old_sl or old_sl == 0.0:
                                 meta["sl"] = new_sl_price
@@ -1746,4 +1766,3 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
-
