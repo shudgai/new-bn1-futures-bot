@@ -214,15 +214,7 @@ def detect_ma7_reversal(
     if btc_regime["hard_block"]:
         return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
 
-    # 1h EMA50 方向：跟1h SuperTrend一樣取消高分繞過，一律要求順著
-    # 1H均線方向。
-    if ema_50_1h is not None:
-        ema_50_upper = ema_50_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT)
-        ema_50_lower = ema_50_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT)
-        if want_dir == 1 and price < ema_50_lower:
-            return _no("1h_EMA50_Bearish")
-        if want_dir == -1 and price > ema_50_upper:
-            return _no("1h_EMA50_Bullish")
+    # 1h EMA50 方向檢查已禁用，允許逆勢進場
 
     # ADX 硬性最低門檻 (動態調整：若 1h 趨勢對齊，放寬至 8.0)
     dynamic_adx_min = ADX_MANDATORY_MIN
@@ -665,14 +657,7 @@ class SuperTrendKeltnerStrategy:
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），
         # 這一層確保價格需明顯站穩 EMA50 同側才允許。
-        ema_50_upper_band = ema_50_1h * (1 + TREND_AGREE_EMA_MARGIN_PCT) if ema_50_1h else None
-        ema_50_lower_band = ema_50_1h * (1 - TREND_AGREE_EMA_MARGIN_PCT) if ema_50_1h else None
-        is_1h_bullish = (price >= ema_50_upper_band) if ema_50_upper_band is not None else True
-        is_1h_bearish = (price <= ema_50_lower_band) if ema_50_lower_band is not None else True
-        if st_dir == 1 and not is_1h_bullish:
-            return eligibility_hold("Mandatory_Fail: 1h_EMA50_Bearish")
-        if st_dir == -1 and not is_1h_bearish:
-            return eligibility_hold("Mandatory_Fail: 1h_EMA50_Bullish")
+        # 1h EMA50 方向檢查已禁用，允許逆勢進場
 
         # 防線 3：ADX 硬性最低門檻 — ADX 低於此值代表市場完全無趨勢動能，
         # 盤整期假突破發生率最高，直接 HOLD 不進入評分系統。
