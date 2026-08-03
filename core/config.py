@@ -193,8 +193,7 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
 # 全體幣種的開倉方向守門——BTC 多頭只允許多單，BTC 空頭只允許空單。
 # 這是防止「大盤偏多但 bot 大量開空」最有效的單一機制。
-# 暫時設為 false 診斷是否缺乏開倉訊號的原因
-BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "false").lower() == "true"
+BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower() == "true"
 # BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
 # 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
 BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "2"))
@@ -209,20 +208,18 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # 曾經允許高分訊號繞過此過濾（SYMBOL_1H_ST_FILTER_BYPASS_SCORE），但實測
 # 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
 # 順著1H大方向。
-# 診斷用：暫時禁用，測試是否為 1h 趨勢不符導致無法開倉
-SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "false").lower() == "true"
+SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
 
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：初始突破評分固定為 100 分制：
 # KC 30 + 量能 20 + RSI 20 + 新鮮度 18 + 品質 12。
 # 不再讓新鮮度跟真正突破同為 30 分，避免只有「方向還沒翻轉」的舊趨勢
 # 靠新鮮度灌成 91+ 高分。調高至 75 分以精簡開倉，避免弱信號磨損。
-# 診斷用：暫時降低到 60 測試是否缺乏訊號
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "60"))
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "75"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "60"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "75"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
