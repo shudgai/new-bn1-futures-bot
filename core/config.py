@@ -114,7 +114,7 @@ MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.10")
 # 爆量微拐幅快速入口：仍只使用已收盤K棒，但峰谷後第一根確認即可進場。
 # 必須同時有 1.5 倍均量，且拐幅限制在 0.02~0.20 ATR；一般低量訊號仍走
 # 上面的兩根收線確認。這只放鬆觸發時機，不改 SL/TP、槓桿或倉位風控。
-MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "false").lower() == "true"
+MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "true").lower() == "true"
 MA7_FAST_MIN_ATR_MULT = float(os.getenv("MA7_FAST_MIN_ATR_MULT", "0.02"))
 MA7_FAST_MAX_ATR_MULT = float(os.getenv("MA7_FAST_MAX_ATR_MULT", "0.20"))
 MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
