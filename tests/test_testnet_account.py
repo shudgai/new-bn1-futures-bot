@@ -684,4 +684,97 @@ async def test_partial_close_position(tmp_path, monkeypatch):
     assert account.trades[0]["action"] == "PARTIAL_CLOSE_LONG"
     assert account.trades[0]["status"] == "PARTIAL_CLOSED"
 
+@pytest.mark.anyio
+async def test_native_trailing_stop_uses_algo_order_endpoint(tmp_path, monkeypatch):
+    """Binance 已把 TRAILING_STOP_MARKET 遷移到 Algo Order API。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
 
+    class RecordingExchange(FakeTestnetExchange):
+        def __init__(self):
+            super().__init__()
+            self.request_calls = []
+
+        async def request(self, path, api, method, params):
+            self.request_calls.append((path, api, method, dict(params)))
+            return await super().request(path, api, method, params)
+
+    exchange = RecordingExchange()
+    account = BinanceTestnetAccount(exchange)
+
+    result = await account._place_native_trailing_stop(
+        "DOGE/USDT",
+        "sell",
+        10.0,
+        atr_pct=0.01,
+        tier=3,
+        highest_pnl=0.06,
+        activation_price=106.0,
+    )
+
+    path, api, method, params = exchange.request_calls[-1]
+    assert (path, api, method) == ("algoOrder", "fapiPrivate", "POST")
+    assert params["algoType"] == "CONDITIONAL"
+    assert params["type"] == "TRAILING_STOP_MARKET"
+    assert params["activationPrice"] == "106.0"
+    assert result["callbackRate"] == params["callbackRate"]
+
+
+@pytest.mark.anyio
+async def test_native_trailing_failure_restores_fixed_stop(tmp_path, monkeypatch):
+    """原生追蹤掛單失敗後，必須補回固定止損且短時間內不反覆撤掛。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
+    monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", True)
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+
+    class TrailingRejectedExchange(FakeTestnetExchange):
+        def __init__(self):
+            super().__init__()
+            self.request_calls = []
+            self.trailing_attempts = 0
+
+        async def request(self, path, api, method, params):
+            self.request_calls.append((path, api, method, dict(params)))
+            if method == "POST" and params.get("type") == "TRAILING_STOP_MARKET":
+                self.trailing_attempts += 1
+                raise ccxt.ExchangeError("binanceusdm error -4120")
+            return await super().request(path, api, method, params)
+
+    exchange = TrailingRejectedExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.position_meta["DOGE/USDT"] = {
+        "sl": 98.0,
+        "tp": 0.0,
+        "atr": 1.0,
+        "highest_pnl_pct": 0.0,
+    }
+    exchange.positions = [{
+        "symbol": "DOGEUSDT",
+        "positionAmt": "10",
+        "entryPrice": "100.0",
+        "markPrice": "106.0",
+        "leverage": "5",
+        "unRealizedProfit": "60",
+    }]
+    account.last_sync_at = 0
+
+    await account.update_positions({"DOGE/USDT": 106.0})
+
+    meta = account.position_meta["DOGE/USDT"]
+    restored_stops = [
+        params for path, _api, method, params in exchange.request_calls
+        if path == "algoOrder" and method == "POST" and params.get("type") == "STOP"
+    ]
+    assert exchange.trailing_attempts == 1
+    assert restored_stops
+    assert meta["sl"] > 100.0
+    assert meta["native_trailing_retry_after"] > 0
+    assert any("固定止損已恢復" in entry["text"] for entry in account.logs)
+
+    await account.update_positions({"DOGE/USDT": 106.0})
+    assert exchange.trailing_attempts == 1

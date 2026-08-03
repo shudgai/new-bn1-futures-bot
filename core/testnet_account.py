@@ -39,6 +39,7 @@ from core.config import (
     TRAILING_TIER1_TRIGGER_ATR_MULT,
     TRAILING_TIER2_TRIGGER_ATR_MULT,
     TRAILING_TIER3_TRIGGER_ATR_MULT,
+    TRAILING_TIER2_LOCK_ATR_MULT,
     MAX_ACCEPTABLE_LOSS_PCT,
 )
 from core.strategy import compute_sl_tp_distance
@@ -721,9 +722,34 @@ class BinanceTestnetAccount:
                     elif profit_in_atr >= TRAILING_TIER2_TRIGGER_ATR_MULT and current_tier < 2:
                         target_tier = 2
 
+                    retry_after = float(meta.get("native_trailing_retry_after", 0.0) or 0.0)
+                    if target_tier > 0 and now_ts < retry_after:
+                        target_tier = 0
+
                     if target_tier > 0:
                         tier_labels = {2: "鎖利", 3: "極致追蹤"}
-                        callback_rate = self._compute_callback_rate(atr_pct, target_tier, highest_pnl=highest_pnl)
+                        callback_rate = self._compute_callback_rate(
+                            atr_pct, target_tier, highest_pnl=highest_pnl
+                        )
+                        # 升級前先保存一條可立即重建的固定止損。若目前已由
+                        # native Tier2 接管（本地 sl=0），就用 Tier2 鎖利價
+                        # 作為安全回復；否則沿用現有固定止損。
+                        fallback_sl = float(meta.get("sl") or pos.get("sl") or 0.0)
+                        if fallback_sl <= 0:
+                            locked_distance = atr_value * TRAILING_TIER2_LOCK_ATR_MULT
+                            if side == "LONG":
+                                fallback_sl = min(
+                                    entry_p + locked_distance,
+                                    mark_p * (1.0 - 0.001),
+                                )
+                            else:
+                                fallback_sl = max(
+                                    entry_p - locked_distance,
+                                    mark_p * (1.0 + 0.001),
+                                )
+                            fallback_sl = float(
+                                self.exchange.price_to_precision(symbol, fallback_sl)
+                            )
                         try:
                             await self._cancel_all_orders(symbol)
                             result = await self._place_native_trailing_stop(
@@ -738,6 +764,7 @@ class BinanceTestnetAccount:
                             actual_callback = result.get("callbackRate", callback_rate)
                             meta["native_trailing_tier"] = target_tier
                             meta["native_trailing_callback"] = actual_callback
+                            meta.pop("native_trailing_retry_after", None)
                             # 接管後，清空本地 SL/TP 條件記錄
                             meta["sl"] = 0.0
                             pos["sl"] = 0.0
@@ -751,10 +778,36 @@ class BinanceTestnetAccount:
                                 "SUCCESS",
                             )
                         except Exception as e:
+                            # 舊保護已被取消；原生掛單失敗時必須立刻補回
+                            # 固定止損，並短暫冷卻避免每輪反覆撤掛。
+                            meta["native_trailing_retry_after"] = now_ts + 60.0
+                            restored = False
+                            try:
+                                if fallback_sl > 0:
+                                    await self._create_protection_order(
+                                        symbol,
+                                        close_side_trail,
+                                        "STOP_MARKET",
+                                        qty_trail,
+                                        fallback_sl,
+                                        limit_price=self._stop_limit_price(
+                                            fallback_sl, close_side_trail
+                                        ),
+                                    )
+                                    meta["sl"] = fallback_sl
+                                    pos["sl"] = fallback_sl
+                                    restored = True
+                            except Exception as restore_exc:
+                                self.log(
+                                    f"🚨 {symbol} 原生 Trailing 失敗後固定止損也恢復失敗: "
+                                    f"{type(restore_exc).__name__}: {restore_exc}",
+                                    "DANGER",
+                                )
+                            restore_status = "已恢復" if restored else "未能恢復"
                             self.log(
                                 f"⚠️ {symbol} 升級掛載原生 Trailing Stop (Tier{target_tier}) 失敗: "
-                                f"{type(e).__name__}: {e}",
-                                "WARNING",
+                                f"{type(e).__name__}: {e} | 固定止損{restore_status}",
+                                "WARNING" if restored else "DANGER",
                             )
 
                 else:
@@ -961,6 +1014,7 @@ class BinanceTestnetAccount:
         """
         callback_rate = self._compute_callback_rate(atr_pct, tier, highest_pnl=highest_pnl)
         params = {
+            "algoType": "CONDITIONAL",
             "symbol": self._raw_symbol(symbol),
             "side": close_side.upper(),
             "type": "TRAILING_STOP_MARKET",
@@ -973,7 +1027,9 @@ class BinanceTestnetAccount:
             params["activationPrice"] = self.exchange.price_to_precision(
                 symbol, activation_price
             )
-        result = await self.exchange.request("order", "fapiPrivate", "POST", params)
+        result = await self.exchange.request(
+            "algoOrder", "fapiPrivate", "POST", params
+        )
         return {"result": result, "callbackRate": callback_rate}
 
     async def _emergency_flatten(self, symbol: str, side: str, qty: float) -> None:
