@@ -22,7 +22,6 @@ from core.config import (
     MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO,
-    VOLUME_DIVERGENCE_LAST_BAR_EXTREME_REQUIRED, VOLUME_DIVERGENCE_CLOSE_PRESSURE_BARS, VOLUME_DIVERGENCE_MIN_ADX,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -32,7 +31,7 @@ from core.config import (
 )
 
 
-def has_volume_divergence(df: pd.DataFrame, want_dir: int, adx: float = 0.0) -> bool:
+def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
     """價格仍創新高/新低，但成交量較前段明顯萎縮 -> 量縮背離（主力收手）。
 
     把最近 VOLUME_DIVERGENCE_LOOKBACK_BARS 根拆成前後兩半：
@@ -40,81 +39,21 @@ def has_volume_divergence(df: pd.DataFrame, want_dir: int, adx: float = 0.0) -> 
       明顯低於前半段 -> 底部量縮，賣壓竭盡。
       空單（探頂）：後半段的最高價 >= 前半段最高價，但後半段平均量能
       明顯低於前半段 -> 頂部量縮，買盤竭盡。
-    
-    強化條件（Option B/C/D）：
-      B - 最後一根 K 棒本身必須創新高/新低
-      C - 最後 N 根 K 棒收盤壓力方向一致（多單收盤在下半部、空單在上半部）
-      D - ADX 必須 >= VOLUME_DIVERGENCE_MIN_ADX（趨勢明確）
     """
     if len(df) < VOLUME_DIVERGENCE_LOOKBACK_BARS:
         return False
-    
     window = df.iloc[-VOLUME_DIVERGENCE_LOOKBACK_BARS:]
     half = VOLUME_DIVERGENCE_LOOKBACK_BARS // 2
     early, recent = window.iloc[:half], window.iloc[half:]
     early_volume = float(early['volume'].mean())
     if early_volume <= 0:
         return False
-    
-    # 基礎量縮檢查
     volume_shrinking = float(recent['volume'].mean()) <= early_volume * VOLUME_DIVERGENCE_MAX_RATIO
     if not volume_shrinking:
         return False
-    
-    # Option D：ADX 門檻（趨勢方向明確）
-    if adx < VOLUME_DIVERGENCE_MIN_ADX:
-        return False
-    
-    # 區間新高/新低檢查
-    if want_dir == 1:  # 多單：找新低
-        has_zone_low = float(recent['low'].min()) <= float(early['low'].min())
-        if not has_zone_low:
-            return False
-    else:  # 空單：找新高
-        has_zone_high = float(recent['high'].max()) >= float(early['high'].max())
-        if not has_zone_high:
-            return False
-    
-    # Option B：最後一根 K 棒必須創新高/新低
-    if VOLUME_DIVERGENCE_LAST_BAR_EXTREME_REQUIRED:
-        last_bar = recent.iloc[-1]
-        if want_dir == 1:  # 多單：最後 K 棒要創新低
-            all_window_low = window['low'].min()
-            if float(last_bar['low']) > float(all_window_low):
-                return False
-        else:  # 空單：最後 K 棒要創新高
-            all_window_high = window['high'].max()
-            if float(last_bar['high']) < float(all_window_high):
-                return False
-    
-    # Option C：最後 N 根 K 棒收盤壓力方向一致
-    pressure_lookback = min(VOLUME_DIVERGENCE_CLOSE_PRESSURE_BARS, len(recent))
-    if pressure_lookback > 0:
-        pressure_bars = recent.iloc[-pressure_lookback:]
-        if want_dir == 1:  # 多單：收盤應在下半部（賣壓）
-            for idx, bar in pressure_bars.iterrows():
-                bar_high = float(bar['high'])
-                bar_low = float(bar['low'])
-                bar_close = float(bar['close'])
-                bar_range = bar_high - bar_low
-                if bar_range > 0:
-                    close_ratio = (bar_close - bar_low) / bar_range
-                    # 下半部 = close_ratio < 0.5
-                    if close_ratio >= 0.5:
-                        return False
-        else:  # 空單：收盤應在上半部（買壓）
-            for idx, bar in pressure_bars.iterrows():
-                bar_high = float(bar['high'])
-                bar_low = float(bar['low'])
-                bar_close = float(bar['close'])
-                bar_range = bar_high - bar_low
-                if bar_range > 0:
-                    close_ratio = (bar_close - bar_low) / bar_range
-                    # 上半部 = close_ratio >= 0.5
-                    if close_ratio < 0.5:
-                        return False
-    
-    return True
+    if want_dir == 1:
+        return float(recent['low'].min()) <= float(early['low'].min())
+    return float(recent['high'].max()) >= float(early['high'].max())
 
 def compute_pullback_target(
     kc_edge: float, ema_20: float, atr: float, side: str, score: int
@@ -339,8 +278,7 @@ def detect_ma7_reversal(
         # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯
         # 萎縮，代表主力收手動能耗盡準備反轉，不是無動能的雜訊盤整，
         # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
-        # 強化條件：最後K棒創新高/低、收盤壓力方向一致、ADX確認趨勢明確。
-        if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir, adx):
+        if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir):
             pass
         else:
             # 逆勢承接（MA7_ContrarianBottomBuy）已停用：實測17%勝率、
