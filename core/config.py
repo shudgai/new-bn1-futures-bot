@@ -88,9 +88,9 @@ STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
-# 例如 -0.03 表示允許虧損最多 3%，超過 3% 虧損才停損；-0.05 表示允許虧損最多 5%
-# 設為 0 或負值表示無限制（只跟止損線），這樣可以等待利潤回來
-MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.03"))
+# 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
+# 設為 0 或負值表示無限制（只跟止損線），這樣可以等待利潤/方向回來
+MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.02"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
 # 5m MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
