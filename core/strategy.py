@@ -18,7 +18,7 @@ from core.config import (
     ADVERSE_PULLBACK_BODY_MIN_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
-    BTC_REGIME_ALLOCATION_FACTOR, SYMBOL_1H_ST_FILTER_ENABLED,
+    BTC_REGIME_ALLOCATION_FACTOR,
     MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO,
@@ -205,15 +205,7 @@ def detect_ma7_reversal(
     if st_dir != want_dir:
         return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
 
-    # 1h SuperTrend 方向：曾經允許高分訊號繞過1H個幣趨勢不符，但實測
-    # 繞過後逆勢進場的勝率明顯偏低（FIL/AAVE兩筆都是靠繞過門檻才逆勢
-    # 開倉，結果雙雙虧損），改成不論分數高低一律要求順著1H大方向，
-    # 取消繞過機制。
-    if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
-        if want_dir == 1 and st_direction_1h == -1:
-            return _no("1h_ST_Bearish vs LONG")
-        if want_dir == -1 and st_direction_1h == 1:
-            return _no("1h_ST_Bullish vs SHORT")
+    # 1h SuperTrend 方向檢查已禁用，允許逆勢進場以增加開倉機會
 
     # BTC 大盤守門員
     btc_regime = classify_btc_regime(
@@ -668,12 +660,7 @@ class SuperTrendKeltnerStrategy:
 
         # 層 B：個幣自身 1h SuperTrend 方向對齊
         # 1h SuperTrend 翻轉需要較長時間，比 price vs EMA50 準確 3~5 倍。
-        # 要求 5m SuperTrend 方向 == 個幣 1h SuperTrend 方向才允許開倉。
-        if SYMBOL_1H_ST_FILTER_ENABLED and st_direction_1h is not None:
-            if st_dir == 1 and st_direction_1h == -1:
-                return eligibility_hold("Mandatory_Fail: Symbol_1h_ST_Bearish(vs_5m_LONG)")
-            if st_dir == -1 and st_direction_1h == 1:
-                return eligibility_hold("Mandatory_Fail: Symbol_1h_ST_Bullish(vs_5m_SHORT)")
+        # 1h SuperTrend 方向檢查已禁用，允許逆勢進場
 
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），
