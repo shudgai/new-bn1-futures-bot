@@ -520,6 +520,13 @@ VOLUME_DIVERGENCE_LOOKBACK_BARS = int(os.getenv("VOLUME_DIVERGENCE_LOOKBACK_BARS
 # VOLUME_DIVERGENCE_MAX_RATIO：後段平均量能 <= 前段平均量能的此比例，才算
 # 明顯萎縮（避免量能只是正常小幅波動就誤判為背離）。
 VOLUME_DIVERGENCE_MAX_RATIO = float(os.getenv("VOLUME_DIVERGENCE_MAX_RATIO", "0.7"))
+# 量縮背離強化過濾：
+# - LAST_BAR_EXTREME_REQUIRED：最後一根 K 棒本身必須創新高/新低（不只是歷史區間內有新低）
+# - CLOSE_PRESSURE_BARS：檢查最後 N 根 K 棒的收盤價壓力方向（多單檢查收盤在下半部、空單在上半部）
+# - MIN_ADX：ADX 須 >= 此值，確保趨勢方向明確（不只是量縮的隨機打底）
+VOLUME_DIVERGENCE_LAST_BAR_EXTREME_REQUIRED = os.getenv("VOLUME_DIVERGENCE_LAST_BAR_EXTREME_REQUIRED", "true").lower() == "true"
+VOLUME_DIVERGENCE_CLOSE_PRESSURE_BARS = int(os.getenv("VOLUME_DIVERGENCE_CLOSE_PRESSURE_BARS", "3"))
+VOLUME_DIVERGENCE_MIN_ADX = float(os.getenv("VOLUME_DIVERGENCE_MIN_ADX", "15.0"))
 
 # --- 動態倉位分配 (依訊號信心分數調整下單金額) ---
 # 只有通過 MIN_SCORE_THRESHOLD 才會進場；分數越高代表 4 項條件符合越多，
