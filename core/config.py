@@ -118,6 +118,9 @@ MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "true").lower() == 
 MA7_FAST_MIN_ATR_MULT = float(os.getenv("MA7_FAST_MIN_ATR_MULT", "0.02"))
 MA7_FAST_MAX_ATR_MULT = float(os.getenv("MA7_FAST_MAX_ATR_MULT", "0.20"))
 MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
+# 低波動時 MA7 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
+# 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
+MA7_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA7_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
 # 非紙上模式下，主網訊號價與執行交易所最佳價偏差超過此比例即拒絕下單。
 EXECUTION_PRICE_MAX_DEVIATION_PCT = float(os.getenv("EXECUTION_PRICE_MAX_DEVIATION_PCT", "0.005"))
 ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"
@@ -485,7 +488,7 @@ MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
 # 12 分鐘內的止損，反推 ATR 只有 0.07%~0.21%——市場太安靜時的「突破」
 # 更可能是假突破（盤整區間的雜訊），沒有真實動能支撐，容易一進場就
 # 反轉。跟 MAX_ATR_PCT 一起框出一個「波動適中」的可交易區間。
-MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0015"))
+MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0010"))
 
 # --- 主流幣名單：交易範圍限縮 + 量縮背離繞過波動過低限制 ---
 # market_candidates() 只會從這份名單裡挑選候選幣（見 symbol_rotation.py）。

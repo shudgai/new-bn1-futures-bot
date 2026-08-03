@@ -21,7 +21,7 @@ from core.config import (
     BTC_REGIME_ALLOCATION_FACTOR,
     MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
-    MA7_FAST_MIN_VOLUME_RATIO,
+    MA7_FAST_MIN_VOLUME_RATIO, MA7_DYNAMIC_ATR_FLOOR_PCT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -253,10 +253,14 @@ def detect_ma7_reversal(
     if atr_pct > MAX_ATR_PCT:
         return _no(f"ATR過高({atr_pct:.2%})")
     
-    # 計算最近 6 小時（72 根 5m K棒）的平均 ATR% 作為動態底線參考，防週末/低波動期漏單，最低下探至 0.0008
+    # 計算最近 6 小時（72 根 5m K棒）的平均 ATR% 作為動態底線參考。
+    # 絕對下限由設定控制，讓低波動期可適度放寬，但仍排除幾乎無波動的雜訊。
     atr_pct_series = df['atr'] / df['close']
     rolling_atr_pct = float(atr_pct_series.rolling(window=72, min_periods=12).mean().iloc[-1])
-    dynamic_atr_min = min(atr_min_pct, max(0.0008, rolling_atr_pct * 0.7))
+    dynamic_atr_min = min(
+        atr_min_pct,
+        max(MA7_DYNAMIC_ATR_FLOOR_PCT, rolling_atr_pct * 0.7),
+    )
     is_contrarian_bottom_buy = False
     if atr_pct < dynamic_atr_min:
         # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯

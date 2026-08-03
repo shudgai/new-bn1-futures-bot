@@ -728,11 +728,11 @@ def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch)
     assert live_volume_again["score_components"] == live_volume["score_components"]
 
     low_atr = _entry_score_frame(volume=1500.0, rsi=60.0, adx=25.0)
-    low_atr["atr"] = low_atr["close"] * 0.0013
+    low_atr["atr"] = low_atr["close"] * 0.0009
     live_atr = strategy.evaluate_signal(low_atr, ema_50_1h=95.0)
     shadow_atr = strategy.evaluate_signal(
         low_atr, ema_50_1h=95.0,
-        parameter_overrides={"atr_min_pct": 0.0012},
+        parameter_overrides={"atr_min_pct": 0.0008},
     )
     assert "ATR_Too_Low" in live_atr["reason"]
     assert "ATR_Too_Low" not in shadow_atr["reason"]
@@ -2220,6 +2220,33 @@ def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume(monkeyp
     assert result["early_projection"] is False
     assert result["volume_ratio"] >= 1.5
     assert "爆量微拐幅提前確認" in result["reason"]
+
+
+def test_detect_ma7_reversal_uses_configured_dynamic_atr_floor(monkeypatch):
+    """低波動環境可依設定放寬至0.06%，但不會放寬到絕對下限以下。"""
+    monkeypatch.setattr(strategy_module, "MA7_DYNAMIC_ATR_FLOOR_PCT", 0.0006)
+    frame = _ma7_frame("LONG")
+    frame["atr"] = 0.06  # price 約100，ATR% 約0.06%
+
+    result = detect_ma7_reversal(
+        frame,
+        side="LONG",
+        parameter_overrides={"atr_min_pct": 0.0010},
+        indicators_precomputed=True,
+    )
+
+    assert result["detected"] is True, result.get("reason")
+
+    frame["atr"] = 0.05  # ATR% 約0.05%，低於絕對下限
+    result_below_floor = detect_ma7_reversal(
+        frame,
+        side="LONG",
+        parameter_overrides={"atr_min_pct": 0.0010},
+        indicators_precomputed=True,
+    )
+
+    assert result_below_floor["detected"] is False
+    assert "ATR過低" in result_below_floor["reason"]
 
 
 def test_detect_ma7_reversal_fast_entry_rejects_low_volume(monkeypatch):
