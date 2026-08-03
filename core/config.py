@@ -216,11 +216,12 @@ SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").l
 # KC 30 + 量能 20 + RSI 20 + 新鮮度 18 + 品質 12。
 # 不再讓新鮮度跟真正突破同為 30 分，避免只有「方向還沒翻轉」的舊趨勢
 # 靠新鮮度灌成 91+ 高分。調高至 75 分以精簡開倉，避免弱信號磨損。
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "75"))
+# 診斷用：暫時降低到 60 測試是否缺乏訊號
+MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "60"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "75"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "60"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
