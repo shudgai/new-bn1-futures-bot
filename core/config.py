@@ -207,8 +207,8 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
 # 曾經允許高分訊號繞過此過濾（SYMBOL_1H_ST_FILTER_BYPASS_SCORE），但實測
 # 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
-# 順著1H大方向。
-SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
+# 順著1H大方向。已禁用此過濾以增加開倉機會。
+SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "false").lower() == "true"
 
 # --- 精準狙擊進場門檻 ---
 # MIN_SCORE_THRESHOLD：初始突破評分固定為 100 分制：
