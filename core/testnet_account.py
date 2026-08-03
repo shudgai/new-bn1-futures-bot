@@ -39,6 +39,7 @@ from core.config import (
     TRAILING_TIER1_TRIGGER_ATR_MULT,
     TRAILING_TIER2_TRIGGER_ATR_MULT,
     TRAILING_TIER3_TRIGGER_ATR_MULT,
+    MAX_ACCEPTABLE_LOSS_PCT,
 )
 from core.strategy import compute_sl_tp_distance
 from core.notifier import notify_email
@@ -597,9 +598,25 @@ class BinanceTestnetAccount:
                     breach_start = self._stop_breach_since.setdefault(symbol, now_ts)
                     if now_ts - breach_start >= STOP_LIMIT_UNFILLED_TIMEOUT_SEC:
                         self._stop_breach_since.pop(symbol, None)
+                        
+                        # ── 新增邏輯：只有當浮虧超過 MAX_ACCEPTABLE_LOSS_PCT 才執行平倉 ──
+                        current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
+                        
+                        # 如果設置了最大可接受虧損 (MAX_ACCEPTABLE_LOSS_PCT < 0)，
+                        # 則只在虧損超過此閾值時才執行停損平倉
+                        if MAX_ACCEPTABLE_LOSS_PCT < 0 and current_loss_pct > MAX_ACCEPTABLE_LOSS_PCT:
+                            # 虧損未超過閾值，允許等待利潤回來
+                            self.log(
+                                f"⏸️ [{symbol}] 止損已觸發但虧損 {current_loss_pct:.2%} 未超過允許值 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，"
+                                f"耐心等待利潤回來... (止損價: {old_sl}, 目前價: {mark_p:.6f})",
+                                "INFO",
+                            )
+                            continue
+                        
+                        # 虧損超過閾值，執行停損平倉
                         self.log(
                             f"🚨 {symbol} 限價止損觸發後超過{STOP_LIMIT_UNFILLED_TIMEOUT_SEC:.0f}秒"
-                            f"未成交（標記價 {mark_p:.6f} 已穿越止損 {old_sl}），強制市價平倉",
+                            f"未成交（標記價 {mark_p:.6f} 已穿越止損 {old_sl}），虧損 {current_loss_pct:.2%} 超過限制 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，強制市價平倉",
                             "DANGER",
                         )
                         await self.close_position(symbol, curr_p, "限價止損逾時未成交，強制市價平倉")

@@ -83,9 +83,14 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # 不用再改程式碼。
 TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
+# 調整為 2.5 ATR：更寬鬆的初始止損距離，減少被掃出的機率
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
+# 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
+# 例如 -0.03 表示允許虧損最多 3%，超過 3% 虧損才停損；-0.05 表示允許虧損最多 5%
+# 設為 0 或負值表示無限制（只跟止損線），這樣可以等待利潤回來
+MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.03"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
 # 5m MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
@@ -179,12 +184,10 @@ SOFT_WARNING_PERSIST_SEC = float(os.getenv("SOFT_WARNING_PERSIST_SEC", "300"))
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
 # 保證止損距離不會低於此比例，止盈距離依 TAKE_PROFIT/STOP_LOSS 倍數比例同步放大。
 MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.004"))
-# DISASTER_STOP_MULTIPLIER：曾經因為「先不要止損，讓利潤有機會回來，
-# 由人工判斷要不要平倉」的需求，把原本 1.5x ATR 的緊止損放寬到 2.5 倍當
-# 最後防線。後來實際看下來覺得太寬，收回到 1.5 倍——等於跟 STOP_LOSS_
-# MULTIPLIER 本身的基準止損距離一致，等於沒有額外放寬，回到最初固定
-# 1:2 風報比的原始設計。想再放寬回去，改這個數字即可，不用動程式碼。
-DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.5"))
+# DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
+# 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
+# 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
+DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
 
 # --- BTC 大盤方向守門員 ---
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
