@@ -3,13 +3,13 @@ import csv
 import io
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    API_TOKEN, TAKER_FEE_RATE,
+    TAKER_FEE_RATE,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -61,18 +61,8 @@ class ManualOrderRequest(BaseModel):
 class ManualCloseRequest(BaseModel):
     symbol: str
 
-def require_auth(authorization: str = Header(default="")) -> None:
-    """異動端點（開倉/平倉/開關機器人）的身份驗證。
-    未設定 API_TOKEN 時（本機開發階段）不強制驗證，只在啟動時印出警告。"""
-    if not API_TOKEN:
-        return
-    if authorization != f"Bearer {API_TOKEN}":
-        raise HTTPException(status_code=401, detail="未授權：缺少或錯誤的 Authorization Header")
-
 @app.on_event("startup")
 async def startup_event():
-    if not API_TOKEN:
-        print("⚠️ API_TOKEN 未設定：/api/toggle、/api/manual_order、/api/manual_close 目前不驗證身份，對外開放前請在 .env 設定 API_TOKEN")
     await engine.start()
 
 @app.on_event("shutdown")
@@ -110,7 +100,6 @@ async def get_status():
         "strategy": "Keltner + SuperTrend 混合模式 (12幣雙向)",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
-        "api_token_configured": bool(API_TOKEN),
         "available_balance": round(engine.account.available_balance, 2),
         "port": PORT,
         "balance": round(engine.account.balance, 2),
@@ -169,7 +158,7 @@ async def get_prices():
     }
 
 @app.post("/api/toggle")
-async def toggle_bot(_auth: None = Depends(require_auth)):
+async def toggle_bot():
     if engine.is_running:
         await engine.stop()
     else:
@@ -177,7 +166,7 @@ async def toggle_bot(_auth: None = Depends(require_auth)):
     return {"is_running": engine.is_running}
 
 @app.post("/api/manual_order")
-async def manual_order(req: ManualOrderRequest, _auth: None = Depends(require_auth)):
+async def manual_order(req: ManualOrderRequest):
     symbol = req.symbol.strip()
     side = req.side.upper()
     amount = req.amount if req.amount > 0 else TRADE_AMOUNT_USDT
@@ -240,7 +229,7 @@ async def export_trades(date: str = None):
     )
 
 @app.post("/api/manual_close")
-async def manual_close(req: ManualCloseRequest, _auth: None = Depends(require_auth)):
+async def manual_close(req: ManualCloseRequest):
     symbol = req.symbol.strip()
     if symbol not in engine.account.positions:
         raise HTTPException(status_code=400, detail="查無此持倉")

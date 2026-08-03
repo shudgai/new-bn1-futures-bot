@@ -640,12 +640,6 @@ USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
 # 既有持倉的止損/止利仍正常運作，不受影響。隔天（台北時區）自動重置。
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0"))
 
-# --- API 認證 ---
-# /api/manual_order、/api/manual_close、/api/toggle 等異動端點要求帶
-# Authorization: Bearer <API_TOKEN>。未設定時（本機開發階段）不強制驗證，
-# 但啟動時會印出警告——對外開放前務必設定。
-API_TOKEN = os.getenv("API_TOKEN", "")
-
 # --- Email 警報 ---
 # 用 SMTP 寄送重大事件（開倉/平倉失敗、每日熔斷觸發等 DANGER 等級事件）。
 # SMTP_USER/SMTP_PASSWORD 未設定時直接跳過通知，不影響交易流程。
