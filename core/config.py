@@ -75,7 +75,7 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "3"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "30.0"))
 # TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
@@ -98,9 +98,9 @@ ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
 # 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
-MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.02"))
-ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
-ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
+MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "0"))
+ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "false").lower() == "true"
+ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "false").lower() == "true"
 MA7_EXIT_TIMEFRAME = os.getenv("MA7_EXIT_TIMEFRAME", "1m")
 # MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
 # 「非結構性」出場需要先持倉滿10分鐘，且逆向幅度達0.20%或0.5倍 MA7_EXIT_TIMEFRAME ATR
@@ -137,9 +137,25 @@ MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05
 # 底點/頂點預掛是在轉彎前承接，成交後需要時間消化正常回撤。寬限期內
 # 屏蔽MA7、5m結構、15m EMA軟退出與軟性收緊；交易所原始SL仍持續有效。
 MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
+# --- 無 MA7 的結構化進出場 ---
+STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower() == "true"
+STRUCTURED_VOLUME_MIN_RATIO = float(os.getenv("STRUCTURED_VOLUME_MIN_RATIO", "1.0"))
+STRUCTURED_SWING_LOOKBACK = int(os.getenv("STRUCTURED_SWING_LOOKBACK", "20"))
+STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "0.25"))
+STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC = float(os.getenv("STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC", "300"))
+STRUCTURED_RSI_LONG_TRIGGER = float(os.getenv("STRUCTURED_RSI_LONG_TRIGGER", "51"))
+STRUCTURED_RSI_SHORT_TRIGGER = float(os.getenv("STRUCTURED_RSI_SHORT_TRIGGER", "49"))
+BREAKOUT_HARD_STOP_ATR_MULT = float(os.getenv("BREAKOUT_HARD_STOP_ATR_MULT", "1.0"))
+BREAKOUT_CANDLE_STOP_BUFFER_ATR = float(os.getenv("BREAKOUT_CANDLE_STOP_BUFFER_ATR", "0.1"))
+BREAKOUT_TRAILING_ATR_MULT = float(os.getenv("BREAKOUT_TRAILING_ATR_MULT", "1.75"))
+BREAKOUT_RR1_TARGET = float(os.getenv("BREAKOUT_RR1_TARGET", "1.5"))
+BREAKOUT_RR2_TARGET = float(os.getenv("BREAKOUT_RR2_TARGET", "2.5"))
+BREAKOUT_RR_CLOSE_FRACTION = float(os.getenv("BREAKOUT_RR_CLOSE_FRACTION", "0.5"))
+STRUCTURED_EXIT_INTERVAL_SEC = float(os.getenv("STRUCTURED_EXIT_INTERVAL_SEC", "15"))
+
 # 非紙上模式下，主網訊號價與執行交易所最佳價偏差超過此比例即拒絕下單。
 EXECUTION_PRICE_MAX_DEVIATION_PCT = float(os.getenv("EXECUTION_PRICE_MAX_DEVIATION_PCT", "0.005"))
-ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"
+ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "false").lower() == "true"
 # 移動止損的 ATR 倍數（預設 3 倍 ATR，動態適應市場波動範圍）
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
@@ -148,7 +164,7 @@ ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
-ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
+ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true"
 # 觸發門檻改用每筆進場 ATR：1.2 ATR 保本、3.5 ATR 轉 runner 並鎖住
 # 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早掃掉剛起跑的部位。
 TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.2"))

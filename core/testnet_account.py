@@ -55,7 +55,8 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
-    "is_contrarian_bottom_buy",
+    "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
+    "signal_candle_low", "signal_candle_high",
 )
 
 
@@ -1160,6 +1161,9 @@ class BinanceTestnetAccount:
             )
             sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
+            if entry_context.get("initial_sl") is not None:
+                entry_context["initial_sl"] = sl_price
+                entry_context["initial_risk"] = abs(execution_price - sl_price)
             atr_value = atr if atr > 0 else execution_price * 0.015
             try:
                 # 限價單成交後，這裡跟主迴圈/網頁輪詢都可能同時偵測到「這個

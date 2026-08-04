@@ -24,6 +24,10 @@ from core.config import (
     MA7_FAST_MIN_VOLUME_RATIO,
     MA7_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
+    STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
+    BREAKOUT_HARD_STOP_ATR_MULT, BREAKOUT_CANDLE_STOP_BUFFER_ATR,
+    BREAKOUT_TRAILING_ATR_MULT, BREAKOUT_RR1_TARGET, BREAKOUT_RR2_TARGET,
+    BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -368,6 +372,37 @@ class TradingEngine:
 
 
     @staticmethod
+    def _trend_follow_breach(df: pd.DataFrame, side: str) -> dict:
+        """Use two closed 15m bars to detect an EMA20 plus ATR-buffer breach."""
+        if df.empty or len(df) < 20:
+            return {"breached": False}
+        work = df.copy()
+        high_low = work["high"] - work["low"]
+        high_cp = (work["high"] - work["close"].shift()).abs()
+        low_cp = (work["low"] - work["close"].shift()).abs()
+        work["tr"] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+        work["atr"] = work["tr"].rolling(window=14).mean()
+        work["ema_20"] = work["close"].ewm(span=20, adjust=False).mean()
+        last_bar, prev_bar = work.iloc[-1], work.iloc[-2]
+        close1, close2 = float(last_bar["close"]), float(prev_bar["close"])
+        ema1, ema2 = float(last_bar["ema_20"]), float(prev_bar["ema_20"])
+        atr1 = float(last_bar["atr"]) if not pd.isna(last_bar["atr"]) else close1 * 0.015
+        atr2 = float(prev_bar["atr"]) if not pd.isna(prev_bar["atr"]) else close2 * 0.015
+        buffer1 = max(close1 * 0.003, 0.5 * atr1)
+        buffer2 = max(close2 * 0.003, 0.5 * atr2)
+        breached = (
+            close1 < ema1 - buffer1 and close2 < ema2 - buffer2
+            if side == "LONG"
+            else close1 > ema1 + buffer1 and close2 > ema2 + buffer2
+        )
+        return {
+            "breached": bool(breached),
+            "close1": close1, "close2": close2,
+            "ema1": ema1, "ema2": ema2,
+            "buffer1": buffer1, "buffer2": buffer2,
+        }
+
+    @staticmethod
     def _history_adjusted_score(raw_score: int, performance: dict) -> tuple[int, float]:
         # 歷史績效降分功能已關閉，一律不降分
         return int(raw_score), 1.0
@@ -689,13 +724,18 @@ class TradingEngine:
         if self.is_running:
             return
         await self.account.initialize()
+        # 策略切換後撤掉尚未成交的舊 MA7/舊回踩進場單，避免重啟後偷渡成交。
+        for symbol, pending in list(self.account.pending_limit_orders.items()):
+            mode = (pending.get("entry_context") or {}).get("entry_mode")
+            if mode != "SUPPORT_PULLBACK":
+                await self.account.cancel_pending_limit(symbol, "已切換為無 MA7 結構進場")
         await self._load_execution_symbols()
         await self._validate_mainstream_symbols()
         self.is_running = True
         if PAPER_TRADING:
             self.account.log(f"▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（{len(DEFAULT_SYMBOLS)}幣雙向交易）")
         elif USE_TESTNET:
-            self.account.log(f"▶️ 8006 機器人啟動【Binance Testnet 測試網模式】達標訊號全數回踩確認 / {len(DEFAULT_SYMBOLS)}幣雙向交易")
+            self.account.log(f"▶️ 8006 機器人啟動【Binance Testnet 測試網模式】無MA7三模式結構進場 / {len(DEFAULT_SYMBOLS)}幣雙向交易")
         else:
             self.account.log(
                 "🔴🔴🔴 【正式實盤模式已啟用】（USE_TESTNET=false）：本次啟動將用真實資金下單！",
@@ -709,13 +749,12 @@ class TradingEngine:
         self.analysis_task = asyncio.create_task(self._analysis_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
-        # 15m EMA20 趨勢止損與分批止盈背景任務
-        self.trend_follow_task = asyncio.create_task(self._run_trend_follow_exits())
-        # 移動停損背景任務（每 5 分鐘更新一次止損位置）
+        # KC失敗、ATR追蹤、RR分批與1h翻向出場背景任務
+        self.trend_follow_task = asyncio.create_task(self._run_structured_exits())
+        # 舊移動停損任務保留但預設停用，避免與結構ATR追蹤衝突
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
-        # 全市場 MA7 拐頭掃描：DEFAULT_SYMBOLS 之外的合約幣種若已達標，
-        # 直接納入監控名單讓主迴圈接手，不用等下一輪輪替。
-        self.market_scan_task = asyncio.create_task(self._run_market_wide_ma7_scan_loop())
+        # 無 MA7 模式不啟動全市場 MA7 掃描。
+        self.market_scan_task = None
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -1008,6 +1047,121 @@ class TradingEngine:
             except Exception as exc:
                 self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(30)
+
+    async def _run_structured_exits(self):
+        """Manage structured positions with KC failure, ATR trail, RR scales, and 1h flips."""
+        managed_modes = {
+            "BREAKOUT", "SUPPORT_PULLBACK", "MOMENTUM_CROSS",
+            "MA7_REVERSAL", "MA7_BOTTOM_LIMIT", "CURRENT_MAKER", "PULLBACK",
+        }
+        while self.is_running:
+            try:
+                for symbol, position in list(self.account.positions.items()):
+                    meta = self.account.position_meta.setdefault(symbol, {})
+                    entry_mode = position.get("entry_mode") or meta.get("entry_mode")
+                    if entry_mode not in managed_modes:
+                        continue
+                    side = position["side"]
+                    direction = 1 if side == "LONG" else -1
+                    current_price = float(
+                        self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"]
+                    )
+
+                    symbol_1h = self.st_direction_1h_cache.get(symbol)
+                    btc_1h = int(self.btc_1h_st_direction or 0)
+                    if symbol_1h == -direction or btc_1h == -direction:
+                        source = "個幣" if symbol_1h == -direction else "BTC"
+                        await self.account.close_position(
+                            symbol, current_price, f"{source} 1h SuperTrend翻向，強制全平"
+                        )
+                        continue
+
+                    df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+                    if df.empty or len(df) < 65:
+                        continue
+                    computed = self.strategy.compute_indicators(df)
+                    bar = computed.iloc[-1]
+                    atr = float(bar["atr"]) if not pd.isna(bar["atr"]) else 0.0
+                    if atr <= 0:
+                        atr = float(meta.get("atr") or position.get("atr") or 0.0)
+                    if atr <= 0:
+                        continue
+
+                    if entry_mode == "BREAKOUT":
+                        if side == "LONG":
+                            kc_failed = (
+                                float(bar["open"]) < float(bar["ema_20"])
+                                and float(bar["close"]) < float(bar["ema_20"])
+                            ) or float(bar["low"]) <= float(bar["kc_lower"])
+                        else:
+                            kc_failed = (
+                                float(bar["open"]) > float(bar["ema_20"])
+                                and float(bar["close"]) > float(bar["ema_20"])
+                            ) or float(bar["high"]) >= float(bar["kc_upper"])
+                        if kc_failed:
+                            await self.account.close_position(
+                                symbol, current_price, "5m K棒實體失守KC中軌或觸及反向外軌"
+                            )
+                            continue
+
+                    entry_price = float(position["entry_price"])
+                    initial_risk = float(
+                        position.get("initial_risk") or meta.get("initial_risk")
+                        or abs(entry_price - float(position.get("sl") or meta.get("sl") or entry_price))
+                    )
+                    if initial_risk <= 0:
+                        continue
+                    favorable_price = max(current_price, float(bar["high"])) if side == "LONG" else min(current_price, float(bar["low"]))
+                    peak_key = "structured_peak_price"
+                    previous_peak = float(meta.get(peak_key) or entry_price)
+                    peak = max(previous_peak, favorable_price) if side == "LONG" else min(previous_peak, favorable_price)
+                    meta[peak_key] = peak
+
+                    current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
+                    trail_sl = (
+                        peak - BREAKOUT_TRAILING_ATR_MULT * atr
+                        if side == "LONG" else peak + BREAKOUT_TRAILING_ATR_MULT * atr
+                    )
+                    improves = (
+                        trail_sl > current_sl if side == "LONG"
+                        else current_sl <= 0 or trail_sl < current_sl
+                    )
+                    if improves:
+                        locked = trail_sl >= entry_price if side == "LONG" else trail_sl <= entry_price
+                        await self.account.trail_stop_loss(
+                            symbol, trail_sl, mark_profit_locked=locked
+                        )
+
+                    favorable_move = (
+                        current_price - entry_price if side == "LONG"
+                        else entry_price - current_price
+                    )
+                    rr = favorable_move / initial_risk
+                    if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
+                        if await self.account.partial_close_position(
+                            symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
+                            fraction=BREAKOUT_RR_CLOSE_FRACTION,
+                        ):
+                            meta = self.account.position_meta.setdefault(symbol, meta)
+                            meta["rr_1_5_done"] = True
+                            self.account.save_state()
+                            continue
+                    if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
+                        if await self.account.partial_close_position(
+                            symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
+                            fraction=BREAKOUT_RR_CLOSE_FRACTION,
+                        ):
+                            meta = self.account.position_meta.setdefault(symbol, meta)
+                            meta["rr_2_5_done"] = True
+                            self.account.save_state()
+                await asyncio.sleep(STRUCTURED_EXIT_INTERVAL_SEC)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.account.log(
+                    f"⚠️ [結構出場管理] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING"
+                )
+                await asyncio.sleep(STRUCTURED_EXIT_INTERVAL_SEC)
 
     async def _run_trend_follow_exits(self):
         """背景任務：大週期 (15m) EMA20 收線確認趨勢移動止損與分批止盈。"""
@@ -1532,6 +1686,76 @@ class TradingEngine:
         self._drop_pullback_candidate(symbol, "現價 Post-Only 掛單失敗", now)
         return False
 
+    async def _place_structured_entry(
+        self, symbol: str, signal: dict, live_price: float
+    ) -> bool:
+        """Place one of the three non-MA7 entries with an exchange hard stop."""
+        committed = len(self.account.positions) + len(self.account.pending_limit_orders)
+        if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
+            return False
+        score = int(signal.get("score") or 0)
+        side = signal["side"]
+        entry_mode = signal["entry_mode"]
+        is_limit = signal.get("action") == "ENTER_LIMIT"
+        planned_price = float(signal.get("target_price") if is_limit else live_price)
+        atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
+        candle_low = float(signal.get("signal_candle_low") or planned_price)
+        candle_high = float(signal.get("signal_candle_high") or planned_price)
+        if side == "LONG":
+            sl = min(
+                planned_price - BREAKOUT_HARD_STOP_ATR_MULT * atr,
+                candle_low - BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr,
+            )
+        else:
+            sl = max(
+                planned_price + BREAKOUT_HARD_STOP_ATR_MULT * atr,
+                candle_high + BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr,
+            )
+        initial_risk = abs(planned_price - sl)
+        if initial_risk <= 0:
+            return False
+        amount = min(
+            max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
+            TRADE_AMOUNT_USDT,
+        )
+        leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
+        amount, projected_risk = cap_margin_to_trade_risk(
+            amount, leverage, planned_price, sl,
+        )
+        if amount < MIN_TRADE_USDT or self.account.get_available_balance() < amount:
+            return False
+        if not await self._execution_price_is_safe(symbol, side):
+            return False
+        entry_context = {
+            "entry_mode": entry_mode,
+            "initial_sl": sl, "initial_risk": initial_risk,
+            "signal_candle_low": candle_low, "signal_candle_high": candle_high,
+            "btc_regime_at_entry": "ALIGNED",
+            "btc_direction_1h_at_entry": self.btc_1h_st_direction,
+            "btc_allocation_factor": 1.0,
+        }
+        kwargs = dict(
+            symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,
+            reason=signal["reason"], atr=atr, leverage=leverage,
+            signal_score=score, entry_context=entry_context,
+        )
+        if is_limit:
+            placed = await self.account.place_limit_entry(
+                target_price=planned_price, post_only=True, **kwargs
+            )
+        else:
+            placed = await self.account.open_position(
+                price=planned_price, **kwargs
+            )
+        if placed:
+            order_type = "支撐限價" if is_limit else "市價"
+            self.account.log(
+                f"🚀 [結構進場] {symbol} {side} {entry_mode} {order_type} @ "
+                f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}",
+                "SUCCESS",
+            )
+        return bool(placed)
+
     async def _place_ma7_reversal_entry(
         self, symbol: str, side: str, ma7_sig: dict, live_price: float, now: float
     ) -> bool:
@@ -1564,6 +1788,17 @@ class TradingEngine:
             self.account.log(
                 f"🛑 {symbol} MA7拐頭訊號成立但5分鐘週期已對{side}方向亮警訊"
                 f"（{', '.join(pre_entry_trigger.get('reasons', []))}），跳過本次進場",
+                "WARNING",
+            )
+            return False
+
+        trend_df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
+        trend_breach = self._trend_follow_breach(trend_df, side)
+        if trend_breach["breached"]:
+            direction_text = "跌破" if side == "LONG" else "突破"
+            self.account.log(
+                f"🛑 {symbol} MA7訊號成立但15分鐘已連續兩根{direction_text}EMA20緩衝帶，"
+                "若進場會立即符合趨勢出場條件，跳過本次進場",
                 "WARNING",
             )
             return False
@@ -1849,10 +2084,14 @@ class TradingEngine:
                 await self.account.cancel_pending_limit(symbol, "幣種已停止新倉或移出牌面")
                 continue
             entry_mode = (info.get("entry_context") or {}).get("entry_mode")
-            if now - info["placed_at"] > ENTRY_LIMIT_TIMEOUT_SEC:
+            order_timeout = (
+                STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC
+                if entry_mode == "SUPPORT_PULLBACK" else ENTRY_LIMIT_TIMEOUT_SEC
+            )
+            if now - info["placed_at"] > order_timeout:
                 self._record_pullback_outcome("maker_timeout")
                 await self.account.cancel_pending_limit(
-                    symbol, f"短效 Maker 掛單 {ENTRY_LIMIT_TIMEOUT_SEC:.0f} 秒未成交"
+                    symbol, f"限價掛單 {order_timeout:.0f} 秒未成交"
                 )
                 # MA7拐頭/回撤底單逾時未成交不設冷卻：下一輪(5秒後)
                 # detect_ma7_reversal會用最新K線與KC重新估價，型態若仍成立便再掛；
@@ -1862,7 +2101,7 @@ class TradingEngine:
                 if entry_mode not in ("MA7_REVERSAL", "MA7_BOTTOM_LIMIT"):
                     self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
-            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT"):
+            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT", "SUPPORT_PULLBACK"):
                 # 90+現價單、MA7拐頭單與回撤底單只短暫存活15秒；底單逾時後
                 # 由下一輪重算KC底價，不在舊單上套用回踩二次確認與目標漂移。
                 # 每日熔斷、幣種停用及掛單逾時仍在上方保留。
@@ -2056,7 +2295,7 @@ class TradingEngine:
                             continue
 
                         live_price = float(self.tickers.get(symbol) or 0.0)
-                        df = await self.fetch_klines(symbol, timeframe="1m", limit=100)
+                        df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
                         if df.empty or len(df) < 50:
                             signal_progress.append(
                                 f"{coin} {direction_text} 資格未通過,K線資料不足"
@@ -2110,119 +2349,47 @@ class TradingEngine:
                             )
                             continue
 
-                        # 計算指標以取得 rsi 與 kc 通道等欄位
+                        # 三種無 MA7 的結構進場：突破市價、支撐回踩限價、動能交叉收盤市價。
                         df = self.strategy.compute_indicators(df)
-
-                        # MA7 拐頭主觸發路徑：符合直接以現價進場，其餘狀態均視為 HOLD。
-                        current_direction = (
-                            "LONG" if int(df.iloc[-1]["st_direction"]) == 1 else "SHORT"
-                        )
-                        ma7_sig = detect_ma7_reversal(
+                        structured_sig = self.strategy.evaluate_structured_entry(
                             df,
-                            side=current_direction,
-                            ema_50_1h=self.ema_50_1h_cache.get(symbol),
+                            ema_50_1h=ema_50_1h,
                             st_direction_1h=self.st_direction_1h_cache.get(symbol),
                             btc_st_direction_1h=self.btc_1h_st_direction,
-                            btc_st_flip_age=self.btc_1h_st_flip_age,
                             symbol=symbol,
                             indicators_precomputed=True,
-                            live_price=live_price,
                         )
-                        
-                        if ma7_sig["detected"]:
-                            timing_ready, early_count, required_scans = self._ma7_timing_ready(
-                                symbol, ma7_sig, now_time
-                            )
-                            if not timing_ready:
-                                signal_progress.append(
-                                    f"{coin} {ma7_sig['side']} {ma7_sig.get('score', 0)}分,"
-                                    f"盤中MA7提前確認 {early_count}/{required_scans}"
-                                )
-                                continue
-
-                            st_direction_1h = self.st_direction_1h_cache.get(symbol)
-                            want_dir = 1 if ma7_sig["side"] == "LONG" else -1
-                            trend_aligned = 1 if (st_direction_1h is None or st_direction_1h == want_dir) else 0
+                        current_direction = structured_sig.get("side", "LONG")
+                        action = structured_sig.get("action", "HOLD")
+                        self._record_entry_filter(
+                            symbol, structured_sig, current_direction,
+                            "structured_entry_ready" if action.startswith("ENTER_") else "structured_wait",
+                        )
+                        if action in ("ENTER_MARKET", "ENTER_LIMIT"):
                             detected_candidates.append({
                                 "symbol": symbol,
-                                "side": ma7_sig["side"],
-                                "ma7_sig": ma7_sig,
-                                "price": float(ma7_sig.get("price") or live_price or price),
-                                "score": ma7_sig.get("score", 65),
-                                "trend_aligned": trend_aligned
+                                "signal": structured_sig,
+                                "price": float(live_price or structured_sig.get("price") or price),
+                                "score": int(structured_sig.get("score") or 0),
                             })
-                            continue
-
-                        self._ma7_timing_ready(symbol, ma7_sig, now_time)
-
-                        # 未觸發拐頭進場，日誌進度顯示 HOLD 理由
-                        reason = ma7_sig.get("reason", "等待MA7拐頭及KC回踩")
-                        score = ma7_sig.get("score", 0)
-                        
-                        # 模擬 evaluate_signal 回傳結構，以正確記錄日誌和影子指標
-                        holding_sig = {
-                            "action": "HOLD",
-                            "score": score,
-                            "reason": reason,
-                            "eligible": False,
-                            "diagnostics": {
-                                "st_direction_5m": current_direction,
-                                "st_direction_1h": self.st_direction_1h_cache.get(symbol),
-                                "price": price,
-                                "ema_50_1h": ema_50_1h,
-                                "adx": float(df.iloc[-1].get("adx") or 0.0),
-                                "rsi": float(df.iloc[-1].get("rsi") or 50.0),
-                            }
-                        }
-                        self._record_shadow_parameter_comparison(symbol, df, holding_sig, current_direction)
-                        self._record_entry_filter(symbol, holding_sig, current_direction)
-                        
-                        direction_text = {"LONG": "多單", "SHORT": "空單"}.get(current_direction, "雙向")
-                        coin = symbol.replace("/USDT", "")
-                        
-                        # 簡化日誌進度顯示
-                        if "SuperTrend方向不符" in reason:
-                            stage = "SuperTrend方向不符"
-                        elif "1h_ST" in reason:
-                            stage = "個幣1h趨勢不符"
-                        elif "1h_EMA50" in reason:
-                            stage = "1h EMA50方向不符"
-                        elif "ADX" in reason:
-                            stage = "ADX過低過濾"
-                        elif "ATR" in reason:
-                            stage = "波動過濾"
-                        elif "RSI" in reason:
-                            stage = "RSI方向不合"
-                        elif "MA7" in reason:
-                            stage = self._format_ma7_wait_detail(df, current_direction)
-                        elif "KC" in reason or "K棒未曾觸碰" in reason:
-                            stage = "待碰觸KC軌道回踩確認"
+                            signal_progress.append(
+                                f"{coin} {current_direction} {structured_sig.get('score', 0)}分,"
+                                f"{structured_sig.get('entry_mode')}待下單"
+                            )
                         else:
-                            stage = "條件未完成"
-                            
-                        signal_progress.append(f"{coin} {direction_text} {score}分,{stage}")
+                            signal_progress.append(
+                                f"{coin} {current_direction} 0分,{structured_sig.get('reason', '等待結構訊號')}"
+                            )
 
                     if detected_candidates:
-                        # 依分數高低排序，同分則優先進場 1H 趨勢對齊的訊號
-                        detected_candidates.sort(
-                            key=lambda item: (item["score"], item["trend_aligned"]),
-                            reverse=True
-                        )
-                        for cand in detected_candidates:
+                        detected_candidates.sort(key=lambda item: item["score"], reverse=True)
+                        for candidate in detected_candidates:
                             daily_halt_now, _ = self.account.daily_loss_limit_hit()
                             if daily_halt_now:
                                 break
-                            ma7_placed = await self._place_ma7_reversal_entry(
-                                cand["symbol"], cand["side"], cand["ma7_sig"], cand["price"], now_time
+                            await self._place_structured_entry(
+                                candidate["symbol"], candidate["signal"], candidate["price"]
                             )
-                            if ma7_placed:
-                                bottom_order = bool(cand["ma7_sig"].get("pullback_bottom_order"))
-                                alignment_note = "" if cand["trend_aligned"] else " (1H趨勢不符,拐頭繞過)"
-                                entry_note = "回撤底點已掛單" if bottom_order else "MA7拐頭進場"
-                                signal_progress.append(
-                                    f"{cand['symbol'].replace('/USDT', '')} {cand['side']} "
-                                    f"{cand['score']}分,{entry_note}{alignment_note}"
-                                )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:

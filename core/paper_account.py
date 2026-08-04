@@ -38,7 +38,8 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
-    "is_contrarian_bottom_buy",
+    "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
+    "signal_candle_low", "signal_candle_high",
 )
 
 
@@ -228,6 +229,9 @@ class PaperAccount:
             execution_price = price * (1 + SLIPPAGE_PCT) if side == "LONG" else price * (1 - SLIPPAGE_PCT)
         else:
             execution_price = price
+        if apply_slippage:
+            sl_distance = abs(price - sl)
+            sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
         qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
         fee = qty * execution_price * TAKER_FEE_RATE
         self.balance -= (amount_usdt + fee)
@@ -236,6 +240,9 @@ class PaperAccount:
             key: value for key, value in dict(entry_context or {}).items()
             if key in ENTRY_CONTEXT_KEYS
         }
+        if entry_context.get("initial_sl") is not None:
+            entry_context["initial_sl"] = sl
+            entry_context["initial_risk"] = abs(execution_price - sl)
         now = time.time()
         pos = {
             "symbol": symbol,

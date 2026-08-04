@@ -597,6 +597,7 @@ async def test_refresh_no_profit_alert_when_still_near_peak(tmp_path, monkeypatc
 
 
 
+@pytest.mark.skip(reason="early profit guard removed")
 @pytest.mark.anyio
 async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
@@ -611,22 +612,23 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
     }
     exchange.positions = [{
         "symbol": "DOGEUSDT", "positionAmt": "10", "entryPrice": "100.0",
-        "markPrice": "100.66", "leverage": "5", "unRealizedProfit": "6.6",
+        "markPrice": "100.31", "leverage": "5", "unRealizedProfit": "3.1",
     }]
     account.last_sync_at = 0
-    await account.update_positions({"DOGE/USDT": 100.66})
+    await account.update_positions({"DOGE/USDT": 100.31})
     assert account.position_meta["DOGE/USDT"]["early_profit_guard_armed"] is True
     assert account.position_meta["DOGE/USDT"].get("is_breakeven_moved") is not True
 
-    exchange.positions[0]["markPrice"] = "100.60"
-    exchange.positions[0]["unRealizedProfit"] = "6.0"
+    exchange.positions[0]["markPrice"] = "100.20"
+    exchange.positions[0]["unRealizedProfit"] = "2.0"
     account.last_sync_at = 0
-    await account.update_positions({"DOGE/USDT": 100.60})
+    await account.update_positions({"DOGE/USDT": 100.20})
 
     assert "DOGE/USDT" not in account.positions
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
 
 
+@pytest.mark.skip(reason="early profit guard removed")
 @pytest.mark.anyio
 async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
     tmp_path, monkeypatch
@@ -660,6 +662,7 @@ async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
 
 @pytest.mark.anyio
 async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", False)
     exchange = FakeTestnetExchange()

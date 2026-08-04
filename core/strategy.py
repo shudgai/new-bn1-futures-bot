@@ -24,6 +24,9 @@ from core.config import (
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO, MA7_DYNAMIC_ATR_FLOOR_PCT,
     MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
+    STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
+    STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
+    STRUCTURED_RSI_SHORT_TRIGGER,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -542,6 +545,109 @@ class SuperTrendKeltnerStrategy:
         df['supertrend'] = supertrend
         df['st_direction'] = direction
         return df
+
+    def evaluate_structured_entry(
+        self, df: pd.DataFrame, ema_50_1h: float = None,
+        st_direction_1h: int = None, btc_st_direction_1h: int = 0,
+        symbol: str = None, indicators_precomputed: bool = False,
+    ) -> dict:
+        """Three closed-bar entries without MA7: breakout, support pullback, momentum cross."""
+        if len(df) < max(65, STRUCTURED_SWING_LOOKBACK + 2):
+            return {"action": "HOLD", "reason": "5m K線資料不足"}
+        if not indicators_precomputed:
+            df = self.compute_indicators(df)
+        curr, prev = df.iloc[-1], df.iloc[-2]
+        direction = int(curr["st_direction"])
+        side = "LONG" if direction == 1 else "SHORT"
+        price = float(curr["close"])
+        atr = float(curr["atr"]) if not pd.isna(curr["atr"]) else price * 0.015
+        volume = float(curr["volume"])
+        volume_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
+        volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
+        aligned = (
+            (st_direction_1h in (None, direction))
+            and (not btc_st_direction_1h or int(btc_st_direction_1h) == direction)
+        )
+        common = {
+            "side": side, "price": price, "atr": atr,
+            "signal_candle_low": float(curr["low"]),
+            "signal_candle_high": float(curr["high"]),
+            "volume_ratio": volume_ratio,
+        }
+
+        swing = df.iloc[-(STRUCTURED_SWING_LOOKBACK + 1):-1]
+        prior_high = float(swing["high"].max())
+        prior_low = float(swing["low"].min())
+        kc_break = (
+            price > float(curr["kc_upper"]) if side == "LONG"
+            else price < float(curr["kc_lower"])
+        )
+        structure_break = price > prior_high if side == "LONG" else price < prior_low
+        if aligned and (kc_break or structure_break) and volume_ratio >= STRUCTURED_VOLUME_MIN_RATIO:
+            trigger = "KC上軌" if side == "LONG" and kc_break else "KC下軌" if side == "SHORT" and kc_break else "前高" if side == "LONG" else "前低"
+            return {
+                "action": "ENTER_MARKET", "entry_mode": "BREAKOUT", "score": 90,
+                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x",
+                "prior_high": prior_high, "prior_low": prior_low, **common,
+            }
+
+        ema20 = float(curr["ema_20"])
+        ema60 = float(df["close"].ewm(span=60, adjust=False).mean().iloc[-1])
+        supports = [("5m EMA20", ema20), ("5m EMA60", ema60)]
+        if ema_50_1h is not None:
+            supports.append(("1h EMA50", float(ema_50_1h)))
+        support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
+        near_support = abs(price - support_price) <= atr * STRUCTURED_SUPPORT_NEAR_ATR
+        body = abs(float(curr["close"]) - float(curr["open"]))
+        lower_wick = min(float(curr["open"]), float(curr["close"])) - float(curr["low"])
+        upper_wick = float(curr["high"]) - max(float(curr["open"]), float(curr["close"]))
+        reversal = (
+            float(curr["close"]) > float(curr["open"]) or lower_wick >= max(body, atr * 0.1)
+            if side == "LONG"
+            else float(curr["close"]) < float(curr["open"]) or upper_wick >= max(body, atr * 0.1)
+        )
+        volume_contracting = volume_ma > 0 and volume <= volume_ma
+        if aligned and near_support and reversal and volume_contracting:
+            return {
+                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": 82,
+                "target_price": support_price,
+                "reason": f"SupportPullback_{side}｜{support_name}止跌｜縮量{volume_ratio:.2f}x",
+                **common,
+            }
+
+        macd_hist_cross = (
+            float(prev["macd_hist"]) <= 0 < float(curr["macd_hist"])
+            if side == "LONG" else float(prev["macd_hist"]) >= 0 > float(curr["macd_hist"])
+        )
+        macd_line_cross = (
+            float(prev["macd_line"]) <= float(prev["macd_signal"])
+            and float(curr["macd_line"]) > float(curr["macd_signal"])
+            and float(curr["macd_line"]) >= 0
+            if side == "LONG" else
+            float(prev["macd_line"]) >= float(prev["macd_signal"])
+            and float(curr["macd_line"]) < float(curr["macd_signal"])
+            and float(curr["macd_line"]) <= 0
+        )
+        rsi_cross = (
+            float(prev["rsi"]) < 50 and float(curr["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
+            if side == "LONG" else
+            float(prev["rsi"]) > 50 and float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
+        )
+        if aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
+            triggers = []
+            if macd_hist_cross or macd_line_cross:
+                triggers.append("MACD交叉")
+            if rsi_cross:
+                triggers.append("RSI穿越50")
+            return {
+                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS", "score": 80,
+                "reason": f"MomentumCross_{side}｜{'+'.join(triggers)}", **common,
+            }
+
+        return {
+            "action": "HOLD", "side": side, "score": 0,
+            "reason": "等待KC/前高突破、支撐止跌或MACD/RSI交叉", **common,
+        }
 
     def evaluate_signal(
         self, df: pd.DataFrame,
