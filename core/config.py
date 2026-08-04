@@ -101,13 +101,14 @@ ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
 MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.02"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
-# 5m MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
-# 「非結構性」出場需要先持倉滿10分鐘，且逆向幅度達0.20%或0.5倍5m ATR
+MA7_EXIT_TIMEFRAME = os.getenv("MA7_EXIT_TIMEFRAME", "1m")
+# MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
+# 「非結構性」出場需要先持倉滿10分鐘，且逆向幅度達0.20%或0.5倍 MA7_EXIT_TIMEFRAME ATR
 # （取較大者）才執行；EMA20緩衝帶＋前低/前高同時失守仍立即退出。
 MA7_EXIT_MIN_HOLD_SEC = float(os.getenv("MA7_EXIT_MIN_HOLD_SEC", "600"))
 MA7_EXIT_MIN_ADVERSE_PCT = float(os.getenv("MA7_EXIT_MIN_ADVERSE_PCT", "0.002"))
 MA7_EXIT_MIN_ADVERSE_ATR_MULT = float(os.getenv("MA7_EXIT_MIN_ADVERSE_ATR_MULT", "0.5"))
-# 單根5m K在EMA20錯誤側停留300秒，並不是新增第二根收盤確認；舊邏輯
+# 單根 K 線在 EMA20 錯誤側停留，並不是新增第二根收盤確認；舊邏輯
 # 還可能把止損移到市價後方而等同立即平倉。預設停用，保留開關供影子測試。
 ENABLE_SOFT_WARNING_TIGHTEN = os.getenv("ENABLE_SOFT_WARNING_TIGHTEN", "false").lower() == "true"
 # 盤中投影在 08/01~08/02 的 7 筆樣本中佔 4 筆，全部都在尚未收線時用極小
@@ -367,8 +368,10 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # --- 以下 TRAILING_* / _PROFIT_TIER_FLOOR 是百分比制移動止利：
 # USE_NATIVE_TRAILING_STOP=false 時 BinanceTestnetAccount 用這套，
 # PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
-EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0025"))
-EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.0015"))
+# 小幅獲利曾達0.30%後，若回落至0.20%便平倉；執行時仍以雙邊費用加
+# 預估滑點作最低安全線，避免鎖到帳面獲利、實際淨虧。
+EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.003"))
+EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.002"))
 TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.004"))
 # CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
 # 專用、更早啟動的移動停利觸發門檻。逆勢單本來就是在跟原本大趨勢對作，

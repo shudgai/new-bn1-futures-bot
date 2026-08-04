@@ -16,7 +16,7 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
-    MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT,
+    MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT, MA7_EXIT_TIMEFRAME,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA7_EARLY_CONFIRM_SCANS,
@@ -897,7 +897,7 @@ class TradingEngine:
         while self.is_running:
             try:
                 for symbol, position in list(self.account.positions.items()):
-                    df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
+                    df = await self.fetch_klines(symbol, timeframe=MA7_EXIT_TIMEFRAME, limit=30)
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
                     # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
@@ -951,9 +951,9 @@ class TradingEngine:
                         and should_auto_close
                     ):
                         close_reason = (
-                            "5m收線均線與結構防線同時失守"
+                            f"{MA7_EXIT_TIMEFRAME}收線均線與結構防線同時失守"
                             if structural_strong
-                            else "5m MA7轉彎反轉平倉"
+                            else f"{MA7_EXIT_TIMEFRAME} MA7轉彎反轉平倉"
                         )
                         self.account.log(
                             f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
@@ -1569,7 +1569,7 @@ class TradingEngine:
         # 立刻被5m強出場防線打掉（實測 NEAR/USDT 進場僅8秒就被5m防線
         # 關倉）。這裡用跟出場防線同一套 compute_position_trigger 邏輯
         # 先擋一次，避免進場即出場的無效交易。
-        trigger_df = await self.fetch_klines(symbol, timeframe="5m", limit=30)
+        trigger_df = await self.fetch_klines(symbol, timeframe=MA7_EXIT_TIMEFRAME, limit=30)
         pre_entry_trigger = compute_position_trigger(trigger_df, side)
         # strong 是5m已確認反轉，一律擋單。ma_ok=False 對已轉彎追價單仍
         # 擋下；回撤底部Maker則容許短暫落在EMA不利側，否則無法低接。
