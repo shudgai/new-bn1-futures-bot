@@ -28,7 +28,7 @@ from core.strategy import (
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import compute_position_trigger
-from core.engine import TradingEngine
+from core.engine import TradingEngine, cap_margin_to_trade_risk
 
 
 @pytest.fixture(autouse=True)
@@ -704,6 +704,7 @@ def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_SCORE_PENALTY", 12)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
 
     aligned = strategy.evaluate_signal(
         frame, ema_50_1h=95.0, btc_st_direction_1h=1, btc_st_flip_age=3,
@@ -720,6 +721,14 @@ def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
     assert contrary["btc_regime_mode"] == "CONTRARY"
     assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
 
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", False)
+    blocked = strategy.evaluate_signal(
+        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=3,
+        symbol="DOGE/USDT",
+    )
+    assert blocked["action"] == "HOLD"
+    assert "BTC_1h_ST_Contrary" in blocked["reason"]
+
 
 def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
@@ -729,6 +738,7 @@ def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch)
     monkeypatch.setattr(strategy_module, "RSI_SHORT_MIN", 32.0)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_SCORE_PENALTY", 12)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
 
     low_volume = _entry_score_frame(volume=700.0, rsi=60.0, adx=35.0)
     live_volume = strategy.evaluate_signal(low_volume, ema_50_1h=95.0)
@@ -1018,6 +1028,7 @@ def test_pullback_reconfirmation_rechecks_btc_regime(monkeypatch):
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
 
     contrary = strategy.confirm_pullback_entry(
         frame, side="LONG", ema_1h=95.0, btc_st_direction_1h=-1,
@@ -1845,6 +1856,19 @@ async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monke
 
     assert "DOGE/USDT" in account.positions
     assert engine.position_triggers["DOGE/USDT"]["bottom_entry_grace"] is True
+
+
+def test_margin_is_reduced_to_fixed_net_risk_cap(monkeypatch):
+    monkeypatch.setattr(engine_module, "MAX_TRADE_RISK_USDT", 0.50)
+    monkeypatch.setattr(engine_module, "TAKER_FEE_RATE", 0.0005)
+    monkeypatch.setattr(engine_module, "SLIPPAGE_PCT", 0.0003)
+
+    amount, projected_loss = cap_margin_to_trade_risk(
+        amount_usdt=50.0, leverage=5, entry_price=100.0, sl_price=99.0,
+    )
+
+    assert projected_loss == pytest.approx(0.50)
+    assert amount == pytest.approx(0.50 / (5 * (0.01 + 0.001 + 0.0003)))
 
 
 def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
@@ -3055,6 +3079,8 @@ async def test_contrarian_bottom_buy_uses_smaller_position_size(tmp_path, monkey
     """逆勢承接（is_contrarian_bottom_buy）信心水準較低，下單金額應該用
     CONTRARIAN_POSITION_SIZE_MULTIPLIER 縮小，比同分數的一般順勢單小。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    # 此測試只驗證逆勢倍率；固定風險上限另有獨立測試。
+    monkeypatch.setattr(engine_module, "MAX_TRADE_RISK_USDT", 0.0)
     engine = TradingEngine()
     engine.account = PaperAccount()
 

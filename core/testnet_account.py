@@ -14,8 +14,6 @@ from core.config import (
     MAX_DAILY_LOSS_PCT,
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
-    STOP_LIMIT_SLIPPAGE_GUARD_PCT,
-    STOP_LIMIT_UNFILLED_TIMEOUT_SEC,
     ENABLE_TRAILING_STOP,
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
@@ -28,6 +26,7 @@ from core.config import (
     get_leverage,
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
+    ENABLE_EXCHANGE_INITIAL_STOP_LOSS,
     USE_NATIVE_TRAILING_STOP,
     NATIVE_TRAILING_ATR_RATE_FACTOR,
     NATIVE_TRAILING_TIER1_CALLBACK_MIN,
@@ -109,12 +108,6 @@ class BinanceTestnetAccount:
         # 影子參數只比較候選資格，不下單；統計與每幣最新結果跨重啟保存。
         self.shadow_parameter_stats: Dict[str, dict] = {"evaluations": 0, "profiles": {}}
         self.shadow_parameter_last: Dict[str, dict] = {}
-        # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
-        # 範圍內的限價單而非市價單）可能因為價格跳空滑出緩衝範圍而遲遲
-        # 無法成交，導致部位裸奔。記錄「標記價開始穿越止損」的時間點，
-        # 超過 STOP_LIMIT_UNFILLED_TIMEOUT_SEC 秒還沒平倉就強制市價出場，
-        # 見 update_positions() 的檢查。
-        self._stop_breach_since: Dict[str, float] = {}
         # 真正掛在交易所的限價回調進場單追蹤，取代原本「軟體輪詢價格到了
         # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
         # 一個 symbol 同時最多一張掛單。
@@ -253,6 +246,7 @@ class BinanceTestnetAccount:
         self._markets_loaded = True
         await self._cancel_orphan_entry_orders()
         await self.refresh(force=True)
+        await self._restore_exchange_initial_stops()
 
     async def _cancel_orphan_entry_orders(self) -> None:
         """開機時清掉「軟體重啟後失去追蹤，但交易所還留著」的孤兒進場限價單。
@@ -469,7 +463,6 @@ class BinanceTestnetAccount:
             return
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = time.time()
-        self._stop_breach_since.pop(symbol, None)
         try:
             await self._cancel_all_orders(symbol)
             self.positions.pop(symbol, None)
@@ -585,45 +578,29 @@ class BinanceTestnetAccount:
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
 
-            # 限價止損（STOP，觸發後轉「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
-            # 範圍內的限價單）可能因為價格跳空滑出緩衝範圍而遲遲無法成交：
-            # 標記價已經穿越止損價，但持倉還在，代表限價單掛著沒成交。
-            # 超過 STOP_LIMIT_UNFILLED_TIMEOUT_SEC 秒還是這樣，直接強制
-            # 市價平倉，不讓部位無限期裸奔等一張可能永遠不會成交的限價單。
-            if old_sl > 0:
+            # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全
+            # 交給交易所 STOP_MARKET 處理，不再需要限價未成交後備。
+            if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS and old_sl > 0:
                 breached = (
                     (side == "LONG" and mark_p <= old_sl)
                     or (side == "SHORT" and mark_p >= old_sl)
                 )
                 if breached:
-                    breach_start = self._stop_breach_since.setdefault(symbol, now_ts)
-                    if now_ts - breach_start >= STOP_LIMIT_UNFILLED_TIMEOUT_SEC:
-                        self._stop_breach_since.pop(symbol, None)
-                        
-                        # ── 新增邏輯：只有當浮虧超過 MAX_ACCEPTABLE_LOSS_PCT 才執行平倉 ──
-                        current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
-                        
-                        # 如果設置了最大可接受虧損 (MAX_ACCEPTABLE_LOSS_PCT < 0)，
-                        # 則只在虧損超過此閾值時才執行停損平倉
-                        if MAX_ACCEPTABLE_LOSS_PCT < 0 and current_loss_pct > MAX_ACCEPTABLE_LOSS_PCT:
-                            # 虧損未超過閾值，允許等待利潤回來
-                            self.log(
-                                f"⏸️ [{symbol}] 止損已觸發但虧損 {current_loss_pct:.2%} 未超過允許值 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，"
-                                f"耐心等待利潤回來... (止損價: {old_sl}, 目前價: {mark_p:.6f})",
-                                "INFO",
-                            )
-                            continue
-                        
-                        # 虧損超過閾值，執行停損平倉
+                    current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
+                    if MAX_ACCEPTABLE_LOSS_PCT < 0 and current_loss_pct > MAX_ACCEPTABLE_LOSS_PCT:
                         self.log(
-                            f"🚨 {symbol} 限價止損觸發後超過{STOP_LIMIT_UNFILLED_TIMEOUT_SEC:.0f}秒"
-                            f"未成交（標記價 {mark_p:.6f} 已穿越止損 {old_sl}），虧損 {current_loss_pct:.2%} 超過限制 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，強制市價平倉",
-                            "DANGER",
+                            f"⏸️ [{symbol}] 止損已觸發但虧損 {current_loss_pct:.2%} 未超過允許值 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，"
+                            f"耐心等待利潤回來... (止損價: {old_sl}, 目前價: {mark_p:.6f})",
+                            "INFO",
                         )
-                        await self.close_position(symbol, curr_p, "限價止損逾時未成交，強制市價平倉")
                         continue
-                else:
-                    self._stop_breach_since.pop(symbol, None)
+                    self.log(
+                        f"🚨 {symbol} 本地停損觀察線已穿越（標記價 {mark_p:.6f}，觀察線 {old_sl}），"
+                        f"虧損 {current_loss_pct:.2%} 超過限制 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，強制市價平倉",
+                        "DANGER",
+                    )
+                    await self.close_position(symbol, curr_p, "本地最大虧損門檻觸發")
+                    continue
 
             # ── 移動停利 / 原生 Trailing Stop 三階段升級 ──
             if ENABLE_TRAILING_STOP:
@@ -639,8 +616,8 @@ class BinanceTestnetAccount:
                 if "peak_profit_updated_at" not in meta:
                     meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-                # 「獲利保護」必須先覆蓋雙邊費用、STOP限價滑價與安全利潤。
-                # 舊門檻0.25%低於NET_PROFIT_GUARANTEE_BUFFER(預設0.35%)，
+                # 「獲利保護」必須先覆蓋雙邊費用、市價滑點與安全利潤。
+                # 門檻不得低於 NET_PROFIT_GUARANTEE_BUFFER，
                 # 實測US/USDT峰值0.2748%便啟動，最後扣費後反而-0.0591U。
                 early_guard_trigger = max(
                     EARLY_PROFIT_GUARD_TRIGGER_PCT,
@@ -705,8 +682,7 @@ class BinanceTestnetAccount:
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
-                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price,
-                                        limit_price=self._stop_limit_price(new_sl_price, close_side_trail)
+                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     if pos.get("tp"):
                                         pos["tp"] = 0.0
@@ -726,8 +702,7 @@ class BinanceTestnetAccount:
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
-                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price,
-                                        limit_price=self._stop_limit_price(new_sl_price, close_side_trail)
+                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     if pos.get("tp"):
                                         pos["tp"] = 0.0
@@ -810,9 +785,6 @@ class BinanceTestnetAccount:
                                         "STOP_MARKET",
                                         qty_trail,
                                         fallback_sl,
-                                        limit_price=self._stop_limit_price(
-                                            fallback_sl, close_side_trail
-                                        ),
                                     )
                                     meta["sl"] = fallback_sl
                                     pos["sl"] = fallback_sl
@@ -855,8 +827,7 @@ class BinanceTestnetAccount:
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
-                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price,
-                                        limit_price=self._stop_limit_price(new_sl_price, close_side_trail)
+                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     if pos.get("tp"):
                                         pos["tp"] = 0.0
@@ -877,8 +848,7 @@ class BinanceTestnetAccount:
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
-                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price,
-                                        limit_price=self._stop_limit_price(new_sl_price, close_side_trail)
+                                        symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
                                     if pos.get("tp"):
                                         pos["tp"] = 0.0
@@ -910,10 +880,10 @@ class BinanceTestnetAccount:
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
-            await self._create_protection_order(
-                symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
-                limit_price=self._stop_limit_price(sl_price, close_side),
-            )
+            if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                await self._create_protection_order(
+                    symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
+                )
             if not DISABLE_TAKE_PROFIT:
                 await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
             meta["sl"] = sl_price
@@ -921,9 +891,10 @@ class BinanceTestnetAccount:
             meta["atr"] = atr
             self.position_meta[symbol] = meta
             self.save_state()
+            sl_msg = f"SL={sl_price}" if ENABLE_EXCHANGE_INITIAL_STOP_LOSS else f"本地SL觀察線={sl_price}"
             tp_msg = f" TP={tp_price}" if not DISABLE_TAKE_PROFIT else " (已停用初始止利)"
             self.log(
-                f"🔧 [補建保護單] {symbol} 偵測到無止損保護持倉，已自動建立 SL={sl_price}{tp_msg}",
+                f"🔧 [補建保護] {symbol} 偵測到缺少保護資料，已建立 {sl_msg}{tp_msg}",
                 "WARNING",
             )
         except Exception as exc:
@@ -931,6 +902,42 @@ class BinanceTestnetAccount:
                 f"⚠️ {symbol} 補建保護單失敗：{type(exc).__name__}: {exc}",
                 "WARNING",
             )
+
+    async def _restore_exchange_initial_stops(self) -> None:
+        """啟用交易所初始停損後，替重啟前的既有持倉重建硬停損。
+
+        position_meta 會跨重啟保留 SL，但先前若以本地觀察線模式開倉，交易所
+        並沒有對應條件單。啟動時取消該幣舊保護單後依原 SL/TP 重建，避免全域
+        開關已切回交易所模式、本地監控也不再觸發，卻留下裸倉。已升級原生
+        trailing 的部位不動，避免把鎖利單降級回初始固定停損。
+        """
+        if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+            return
+        for symbol, pos in list(self.positions.items()):
+            meta = self.position_meta.get(symbol, {})
+            sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
+            if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
+                continue
+            close_side = "sell" if pos["side"] == "LONG" else "buy"
+            try:
+                await self._cancel_all_orders(symbol)
+                await self._create_protection_order(
+                    symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
+                )
+                tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                    await self._create_protection_order(
+                        symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price,
+                    )
+                self.log(
+                    f"🔧 [啟動保護遷移] {symbol} 已依既有 SL={sl_price} 重建交易所硬停損",
+                    "WARNING",
+                )
+            except Exception as exc:
+                self.log(
+                    f"🚨 {symbol} 啟動時重建交易所硬停損失敗：{type(exc).__name__}: {exc}",
+                    "DANGER",
+                )
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:
@@ -954,14 +961,8 @@ class BinanceTestnetAccount:
 
     async def _create_protection_order(
         self, symbol: str, side: str, order_type: str, qty: float, trigger_price: float,
-        limit_price: float = None,
     ) -> dict:
-        """建立條件單。limit_price 有給值時，STOP_MARKET 改成限價止損
-        （STOP，帶 price），觸發後轉成「觸發價±STOP_LIMIT_SLIPPAGE_GUARD_PCT」
-        範圍內的限價單，而不是不管市價多差都吃單的市價單——實測 DOT/USDT
-        保本鎖正確收緊止損後，觸發轉市價單滑價 0.66%，把理論上 +0.34 的
-        小賺滑成 -2.30 的虧損。TAKE_PROFIT_MARKET 維持原本市價，profit-
-        taking 滑價頂多少賺一點，不像止損滑價會擴大虧損那麼需要限制。"""
+        """建立交易所條件單；停損使用 STOP_MARKET，觸發後直接市價平倉。"""
         params = {
             "algoType": "CONDITIONAL",
             "symbol": self._raw_symbol(symbol),
@@ -971,20 +972,8 @@ class BinanceTestnetAccount:
             "reduceOnly": "true",
             "workingType": "MARK_PRICE",
         }
-        if limit_price is not None and order_type == "STOP_MARKET":
-            params["type"] = "STOP"
-            params["price"] = self.exchange.price_to_precision(symbol, limit_price)
-        else:
-            params["type"] = order_type
+        params["type"] = order_type
         return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
-
-    @staticmethod
-    def _stop_limit_price(trigger_price: float, close_side: str) -> float:
-        """算出限價止損的限價：買回補空單時願意多付一點（觸發價之上），
-        賣出平多單時願意少賣一點（觸發價之下），緩衝之外寧可不成交。"""
-        if close_side == "buy":
-            return trigger_price * (1 + STOP_LIMIT_SLIPPAGE_GUARD_PCT)
-        return trigger_price * (1 - STOP_LIMIT_SLIPPAGE_GUARD_PCT)
 
     @staticmethod
     def _compute_callback_rate(atr_pct: float, tier: int, highest_pnl: float = None) -> float:
@@ -1210,10 +1199,10 @@ class BinanceTestnetAccount:
                 # 兩邊可能疊出重複的止損止盈單。先清一次掛單，確保接下來建的
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
-                await self._create_protection_order(
-                    symbol, close_side, "STOP_MARKET", qty, sl_price,
-                    limit_price=self._stop_limit_price(sl_price, close_side),
-                )
+                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                    await self._create_protection_order(
+                        symbol, close_side, "STOP_MARKET", qty, sl_price,
+                    )
                 if not DISABLE_TAKE_PROFIT:
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
@@ -1224,9 +1213,8 @@ class BinanceTestnetAccount:
                 raise
 
             fee = qty * execution_price * TAKER_FEE_RATE
-            # 開倉時設好 SL/TP 之後就不再更動，只等價格碰到其中一個交易所
-            # 保護單才平倉（回到最初版本的固定止損/止利方式，見 config.py
-            # 的 STOP_LOSS_MULTIPLIER/TAKE_PROFIT_MULTIPLIER 註解）。
+            # 即使停用交易所初始停損，仍保存 SL 作為本地觀察線；TP 以及
+            # 獲利後的移動保本／移動停利維持原本的交易所保護方式。
             meta = {
                 "sl": sl_price,
                 "tp": tp_price,
@@ -1267,9 +1255,10 @@ class BinanceTestnetAccount:
                 **entry_context,
             })
             await self.refresh(force=True)
+            sl_label = "SL" if ENABLE_EXCHANGE_INITIAL_STOP_LOSS else "本地SL觀察線"
             self.log(
                 f"🚀 Binance Testnet 開倉成功 [{side}] {symbol} @ "
-                f"{execution_price:.6f} ({leverage}x，SL={sl_price}, TP={tp_price})",
+                f"{execution_price:.6f} ({leverage}x，{sl_label}={sl_price}, TP={tp_price})",
                 "SUCCESS",
             )
             return True
@@ -1539,7 +1528,6 @@ class BinanceTestnetAccount:
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = time.time()
-        self._stop_breach_since.pop(symbol, None)
         position = dict(self.positions[symbol])
         try:
             await self._cancel_all_orders(symbol)
@@ -1674,10 +1662,9 @@ class BinanceTestnetAccount:
                 # 6. 重建剩餘部位的保護單
                 sl_price = position.get("sl", 0.0)
                 tp_price = position.get("tp", 0.0)
-                if sl_price > 0:
+                if sl_price > 0 and ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", remaining_qty, sl_price,
-                        limit_price=self._stop_limit_price(sl_price, close_side),
                     )
                 if tp_price > 0 and not DISABLE_TAKE_PROFIT:
                     await self._create_protection_order(
@@ -1718,7 +1705,7 @@ class BinanceTestnetAccount:
     async def trail_stop_loss(
         self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
     ) -> bool:
-        """移動限價止損：取消舊止損單，在新位置重新掛保護單。
+        """移動市價止損：取消舊止損單，在新位置重新掛保護單。
         止損線只往有利方向移動，呼叫端負責確認 new_sl_price 已經比 current_sl 更好。
         mark_profit_locked 預設True（真正的移動停利，止損已經鎖到保本以上）；
         軟性警訊收緊止損只是把止損往進場價方向拉近、不保證已經是正的，
@@ -1738,7 +1725,6 @@ class BinanceTestnetAccount:
             # 重新掛新止損單
             await self._create_protection_order(
                 symbol, close_side, "STOP_MARKET", qty, new_sl_price,
-                limit_price=self._stop_limit_price(new_sl_price, close_side),
             )
             # 如果止利仍啟用，同步重建止利單
             tp_price = meta.get("tp", 0.0)

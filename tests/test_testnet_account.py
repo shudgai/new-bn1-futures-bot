@@ -99,6 +99,7 @@ class FakeTestnetExchange:
 async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
     monkeypatch.setattr(
         BinanceTestnetAccount,
         "credentials_configured",
@@ -127,11 +128,105 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
     assert "DOGE/USDT" in account.positions
     assert [order["type"] for order in exchange.orders] == [
         "market",
-        "STOP",
+        "STOP_MARKET",
         "TAKE_PROFIT_MARKET",
     ]
     assert exchange.orders[1]["params"]["reduceOnly"] == "true"
     assert exchange.orders[2]["params"]["reduceOnly"] == "true"
+
+
+@pytest.mark.anyio
+async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
+    tmp_path, monkeypatch
+):
+    """停用交易所初始 STOP 後仍保留虛擬 SL；小幅穿越不平倉，
+    只有達本地最大虧損門檻才退出。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(testnet_module, "MAX_ACCEPTABLE_LOSS_PCT", -0.02)
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+
+    await account.initialize()
+    success = await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 50.0, 99.5, 103.0,
+        "MA7_Reversal_LONG", atr=1.0, leverage=5, signal_score=88,
+    )
+
+    assert success is True
+    assert [order["type"] for order in exchange.orders] == [
+        "market", "TAKE_PROFIT_MARKET",
+    ]
+    assert account.position_meta["DOGE/USDT"]["sl"] == pytest.approx(99.5)
+
+    close_reasons = []
+
+    async def record_close(_symbol, _price, reason):
+        close_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(account, "close_position", record_close)
+
+    exchange.positions[0]["markPrice"] = "99.0"
+    exchange.positions[0]["unRealizedProfit"] = "-10"
+    account.last_sync_at = 0
+    await account.update_positions({"DOGE/USDT": 99.0})
+    assert close_reasons == []
+
+    exchange.positions[0]["markPrice"] = "97.5"
+    exchange.positions[0]["unRealizedProfit"] = "-25"
+    account.last_sync_at = 0
+    await account.update_positions({"DOGE/USDT": 97.5})
+    assert close_reasons == ["本地最大虧損門檻觸發"]
+
+
+@pytest.mark.anyio
+async def test_initialize_restores_exchange_stop_for_position_opened_in_local_mode(
+    tmp_path, monkeypatch
+):
+    """切回交易所硬停損後重啟，舊持倉不可因只留本地 SL 而變成裸倉。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    exchange.positions = [{
+        "symbol": "DOGEUSDT",
+        "positionAmt": "10",
+        "entryPrice": "100",
+        "markPrice": "100",
+        "leverage": "5",
+        "unRealizedProfit": "0",
+    }]
+    account = BinanceTestnetAccount(exchange)
+    account.position_meta["DOGE/USDT"] = {
+        "sl": 98.0,
+        "tp": 104.0,
+        "atr": 1.0,
+    }
+
+    await account.initialize()
+
+    restored = [
+        order for order in exchange.orders
+        if order["type"] in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
+    ]
+    assert [order["type"] for order in restored] == [
+        "STOP_MARKET", "TAKE_PROFIT_MARKET",
+    ]
+    assert restored[0]["params"]["triggerPrice"] == "98.0"
+    assert any("啟動保護遷移" in entry["text"] for entry in account.logs)
 
 
 
@@ -516,17 +611,17 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
     }
     exchange.positions = [{
         "symbol": "DOGEUSDT", "positionAmt": "10", "entryPrice": "100.0",
-        "markPrice": "100.41", "leverage": "5", "unRealizedProfit": "4.1",
+        "markPrice": "100.66", "leverage": "5", "unRealizedProfit": "6.6",
     }]
     account.last_sync_at = 0
-    await account.update_positions({"DOGE/USDT": 100.41})
+    await account.update_positions({"DOGE/USDT": 100.66})
     assert account.position_meta["DOGE/USDT"]["early_profit_guard_armed"] is True
     assert account.position_meta["DOGE/USDT"].get("is_breakeven_moved") is not True
 
-    exchange.positions[0]["markPrice"] = "100.35"
-    exchange.positions[0]["unRealizedProfit"] = "3.5"
+    exchange.positions[0]["markPrice"] = "100.60"
+    exchange.positions[0]["unRealizedProfit"] = "6.0"
     account.last_sync_at = 0
-    await account.update_positions({"DOGE/USDT": 100.35})
+    await account.update_positions({"DOGE/USDT": 100.60})
 
     assert "DOGE/USDT" not in account.positions
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
@@ -537,7 +632,7 @@ async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
     tmp_path, monkeypatch
 ):
     """US/USDT型案例：0.28%毛利雖已超過1.2 ATR，仍不足以覆蓋
-    雙邊費用+STOP限價滑價，不得啟動早期保護或把SL推進淨虧區。"""
+    雙邊費用與市價滑點安全帶，不得啟動早期保護或把SL推進淨虧區。"""
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", True)
@@ -560,12 +655,13 @@ async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
     assert meta.get("early_profit_guard_armed") is not True
     assert meta.get("is_breakeven_moved") is not True
     assert meta["sl"] == pytest.approx(101.0)
-    assert not any(order["type"] == "STOP" for order in exchange.orders[previous_order_count:])
+    assert not any(order["type"] == "STOP_MARKET" for order in exchange.orders[previous_order_count:])
 
 
 @pytest.mark.anyio
 async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", False)
     exchange = FakeTestnetExchange()
     account = BinanceTestnetAccount(exchange)
     await account.initialize()
@@ -594,7 +690,7 @@ async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monk
     assert meta["is_breakeven_moved"] is True
     assert meta["tp"] == 0.0
     assert account.positions["DOGE/USDT"]["tp"] == 0.0
-    assert any(order["type"] == "STOP" for order in exchange.orders[previous_order_count:])
+    assert any(order["type"] == "STOP_MARKET" for order in exchange.orders[previous_order_count:])
 
 
 @pytest.mark.anyio
@@ -650,6 +746,7 @@ async def test_external_stop_on_favorable_side_is_profit_protection(
 async def test_disable_take_profit_prevents_tp_order(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", True)
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
     monkeypatch.setattr(
         BinanceTestnetAccount,
         "credentials_configured",
@@ -673,10 +770,10 @@ async def test_disable_take_profit_prevents_tp_order(tmp_path, monkeypatch):
     )
 
     assert success is True
-    # Should only place market entry and STOP (SL), no TAKE_PROFIT_MARKET
+    # Should only place market entry and STOP_MARKET (SL), no TAKE_PROFIT_MARKET
     assert [order["type"] for order in exchange.orders] == [
         "market",
-        "STOP",
+        "STOP_MARKET",
     ]
     assert "DOGE/USDT" in account.positions
     assert account.positions["DOGE/USDT"]["tp"] == 0.0
@@ -800,7 +897,7 @@ async def test_native_trailing_failure_restores_fixed_stop(tmp_path, monkeypatch
     meta = account.position_meta["DOGE/USDT"]
     restored_stops = [
         params for path, _api, method, params in exchange.request_calls
-        if path == "algoOrder" and method == "POST" and params.get("type") == "STOP"
+        if path == "algoOrder" and method == "POST" and params.get("type") == "STOP_MARKET"
     ]
     assert exchange.trailing_attempts == 1
     assert restored_stops

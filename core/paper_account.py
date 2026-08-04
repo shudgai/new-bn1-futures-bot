@@ -511,7 +511,7 @@ class PaperAccount:
     async def trail_stop_loss(
         self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
     ) -> bool:
-        """移動限價止損：只往有利方向移動，呼叫端負責確認 new_sl_price
+        """移動停損：只往有利方向移動，呼叫端負責確認 new_sl_price
         已經比目前SL更好。mark_profit_locked 預設True（真正的移動停利，
         止損已經鎖到保本以上）；軟性警訊收緊止損只是把止損往進場價方向
         拉近、不保證已經是正的，呼叫時要傳 mark_profit_locked=False，

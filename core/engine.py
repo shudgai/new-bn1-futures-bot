@@ -18,7 +18,7 @@ from core.config import (
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
-    TAKER_FEE_RATE, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
+    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA7_EARLY_CONFIRM_SCANS,
     MA7_REVERSAL_MIN_ATR_MULT, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO,
@@ -29,6 +29,26 @@ from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
     detect_ma7_reversal, has_volume_divergence,
 )
+
+
+def cap_margin_to_trade_risk(
+    amount_usdt: float, leverage: int, entry_price: float, sl_price: float,
+) -> tuple[float, float]:
+    """依 SL、雙邊 taker fee 與單邊滑價縮小保證金，回傳(金額, 預估虧損)。"""
+    amount = max(0.0, float(amount_usdt))
+    lev = max(1, int(leverage or 1))
+    entry = float(entry_price or 0.0)
+    if amount <= 0 or entry <= 0:
+        return amount, 0.0
+    stop_pct = abs(entry - float(sl_price or entry)) / entry
+    loss_pct_on_notional = stop_pct + 2 * max(TAKER_FEE_RATE, 0.0) + max(SLIPPAGE_PCT, 0.0)
+    if loss_pct_on_notional <= 0:
+        return amount, 0.0
+    projected_loss = amount * lev * loss_pct_on_notional
+    if MAX_TRADE_RISK_USDT > 0 and projected_loss > MAX_TRADE_RISK_USDT:
+        amount *= MAX_TRADE_RISK_USDT / projected_loss
+        projected_loss = MAX_TRADE_RISK_USDT
+    return amount, projected_loss
 from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
@@ -691,7 +711,7 @@ class TradingEngine:
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
         # 15m EMA20 趨勢止損與分批止盈背景任務
         self.trend_follow_task = asyncio.create_task(self._run_trend_follow_exits())
-        # 移動限價止損背景任務（每 5 分鐘更新一次止損位置）
+        # 移動停損背景任務（每 5 分鐘更新一次止損位置）
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
         # 全市場 MA7 拐頭掃描：DEFAULT_SYMBOLS 之外的合約幣種若已達標，
         # 直接納入監控名單讓主迴圈接手，不用等下一輪輪替。
@@ -1485,6 +1505,15 @@ class TradingEngine:
             sl, tp = live_price - sl_distance, live_price + tp_distance
         else:
             sl, tp = live_price + sl_distance, live_price - tp_distance
+        original_amount = candidate["amount_usdt"]
+        candidate["amount_usdt"], projected_risk = cap_margin_to_trade_risk(
+            original_amount, candidate["leverage"], live_price, sl,
+        )
+        if candidate["amount_usdt"] < original_amount - 0.01:
+            self.account.log(
+                f"🛡️ [單筆風險上限] {symbol} 保證金 {original_amount:.2f}→{candidate['amount_usdt']:.2f}U，"
+                f"預估最大淨虧損≤{projected_risk:.2f}U", "INFO",
+            )
         if not await self._execution_price_is_safe(symbol, candidate["side"]):
             self._drop_pullback_candidate(symbol, "執行市場合約或價差驗證未通過", now)
             return False
@@ -1606,12 +1635,25 @@ class TradingEngine:
             else:
                 sl, tp = target_price + sl_distance, target_price - tp_distance
 
+        leverage = self.symbol_rotation.get_dynamic_leverage(
+            symbol, score, adx=ma7_sig.get("adx")
+        )
+        original_amount = amount_usdt
+        amount_usdt, projected_risk = cap_margin_to_trade_risk(
+            amount_usdt, leverage, target_price, sl,
+        )
+        if amount_usdt < original_amount - 0.01:
+            self.account.log(
+                f"🛡️ [單筆風險上限] {symbol} 保證金 {original_amount:.2f}→{amount_usdt:.2f}U，"
+                f"預估最大淨虧損≤{projected_risk:.2f}U", "INFO",
+            )
+
         placed = await self.account.place_limit_entry(
             symbol=symbol, side=side, target_price=target_price,
             amount_usdt=amount_usdt, sl=sl, tp=tp,
             reason=ma7_sig.get("reason", "MA7_Reversal_Entry"),
             atr=atr,
-            leverage=self.symbol_rotation.get_dynamic_leverage(symbol, score, adx=ma7_sig.get("adx")),
+            leverage=leverage,
             signal_score=score,
             post_only=is_bottom_order,
             entry_context={
@@ -1764,6 +1806,15 @@ class TradingEngine:
                 sl, tp = fresh_target - sl_distance, fresh_target + tp_distance
             else:
                 sl, tp = fresh_target + sl_distance, fresh_target - tp_distance
+            original_amount = candidate["amount_usdt"]
+            candidate["amount_usdt"], projected_risk = cap_margin_to_trade_risk(
+                original_amount, candidate["leverage"], fresh_target, sl,
+            )
+            if candidate["amount_usdt"] < original_amount - 0.01:
+                self.account.log(
+                    f"🛡️ [單筆風險上限] {symbol} 保證金 {original_amount:.2f}→{candidate['amount_usdt']:.2f}U，"
+                    f"預估最大淨虧損≤{projected_risk:.2f}U", "INFO",
+                )
             if not await self._execution_price_is_safe(symbol, candidate["side"]):
                 self._drop_pullback_candidate(symbol, "執行市場合約或價差驗證未通過", now)
                 continue

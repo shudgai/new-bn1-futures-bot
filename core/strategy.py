@@ -17,7 +17,8 @@ from core.config import (
     PULLBACK_TARGET_MIN_ATR_MULT, ADVERSE_PULLBACK_VOLUME_SPIKE_RATIO,
     ADVERSE_PULLBACK_BODY_MIN_ATR_MULT,
     TREND_AGREE_EMA_MARGIN_PCT,
-    BTC_REGIME_FILTER_ENABLED, BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
+    BTC_REGIME_FILTER_ENABLED, BTC_REGIME_ALLOW_CONTRARY,
+    BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR,
     MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
@@ -78,7 +79,7 @@ def classify_btc_regime(
     st_direction: int, btc_direction: int, flip_age: int, symbol: str = None,
     score_penalty: int = None,
 ) -> dict:
-    """Return the BTC entry adjustment without blocking healthy relative-strength trades."""
+    """Return BTC alignment context and block contrary trades unless explicitly allowed."""
     context = {
         "mode": "UNKNOWN",
         "score_penalty": 0,
@@ -97,6 +98,9 @@ def classify_btc_regime(
         st_direction == -1 and btc_direction == 1
     )
     if contrary:
+        if not BTC_REGIME_ALLOW_CONTRARY:
+            context.update(mode="CONTRARY", hard_block=True)
+            return context
         context.update(
             mode="CONTRARY",
             score_penalty=(
@@ -213,6 +217,8 @@ def detect_ma7_reversal(
         st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol,
     )
     if btc_regime["hard_block"]:
+        if btc_regime["mode"] == "CONTRARY":
+            return _no("BTC 1h方向背離，禁止逆大盤進場")
         return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
 
     # 1h EMA50 方向檢查已禁用，允許逆勢進場
@@ -687,9 +693,12 @@ class SuperTrendKeltnerStrategy:
             score_penalty=btc_score_penalty,
         )
         if btc_regime["hard_block"]:
-            return eligibility_hold(
-                f"Mandatory_Fail: BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
+            block_reason = (
+                "BTC_1h_ST_Contrary"
+                if btc_regime["mode"] == "CONTRARY"
+                else f"BTC_1h_ST_JustFlipped({btc_st_flip_age}bars<{BTC_REGIME_FLIP_BUFFER_BARS})"
             )
+            return eligibility_hold(f"Mandatory_Fail: {block_reason}")
 
         # 層 B：個幣自身 1h SuperTrend 方向對齊
         # 1h SuperTrend 翻轉需要較長時間，比 price vs EMA50 準確 3~5 倍。
@@ -1029,10 +1038,12 @@ class SuperTrendKeltnerStrategy:
             want_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol
         )
         if btc_regime["hard_block"]:
-            return {
-                "status": "CANCEL",
-                "reason": f"BTC 1h 剛翻轉，仍在 {btc_st_flip_age}/{BTC_REGIME_FLIP_BUFFER_BARS} 根緩衝期",
-            }
+            reason = (
+                "BTC 1h 方向背離，禁止逆大盤進場"
+                if btc_regime["mode"] == "CONTRARY"
+                else f"BTC 1h 剛翻轉，仍在 {btc_st_flip_age}/{BTC_REGIME_FLIP_BUFFER_BARS} 根緩衝期"
+            )
+            return {"status": "CANCEL", "reason": reason}
 
         if side == "LONG" and rsi > RSI_LONG_MAX:
             return {"status": "CANCEL", "reason": f"RSI過熱 RSI_Overbought({rsi:.1f}>{RSI_LONG_MAX:.1f})"}

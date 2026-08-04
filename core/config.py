@@ -61,6 +61,8 @@ def get_atr_based_leverage(atr_pct: float) -> int:
     return 3
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "75.0"))
+# 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
+MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "0.50"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
@@ -87,9 +89,15 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
+# 是否在交易所端掛出「初始虧損停損」條件單。停用時仍會在本地保留
+# 計算出的 SL 作為觀察線，並由 MAX_ACCEPTABLE_LOSS_PCT 控制最終強制退出；
+# 獲利後的移動保本／移動停利不受此開關影響。
+ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
+    "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", "true"
+).lower() == "true"
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
 # 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
-# 設為 0 或負值表示無限制（只跟止損線），這樣可以等待利潤/方向回來
+# 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
 MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.02"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "true").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "true").lower() == "true"
@@ -114,7 +122,7 @@ MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.10")
 # 爆量微拐幅快速入口：仍只使用已收盤K棒，但峰谷後第一根確認即可進場。
 # 必須同時有 1.5 倍均量，且拐幅限制在 0.02~0.20 ATR；一般低量訊號仍走
 # 上面的兩根收線確認。這只放鬆觸發時機，不改 SL/TP、槓桿或倉位風控。
-MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "true").lower() == "true"
+MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "false").lower() == "true"
 MA7_FAST_MIN_ATR_MULT = float(os.getenv("MA7_FAST_MIN_ATR_MULT", "0.02"))
 MA7_FAST_MAX_ATR_MULT = float(os.getenv("MA7_FAST_MAX_ATR_MULT", "0.20"))
 MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
@@ -123,7 +131,7 @@ MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
 MA7_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA7_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
 # MA7仍在回撤/反彈時，不等拐頭便預掛在KC邊緣附近。偏移量讓限價位
 # 稍微留在通道內側，同時由策略端保證LONG低於現價、SHORT高於現價。
-MA7_BOTTOM_ENTRY_ENABLED = os.getenv("MA7_BOTTOM_ENTRY_ENABLED", "true").lower() == "true"
+MA7_BOTTOM_ENTRY_ENABLED = os.getenv("MA7_BOTTOM_ENTRY_ENABLED", "false").lower() == "true"
 MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05"))
 # 底點/頂點預掛是在轉彎前承接，成交後需要時間消化正常回撤。寬限期內
 # 屏蔽MA7、5m結構、15m EMA軟退出與軟性收緊；交易所原始SL仍持續有效。
@@ -134,7 +142,7 @@ ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "true").lower() == "true"
 # 移動止損的 ATR 倍數（預設 3 倍 ATR，動態適應市場波動範圍）
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
-MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.8"))
+MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "2.0"))
 # 訊號即使總分達標，也必須具備足夠的波動/RSI/量能/ADX品質。
 # 避免只靠新鮮度與基礎分數湊到門檻的低品質突破。
 ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "5"))
@@ -147,7 +155,7 @@ ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "tru
 TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.2"))
 TRAILING_TIER2_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER2_TRIGGER_ATR_MULT", "3.5"))
 TRAILING_TIER3_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER3_TRIGGER_ATR_MULT", "5.0"))
-TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "1.5"))
+TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "2.0"))
 # Tier 1 保本價除覆蓋雙邊 taker fee 外，再多留這段緩衝吸收價格精度誤差。
 TRAILING_BREAK_EVEN_EXTRA_PCT = float(os.getenv("TRAILING_BREAK_EVEN_EXTRA_PCT", "0.0001"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
@@ -204,6 +212,8 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
 # 全體幣種的開倉方向守門——BTC 多頭只允許多單，BTC 空頭只允許空單。
 # 這是防止「大盤偏多但 bot 大量開空」最有效的單一機制。
 BTC_REGIME_FILTER_ENABLED = os.getenv("BTC_REGIME_FILTER_ENABLED", "true").lower() == "true"
+# 預設禁止逆 BTC 1h SuperTrend 開倉；只在明確對照測試時允許扣分半倉。
+BTC_REGIME_ALLOW_CONTRARY = os.getenv("BTC_REGIME_ALLOW_CONTRARY", "false").lower() == "true"
 # BTC_REGIME_FLIP_BUFFER_BARS：BTC 1h SuperTrend 剛翻轉時，市場方向尚不
 # 確定，容易產生假訊號。翻轉後的前 N 根 1h K棒內禁止開新倉，等方向確認。
 BTC_REGIME_FLIP_BUFFER_BARS = int(os.getenv("BTC_REGIME_FLIP_BUFFER_BARS", "2"))
@@ -446,32 +456,9 @@ def get_trailing_pullback_pct(peak_profit_pct: float, position_opened_at: float)
 
     return base
 
-# NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）
-#   計算基礎：吃單手續費 0.05% × 2（開+平）= 0.10%
-#              止損滑價緩衝 STOP_LIMIT_SLIPPAGE_GUARD_PCT = 0.20%
-#              （原本抓 0.03%×2=0.06% 滑點預留，比實際的滑價緩衝還小，
-#              保本鎖觸發後在緩衝邊緣成交時穩定倒虧，實測 SUI/USDT
-#              07/28 21:43~21:49 這筆就是精準卡在 0.6791×1.002 的滑價
-#              邊緣成交，鎖到的 0.18% 完全蓋不住 0.10%+0.20%）
-#              安全緩衝  +0.05%
-#   合計 ≈ 0.35%，trail_sl 必須高於「進場價 × (1 + 0.0035)」才能真正保本。
-NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.0035"))
-# 只剩 core/paper_account.py 在用（BinanceTestnetAccount 已移除開倉後的
-# 動態止損調整，改回固定 SL/TP，見 STOP_LOSS_MULTIPLIER 註解）。
-# STOP_LIMIT_SLIPPAGE_GUARD_PCT：止損保護單原本是 STOP_MARKET（觸發後
-# 直接轉市價單成交，不管當下市價多差都會成交），實測 DOT/USDT 07/28
-# 19:42~19:44 這筆，保本鎖正確把止損收緊到 0.7586（理論上該筆已經是
-# +0.34 USDT 小賺），但觸發轉市價單時滑價 0.66%，實際卻虧了 -2.30
-# USDT——滑價吃掉的金額比原本該賺的還多。改用 STOP（限價止損）：觸發
-# 後轉成「觸發價 ± 這個緩衝」的限價單，超過緩衝範圍寧可不成交，也不要
-# 用任意差的市價成交。緩衝抓 0.2%，足夠涵蓋正常滑價，又不會大到讓限價
-# 單長時間掛不出去。搭配下面的逾時未成交強制平倉機制，避免價格跳空
-# 超過緩衝時部位裸奔太久。
-STOP_LIMIT_SLIPPAGE_GUARD_PCT = float(os.getenv("STOP_LIMIT_SLIPPAGE_GUARD_PCT", "0.002"))
-# STOP_LIMIT_UNFILLED_TIMEOUT_SEC：限價止損觸發後，如果市價已經穿越
-# 限價單的緩衝範圍導致遲遲無法成交，超過這個秒數就放棄等待、直接強制
-# 市價平倉，避免部位無限期裸奔。
-STOP_LIMIT_UNFILLED_TIMEOUT_SEC = float(os.getenv("STOP_LIMIT_UNFILLED_TIMEOUT_SEC", "8"))
+# NET_PROFIT_GUARANTEE_BUFFER: 保本線安全帶係數（佔進場價的比例）。
+# 預留雙邊吃單手續費 0.10%、市價滑點與額外安全利潤，維持 0.35%。
+NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.006"))
 
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
