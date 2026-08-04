@@ -508,8 +508,11 @@ def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
 async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
-    # signal_score 必須 >= MIN_OPEN_SIGNAL_SCORE(75) 才會真的開倉，75分仍
-    # 落在跟70分相同的3x槓桿檔位。
+    # 74分必須拒絕，75分才會真的開倉。
+    assert not await account.open_position(
+        "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
+        "Score74 reject", signal_score=74
+    )
     assert await account.open_position(
         "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
         "Score75 test", signal_score=75
@@ -1624,7 +1627,7 @@ def test_directional_rotation_does_not_fill_with_ineligible_symbols(monkeypatch)
     assert set(directions.values()) == {"SHORT"}
 
 
-def test_trade_amount_multiplier_uses_tiered_size_for_score_70():
+def test_trade_amount_multiplier_uses_tiered_size_for_score_75():
     assert get_position_multiplier(MIN_SCORE_THRESHOLD) == 0.6
     assert get_position_multiplier(80) == 1.0
     assert get_position_multiplier(100) == 1.0
@@ -2267,6 +2270,15 @@ def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 
         "supertrend": [price] * 50,
         "kc_width": [2.0] * 50,
     })
+
+
+def test_ma7_score_baseline_does_not_rise_with_entry_threshold():
+    frame = _ma7_frame("LONG", adx=10.0, rsi=50.0, volume=100.0)
+    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is True
+    assert result["score"] == 65
+    assert result["score"] < MIN_SCORE_THRESHOLD
 
 
 def test_detect_ma7_reversal_long():

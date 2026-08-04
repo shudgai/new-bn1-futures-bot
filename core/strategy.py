@@ -192,7 +192,7 @@ def detect_ma7_reversal(
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
     # 提前計算品質分數（用於狀態待命時顯示預估分數，上限 89 避免誤觸 CURRENT_MAKER 路徑）
-    score = MIN_SCORE_THRESHOLD  # 基礎 65 分
+    score = 65  # 固定評分基準；不得隨開倉門檻上調而灌高訊號分數
     if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
         score += 10  # 量能確認
     if want_dir == 1 and rsi >= RSI_LONG_THRESHOLD:

@@ -1555,6 +1555,13 @@ class TradingEngine:
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
             return False
+        score = int(ma7_sig.get("score") or 0)
+        if score < MIN_SCORE_THRESHOLD:
+            self.account.log(
+                f"🛑 {symbol} MA7訊號 {score}分低於 {MIN_SCORE_THRESHOLD} 分，拒絕開倉",
+                "INFO",
+            )
+            return False
 
         # 進場前先確認5分鐘週期沒有已經在反對這個方向——1分鐘MA7訊號跟
         # 5分鐘出場防線是兩個獨立時間週期各自判斷，可能出現「1分鐘剛要
@@ -1577,7 +1584,6 @@ class TradingEngine:
             )
             return False
 
-        score = int(ma7_sig.get("score") or MIN_SCORE_THRESHOLD)
         base_amount = min(
             max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
             TRADE_AMOUNT_USDT,
