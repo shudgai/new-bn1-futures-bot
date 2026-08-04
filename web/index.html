@@ -219,7 +219,6 @@
                                 <th>未實現損益</th>
                                 <th>觸發</th>
                                 <th>數量</th>
-                                <th>操作</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -231,11 +230,10 @@
                                 <td>{{ formatPrice(pos.entry_price) }}</td>
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td style="padding: 6px;">
-                                    <button 
+                                    <div 
                                         :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']" 
-                                        style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); transition: transform 0.1s; border: none; cursor: pointer; white-space: nowrap;"
-                                        @click="closePos(pos.symbol)"
-                                        title="點擊以手動平倉此部位"
+                                        style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: default; white-space: nowrap;"
+                                        title="未實現損益與報酬率 (ROE / 無槓桿 ROE)"
                                     >
                                         <span>{{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT</span>
                                         <span style="font-size: 10px; opacity: 0.95; font-weight: 600;">
@@ -243,7 +241,7 @@
                                         </span>
                                         <span v-if="pos.profit_alert" style="font-size: 11px;">💰⚠️</span>
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
-                                    </button>
+                                    </div>
                                 </td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
                                     <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
@@ -254,12 +252,9 @@
                                     </span>
                                 </td>
                                 <td>{{ pos.qty }}</td>
-                                <td style="white-space:nowrap;">
-                                    <button class="btn btn-stop" style="padding:4px 12px; font-size:12px; white-space:nowrap; display:inline-block;" @click="closePos(pos.symbol)">平倉</button>
-                                </td>
                             </tr>
                             <tr v-if="bot.positions.length === 0">
-                                <td colspan="10" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
+                                <td colspan="9" style="text-align:center; color:var(--muted); padding:16px;">目前尚無持倉</td>
                             </tr>
                         </tbody>
                     </table>
