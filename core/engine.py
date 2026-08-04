@@ -1033,23 +1033,7 @@ class TradingEngine:
                             if not is_aligned:
                                 continue
 
-                        # 1. 檢查 5% ROE 分批止盈減倉 (5% ROE)
-                        position_meta = self.account.position_meta.get(symbol, {})
-                        if not position_meta.get("is_half_closed"):
-                            curr_p = self.tickers.get(symbol)
-                            if curr_p:
-                                side = position["side"]
-                                entry_p = position["entry_price"]
-                                leverage = position.get("leverage") or self.symbol_rotation.get_dynamic_leverage(symbol, position.get("signal_score", 85))
-                                pnl_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
-                                roe = pnl_pct * leverage
-                                if roe >= 0.05:
-                                    self.account.log(
-                                        f"💰 [分批止盈] {symbol} 達到 ROE +5.0% (當前約 {roe:.2%})，自動平倉一半鎖定利潤",
-                                        "SUCCESS"
-                                    )
-                                    await self.account.partial_close_position(symbol, curr_p, "ROE達5%減倉一半", fraction=0.5)
-                                    continue # 本輪縮小部位後暫不作止損判斷，等待下一輪
+
 
                         # 底點預掛在轉彎前承接，前30分鐘的15m EMA逆向通常仍是
                         # 原回撤的一部分；讓固定交易所SL控風險，不用軟退出砍掉。

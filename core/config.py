@@ -161,10 +161,7 @@ TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "
 TRAILING_BREAK_EVEN_EXTRA_PCT = float(os.getenv("TRAILING_BREAK_EVEN_EXTRA_PCT", "0.0001"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
 
-# --- 交易所原生毫秒級 Trailing Stop 設定 ---
-# USE_NATIVE_TRAILING_STOP: True = 用 Binance TRAILING_STOP_MARKET（伺服器端即時追蹤）
-#   False = fallback 至舊版百分比制輪詢移動止利（Testnet/Paper 環境建議設 false）
-USE_NATIVE_TRAILING_STOP = os.getenv("USE_NATIVE_TRAILING_STOP", "true").lower() == "true"
+USE_NATIVE_TRAILING_STOP = os.getenv("USE_NATIVE_TRAILING_STOP", "false").lower() == "true"
 # CallbackRate 動態計算：callbackRate = atr_pct * 100 * NATIVE_TRAILING_ATR_RATE_FACTOR
 # 例：ATR% = 1.0% → callbackRate = 1.0 * 100 * 0.015 * 10 ≈ 1.5%
 # 實際公式：max(MIN, min(MAX, round(atr_pct * 100 * FACTOR, 1)))
@@ -372,13 +369,11 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # 預估滑點作最低安全線，避免鎖到帳面獲利、實際淨虧。
 EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.003"))
 EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.002"))
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.004"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
+TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0005"))
 # CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
-# 專用、更早啟動的移動停利觸發門檻。逆勢單本來就是在跟原本大趨勢對作，
-# 反彈站不站得住沒把握，用更低的門檻讓移動停利盡快接手保護獲利——一旦
-# 觸發只是把止損往有利方向移動、不會限制往上的空間，利潤持續往上一樣
-# 會繼續跟著推移，不是設一個近的固定止盈就出場。
-CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.004"))
+# 專用、更早啟動的移動停利觸發門檻。
+CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.0025"))
 # CONTRARIAN_POSITION_SIZE_MULTIPLIER：逆勢承接單的信心水準本來就比一般
 # 順勢MA7拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
 # 就算反彈失敗被打回原趨勢方向，虧損金額也比較小。

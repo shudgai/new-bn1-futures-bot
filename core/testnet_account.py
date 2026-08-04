@@ -11,6 +11,7 @@ from core.config import (
     BINANCE_API_KEY,
     BINANCE_SECRET,
     TAKER_FEE_RATE,
+    SLIPPAGE_PCT,
     MAX_DAILY_LOSS_PCT,
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
@@ -18,6 +19,7 @@ from core.config import (
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
+    TRAILING_CALLBACK_PCT,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_PULLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
@@ -616,38 +618,6 @@ class BinanceTestnetAccount:
                 if "peak_profit_updated_at" not in meta:
                     meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-                # 「獲利保護」必須先覆蓋雙邊費用、市價滑點與安全利潤。
-                # 門檻不得低於 NET_PROFIT_GUARANTEE_BUFFER，
-                # 實測US/USDT峰值0.2748%便啟動，最後扣費後反而-0.0591U。
-                early_guard_trigger = max(
-                    EARLY_PROFIT_GUARD_TRIGGER_PCT,
-                    NET_PROFIT_GUARANTEE_BUFFER + TAKER_FEE_RATE,
-                )
-                early_guard_exit = max(
-                    EARLY_PROFIT_GUARD_EXIT_PCT,
-                    NET_PROFIT_GUARANTEE_BUFFER,
-                )
-                if highest_pnl >= early_guard_trigger and not meta.get("early_profit_guard_armed"):
-                    meta["early_profit_guard_armed"] = True
-                    pos["early_profit_guard_armed"] = True
-                    self.log(
-                        f"🛡️ [早期獲利保護] {symbol} 峰值達 {highest_pnl:.4%}，"
-                        f"回吐至淨利安全線 {early_guard_exit:.2%} 將市價離場", "SUCCESS"
-                    )
-                if (
-                    meta.get("early_profit_guard_armed")
-                    and not meta.get("is_breakeven_moved")
-                    and NET_PROFIT_GUARANTEE_BUFFER - 1e-9
-                    <= pnl_pct
-                    <= early_guard_exit + 1e-9
-                ):
-                    self.log(
-                        f"🏁 [早期獲利保護] {symbol} 從峰值 {highest_pnl:.4%} "
-                        f"回吐至 {pnl_pct:.4%}，執行市價平倉", "SUCCESS"
-                    )
-                    await self.close_position(symbol, curr_p, "早期獲利保護回吐平倉")
-                    continue
-
                 # 浮盈換算為 ATR 倍數（無槓桿）
                 profit_in_atr = (highest_pnl / atr_pct) if atr_pct > 0 else 0.0
                 close_side_trail = "sell" if side == "LONG" else "buy"
@@ -811,10 +781,8 @@ class BinanceTestnetAccount:
                         else TRAILING_TRIGGER_PCT
                     )
                     if highest_pnl >= trailing_trigger:
-                        opened_at = meta.get("open_timestamp") or pos.get("open_timestamp") or now_ts
-                        pullback = get_trailing_pullback_pct(highest_pnl, opened_at)
                         if side == "LONG":
-                            trail_sl = entry_p * (1.0 + highest_pnl * pullback)
+                            trail_sl = entry_p * (1.0 + highest_pnl - TRAILING_CALLBACK_PCT)
                             npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                             trail_sl = max(trail_sl, npg_floor)
                             new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
@@ -823,7 +791,7 @@ class BinanceTestnetAccount:
                                 pos["sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
-                                self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
+                                self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {TRAILING_CALLBACK_PCT:.4%} 平倉）", "SUCCESS")
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
@@ -835,7 +803,7 @@ class BinanceTestnetAccount:
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
                         else:  # SHORT
-                            trail_sl = entry_p * (1.0 - highest_pnl * pullback)
+                            trail_sl = entry_p * (1.0 - highest_pnl + TRAILING_CALLBACK_PCT)
                             npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                             trail_sl = min(trail_sl, npg_ceiling)
                             new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
@@ -844,7 +812,7 @@ class BinanceTestnetAccount:
                                 pos["sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
-                                self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
+                                self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {TRAILING_CALLBACK_PCT:.4%} 平倉）", "SUCCESS")
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(

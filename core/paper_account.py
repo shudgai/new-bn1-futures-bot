@@ -15,6 +15,7 @@ from core.config import (
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
+    TRAILING_CALLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
@@ -560,36 +561,6 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-            if ENABLE_TRAILING_STOP:
-                early_guard_trigger = max(
-                    EARLY_PROFIT_GUARD_TRIGGER_PCT,
-                    NET_PROFIT_GUARANTEE_BUFFER + TAKER_FEE_RATE,
-                )
-                early_guard_exit = max(
-                    EARLY_PROFIT_GUARD_EXIT_PCT,
-                    NET_PROFIT_GUARANTEE_BUFFER,
-                )
-                if highest_pnl >= early_guard_trigger and not meta.get("early_profit_guard_armed"):
-                    meta["early_profit_guard_armed"] = True
-                    pos["early_profit_guard_armed"] = True
-                    self.log(
-                        f"🛡️ [紙上交易/早期獲利保護] {symbol} 峰值達 {highest_pnl:.4%}，"
-                        f"回吐至淨利安全線 {early_guard_exit:.2%} 將市價離場", "SUCCESS"
-                    )
-                if (
-                    meta.get("early_profit_guard_armed")
-                    and not meta.get("is_breakeven_moved")
-                    and NET_PROFIT_GUARANTEE_BUFFER - 1e-9
-                    <= pnl_pct
-                    <= early_guard_exit + 1e-9
-                ):
-                    self.log(
-                        f"🏁 [紙上交易/早期獲利保護] {symbol} 從峰值 {highest_pnl:.4%} "
-                        f"回吐至 {pnl_pct:.4%}，執行平倉", "SUCCESS"
-                    )
-                    await self.close_position(symbol, curr_p, "早期獲利保護回吐平倉")
-                    continue
-
             # 移動停利（百分比制，跟 USE_NATIVE_TRAILING_STOP=false 時的
             # testnet 邏輯相同——紙上帳戶沒有真實交易所可以掛原生
             # TRAILING_STOP_MARKET，統一用這一套）。逆勢承接單用更早/更低
@@ -599,15 +570,13 @@ class PaperAccount:
                 CONTRARIAN_TRAILING_TRIGGER_PCT if meta.get("is_contrarian_bottom_buy")
                 else TRAILING_TRIGGER_PCT
             )
-            # 正式移動停利在0.40%啟動；止利線本身仍由
+            # 正式移動停利在0.25%啟動；止利線本身仍由
             # NET_PROFIT_GUARANTEE_BUFFER保證至少鎖在安全獲利區。
             trailing_trigger = configured_trigger
             if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:
-                opened_at = meta.get("open_timestamp") or pos.get("open_timestamp") or now_ts
-                pullback = get_trailing_pullback_pct(highest_pnl, opened_at)
                 old_sl = pos.get("sl", 0.0)
                 if side == "LONG":
-                    trail_sl = entry_p * (1.0 + highest_pnl * pullback)
+                    trail_sl = entry_p * (1.0 + highest_pnl - TRAILING_CALLBACK_PCT)
                     npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = max(trail_sl, npg_floor)
                     if trail_sl > old_sl:
@@ -615,9 +584,9 @@ class PaperAccount:
                         pos["is_breakeven_moved"] = True
                         meta["sl"] = trail_sl
                         meta["is_breakeven_moved"] = True
-                        self.log(f"📈 [紙上交易/移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {trail_sl:.6g}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
+                        self.log(f"📈 [紙上交易/移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {trail_sl:.6g}（回吐 {TRAILING_CALLBACK_PCT:.4%} 平倉）", "SUCCESS")
                 else:
-                    trail_sl = entry_p * (1.0 - highest_pnl * pullback)
+                    trail_sl = entry_p * (1.0 - highest_pnl + TRAILING_CALLBACK_PCT)
                     npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                     trail_sl = min(trail_sl, npg_ceiling)
                     if trail_sl < old_sl or old_sl == 0.0:
@@ -625,23 +594,11 @@ class PaperAccount:
                         pos["is_breakeven_moved"] = True
                         meta["sl"] = trail_sl
                         meta["is_breakeven_moved"] = True
-                        self.log(f"📉 [紙上交易/移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {trail_sl:.6g}（回吐 {1-pullback:.0%} 平倉）", "SUCCESS")
+                        self.log(f"📉 [紙上交易/移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {trail_sl:.6g}（回吐 {TRAILING_CALLBACK_PCT:.4%} 平倉）", "SUCCESS")
 
             # 24小時時間過濾
             if (now_ts - pos.get("open_timestamp", now_ts)) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
-                continue
-
-            # 分批止盈：到達利潤門檻先平一部分
-            phase = meta.get("partial_close_phase", 0)
-            triggered_partial = False
-            for i, (threshold, ratio) in enumerate(PARTIAL_CLOSE_THRESHOLDS):
-                if phase <= i and pnl_pct >= threshold:
-                    meta["partial_close_phase"] = i + 1
-                    await self.partial_close_position(symbol, curr_p, f"分批止盈 (Phase {i+1})", fraction=ratio)
-                    triggered_partial = True
-                    break
-            if triggered_partial:
                 continue
 
             # SL/TP 本地觸價比對（沒有真實交易所保護單，價格穿越就在
