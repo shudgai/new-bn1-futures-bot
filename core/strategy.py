@@ -289,143 +289,70 @@ def detect_ma7_reversal(
     if want_dir == -1 and rsi < rsi_short_min:
         return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
 
-    # MA7 谷底/峰頂拐頭必須由最新四根已收盤K棒當場確立：峰谷後還要有
-    # 兩根同方向延續。只確認第一根會把最後幾個小數位的抖動當成反轉，
-    # 實測 BABY/SYN/NEAR 都因此在趨勢尚未成立時進場。
-    # 不接受「當前 MA7 低於/高於過去某個舊峰谷」，否則同一個舊拐點
-    # 會在後續多根K棒重複觸發，把已經展開或失效的趨勢誤報為新轉彎。
-    if 'ma7' not in df.columns:
-        return _no("ma7欄位缺失")
-    ma7_series = df['ma7'].dropna()
-    min_bars_needed = 4
-    if len(ma7_series) < min_bars_needed:
-        return _no(f"MA7有效值不足{min_bars_needed}根")
-    ma7_curr = float(ma7_series.iloc[-1])
-    ma7_prev = float(ma7_series.iloc[-2])
-    ma7_prev2 = float(ma7_series.iloc[-3])
-    ma7_prev3 = float(ma7_series.iloc[-4])
-
-    regular_reversal = (
-        ma7_prev2 < ma7_prev3 and ma7_prev > ma7_prev2 and ma7_curr > ma7_prev
-        if want_dir == 1
-        else ma7_prev2 > ma7_prev3 and ma7_prev < ma7_prev2 and ma7_curr < ma7_prev
-    )
-    confirmed_turn = abs(ma7_curr - ma7_prev2)
-    min_confirmed_turn = max(float(atr) * MA7_REVERSAL_MIN_ATR_MULT, 1e-12)
-    if regular_reversal and confirmed_turn < min_confirmed_turn:
-        return _no(
-            f"MA7轉彎幅度不足（{confirmed_turn:.6g}<{min_confirmed_turn:.6g}，"
-            f"需達{MA7_REVERSAL_MIN_ATR_MULT:.2f} ATR）"
-        )
-
-    # 快速入口仍以收盤資料判斷，只把「峰谷後需再等第二根」放寬為第一根
-    # 即可；用爆量與拐幅上下限換取速度，避免恢復無條件的微小抖動搶進。
-    first_closed_turn = (
-        ma7_prev < ma7_prev2 and ma7_curr > ma7_prev
-        if want_dir == 1
-        else ma7_prev > ma7_prev2 and ma7_curr < ma7_prev
-    )
-    fast_turn = abs(ma7_curr - ma7_prev)
-    fast_min_turn = max(float(atr) * MA7_FAST_MIN_ATR_MULT, 1e-12)
-    fast_max_turn = max(float(atr) * MA7_FAST_MAX_ATR_MULT, fast_min_turn)
-    volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
-    fast_entry = bool(
-        MA7_FAST_ENTRY_ENABLED
-        and not regular_reversal
-        and first_closed_turn
-        and fast_min_turn <= fast_turn <= fast_max_turn
-        and volume_ratio >= MA7_FAST_MIN_VOLUME_RATIO
-    )
-    confirmed_reversal = regular_reversal or fast_entry
-    early_projection = False
-    projected_ma7 = None
-    if (
-        not confirmed_reversal
-        and MA7_EARLY_ENTRY_ENABLED
-        and live_price is not None
-        and float(live_price) > 0
-        and len(df['close'].dropna()) >= 7
-    ):
-        closes = df['close'].dropna()
-        # 下一個1m MA7 = 最近6根已收盤價 + 當下即時價。
-        projected_ma7 = float(ma7_curr + (price - float(closes.iloc[-7])) / 7.0)
-        min_turn = max(float(atr) * MA7_EARLY_MIN_ATR_MULT, 1e-12)
-        if want_dir == 1:
-            early_projection = (
-                ma7_curr < ma7_prev
-                and projected_ma7 > ma7_curr
-                and projected_ma7 - ma7_curr >= min_turn
-            )
-        else:
-            early_projection = (
-                ma7_curr > ma7_prev
-                and projected_ma7 < ma7_curr
-                and ma7_curr - projected_ma7 >= min_turn
-            )
-
-    # 不等MA7真正拐頭：同方向連續兩根回撤時先通過後續KC/風險驗證，
-    # 再在KC回撤側估算底部掛Maker單。只接受「連續」回撤，避免一根雜訊
-    # 就提早接刀；趨勢、ADX、ATR、RSI等前置濾網仍全部保留。
-    pullback_bottom_order = bool(
-        MA7_BOTTOM_ENTRY_ENABLED
-        and not confirmed_reversal
-        and not early_projection
-        and (
-            (ma7_prev2 > ma7_prev > ma7_curr)
-            if want_dir == 1
-            else (ma7_prev2 < ma7_prev < ma7_curr)
-        )
-    )
-
-    if not confirmed_reversal and not early_projection and not pullback_bottom_order:
-        shape = "谷底" if want_dir == 1 else "峰頂"
-        projection_note = (
-            f"，盤中投影={projected_ma7:.6g}" if projected_ma7 is not None else ""
-        )
-        return _no(
-            f"MA7最新四根未形成局部{shape}轉彎後連續兩根確認"
-            f"（{ma7_prev3:.6g}→{ma7_prev2:.6g}→{ma7_prev:.6g}→{ma7_curr:.6g}{projection_note}）"
-        )
-
-    if pullback_bottom_order:
-        signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev2, ma7_prev, ma7_curr
-    elif early_projection:
-        signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev, ma7_curr, projected_ma7
-    else:
-        signal_ma7_prev2, signal_ma7_prev, signal_ma7_curr = ma7_prev2, ma7_prev, ma7_curr
-
-    # KC 位置驗證與防假突破
-    # 1. 簡化區間定位：現價需在 KC 中軌（EMA20）至通道回調側之間
-    #    多單：kc_lower <= price <= ema_20
-    #    空單：ema_20 <= price <= kc_upper
-    # 2. 歷史觸碰確認：前 KC_TOUCH_LOOKBACK_BARS 根已收盤的 K 棒（限制時效性，防止拿很久以前的回調來當現在的轉彎）
-    #    多單：至少有一根 K 棒的最低價（low）碰觸或跌破過 kc_lower（下軌），容許 0.15x ATR 的微小誤差
-    #    空單：至少有一根 K 棒的最高價（high）碰觸或突破過 kc_upper（上軌），容許 0.15x ATR 的微小誤差
-    past_bars = df.iloc[-(KC_TOUCH_LOOKBACK_BARS + 1):-1]
-    if len(past_bars) < 1:
-        return _no("歷史已收盤K棒不足，無法進行KC觸碰驗證")
-
-    # 碰觸門檻容差：加/減 0.15 ATR 的寬鬆度，避免因些微差距被過濾
-    touch_buffer = atr * 0.15
-
+    # ── 結合方案：突破 Keltner 通道 (KC) + MACD/RSI 動能指標偏強 ──
+    # 1. 價格突破 KC 軌道
+    is_breakout = False
     if want_dir == 1:
-        # 區間判斷
-        if not (price <= ema_20):
-            return _no(f"價格高於EMA20，非回檔買點（{price:.6g}>{ema_20:.6g}）")
-        # 觸摸下軌確認 (低點 <= 下軌 + 容差)
-        touched_lower = (past_bars['low'] <= (past_bars['kc_lower'] + touch_buffer)).any()
-        # 回撤底部單本來就是預掛在KC下軌附近，不能要求價格先碰過下軌，
-        # 否則又會退化成到達底部後才開始掛單。已拐頭的舊路徑仍保留觸碰驗證。
-        if not touched_lower and not pullback_bottom_order:
-            return _no(f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或跌破KC下軌（無回踩確認）")
+        if price > kc_upper:
+            is_breakout = True
+        else:
+            return _no(f"價格未突破KC上軌（{price:.6g}<={kc_upper:.6g}）")
     else:
-        # 區間判斷
-        if not (price >= ema_20):
-            return _no(f"價格低於EMA20，非反彈賣點（{price:.6g}<{ema_20:.6g}）")
-        # 觸摸上軌確認 (高點 >= 上軌 - 容差)
-        touched_upper = (past_bars['high'] >= (past_bars['kc_upper'] - touch_buffer)).any()
-        if not touched_upper and not pullback_bottom_order:
-            return _no(f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或突破KC上軌（無回踩確認）")
+        if price < kc_lower:
+            is_breakout = True
+        else:
+            return _no(f"價格未突破KC下軌（{price:.6g}>={kc_lower:.6g}）")
+
+    # 2. MACD 零軸上方黃金交叉 / 多頭動能確認
+    if 'macd_line' not in df.columns:
+        return _no("MACD指標未計算")
+    macd_line = float(curr['macd_line'])
+    macd_signal = float(curr['macd_signal'])
+    macd_hist = float(curr['macd_hist'])
+
+    macd_ok = False
+    if want_dir == 1:
+        # MACD 黃金交叉且柱狀體為正
+        if macd_line > macd_signal and macd_hist > 0:
+            macd_ok = True
+        else:
+            return _no(f"MACD未呈現多頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
+    else:
+        # MACD 死亡交叉且柱狀體為負
+        if macd_line < macd_signal and macd_hist < 0:
+            macd_ok = True
+        else:
+            return _no(f"MACD未呈現空頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
+
+    # 3. RSI 突破 50 (多頭動能確認)
+    rsi_ok = False
+    if want_dir == 1:
+        if rsi >= 50.0:
+            rsi_ok = True
+        else:
+            return _no(f"RSI低於50（RSI={rsi:.1f}）")
+    else:
+        if rsi <= 50.0:
+            rsi_ok = True
+        else:
+            return _no(f"RSI高於50（RSI={rsi:.1f}）")
+
+    # 4. 成交量放大 (Volume Ratio >= 1.0)
+    volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
+    if volume_ratio < 1.0:
+        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<1.0）")
+
+    # 所有核心條件均通過！開始設定訊號評分
+    score = 72  # 基礎分高於 MIN_SCORE_THRESHOLD (71)
+    if volume_ratio >= 1.5:
+        score += 10
+    if want_dir == 1 and rsi >= 58.0:
+        score += 7
+    elif want_dir == -1 and rsi <= 42.0:
+        score += 7
+    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
+    score += round(min(max(adx_ratio, 0.0), 1.0) * 10)  # ADX 品質最多 +10
+    score = min(score, 89)
 
     # 計算結構性止損位（參考過去 6 根已收盤 K 棒的波段高低點與 KC 軌道，外加 0.05 * ATR 緩衝避免精準掃單）
     past_6_bars = df.iloc[-7:-1]
@@ -438,17 +365,13 @@ def detect_ma7_reversal(
         kc_upper_val = float(past_6_bars['kc_upper'].max())
         structural_sl = max(swing_high, kc_upper_val) + 0.05 * atr
 
-    bottom_target = None
-    if pullback_bottom_order:
-        offset = max(float(atr) * MA7_BOTTOM_OFFSET_ATR_MULT, float(price) * 1e-6)
-        if want_dir == 1:
-            # KC下軌是順勢回撤最可重複計算的支撐估值；若價格已穿越下軌，
-            # 則將掛單放到現價再低一個小偏移，確保仍是Maker而非追價成交。
-            bottom_target = min(float(kc_lower) + offset, float(price) - offset)
-        else:
-            bottom_target = max(float(kc_upper) - offset, float(price) + offset)
+    # 為了向下相容，填入對應的 MA7 變數
+    ma7_series = df['ma7'].dropna()
+    ma7_curr = float(ma7_series.iloc[-1]) if len(ma7_series) > 0 else price
+    ma7_prev = float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else price
+    ma7_prev2 = float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else price
 
-    direction_note = "谷底轉彎向上" if want_dir == 1 else "峰頂轉彎向下"
+    direction_note = "突破KC上軌+MACD金叉+RSI>=50" if want_dir == 1 else "跌破KC下軌+MACD死叉+RSI<=50"
     return {
         "detected": True,
         "side": side,
@@ -458,32 +381,26 @@ def detect_ma7_reversal(
         "ema_20": float(ema_20),
         "kc_upper": float(kc_upper),
         "kc_lower": float(kc_lower),
-        "ma7_curr": signal_ma7_curr,
-        "ma7_prev": signal_ma7_prev,
-        "ma7_prev2": signal_ma7_prev2,
-        "ma7_projected": projected_ma7,
-        "early_projection": early_projection,
-        "fast_entry": fast_entry,
-        "pullback_bottom_order": pullback_bottom_order,
-        "entry_mode": "MA7_BOTTOM_LIMIT" if pullback_bottom_order else "MA7_REVERSAL",
-        "target_price": bottom_target,
+        "ma7_curr": ma7_curr,
+        "ma7_prev": ma7_prev,
+        "ma7_prev2": ma7_prev2,
+        "ma7_projected": None,
+        "early_projection": False,
+        "fast_entry": False,
+        "pullback_bottom_order": False,
+        "entry_mode": "BREAKOUT_MOMENTUM",
+        "target_price": None,
         "volume_ratio": volume_ratio,
         "rsi": float(rsi),
         "adx": float(adx),
         "btc_regime_mode": btc_regime["mode"],
         "btc_allocation_factor": btc_regime["allocation_factor"],
         "structural_sl": structural_sl,
-        "is_contrarian_bottom_buy": is_contrarian_bottom_buy,
+        "is_contrarian_bottom_buy": False,
         "reason": (
-            (
-                f"MA7_PullbackBottom_{side}｜" if pullback_bottom_order
-                else f"MA7_ContrarianBottomBuy_{side}｜" if is_contrarian_bottom_buy
-                else f"MA7_Reversal_{side}｜"
-            )
-            + f"{signal_ma7_prev2:.6g}→{signal_ma7_prev:.6g}→{signal_ma7_curr:.6g}｜"
-            + (f"回撤中預掛底點@{bottom_target:.6g}｜" if pullback_bottom_order else "")
-            + ("盤中投影提前確認｜" if early_projection else "")
-            + ("爆量微拐幅提前確認｜" if fast_entry else "")
+            f"Breakout_Momentum_{side}｜"
+            f"價格突破通道｜MACD黃金交叉｜RSI強勢｜"
+            + f"Volume Ratio={volume_ratio:.2f}｜"
             + f"{direction_note}｜score={score}"
         ),
     }
@@ -539,6 +456,13 @@ class SuperTrendKeltnerStrategy:
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
+
+        # MACD
+        fast_ema = close.ewm(span=12, adjust=False).mean()
+        slow_ema = close.ewm(span=26, adjust=False).mean()
+        df['macd_line'] = fast_ema - slow_ema
+        df['macd_signal'] = df['macd_line'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd_line'] - df['macd_signal']
 
         # ADX（趨勢強度濾網）：KC 突破配上低 ADX，是盤整期假突破的常見樣貌，
         # 用來在評分裡分辨「真的有趨勢動能撐著的突破」跟「雜訊型突破」。
