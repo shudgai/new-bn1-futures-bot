@@ -1122,6 +1122,16 @@ class TradingEngine:
                         peak - BREAKOUT_TRAILING_ATR_MULT * atr
                         if side == "LONG" else peak + BREAKOUT_TRAILING_ATR_MULT * atr
                     )
+                    # 只要ATR算出來的止損已經要移到「進場價以上」（準備標記為
+                    # 已鎖利），就強制拉高到「進場價 + 來回手續費 + 滑價」，避免
+                    # 距離進場價太近的止損被誤標成「已鎖利」卻其實扣掉成本後
+                    # 仍是虧損。還沒到進場價以上的正常止損收緊（單純縮小虧損）
+                    # 不受影響。
+                    cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
+                    if side == "LONG" and trail_sl > entry_price:
+                        trail_sl = max(trail_sl, entry_price * (1.0 + cost_pct))
+                    elif side == "SHORT" and trail_sl < entry_price:
+                        trail_sl = min(trail_sl, entry_price * (1.0 - cost_pct))
                     improves = (
                         trail_sl > current_sl if side == "LONG"
                         else current_sl <= 0 or trail_sl < current_sl
