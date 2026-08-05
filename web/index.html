@@ -211,12 +211,12 @@
                         <thead>
                             <tr>
                                 <th>方向</th>
-                                <th style="white-space:nowrap;">槓桿</th>
+                                <th>槓桿</th>
                                 <th>時間</th>
                                 <th>幣種</th>
                                 <th>入場價</th>
                                 <th>現價</th>
-                                <th>未實現損益</th>
+                                <th>未實現損益（點擊平倉）</th>
                                 <th>觸發</th>
                                 <th>數量</th>
                             </tr>
@@ -230,10 +230,11 @@
                                 <td>{{ formatPrice(pos.entry_price) }}</td>
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td style="padding: 6px;">
-                                    <div 
-                                        :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']" 
-                                        style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: default; white-space: nowrap;"
-                                        title="未實現損益與報酬率 (ROE / 無槓桿 ROE)"
+                                    <div
+                                        :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']"
+                                        style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: pointer; white-space: nowrap;"
+                                        title="點擊即可手動平倉此持倉"
+                                        @click="closePos(pos.symbol)"
                                     >
                                         <span>{{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT</span>
                                         <span style="font-size: 10px; opacity: 0.95; font-weight: 600;">
@@ -241,6 +242,7 @@
                                         </span>
                                         <span v-if="pos.profit_alert" style="font-size: 11px;">💰⚠️</span>
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
+                                        <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
                                 </td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
@@ -280,6 +282,7 @@
                                     <th>時間</th>
                                     <th>幣種</th>
                                     <th>動作</th>
+                                    <th>狀態</th>
                                     <th>價格</th>
                                     <th>金額 (USDT)</th>
                                     <th>手續費 (USDT)</th>
@@ -287,15 +290,25 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="t in bot.trades" :key="t.id">
+                                <tr v-for="t in bot.trades" :key="t.id"
+                                    :style="{ opacity: t.status === 'OPEN' ? 0.5 : 1 }">
                                     <td>{{ t.time }}</td>
                                     <td><b>{{ t.symbol }}</b></td>
-                                    <td :class="t.side === 'LONG' ? 'up' : 'down'">{{ t.action }}</td>
+                                    <td :style="{
+                                        color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
+                                               (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
+                                    }">{{ t.action }}</td>
+                                    <td :style="{
+                                        color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
+                                               t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
+                                               'var(--muted)',
+                                        fontSize: '11px'
+                                    }">{{ t.status }}</td>
                                     <td>{{ t.price.toFixed(4) }}</td>
                                     <td>{{ t.amount }}</td>
                                     <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
                                     <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
-                                        {{ t.status === 'CLOSED' ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(2) : '-' }}
+                                        {{ (t.status === 'CLOSED' || t.status === 'PARTIAL_CLOSED') ? (t.pnl > 0 ? '+' : '') + (t.pnl || 0).toFixed(2) : '-' }}
                                     </td>
                                 </tr>
                             </tbody>

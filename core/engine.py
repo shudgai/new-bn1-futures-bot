@@ -1132,28 +1132,28 @@ class TradingEngine:
                             symbol, trail_sl, mark_profit_locked=locked
                         )
 
-                    favorable_move = (
-                        current_price - entry_price if side == "LONG"
-                        else entry_price - current_price
-                    )
-                    rr = favorable_move / initial_risk
-                    if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
-                        if await self.account.partial_close_position(
-                            symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
-                            fraction=BREAKOUT_RR_CLOSE_FRACTION,
-                        ):
-                            meta = self.account.position_meta.setdefault(symbol, meta)
-                            meta["rr_1_5_done"] = True
-                            self.account.save_state()
-                            continue
-                    if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
-                        if await self.account.partial_close_position(
-                            symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
-                            fraction=BREAKOUT_RR_CLOSE_FRACTION,
-                        ):
-                            meta = self.account.position_meta.setdefault(symbol, meta)
-                            meta["rr_2_5_done"] = True
-                            self.account.save_state()
+                    # favorable_move = (
+                    #     current_price - entry_price if side == "LONG"
+                    #     else entry_price - current_price
+                    # )
+                    # rr = favorable_move / initial_risk
+                    # if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
+                    #     if await self.account.partial_close_position(
+                    #         symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
+                    #         fraction=BREAKOUT_RR_CLOSE_FRACTION,
+                    #     ):
+                    #         meta = self.account.position_meta.setdefault(symbol, meta)
+                    #         meta["rr_1_5_done"] = True
+                    #         self.account.save_state()
+                    #         continue
+                    # if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
+                    #     if await self.account.partial_close_position(
+                    #         symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
+                    #         fraction=BREAKOUT_RR_CLOSE_FRACTION,
+                    #     ):
+                    #         meta = self.account.position_meta.setdefault(symbol, meta)
+                    #         meta["rr_2_5_done"] = True
+                    #         self.account.save_state()
                 await asyncio.sleep(STRUCTURED_EXIT_INTERVAL_SEC)
             except asyncio.CancelledError:
                 break
