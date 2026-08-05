@@ -693,7 +693,15 @@ class TradingEngine:
             )
 
     async def _execution_price_is_safe(self, symbol: str, side: str) -> bool:
-        """確認執行合約存在，且主網與執行市場最佳價偏差不超標。"""
+        """確認執行合約存在，且主網與執行市場最佳價偏差不超標。
+
+        ✅ 修正：改用「方向性偏差」取代「絕對偏差」。
+        - 做多(LONG)時：執行 ask ≤ 主網 ask → 對我們有利（買得更便宜），直接放行。
+          只有執行 ask 比主網 ask「貴」超過門檻，才代表會多付錢，才需要拒絕。
+        - 做空(SHORT)時：執行 bid ≥ 主網 bid → 對我們有利（賣得更高），直接放行。
+          只有執行 bid 比主網 bid「低」超過門檻，才代表會少收錢，才需要拒絕。
+        原本用 abs() 同等對待有利/不利方向，導致底部進場時執行市場稍低被誤拒。
+        """
         if PAPER_TRADING:
             return True
         if self.execution_symbols is None or symbol not in self.execution_symbols:
@@ -711,15 +719,34 @@ class TradingEngine:
                 raise ValueError(f"{book_side}深度為空")
             main_price = float(main_rows[0][0])
             execution_price = float(execution_rows[0][0])
-            deviation = abs(execution_price - main_price) / max(main_price, 1e-12)
-            if deviation > EXECUTION_PRICE_MAX_DEVIATION_PCT:
+
+            # 方向性偏差：只計算「對我們不利」的方向
+            # LONG (asks)：執行比主網貴 → 不利；SHORT (bids)：執行比主網便宜 → 不利
+            if str(side).upper() == "LONG":
+                adverse_deviation = (execution_price - main_price) / max(main_price, 1e-12)
+            else:
+                adverse_deviation = (main_price - execution_price) / max(main_price, 1e-12)
+
+            abs_deviation = abs(execution_price - main_price) / max(main_price, 1e-12)
+
+            if adverse_deviation > EXECUTION_PRICE_MAX_DEVIATION_PCT:
+                # 執行市場對我們不利，且超過門檻 → 拒絕
                 self.account.log(
-                    f"🛑 {symbol} 主網與執行市場最佳價偏差 {deviation:.2%}>"
+                    f"🛑 {symbol} 執行市場不利偏差 {adverse_deviation:.2%}>"
                     f"{EXECUTION_PRICE_MAX_DEVIATION_PCT:.2%}，拒絕下單"
-                    f"（主網={main_price:.8g}，執行={execution_price:.8g}）",
+                    f"（主網={main_price:.8g}，執行={execution_price:.8g}，方向={side}）",
                     "WARNING",
                 )
                 return False
+
+            if adverse_deviation < 0 and abs_deviation > EXECUTION_PRICE_MAX_DEVIATION_PCT:
+                # 執行市場對我們有利（如底部 ask 更低），即使絕對偏差超標也放行
+                self.account.log(
+                    f"✅ {symbol} 執行市場有利偏差 {abs_deviation:.2%}（{side} 更優），放行下單"
+                    f"（主網={main_price:.8g}，執行={execution_price:.8g}）",
+                    "INFO",
+                )
+
             return True
         except Exception as exc:
             self.account.log(f"🛑 {symbol} 執行市場價差驗證失敗，拒絕下單：{exc}", "WARNING")
