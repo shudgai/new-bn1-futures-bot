@@ -26,7 +26,7 @@ from core.config import (
     MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
-    STRUCTURED_RSI_SHORT_TRIGGER,
+    STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -633,7 +633,7 @@ class SuperTrendKeltnerStrategy:
             if side == "LONG" else
             float(prev["rsi"]) > 50 and float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
         )
-        if aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
+        if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
             triggers = []
             if macd_hist_cross or macd_line_cross:
                 triggers.append("MACD交叉")
