@@ -1274,7 +1274,15 @@ class BinanceTestnetAccount:
     ) -> bool:
         """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
         post_only=False 代表要求立即成交，改走 open_position() 市價單，不建立
-        會在 15 秒後被撤銷的 GTC 限價單。"""
+        會在 15 秒後被撤銷的 GTC 限價單。
+
+        ✅ 修正：若訊號分數達 90 分以上（強勢訊號），強制將 post_only 設為 False，
+        改以市價單（open_position）立即成交進場，避免價格快速拉升時錯過行情。
+        """
+        if signal_score is not None and signal_score >= 90:
+            post_only = False
+            reason = f"🚀 [90分+強勢市價] {reason}"
+
         if symbol in self.positions or symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False
         if not post_only:
