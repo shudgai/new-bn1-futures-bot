@@ -1716,11 +1716,16 @@ class TradingEngine:
                 planned_price - BREAKOUT_HARD_STOP_ATR_MULT * atr,
                 candle_low - BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr,
             )
+            # PAXG、FARTCOIN 這類絕對價格波動小或報價精度粗的品種，ATR/K棒
+            # 算出來的止損可能窄到只剩幾個最小報價單位，一有正常雜訊就被
+            # 掃到。比照舊版 MA7 邏輯套用 MIN_SL_DISTANCE_PCT 下限。
+            sl = min(sl, planned_price * (1.0 - MIN_SL_DISTANCE_PCT))
         else:
             sl = max(
                 planned_price + BREAKOUT_HARD_STOP_ATR_MULT * atr,
                 candle_high + BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr,
             )
+            sl = max(sl, planned_price * (1.0 + MIN_SL_DISTANCE_PCT))
         initial_risk = abs(planned_price - sl)
         if initial_risk <= 0:
             return False
