@@ -122,6 +122,8 @@ class BinanceTestnetAccount:
         # 撤單/重掛的邏輯本身完全不受影響，只是省略中間重複的日誌行；
         # 想看目前是不是還在等，「📊 12幣訊號進度」摘要裡本來就有顯示。
         self._pending_retry_streak: Dict[str, int] = {}
+        # ✅ 修正 Bug2：平倉失敗後的冷卻計時器，防止網路抖動期間連續暴力重試 API
+        self._close_retry_after: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -575,8 +577,13 @@ class BinanceTestnetAccount:
                 and symbol not in self._orphan_protection_attempted
                 and symbol not in self.pending_limit_orders
             ):
-                self._orphan_protection_attempted.add(symbol)
+                # ✅ 修正 Bug1：先呼叫，成功後才加入集合
+                # 原本先 add() 再呼叫：若 _create_orphan_protection 內部 except 靜默失敗，
+                # symbol 永遠留在集合裡，裸倉無法再次觸發補建，直到 bot 重啟。
                 await self._create_orphan_protection(symbol, pos, meta)
+                if meta.get("sl", 0.0) > 0:
+                    # 保護單確實建立（meta["sl"] 有值）才標記，失敗時下輪自動重試
+                    self._orphan_protection_attempted.add(symbol)
 
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
@@ -1181,7 +1188,14 @@ class BinanceTestnetAccount:
                     )
             except Exception:
                 await self._cancel_all_orders(symbol)
-                await self._emergency_flatten(symbol, side, qty)
+                try:
+                    await self._emergency_flatten(symbol, side, qty)
+                except Exception:
+                    # ✅ 修正 Bug3：緊急平倉也失敗時，清除 position_meta 的 sl 記錄，
+                    # 確保 update_positions() 下輪偵測到 sl=0 後由孤兒保護機制接手重建。
+                    # 若不清除：refresh() 會從 meta 把舊 sl 帶入 pos，
+                    # 孤兒偵測的 pos["sl"] <= 0 條件不成立，裸倉永久缺乏保護。
+                    self.position_meta.pop(symbol, None)
                 raise
 
             fee = qty * execution_price * TAKER_FEE_RATE
@@ -1498,8 +1512,12 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        # ✅ 修正 Bug2：平倉失敗後 30 秒冷卻，防止網路抖動期間重複打 API
+        _now = time.time()
+        if _now < self._close_retry_after.get(symbol, 0.0):
+            return False
         self.closing_lock.add(symbol)
-        self.last_closed_at[symbol] = time.time()
+        self.last_closed_at[symbol] = _now
         position = dict(self.positions[symbol])
         try:
             await self._cancel_all_orders(symbol)
@@ -1554,12 +1572,17 @@ class BinanceTestnetAccount:
                     pass
             return True
         except Exception as exc:
+            # ✅ 修正 Bug2：失敗後登記冷卻時間，30 秒後主迴圈才允許再試
+            self._close_retry_after[symbol] = time.time() + 30.0
             self.log(
-                f"🚨 Binance Testnet 平倉失敗 {symbol}："
+                f"🚨 Binance Testnet 平倉失敗 {symbol}（30 秒後自動重試）："
                 f"{type(exc).__name__}: {exc}",
                 "DANGER",
             )
             return False
+        else:
+            # 平倉成功，清除冷卻記錄
+            self._close_retry_after.pop(symbol, None)
         finally:
             self.closing_lock.discard(symbol)
 
