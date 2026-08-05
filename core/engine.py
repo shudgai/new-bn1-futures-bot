@@ -28,6 +28,8 @@ from core.config import (
     BREAKOUT_HARD_STOP_ATR_MULT, BREAKOUT_CANDLE_STOP_BUFFER_ATR,
     BREAKOUT_TRAILING_ATR_MULT, BREAKOUT_RR1_TARGET, BREAKOUT_RR2_TARGET,
     BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
+    BREAKOUT_KC_FAIL_CONFIRM_BARS,
+    BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -128,6 +130,9 @@ class TradingEngine:
         self._history_coeff_logged: Dict[str, tuple] = {}
         # 診斷與影子比較每分鐘落盤一次，避免每 5 秒主迴圈造成過度寫檔。
         self._last_diagnostic_stats_save_at: float = 0.0
+        # KC失敗連續計數器：記錄每個持倉已連續將實體收在EMA20不利側的已收盤K棒數
+        # 需達到 BREAKOUT_KC_FAIL_CONFIRM_BARS 根才實際關倉，防止單根回踩誤觸
+        self._kc_fail_count: Dict[str, int] = {}
 
     def _ma7_timing_ready(self, symbol: str, signal: dict, now: float) -> tuple:
         """已收盤轉彎直接放行；盤中投影須連續多輪成立，失效即清零。"""
@@ -1069,10 +1074,14 @@ class TradingEngine:
 
                     symbol_1h = self.st_direction_1h_cache.get(symbol)
                     btc_1h = int(self.btc_1h_st_direction or 0)
-                    if symbol_1h == -direction or btc_1h == -direction:
-                        source = "個幣" if symbol_1h == -direction else "BTC"
+                    # 修歙1：1h ST翻向需至少廢過 BREAKOUT_KC_FAIL_CONFIRM_BARS 根已收盤1h K棒才確認
+                    # 限于可取得的資料，用 btc_1h_st_flip_age 代替個幣翻轉年齡（已有编碼）
+                    btc_flip_buffered = btc_1h == -direction and self.btc_1h_st_flip_age >= BREAKOUT_KC_FAIL_CONFIRM_BARS
+                    symbol_1h_contrary = symbol_1h == -direction
+                    if symbol_1h_contrary or btc_flip_buffered:
+                        source = "個幣" if symbol_1h_contrary else "BTC"
                         await self.account.close_position(
-                            symbol, current_price, f"{source} 1h SuperTrend翻向，強制全平"
+                            symbol, current_price, f"{source} 1h SuperTrend翻向（纓衝確認），強制全平"
                         )
                         continue
 
@@ -1088,21 +1097,39 @@ class TradingEngine:
                         continue
 
                     if entry_mode == "BREAKOUT":
+                        # 修正2：kc_failed 改為需要連續 BREAKOUT_KC_FAIL_CONFIRM_BARS 根
+                        # 已收盤5m K棒實體（開盤+收盤）都在EMA20不利側才觸發關倉。
+                        # 突破後第一根正常回踩K棒不會觸發，需要連續失守才認定趨勢翻轉。
+                        # 第二道防線保留：影線觸及反向KC外軌仍立即觸發（極端反轉訊號）。
+                        past_bars = computed.iloc[-BREAKOUT_KC_FAIL_CONFIRM_BARS - 1:-1]
                         if side == "LONG":
-                            kc_failed = (
-                                float(bar["open"]) < float(bar["ema_20"])
-                                and float(bar["close"]) < float(bar["ema_20"])
-                            ) or float(bar["low"]) <= float(bar["kc_lower"])
+                            # 每根K棒的開盤和收盤都在EMA20以下才算失守1根
+                            bar_failed_count = int(
+                                ((past_bars['open'] < past_bars['ema_20']) & (past_bars['close'] < past_bars['ema_20'])).sum()
+                            )
+                            shadow_breach = float(bar["low"]) <= float(bar["kc_lower"])
+                            kc_failed = bar_failed_count >= BREAKOUT_KC_FAIL_CONFIRM_BARS or shadow_breach
                         else:
-                            kc_failed = (
-                                float(bar["open"]) > float(bar["ema_20"])
-                                and float(bar["close"]) > float(bar["ema_20"])
-                            ) or float(bar["high"]) >= float(bar["kc_upper"])
+                            bar_failed_count = int(
+                                ((past_bars['open'] > past_bars['ema_20']) & (past_bars['close'] > past_bars['ema_20'])).sum()
+                            )
+                            shadow_breach = float(bar["high"]) >= float(bar["kc_upper"])
+                            kc_failed = bar_failed_count >= BREAKOUT_KC_FAIL_CONFIRM_BARS or shadow_breach
+
                         if kc_failed:
+                            fail_reason = (
+                                f"影線觸及反向KC外軌" if shadow_breach
+                                else f"連續{bar_failed_count}根5m實體收在EMA20不利側"
+                            )
+                            self.account.log(
+                                f"🟡 [KC失敗關倉] {symbol} {side} {fail_reason}",
+                                "WARNING"
+                            )
                             await self.account.close_position(
-                                symbol, current_price, "5m K棒實體失守KC中軌或觸及反向外軌"
+                                symbol, current_price, f"KC失敗({fail_reason})"
                             )
                             continue
+
 
                     entry_price = float(position["entry_price"])
                     initial_risk = float(
@@ -1711,7 +1738,20 @@ class TradingEngine:
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         candle_low = float(signal.get("signal_candle_low") or planned_price)
         candle_high = float(signal.get("signal_candle_high") or planned_price)
-        if side == "LONG":
+
+        # BREAKOUT 限價掛單：止損以「訊號K棒低/高點」為基準（結構失效點），
+        # 而非以限價進場點往下/上算 ATR。這樣進場在 EMA20 附近（限價），
+        # 止損在突破K棒低點以下，兩者距離 = 突破K棒振幅的一大半，
+        # 遠比舊版「進場@突破高點 - 1ATR」給更寬的止損空間，賠率大幅改善。
+        # 非 BREAKOUT 的 SUPPORT_PULLBACK 等仍用原本邏輯。
+        if entry_mode == "BREAKOUT" and is_limit:
+            if side == "LONG":
+                sl = candle_low - BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr
+                sl = min(sl, planned_price * (1.0 - MIN_SL_DISTANCE_PCT))
+            else:
+                sl = candle_high + BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr
+                sl = max(sl, planned_price * (1.0 + MIN_SL_DISTANCE_PCT))
+        elif side == "LONG":
             sl = min(
                 planned_price - BREAKOUT_HARD_STOP_ATR_MULT * atr,
                 candle_low - BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr,
@@ -2101,7 +2141,10 @@ class TradingEngine:
             entry_mode = (info.get("entry_context") or {}).get("entry_mode")
             order_timeout = (
                 STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC
-                if entry_mode == "SUPPORT_PULLBACK" else ENTRY_LIMIT_TIMEOUT_SEC
+                if entry_mode == "SUPPORT_PULLBACK"
+                else BREAKOUT_PULLBACK_TIMEOUT_SEC
+                if entry_mode == "BREAKOUT"
+                else ENTRY_LIMIT_TIMEOUT_SEC
             )
             if now - info["placed_at"] > order_timeout:
                 self._record_pullback_outcome("maker_timeout")
@@ -2116,11 +2159,13 @@ class TradingEngine:
                 if entry_mode not in ("MA7_REVERSAL", "MA7_BOTTOM_LIMIT"):
                     self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
-            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT", "SUPPORT_PULLBACK"):
+            if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT", "SUPPORT_PULLBACK", "BREAKOUT"):
                 # 90+現價單、MA7拐頭單與回撤底單只短暫存活15秒；底單逾時後
                 # 由下一輪重算KC底價，不在舊單上套用回踩二次確認與目標漂移。
-                # 每日熔斷、幣種停用及掛單逾時仍在上方保留。
+                # BREAKOUT 回踩限價掛單不需要 confirm_pullback_entry，
+                # 由限價單成交自然確認回踩；每日熔斷、幣種停用及掛單逾時仍在上方保留。
                 continue
+
             confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
             if confirm_df.empty or len(confirm_df) < 50:
                 continue
