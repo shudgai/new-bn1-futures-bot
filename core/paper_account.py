@@ -370,9 +370,12 @@ class PaperAccount:
                 continue
             side = info["side"]
             target = float(info["target_price"])
+            # ✅ 穿透成交優化：多單要求最新價低於掛單價 0.05%，空單要求高於掛單價 0.05%
+            # 藉此模擬真實掛單簿在同價格排隊的撮合阻力，防範假觸價幻想成交。
+            threshold_pct = 0.0005
             touched = (
-                (side == "LONG" and current_price <= target)
-                or (side == "SHORT" and current_price >= target)
+                (side == "LONG" and current_price <= target * (1.0 - threshold_pct))
+                or (side == "SHORT" and current_price >= target * (1.0 + threshold_pct))
             )
             if not touched:
                 continue
