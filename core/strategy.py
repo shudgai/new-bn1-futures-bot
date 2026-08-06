@@ -605,9 +605,9 @@ class SuperTrendKeltnerStrategy:
                 "prior_high": prior_high, "prior_low": prior_low, **common,
             }
 
-        ema35 = float(df["close"].ewm(span=35, adjust=False).mean().iloc[-1])
+        ema20 = float(curr["ema_20"])
         ema60 = float(df["close"].ewm(span=60, adjust=False).mean().iloc[-1])
-        supports = [("5m EMA35", ema35), ("5m EMA60", ema60)]
+        supports = [("5m EMA20", ema20), ("5m EMA60", ema60)]
         if ema_50_1h is not None:
             supports.append(("1h EMA50", float(ema_50_1h)))
         support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
