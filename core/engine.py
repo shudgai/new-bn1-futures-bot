@@ -2486,7 +2486,10 @@ class TradingEngine:
                         self.account.save_state()
                         self._last_diagnostic_stats_save_at = now_time
 
-                await asyncio.sleep(5)
+                # ✅ 修正：紙交易模式下將輪詢間隔縮短為 1 秒，以實現近乎即時的平倉監控
+                # 實體模式下保持 5 秒以防 API 頻率超限。
+                sleep_sec = 1 if PAPER_TRADING else 5
+                await asyncio.sleep(sleep_sec)
             except asyncio.CancelledError:
                 break
             except (ccxt.NetworkError, ccxt.RequestTimeout) as e:
