@@ -165,8 +165,13 @@ class TradingEngine:
         eligible = signal.get("eligible")
         score = signal.get("score")
         if score is None:
+            # 嘗試從 reason 字串中解析分數（格式：Score(85)）
             match = re.search(r"Score\((\d+)\)", signal.get("reason", ""))
-            score = int(match.group(1)) if match else 0
+            if match:
+                score = int(match.group(1))
+            else:
+                # 嘗試 btc_adjusted_score / raw_score 作為備用
+                score = signal.get("btc_adjusted_score") or signal.get("raw_score")
         direction_text = {"LONG": "多單", "SHORT": "空單"}.get(
             current_direction, "雙向"
         )
@@ -2289,7 +2294,11 @@ class TradingEngine:
                         coin = symbol.replace("/USDT", "")
                         if symbol in self.account.positions:
                             position = self.account.positions[symbol]
-                            position_score = position.get("signal_score") or 0
+                            # signal_score 重啟後從交易所同步回來可能是 None
+                            # 優先用 signal_score，其次 raw_signal_score，都沒有才顯示 --
+                            raw_sc = position.get("raw_signal_score")
+                            sc = position.get("signal_score") or raw_sc
+                            position_score = f"{int(sc)}" if sc is not None else "--"
                             position_direction = "多單" if position.get("side") == "LONG" else "空單"
                             signal_progress.append(
                                 f"{coin} {position_direction} {position_score}分,持倉中"
