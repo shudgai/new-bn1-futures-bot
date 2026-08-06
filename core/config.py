@@ -177,9 +177,9 @@ ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true"
-# 觸發門檻改用每筆進場 ATR：1.2 ATR 保本、3.5 ATR 轉 runner 並鎖住
-# 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早掃掉剛起跑的部位。
-TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.2"))
+# 觸發門檻改用每筆進場 ATR：2.0 ATR 保本、3.5 ATR 轉 runner 並鎖住
+# 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早補保本掃掉剛起跑的部位。
+TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "2.0"))
 TRAILING_TIER2_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER2_TRIGGER_ATR_MULT", "3.5"))
 TRAILING_TIER3_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER3_TRIGGER_ATR_MULT", "5.0"))
 TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "2.0"))
@@ -395,11 +395,11 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # 預估滑點作最低安全線，避免鎖到帳面獲利、實際淨虧。
 EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.003"))
 EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.002"))
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0025"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0060"))
 TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0005"))
 # CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
 # 專用、更早啟動的移動停利觸發門檻。
-CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.0025"))
+CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.0060"))
 # CONTRARIAN_POSITION_SIZE_MULTIPLIER：逆勢承接單的信心水準本來就比一般
 # 順勢MA7拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
 # 就算反彈失敗被打回原趨勢方向，虧損金額也比較小。
