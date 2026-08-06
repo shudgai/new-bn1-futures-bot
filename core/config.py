@@ -142,6 +142,9 @@ STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower()
 # 08/05實績：MOMENTUM_CROSS 18答033%勝率、總損益-4.21U，且輸家平均持倉(21.4分)
 # 反而比赏家(7.0分)還長，結構是反的；已正式停用。
 ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "false").lower() == "true"
+# 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
+# SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
+ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "true").lower() == "true"
 STRUCTURED_VOLUME_MIN_RATIO = float(os.getenv("STRUCTURED_VOLUME_MIN_RATIO", "1.0"))
 STRUCTURED_SWING_LOOKBACK = int(os.getenv("STRUCTURED_SWING_LOOKBACK", "20"))
 STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "0.25"))

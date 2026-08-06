@@ -26,7 +26,7 @@ from core.config import (
     MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
-    STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY,
+    STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -583,7 +583,7 @@ class SuperTrendKeltnerStrategy:
             else price < float(curr["kc_lower"])
         )
         structure_break = price > prior_high if side == "LONG" else price < prior_low
-        if aligned and (kc_break or structure_break) and volume_ratio >= STRUCTURED_VOLUME_MIN_RATIO:
+        if ENABLE_BREAKOUT_ENTRY and aligned and (kc_break or structure_break) and volume_ratio >= STRUCTURED_VOLUME_MIN_RATIO:
             trigger = "KC上軌" if side == "LONG" and kc_break else "KC下軌" if side == "SHORT" and kc_break else "前高" if side == "LONG" else "前低"
             ema20 = float(curr["ema_20"])
             # 突破後掛限價單等回踩確認再進場：
