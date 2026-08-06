@@ -585,19 +585,25 @@ class SuperTrendKeltnerStrategy:
         structure_break = price > prior_high if side == "LONG" else price < prior_low
         if ENABLE_BREAKOUT_ENTRY and aligned and (kc_break or structure_break) and volume_ratio >= STRUCTURED_VOLUME_MIN_RATIO:
             trigger = "KC上軌" if side == "LONG" and kc_break else "KC下軌" if side == "SHORT" and kc_break else "前高" if side == "LONG" else "前低"
+            
+            # ✅ 新增副策略：如果突破時成交量暴增 >= 2.0 倍均量，判定為主力強勢掃貨，直接以市價單進場搶籌
+            if volume_ratio >= 2.0:
+                return {
+                    "action": "ENTER_MARKET", "entry_mode": "BREAKOUT", "score": 95,
+                    "target_price": price,
+                    "reason": f"Breakout_{side}｜🚀 [爆量強突破市價] 突破{trigger}｜量能{volume_ratio:.2f}x",
+                    "prior_high": prior_high, "prior_low": prior_low, **common,
+                }
+            
+            # 普通突破：維持原限價單等待回踩
             ema20 = float(curr["ema_20"])
-            # 突破後掛限價單等回踩確認再進場：
-            # 多頭：等回踩到 EMA20 + 0.5ATR（通道中間偏上方），而非在突破高點市價追買
-            # 空頭：等反彈到 EMA20 - 0.5ATR（通道中間偏下方），而非在突破低點市價追賣
-            # 這樣進場點比突破極端價低/高至少 0.5~1.5 ATR，止損距離同樣寬，賠率大幅改善
             from core.config import BREAKOUT_PULLBACK_ATR_MULT
             if side == "LONG":
                 pullback_target = ema20 + BREAKOUT_PULLBACK_ATR_MULT * atr
-                # 只有在回踩目標低於現在突破價時才有意義（否則直接成交沒有等待效果）
-                pullback_target = min(pullback_target, price * 0.9995)  # 確保比現價低
+                pullback_target = min(pullback_target, price * 0.9995)
             else:
                 pullback_target = ema20 - BREAKOUT_PULLBACK_ATR_MULT * atr
-                pullback_target = max(pullback_target, price * 1.0005)  # 確保比現價高
+                pullback_target = max(pullback_target, price * 1.0005)
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT", "score": 90,
                 "target_price": pullback_target,
