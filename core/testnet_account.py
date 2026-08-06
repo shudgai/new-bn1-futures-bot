@@ -1279,9 +1279,7 @@ class BinanceTestnetAccount:
         ✅ 修正：若訊號分數達 90 分以上（強勢訊號），強制將 post_only 設為 False，
         改以市價單（open_position）立即成交進場，避免價格快速拉升時錯過行情。
         """
-        if signal_score is not None and signal_score >= 90:
-            post_only = False
-            reason = f"🚀 [90分+強勢市價] {reason}"
+        # ✅ 修正：配合突破確認後限價回踩優化，90 分以上也完全恢復使用限價單，移除先前強制轉市價的設定。
 
         if symbol in self.positions or symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False

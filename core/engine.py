@@ -1599,7 +1599,10 @@ class TradingEngine:
         for score, symbol, sig, _price, real_atr in signals:
             if symbol in pool or self._pullback_retry_after.get(symbol, 0.0) > now:
                 continue
-            entry_mode = sig.get("entry_mode", "CURRENT_MAKER" if score >= 90 else "PULLBACK")
+            # ✅ 修正：結合「收盤確認」與「限價回踩」
+            # 即使分數達到 90 分以上，也強制使用 PULLBACK 模式。
+            # 這會迫使系統必須等 5m/1m 收盤反轉確認，並以限價單掛在回踩點，避免市價追高吃針。
+            entry_mode = "PULLBACK"
             pullback_depth = get_pullback_target_depth(score)
             target_price = float(_price if entry_mode == "CURRENT_MAKER" else sig["target_zone"])
             pullback_distance_atr = float(sig.get("pullback_distance_atr") or 0.0)
