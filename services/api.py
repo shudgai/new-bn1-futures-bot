@@ -234,7 +234,7 @@ async def manual_close(req: ManualCloseRequest):
     if symbol not in engine.account.positions:
         raise HTTPException(status_code=400, detail="查無此持倉")
     price = engine.tickers.get(symbol, engine.account.positions[symbol]["entry_price"])
-    success = await engine.account.close_position(symbol, price, "手動平倉")
+    success = await engine.account.close_position(symbol, price, "手動平倉", is_manual=True)
     if not success:
         raise HTTPException(status_code=502, detail="Binance Testnet 平倉失敗")
     return {"status": "success", "message": f"手動平倉 {symbol}"}

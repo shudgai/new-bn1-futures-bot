@@ -1516,13 +1516,13 @@ class BinanceTestnetAccount:
         self._pending_retry_streak[symbol] = streak + 1
 
     async def close_position(
-        self, symbol: str, current_price: float, close_reason: str
+        self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
-        # ✅ 修正 Bug2：平倉失敗後 30 秒冷卻，防止網路抖動期間重複打 API
+        # ✅ 修正：若是手動平倉，直接跳過自動冷卻計時器，避免用戶手動平倉卡住
         _now = time.time()
-        if _now < self._close_retry_after.get(symbol, 0.0):
+        if not is_manual and _now < self._close_retry_after.get(symbol, 0.0):
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = _now
