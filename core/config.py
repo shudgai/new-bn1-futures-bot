@@ -228,7 +228,7 @@ SOFT_WARNING_PERSIST_SEC = float(os.getenv("SOFT_WARNING_PERSIST_SEC", "300"))
 # 波動率本身很低的時候（實測 BTC/LINK/LTC/BNB/XRP 反推 ATR 只有 0.07%~0.21%），
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
 # 保證止損距離不會低於此比例，止盈距離依 TAKE_PROFIT/STOP_LOSS 倍數比例同步放大。
-MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.0080"))
+MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.0015"))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
