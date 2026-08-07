@@ -1179,7 +1179,7 @@ class TradingEngine:
                             # 即時計算最新評分
                             score_res = self.strategy.evaluate_structured_entry(
                                 computed,
-                                ema_50_1h=self.st_ema_50_1h_cache.get(symbol),
+                                ema_50_1h=self.ema_50_1h_cache.get(symbol),
                                 st_direction_1h=symbol_1h,
                                 btc_st_direction_1h=btc_1h,
                                 symbol=symbol,
