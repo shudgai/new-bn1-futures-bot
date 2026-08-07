@@ -1038,19 +1038,20 @@ class TradingEngine:
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
                         await self.account.close_position(symbol, curr_p, close_reason)
                         self._soft_warning_since.pop(symbol, None)
-                    elif (
-                        not is_profit_locked
-                        and not bottom_grace
-                        and ENABLE_SOFT_WARNING_TIGHTEN
-                    ):
-                        # 軟性警訊收緊止損：持續處於「✗」（ma_ok=false）但還沒
-                        # 升級成「⛔」超過 SOFT_WARNING_PERSIST_SEC，把止損往
-                        # 進場價方向收緊到「目前止損與進場價的中點」（只會變緊
-                        # 不會變鬆），降低風險但不直接平倉，介於「完全不管」跟
-                        # 「5m防線直接關倉」之間。
-                        if trigger.get("ma_ok") is False:
-                            from core.config import ENABLE_SOFT_WARNING_TIGHTEN
-                            since = self._soft_warning_since.setdefault(symbol, time.time())
+                    else:
+                        from core.config import ENABLE_SOFT_WARNING_TIGHTEN
+                        if (
+                            not is_profit_locked
+                            and not bottom_grace
+                            and ENABLE_SOFT_WARNING_TIGHTEN
+                        ):
+                            # 軟性警訊收緊止損：持續處於「✗」（ma_ok=false）但還沒
+                            # 升級成「⛔」超過 SOFT_WARNING_PERSIST_SEC，把止損往
+                            # 進場價方向收緊到「目前止損與進場價的中點」（只會變緊
+                            # 不會變鬆），降低風險但不直接平倉，介於「完全不管」跟
+                            # 「5m防線直接關倉」之間。
+                            if trigger.get("ma_ok") is False:
+                                since = self._soft_warning_since.setdefault(symbol, time.time())
                             already_tightened = bool(position_meta.get("soft_warning_tightened"))
                             if ENABLE_SOFT_WARNING_TIGHTEN and time.time() - since >= SOFT_WARNING_PERSIST_SEC and not already_tightened:
                                 side = position.get("side")
