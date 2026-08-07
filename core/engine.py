@@ -1883,7 +1883,11 @@ class TradingEngine:
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price, sl,
         )
-        if amount < MIN_TRADE_USDT or self.account.get_available_balance() < amount:
+        if amount < MIN_TRADE_USDT:
+            self.account.log(f"🛑 {symbol} 風控縮減後金額 {amount:.2f}U 低於最小交易門檻 {MIN_TRADE_USDT}U，放棄掛單", "WARNING")
+            return False
+        if self.account.get_available_balance() < amount:
+            self.account.log(f"🛑 {symbol} 可用餘額 {self.account.get_available_balance():.2f}U 不足 {amount:.2f}U，放棄掛單", "WARNING")
             return False
         if not await self._execution_price_is_safe(symbol, side):
             return False
