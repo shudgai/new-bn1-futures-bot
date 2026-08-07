@@ -1227,16 +1227,8 @@ class TradingEngine:
                                     self._last_dca_skip_log_at[symbol] = time.time()
                                     self.account.log(f"⚠️ [DCA 評分不足] {symbol} 最新分數 {current_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分，暫不掛載下一階加倉單", "WARNING")
 
-                    # 修歙1：1h ST翻向需至少廢過 BREAKOUT_KC_FAIL_CONFIRM_BARS 根已收盤1h K棒才確認
-                    # 限于可取得的資料，用 btc_1h_st_flip_age 代替個幣翻轉年齡（已有编碼）
-                    btc_flip_buffered = btc_1h == -direction and self.btc_1h_st_flip_age >= BREAKOUT_KC_FAIL_CONFIRM_BARS
-                    symbol_1h_contrary = symbol_1h == -direction
-                    if symbol_1h_contrary or btc_flip_buffered:
-                        source = "個幣" if symbol_1h_contrary else "BTC"
-                        await self.account.close_position(
-                            symbol, current_price, f"{source} 1h SuperTrend翻向（纓衝確認），強制全平"
-                        )
-                        continue
+                    # 根據使用者偏好：已停用 1h SuperTrend 翻向強制全平防線，給持倉死等利潤彈回或吃滿硬止損的空間。
+                    pass
 
 
 
