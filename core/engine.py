@@ -2299,6 +2299,32 @@ class TradingEngine:
                 if entry_mode not in ("MA7_REVERSAL", "MA7_BOTTOM_LIMIT"):
                     self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
+            if entry_mode in ("SUPPORT_PULLBACK", "BREAKOUT"):
+                confirm_df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+                if not confirm_df.empty and len(confirm_df) >= 50:
+                    confirm_df = self.strategy.compute_indicators(confirm_df)
+                    from core.config import MIN_OPEN_SIGNAL_SCORE
+                    ema_50_1h = self.ema_50_1h_cache.get(symbol)
+                    st_direction_1h = self.st_direction_1h_cache.get(symbol)
+                    structured_sig = self.strategy.evaluate_structured_entry(
+                        confirm_df,
+                        ema_50_1h=ema_50_1h,
+                        st_direction_1h=st_direction_1h,
+                        btc_st_direction_1h=self.btc_1h_st_direction,
+                        symbol=symbol,
+                        indicators_precomputed=True,
+                    )
+                    action = structured_sig.get("action", "HOLD")
+                    score = int(structured_sig.get("score") or 0)
+                    if action not in ("ENTER_MARKET", "ENTER_LIMIT") or score < MIN_OPEN_SIGNAL_SCORE:
+                        self._record_pullback_outcome("maker_condition_changed")
+                        await self.account.cancel_pending_limit(
+                            symbol,
+                            f"條件已變差或分數不足：模式={action}, 分數={score} < {MIN_OPEN_SIGNAL_SCORE}"
+                        )
+                        self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                        continue
+
             if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT", "SUPPORT_PULLBACK", "BREAKOUT"):
                 # 90+現價單、MA7拐頭單與回撤底單只短暫存活15秒；底單逾時後
                 # 由下一輪重算KC底價，不在舊單上套用回踩二次確認與目標漂移。
