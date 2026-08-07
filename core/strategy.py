@@ -576,7 +576,20 @@ class SuperTrendKeltnerStrategy:
             "volume_ratio": volume_ratio,
         }
 
-        # 計算支撐與壓力區（基於最近 24 根已收盤的 5m K棒）
+        # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
+        if not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
+            if side == "LONG" and price < ema_50_1h:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"價格低於 1h EMA50，逆勢做多拒絕開倉（價格 {price:.6g} < EMA50 {ema_50_1h:.6g}）", **common
+                }
+            elif side == "SHORT" and price > ema_50_1h:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"價格高於 1h EMA50，逆勢做空拒絕開倉（價格 {price:.6g} > EMA50 {ema_50_1h:.6g}）", **common
+                }
+
+        # 計算支撐與壓力區（基於最近 24 根已收盤 of 5m K棒）
         if not is_dca_check and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
             past_24_bars = df.iloc[-25:-1]
             support_level = float(past_24_bars['low'].min())
