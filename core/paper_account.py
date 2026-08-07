@@ -686,17 +686,14 @@ class PaperAccount:
             rebound_peak_pnl_pct = meta.get("rebound_peak_pnl_pct")
             if profit_alert or rebound_peak_pnl_pct is not None:
                 if pnl_pct >= peak_pnl_pct:
-                    # 反彈已經漲回、甚至超越原本的歷史高點，不再是「回吐
-                    # 後的反彈」，是全新的高點，回到正常的警訊/移動停利邏輯
+                    # 反彈已經漲回、甚至超越原本的歷史高點
                     meta["rebound_peak_pnl_pct"] = None
                 elif rebound_peak_pnl_pct is None or pnl_pct > rebound_peak_pnl_pct:
-                    # 反彈還在持續往上爬，還沒觸頂，記錄目前反彈高點繼續持有
+                    # 記錄目前反彈高點
                     meta["rebound_peak_pnl_pct"] = pnl_pct
                 elif pnl_pct > min_rebound_exit_pct:
-                    # 反彈本身開始回落（找到高點了），且獲利仍蓋過來回成本，
-                    # 把握這個反彈高點平倉
-                    await self.close_position(symbol, curr_p, "獲利回吐警訊後反彈觸頂回落，把握高點平倉")
-                    continue
+                    # 警報只做為視覺提示，不在這裡自動平倉，讓利潤能奔跑
+                    pass
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p

@@ -179,7 +179,7 @@ ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
-ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true"
+ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
 # 觸發門檻改用每筆進場 ATR：2.0 ATR 保本、3.5 ATR 轉 runner 並鎖住
 # 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早補保本掃掉剛起跑的部位。
 TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "2.0"))
