@@ -1107,6 +1107,76 @@ class TradingEngine:
 
                     symbol_1h = self.st_direction_1h_cache.get(symbol)
                     btc_1h = int(self.btc_1h_st_direction or 0)
+                    
+                    # ====== 【DCA 分批加倉限價單掛載與均價 SL/TP 重算】 ======
+                    from core.config import ENABLE_DCA_LIMIT, DCA_STAGE_DEPTHS
+                    
+                    # 取得目前持倉所處的 DCA 階段，若沒有則從 meta 讀取
+                    dca_stage = position.get("dca_stage") or meta.get("dca_stage")
+                    
+                    # 如果有新加倉單成交，qty 增加時更新 stage
+                    last_qty = meta.get("dca_last_qty", 0.0)
+                    if last_qty > 0.0 and abs(position["qty"] - last_qty) > 1e-8:
+                        # 數量增加，代表上一階 DCA 限價單已成交！
+                        old_stage = dca_stage or 1
+                        dca_stage = old_stage + 1
+                        meta["dca_stage"] = dca_stage
+                        meta["dca_last_qty"] = position["qty"]
+                        
+                        # 成交後，重新對齊均價（最新進場價）來重算 SL
+                        dca_atr = float(position.get("atr") or meta.get("atr") or 0.0)
+                        if dca_atr > 0:
+                            from core.config import BREAKOUT_HARD_STOP_ATR_MULT, MIN_SL_DISTANCE_PCT
+                            if side == "LONG":
+                                new_sl = position["entry_price"] - BREAKOUT_HARD_STOP_ATR_MULT * dca_atr
+                                new_sl = min(new_sl, position["entry_price"] * (1.0 - MIN_SL_DISTANCE_PCT))
+                            else:
+                                new_sl = position["entry_price"] + BREAKOUT_HARD_STOP_ATR_MULT * dca_atr
+                                new_sl = max(new_sl, position["entry_price"] * (1.0 + MIN_SL_DISTANCE_PCT))
+                            
+                            # 強制將新止損對齊到交易所與本地
+                            meta["sl"] = new_sl
+                            await self.account.trail_stop_loss(symbol, new_sl, mark_profit_locked=False)
+                            self.account.log(f"🔄 [DCA 均價對齊] {symbol} 加倉成交 (階 {dca_stage})，新均價 {position['entry_price']:.8g}，止損重設為 {new_sl:.8g}", "SUCCESS")
+                    else:
+                        meta["dca_last_qty"] = position["qty"]
+
+                    if ENABLE_DCA_LIMIT and dca_stage in (1, 2):
+                        # 如果此幣種目前沒有在掛限價加倉單，則掛載下一階加倉單
+                        if symbol not in self.account.pending_limit_orders:
+                            dca_base_price = float(position.get("dca_base_price") or meta.get("dca_base_price") or position["entry_price"])
+                            dca_original_amount = float(position.get("dca_original_amount") or meta.get("dca_original_amount") or (position["entry_price"] * position["qty"]))
+                            
+                            next_stage = int(dca_stage) + 1
+                            if next_stage - 2 < len(DCA_STAGE_DEPTHS):
+                                depth_pct = DCA_STAGE_DEPTHS[next_stage - 2]
+                                next_price = dca_base_price * (1 - depth_pct) if side == "LONG" else dca_base_price * (1 + depth_pct)
+                                next_amount = dca_original_amount / 3.0
+                                
+                                dca_context = {
+                                    "dca_stage": next_stage,
+                                    "dca_base_price": dca_base_price,
+                                    "dca_original_amount": dca_original_amount,
+                                    "entry_mode": entry_mode,
+                                    "initial_sl": float(position.get("sl") or meta.get("sl") or 0.0),
+                                }
+                                # 使用與目前持倉相同的槓桿與 SL
+                                success = await self.account.place_limit_entry(
+                                    symbol=symbol,
+                                    side=side,
+                                    target_price=next_price,
+                                    amount_usdt=next_amount,
+                                    sl=float(position.get("sl") or meta.get("sl") or 0.0),
+                                    tp=float(position.get("tp") or meta.get("tp") or 0.0),
+                                    reason=f"DCA 加倉 (階 {next_stage})",
+                                    atr=float(position.get("atr") or meta.get("atr") or 0.015),
+                                    leverage=int(position.get("leverage") or 1),
+                                    post_only=True,
+                                    entry_context=dca_context
+                                )
+                                if success:
+                                    self.account.log(f"📥 [DCA 自動加倉掛單] {symbol} {side} 成功掛出第 {next_stage} 階加倉委託 @ {next_price:.8g}", "INFO")
+
                     # 修歙1：1h ST翻向需至少廢過 BREAKOUT_KC_FAIL_CONFIRM_BARS 根已收盤1h K棒才確認
                     # 限于可取得的資料，用 btc_1h_st_flip_age 代替個幣翻轉年齡（已有编碼）
                     btc_flip_buffered = btc_1h == -direction and self.btc_1h_st_flip_age >= BREAKOUT_KC_FAIL_CONFIRM_BARS

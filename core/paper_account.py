@@ -26,6 +26,8 @@ from core.config import (
     DISABLE_TAKE_PROFIT,
     PARTIAL_CLOSE_THRESHOLDS,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
+    ENABLE_DCA_LIMIT,
+    DCA_STAGE_DEPTHS,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -40,6 +42,7 @@ ENTRY_CONTEXT_KEYS = (
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
+    "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
 
@@ -326,8 +329,22 @@ class PaperAccount:
                 entry_context=entry_context,
             )
 
-        if symbol in self.positions or symbol in self.pending_limit_orders or symbol in self.closing_lock:
+        # DCA 分批掛單處理
+        entry_ctx = dict(entry_context or {})
+        is_dca_call = "dca_stage" in entry_ctx
+        if ENABLE_DCA_LIMIT and not is_dca_call:
+            entry_ctx["dca_stage"] = 1
+            entry_ctx["dca_base_price"] = float(target_price)
+            entry_ctx["dca_original_amount"] = float(amount_usdt)
+            amount_usdt = amount_usdt / 3.0
+
+        if symbol in self.positions:
+            # 只有在非 DCA 首次進場（也就是 DCA 2、3 階加倉）時，才允許在已有持倉時繼續掛單
+            if not is_dca_call:
+                return False
+        elif symbol in self.pending_limit_orders or symbol in self.closing_lock:
             return False
+
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(
                 f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕掛單",
@@ -354,11 +371,12 @@ class PaperAccount:
             "placed_at": time.time(),
             "post_only": True,
             "entry_context": {
-                key: value for key, value in dict(entry_context or {}).items()
+                key: value for key, value in entry_ctx.items()
                 if key in ENTRY_CONTEXT_KEYS
             },
         }
-        self.log(f"📝 [紙上Maker掛單] {symbol} {side} @ {target_price:.8g}，等待觸價", "INFO")
+        dca_note = f" (DCA 階 {entry_ctx['dca_stage']})" if "dca_stage" in entry_ctx else ""
+        self.log(f"📝 [紙上Maker掛單] {symbol} {side} @ {target_price:.8g}{dca_note}，等待觸價", "INFO")
         self.save_state()
         return True
 
