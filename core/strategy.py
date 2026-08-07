@@ -662,7 +662,7 @@ class SuperTrendKeltnerStrategy:
         )
         volume_contracting = volume_ma > 0 and volume <= volume_ma
         rsi = float(curr["rsi"])
-        rsi_ok = rsi >= 45.0 if side == "LONG" else rsi <= 55.0
+        rsi_ok = rsi >= 52.0 if side == "LONG" else rsi <= 48.0
         
         if aligned and near_support and reversal and volume_contracting and rsi_ok:
             return {
