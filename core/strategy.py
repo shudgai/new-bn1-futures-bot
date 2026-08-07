@@ -647,11 +647,14 @@ class SuperTrendKeltnerStrategy:
             else float(curr["close"]) < float(curr["open"]) or upper_wick >= max(body, atr * 0.1)
         )
         volume_contracting = volume_ma > 0 and volume <= volume_ma
-        if aligned and near_support and reversal and volume_contracting:
+        rsi = float(curr["rsi"])
+        rsi_ok = rsi >= 45.0 if side == "LONG" else rsi <= 55.0
+        
+        if aligned and near_support and reversal and volume_contracting and rsi_ok:
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": 82,
                 "target_price": support_price,
-                "reason": f"SupportPullback_{side}｜{support_name}止跌｜縮量{volume_ratio:.2f}x",
+                "reason": f"SupportPullback_{side}｜{support_name}止跌｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}",
                 **common,
             }
 
