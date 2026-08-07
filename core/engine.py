@@ -1156,7 +1156,24 @@ class TradingEngine:
                     else:
                         meta["dca_last_qty"] = position["qty"]
 
-                    if ENABLE_DCA_LIMIT and dca_stage in (1, 2):
+                    # 1h 級別趨勢防接飛刀 (防瀑布) 過濾：若大趨勢已翻向，停止加倉並撤回掛單
+                    waterfall_crash = (side == "LONG" and symbol_1h == -1) or (side == "SHORT" and symbol_1h == 1)
+                    if waterfall_crash:
+                        if symbol in self.account.pending_limit_orders:
+                            po = self.account.pending_limit_orders[symbol]
+                            if "dca_stage" in po.get("entry_context", {}):
+                                await self.account.cancel_pending_limit(symbol, f"大週期 1h 趨勢反向({symbol_1h})，DCA撤單避險")
+                    else:
+                        # DCA 掛單超時管理：掛單時間過長自動撤回，釋放資金佔用
+                        if symbol in self.account.pending_limit_orders:
+                            po = self.account.pending_limit_orders[symbol]
+                            if "dca_stage" in po.get("entry_context", {}):
+                                from core.config import DCA_LIMIT_TIMEOUT_SEC
+                                placed_at = po.get("placed_at") or time.time()
+                                if time.time() - placed_at >= DCA_LIMIT_TIMEOUT_SEC:
+                                    await self.account.cancel_pending_limit(symbol, "DCA 加倉限價單超時撤單")
+
+                    if ENABLE_DCA_LIMIT and dca_stage in (1, 2) and not waterfall_crash:
                         # 如果此幣種目前沒有在掛限價加倉單，則進行最新評分檢測
                         if symbol not in self.account.pending_limit_orders:
                             # 即時計算最新評分

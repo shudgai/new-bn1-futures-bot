@@ -157,8 +157,13 @@ class PaperAccount:
             "shadow_parameter_stats": self.shadow_parameter_stats,
             "shadow_parameter_last": self.shadow_parameter_last,
         }
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp_file = f"{STATE_FILE}.tmp"
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, STATE_FILE)
+        except Exception:
+            pass
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.logs.append({
