@@ -550,6 +550,7 @@ class SuperTrendKeltnerStrategy:
         self, df: pd.DataFrame, ema_50_1h: float = None,
         st_direction_1h: int = None, btc_st_direction_1h: int = 0,
         symbol: str = None, indicators_precomputed: bool = False,
+        is_dca_check: bool = False,
     ) -> dict:
         """Three closed-bar entries without MA7: breakout, support pullback, momentum cross."""
         if len(df) < max(65, STRUCTURED_SWING_LOOKBACK + 2):
@@ -576,7 +577,7 @@ class SuperTrendKeltnerStrategy:
         }
 
         # 計算支撐與壓力區（基於最近 24 根已收盤的 5m K棒）
-        if symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+        if not is_dca_check and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
             past_24_bars = df.iloc[-25:-1]
             support_level = float(past_24_bars['low'].min())
             resistance_level = float(past_24_bars['high'].max())

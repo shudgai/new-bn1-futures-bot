@@ -1176,7 +1176,6 @@ class TradingEngine:
                     if ENABLE_DCA_LIMIT and dca_stage in (1, 2) and not waterfall_crash:
                         # 如果此幣種目前沒有在掛限價加倉單，則進行最新評分檢測
                         if symbol not in self.account.pending_limit_orders:
-                            # 即時計算最新評分
                             score_res = self.strategy.evaluate_structured_entry(
                                 computed,
                                 ema_50_1h=self.ema_50_1h_cache.get(symbol),
@@ -1184,6 +1183,7 @@ class TradingEngine:
                                 btc_st_direction_1h=btc_1h,
                                 symbol=symbol,
                                 indicators_precomputed=True,
+                                is_dca_check=True,
                             )
                             current_score = score_res.get("score") or 0
                             
