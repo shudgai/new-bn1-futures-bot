@@ -1109,8 +1109,20 @@ class TradingEngine:
                     symbol_1h = self.st_direction_1h_cache.get(symbol)
                     btc_1h = int(self.btc_1h_st_direction or 0)
                     
+                    # 提前載入 5m K線與指標計算，供後續 DCA 評分與 exits 共同使用
+                    df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+                    if df.empty or len(df) < 65:
+                        continue
+                    computed = self.strategy.compute_indicators(df)
+                    bar = computed.iloc[-1]
+                    atr = float(bar["atr"]) if not pd.isna(bar["atr"]) else 0.0
+                    if atr <= 0:
+                        atr = float(meta.get("atr") or position.get("atr") or 0.0)
+                    if atr <= 0:
+                        continue
+                    
                     # ====== 【DCA 分批加倉限價單掛載與均價 SL/TP 重算】 ======
-                    from core.config import ENABLE_DCA_LIMIT, DCA_STAGE_DEPTHS
+                    from core.config import ENABLE_DCA_LIMIT, DCA_STAGE_DEPTHS, MIN_OPEN_SIGNAL_SCORE
                     
                     # 取得目前持倉所處的 DCA 階段，若沒有則從 meta 讀取
                     dca_stage = position.get("dca_stage") or meta.get("dca_stage")
@@ -1126,6 +1138,8 @@ class TradingEngine:
                         
                         # 成交後，重新對齊均價（最新進場價）來重算 SL
                         dca_atr = float(position.get("atr") or meta.get("atr") or 0.0)
+                        if dca_atr <= 0:
+                            dca_atr = atr
                         if dca_atr > 0:
                             from core.config import BREAKOUT_HARD_STOP_ATR_MULT, MIN_SL_DISTANCE_PCT
                             if side == "LONG":
@@ -1143,40 +1157,58 @@ class TradingEngine:
                         meta["dca_last_qty"] = position["qty"]
 
                     if ENABLE_DCA_LIMIT and dca_stage in (1, 2):
-                        # 如果此幣種目前沒有在掛限價加倉單，則掛載下一階加倉單
+                        # 如果此幣種目前沒有在掛限價加倉單，則進行最新評分檢測
                         if symbol not in self.account.pending_limit_orders:
-                            dca_base_price = float(position.get("dca_base_price") or meta.get("dca_base_price") or position["entry_price"])
-                            dca_original_amount = float(position.get("dca_original_amount") or meta.get("dca_original_amount") or (position["entry_price"] * position["qty"]))
+                            # 即時計算最新評分
+                            score_res = self.strategy.evaluate_structured_entry(
+                                computed,
+                                ema_50_1h=self.st_ema_50_1h_cache.get(symbol),
+                                st_direction_1h=symbol_1h,
+                                btc_st_direction_1h=btc_1h,
+                                symbol=symbol,
+                                indicators_precomputed=True,
+                            )
+                            current_score = score_res.get("score") or 0
                             
-                            next_stage = int(dca_stage) + 1
-                            if next_stage - 2 < len(DCA_STAGE_DEPTHS):
-                                depth_pct = DCA_STAGE_DEPTHS[next_stage - 2]
-                                next_price = dca_base_price * (1 - depth_pct) if side == "LONG" else dca_base_price * (1 + depth_pct)
-                                next_amount = dca_original_amount / 3.0
+                            # 分數有維持（符合最低開倉門檻），才允許分批掛出下一階
+                            if current_score >= MIN_OPEN_SIGNAL_SCORE:
+                                dca_base_price = float(position.get("dca_base_price") or meta.get("dca_base_price") or position["entry_price"])
+                                dca_original_amount = float(position.get("dca_original_amount") or meta.get("dca_original_amount") or (position["entry_price"] * position["qty"]))
                                 
-                                dca_context = {
-                                    "dca_stage": next_stage,
-                                    "dca_base_price": dca_base_price,
-                                    "dca_original_amount": dca_original_amount,
-                                    "entry_mode": entry_mode,
-                                    "initial_sl": float(position.get("sl") or meta.get("sl") or 0.0),
-                                }
-                                # 使用與目前持倉相同的槓桿與 SL
-                                success = await self.account.place_limit_entry(
-                                    symbol=symbol,
-                                    side=side,
-                                    target_price=next_price,
-                                    amount_usdt=next_amount,
-                                    sl=float(position.get("sl") or meta.get("sl") or 0.0),
-                                    tp=float(position.get("tp") or meta.get("tp") or 0.0),
-                                    reason=f"DCA 加倉 (階 {next_stage})",
-                                    atr=float(position.get("atr") or meta.get("atr") or 0.015),
-                                    leverage=int(position.get("leverage") or 1),
-                                    post_only=True,
-                                    entry_context=dca_context
-                                )
-                                if success:
-                                    self.account.log(f"📥 [DCA 自動加倉掛單] {symbol} {side} 成功掛出第 {next_stage} 階加倉委託 @ {next_price:.8g}", "INFO")
+                                next_stage = int(dca_stage) + 1
+                                if next_stage - 2 < len(DCA_STAGE_DEPTHS):
+                                    depth_pct = DCA_STAGE_DEPTHS[next_stage - 2]
+                                    next_price = dca_base_price * (1 - depth_pct) if side == "LONG" else dca_base_price * (1 + depth_pct)
+                                    next_amount = dca_original_amount / 3.0
+                                    
+                                    dca_context = {
+                                        "dca_stage": next_stage,
+                                        "dca_base_price": dca_base_price,
+                                        "dca_original_amount": dca_original_amount,
+                                        "entry_mode": entry_mode,
+                                        "initial_sl": float(position.get("sl") or meta.get("sl") or 0.0),
+                                    }
+                                    # 使用與目前持倉相同的槓桿與 SL
+                                    success = await self.account.place_limit_entry(
+                                        symbol=symbol,
+                                        side=side,
+                                        target_price=next_price,
+                                        amount_usdt=next_amount,
+                                        sl=float(position.get("sl") or meta.get("sl") or 0.0),
+                                        tp=float(position.get("tp") or meta.get("tp") or 0.0),
+                                        reason=f"DCA 加倉 (階 {next_stage})",
+                                        atr=atr,
+                                        leverage=int(position.get("leverage") or 1),
+                                        post_only=True,
+                                        entry_context=dca_context
+                                    )
+                                    if success:
+                                        self.account.log(f"📥 [DCA 自動加倉掛單] {symbol} {side} 成功掛出第 {next_stage} 階加倉委託 @ {next_price:.8g}，當前評分維持 {current_score} 分", "INFO")
+                            else:
+                                if getattr(self, "_last_dca_skip_log_at", {}).get(symbol, 0) < time.time() - 300:
+                                    self._last_dca_skip_log_at = getattr(self, "_last_dca_skip_log_at", {})
+                                    self._last_dca_skip_log_at[symbol] = time.time()
+                                    self.account.log(f"⚠️ [DCA 評分不足] {symbol} 最新分數 {current_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分，暫不掛載下一階加倉單", "WARNING")
 
                     # 修歙1：1h ST翻向需至少廢過 BREAKOUT_KC_FAIL_CONFIRM_BARS 根已收盤1h K棒才確認
                     # 限于可取得的資料，用 btc_1h_st_flip_age 代替個幣翻轉年齡（已有编碼）
@@ -1189,16 +1221,7 @@ class TradingEngine:
                         )
                         continue
 
-                    df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
-                    if df.empty or len(df) < 65:
-                        continue
-                    computed = self.strategy.compute_indicators(df)
-                    bar = computed.iloc[-1]
-                    atr = float(bar["atr"]) if not pd.isna(bar["atr"]) else 0.0
-                    if atr <= 0:
-                        atr = float(meta.get("atr") or position.get("atr") or 0.0)
-                    if atr <= 0:
-                        continue
+
 
                     if entry_mode == "BREAKOUT":
                         # 修正2：kc_failed 改為需要連續 BREAKOUT_KC_FAIL_CONFIRM_BARS 根
