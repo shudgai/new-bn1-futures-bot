@@ -575,6 +575,26 @@ class SuperTrendKeltnerStrategy:
             "volume_ratio": volume_ratio,
         }
 
+        # 計算支撐與壓力區（基於最近 24 根已收盤的 5m K棒）
+        if symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+            past_24_bars = df.iloc[-25:-1]
+            support_level = float(past_24_bars['low'].min())
+            resistance_level = float(past_24_bars['high'].max())
+
+            # 做多：必須在支撐位 3% 內
+            if side == "LONG" and price > support_level * 1.03:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"價格不在支撐區3%內（當前 {price:.6g} > 支撐 {support_level:.6g}*1.03）", **common
+                }
+
+            # 做空：必須在壓力位 3% 內
+            if side == "SHORT" and price < resistance_level * 0.97:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"價格不在壓力區3%內（當前 {price:.6g} < 壓力 {resistance_level:.6g}*0.97）", **common
+                }
+
         swing = df.iloc[-(STRUCTURED_SWING_LOOKBACK + 1):-1]
         prior_high = float(swing["high"].max())
         prior_low = float(swing["low"].min())
@@ -735,6 +755,20 @@ class SuperTrendKeltnerStrategy:
         # --- 1. 底線防禦 (Mandatory Filters) ---
 
         st_dir = curr['st_direction']
+
+        # 計算支撐與壓力區（基於最近 24 根已收盤的 5m K棒）
+        if symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+            past_24_bars = df.iloc[-25:-1]
+            support_level = float(past_24_bars['low'].min())
+            resistance_level = float(past_24_bars['high'].max())
+
+            # 做多：必須在支撐位 3% 內
+            if st_dir == 1 and price > support_level * 1.03:
+                return eligibility_hold(f"Mandatory_Fail: Price_Not_Near_Support({price:.6g}>{support_level:.6g}*1.03)")
+
+            # 做空：必須在壓力位 3% 內
+            if st_dir == -1 and price < resistance_level * 0.97:
+                return eligibility_hold(f"Mandatory_Fail: Price_Not_Near_Resistance({price:.6g}<{resistance_level:.6g}*0.97)")
 
         # 層 A：BTC 大盤風險調整。剛翻轉仍暫停；方向相反改為扣分與縮倉，
         # 讓真正相對強勢的個幣仍可在通過其餘品質與回踩確認後進場。

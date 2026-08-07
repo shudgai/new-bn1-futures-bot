@@ -2933,7 +2933,8 @@ def _structured_entry_frame():
     })
 
 
-def test_structured_entry_prioritizes_volume_confirmed_breakout():
+def test_structured_entry_prioritizes_volume_confirmed_breakout(monkeypatch):
+    monkeypatch.setattr("core.strategy.ENABLE_BREAKOUT_ENTRY", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame.loc[frame.index[-1], ["close", "high", "volume"]] = [102.0, 102.2, 1000.0]
@@ -2958,7 +2959,8 @@ def test_structured_entry_uses_limit_for_shrinking_volume_support_reversal():
     assert signal["entry_mode"] == "SUPPORT_PULLBACK"
 
 
-def test_structured_entry_uses_closed_macd_cross():
+def test_structured_entry_uses_closed_macd_cross(monkeypatch):
+    monkeypatch.setattr("core.strategy.ENABLE_MOMENTUM_CROSS_ENTRY", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 106.0
