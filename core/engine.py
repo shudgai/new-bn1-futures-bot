@@ -1049,9 +1049,10 @@ class TradingEngine:
                         # 不會變鬆），降低風險但不直接平倉，介於「完全不管」跟
                         # 「5m防線直接關倉」之間。
                         if trigger.get("ma_ok") is False:
+                            from core.config import ENABLE_SOFT_WARNING_TIGHTEN
                             since = self._soft_warning_since.setdefault(symbol, time.time())
                             already_tightened = bool(position_meta.get("soft_warning_tightened"))
-                            if time.time() - since >= SOFT_WARNING_PERSIST_SEC and not already_tightened:
+                            if ENABLE_SOFT_WARNING_TIGHTEN and time.time() - since >= SOFT_WARNING_PERSIST_SEC and not already_tightened:
                                 side = position.get("side")
                                 current_sl = float(position.get("sl") or 0.0)
                                 entry_p2 = float(position.get("entry_price") or 0.0)
