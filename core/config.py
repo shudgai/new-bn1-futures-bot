@@ -675,7 +675,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "shudgai999@gmail.com")
 
 # --- 分批掛單 (DCA) 配置 ---
-ENABLE_DCA_LIMIT = os.getenv("ENABLE_DCA_LIMIT", "true").lower() == "true"
+ENABLE_DCA_LIMIT = os.getenv("ENABLE_DCA_LIMIT", "false").lower() == "true"
 DCA_STAGE_DEPTHS = [float(d) for d in os.getenv("DCA_STAGE_DEPTHS", "0.03,0.05").split(",") if d.strip()]
 DCA_LIMIT_TIMEOUT_SEC = float(os.getenv("DCA_LIMIT_TIMEOUT_SEC", "14400.0"))
 
