@@ -30,6 +30,7 @@ from core.config import (
     TRAILING_CALLBACK_R_MULT,
     ENABLE_DCA_LIMIT,
     DCA_STAGE_DEPTHS,
+    PAPER_MAKER_FILL_PENETRATION_PCT,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -395,9 +396,9 @@ class PaperAccount:
                 continue
             side = info["side"]
             target = float(info["target_price"])
-            # ✅ 穿透成交優化：多單要求最新價低於掛單價 0.05%，空單要求高於掛單價 0.05%
+            # 多單要求最新價低於掛單價、空單要求高於掛單價一小段距離，
             # 藉此模擬真實掛單簿在同價格排隊的撮合阻力，防範假觸價幻想成交。
-            threshold_pct = 0.0005
+            threshold_pct = PAPER_MAKER_FILL_PENETRATION_PCT
             touched = (
                 (side == "LONG" and current_price <= target * (1.0 - threshold_pct))
                 or (side == "SHORT" and current_price >= target * (1.0 + threshold_pct))

@@ -465,7 +465,12 @@ async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_pa
     await account.check_pending_limit_orders()
     assert "SOL/USDT" in account.pending_limit_orders
 
-    await account.update_positions({"SOL/USDT": 99.9})
+    # 只碰到掛單附近但尚未穿透 0.01%，仍模擬排隊未成交。
+    await account.update_positions({"SOL/USDT": 99.995})
+    await account.check_pending_limit_orders()
+    assert "SOL/USDT" in account.pending_limit_orders
+
+    await account.update_positions({"SOL/USDT": 99.98})
     await account.check_pending_limit_orders()
     assert "SOL/USDT" not in account.pending_limit_orders
     assert account.positions["SOL/USDT"]["entry_price"] == pytest.approx(100.0)
