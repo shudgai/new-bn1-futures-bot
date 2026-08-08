@@ -27,6 +27,7 @@ from core.config import (
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
+    ENABLE_1H_EMA50_FILTER,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -577,7 +578,7 @@ class SuperTrendKeltnerStrategy:
         }
 
         # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
-        if not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
+        if ENABLE_1H_EMA50_FILTER and not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
             if side == "LONG" and price < ema_50_1h:
                 return {
                     "action": "HOLD", "side": side, "score": 0,
