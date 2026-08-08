@@ -471,6 +471,31 @@ async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_pa
     assert account.positions["SOL/USDT"]["entry_price"] == pytest.approx(100.0)
 
 
+@pytest.mark.anyio
+async def test_paper_structured_trailing_waits_for_one_r(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "risk_trailing.json"))
+    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 0.0025)
+    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_R_MULT", 1.0)
+    monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_R_MULT", 0.75)
+    account = PaperAccount()
+    await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "structured",
+        atr=0.5, leverage=2, signal_score=80,
+        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.0, "initial_risk": 1.0},
+    )
+    position = account.positions["BTC/USDT"]
+    entry = position["entry_price"]
+    risk = position["initial_risk"]
+    original_sl = position["sl"]
+
+    await account.update_positions({"BTC/USDT": entry + risk * 0.8})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
+
+    await account.update_positions({"BTC/USDT": entry + risk * 1.1})
+    assert account.positions["BTC/USDT"]["sl"] > original_sl
+    assert account.positions["BTC/USDT"]["is_breakeven_moved"] is True
+
+
 def test_low_score_signal_caps_eth_leverage():
     """最低檔門檻用 MIN_SCORE_THRESHOLD 本身，避免它跟這裡的最低檔位置
     調開之後又出現「兩個門檻中間的分數算出 0 倍位，下單金額變 0」的
@@ -2946,17 +2971,35 @@ def test_structured_entry_prioritizes_volume_confirmed_breakout(monkeypatch):
     assert signal["entry_mode"] == "BREAKOUT"
 
 
-def test_structured_entry_uses_market_for_shrinking_volume_support_reversal():
+def test_structured_entry_uses_maker_for_quality_support_reversal():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
-    frame.loc[frame.index[-1], ["open", "close", "low", "volume"]] = [99.9, 100.1, 99.5, 300.0]
+    frame["atr"] = 0.3
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [99.96, 100.03, 100.04, 99.95, 300.0, 54.0]
     signal = strategy.evaluate_structured_entry(
         frame, ema_50_1h=100.0, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_MARKET"
+    assert signal["action"] == "ENTER_LIMIT"
     assert signal["entry_mode"] == "SUPPORT_PULLBACK"
+    assert signal["target_price"] < signal["price"]
+    assert 75 <= signal["score"] <= 91
+
+
+def test_structured_entry_rejects_weak_rsi_support_reversal():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame.loc[frame.index[-2], "rsi"] = 49.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [99.96, 100.03, 100.04, 99.95, 300.0, 50.0]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.0, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
 
 
 def test_structured_entry_uses_closed_macd_cross(monkeypatch):

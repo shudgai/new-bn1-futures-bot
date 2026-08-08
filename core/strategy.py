@@ -28,6 +28,8 @@ from core.config import (
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
     ENABLE_1H_EMA50_FILTER,
+    SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
+    SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -652,21 +654,59 @@ class SuperTrendKeltnerStrategy:
         if ema_50_1h is not None:
             supports.append(("1h EMA50", float(ema_50_1h)))
         support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
-        near_support = abs(price - support_price) <= atr * STRUCTURED_SUPPORT_NEAR_ATR
+        support_distance_atr = abs(price - support_price) / max(atr, 1e-12)
+        near_support = support_distance_atr <= STRUCTURED_SUPPORT_NEAR_ATR
+        candle_open = float(curr["open"])
+        candle_high = float(curr["high"])
+        candle_low = float(curr["low"])
+        candle_body_atr = abs(price - candle_open) / max(atr, 1e-12)
+        candle_range = max(candle_high - candle_low, 1e-12)
+        close_location = (price - candle_low) / candle_range
         reversal = (
-            float(curr["close"]) > float(curr["open"])
+            price > candle_open and close_location >= 0.60
             if side == "LONG"
-            else float(curr["close"]) < float(curr["open"])
+            else price < candle_open and close_location <= 0.40
         )
+        body_confirmed = candle_body_atr >= SUPPORT_PULLBACK_MIN_BODY_ATR_MULT
         volume_contracting = volume_ma > 0 and volume <= volume_ma * 0.8
         rsi = float(curr["rsi"])
-        rsi_ok = rsi >= 48.0 if side == "LONG" else rsi <= 52.0
-        
-        if aligned and near_support and reversal and volume_contracting and rsi_ok:
+        previous_rsi = float(prev["rsi"])
+        rsi_ok = (
+            rsi >= SUPPORT_PULLBACK_RSI_LONG_MIN and rsi > previous_rsi
+            if side == "LONG"
+            else rsi <= SUPPORT_PULLBACK_RSI_SHORT_MAX and rsi < previous_rsi
+        )
+        adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 0.0
+        atr_pct = atr / price if price > 0 else 0.0
+        quality_ok = ADX_QUALITY_MIN <= adx and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
+
+        if aligned and near_support and reversal and body_confirmed and volume_contracting and rsi_ok and quality_ok:
             reversal_desc = "收綠K反彈" if side == "LONG" else "收紅K反轉"
+            target_price = (
+                min(support_price, price - atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT)
+                if side == "LONG"
+                else max(support_price, price + atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT)
+            )
+            body_score = round(min(candle_body_atr / 0.50, 1.0) * 4)
+            support_score = round(
+                max(0.0, 1.0 - support_distance_atr / max(STRUCTURED_SUPPORT_NEAR_ATR, 1e-12)) * 4
+            )
+            rsi_strength = (
+                max(0.0, rsi - SUPPORT_PULLBACK_RSI_LONG_MIN)
+                if side == "LONG"
+                else max(0.0, SUPPORT_PULLBACK_RSI_SHORT_MAX - rsi)
+            )
+            rsi_score = round(min(rsi_strength / 8.0, 1.0) * 4)
+            adx_score = round(min(max(adx - ADX_QUALITY_MIN, 0.0) / 18.0, 1.0) * 4)
+            score = min(91, 75 + body_score + support_score + rsi_score + adx_score)
+            rsi_arrow = "↑" if side == "LONG" else "↓"
             return {
-                "action": "ENTER_MARKET", "entry_mode": "SUPPORT_PULLBACK", "score": 82,
-                "reason": f"SupportPullback_{side}｜{support_name}{reversal_desc}｜極致縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}",
+                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": score,
+                "target_price": target_price,
+                "reason": (
+                    f"SupportPullback_{side}｜{support_name}{reversal_desc}｜"
+                    f"Maker@{target_price:.6g}｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}"
+                ),
                 **common,
             }
 

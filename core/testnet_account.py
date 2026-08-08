@@ -20,6 +20,8 @@ from core.config import (
     EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
     TRAILING_CALLBACK_PCT,
+    TRAILING_TRIGGER_R_MULT,
+    TRAILING_CALLBACK_R_MULT,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_PULLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
@@ -792,13 +794,23 @@ class BinanceTestnetAccount:
                     # ── 路徑 B：舊版百分比制輪詢移動止利（Testnet / fallback）──
                     # 逆勢承接單（MA7_ContrarianBottomBuy）用更早/更低的觸發
                     # 門檻，一旦有利潤就盡快接手保護，不限制往上空間。
-                    trailing_trigger = (
+                    configured_trigger = (
                         CONTRARIAN_TRAILING_TRIGGER_PCT if meta.get("is_contrarian_bottom_buy")
                         else TRAILING_TRIGGER_PCT
                     )
+                    initial_risk = float(pos.get("initial_risk") or meta.get("initial_risk") or 0.0)
+                    risk_pct = initial_risk / entry_p if entry_p > 0 else 0.0
+                    trailing_trigger = (
+                        max(configured_trigger, risk_pct * TRAILING_TRIGGER_R_MULT)
+                        if risk_pct > 0 else configured_trigger
+                    )
+                    trailing_callback = (
+                        max(TRAILING_CALLBACK_PCT, risk_pct * TRAILING_CALLBACK_R_MULT)
+                        if risk_pct > 0 else TRAILING_CALLBACK_PCT
+                    )
                     if highest_pnl >= trailing_trigger:
                         if side == "LONG":
-                            trail_sl = entry_p * (1.0 + highest_pnl - TRAILING_CALLBACK_PCT)
+                            trail_sl = entry_p * (1.0 + highest_pnl - trailing_callback)
                             npg_floor = entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER)
                             trail_sl = max(trail_sl, npg_floor)
                             new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
@@ -807,7 +819,7 @@ class BinanceTestnetAccount:
                                 pos["sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
-                                self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {TRAILING_CALLBACK_PCT:.4%} 平倉）", "SUCCESS")
+                                self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {trailing_callback:.4%} 平倉）", "SUCCESS")
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
@@ -819,7 +831,7 @@ class BinanceTestnetAccount:
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
                         else:  # SHORT
-                            trail_sl = entry_p * (1.0 - highest_pnl + TRAILING_CALLBACK_PCT)
+                            trail_sl = entry_p * (1.0 - highest_pnl + trailing_callback)
                             npg_ceiling = entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER)
                             trail_sl = min(trail_sl, npg_ceiling)
                             new_sl_price = float(self.exchange.price_to_precision(symbol, trail_sl))
@@ -828,7 +840,7 @@ class BinanceTestnetAccount:
                                 pos["sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
-                                self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {TRAILING_CALLBACK_PCT:.4%} 平倉）", "SUCCESS")
+                                self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {trailing_callback:.4%} 平倉）", "SUCCESS")
                                 try:
                                     await self._cancel_all_orders(symbol)
                                     await self._create_protection_order(
