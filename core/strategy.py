@@ -653,23 +653,20 @@ class SuperTrendKeltnerStrategy:
             supports.append(("1h EMA50", float(ema_50_1h)))
         support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
         near_support = abs(price - support_price) <= atr * STRUCTURED_SUPPORT_NEAR_ATR
-        body = abs(float(curr["close"]) - float(curr["open"]))
-        lower_wick = min(float(curr["open"]), float(curr["close"])) - float(curr["low"])
-        upper_wick = float(curr["high"]) - max(float(curr["open"]), float(curr["close"]))
         reversal = (
-            float(curr["close"]) > float(curr["open"]) or lower_wick >= max(body, atr * 0.1)
+            float(curr["close"]) > float(curr["open"])
             if side == "LONG"
-            else float(curr["close"]) < float(curr["open"]) or upper_wick >= max(body, atr * 0.1)
+            else float(curr["close"]) < float(curr["open"])
         )
-        volume_contracting = volume_ma > 0 and volume <= volume_ma
+        volume_contracting = volume_ma > 0 and volume <= volume_ma * 0.8
         rsi = float(curr["rsi"])
         rsi_ok = rsi >= 48.0 if side == "LONG" else rsi <= 52.0
         
         if aligned and near_support and reversal and volume_contracting and rsi_ok:
+            reversal_desc = "收綠K反彈" if side == "LONG" else "收紅K反轉"
             return {
-                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": 82,
-                "target_price": support_price,
-                "reason": f"SupportPullback_{side}｜{support_name}止跌｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}",
+                "action": "ENTER_MARKET", "entry_mode": "SUPPORT_PULLBACK", "score": 82,
+                "reason": f"SupportPullback_{side}｜{support_name}{reversal_desc}｜極致縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}",
                 **common,
             }
 

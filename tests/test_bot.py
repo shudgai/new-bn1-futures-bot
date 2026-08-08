@@ -2946,7 +2946,7 @@ def test_structured_entry_prioritizes_volume_confirmed_breakout(monkeypatch):
     assert signal["entry_mode"] == "BREAKOUT"
 
 
-def test_structured_entry_uses_limit_for_shrinking_volume_support_reversal():
+def test_structured_entry_uses_market_for_shrinking_volume_support_reversal():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
@@ -2955,7 +2955,7 @@ def test_structured_entry_uses_limit_for_shrinking_volume_support_reversal():
         frame, ema_50_1h=100.0, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_MARKET"
     assert signal["entry_mode"] == "SUPPORT_PULLBACK"
 
 
