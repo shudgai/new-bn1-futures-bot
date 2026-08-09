@@ -3124,6 +3124,56 @@ def test_structured_entry_penalizes_contrary_btc_without_blocking():
     assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
 
 
+def test_structured_entry_remembers_recent_location_and_confirmation():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["close"] = 99.0
+    frame["ema_20"] = 99.0
+    frame["atr"] = 0.3
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], [
+        "open", "close", "high", "low", "ema_20", "volume", "rsi", "macd_hist",
+    ]] = [98.96, 99.03, 99.04, 98.95, 99.02, 300.0, 51.0, -0.10]
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "ema_20", "volume", "rsi", "macd_hist",
+    ]] = [99.20, 99.20, 99.22, 99.18, 99.0, 450.0, 54.0, -0.10]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=98.9, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "ENTER_LIMIT"
+    assert "位置1根內、確認1根內" in signal["reason"]
+    assert signal["target_price"] < 99.03
+
+
+def test_structured_entry_expires_old_location_and_confirmation():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["close"] = 99.0
+    frame["ema_20"] = 99.0
+    frame["atr"] = 0.3
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-4], [
+        "open", "close", "high", "low", "ema_20", "rsi", "macd_hist",
+    ]] = [98.96, 99.03, 99.04, 98.95, 99.02, 50.0, -0.10]
+    frame.loc[frame.index[-3], [
+        "open", "close", "high", "low", "ema_20", "rsi", "macd_hist",
+    ]] = [99.13, 99.20, 99.22, 99.12, 99.0, 50.0, -0.10]
+    frame.loc[frame.index[-2], [
+        "open", "close", "high", "low", "ema_20", "rsi", "macd_hist",
+    ]] = [99.20, 99.20, 99.22, 99.18, 99.0, 51.0, -0.10]
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "ema_20", "volume", "rsi", "macd_hist",
+    ]] = [99.20, 99.20, 99.22, 99.18, 99.0, 450.0, 54.0, -0.10]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=98.9, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert "需≤0.40" in signal["reason"]
+    assert "近2根缺反轉K/MACD改善＋足夠實體" in signal["reason"]
+
+
 def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()

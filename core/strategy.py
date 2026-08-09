@@ -31,6 +31,7 @@ from core.config import (
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
     SUPPORT_PULLBACK_MAX_VOLUME_RATIO,
+    SUPPORT_PULLBACK_LOCATION_MEMORY_BARS, SUPPORT_PULLBACK_CONFIRM_MEMORY_BARS,
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
     TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
     get_bounce_capture_ratio,
@@ -660,32 +661,86 @@ class SuperTrendKeltnerStrategy:
             }
 
         ema20 = float(curr["ema_20"])
-        ema60 = float(df["close"].ewm(span=60, adjust=False).mean().iloc[-1])
+        ema60_series = df["close"].ewm(span=60, adjust=False).mean()
+        ema60 = float(ema60_series.iloc[-1])
         supports = [("5m EMA20", ema20), ("5m EMA60", ema60)]
         if ema_50_1h is not None:
             supports.append(("1h EMA50", float(ema_50_1h)))
         support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
         support_distance_atr = abs(price - support_price) / max(atr, 1e-12)
-        near_support = support_distance_atr <= STRUCTURED_SUPPORT_NEAR_ATR
+        location_memory = None
+        for age in range(max(1, SUPPORT_PULLBACK_LOCATION_MEMORY_BARS)):
+            row_pos = len(df) - 1 - age
+            if row_pos < 0:
+                break
+            row = df.iloc[row_pos]
+            if int(row["st_direction"]) != direction:
+                continue
+            row_price = float(row["close"])
+            row_atr = float(row["atr"]) if not pd.isna(row["atr"]) else atr
+            row_supports = [
+                ("5m EMA20", float(row["ema_20"])),
+                ("5m EMA60", float(ema60_series.iloc[row_pos])),
+            ]
+            if ema_50_1h is not None:
+                row_supports.append(("1h EMA50", float(ema_50_1h)))
+            row_name, row_support = min(
+                row_supports, key=lambda item: abs(row_price - item[1])
+            )
+            row_distance = abs(row_price - row_support) / max(row_atr, 1e-12)
+            if row_distance <= STRUCTURED_SUPPORT_NEAR_ATR:
+                location_memory = {
+                    "age": age, "name": row_name, "price": row_support,
+                    "close": row_price, "distance": row_distance,
+                }
+                break
+        near_support = location_memory is not None
         candle_open = float(curr["open"])
-        candle_high = float(curr["high"])
-        candle_low = float(curr["low"])
         candle_body_atr = abs(price - candle_open) / max(atr, 1e-12)
-        candle_range = max(candle_high - candle_low, 1e-12)
-        close_location = (price - candle_low) / candle_range
-        reversal = (
-            price > candle_open and close_location >= 0.60
-            if side == "LONG"
-            else price < candle_open and close_location <= 0.40
-        )
         macd_hist = float(curr["macd_hist"])
         prev_macd_hist = float(prev["macd_hist"])
-        macd_improving = (
-            macd_hist > prev_macd_hist
-            if side == "LONG" else macd_hist < prev_macd_hist
+        confirmation_memory = None
+        for age in range(max(1, SUPPORT_PULLBACK_CONFIRM_MEMORY_BARS)):
+            row_pos = len(df) - 1 - age
+            prev_pos = row_pos - 1
+            if prev_pos < 0:
+                break
+            row = df.iloc[row_pos]
+            prior_row = df.iloc[prev_pos]
+            if int(row["st_direction"]) != direction:
+                continue
+            row_price = float(row["close"])
+            row_open = float(row["open"])
+            row_high = float(row["high"])
+            row_low = float(row["low"])
+            row_atr = float(row["atr"]) if not pd.isna(row["atr"]) else atr
+            row_range = max(row_high - row_low, 1e-12)
+            row_close_location = (row_price - row_low) / row_range
+            row_reversal = (
+                row_price > row_open and row_close_location >= 0.60
+                if side == "LONG"
+                else row_price < row_open and row_close_location <= 0.40
+            )
+            row_hist = float(row["macd_hist"])
+            prior_hist = float(prior_row["macd_hist"])
+            row_macd_improving = (
+                row_hist > prior_hist if side == "LONG" else row_hist < prior_hist
+            )
+            row_body_atr = abs(row_price - row_open) / max(row_atr, 1e-12)
+            if (
+                (row_reversal or row_macd_improving)
+                and row_body_atr >= SUPPORT_PULLBACK_MIN_BODY_ATR_MULT
+            ):
+                confirmation_memory = {
+                    "age": age, "reversal": row_reversal,
+                    "body_atr": row_body_atr,
+                }
+                break
+        confirmation_recent = confirmation_memory is not None
+        confirmed_body_atr = (
+            float(confirmation_memory["body_atr"])
+            if confirmation_memory else candle_body_atr
         )
-        reversal_or_momentum = reversal or macd_improving
-        body_confirmed = candle_body_atr >= SUPPORT_PULLBACK_MIN_BODY_ATR_MULT
         volume_contracting = (
             volume_ma > 0
             and volume <= volume_ma * SUPPORT_PULLBACK_MAX_VOLUME_RATIO
@@ -701,18 +756,22 @@ class SuperTrendKeltnerStrategy:
         atr_pct = atr / price if price > 0 else 0.0
         quality_ok = ADX_QUALITY_MIN <= adx and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
 
-        # 等待中的訊號提供「準備度」，但不冒充正式進場分數。正式進場仍須
-        # 所有硬條件同時成立，並由 75 分起算。
+        # 等待中的訊號提供「準備度」，但不冒充正式進場分數。位置與確認事件
+        # 可在短期記憶視窗內組合；方向、量能、RSI與品質仍須以最新K棒通過。
         trend_points = 20 if aligned else 0
+        effective_support_distance = (
+            float(location_memory["distance"])
+            if location_memory else support_distance_atr
+        )
         location_progress = max(
             0.0,
-            1.0 - max(0.0, support_distance_atr - STRUCTURED_SUPPORT_NEAR_ATR),
+            1.0 - max(0.0, effective_support_distance - STRUCTURED_SUPPORT_NEAR_ATR),
         )
         location_points = round(20 * location_progress)
-        reversal_points = 20 if reversal_or_momentum else 0
+        reversal_points = 20 if confirmation_recent else 0
         body_points = round(
             10 * min(
-                candle_body_atr / max(SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, 1e-12), 1.0
+                confirmed_body_atr / max(SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, 1e-12), 1.0
             )
         )
         volume_progress = (
@@ -743,18 +802,24 @@ class SuperTrendKeltnerStrategy:
         }
         readiness_score = int(sum(readiness_components.values()))
 
-        if aligned and near_support and reversal_or_momentum and body_confirmed and volume_contracting and rsi_ok and quality_ok:
+        if aligned and near_support and confirmation_recent and volume_contracting and rsi_ok and quality_ok:
             reversal_desc = (
                 "收綠K反彈" if side == "LONG" else "收紅K反轉"
-            ) if reversal else "MACD動能改善"
-            target_price = (
-                price - atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
-                if side == "LONG"
-                else price + atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
+            ) if confirmation_memory["reversal"] else "MACD動能改善"
+            memory_note = (
+                f"位置{location_memory['age']}根內、確認{confirmation_memory['age']}根內"
+                if location_memory["age"] or confirmation_memory["age"] else "即時確認"
             )
-            body_score = round(min(candle_body_atr / 0.50, 1.0) * 4)
+            entry_support_name = str(location_memory["name"])
+            anchor_price = float(location_memory["close"])
+            target_price = (
+                min(price, anchor_price) - atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
+                if side == "LONG"
+                else max(price, anchor_price) + atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
+            )
+            body_score = round(min(confirmed_body_atr / 0.50, 1.0) * 4)
             support_score = round(
-                max(0.0, 1.0 - support_distance_atr / max(STRUCTURED_SUPPORT_NEAR_ATR, 1e-12)) * 4
+                max(0.0, 1.0 - effective_support_distance / max(STRUCTURED_SUPPORT_NEAR_ATR, 1e-12)) * 4
             )
             rsi_strength = (
                 max(0.0, rsi - SUPPORT_PULLBACK_RSI_LONG_MIN)
@@ -823,8 +888,9 @@ class SuperTrendKeltnerStrategy:
                 "bounce_capture_ratio": bounce_capture_ratio,
                 "bounce_target_pct": bounce_target_pct,
                 "reason": (
-                    f"SupportPullback_{side}｜{support_name}{reversal_desc}｜"
+                    f"SupportPullback_{side}｜{entry_support_name}{reversal_desc}｜"
                     f"Maker@{target_price:.6g}｜量能{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}｜"
+                    f"{memory_note}｜"
                     f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}｜"
                     f"{profit_exit_note}"
                     + (
@@ -872,11 +938,9 @@ class SuperTrendKeltnerStrategy:
             missing.append(
                 f"靠近{support_name}（目前{support_distance_atr:.2f}ATR，需≤{STRUCTURED_SUPPORT_NEAR_ATR:.2f}）"
             )
-        if not reversal_or_momentum:
-            missing.append("收盤反轉K或MACD動能改善")
-        if not body_confirmed:
+        if not confirmation_recent:
             missing.append(
-                f"K棒實體（{candle_body_atr:.2f}ATR<{SUPPORT_PULLBACK_MIN_BODY_ATR_MULT:.2f}）"
+                f"近{SUPPORT_PULLBACK_CONFIRM_MEMORY_BARS}根缺反轉K/MACD改善＋足夠實體"
             )
         if not volume_contracting:
             missing.append(
