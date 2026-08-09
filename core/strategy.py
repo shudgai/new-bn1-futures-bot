@@ -30,6 +30,8 @@ from core.config import (
     ENABLE_1H_EMA50_FILTER,
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
+    TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
+    TREND_EXTENSION_MIN_BODY_ATR_MULT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -737,15 +739,44 @@ class SuperTrendKeltnerStrategy:
             rsi_score = round(min(rsi_strength / 8.0, 1.0) * 4)
             adx_score = round(min(max(adx - ADX_QUALITY_MIN, 0.0) / 18.0, 1.0) * 4)
             score = min(91, 75 + body_score + support_score + rsi_score + adx_score)
+            profit_room_pct = (
+                max(0.0, (prior_high - target_price) / target_price)
+                if side == "LONG"
+                else max(0.0, (target_price - prior_low) / target_price)
+            )
+            prev_adx = float(prev["adx"]) if not pd.isna(prev["adx"]) else 0.0
+            macd_hist = float(curr["macd_hist"])
+            prev_macd_hist = float(prev["macd_hist"])
+            macd_expanding = (
+                macd_hist > 0 and macd_hist > prev_macd_hist
+                if side == "LONG"
+                else macd_hist < 0 and macd_hist < prev_macd_hist
+            )
+            volume_recovering = (
+                volume_ratio >= TREND_EXTENSION_MIN_VOLUME_RATIO
+                and volume > float(prev["volume"])
+            )
+            is_trend_extension = (
+                profit_room_pct >= TREND_EXTENSION_MIN_ROOM_PCT
+                and adx > prev_adx
+                and macd_expanding
+                and volume_recovering
+                and candle_body_atr >= TREND_EXTENSION_MIN_BODY_ATR_MULT
+            )
+            profit_profile = "TREND_EXTENSION" if is_trend_extension else "BOUNCE"
+            profit_profile_label = "趨勢延伸" if is_trend_extension else "反彈單"
             rsi_arrow = "↑" if side == "LONG" else "↓"
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": score,
                 "readiness_score": 100, "readiness_components": readiness_components,
                 "wait_estimate": "條件已完成，等待掛單成交",
                 "target_price": target_price,
+                "profit_profile": profit_profile,
+                "profit_room_pct": profit_room_pct,
                 "reason": (
                     f"SupportPullback_{side}｜{support_name}{reversal_desc}｜"
-                    f"Maker@{target_price:.6g}｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}"
+                    f"Maker@{target_price:.6g}｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}｜"
+                    f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}"
                 ),
                 **common,
             }

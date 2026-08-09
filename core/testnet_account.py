@@ -61,6 +61,7 @@ ENTRY_CONTEXT_KEYS = (
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
+    "profit_profile", "profit_room_pct",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 

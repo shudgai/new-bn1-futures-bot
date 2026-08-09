@@ -30,6 +30,7 @@ from core.config import (
     BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
     BREAKOUT_KC_FAIL_CONFIRM_BARS,
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
+    TREND_EXTENSION_TARGET_PCT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -1310,7 +1311,11 @@ class TradingEngine:
                         else entry_price - current_price
                     )
                     rr = favorable_move / initial_risk
-                    if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
+                    target_ready = (
+                        meta.get("profit_profile") != "TREND_EXTENSION"
+                        or favorable_move / entry_price >= TREND_EXTENSION_TARGET_PCT
+                    )
+                    if target_ready and rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
                         if await self.account.partial_close_position(
                             symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
                             fraction=BREAKOUT_RR_CLOSE_FRACTION,
@@ -1319,7 +1324,7 @@ class TradingEngine:
                             meta["rr_1_5_done"] = True
                             self.account.save_state()
                             continue
-                    if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
+                    if target_ready and rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
                         if await self.account.partial_close_position(
                             symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
                             fraction=BREAKOUT_RR_CLOSE_FRACTION,
@@ -1937,6 +1942,8 @@ class TradingEngine:
             "btc_direction_1h_at_entry": self.btc_1h_st_direction,
             "btc_allocation_factor": 1.0,
             "history_allocation_factor": history_allocation_factor,
+            "profit_profile": signal.get("profit_profile", "BOUNCE"),
+            "profit_room_pct": float(signal.get("profit_room_pct") or 0.0),
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,

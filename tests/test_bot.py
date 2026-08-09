@@ -3017,6 +3017,24 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
     assert 75 <= signal["score"] <= 91
 
 
+def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["high"] = 102.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], ["volume", "rsi", "adx", "macd_hist"]] = [250.0, 51.0, 25.0, 0.01]
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi", "adx", "macd_hist"]] = [99.94, 100.03, 100.05, 99.94, 300.0, 54.0, 26.0, 0.02]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["profit_profile"] == "TREND_EXTENSION"
+    assert signal["profit_room_pct"] >= 0.012
+
+
 def test_structured_entry_rejects_weak_rsi_support_reversal():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()

@@ -34,6 +34,8 @@ from core.config import (
     SUPPORT_PULLBACK_RECLAIM_ATR_MULT,
     SUPPORT_PULLBACK_RECLAIM_MIN_SEC,
     SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT,
+    TREND_EXTENSION_TARGET_PCT, TREND_EXTENSION_GUARD_TRIGGER_PCT,
+    TREND_EXTENSION_GUARD_EXIT_PCT,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -49,6 +51,7 @@ ENTRY_CONTEXT_KEYS = (
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
+    "profit_profile", "profit_room_pct",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -698,6 +701,10 @@ class PaperAccount:
             round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
             early_guard_trigger = max(EARLY_PROFIT_GUARD_TRIGGER_PCT, round_trip_cost_pct)
             early_guard_exit = max(EARLY_PROFIT_GUARD_EXIT_PCT, round_trip_cost_pct)
+            if meta.get("profit_profile") == "TREND_EXTENSION":
+                early_guard_trigger = max(TREND_EXTENSION_GUARD_TRIGGER_PCT, round_trip_cost_pct)
+                early_guard_exit = max(TREND_EXTENSION_GUARD_EXIT_PCT, round_trip_cost_pct)
+                trailing_trigger = max(trailing_trigger, TREND_EXTENSION_TARGET_PCT)
             if (
                 highest_pnl >= early_guard_trigger
                 and highest_pnl < trailing_trigger
