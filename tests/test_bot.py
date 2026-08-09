@@ -253,7 +253,6 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
 async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
@@ -275,7 +274,6 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
 async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
@@ -477,11 +475,11 @@ async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_pa
 
 
 @pytest.mark.anyio
-async def test_paper_structured_trailing_waits_for_one_r(tmp_path, monkeypatch):
+async def test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "risk_trailing.json"))
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 0.0025)
-    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_R_MULT", 1.0)
-    monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_R_MULT", 0.75)
+    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_R_MULT", 1.5)
+    monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_R_MULT", 0.5)
     account = PaperAccount()
     await account.open_position(
         "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "structured",
@@ -493,11 +491,11 @@ async def test_paper_structured_trailing_waits_for_one_r(tmp_path, monkeypatch):
     risk = position["initial_risk"]
     original_sl = position["sl"]
 
-    await account.update_positions({"BTC/USDT": entry + risk * 0.8})
+    await account.update_positions({"BTC/USDT": entry + risk * 1.4})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
 
-    await account.update_positions({"BTC/USDT": entry + risk * 1.1})
-    assert account.positions["BTC/USDT"]["sl"] > original_sl
+    await account.update_positions({"BTC/USDT": entry + risk * 1.6})
+    assert account.positions["BTC/USDT"]["sl"] >= entry + risk
     assert account.positions["BTC/USDT"]["is_breakeven_moved"] is True
 
 
@@ -786,11 +784,11 @@ def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch)
     assert live_volume_again["score_components"] == live_volume["score_components"]
 
     low_atr = _entry_score_frame(volume=1500.0, rsi=60.0, adx=25.0)
-    low_atr["atr"] = low_atr["close"] * 0.0009
+    low_atr["atr"] = low_atr["close"] * 0.0004
     live_atr = strategy.evaluate_signal(low_atr, ema_50_1h=95.0)
     shadow_atr = strategy.evaluate_signal(
         low_atr, ema_50_1h=95.0,
-        parameter_overrides={"atr_min_pct": 0.0008},
+        parameter_overrides={"atr_min_pct": 0.0003},
     )
     assert "ATR_Too_Low" in live_atr["reason"]
     assert "ATR_Too_Low" not in shadow_atr["reason"]
@@ -1371,16 +1369,17 @@ def test_trade_history_ai_analysis_is_sanitized_cached_and_persisted(tmp_path):
     assert restored.status()["summary"] == "一筆交易樣本，暫以風控觀察為主。"
 
 
-def test_directional_eligibility_requires_trend_st_and_tradeable_atr(monkeypatch):
+def test_directional_monitor_pool_requires_1h_st_and_tradeable_atr(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.MIN_ATR_PCT", 0.0015)
     monkeypatch.setattr("core.symbol_rotation.MAX_ATR_PCT", 0.006)
 
-    # 輪替資格與實際進場一致：1h EMA、5m ST、1h ST 必須全部對齊。
+    # 輪替只建立監控池；EMA、5m ST 與歷史績效由進場與倉位層處理。
     assert not SymbolRotation._direction_is_eligible(False, True, False, 0.003, False, False)
     assert SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, False)
-    assert not SymbolRotation._direction_is_eligible(True, False, True, 0.003, False, False)
+    assert SymbolRotation._direction_is_eligible(False, False, True, 0.003, False, False)
+    assert SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, True)
     assert not SymbolRotation._direction_is_eligible(True, True, True, 0.0075, False, False)
-    assert not SymbolRotation._direction_is_eligible(True, True, True, 0.003, False, True)
+    assert not SymbolRotation._direction_is_eligible(True, True, True, 0.003, True, False)
 
 
 def test_negative_expectancy_quarantine_needs_enough_samples(monkeypatch):
@@ -1397,6 +1396,29 @@ def test_negative_expectancy_quarantine_needs_enough_samples(monkeypatch):
     assert SymbolRotation._history_quarantined(
         {"trades": 8, "avg_pnl": 0.10, "stop_rate": 0.40}
     )
+
+
+def test_history_allocation_uses_half_size_for_sparse_or_negative_direction(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.EXPLORATION_MIN_DIRECTION_TRADES", 3)
+    monkeypatch.setattr("core.symbol_rotation.EXPLORATION_POSITION_SIZE_MULTIPLIER", 0.5)
+    rotation = object.__new__(SymbolRotation)
+    rotation.account = type("Account", (), {"trades": []})()
+
+    assert rotation.get_history_allocation_factor("LINK/USDT", "LONG") == pytest.approx(0.5)
+
+    rotation.account.trades = [
+        {"action": "CLOSE_LONG", "symbol": "LINK/USDT", "side": "LONG",
+         "pnl": -0.5, "reason": "觸發止損 (Stop-Loss)"}
+        for _ in range(3)
+    ]
+    assert rotation.get_history_allocation_factor("LINK/USDT", "LONG") == pytest.approx(0.5)
+
+    rotation.account.trades = [
+        {"action": "CLOSE_LONG", "symbol": "LINK/USDT", "side": "LONG",
+         "pnl": 0.2, "reason": "觸發移動止利"}
+        for _ in range(3)
+    ]
+    assert rotation.get_history_allocation_factor("LINK/USDT", "LONG") == pytest.approx(1.0)
 
 
 def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
@@ -2385,7 +2407,7 @@ def test_detect_ma7_reversal_uses_configured_dynamic_atr_floor(monkeypatch):
 
     assert result["detected"] is True, result.get("reason")
 
-    frame["atr"] = 0.05  # ATR% 約0.05%，低於絕對下限
+    frame["atr"] = 0.04  # ATR% 約0.05%，低於絕對下限
     result_below_floor = detect_ma7_reversal(
         frame,
         side="LONG",
@@ -2642,7 +2664,7 @@ def test_detect_ma7_reversal_contrarian_bottom_buy_disabled_on_low_atr_short():
     直接跳過，不再翻轉成逆勢承接的多單買點。"""
     frame = _ma7_frame("LONG")  # LONG 樣式：谷底型態 + KC下軌回踩 + price<=ema20
     frame["st_direction"] = -1  # 但 SuperTrend 方向是 SHORT（原本要空）
-    frame["atr"] = 0.05  # 刻意壓低 ATR，觸發波動過低
+    frame["atr"] = 0.04  # 0.04% 低於探索池 0.05% 下限
     frame.loc[frame.index[47], "ma7"] = 99.85  # prev2（谷底）
     frame.loc[frame.index[48], "ma7"] = 99.95  # prev（已站上谷底）
     frame.loc[frame.index[49], "ma7"] = 100.05  # curr（繼續站上谷底）
@@ -2661,7 +2683,7 @@ def test_detect_ma7_reversal_no_contrarian_flip_without_real_bottom_shape():
         "close_price_spike_filtered": [price] * 50,
         "high": [101.0] * 50,
         "low": [100.0] * 50,
-        "atr": [0.05] * 50,
+        "atr": [0.04] * 50,
         "rsi": [60.0] * 50,
         "volume": [1000.0] * 50,
         "vol_ma_20": [900.0] * 50,
@@ -2685,7 +2707,7 @@ def test_detect_ma7_reversal_no_contrarian_flip_for_long_context():
     SHORT->LONG（逆勢承接底部買點）這一種情況。"""
     frame = _ma7_frame("LONG")
     frame["st_direction"] = 1
-    frame["atr"] = 0.05
+    frame["atr"] = 0.04
     result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is False
     assert "ATR過低" in result["reason"]
@@ -2981,15 +3003,17 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
     frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
     frame.loc[frame.index[-2], "rsi"] = 51.0
     frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [99.96, 100.03, 100.04, 99.95, 300.0, 54.0]
     signal = strategy.evaluate_structured_entry(
-        frame, ema_50_1h=100.0, st_direction_1h=1, btc_st_direction_1h=1,
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
     assert signal["action"] == "ENTER_LIMIT"
     assert signal["entry_mode"] == "SUPPORT_PULLBACK"
     assert signal["target_price"] < signal["price"]
+    assert signal["target_price"] <= signal["price"] - 0.3 * 0.05 + 1e-9
     assert 75 <= signal["score"] <= 91
 
 
@@ -3005,6 +3029,10 @@ def test_structured_entry_rejects_weak_rsi_support_reversal():
         indicators_precomputed=True,
     )
     assert signal["action"] == "HOLD"
+    assert 0 < signal["readiness_score"] < 100
+    assert signal["readiness_components"]["rsi"] < 10
+    assert "RSI達52且上升" in signal["reason"]
+    assert "最快約" in signal["wait_estimate"]
 
 
 def test_structured_entry_uses_closed_macd_cross(monkeypatch):
@@ -3350,3 +3378,46 @@ async def test_contrarian_bottom_buy_trailing_respects_safety_floor(tmp_path, mo
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(90.0)
     assert account.position_meta["ETH/USDT"]["is_breakeven_moved"] is False
     assert account.positions["ETH/USDT"]["sl"] == pytest.approx(90.0)
+
+
+@pytest.mark.anyio
+async def test_support_pullback_touch_waits_for_reclaim_before_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "reclaim.json"))
+    monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
+    account = PaperAccount()
+    await account.place_limit_entry(
+        "SOL/USDT", "LONG", 100.0, 50.0, sl=98.0, tp=0.0, atr=1.0,
+        reason="SupportPullback_LONG", signal_score=85, post_only=True,
+        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 98.0},
+    )
+
+    await account.update_positions({"SOL/USDT": 99.98})
+    await account.check_pending_limit_orders()
+    assert "SOL/USDT" not in account.positions
+    assert account.pending_limit_orders["SOL/USDT"]["touched_at"] > 0
+
+    await account.update_positions({"SOL/USDT": 100.06})
+    await account.check_pending_limit_orders()
+    assert "SOL/USDT" in account.positions
+    assert account.positions["SOL/USDT"]["reclaim_confirmed"] is True
+    assert account.positions["SOL/USDT"]["entry_price"] > 100.06
+
+
+@pytest.mark.anyio
+async def test_support_pullback_cancels_when_touch_keeps_moving_adverse(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "adverse.json"))
+    account = PaperAccount()
+    await account.place_limit_entry(
+        "SOL/USDT", "LONG", 100.0, 50.0, sl=98.0, tp=0.0, atr=1.0,
+        reason="SupportPullback_LONG", signal_score=85, post_only=True,
+        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 98.0},
+    )
+
+    await account.update_positions({"SOL/USDT": 99.98})
+    await account.check_pending_limit_orders()
+    await account.update_positions({"SOL/USDT": 99.60})
+    await account.check_pending_limit_orders()
+
+    assert "SOL/USDT" not in account.positions
+    assert "SOL/USDT" not in account.pending_limit_orders
+    assert any("承接失敗" in row["text"] for row in account.logs)

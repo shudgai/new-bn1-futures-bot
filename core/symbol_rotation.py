@@ -31,6 +31,8 @@ from core.config import (
     SYMBOL_HISTORY_QUARANTINE_MIN_TRADES,
     SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL,
     SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE,
+    EXPLORATION_MIN_DIRECTION_TRADES,
+    EXPLORATION_POSITION_SIZE_MULTIPLIER,
     ENTRY_DISABLED_SYMBOLS,
     TREND_FILTER_EMA_PERIOD,
     RAPID_MOVE_WINDOW,
@@ -137,15 +139,27 @@ class SymbolRotation:
         trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
         volatility_excluded: bool, history_quarantined: bool,
     ) -> bool:
-        # 輪替資格必須與實際進場一致，避免選入後才被1h ST/EMA擋住、
-        # 白白占用監控席位。
+        # 輪替名單是未來一段時間的「監控池」，不能要求輪替當下的 5m ST
+        # 也已經同向；否則 5m 尚未翻轉的幣會被整輪移除，等真正出現入場
+        # 訊號時反而不在掃描名單。輪替只保留 1h ST 與 ATR 健康門檻；
+        # 1h EMA、5m ST 和歷史績效留給實際進場與探索倉位重新判斷。
         return (
-            trend_aligned
-            and st_5m_aligned
-            and st_1h_aligned
+            st_1h_aligned
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
-            and not volatility_excluded and not history_quarantined
+            and not volatility_excluded
         )
+
+    def get_history_allocation_factor(self, symbol: str, side: str) -> float:
+        """保留探索機會，同時限制樣本不足或負期望方向的試錯成本。"""
+        stat = self._closed_trade_direction_stats(self.account.trades).get(
+            (symbol, side), {"trades": 0, "avg_pnl": 0.0, "stop_rate": 0.0}
+        )
+        exploratory = (
+            stat["trades"] < EXPLORATION_MIN_DIRECTION_TRADES
+            or stat["avg_pnl"] <= SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL
+            or stat["stop_rate"] >= SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE
+        )
+        return EXPLORATION_POSITION_SIZE_MULTIPLIER if exploratory else 1.0
 
 
     @staticmethod
@@ -654,6 +668,36 @@ class SymbolRotation:
                 item["quant_score"] * (1.0 - AI_ADVISOR_WEIGHT)
                 + ai_scores.get(item["symbol"], 0.5) * 100.0 * AI_ADVISOR_WEIGHT
             )
+        analyzed_by_symbol = {}
+        for item in directional:
+            analyzed_by_symbol.setdefault(item["symbol"], item)
+        atr_low_count = sum(
+            item.get("atr_pct", 0.0) < MIN_ATR_PCT
+            for item in analyzed_by_symbol.values()
+        )
+        atr_high_count = sum(
+            item.get("atr_pct", 0.0) > MAX_ATR_PCT
+            for item in analyzed_by_symbol.values()
+        )
+        eligible_symbols = {
+            item["symbol"] for item in directional if item.get("eligible")
+        }
+        qualified_symbols = {
+            item["symbol"] for item in directional
+            if item.get("eligible") and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
+        }
+        score_low_count = len(eligible_symbols - qualified_symbols)
+        other_rejected_count = max(
+            0, len(analyzed_by_symbol) - atr_low_count - atr_high_count - len(eligible_symbols)
+        )
+        unavailable_count = max(0, len(candidates) - len(analyzed_by_symbol))
+        filter_text = (
+            f"ATR過低 {atr_low_count}、ATR過高 {atr_high_count}、"
+            f"其他資格淘汰 {other_rejected_count}、評分<{DIRECTIONAL_MIN_SCORE:g} {score_low_count}"
+        )
+        if unavailable_count:
+            filter_text += f"、資料不足/急漲跌 {unavailable_count}"
+
         selected, directions, changes = self.choose_directional_symbols(
             list(DEFAULT_SYMBOLS),
             self.account.positions,
@@ -684,7 +728,7 @@ class SymbolRotation:
             if len(selected) < SYMBOL_ROTATION_COUNT else ""
         )
         self.last_reason = (
-            f"已讀取 Binance 活躍USDT永續 {active_usdt_perpetuals} 幣；成交量初篩後深度掃描 {len(candidates)} 幣；方向評分參考 多 {long_count}、空 {short_count}，入選後皆可雙向交易；"
+            f"已讀取 Binance 活躍USDT永續 {active_usdt_perpetuals} 幣；成交量初篩後深度掃描 {len(candidates)} 幣；篩選結果 {filter_text}；方向評分參考 多 {long_count}、空 {short_count}，入選後皆可雙向交易；"
             f"{ai_text}{shortfall_text}"
         )
         self._save()

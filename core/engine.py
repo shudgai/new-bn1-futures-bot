@@ -509,6 +509,9 @@ class TradingEngine:
             "outcome": outcome,
             "action": signal.get("action", "HOLD"),
             "score": signal.get("score"),
+            "readiness_score": signal.get("readiness_score"),
+            "readiness_components": dict(signal.get("readiness_components") or {}),
+            "wait_estimate": signal.get("wait_estimate"),
             "raw_score": signal.get("raw_score"),
             "btc_adjusted_score": signal.get("btc_adjusted_score"),
             "history_adjusted_score": signal.get("history_adjusted_score"),
@@ -1909,6 +1912,11 @@ class TradingEngine:
             max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
             TRADE_AMOUNT_USDT,
         )
+        history_factor_fn = getattr(
+            self.symbol_rotation, "get_history_allocation_factor", lambda _symbol, _side: 1.0
+        )
+        history_allocation_factor = history_factor_fn(symbol, side)
+        amount *= history_allocation_factor
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price, sl,
@@ -1928,6 +1936,7 @@ class TradingEngine:
             "btc_regime_at_entry": "ALIGNED",
             "btc_direction_1h_at_entry": self.btc_1h_st_direction,
             "btc_allocation_factor": 1.0,
+            "history_allocation_factor": history_allocation_factor,
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,
@@ -1946,7 +1955,8 @@ class TradingEngine:
             order_type = "支撐限價" if is_limit else "市價"
             self.account.log(
                 f"🚀 [結構進場] {symbol} {side} {entry_mode} {order_type} @ "
-                f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}",
+                f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}｜"
+                f"歷史探索倉×{history_allocation_factor:.2f}",
                 "SUCCESS",
             )
         return bool(placed)
@@ -2376,7 +2386,10 @@ class TradingEngine:
         for symbol in pending_before_fill_check - set(self.account.pending_limit_orders):
             if symbol in self.account.positions:
                 self._record_pullback_outcome("maker_filled")
-                self.account.save_state()
+            else:
+                self._record_pullback_outcome("maker_reclaim_failed")
+                self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+            self.account.save_state()
 
     async def _main_loop(self):
         while self.is_running:
@@ -2607,8 +2620,14 @@ class TradingEngine:
                                 f"{structured_sig.get('entry_mode')}待下單"
                             )
                         else:
+                            readiness = structured_sig.get("readiness_score")
+                            readiness_text = (
+                                f"準備{int(readiness)}/100"
+                                if readiness is not None else "0分"
+                            )
                             signal_progress.append(
-                                f"{coin} {current_direction} 0分,{structured_sig.get('reason', '等待結構訊號')}"
+                                f"{coin} {current_direction} {readiness_text},"
+                                f"{structured_sig.get('reason', '等待結構訊號')}"
                             )
 
                     if detected_candidates:

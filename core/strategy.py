@@ -680,12 +680,50 @@ class SuperTrendKeltnerStrategy:
         atr_pct = atr / price if price > 0 else 0.0
         quality_ok = ADX_QUALITY_MIN <= adx and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
 
+        # 等待中的訊號提供「準備度」，但不冒充正式進場分數。正式進場仍須
+        # 所有硬條件同時成立，並由 75 分起算。
+        trend_points = 20 if aligned else 0
+        location_progress = max(
+            0.0,
+            1.0 - max(0.0, support_distance_atr - STRUCTURED_SUPPORT_NEAR_ATR),
+        )
+        location_points = round(20 * location_progress)
+        reversal_points = 20 if reversal else 0
+        body_points = round(
+            10 * min(
+                candle_body_atr / max(SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, 1e-12), 1.0
+            )
+        )
+        volume_progress = (
+            max(0.0, 1.0 - max(0.0, volume_ratio - 0.8) / 0.8)
+            if volume_ma > 0 else 0.0
+        )
+        volume_points = round(10 * volume_progress)
+        if side == "LONG":
+            rsi_progress = min(max((rsi - (SUPPORT_PULLBACK_RSI_LONG_MIN - 10.0)) / 10.0, 0.0), 1.0)
+            rsi_trending = rsi > previous_rsi
+        else:
+            rsi_progress = min(max(((SUPPORT_PULLBACK_RSI_SHORT_MAX + 10.0) - rsi) / 10.0, 0.0), 1.0)
+            rsi_trending = rsi < previous_rsi
+        rsi_points = min(10, round(7 * rsi_progress) + (3 if rsi_trending else 0))
+        quality_points = (
+            (5 if adx >= ADX_QUALITY_MIN else round(5 * max(adx, 0.0) / max(ADX_QUALITY_MIN, 1e-12)))
+            + (5 if MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT else 0)
+        )
+        readiness_components = {
+            "trend": trend_points, "location": location_points,
+            "reversal": reversal_points, "body": body_points,
+            "volume": volume_points, "rsi": rsi_points,
+            "quality": quality_points,
+        }
+        readiness_score = int(sum(readiness_components.values()))
+
         if aligned and near_support and reversal and body_confirmed and volume_contracting and rsi_ok and quality_ok:
             reversal_desc = "收綠K反彈" if side == "LONG" else "收紅K反轉"
             target_price = (
-                min(support_price, price - atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT)
+                price - atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
                 if side == "LONG"
-                else max(support_price, price + atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT)
+                else price + atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
             )
             body_score = round(min(candle_body_atr / 0.50, 1.0) * 4)
             support_score = round(
@@ -702,6 +740,8 @@ class SuperTrendKeltnerStrategy:
             rsi_arrow = "↑" if side == "LONG" else "↓"
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": score,
+                "readiness_score": 100, "readiness_components": readiness_components,
+                "wait_estimate": "條件已完成，等待掛單成交",
                 "target_price": target_price,
                 "reason": (
                     f"SupportPullback_{side}｜{support_name}{reversal_desc}｜"
@@ -739,9 +779,52 @@ class SuperTrendKeltnerStrategy:
                 "reason": f"MomentumCross_{side}｜{'+'.join(triggers)}", **common,
             }
 
+        missing = []
+        if not aligned:
+            missing.append("5m/1h/BTC趨勢同向")
+        if not near_support:
+            missing.append(
+                f"靠近{support_name}（目前{support_distance_atr:.2f}ATR，需≤{STRUCTURED_SUPPORT_NEAR_ATR:.2f}）"
+            )
+        if not reversal:
+            missing.append("收盤反轉K")
+        if not body_confirmed:
+            missing.append(
+                f"K棒實體（{candle_body_atr:.2f}ATR<{SUPPORT_PULLBACK_MIN_BODY_ATR_MULT:.2f}）"
+            )
+        if not volume_contracting:
+            missing.append(f"縮量（目前{volume_ratio:.2f}x，需≤0.80x）")
+        if not rsi_ok:
+            rsi_target = (
+                SUPPORT_PULLBACK_RSI_LONG_MIN
+                if side == "LONG" else SUPPORT_PULLBACK_RSI_SHORT_MAX
+            )
+            rsi_arrow = "上升" if side == "LONG" else "下降"
+            missing.append(f"RSI達{rsi_target:g}且{rsi_arrow}（目前{rsi:.1f}）")
+        if not quality_ok:
+            missing.append(f"ADX/ATR品質（ADX {adx:.1f}，ATR {atr_pct:.2%}）")
+
+        if not aligned or not quality_ok:
+            wait_estimate = "趨勢或品質未通過，暫時無法估時"
+        else:
+            distance_bars = math.ceil(
+                max(0.0, support_distance_atr - STRUCTURED_SUPPORT_NEAR_ATR) / 0.25
+            )
+            estimate_bars = min(12, max(1, distance_bars))
+            wait_estimate = (
+                f"最快約{estimate_bars * 5}–{(estimate_bars + 1) * 5}分鐘"
+                f"（至少{estimate_bars}根5m收盤，僅估計）"
+            )
+        missing_text = "、".join(missing[:4])
+        if len(missing) > 4:
+            missing_text += f"，另{len(missing) - 4}項"
+
         return {
             "action": "HOLD", "side": side, "score": 0,
-            "reason": "等待KC/前高突破、支撐止跌或MACD/RSI交叉", **common,
+            "readiness_score": readiness_score,
+            "readiness_components": readiness_components,
+            "wait_estimate": wait_estimate,
+            "reason": f"尚缺：{missing_text}｜{wait_estimate}", **common,
         }
 
     def evaluate_signal(

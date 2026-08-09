@@ -31,6 +31,9 @@ from core.config import (
     ENABLE_DCA_LIMIT,
     DCA_STAGE_DEPTHS,
     PAPER_MAKER_FILL_PENETRATION_PCT,
+    SUPPORT_PULLBACK_RECLAIM_ATR_MULT,
+    SUPPORT_PULLBACK_RECLAIM_MIN_SEC,
+    SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -45,6 +48,7 @@ ENTRY_CONTEXT_KEYS = (
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
+    "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -389,23 +393,77 @@ class PaperAccount:
         return True
 
     async def check_pending_limit_orders(self) -> None:
-        """用最新成交價模擬Maker觸價；成交價固定為原掛單價且不加Taker滑點。"""
+        """模擬掛單；支撐反轉單觸價後須先確認回收，避免接住持續下跌。"""
         for symbol, info in list(self.pending_limit_orders.items()):
             current_price = self.latest_prices.get(symbol)
             if current_price is None:
                 continue
             side = info["side"]
             target = float(info["target_price"])
-            # 多單要求最新價低於掛單價、空單要求高於掛單價一小段距離，
-            # 藉此模擬真實掛單簿在同價格排隊的撮合阻力，防範假觸價幻想成交。
             threshold_pct = PAPER_MAKER_FILL_PENETRATION_PCT
             touched = (
                 (side == "LONG" and current_price <= target * (1.0 - threshold_pct))
                 or (side == "SHORT" and current_price >= target * (1.0 + threshold_pct))
             )
-            if not touched:
+            entry_mode = (info.get("entry_context") or {}).get("entry_mode")
+
+            if entry_mode == "SUPPORT_PULLBACK":
+                if not info.get("touched_at"):
+                    if touched:
+                        info["touched_at"] = time.time()
+                        info["touch_price"] = float(current_price)
+                        self.log(
+                            f"👀 [紙上支撐觸價] {symbol} {side} @ {current_price:.8g}，"
+                            f"等待回收 {SUPPORT_PULLBACK_RECLAIM_ATR_MULT:.2f} ATR 確認承接",
+                            "INFO",
+                        )
+                        self.save_state()
+                    continue
+
+                atr = max(float(info.get("atr") or 0.0), target * 1e-6)
+                adverse = target - current_price if side == "LONG" else current_price - target
+                if adverse >= atr * SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT:
+                    self.pending_limit_orders.pop(symbol, None)
+                    self.log(
+                        f"↩️ [紙上反轉撤單] {symbol}：觸價後反向穿越 "
+                        f"{adverse / atr:.2f} ATR，承接失敗",
+                        "INFO",
+                    )
+                    self.save_state()
+                    continue
+
+                waited = time.time() - float(info["touched_at"])
+                reclaim = atr * SUPPORT_PULLBACK_RECLAIM_ATR_MULT
+                reclaimed = (
+                    current_price >= target + reclaim if side == "LONG"
+                    else current_price <= target - reclaim
+                )
+                if waited < SUPPORT_PULLBACK_RECLAIM_MIN_SEC or not reclaimed:
+                    continue
+
+                self.pending_limit_orders.pop(symbol, None)
+                entry_ctx = dict(info.get("entry_context") or {})
+                entry_ctx.update({
+                    "touch_price": info.get("touch_price", target),
+                    "reclaim_confirmed": True,
+                    "reclaim_wait_sec": round(waited, 1),
+                })
+                opened = await self.open_position(
+                    symbol, side, current_price, info["amount_usdt"], info["sl"], info["tp"],
+                    info["reason"], atr=info["atr"], leverage=info["leverage"],
+                    signal_score=info["signal_score"], entry_context=entry_ctx,
+                    apply_slippage=True,
+                )
+                if opened:
+                    self.log(
+                        f"✅ [紙上反轉確認成交] {symbol} {side} @ {current_price:.8g}｜"
+                        f"觸價後等待 {waited:.0f}秒、回收 {SUPPORT_PULLBACK_RECLAIM_ATR_MULT:.2f} ATR",
+                        "SUCCESS",
+                    )
                 continue
 
+            if not touched:
+                continue
             self.pending_limit_orders.pop(symbol, None)
             opened = await self.open_position(
                 symbol, side, target, info["amount_usdt"], info["sl"], info["tp"],
@@ -427,7 +485,7 @@ class PaperAccount:
         self.closing_lock.add(symbol)
         try:
             pos = self.positions.pop(symbol)
-            self.position_meta.pop(symbol, None)
+            meta = self.position_meta.pop(symbol, {})
             side = pos["side"]
             entry_price = pos["entry_price"]
             qty = pos["qty"]
@@ -442,6 +500,15 @@ class PaperAccount:
             close_fee = qty * exec_close_price * TAKER_FEE_RATE
             total_fee = open_fee + close_fee
             net_pnl = raw_pnl - total_fee
+            peak_pnl_pct = max(
+                float(pos.get("peak_pnl_pct") or 0.0),
+                float(meta.get("highest_pnl_pct") or 0.0),
+            )
+            realized_price_move_pct = (
+                (exec_close_price - entry_price) / entry_price
+                if side == "LONG"
+                else (entry_price - exec_close_price) / entry_price
+            )
             self.balance += margin + net_pnl
             self.realized_pnl += net_pnl
             self.last_closed_at[symbol] = time.time()
@@ -470,6 +537,12 @@ class PaperAccount:
                 "amount": margin,
                 "fee": round(total_fee, 4),
                 "pnl": round(net_pnl, 4),
+                "peak_pnl_pct": round(peak_pnl_pct, 8),
+                "realized_price_move_pct": round(realized_price_move_pct, 8),
+                "profit_capture_ratio": (
+                    round(realized_price_move_pct / peak_pnl_pct, 4)
+                    if peak_pnl_pct > 0 else None
+                ),
                 "status": "CLOSED",
                 "reason": close_reason,
                 **{key: pos.get(key) for key in ENTRY_CONTEXT_KEYS},
@@ -618,6 +691,32 @@ class PaperAccount:
                 max(TRAILING_CALLBACK_PCT, risk_pct * TRAILING_CALLBACK_R_MULT)
                 if risk_pct > 0 else TRAILING_CALLBACK_PCT
             )
+
+            # 正式 1.5R 移動停利之前的早期保護層。曾有小幅有效浮盈後若
+            # 明顯回吐，先在成本上方附近退出，避免 +0.3% 一路退成完整 -1R。
+            # 費用與預估滑點是最低門檻，確保保護價不設定在必然淨虧處。
+            round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
+            early_guard_trigger = max(EARLY_PROFIT_GUARD_TRIGGER_PCT, round_trip_cost_pct)
+            early_guard_exit = max(EARLY_PROFIT_GUARD_EXIT_PCT, round_trip_cost_pct)
+            if (
+                highest_pnl >= early_guard_trigger
+                and highest_pnl < trailing_trigger
+                and not meta.get("early_profit_guard_armed")
+            ):
+                meta["early_profit_guard_armed"] = True
+                self.log(
+                    f"🛡️ [早期獲利保護] {symbol} 峰值 {highest_pnl:.4%} 已達"
+                    f" {early_guard_trigger:.4%}，若回吐至 {early_guard_exit:.4%} 即離場",
+                    "SUCCESS",
+                )
+            if (
+                meta.get("early_profit_guard_armed")
+                and highest_pnl < trailing_trigger
+                and pnl_pct <= early_guard_exit
+            ):
+                await self.close_position(symbol, curr_p, "早期獲利保護回吐平倉")
+                continue
+
             if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:
                 old_sl = pos.get("sl", 0.0)
                 if side == "LONG":

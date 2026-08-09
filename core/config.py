@@ -156,7 +156,11 @@ STRUCTURED_RSI_SHORT_TRIGGER = float(os.getenv("STRUCTURED_RSI_SHORT_TRIGGER", "
 SUPPORT_PULLBACK_RSI_LONG_MIN = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MIN", "52"))
 SUPPORT_PULLBACK_RSI_SHORT_MAX = float(os.getenv("SUPPORT_PULLBACK_RSI_SHORT_MAX", "48"))
 SUPPORT_PULLBACK_MIN_BODY_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_MIN_BODY_ATR_MULT", "0.10"))
-SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT", "0.02"))
+SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT", "0.05"))
+# 觸價不等於承接成功：回收確認避免 Maker 限價單專接落刀。
+SUPPORT_PULLBACK_RECLAIM_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_RECLAIM_ATR_MULT", "0.05"))
+SUPPORT_PULLBACK_RECLAIM_MIN_SEC = float(os.getenv("SUPPORT_PULLBACK_RECLAIM_MIN_SEC", "10"))
+SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT", "0.35"))
 # 紙交易沒有真實委託簿，仍保留少量穿透才成交以模擬排隊，但避免 0.05%
 # 的舊門檻讓短效 Maker 單過度難成交。
 PAPER_MAKER_FILL_PENETRATION_PCT = float(os.getenv("PAPER_MAKER_FILL_PENETRATION_PCT", "0.0001"))
@@ -411,10 +415,11 @@ EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT
 EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.002"))
 TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0060"))
 TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0005"))
-# 有 initial_risk 的策略單改用 R 倍數啟動移動停利。到 1R 才開始保護，
-# 回吐空間保留 0.75R，讓部位有機會走到 1.5R 分批止盈。
-TRAILING_TRIGGER_R_MULT = float(os.getenv("TRAILING_TRIGGER_R_MULT", "1.0"))
-TRAILING_CALLBACK_R_MULT = float(os.getenv("TRAILING_CALLBACK_R_MULT", "0.75"))
+# 有 initial_risk 的策略單改用 R 倍數啟動移動停利。到 1.5R 才開始保護，
+# 回吐空間保留 0.5R，因此啟動後至少鎖住約 1R；避免舊設定在 +1R 啟動、
+# 回吐 0.75R 後只留下約 +0.25R，形成平均贏單遠小於完整 -1R 止損。
+TRAILING_TRIGGER_R_MULT = float(os.getenv("TRAILING_TRIGGER_R_MULT", "1.5"))
+TRAILING_CALLBACK_R_MULT = float(os.getenv("TRAILING_CALLBACK_R_MULT", "0.5"))
 # CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
 # 專用、更早啟動的移動停利觸發門檻。
 CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.0060"))
@@ -517,14 +522,11 @@ RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
 # ZAMA -1.03）都集中在 ATR/價格 明顯偏高的幣種：SL/TP 是用 ATR 倍數算的，
 # 幣種本身波動率越高，同樣的倉位金額下止損被觸發時虧的錢就越大，
 # 而移動止利鎖住的獲利卻不會跟著等比放大，造成贏小賠大。
-# 反觀 BTC(0.19%)、HYPE(0.26%)、SOL(0.30%)、AAVE(0.60%) 這類 ATR% 較低的
-# 幣種整體是賺錢的，故以 0.6% 為門檻，超過就跳過進場。
-MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.006"))
-# MIN_ATR_PCT：波動率太低也不開倉。實測 BTC/LINK/LTC/BNB/XRP 一批集中在
-# 12 分鐘內的止損，反推 ATR 只有 0.07%~0.21%——市場太安靜時的「突破」
-# 更可能是假突破（盤整區間的雜訊），沒有真實動能支撐，容易一進場就
-# 反轉。跟 MAX_ATR_PCT 一起框出一個「波動適中」的可交易區間。
-MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0010"))
+# 探索模式以半倉收集樣本，ATR 上限放寬至 0.8%；仍排除更極端的高波動幣。
+MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.008"))
+# MIN_ATR_PCT：探索池下限放寬至 0.05%，讓 ETH、XRP、LINK 等主流幣
+# 留在監控範圍；更低波動仍視為缺乏足夠價格空間。
+MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
 
 # --- 主流幣名單：交易範圍限縮 + 量縮背離繞過波動過低限制 ---
 # market_candidates() 只會從這份名單裡挑選候選幣（見 symbol_rotation.py）。
@@ -610,10 +612,9 @@ SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "90
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
 # 跟著 SYMBOL_ROTATION_COUNT 等比放大（24→12 是 1:2），維持多空對稱席次。
 DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "12"))
-# 實測輪替候選池常常只剩個位數合格（60分門檻+ATR範圍雙重過濾下，31個
-# 候選常態只剩4~10個能進監控名單），降到45分讓中等評分的候選也能進來，
-# 同時仍濾掉評分明顯偏弱（30分以下）的。
-DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "45"))
+# 輪替候選池常因 ATR 與方向分數雙重過濾只剩個位數，監控分數降到40；真正進場仍需 MIN_OPEN_SIGNAL_SCORE，
+# 因此只會增加持續觀察的幣，不會讓40分訊號直接下單。
+DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "40"))
 SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "100"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "35000000"))
 SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "5.0"))
@@ -625,6 +626,11 @@ SYMBOL_MAX_24H_CHANGE_PCT = float(os.getenv("SYMBOL_MAX_24H_CHANGE_PCT", "50.0")
 SYMBOL_HISTORY_QUARANTINE_MIN_TRADES = int(os.getenv("SYMBOL_HISTORY_QUARANTINE_MIN_TRADES", "8"))
 SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL = float(os.getenv("SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL", "-0.20"))
 SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE = float(os.getenv("SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE", "0.40"))
+# 樣本不足或方向績效仍為負時不移出監控池，改用較小倉位探索。
+EXPLORATION_MIN_DIRECTION_TRADES = int(os.getenv("EXPLORATION_MIN_DIRECTION_TRADES", "3"))
+EXPLORATION_POSITION_SIZE_MULTIPLIER = min(
+    1.0, max(0.1, float(os.getenv("EXPLORATION_POSITION_SIZE_MULTIPLIER", "0.5")))
+)
 AI_ADVISOR_ENABLED = os.getenv("AI_ADVISOR_ENABLED", "true").lower() == "true"
 AI_ADVISOR_URL = os.getenv("AI_ADVISOR_URL", "http://127.0.0.1:8888/v1/chat/completions")
 AI_ADVISOR_TIMEOUT_SEC = float(os.getenv("AI_ADVISOR_TIMEOUT_SEC", "30"))

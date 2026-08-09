@@ -97,7 +97,7 @@ async def get_status():
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": "Keltner + SuperTrend 混合模式 (12幣雙向)",
+        "strategy": f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
