@@ -34,8 +34,8 @@ from core.config import (
     SUPPORT_PULLBACK_RECLAIM_ATR_MULT,
     SUPPORT_PULLBACK_RECLAIM_MIN_SEC,
     SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT,
-    TREND_EXTENSION_TARGET_PCT, TREND_EXTENSION_GUARD_TRIGGER_PCT,
-    TREND_EXTENSION_GUARD_EXIT_PCT,
+    TREND_EXTENSION_GUARD_TRIGGER_PCT, TREND_EXTENSION_GUARD_EXIT_PCT,
+    TREND_EXTENSION_MIN_CAPTURE_RATIO,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -701,13 +701,20 @@ class PaperAccount:
             round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
             early_guard_trigger = max(EARLY_PROFIT_GUARD_TRIGGER_PCT, round_trip_cost_pct)
             early_guard_exit = max(EARLY_PROFIT_GUARD_EXIT_PCT, round_trip_cost_pct)
-            if meta.get("profit_profile") == "TREND_EXTENSION":
+            is_trend_extension = meta.get("profit_profile") == "TREND_EXTENSION"
+            if is_trend_extension:
                 early_guard_trigger = max(TREND_EXTENSION_GUARD_TRIGGER_PCT, round_trip_cost_pct)
-                early_guard_exit = max(TREND_EXTENSION_GUARD_EXIT_PCT, round_trip_cost_pct)
-                trailing_trigger = max(trailing_trigger, TREND_EXTENSION_TARGET_PCT)
+                early_guard_exit = max(
+                    TREND_EXTENSION_GUARD_EXIT_PCT,
+                    round_trip_cost_pct,
+                    highest_pnl * TREND_EXTENSION_MIN_CAPTURE_RATIO,
+                )
+                trailing_trigger = max(trailing_trigger, early_guard_trigger)
+                meta["dynamic_profit_floor_pct"] = early_guard_exit
+                pos["dynamic_profit_floor_pct"] = early_guard_exit
             if (
                 highest_pnl >= early_guard_trigger
-                and highest_pnl < trailing_trigger
+                and (is_trend_extension or highest_pnl < trailing_trigger)
                 and not meta.get("early_profit_guard_armed")
             ):
                 meta["early_profit_guard_armed"] = True
@@ -718,10 +725,14 @@ class PaperAccount:
                 )
             if (
                 meta.get("early_profit_guard_armed")
-                and highest_pnl < trailing_trigger
+                and (is_trend_extension or highest_pnl < trailing_trigger)
                 and pnl_pct <= early_guard_exit
             ):
-                await self.close_position(symbol, curr_p, "早期獲利保護回吐平倉")
+                close_reason = (
+                    "趨勢延伸峰值保護平倉" if is_trend_extension
+                    else "早期獲利保護回吐平倉"
+                )
+                await self.close_position(symbol, curr_p, close_reason)
                 continue
 
             if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:

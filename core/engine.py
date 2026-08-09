@@ -30,7 +30,6 @@ from core.config import (
     BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
     BREAKOUT_KC_FAIL_CONFIRM_BARS,
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
-    TREND_EXTENSION_TARGET_PCT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
@@ -1311,11 +1310,7 @@ class TradingEngine:
                         else entry_price - current_price
                     )
                     rr = favorable_move / initial_risk
-                    target_ready = (
-                        meta.get("profit_profile") != "TREND_EXTENSION"
-                        or favorable_move / entry_price >= TREND_EXTENSION_TARGET_PCT
-                    )
-                    if target_ready and rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
+                    if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
                         if await self.account.partial_close_position(
                             symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
                             fraction=BREAKOUT_RR_CLOSE_FRACTION,
@@ -1324,7 +1319,7 @@ class TradingEngine:
                             meta["rr_1_5_done"] = True
                             self.account.save_state()
                             continue
-                    if target_ready and rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
+                    if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
                         if await self.account.partial_close_position(
                             symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
                             fraction=BREAKOUT_RR_CLOSE_FRACTION,

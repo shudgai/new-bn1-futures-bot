@@ -274,6 +274,27 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
 
 
 @pytest.mark.anyio
+async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "dynamic_peak.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    account = PaperAccount()
+    await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 90.0, 0.0, "trend", signal_score=85,
+        entry_context={"entry_mode": "SUPPORT_PULLBACK", "profit_profile": "TREND_EXTENSION", "profit_room_pct": 0.02},
+    )
+    entry = account.positions["BTC/USDT"]["entry_price"]
+    await account.update_positions({"BTC/USDT": entry * 1.0044})
+    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
+    await account.update_positions({"BTC/USDT": entry * 1.0080})
+    assert account.position_meta["BTC/USDT"]["early_profit_guard_armed"] is True
+    await account.update_positions({"BTC/USDT": entry * 1.0057})
+    assert "BTC/USDT" in account.positions
+    await account.update_positions({"BTC/USDT": entry * 1.0055})
+    assert "BTC/USDT" not in account.positions
+    assert account.trades[0]["peak_pnl_pct"] >= 0.008
+
+
+@pytest.mark.anyio
 async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
