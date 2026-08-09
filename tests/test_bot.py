@@ -3063,6 +3063,67 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
     )
 
 
+def test_structured_entry_accepts_relaxed_location_and_volume():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["close"] = 99.925
+    frame["ema_20"] = 99.925
+    frame["atr"] = 0.3
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [
+        99.96, 100.03, 100.04, 99.95, 475.0, 54.0,
+    ]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=99.8, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["volume_ratio"] == pytest.approx(0.95)
+
+
+def test_structured_entry_accepts_macd_improvement_without_reversal_candle():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], ["rsi", "macd_hist"]] = [51.0, -0.10]
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi", "macd_hist",
+    ]] = [100.07, 100.03, 100.08, 99.95, 450.0, 54.0, -0.05]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "ENTER_LIMIT"
+    assert "MACD動能改善" in signal["reason"]
+
+
+def test_structured_entry_penalizes_contrary_btc_without_blocking():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [
+        99.96, 100.03, 100.04, 99.95, 300.0, 54.0,
+    ]
+    aligned = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    contrary = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=-1,
+        indicators_precomputed=True,
+    )
+    assert aligned["action"] == contrary["action"] == "ENTER_LIMIT"
+    assert contrary["score"] == aligned["score"] - strategy_module.BTC_REGIME_SCORE_PENALTY
+    assert contrary["btc_regime_mode"] == "CONTRARY"
+    assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
+
+
 def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()

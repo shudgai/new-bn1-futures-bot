@@ -30,6 +30,7 @@ from core.config import (
     ENABLE_1H_EMA50_FILTER,
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
+    SUPPORT_PULLBACK_MAX_VOLUME_RATIO,
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
     TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
     get_bounce_capture_ratio,
@@ -571,15 +572,20 @@ class SuperTrendKeltnerStrategy:
         volume = float(curr["volume"])
         volume_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
         volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
-        aligned = (
-            (st_direction_1h in (None, direction))
-            and (not btc_st_direction_1h or int(btc_st_direction_1h) == direction)
+        aligned = st_direction_1h in (None, direction)
+        btc_contrary = bool(
+            btc_st_direction_1h and int(btc_st_direction_1h) != direction
         )
+        btc_score_penalty = BTC_REGIME_SCORE_PENALTY if btc_contrary else 0
+        btc_allocation_factor = BTC_REGIME_ALLOCATION_FACTOR if btc_contrary else 1.0
         common = {
             "side": side, "price": price, "atr": atr,
             "signal_candle_low": float(curr["low"]),
             "signal_candle_high": float(curr["high"]),
             "volume_ratio": volume_ratio,
+            "btc_regime_mode": "CONTRARY" if btc_contrary else "ALIGNED",
+            "btc_score_penalty": btc_score_penalty,
+            "btc_allocation_factor": btc_allocation_factor,
         }
 
         # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
@@ -629,7 +635,8 @@ class SuperTrendKeltnerStrategy:
             # ✅ 新增副策略：如果突破時成交量暴增 >= 2.0 倍均量，判定為主力強勢掃貨，直接以市價單進場搶籌
             if volume_ratio >= 2.0:
                 return {
-                    "action": "ENTER_MARKET", "entry_mode": "BREAKOUT", "score": 95,
+                    "action": "ENTER_MARKET", "entry_mode": "BREAKOUT",
+                    "score": 95 - btc_score_penalty,
                     "target_price": price,
                     "reason": f"Breakout_{side}｜🚀 [爆量強突破市價] 突破{trigger}｜量能{volume_ratio:.2f}x",
                     "prior_high": prior_high, "prior_low": prior_low, **common,
@@ -645,7 +652,8 @@ class SuperTrendKeltnerStrategy:
                 pullback_target = ema20 - BREAKOUT_PULLBACK_ATR_MULT * atr
                 pullback_target = max(pullback_target, price * 1.0005)
             return {
-                "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT", "score": 90,
+                "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT",
+                "score": 90 - btc_score_penalty,
                 "target_price": pullback_target,
                 "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜等回踩@{pullback_target:.6g}",
                 "prior_high": prior_high, "prior_low": prior_low, **common,
@@ -670,8 +678,18 @@ class SuperTrendKeltnerStrategy:
             if side == "LONG"
             else price < candle_open and close_location <= 0.40
         )
+        macd_hist = float(curr["macd_hist"])
+        prev_macd_hist = float(prev["macd_hist"])
+        macd_improving = (
+            macd_hist > prev_macd_hist
+            if side == "LONG" else macd_hist < prev_macd_hist
+        )
+        reversal_or_momentum = reversal or macd_improving
         body_confirmed = candle_body_atr >= SUPPORT_PULLBACK_MIN_BODY_ATR_MULT
-        volume_contracting = volume_ma > 0 and volume <= volume_ma * 0.8
+        volume_contracting = (
+            volume_ma > 0
+            and volume <= volume_ma * SUPPORT_PULLBACK_MAX_VOLUME_RATIO
+        )
         rsi = float(curr["rsi"])
         previous_rsi = float(prev["rsi"])
         rsi_ok = (
@@ -691,14 +709,18 @@ class SuperTrendKeltnerStrategy:
             1.0 - max(0.0, support_distance_atr - STRUCTURED_SUPPORT_NEAR_ATR),
         )
         location_points = round(20 * location_progress)
-        reversal_points = 20 if reversal else 0
+        reversal_points = 20 if reversal_or_momentum else 0
         body_points = round(
             10 * min(
                 candle_body_atr / max(SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, 1e-12), 1.0
             )
         )
         volume_progress = (
-            max(0.0, 1.0 - max(0.0, volume_ratio - 0.8) / 0.8)
+            max(
+                0.0,
+                1.0 - max(0.0, volume_ratio - SUPPORT_PULLBACK_MAX_VOLUME_RATIO)
+                / max(SUPPORT_PULLBACK_MAX_VOLUME_RATIO, 1e-12),
+            )
             if volume_ma > 0 else 0.0
         )
         volume_points = round(10 * volume_progress)
@@ -721,8 +743,10 @@ class SuperTrendKeltnerStrategy:
         }
         readiness_score = int(sum(readiness_components.values()))
 
-        if aligned and near_support and reversal and body_confirmed and volume_contracting and rsi_ok and quality_ok:
-            reversal_desc = "收綠K反彈" if side == "LONG" else "收紅K反轉"
+        if aligned and near_support and reversal_or_momentum and body_confirmed and volume_contracting and rsi_ok and quality_ok:
+            reversal_desc = (
+                "收綠K反彈" if side == "LONG" else "收紅K反轉"
+            ) if reversal else "MACD動能改善"
             target_price = (
                 price - atr * SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT
                 if side == "LONG"
@@ -739,7 +763,11 @@ class SuperTrendKeltnerStrategy:
             )
             rsi_score = round(min(rsi_strength / 8.0, 1.0) * 4)
             adx_score = round(min(max(adx - ADX_QUALITY_MIN, 0.0) / 18.0, 1.0) * 4)
-            score = min(91, 75 + body_score + support_score + rsi_score + adx_score)
+            score = max(
+                0,
+                min(91, 75 + body_score + support_score + rsi_score + adx_score)
+                - btc_score_penalty,
+            )
             profit_room_pct = (
                 max(0.0, (prior_high - target_price) / target_price)
                 if side == "LONG"
@@ -759,8 +787,6 @@ class SuperTrendKeltnerStrategy:
                     **common,
                 }
             prev_adx = float(prev["adx"]) if not pd.isna(prev["adx"]) else 0.0
-            macd_hist = float(curr["macd_hist"])
-            prev_macd_hist = float(prev["macd_hist"])
             macd_expanding = (
                 macd_hist > 0 and macd_hist > prev_macd_hist
                 if side == "LONG"
@@ -798,9 +824,13 @@ class SuperTrendKeltnerStrategy:
                 "bounce_target_pct": bounce_target_pct,
                 "reason": (
                     f"SupportPullback_{side}｜{support_name}{reversal_desc}｜"
-                    f"Maker@{target_price:.6g}｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}｜"
+                    f"Maker@{target_price:.6g}｜量能{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}｜"
                     f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}｜"
                     f"{profit_exit_note}"
+                    + (
+                        f"｜BTC反向扣{btc_score_penalty}分、半倉"
+                        if btc_contrary else ""
+                    )
                 ),
                 **common,
             }
@@ -830,25 +860,28 @@ class SuperTrendKeltnerStrategy:
             if rsi_cross:
                 triggers.append("RSI穿越50")
             return {
-                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS", "score": 80,
+                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
+                "score": 80 - btc_score_penalty,
                 "reason": f"MomentumCross_{side}｜{'+'.join(triggers)}", **common,
             }
 
         missing = []
         if not aligned:
-            missing.append("5m/1h/BTC趨勢同向")
+            missing.append("5m/1h趨勢同向")
         if not near_support:
             missing.append(
                 f"靠近{support_name}（目前{support_distance_atr:.2f}ATR，需≤{STRUCTURED_SUPPORT_NEAR_ATR:.2f}）"
             )
-        if not reversal:
-            missing.append("收盤反轉K")
+        if not reversal_or_momentum:
+            missing.append("收盤反轉K或MACD動能改善")
         if not body_confirmed:
             missing.append(
                 f"K棒實體（{candle_body_atr:.2f}ATR<{SUPPORT_PULLBACK_MIN_BODY_ATR_MULT:.2f}）"
             )
         if not volume_contracting:
-            missing.append(f"縮量（目前{volume_ratio:.2f}x，需≤0.80x）")
+            missing.append(
+                f"量能（目前{volume_ratio:.2f}x，需≤{SUPPORT_PULLBACK_MAX_VOLUME_RATIO:.2f}x）"
+            )
         if not rsi_ok:
             rsi_target = (
                 SUPPORT_PULLBACK_RSI_LONG_MIN
@@ -873,6 +906,11 @@ class SuperTrendKeltnerStrategy:
         missing_text = "、".join(missing[:4])
         if len(missing) > 4:
             missing_text += f"，另{len(missing) - 4}項"
+        if btc_contrary:
+            missing_text += (
+                f"｜BTC方向相反僅扣{btc_score_penalty}分、"
+                f"倉位×{btc_allocation_factor:.2f}，不阻擋"
+            )
 
         return {
             "action": "HOLD", "side": side, "score": 0,

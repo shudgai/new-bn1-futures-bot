@@ -1917,6 +1917,8 @@ class TradingEngine:
         )
         history_allocation_factor = history_factor_fn(symbol, side)
         amount *= history_allocation_factor
+        btc_allocation_factor = float(signal.get("btc_allocation_factor") or 1.0)
+        amount *= btc_allocation_factor
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price, sl,
@@ -1933,9 +1935,10 @@ class TradingEngine:
             "entry_mode": entry_mode,
             "initial_sl": sl, "initial_risk": initial_risk,
             "signal_candle_low": candle_low, "signal_candle_high": candle_high,
-            "btc_regime_at_entry": "ALIGNED",
+            "btc_regime_at_entry": signal.get("btc_regime_mode", "ALIGNED"),
             "btc_direction_1h_at_entry": self.btc_1h_st_direction,
-            "btc_allocation_factor": 1.0,
+            "btc_score_penalty": int(signal.get("btc_score_penalty") or 0),
+            "btc_allocation_factor": btc_allocation_factor,
             "history_allocation_factor": history_allocation_factor,
             "profit_profile": signal.get("profit_profile", "BOUNCE"),
             "profit_room_pct": float(signal.get("profit_room_pct") or 0.0),
