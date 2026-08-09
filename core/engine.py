@@ -1939,6 +1939,8 @@ class TradingEngine:
             "history_allocation_factor": history_allocation_factor,
             "profit_profile": signal.get("profit_profile", "BOUNCE"),
             "profit_room_pct": float(signal.get("profit_room_pct") or 0.0),
+            "bounce_capture_ratio": float(signal.get("bounce_capture_ratio") or 0.0),
+            "bounce_target_pct": float(signal.get("bounce_target_pct") or 0.0),
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,

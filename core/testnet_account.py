@@ -46,6 +46,7 @@ from core.config import (
     MAX_ACCEPTABLE_LOSS_PCT,
     ENABLE_DCA_LIMIT,
     DCA_STAGE_DEPTHS,
+    get_bounce_capture_ratio,
 )
 from core.strategy import compute_sl_tp_distance
 from core.notifier import notify_email
@@ -62,6 +63,7 @@ ENTRY_CONTEXT_KEYS = (
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
     "profit_profile", "profit_room_pct",
+    "bounce_capture_ratio", "bounce_target_pct",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -599,6 +601,41 @@ class BinanceTestnetAccount:
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
 
+            pnl_pct = (
+                (mark_p - entry_p) / entry_p
+                if side == "LONG" else (entry_p - mark_p) / entry_p
+            )
+            bounce_capture_ratio = float(
+                pos.get("bounce_capture_ratio")
+                or meta.get("bounce_capture_ratio")
+                or 0.0
+            )
+            bounce_target_pct = float(
+                pos.get("bounce_target_pct") or meta.get("bounce_target_pct") or 0.0
+            )
+            if meta.get("profit_profile") == "BOUNCE" and bounce_target_pct <= 0:
+                profit_room_pct = float(
+                    pos.get("profit_room_pct") or meta.get("profit_room_pct") or 0.0
+                )
+                if profit_room_pct > 0:
+                    bounce_capture_ratio = get_bounce_capture_ratio(
+                        int(pos.get("signal_score") or meta.get("signal_score") or 75)
+                    )
+                    bounce_target_pct = profit_room_pct * bounce_capture_ratio
+                    pos["bounce_capture_ratio"] = bounce_capture_ratio
+                    pos["bounce_target_pct"] = bounce_target_pct
+                    meta["bounce_capture_ratio"] = bounce_capture_ratio
+                    meta["bounce_target_pct"] = bounce_target_pct
+            if (
+                meta.get("profit_profile") == "BOUNCE"
+                and bounce_target_pct > 0
+                and pnl_pct + 1e-12 >= bounce_target_pct
+            ):
+                await self.close_position(
+                    symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
+                )
+                continue
+
             # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全
             # 交給交易所 STOP_MARKET 處理，不再需要限價未成交後備。
             if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS and old_sl > 0:
@@ -627,7 +664,6 @@ class BinanceTestnetAccount:
             if ENABLE_TRAILING_STOP:
                 atr_value = meta.get("atr", entry_p * 0.015)
                 atr_pct = atr_value / entry_p if entry_p > 0 else 0.015
-                pnl_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
                 highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
                 if pnl_pct > highest_pnl:
                     highest_pnl = pnl_pct

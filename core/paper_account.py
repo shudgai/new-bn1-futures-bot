@@ -36,6 +36,7 @@ from core.config import (
     SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT,
     TREND_EXTENSION_GUARD_TRIGGER_PCT, TREND_EXTENSION_GUARD_EXIT_PCT,
     TREND_EXTENSION_MIN_CAPTURE_RATIO,
+    get_bounce_capture_ratio,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -52,6 +53,7 @@ ENTRY_CONTEXT_KEYS = (
     "signal_candle_low", "signal_candle_high",
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
     "profit_profile", "profit_room_pct",
+    "bounce_capture_ratio", "bounce_target_pct",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -672,6 +674,37 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = now_ts
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
+
+            bounce_capture_ratio = float(
+                pos.get("bounce_capture_ratio")
+                or meta.get("bounce_capture_ratio")
+                or 0.0
+            )
+            bounce_target_pct = float(
+                pos.get("bounce_target_pct") or meta.get("bounce_target_pct") or 0.0
+            )
+            if meta.get("profit_profile") == "BOUNCE" and bounce_target_pct <= 0:
+                profit_room_pct = float(
+                    pos.get("profit_room_pct") or meta.get("profit_room_pct") or 0.0
+                )
+                if profit_room_pct > 0:
+                    bounce_capture_ratio = get_bounce_capture_ratio(
+                        int(pos.get("signal_score") or meta.get("signal_score") or 75)
+                    )
+                    bounce_target_pct = profit_room_pct * bounce_capture_ratio
+                    pos["bounce_capture_ratio"] = bounce_capture_ratio
+                    pos["bounce_target_pct"] = bounce_target_pct
+                    meta["bounce_capture_ratio"] = bounce_capture_ratio
+                    meta["bounce_target_pct"] = bounce_target_pct
+            if (
+                meta.get("profit_profile") == "BOUNCE"
+                and bounce_target_pct > 0
+                and pnl_pct + 1e-12 >= bounce_target_pct
+            ):
+                await self.close_position(
+                    symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
+                )
+                continue
 
             # 移動停利（百分比制，跟 USE_NATIVE_TRAILING_STOP=false 時的
             # testnet 邏輯相同——紙上帳戶沒有真實交易所可以掛原生

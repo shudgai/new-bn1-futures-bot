@@ -295,6 +295,27 @@ async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkey
 
 
 @pytest.mark.anyio
+async def test_bounce_closes_at_configured_room_capture_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_target.json"))
+    account = PaperAccount()
+    await account.open_position(
+        "DOGE/USDT", "SHORT", 100.0, 50.0, 110.0, 0.0, "bounce", signal_score=75,
+        entry_context={
+            "entry_mode": "SUPPORT_PULLBACK", "profit_profile": "BOUNCE",
+            "profit_room_pct": 0.004,
+        },
+    )
+    entry = account.positions["DOGE/USDT"]["entry_price"]
+    await account.update_positions({"DOGE/USDT": entry * (1 - 0.0029)})
+    assert "DOGE/USDT" in account.positions
+    assert account.positions["DOGE/USDT"]["bounce_capture_ratio"] == pytest.approx(0.75)
+    assert account.positions["DOGE/USDT"]["bounce_target_pct"] == pytest.approx(0.003)
+    await account.update_positions({"DOGE/USDT": entry * (1 - 0.0030)})
+    assert "DOGE/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "反彈空間75%目標平倉"
+
+
+@pytest.mark.anyio
 async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
@@ -3036,6 +3057,10 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
     assert signal["target_price"] < signal["price"]
     assert signal["target_price"] <= signal["price"] - 0.3 * 0.05 + 1e-9
     assert 75 <= signal["score"] <= 91
+    assert 0.75 <= signal["bounce_capture_ratio"] <= 0.80
+    assert signal["bounce_target_pct"] == pytest.approx(
+        signal["profit_room_pct"] * signal["bounce_capture_ratio"]
+    )
 
 
 def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():

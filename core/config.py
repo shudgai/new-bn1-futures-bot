@@ -165,6 +165,14 @@ TREND_EXTENSION_MIN_ROOM_PCT = float(os.getenv("TREND_EXTENSION_MIN_ROOM_PCT", "
 TREND_EXTENSION_MIN_VOLUME_RATIO = float(os.getenv("TREND_EXTENSION_MIN_VOLUME_RATIO", "0.60"))
 TREND_EXTENSION_MIN_BODY_ATR_MULT = float(os.getenv("TREND_EXTENSION_MIN_BODY_ATR_MULT", "0.20"))
 MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0040"))
+BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.75"))
+BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
+
+def get_bounce_capture_ratio(score: int) -> float:
+    progress = min(1.0, max(0.0, (float(score or 75) - 75.0) / 16.0))
+    return BOUNCE_CAPTURE_MIN_RATIO + progress * (
+        BOUNCE_CAPTURE_MAX_RATIO - BOUNCE_CAPTURE_MIN_RATIO
+    )
 # 紙交易沒有真實委託簿，仍保留少量穿透才成交以模擬排隊，但避免 0.05%
 # 的舊門檻讓短效 Maker 單過度難成交。
 PAPER_MAKER_FILL_PENETRATION_PCT = float(os.getenv("PAPER_MAKER_FILL_PENETRATION_PCT", "0.0001"))

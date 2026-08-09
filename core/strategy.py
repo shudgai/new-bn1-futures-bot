@@ -32,6 +32,7 @@ from core.config import (
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
     TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
+    get_bounce_capture_ratio,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -778,6 +779,13 @@ class SuperTrendKeltnerStrategy:
             )
             profit_profile = "TREND_EXTENSION" if is_trend_extension else "BOUNCE"
             profit_profile_label = "趨勢延伸" if is_trend_extension else "反彈單"
+            is_bounce = profit_profile == "BOUNCE"
+            bounce_capture_ratio = get_bounce_capture_ratio(score) if is_bounce else 0.0
+            bounce_target_pct = profit_room_pct * bounce_capture_ratio
+            profit_exit_note = (
+                f"預定收割{bounce_capture_ratio:.0%}於{bounce_target_pct:.2%}"
+                if is_bounce else "採動態峰值停利"
+            )
             rsi_arrow = "↑" if side == "LONG" else "↓"
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK", "score": score,
@@ -786,10 +794,13 @@ class SuperTrendKeltnerStrategy:
                 "target_price": target_price,
                 "profit_profile": profit_profile,
                 "profit_room_pct": profit_room_pct,
+                "bounce_capture_ratio": bounce_capture_ratio,
+                "bounce_target_pct": bounce_target_pct,
                 "reason": (
                     f"SupportPullback_{side}｜{support_name}{reversal_desc}｜"
                     f"Maker@{target_price:.6g}｜縮量{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}｜"
-                    f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}"
+                    f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}｜"
+                    f"{profit_exit_note}"
                 ),
                 **common,
             }
