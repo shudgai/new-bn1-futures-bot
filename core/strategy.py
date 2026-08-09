@@ -31,7 +31,7 @@ from core.config import (
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
-    TREND_EXTENSION_MIN_BODY_ATR_MULT,
+    TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
 )
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
@@ -744,6 +744,19 @@ class SuperTrendKeltnerStrategy:
                 if side == "LONG"
                 else max(0.0, (target_price - prior_low) / target_price)
             )
+            if profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "readiness_score": readiness_score,
+                    "readiness_components": readiness_components,
+                    "wait_estimate": "等待前高/前低空間擴大後重新評估",
+                    "profit_room_pct": profit_room_pct,
+                    "reason": (
+                        f"獲利空間不足：目前{profit_room_pct:.2%}<"
+                        f"最低{MIN_ENTRY_PROFIT_ROOM_PCT:.2%}，拒絕低價值進場"
+                    ),
+                    **common,
+                }
             prev_adx = float(prev["adx"]) if not pd.isna(prev["adx"]) else 0.0
             macd_hist = float(curr["macd_hist"])
             prev_macd_hist = float(prev["macd_hist"])

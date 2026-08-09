@@ -3056,6 +3056,24 @@ def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
     assert signal["profit_room_pct"] >= 0.012
 
 
+def test_structured_entry_rejects_profit_room_below_guard_threshold():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["high"] = 100.30
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [99.96, 100.03, 100.04, 99.95, 300.0, 54.0]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert signal["profit_room_pct"] < 0.004
+    assert "獲利空間不足" in signal["reason"]
+
+
 def test_structured_entry_rejects_weak_rsi_support_reversal():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
