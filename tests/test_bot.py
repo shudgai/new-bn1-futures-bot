@@ -2434,7 +2434,13 @@ async def test_structured_pending_revalidates_direction_mode_and_target(
 
 
 @pytest.mark.anyio
-async def test_structured_low_rr_places_when_filter_is_disabled(monkeypatch):
+@pytest.mark.parametrize(
+    ("bounce_target_pct", "should_place"),
+    [(0.008, True), (0.004, False)],
+)
+async def test_structured_rr_experiment_keeps_point_five_hard_floor(
+    monkeypatch, bounce_target_pct, should_place,
+):
     placed_orders = []
 
     class DummyAccount:
@@ -2476,18 +2482,22 @@ async def test_structured_low_rr_places_when_filter_is_disabled(monkeypatch):
 
     engine._execution_price_is_safe = price_is_safe
     monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
+    monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_HARD_FLOOR", 0.5)
+    monkeypatch.setattr(engine_module, "MIN_TRADE_USDT", 1.0)
     signal = {
         "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
-        "side": "LONG", "score": 85, "target_price": 100.0, "atr": 1.0,
+        "side": "LONG", "score": 85, "target_price": 100.0, "atr": 0.6,
         "signal_candle_low": 100.0, "signal_candle_high": 100.2,
         "profit_profile": "BOUNCE", "profit_room_pct": 0.002,
-        "bounce_capture_ratio": 0.75, "bounce_target_pct": 0.0015,
+        "bounce_capture_ratio": 0.75, "bounce_target_pct": bounce_target_pct,
         "reason": "low-rr experiment",
     }
 
-    assert await engine._place_structured_entry("XMR/USDT", signal, 100.0) is True
-    assert placed_orders
-    assert placed_orders[0]["entry_context"]["structured_net_rr"] < 1.0
+    result = await engine._place_structured_entry("XMR/USDT", signal, 100.0)
+    assert result is should_place
+    assert bool(placed_orders) is should_place
+    if should_place:
+        assert 0.5 <= placed_orders[0]["entry_context"]["structured_net_rr"] < 1.0
 
 
 # --- detect_ma7_reversal 拐頭偵測單元測試 ---
@@ -3938,6 +3948,7 @@ async def test_support_pullback_allows_low_reward_risk_when_filter_disabled(
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "low_rr.json"))
     monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
     monkeypatch.setattr(pa_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
+    monkeypatch.setattr(pa_module, "STRUCTURED_NET_RR_HARD_FLOOR", 0.5)
     monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
     account = PaperAccount()
     await account.place_limit_entry(
@@ -3945,7 +3956,7 @@ async def test_support_pullback_allows_low_reward_risk_when_filter_disabled(
         reason="SupportPullback_LONG", signal_score=87, post_only=True,
         entry_context={
             "entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.4,
-            "profit_profile": "BOUNCE", "bounce_target_pct": 0.0047,
+            "profit_profile": "BOUNCE", "bounce_target_pct": 0.0060,
         },
     )
 

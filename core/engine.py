@@ -16,7 +16,7 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
-    STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK,
+    STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
     MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT, MA7_EXIT_TIMEFRAME,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
@@ -1927,13 +1927,15 @@ class TradingEngine:
                 structured_net_rr, _, _ = compute_net_reward_risk(
                     planned_price, sl, reward_pct,
                 )
-                if (
-                    STRUCTURED_NET_RR_FILTER_ENABLED
-                    and structured_net_rr + 1e-12 < STRUCTURED_MIN_NET_REWARD_RISK
-                ):
+                required_net_rr = (
+                    STRUCTURED_MIN_NET_REWARD_RISK
+                    if STRUCTURED_NET_RR_FILTER_ENABLED
+                    else STRUCTURED_NET_RR_HARD_FLOOR
+                )
+                if structured_net_rr + 1e-12 < required_net_rr:
                     self.account.log(
                         f"🛑 {symbol} 結構反彈單淨風報比 {structured_net_rr:.2f}:1 低於 "
-                        f"{STRUCTURED_MIN_NET_REWARD_RISK:.2f}:1（已含雙邊費用與出場滑價），拒絕掛單",
+                        f"{required_net_rr:.2f}:1（已含雙邊費用與出場滑價），拒絕掛單",
                         "WARNING",
                     )
                     return False

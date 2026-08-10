@@ -40,7 +40,7 @@ from core.config import (
     TREND_EXTENSION_GUARD_TRIGGER_PCT, TREND_EXTENSION_GUARD_EXIT_PCT,
     TREND_EXTENSION_MIN_CAPTURE_RATIO,
     get_bounce_capture_ratio,
-    STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK,
+    STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
 )
@@ -469,14 +469,16 @@ class PaperAccount:
                         net_rr, _, _ = compute_net_reward_risk(
                             projected_entry, projected_sl, reward_pct,
                         )
-                        if (
-                            STRUCTURED_NET_RR_FILTER_ENABLED
-                            and net_rr + 1e-12 < STRUCTURED_MIN_NET_REWARD_RISK
-                        ):
+                        required_net_rr = (
+                            STRUCTURED_MIN_NET_REWARD_RISK
+                            if STRUCTURED_NET_RR_FILTER_ENABLED
+                            else STRUCTURED_NET_RR_HARD_FLOOR
+                        )
+                        if net_rr + 1e-12 < required_net_rr:
                             self.pending_limit_orders.pop(symbol, None)
                             self.log(
                                 f"↩️ [紙上反轉撤單] {symbol}：回收後淨風報比 "
-                                f"{net_rr:.2f}:1 低於 {STRUCTURED_MIN_NET_REWARD_RISK:.2f}:1",
+                                f"{net_rr:.2f}:1 低於 {required_net_rr:.2f}:1",
                                 "INFO",
                             )
                             self.save_state()

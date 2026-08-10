@@ -183,6 +183,9 @@ STRUCTURED_NET_RR_FILTER_ENABLED = os.getenv(
     "STRUCTURED_NET_RR_FILTER_ENABLED", "false"
 ).lower() == "true"
 STRUCTURED_MIN_NET_REWARD_RISK = float(os.getenv("STRUCTURED_MIN_NET_REWARD_RISK", "1.0"))
+STRUCTURED_NET_RR_HARD_FLOOR = float(
+    os.getenv("STRUCTURED_NET_RR_HARD_FLOOR", "0.5")
+)
 BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.75"))
 BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
 # 反彈單若長時間連交易成本等級的順向波動都沒有，代表承接／反壓並未延續；
