@@ -807,10 +807,16 @@ class PaperAccount:
                 and (is_trend_extension or highest_pnl < trailing_trigger)
                 and not meta.get("early_profit_guard_armed")
             ):
+                guard_price = entry_p * (
+                    1.0 + early_guard_exit if side == "LONG" else 1.0 - early_guard_exit
+                )
                 meta["early_profit_guard_armed"] = True
+                meta["early_profit_guard_price"] = guard_price
+                pos["early_profit_guard_price"] = guard_price
                 self.log(
                     f"🛡️ [早期獲利保護] {symbol} 峰值 {highest_pnl:.4%} 已達"
-                    f" {early_guard_trigger:.4%}，若回吐至 {early_guard_exit:.4%} 即離場",
+                    f" {early_guard_trigger:.4%}，立即設定保護價 {guard_price:.6g}"
+                    f"（回吐至 {early_guard_exit:.4%} 離場）",
                     "SUCCESS",
                 )
             if (
@@ -822,7 +828,15 @@ class PaperAccount:
                     "趨勢延伸峰值保護平倉" if is_trend_extension
                     else "早期獲利保護回吐平倉"
                 )
-                await self.close_position(symbol, curr_p, close_reason)
+                # 保護啟動當下視為已掛出 STOP；下次報價即使已跳過觸發價，
+                # 也以保護價（再加平倉滑價）模擬成交，不追逐已浮虧的現價。
+                guard_price = float(
+                    meta.get("early_profit_guard_price")
+                    or entry_p * (
+                        1.0 + early_guard_exit if side == "LONG" else 1.0 - early_guard_exit
+                    )
+                )
+                await self.close_position(symbol, guard_price, close_reason)
                 continue
 
             if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:

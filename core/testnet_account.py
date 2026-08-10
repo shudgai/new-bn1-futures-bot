@@ -676,12 +676,53 @@ class BinanceTestnetAccount:
                     highest_pnl >= early_guard_trigger
                     and not meta.get("early_profit_guard_armed")
                 ):
-                    meta["early_profit_guard_armed"] = True
-                    self.log(
-                        f"🛡️ [反彈早期獲利保護] {symbol} 峰值 {highest_pnl:.4%} 已達"
-                        f" {early_guard_trigger:.4%}，若回吐至 {early_guard_exit:.4%} 即離場",
-                        "SUCCESS",
+                    guard_price = entry_p * (
+                        1.0 + early_guard_exit
+                        if side == "LONG" else 1.0 - early_guard_exit
                     )
+                    protection_installed = not ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                    if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                        close_side_guard = "sell" if side == "LONG" else "buy"
+                        try:
+                            await self._cancel_all_orders(symbol)
+                            await self._create_protection_order(
+                                symbol, close_side_guard, "STOP_MARKET", pos["qty"], guard_price,
+                            )
+                            protection_installed = True
+                        except Exception as exc:
+                            restored = False
+                            if old_sl > 0:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_guard, "STOP_MARKET", pos["qty"], old_sl,
+                                    )
+                                    restored = True
+                                except Exception:
+                                    pass
+                            self.log(
+                                f"⚠️ [反彈早期獲利保護] {symbol} 保護單建立失敗："
+                                f"{type(exc).__name__}: {exc}；"
+                                f"{'已恢復原停損' if restored else '原停損恢復失敗，下輪重試'}",
+                                "WARNING" if restored else "DANGER",
+                            )
+                    if protection_installed:
+                        meta["early_profit_guard_armed"] = True
+                        meta["early_profit_guard_price"] = guard_price
+                        meta["sl"] = guard_price
+                        meta["is_breakeven_moved"] = True
+                        pos["early_profit_guard_price"] = guard_price
+                        pos["sl"] = guard_price
+                        pos["is_breakeven_moved"] = True
+                        mode = "立即掛出 STOP_MARKET" if ENABLE_EXCHANGE_INITIAL_STOP_LOSS else "立即設定本地保護價"
+                        self.log(
+                            f"🛡️ [反彈早期獲利保護] {symbol} 峰值 {highest_pnl:.4%} 已達"
+                            f" {early_guard_trigger:.4%}，{mode} {guard_price:.6g}"
+                            f"（回吐至 {early_guard_exit:.4%} 觸發）",
+                            "SUCCESS",
+                        )
+                        # 先讓新保護單穩定存在；下一輪才允許移動止利繼續往
+                        # 更有利方向收緊，避免同一輪建立後又立即取消替換。
+                        continue
                 if meta.get("early_profit_guard_armed") and pnl_pct <= early_guard_exit:
                     await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
                     continue

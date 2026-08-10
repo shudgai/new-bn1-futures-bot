@@ -1932,7 +1932,13 @@ class TradingEngine:
                     if STRUCTURED_NET_RR_FILTER_ENABLED
                     else STRUCTURED_NET_RR_HARD_FLOOR
                 )
-                if structured_net_rr + 1e-12 < required_net_rr:
+                high_readiness_low_room = bool(
+                    signal.get("high_readiness_low_room")
+                )
+                if (
+                    structured_net_rr + 1e-12 < required_net_rr
+                    and not high_readiness_low_room
+                ):
                     self.account.log(
                         f"🛑 {symbol} 結構反彈單淨風報比 {structured_net_rr:.2f}:1 低於 "
                         f"{required_net_rr:.2f}:1（已含雙邊費用與出場滑價），拒絕掛單",
@@ -1948,6 +1954,10 @@ class TradingEngine:
         )
         history_allocation_factor = history_factor_fn(symbol, side)
         amount *= history_allocation_factor
+        low_room_allocation_factor = (
+            0.5 if signal.get("high_readiness_low_room") else 1.0
+        )
+        amount *= low_room_allocation_factor
         btc_allocation_factor = float(signal.get("btc_allocation_factor") or 1.0)
         amount *= btc_allocation_factor
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
@@ -1978,6 +1988,8 @@ class TradingEngine:
             "structured_net_rr": (
                 round(structured_net_rr, 4) if structured_net_rr is not None else None
             ),
+            "high_readiness_low_room": bool(signal.get("high_readiness_low_room")),
+            "low_room_allocation_factor": low_room_allocation_factor,
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,
@@ -1997,7 +2009,11 @@ class TradingEngine:
             self.account.log(
                 f"📝 [結構掛單] {symbol} {side} {entry_mode} {order_type} @ "
                 f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}｜"
-                f"歷史探索倉×{history_allocation_factor:.2f}",
+                f"歷史探索倉×{history_allocation_factor:.2f}"
+                + (
+                    f"｜滿準備低空間倉×{low_room_allocation_factor:.2f}"
+                    if low_room_allocation_factor < 1.0 else ""
+                ),
                 "SUCCESS",
             )
         return bool(placed)

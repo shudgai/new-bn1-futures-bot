@@ -628,6 +628,39 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
 
 
+@pytest.mark.anyio
+async def test_testnet_bounce_guard_immediately_places_stop_market(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
+    monkeypatch.setattr(testnet_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0023)
+    monkeypatch.setattr(testnet_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0020)
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.position_meta["HEI/USDT"] = {
+        "sl": 101.0, "tp": 0.0, "atr": 1.0, "highest_pnl_pct": 0.0,
+        "profit_profile": "BOUNCE",
+    }
+    exchange.positions = [{
+        "symbol": "HEIUSDT", "positionAmt": "-10", "entryPrice": "100.0",
+        "markPrice": "99.66", "leverage": "5", "unRealizedProfit": "3.4",
+    }]
+    account.last_sync_at = 0
+
+    await account.update_positions({"HEI/USDT": 99.66})
+
+    meta = account.position_meta["HEI/USDT"]
+    assert meta["early_profit_guard_armed"] is True
+    assert meta["early_profit_guard_price"] == pytest.approx(99.8)
+    assert meta["sl"] == pytest.approx(99.8)
+    assert meta["is_breakeven_moved"] is True
+    assert exchange.cancelled
+    guard_order = exchange.orders[-1]
+    assert guard_order["type"] == "STOP_MARKET"
+    assert guard_order["side"] == "buy"
+    assert float(guard_order["params"]["triggerPrice"]) == pytest.approx(99.8)
+
+
 @pytest.mark.skip(reason="early profit guard removed")
 @pytest.mark.anyio
 async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(

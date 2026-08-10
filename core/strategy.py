@@ -885,7 +885,31 @@ class SuperTrendKeltnerStrategy:
                 if side == "LONG"
                 else max(0.0, (target_price - prior_low) / target_price)
             )
-            if profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT:
+            # 100/100 代表型態、位置、反轉、量能、RSI 與品質全部完成。
+            # 這類滿準備度訊號可在固定 0.40% 門檻下方做半倉探索，但預定
+            # 收割幅度扣除雙邊費用、出場滑價及 0.05% 淨利緩衝後仍須為正。
+            candidate_capture_ratio = get_bounce_capture_ratio(score)
+            round_trip_cost_pct = 2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
+            full_readiness_room_floor = (
+                round_trip_cost_pct + 0.0005
+            ) / max(candidate_capture_ratio, 1e-12)
+            high_readiness_low_room = (
+                readiness_score >= 100
+                and profit_room_pct >= full_readiness_room_floor
+                and profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT
+            )
+            if (
+                profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT
+                and not high_readiness_low_room
+            ):
+                required_room_pct = (
+                    full_readiness_room_floor
+                    if readiness_score >= 100 else MIN_ENTRY_PROFIT_ROOM_PCT
+                )
+                room_floor_label = (
+                    "滿分成本安全線"
+                    if readiness_score >= 100 else "最低"
+                )
                 return {
                     "action": "HOLD", "side": side, "score": 0,
                     "readiness_score": readiness_score,
@@ -894,7 +918,7 @@ class SuperTrendKeltnerStrategy:
                     "profit_room_pct": profit_room_pct,
                     "reason": (
                         f"獲利空間不足：目前{profit_room_pct:.2%}<"
-                        f"最低{MIN_ENTRY_PROFIT_ROOM_PCT:.2%}，拒絕低價值進場"
+                        f"{room_floor_label}{required_room_pct:.2%}，拒絕低價值進場"
                     ),
                     **common,
                 }
@@ -918,7 +942,7 @@ class SuperTrendKeltnerStrategy:
             profit_profile = "TREND_EXTENSION" if is_trend_extension else "BOUNCE"
             profit_profile_label = "趨勢延伸" if is_trend_extension else "反彈單"
             is_bounce = profit_profile == "BOUNCE"
-            bounce_capture_ratio = get_bounce_capture_ratio(score) if is_bounce else 0.0
+            bounce_capture_ratio = candidate_capture_ratio if is_bounce else 0.0
             bounce_target_pct = profit_room_pct * bounce_capture_ratio
             profit_exit_note = (
                 f"預定收割{bounce_capture_ratio:.0%}於{bounce_target_pct:.2%}"
@@ -934,12 +958,17 @@ class SuperTrendKeltnerStrategy:
                 "profit_room_pct": profit_room_pct,
                 "bounce_capture_ratio": bounce_capture_ratio,
                 "bounce_target_pct": bounce_target_pct,
+                "high_readiness_low_room": high_readiness_low_room,
                 "reason": (
                     f"SupportPullback_{side}｜{entry_support_name}{reversal_desc}｜"
                     f"Maker@{target_price:.6g}｜量能{volume_ratio:.2f}x｜RSI={rsi:.1f}{rsi_arrow}｜"
                     f"{memory_note}｜"
                     f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}｜"
                     f"{profit_exit_note}"
+                    + (
+                        "｜滿準備度低空間探索半倉"
+                        if high_readiness_low_room else ""
+                    )
                     + (
                         f"｜BTC反向扣{btc_score_penalty}分、半倉"
                         if btc_contrary else ""

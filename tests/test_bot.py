@@ -265,6 +265,9 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
     effective_exit = max(EARLY_PROFIT_GUARD_EXIT_PCT, cost_floor)
     await account.update_positions({"BTC/USDT": entry * (1 + effective_trigger + 0.0001)})
     assert account.position_meta["BTC/USDT"]["early_profit_guard_armed"] is True
+    assert account.position_meta["BTC/USDT"]["early_profit_guard_price"] == pytest.approx(
+        entry * (1 + effective_exit)
+    )
     assert account.position_meta["BTC/USDT"]["is_breakeven_moved"] is False
 
     await account.update_positions({"BTC/USDT": entry * (1 + effective_exit)})
@@ -2435,11 +2438,11 @@ async def test_structured_pending_revalidates_direction_mode_and_target(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("bounce_target_pct", "should_place"),
-    [(0.008, True), (0.004, False)],
+    ("bounce_target_pct", "low_room_exploration", "should_place"),
+    [(0.008, False, True), (0.004, False, False), (0.004, True, True)],
 )
 async def test_structured_rr_experiment_keeps_point_five_hard_floor(
-    monkeypatch, bounce_target_pct, should_place,
+    monkeypatch, bounce_target_pct, low_room_exploration, should_place,
 ):
     placed_orders = []
 
@@ -2490,6 +2493,7 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
         "signal_candle_low": 100.0, "signal_candle_high": 100.2,
         "profit_profile": "BOUNCE", "profit_room_pct": 0.002,
         "bounce_capture_ratio": 0.75, "bounce_target_pct": bounce_target_pct,
+        "high_readiness_low_room": low_room_exploration,
         "reason": "low-rr experiment",
     }
 
@@ -2497,7 +2501,14 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
     assert result is should_place
     assert bool(placed_orders) is should_place
     if should_place:
-        assert 0.5 <= placed_orders[0]["entry_context"]["structured_net_rr"] < 1.0
+        rr = placed_orders[0]["entry_context"]["structured_net_rr"]
+        if low_room_exploration:
+            assert rr < 0.5
+            assert placed_orders[0]["amount_usdt"] == pytest.approx(
+                engine_module.TRADE_AMOUNT_USDT * 0.5
+            )
+        else:
+            assert 0.5 <= rr < 1.0
 
 
 # --- detect_ma7_reversal 拐頭偵測單元測試 ---
@@ -3515,7 +3526,7 @@ def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
     assert signal["profit_room_pct"] >= 0.012
 
 
-def test_structured_entry_rejects_profit_room_below_guard_threshold():
+def test_structured_entry_full_readiness_allows_cost_safe_low_room_at_half_size():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 100.30
@@ -3528,9 +3539,28 @@ def test_structured_entry_rejects_profit_room_below_guard_threshold():
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "ENTER_LIMIT"
     assert signal["profit_room_pct"] < 0.004
+    assert signal["high_readiness_low_room"] is True
+    assert "滿準備度低空間探索半倉" in signal["reason"]
+
+
+def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer():
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["high"] = 100.15
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [99.96, 100.03, 100.04, 99.95, 300.0, 54.0]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
     assert "獲利空間不足" in signal["reason"]
+    assert "滿分成本安全線" in signal["reason"]
 
 
 def test_structured_entry_rejects_weak_rsi_support_reversal():
@@ -4035,8 +4065,12 @@ async def test_bounce_early_profit_guard_captures_saga_sized_move(tmp_path, monk
 
     assert "ADA/USDT" in account.positions
     assert account.position_meta["ADA/USDT"]["early_profit_guard_armed"] is True
+    assert account.position_meta["ADA/USDT"]["early_profit_guard_price"] == pytest.approx(99.8)
 
-    await account.update_positions({"ADA/USDT": 99.801})
+    # 模擬 HEI：下次輪詢時報價已從浮盈跳到浮虧。
+    await account.update_positions({"ADA/USDT": 100.056})
 
     assert "ADA/USDT" not in account.positions
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
+    assert account.trades[0]["pnl"] > 0
+    assert account.trades[0]["price"] < 100.0
