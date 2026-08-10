@@ -28,7 +28,7 @@ from core.config import (
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
-    ENABLE_1H_EMA50_FILTER,
+    ENABLE_1H_EMA50_FILTER, STRUCTURED_1H_EMA50_TOLERANCE_PCT,
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_RSI_LONG_MAX, SUPPORT_PULLBACK_RSI_SHORT_MIN,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
@@ -618,15 +618,17 @@ class SuperTrendKeltnerStrategy:
 
         # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
         if ENABLE_1H_EMA50_FILTER and not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
-            if side == "LONG" and price < ema_50_1h:
+            ema_lower_bound = ema_50_1h * (1.0 - STRUCTURED_1H_EMA50_TOLERANCE_PCT)
+            ema_upper_bound = ema_50_1h * (1.0 + STRUCTURED_1H_EMA50_TOLERANCE_PCT)
+            if side == "LONG" and price < ema_lower_bound:
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"價格低於 1h EMA50，逆勢做多拒絕開倉（價格 {price:.6g} < EMA50 {ema_50_1h:.6g}）", **common
+                    "reason": f"價格低於 1h EMA50 容許區，逆勢做多拒絕開倉（價格 {price:.6g} < 下界 {ema_lower_bound:.6g}，容許{STRUCTURED_1H_EMA50_TOLERANCE_PCT:.2%}）", **common
                 }
-            elif side == "SHORT" and price > ema_50_1h:
+            elif side == "SHORT" and price > ema_upper_bound:
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"價格高於 1h EMA50，逆勢做空拒絕開倉（價格 {price:.6g} > EMA50 {ema_50_1h:.6g}）", **common
+                    "reason": f"價格高於 1h EMA50 容許區，逆勢做空拒絕開倉（價格 {price:.6g} > 上界 {ema_upper_bound:.6g}，容許{STRUCTURED_1H_EMA50_TOLERANCE_PCT:.2%}）", **common
                 }
 
         # 計算支撐與壓力區（基於最近 24 根已收盤 of 5m K棒）

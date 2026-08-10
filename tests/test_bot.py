@@ -3233,6 +3233,52 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
     )
 
 
+def test_structured_entry_allows_small_ema50_cross_but_rejects_larger_one(monkeypatch):
+    monkeypatch.setattr(strategy_module, "STRUCTURED_1H_EMA50_TOLERANCE_PCT", 0.002)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], "rsi"] = 50.5
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi",
+    ]] = [99.96, 100.03, 100.04, 99.95, 300.0, 51.5]
+
+    within_tolerance = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.20, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    beyond_tolerance = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.40, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+
+    assert within_tolerance["action"] == "ENTER_LIMIT"
+    assert beyond_tolerance["action"] == "HOLD"
+    assert "逆勢做多拒絕" in beyond_tolerance["reason"]
+
+
+def test_structured_entry_accepts_rsi_51_and_volume_1_20(monkeypatch):
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_RSI_LONG_MIN", 51.0)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_MAX_VOLUME_RATIO", 1.20)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], "rsi"] = 50.5
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi",
+    ]] = [99.96, 100.03, 100.04, 99.95, 600.0, 51.5]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["volume_ratio"] == pytest.approx(1.20)
+
+
 def test_structured_entry_accepts_relaxed_location_and_volume():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
@@ -3388,7 +3434,7 @@ def test_support_pullback_rejects_confirmation_volume_below_point_three(monkeypa
         indicators_precomputed=True,
     )
     assert signal["action"] == "HOLD"
-    assert "量能（目前0.21x，需0.30–1.00x）" in signal["reason"]
+    assert "量能（目前0.21x，需0.30–1.20x）" in signal["reason"]
 
 
 def test_structured_entry_remembers_recent_location_and_confirmation():
@@ -3491,7 +3537,7 @@ def test_structured_entry_rejects_weak_rsi_support_reversal():
     assert signal["action"] == "HOLD"
     assert 0 < signal["readiness_score"] < 100
     assert signal["readiness_components"]["rsi"] < 10
-    assert "RSI達52且上升" in signal["reason"]
+    assert "RSI達51且上升" in signal["reason"]
     assert "最快約" in signal["wait_estimate"]
 
 
