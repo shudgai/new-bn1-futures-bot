@@ -396,6 +396,8 @@ async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_pat
     平倉。關掉移動停利避免SL價位干擾，單純測試這個邏輯。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
+    monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
     account = PaperAccount()
 
     await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, sl=50.0, tp=500.0, reason="test", signal_score=80)
@@ -435,6 +437,8 @@ async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost
     部位要繼續留著等真正夠大的獲利。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
+    monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
     account = PaperAccount()
 
     await account.open_position("ADA/USDT", "LONG", 100.0, 50.0, sl=50.0, tp=500.0, reason="test", signal_score=80)
