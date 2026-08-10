@@ -189,7 +189,7 @@ BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
 # 在仍處於虧損時提早退出，不等待完整硬停損。
 BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "3600")))
 BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
-    0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.0025"))
+    0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.0023"))
 )
 
 def get_bounce_capture_ratio(score: int) -> float:
@@ -452,10 +452,10 @@ EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.
 # 結構反彈單的獲利窗口通常較短，較一般單提早保護；退出線仍必須高於
 # 雙邊手續費與預估滑價，避免帳面小利實際淨虧。
 BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0025")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0023")
 )
 BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0018")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0020")
 )
 TREND_EXTENSION_GUARD_TRIGGER_PCT = float(os.getenv("TREND_EXTENSION_GUARD_TRIGGER_PCT", "0.0045"))
 TREND_EXTENSION_GUARD_EXIT_PCT = float(os.getenv("TREND_EXTENSION_GUARD_EXIT_PCT", "0.0030"))

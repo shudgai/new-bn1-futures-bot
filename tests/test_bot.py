@@ -3939,7 +3939,7 @@ async def test_support_pullback_default_paper_maker_fills_at_resting_limit(
 async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "no_follow.json"))
     monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_SEC", 3600.0)
-    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", 0.0025)
+    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", 0.0023)
     account = PaperAccount()
     await account.open_position(
         "ZEC/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=0.0,
@@ -3959,10 +3959,10 @@ async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_bounce_early_profit_guard_captures_ada_sized_move(tmp_path, monkeypatch):
+async def test_bounce_early_profit_guard_captures_saga_sized_move(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_guard.json"))
-    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0025)
-    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0018)
+    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0023)
+    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0020)
     account = PaperAccount()
     await account.open_position(
         "ADA/USDT", "SHORT", 100.0, 50.0, sl=101.0, tp=0.0,
@@ -3974,12 +3974,12 @@ async def test_bounce_early_profit_guard_captures_ada_sized_move(tmp_path, monke
         apply_slippage=False,
     )
 
-    await account.update_positions({"ADA/USDT": 99.73})
+    await account.update_positions({"ADA/USDT": 99.765})
 
     assert "ADA/USDT" in account.positions
     assert account.position_meta["ADA/USDT"]["early_profit_guard_armed"] is True
 
-    await account.update_positions({"ADA/USDT": 99.825})
+    await account.update_positions({"ADA/USDT": 99.801})
 
     assert "ADA/USDT" not in account.positions
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
