@@ -26,6 +26,10 @@ from core.config import (
     get_leverage,
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
+    DISABLE_STOP_LOSS,
+    ONLY_CLOSE_ON_PROFIT,
+    ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT,
+    ENABLE_24H_TIME_FILTER,
     PARTIAL_CLOSE_THRESHOLDS,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_TRIGGER_R_MULT,
@@ -261,6 +265,8 @@ class PaperAccount:
         if apply_slippage:
             sl_distance = abs(price - sl)
             sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
+        if DISABLE_STOP_LOSS:
+            sl = 0.0
         qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
         fee = qty * execution_price * TAKER_FEE_RATE
         self.balance -= (amount_usdt + fee)
@@ -533,6 +539,28 @@ class PaperAccount:
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        if not is_manual and ONLY_CLOSE_ON_PROFIT:
+            pos = self.positions[symbol]
+            side = pos["side"]
+            entry_price = pos["entry_price"]
+            qty = pos["qty"]
+            exec_close_price = current_price * (1 - SLIPPAGE_PCT) if side == "LONG" else current_price * (1 + SLIPPAGE_PCT)
+            raw_pnl = (
+                (exec_close_price - entry_price) * qty if side == "LONG"
+                else (entry_price - exec_close_price) * qty
+            )
+            open_fee = qty * entry_price * TAKER_FEE_RATE
+            close_fee = qty * exec_close_price * TAKER_FEE_RATE
+            total_fee = open_fee + close_fee
+            net_pnl = raw_pnl - total_fee
+            if net_pnl < ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT:
+                self.log(
+                    f"Attempted to close position {symbol} {side} ({close_reason}), but skipped: "
+                    f"Net PnL is {net_pnl:.4f} USDT, which is less than minimum profit threshold {ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT} USDT. "
+                    f"Entry Price: {entry_price:.6g}, Current Price: {current_price:.6g}, Qty: {qty:.6g}.",
+                    "WARNING"
+                )
+                return False
         self.closing_lock.add(symbol)
         try:
             pos = self.positions.pop(symbol)
@@ -872,7 +900,7 @@ class PaperAccount:
                         self.log(f"📉 [紙上交易/移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {trail_sl:.6g}（回吐 {trailing_callback:.4%} 平倉）", "SUCCESS")
 
             # 24小時時間過濾
-            if (now_ts - pos.get("open_timestamp", now_ts)) >= 86400:
+            if ENABLE_24H_TIME_FILTER and (now_ts - pos.get("open_timestamp", now_ts)) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 

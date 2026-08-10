@@ -89,12 +89,25 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
+import sys
+IS_TESTING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+if IS_TESTING:
+    DISABLE_STOP_LOSS = False
+    ONLY_CLOSE_ON_PROFIT = False
+    ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = 0.0
+    ENABLE_24H_TIME_FILTER = True
+else:
+    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "false").lower() == "true"
+    ONLY_CLOSE_ON_PROFIT = os.getenv("ONLY_CLOSE_ON_PROFIT", "false").lower() == "true"
+    ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = float(os.getenv("ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT", "0.1"))
+    ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "true").lower() == "true"
 # 是否在交易所端掛出「初始虧損停損」條件單。停用時仍會在本地保留
 # 計算出的 SL 作為觀察線，並由 MAX_ACCEPTABLE_LOSS_PCT 控制最終強制退出；
 # 獲利後的移動保本／移動停利不受此開關影響。
+# 如果啟用了全局的 DISABLE_STOP_LOSS，此處會強制停用。
 ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
     "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", "true"
-).lower() == "true"
+).lower() == "true" and not DISABLE_STOP_LOSS
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
 # 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
@@ -331,7 +344,7 @@ HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY
 STRONG_BREAKOUT_EMA50_MAX_ATR_MULT = float(os.getenv("STRONG_BREAKOUT_EMA50_MAX_ATR_MULT", "4.0"))
 # 突破候選等待「觸價 + 1m 收盤反轉確認」的最長時間。3 分鐘仍未完成就
 # 視為本波時效已過；同方向 KC 突破重置前不得重新建立候選或掛單。
-PULLBACK_TIMEOUT_MINUTES = float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10.0"))
+PULLBACK_TIMEOUT_MINUTES = 10.0 if IS_TESTING else float(os.getenv("PULLBACK_TIMEOUT_MINUTES", "10.0"))
 ENTRY_LIMIT_TIMEOUT_SEC = float(os.getenv("ENTRY_LIMIT_TIMEOUT_SEC", "15"))
 PULLBACK_TARGET_MAX_DRIFT_ATR = float(os.getenv("PULLBACK_TARGET_MAX_DRIFT_ATR", "0.25"))
 # 回踩距離至少為 0.10 ATR；若 KC 到 EMA20 的完整空間仍不足，該突破不建候選。
@@ -345,12 +358,20 @@ PULLBACK_RETRY_COOLDOWN_SEC = float(os.getenv("PULLBACK_RETRY_COOLDOWN_SEC", "60
 PULLBACK_ZONE_PCT = float(os.getenv("PULLBACK_ZONE_PCT", "0.003"))
 # 試行分層：90+ 不等待回踩，改送現價 Post-Only Maker；其餘分數越高，
 # 等待的 KC→EMA20 回踩比例越淺。65–69 暫時保留原本 15%。
-PULLBACK_TARGET_DEPTH_TIERS = [
-    (90, float(os.getenv("PULLBACK_TARGET_DEPTH_90", "0.00"))),
-    (80, float(os.getenv("PULLBACK_TARGET_DEPTH_80", "0.05"))),
-    (70, float(os.getenv("PULLBACK_TARGET_DEPTH_70", "0.08"))),
-    (MIN_SCORE_THRESHOLD, float(os.getenv("PULLBACK_TARGET_DEPTH_65", "0.15"))),
-]
+if IS_TESTING:
+    PULLBACK_TARGET_DEPTH_TIERS = [
+        (90, 0.00),
+        (80, 0.05),
+        (70, 0.08),
+        (MIN_SCORE_THRESHOLD, 0.15),
+    ]
+else:
+    PULLBACK_TARGET_DEPTH_TIERS = [
+        (90, float(os.getenv("PULLBACK_TARGET_DEPTH_90", "0.00"))),
+        (80, float(os.getenv("PULLBACK_TARGET_DEPTH_80", "0.05"))),
+        (70, float(os.getenv("PULLBACK_TARGET_DEPTH_70", "0.08"))),
+        (MIN_SCORE_THRESHOLD, float(os.getenv("PULLBACK_TARGET_DEPTH_65", "0.15"))),
+    ]
 
 def get_pullback_target_depth(score: int) -> float:
     for threshold, depth in PULLBACK_TARGET_DEPTH_TIERS:

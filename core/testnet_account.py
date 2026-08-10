@@ -33,6 +33,10 @@ from core.config import (
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
     ENABLE_EXCHANGE_INITIAL_STOP_LOSS,
+    DISABLE_STOP_LOSS,
+    ONLY_CLOSE_ON_PROFIT,
+    ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT,
+    ENABLE_24H_TIME_FILTER,
     USE_NATIVE_TRAILING_STOP,
     NATIVE_TRAILING_ATR_RATE_FACTOR,
     NATIVE_TRAILING_TIER1_CALLBACK_MIN,
@@ -382,6 +386,7 @@ class BinanceTestnetAccount:
                 "signal_score": meta.get("signal_score"),
                 **{key: meta.get(key) for key in ENTRY_CONTEXT_KEYS},
                 "mark_price": mark_price,
+                "liquidation_price": float(row.get("liquidationPrice") or 0.0),
                 "unrealized_pnl": float(row.get("unRealizedProfit") or 0.0),
                 "peak_pnl_pct": peak_pnl_pct,
                 "profit_alert": profit_alert,
@@ -606,6 +611,12 @@ class BinanceTestnetAccount:
 
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
+
+            liq_p = pos.get("liquidation_price", 0.0)
+            if liq_p > 0:
+                dist_pct = (mark_p - liq_p) / mark_p if side == "LONG" else (liq_p - mark_p) / mark_p
+                if dist_pct < 0.05:
+                    self.log(f"🚨🚨🚨 [強平警戒] {symbol} {side} 距離強平價僅剩 {dist_pct:.2%}！強平價: {liq_p:.6g}, 當前價: {mark_p:.6g}", "DANGER")
 
             pnl_pct = (
                 (mark_p - entry_p) / entry_p
@@ -982,7 +993,7 @@ class BinanceTestnetAccount:
                                     self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
 
 
-            if (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
+            if ENABLE_24H_TIME_FILTER and (time.time() - pos.get("open_timestamp", time.time())) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
 
@@ -997,10 +1008,10 @@ class BinanceTestnetAccount:
         atr = meta.get("atr") or entry_p * 0.015
         sl_distance, tp_distance = compute_sl_tp_distance(entry_p, atr)
         if side == "LONG":
-            sl_price = float(self.exchange.price_to_precision(symbol, entry_p - sl_distance))
+            sl_price = float(self.exchange.price_to_precision(symbol, entry_p - sl_distance)) if not DISABLE_STOP_LOSS else 0.0
             tp_price = float(self.exchange.price_to_precision(symbol, entry_p + tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         else:
-            sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance))
+            sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
             tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
         close_side = "sell" if side == "LONG" else "buy"
         try:
@@ -1315,7 +1326,7 @@ class BinanceTestnetAccount:
                 execution_price + tp_distance if side == "LONG"
                 else execution_price - tp_distance
             )
-            sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
+            sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl)) if not DISABLE_STOP_LOSS else 0.0
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
             if entry_context.get("initial_sl") is not None:
                 entry_context["initial_sl"] = sl_price
@@ -1682,6 +1693,28 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        if not is_manual and ONLY_CLOSE_ON_PROFIT:
+            position = self.positions[symbol]
+            side = position["side"]
+            entry_price = position["entry_price"]
+            qty = position["qty"]
+            exec_close_price = current_price * (1 - SLIPPAGE_PCT) if side == "LONG" else current_price * (1 + SLIPPAGE_PCT)
+            raw_pnl = (
+                (exec_close_price - entry_price) * qty if side == "LONG"
+                else (entry_price - exec_close_price) * qty
+            )
+            open_fee = entry_price * qty * TAKER_FEE_RATE
+            close_fee = exec_close_price * qty * TAKER_FEE_RATE
+            total_fee = open_fee + close_fee
+            net_pnl = raw_pnl - total_fee
+            if net_pnl < ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT:
+                self.log(
+                    f"Attempted to close position {symbol} {side} ({close_reason}), but skipped: "
+                    f"Net PnL is {net_pnl:.4f} USDT, which is less than minimum profit threshold {ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT} USDT. "
+                    f"Entry Price: {entry_price:.6g}, Current Price: {current_price:.6g}, Qty: {qty:.6g}.",
+                    "WARNING"
+                )
+                return False
         # ✅ 修正：若是手動平倉，直接跳過自動冷卻計時器，避免用戶手動平倉卡住
         _now = time.time()
         if not is_manual and _now < self._close_retry_after.get(symbol, 0.0):
