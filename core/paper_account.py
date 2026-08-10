@@ -14,6 +14,8 @@ from core.config import (
     ENABLE_TRAILING_STOP,
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
+    BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
+    BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
     TRAILING_CALLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
@@ -38,7 +40,7 @@ from core.config import (
     TREND_EXTENSION_GUARD_TRIGGER_PCT, TREND_EXTENSION_GUARD_EXIT_PCT,
     TREND_EXTENSION_MIN_CAPTURE_RATIO,
     get_bounce_capture_ratio,
-    STRUCTURED_MIN_NET_REWARD_RISK,
+    STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK,
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
 )
@@ -59,6 +61,7 @@ ENTRY_CONTEXT_KEYS = (
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
     "profit_profile", "profit_room_pct",
     "bounce_capture_ratio", "bounce_target_pct",
+    "structured_net_rr",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -466,7 +469,10 @@ class PaperAccount:
                         net_rr, _, _ = compute_net_reward_risk(
                             projected_entry, projected_sl, reward_pct,
                         )
-                        if net_rr + 1e-12 < STRUCTURED_MIN_NET_REWARD_RISK:
+                        if (
+                            STRUCTURED_NET_RR_FILTER_ENABLED
+                            and net_rr + 1e-12 < STRUCTURED_MIN_NET_REWARD_RISK
+                        ):
                             self.pending_limit_orders.pop(symbol, None)
                             self.log(
                                 f"↩️ [紙上反轉撤單] {symbol}：回收後淨風報比 "
@@ -772,8 +778,17 @@ class PaperAccount:
             # 明顯回吐，先在成本上方附近退出，避免 +0.3% 一路退成完整 -1R。
             # 費用與預估滑點是最低門檻，確保保護價不設定在必然淨虧處。
             round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
-            early_guard_trigger = max(EARLY_PROFIT_GUARD_TRIGGER_PCT, round_trip_cost_pct)
-            early_guard_exit = max(EARLY_PROFIT_GUARD_EXIT_PCT, round_trip_cost_pct)
+            is_bounce = meta.get("profit_profile") == "BOUNCE"
+            early_guard_trigger = max(
+                BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT
+                if is_bounce else EARLY_PROFIT_GUARD_TRIGGER_PCT,
+                round_trip_cost_pct,
+            )
+            early_guard_exit = max(
+                BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT
+                if is_bounce else EARLY_PROFIT_GUARD_EXIT_PCT,
+                round_trip_cost_pct,
+            )
             is_trend_extension = meta.get("profit_profile") == "TREND_EXTENSION"
             if is_trend_extension:
                 early_guard_trigger = max(TREND_EXTENSION_GUARD_TRIGGER_PCT, round_trip_cost_pct)

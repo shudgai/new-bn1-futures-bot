@@ -32,7 +32,7 @@ from core.config import (
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_RSI_LONG_MAX, SUPPORT_PULLBACK_RSI_SHORT_MIN,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
-    SUPPORT_PULLBACK_MAX_VOLUME_RATIO,
+    SUPPORT_PULLBACK_MIN_VOLUME_RATIO, SUPPORT_PULLBACK_MAX_VOLUME_RATIO,
     SUPPORT_PULLBACK_LOCATION_MEMORY_BARS, SUPPORT_PULLBACK_CONFIRM_MEMORY_BARS,
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
     TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
@@ -768,9 +768,10 @@ class SuperTrendKeltnerStrategy:
             float(confirmation_memory["body_atr"])
             if confirmation_memory else candle_body_atr
         )
-        volume_contracting = (
+        volume_healthy = (
             volume_ma > 0
-            and volume <= volume_ma * SUPPORT_PULLBACK_MAX_VOLUME_RATIO
+            and SUPPORT_PULLBACK_MIN_VOLUME_RATIO <= volume_ratio
+            <= SUPPORT_PULLBACK_MAX_VOLUME_RATIO
         )
         rsi = float(curr["rsi"])
         previous_rsi = float(prev["rsi"])
@@ -816,14 +817,16 @@ class SuperTrendKeltnerStrategy:
                 confirmed_body_atr / max(SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, 1e-12), 1.0
             )
         )
-        volume_progress = (
-            max(
+        if volume_ma <= 0:
+            volume_progress = 0.0
+        elif volume_ratio < SUPPORT_PULLBACK_MIN_VOLUME_RATIO:
+            volume_progress = volume_ratio / max(SUPPORT_PULLBACK_MIN_VOLUME_RATIO, 1e-12)
+        else:
+            volume_progress = max(
                 0.0,
                 1.0 - max(0.0, volume_ratio - SUPPORT_PULLBACK_MAX_VOLUME_RATIO)
                 / max(SUPPORT_PULLBACK_MAX_VOLUME_RATIO, 1e-12),
             )
-            if volume_ma > 0 else 0.0
-        )
         volume_points = round(10 * volume_progress)
         if side == "LONG":
             rsi_progress = min(max((rsi - (SUPPORT_PULLBACK_RSI_LONG_MIN - 10.0)) / 10.0, 0.0), 1.0)
@@ -844,7 +847,7 @@ class SuperTrendKeltnerStrategy:
         }
         readiness_score = int(sum(readiness_components.values()))
 
-        if aligned and near_support and confirmation_recent and volume_contracting and rsi_ok and quality_ok:
+        if aligned and near_support and confirmation_recent and volume_healthy and rsi_ok and quality_ok:
             reversal_desc = (
                 "收綠K反彈" if side == "LONG" else "收紅K反轉"
             ) if confirmation_memory["reversal"] else "MACD動能改善"
@@ -984,9 +987,9 @@ class SuperTrendKeltnerStrategy:
             missing.append(
                 f"近{SUPPORT_PULLBACK_CONFIRM_MEMORY_BARS}根缺反轉K/MACD改善＋足夠實體"
             )
-        if not volume_contracting:
+        if not volume_healthy:
             missing.append(
-                f"量能（目前{volume_ratio:.2f}x，需≤{SUPPORT_PULLBACK_MAX_VOLUME_RATIO:.2f}x）"
+                f"量能（目前{volume_ratio:.2f}x，需{SUPPORT_PULLBACK_MIN_VOLUME_RATIO:.2f}–{SUPPORT_PULLBACK_MAX_VOLUME_RATIO:.2f}x）"
             )
         if not rsi_ok:
             rsi_target = (

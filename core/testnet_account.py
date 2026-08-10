@@ -18,6 +18,8 @@ from core.config import (
     ENABLE_TRAILING_STOP,
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
+    BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
+    BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT,
     TRAILING_TRIGGER_PCT,
     TRAILING_CALLBACK_PCT,
     TRAILING_TRIGGER_R_MULT,
@@ -66,6 +68,7 @@ ENTRY_CONTEXT_KEYS = (
     "signal_candle_low", "signal_candle_high",
     "profit_profile", "profit_room_pct",
     "bounce_capture_ratio", "bounce_target_pct",
+    "structured_net_rr",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -656,6 +659,32 @@ class BinanceTestnetAccount:
             ):
                 await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                 continue
+
+            # 結構反彈單專用的早期獲利保護。這層獨立於原生 Trailing，
+            # 讓 Testnet 與紙上帳戶在小幅浮盈回吐時採取一致行為。
+            if meta.get("profit_profile") == "BOUNCE":
+                round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
+                early_guard_trigger = max(
+                    BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
+                    round_trip_cost_pct,
+                )
+                early_guard_exit = max(
+                    BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT,
+                    round_trip_cost_pct,
+                )
+                if (
+                    highest_pnl >= early_guard_trigger
+                    and not meta.get("early_profit_guard_armed")
+                ):
+                    meta["early_profit_guard_armed"] = True
+                    self.log(
+                        f"🛡️ [反彈早期獲利保護] {symbol} 峰值 {highest_pnl:.4%} 已達"
+                        f" {early_guard_trigger:.4%}，若回吐至 {early_guard_exit:.4%} 即離場",
+                        "SUCCESS",
+                    )
+                if meta.get("early_profit_guard_armed") and pnl_pct <= early_guard_exit:
+                    await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
+                    continue
 
             # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全
             # 交給交易所 STOP_MARKET 處理，不再需要限價未成交後備。

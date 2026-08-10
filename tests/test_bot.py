@@ -2433,6 +2433,63 @@ async def test_structured_pending_revalidates_direction_mode_and_target(
     assert engine._pullback_retry_after["COIN/USDT"] == 100.0
 
 
+@pytest.mark.anyio
+async def test_structured_low_rr_places_when_filter_is_disabled(monkeypatch):
+    placed_orders = []
+
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+
+
+        def get_available_balance(self):
+            return 1000.0
+
+
+        def log(*args, **kwargs):
+            return None
+
+        async def place_limit_entry(self, **kwargs):
+            placed_orders.append(kwargs)
+            return True
+
+    class DummyRotation:
+
+        def get_stop_cooldown_remaining(*args):
+            return 0.0
+
+
+        def get_history_allocation_factor(*args):
+            return 1.0
+
+
+        def get_dynamic_leverage(*args):
+            return 5
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.symbol_rotation = DummyRotation()
+    engine.btc_1h_st_direction = 1
+
+    async def price_is_safe(*args):
+        return True
+
+    engine._execution_price_is_safe = price_is_safe
+    monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
+    signal = {
+        "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
+        "side": "LONG", "score": 85, "target_price": 100.0, "atr": 1.0,
+        "signal_candle_low": 100.0, "signal_candle_high": 100.2,
+        "profit_profile": "BOUNCE", "profit_room_pct": 0.002,
+        "bounce_capture_ratio": 0.75, "bounce_target_pct": 0.0015,
+        "reason": "low-rr experiment",
+    }
+
+    assert await engine._place_structured_entry("XMR/USDT", signal, 100.0) is True
+    assert placed_orders
+    assert placed_orders[0]["entry_context"]["structured_net_rr"] < 1.0
+
+
 # --- detect_ma7_reversal 拐頭偵測單元測試 ---
 
 def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):
@@ -2895,7 +2952,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     # 1. Test Partial Close at ROE >= 5%
     # Price moves to 101.5 (ROE = 1.5% * 5 = 7.5% >= 5%)
     engine.tickers["DOGE/USDT"] = 101.5
-    
+
     # We mock fetch_klines to return prices that do not breach EMA20
     async def mock_fetch_klines_no_breach(symbol, timeframe, limit):
         return pd.DataFrame({
@@ -2926,7 +2983,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     # Reset engine and tickers
     engine.is_running = True
     engine.tickers["DOGE/USDT"] = 90.0
-    
+
     async def mock_fetch_klines_breach(symbol, timeframe, limit):
         # 28 bars at 105.0, last 2 bars at 90.0 -> EMA20 will be > 90.0 (and breach will be verified for last 2 closes)
         return pd.DataFrame({
@@ -3277,6 +3334,61 @@ def test_structured_short_rejects_oversold_rsi(monkeypatch):
     )
     assert signal["action"] == "HOLD"
     assert "RSI過冷" in signal["reason"]
+
+
+@pytest.mark.parametrize(
+    ("side", "previous_rsi", "current_rsi", "reason_fragment"),
+    [
+        ("SHORT", 40.0, 36.8, "界限38"),
+        ("LONG", 60.0, 63.0, "界限62"),
+    ],
+)
+def test_support_pullback_rejects_ada_style_rsi_exhaustion(
+    monkeypatch, side, previous_rsi, current_rsi, reason_fragment,
+):
+    monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    direction = -1 if side == "SHORT" else 1
+    frame["st_direction"] = direction
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.0
+    frame["kc_lower"] = 90.0
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], ["rsi", "macd_hist"]] = [previous_rsi, 0.10]
+    current = (
+        [100.04, 99.97, 100.05, 99.96, 200.0, current_rsi, 0.05]
+        if side == "SHORT"
+        else [99.96, 100.03, 100.04, 99.95, 200.0, current_rsi, 0.15]
+    )
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi", "macd_hist",
+    ]] = current
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.0, st_direction_1h=direction,
+        btc_st_direction_1h=direction, indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert reason_fragment in signal["reason"]
+
+
+def test_support_pullback_rejects_confirmation_volume_below_point_three(monkeypatch):
+    monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi",
+    ]] = [99.96, 100.03, 100.04, 99.95, 105.0, 54.0]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert "量能（目前0.21x，需0.30–1.00x）" in signal["reason"]
 
 
 def test_structured_entry_remembers_recent_location_and_confirmation():
@@ -3774,11 +3886,12 @@ async def test_support_pullback_cancels_when_touch_keeps_moving_adverse(tmp_path
 
 
 @pytest.mark.anyio
-async def test_support_pullback_cancels_when_reclaim_reward_risk_is_too_low(
+async def test_support_pullback_allows_low_reward_risk_when_filter_disabled(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "low_rr.json"))
     monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
+    monkeypatch.setattr(pa_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
     monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
     account = PaperAccount()
     await account.place_limit_entry(
@@ -3795,9 +3908,9 @@ async def test_support_pullback_cancels_when_reclaim_reward_risk_is_too_low(
     await account.update_positions({"ZEC/USDT": 100.06})
     await account.check_pending_limit_orders()
 
-    assert "ZEC/USDT" not in account.positions
+    assert "ZEC/USDT" in account.positions
     assert "ZEC/USDT" not in account.pending_limit_orders
-    assert any("回收後淨風報比" in row["text"] for row in account.logs)
+    assert not any("回收後淨風報比" in row["text"] for row in account.logs)
 
 
 @pytest.mark.anyio
@@ -3825,8 +3938,8 @@ async def test_support_pullback_default_paper_maker_fills_at_resting_limit(
 @pytest.mark.anyio
 async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "no_follow.json"))
-    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_SEC", 2700.0)
-    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", 0.002)
+    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_SEC", 3600.0)
+    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", 0.0025)
     account = PaperAccount()
     await account.open_position(
         "ZEC/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=0.0,
@@ -3836,10 +3949,37 @@ async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
             "profit_room_pct": 0.01, "bounce_target_pct": 0.0078,
         },
     )
-    account.positions["ZEC/USDT"]["open_timestamp"] -= 2701.0
-    account.position_meta["ZEC/USDT"]["open_timestamp"] -= 2701.0
+    account.positions["ZEC/USDT"]["open_timestamp"] -= 3601.0
+    account.position_meta["ZEC/USDT"]["open_timestamp"] -= 3601.0
 
     await account.update_positions({"ZEC/USDT": 99.9})
 
     assert "ZEC/USDT" not in account.positions
     assert account.trades[0]["reason"] == "反彈逾時未延續平倉"
+
+
+@pytest.mark.anyio
+async def test_bounce_early_profit_guard_captures_ada_sized_move(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_guard.json"))
+    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0025)
+    monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0018)
+    account = PaperAccount()
+    await account.open_position(
+        "ADA/USDT", "SHORT", 100.0, 50.0, sl=101.0, tp=0.0,
+        reason="SupportPullback_SHORT", signal_score=88,
+        entry_context={
+            "entry_mode": "SUPPORT_PULLBACK", "profit_profile": "BOUNCE",
+            "initial_sl": 101.0, "profit_room_pct": 0.01, "bounce_target_pct": 0.008,
+        },
+        apply_slippage=False,
+    )
+
+    await account.update_positions({"ADA/USDT": 99.73})
+
+    assert "ADA/USDT" in account.positions
+    assert account.position_meta["ADA/USDT"]["early_profit_guard_armed"] is True
+
+    await account.update_positions({"ADA/USDT": 99.825})
+
+    assert "ADA/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
