@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
+    SLIPPAGE_PCT,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
     ENTRY_FRESHNESS_SCORE_MAX,
     MIN_FRESHNESS_SCORE,
@@ -29,6 +30,7 @@ from core.config import (
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
     ENABLE_1H_EMA50_FILTER,
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
+    SUPPORT_PULLBACK_RSI_LONG_MAX, SUPPORT_PULLBACK_RSI_SHORT_MIN,
     SUPPORT_PULLBACK_MIN_BODY_ATR_MULT, SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT,
     SUPPORT_PULLBACK_MAX_VOLUME_RATIO,
     SUPPORT_PULLBACK_LOCATION_MEMORY_BARS, SUPPORT_PULLBACK_CONFIRM_MEMORY_BARS,
@@ -144,6 +146,31 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     ) / max(1 - fee_rate, 1e-9)
     tp_distance = max(configured_tp_distance, min_tp_distance)
     return sl_distance, tp_distance
+
+
+def compute_net_reward_risk(
+    entry_price: float,
+    sl_price: float,
+    reward_pct: float,
+    fee_rate: float = TAKER_FEE_RATE,
+    slippage_pct: float = SLIPPAGE_PCT,
+) -> tuple[float, float, float]:
+    """回傳（淨風報比、淨獲利距離、淨風險距離）。
+
+    BOUNCE 目標是以成交價百分比觸發；進場與出場手續費皆計入，另保留
+    一次出場滑價。進場若是市價，呼叫端應傳實際或預估滑價後成交價。
+    """
+    entry = max(float(entry_price or 0.0), 0.0)
+    stop_distance = abs(entry - float(sl_price or entry))
+    gross_reward = entry * max(float(reward_pct or 0.0), 0.0)
+    execution_cost = entry * (
+        2.0 * max(float(fee_rate or 0.0), 0.0)
+        + max(float(slippage_pct or 0.0), 0.0)
+    )
+    net_reward = max(0.0, gross_reward - execution_cost)
+    net_risk = stop_distance + execution_cost
+    ratio = net_reward / net_risk if net_risk > 0 else 0.0
+    return ratio, net_reward, net_risk
 
 
 def detect_ma7_reversal(
@@ -747,10 +774,25 @@ class SuperTrendKeltnerStrategy:
         )
         rsi = float(curr["rsi"])
         previous_rsi = float(prev["rsi"])
+        rsi_extreme = (
+            rsi > SUPPORT_PULLBACK_RSI_LONG_MAX
+            if side == "LONG" else rsi < SUPPORT_PULLBACK_RSI_SHORT_MIN
+        )
+        if rsi_extreme:
+            boundary = (
+                SUPPORT_PULLBACK_RSI_LONG_MAX
+                if side == "LONG" else SUPPORT_PULLBACK_RSI_SHORT_MIN
+            )
+            label = "過熱" if side == "LONG" else "過冷"
+            return {
+                "action": "HOLD", "side": side, "score": 0,
+                "reason": f"RSI{label}（目前{rsi:.1f}，界限{boundary:g}），拒絕追價進場",
+                **common,
+            }
         rsi_ok = (
-            rsi >= SUPPORT_PULLBACK_RSI_LONG_MIN and rsi > previous_rsi
+            SUPPORT_PULLBACK_RSI_LONG_MIN <= rsi <= SUPPORT_PULLBACK_RSI_LONG_MAX and rsi > previous_rsi
             if side == "LONG"
-            else rsi <= SUPPORT_PULLBACK_RSI_SHORT_MAX and rsi < previous_rsi
+            else SUPPORT_PULLBACK_RSI_SHORT_MIN <= rsi <= SUPPORT_PULLBACK_RSI_SHORT_MAX and rsi < previous_rsi
         )
         adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 0.0
         atr_pct = atr / price if price > 0 else 0.0

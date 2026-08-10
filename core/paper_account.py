@@ -34,10 +34,15 @@ from core.config import (
     SUPPORT_PULLBACK_RECLAIM_ATR_MULT,
     SUPPORT_PULLBACK_RECLAIM_MIN_SEC,
     SUPPORT_PULLBACK_MAX_ADVERSE_ATR_MULT,
+    PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM,
     TREND_EXTENSION_GUARD_TRIGGER_PCT, TREND_EXTENSION_GUARD_EXIT_PCT,
     TREND_EXTENSION_MIN_CAPTURE_RATIO,
     get_bounce_capture_ratio,
+    STRUCTURED_MIN_NET_REWARD_RISK,
+    BOUNCE_NO_FOLLOW_THROUGH_SEC,
+    BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
 )
+from core.strategy import compute_net_reward_risk
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -412,7 +417,7 @@ class PaperAccount:
             )
             entry_mode = (info.get("entry_context") or {}).get("entry_mode")
 
-            if entry_mode == "SUPPORT_PULLBACK":
+            if entry_mode == "SUPPORT_PULLBACK" and PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM:
                 if not info.get("touched_at"):
                     if touched:
                         info["touched_at"] = time.time()
@@ -446,8 +451,32 @@ class PaperAccount:
                 if waited < SUPPORT_PULLBACK_RECLAIM_MIN_SEC or not reclaimed:
                     continue
 
-                self.pending_limit_orders.pop(symbol, None)
                 entry_ctx = dict(info.get("entry_context") or {})
+                if entry_ctx.get("profit_profile") == "BOUNCE":
+                    reward_pct = float(entry_ctx.get("bounce_target_pct") or 0.0)
+                    if reward_pct > 0:
+                        projected_entry = current_price * (
+                            1 + SLIPPAGE_PCT if side == "LONG" else 1 - SLIPPAGE_PCT
+                        )
+                        stop_distance = abs(current_price - float(info["sl"]))
+                        projected_sl = (
+                            projected_entry - stop_distance
+                            if side == "LONG" else projected_entry + stop_distance
+                        )
+                        net_rr, _, _ = compute_net_reward_risk(
+                            projected_entry, projected_sl, reward_pct,
+                        )
+                        if net_rr + 1e-12 < STRUCTURED_MIN_NET_REWARD_RISK:
+                            self.pending_limit_orders.pop(symbol, None)
+                            self.log(
+                                f"↩️ [紙上反轉撤單] {symbol}：回收後淨風報比 "
+                                f"{net_rr:.2f}:1 低於 {STRUCTURED_MIN_NET_REWARD_RISK:.2f}:1",
+                                "INFO",
+                            )
+                            self.save_state()
+                            continue
+
+                self.pending_limit_orders.pop(symbol, None)
                 entry_ctx.update({
                     "touch_price": info.get("touch_price", target),
                     "reclaim_confirmed": True,
@@ -704,6 +733,17 @@ class PaperAccount:
                 await self.close_position(
                     symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
                 )
+                continue
+
+            if (
+                meta.get("profit_profile") == "BOUNCE"
+                and BOUNCE_NO_FOLLOW_THROUGH_SEC > 0
+                and now_ts - float(pos.get("open_timestamp") or now_ts)
+                    >= BOUNCE_NO_FOLLOW_THROUGH_SEC
+                and highest_pnl < BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT
+                and pnl_pct <= 0
+            ):
+                await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                 continue
 
             # 移動停利（百分比制，跟 USE_NATIVE_TRAILING_STOP=false 時的

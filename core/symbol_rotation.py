@@ -33,6 +33,8 @@ from core.config import (
     SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE,
     EXPLORATION_MIN_DIRECTION_TRADES,
     EXPLORATION_POSITION_SIZE_MULTIPLIER,
+    CONSECUTIVE_STOP_COOLDOWN_COUNT,
+    CONSECUTIVE_STOP_COOLDOWN_SEC,
     ENTRY_DISABLED_SYMBOLS,
     TREND_FILTER_EMA_PERIOD,
     RAPID_MOVE_WINDOW,
@@ -160,6 +162,42 @@ class SymbolRotation:
             or stat["stop_rate"] >= SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE
         )
         return EXPLORATION_POSITION_SIZE_MULTIPLIER if exploratory else 1.0
+
+
+    def get_stop_cooldown_remaining(
+        self, symbol: str, side: str, now: float = None,
+    ) -> float:
+        """同幣同方向連續硬停損後的剩餘冷卻秒數。"""
+        if CONSECUTIVE_STOP_COOLDOWN_SEC <= 0:
+            return 0.0
+        closed = [
+            trade for trade in self.account.trades
+            if trade.get("symbol") == symbol
+            and trade.get("side") == side
+            and str(trade.get("action", "")).startswith("CLOSE")
+        ]
+        streak = 0
+        latest_stop_at = 0.0
+        for trade in closed:
+            reason = str(trade.get("reason") or "")
+            is_hard_stop = "Stop-Loss" in reason or (
+                "止損" in reason and "移動" not in reason
+            )
+            if not is_hard_stop:
+                break
+            streak += 1
+            if latest_stop_at <= 0:
+                timestamp = trade.get("timestamp")
+                if isinstance(timestamp, (int, float)) and timestamp > 0:
+                    latest_stop_at = float(timestamp)
+                else:
+                    trade_id = trade.get("id")
+                    if isinstance(trade_id, (int, float)) and trade_id > 0:
+                        latest_stop_at = float(trade_id) / 1000.0
+        if streak < CONSECUTIVE_STOP_COOLDOWN_COUNT or latest_stop_at <= 0:
+            return 0.0
+        elapsed = max(0.0, float(time.time() if now is None else now) - latest_stop_at)
+        return max(0.0, CONSECUTIVE_STOP_COOLDOWN_SEC - elapsed)
 
 
     @staticmethod

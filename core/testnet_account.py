@@ -47,6 +47,8 @@ from core.config import (
     ENABLE_DCA_LIMIT,
     DCA_STAGE_DEPTHS,
     get_bounce_capture_ratio,
+    BOUNCE_NO_FOLLOW_THROUGH_SEC,
+    BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
 )
 from core.strategy import compute_sl_tp_distance
 from core.notifier import notify_email
@@ -605,6 +607,14 @@ class BinanceTestnetAccount:
                 (mark_p - entry_p) / entry_p
                 if side == "LONG" else (entry_p - mark_p) / entry_p
             )
+            stored_highest_pnl = meta.get("highest_pnl_pct")
+            highest_pnl = max(
+                float(stored_highest_pnl) if stored_highest_pnl is not None else pnl_pct,
+                pnl_pct,
+            )
+            if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
+                meta["highest_pnl_pct"] = highest_pnl
+                meta["peak_profit_updated_at"] = now_ts
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
                 or meta.get("bounce_capture_ratio")
@@ -634,6 +644,17 @@ class BinanceTestnetAccount:
                 await self.close_position(
                     symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
                 )
+                continue
+
+            if (
+                meta.get("profit_profile") == "BOUNCE"
+                and BOUNCE_NO_FOLLOW_THROUGH_SEC > 0
+                and now_ts - float(meta.get("open_timestamp") or now_ts)
+                    >= BOUNCE_NO_FOLLOW_THROUGH_SEC
+                and highest_pnl < BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT
+                and pnl_pct <= 0
+            ):
+                await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                 continue
 
             # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全

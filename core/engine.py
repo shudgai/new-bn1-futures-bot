@@ -16,6 +16,7 @@ from core.config import (
     ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
     HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
+    STRUCTURED_MIN_NET_REWARD_RISK,
     MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT, MA7_EXIT_TIMEFRAME,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
@@ -33,7 +34,7 @@ from core.config import (
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
-    detect_ma7_reversal, has_volume_divergence,
+    compute_net_reward_risk, detect_ma7_reversal, has_volume_divergence,
 )
 
 
@@ -1871,6 +1872,17 @@ class TradingEngine:
             return False
         score = int(signal.get("score") or 0)
         side = signal["side"]
+        stop_cooldown_fn = getattr(
+            self.symbol_rotation, "get_stop_cooldown_remaining", lambda *_args: 0.0
+        )
+        stop_cooldown_remaining = float(stop_cooldown_fn(symbol, side) or 0.0)
+        if stop_cooldown_remaining > 0:
+            self.account.log(
+                f"🛑 {symbol} {side} 近期同方向連續停損，冷卻尚餘 "
+                f"{stop_cooldown_remaining / 3600.0:.1f} 小時，拒絕結構化進場",
+                "WARNING",
+            )
+            return False
         entry_mode = signal["entry_mode"]
         is_limit = signal.get("action") == "ENTER_LIMIT"
         planned_price = float(signal.get("target_price") if is_limit else live_price)
@@ -1908,6 +1920,19 @@ class TradingEngine:
         initial_risk = abs(planned_price - sl)
         if initial_risk <= 0:
             return False
+        if signal.get("profit_profile") == "BOUNCE":
+            reward_pct = float(signal.get("bounce_target_pct") or 0.0)
+            if reward_pct > 0:
+                net_rr, _, _ = compute_net_reward_risk(
+                    planned_price, sl, reward_pct,
+                )
+                if net_rr + 1e-12 < STRUCTURED_MIN_NET_REWARD_RISK:
+                    self.account.log(
+                        f"🛑 {symbol} 結構反彈單淨風報比 {net_rr:.2f}:1 低於 "
+                        f"{STRUCTURED_MIN_NET_REWARD_RISK:.2f}:1（已含雙邊費用與出場滑價），拒絕掛單",
+                        "WARNING",
+                    )
+                    return False
         amount = min(
             max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
             TRADE_AMOUNT_USDT,
@@ -1961,7 +1986,7 @@ class TradingEngine:
         if placed:
             order_type = "支撐限價" if is_limit else "市價"
             self.account.log(
-                f"🚀 [結構進場] {symbol} {side} {entry_mode} {order_type} @ "
+                f"📝 [結構掛單] {symbol} {side} {entry_mode} {order_type} @ "
                 f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}｜"
                 f"歷史探索倉×{history_allocation_factor:.2f}",
                 "SUCCESS",
@@ -2340,6 +2365,49 @@ class TradingEngine:
                             f"條件已變差或分數不足：模式={action}, 分數={score} < {MIN_OPEN_SIGNAL_SCORE}"
                         )
                         self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
+                        continue
+                    fresh_side = str(structured_sig.get("side") or "")
+                    fresh_mode = str(structured_sig.get("entry_mode") or "")
+                    if fresh_side != str(info.get("side") or ""):
+                        self._record_pullback_outcome("maker_direction_changed")
+                        await self.account.cancel_pending_limit(
+                            symbol,
+                            f"方向已翻轉：原{info.get('side')}→現{fresh_side}，撤銷舊掛單",
+                        )
+                        # 當輪主掃描即可依新方向重新建立，不讓舊方向冷卻擋住反手。
+                        self._pullback_retry_after[symbol] = now
+                        continue
+                    if action != "ENTER_LIMIT" or fresh_mode != entry_mode:
+                        self._record_pullback_outcome("maker_mode_changed")
+                        await self.account.cancel_pending_limit(
+                            symbol,
+                            f"入口模式已改變：原{entry_mode}→現{fresh_mode or action}，撤銷舊掛單",
+                        )
+                        self._pullback_retry_after[symbol] = now
+                        continue
+                    fresh_target = structured_sig.get("target_price")
+                    fresh_atr = max(
+                        float(structured_sig.get("atr") or info.get("atr") or 0.0),
+                        1e-12,
+                    )
+                    if fresh_target is None:
+                        self._record_pullback_outcome("maker_target_missing")
+                        await self.account.cancel_pending_limit(
+                            symbol, "最新結構訊號缺少掛單價，撤銷舊掛單"
+                        )
+                        self._pullback_retry_after[symbol] = now
+                        continue
+                    drift_atr = abs(
+                        float(fresh_target) - float(info["target_price"])
+                    ) / fresh_atr
+                    if drift_atr > PULLBACK_TARGET_MAX_DRIFT_ATR:
+                        self._record_pullback_outcome("maker_target_drift")
+                        await self.account.cancel_pending_limit(
+                            symbol,
+                            f"結構掛單目標已漂移 {drift_atr:.2f} ATR："
+                            f"{float(info['target_price']):.8g}→{float(fresh_target):.8g}",
+                        )
+                        self._pullback_retry_after[symbol] = now
                         continue
 
             if entry_mode in ("CURRENT_MAKER", "MA7_REVERSAL", "MA7_BOTTOM_LIMIT", "SUPPORT_PULLBACK", "BREAKOUT"):

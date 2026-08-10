@@ -1463,6 +1463,36 @@ def test_history_allocation_uses_half_size_for_sparse_or_negative_direction(monk
     assert rotation.get_history_allocation_factor("LINK/USDT", "LONG") == pytest.approx(1.0)
 
 
+def test_consecutive_hard_stops_start_directional_cooldown(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.CONSECUTIVE_STOP_COOLDOWN_COUNT", 2)
+    monkeypatch.setattr("core.symbol_rotation.CONSECUTIVE_STOP_COOLDOWN_SEC", 43200.0)
+    now = 100000.0
+    rotation = object.__new__(SymbolRotation)
+    rotation.account = type("Account", (), {"trades": [
+        {
+            "id": int((now - 60) * 1000), "action": "CLOSE_LONG",
+            "symbol": "ZEC/USDT", "side": "LONG",
+            "reason": "觸發止損 (Stop-Loss)",
+        },
+        {
+            "id": int((now - 3600) * 1000), "action": "CLOSE_LONG",
+            "symbol": "ZEC/USDT", "side": "LONG",
+            "reason": "觸發止損 (Stop-Loss)",
+        },
+    ]})()
+
+    assert rotation.get_stop_cooldown_remaining(
+        "ZEC/USDT", "LONG", now=now,
+    ) == pytest.approx(43200.0 - 60.0)
+    assert rotation.get_stop_cooldown_remaining("ZEC/USDT", "SHORT", now=now) == 0.0
+
+    rotation.account.trades.insert(0, {
+        "id": int((now - 10) * 1000), "action": "CLOSE_LONG",
+        "symbol": "ZEC/USDT", "side": "LONG", "reason": "目標平倉",
+    })
+    assert rotation.get_stop_cooldown_remaining("ZEC/USDT", "LONG", now=now) == 0.0
+
+
 def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 20_000_000.0)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 40)
@@ -2320,6 +2350,89 @@ async def test_pending_limit_is_validated_for_drift_before_fill_check(monkeypatc
     assert events[-1][0] == "check"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("fresh_signal", "reason_fragment"),
+    [
+        (
+            {
+                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
+                "side": "SHORT", "score": 85, "target_price": 99.8, "atr": 1.0,
+            },
+            "方向已翻轉",
+        ),
+        (
+            {
+                "action": "ENTER_LIMIT", "entry_mode": "SUPPORT_PULLBACK",
+                "side": "LONG", "score": 85, "target_price": 100.5, "atr": 1.0,
+            },
+            "結構掛單目標已漂移",
+        ),
+        (
+            {
+                "action": "ENTER_MARKET", "entry_mode": "BREAKOUT",
+                "side": "LONG", "score": 95, "target_price": 101.0, "atr": 1.0,
+            },
+            "入口模式已改變",
+        ),
+    ],
+)
+async def test_structured_pending_revalidates_direction_mode_and_target(
+    monkeypatch, fresh_signal, reason_fragment,
+):
+    events = []
+
+    class DummyAccount:
+        pending_limit_orders = {
+            "COIN/USDT": {
+                "side": "LONG", "target_price": 100.0, "atr": 1.0,
+                "placed_at": 99.0,
+                "entry_context": {"entry_mode": "SUPPORT_PULLBACK"},
+            }
+        }
+
+        async def cancel_pending_limit(self, symbol, reason):
+            events.append(("cancel", reason))
+
+        async def check_pending_limit_orders(self):
+            events.append(("check", ""))
+
+        @staticmethod
+        def daily_loss_limit_hit():
+            return False, 0.0
+
+    class DummyStrategy:
+        @staticmethod
+        def compute_indicators(frame):
+            return frame
+
+        @staticmethod
+        def evaluate_structured_entry(*args, **kwargs):
+            return fresh_signal
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.strategy = DummyStrategy()
+    engine.ema_50_1h_cache = {}
+    engine.st_direction_1h_cache = {}
+    engine.btc_1h_st_direction = 1
+    engine._pullback_retry_after = {}
+    engine._record_pullback_outcome = lambda *_args: None
+    engine.fetch_klines = lambda *args, **kwargs: None
+
+    async def fake_fetch(*args, **kwargs):
+        return pd.DataFrame({"close": [100.0] * 50})
+
+    engine.fetch_klines = fake_fetch
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["COIN/USDT"])
+
+    await engine._validate_pending_limit_orders(now=100.0)
+
+    assert events[0][0] == "cancel"
+    assert reason_fragment in events[0][1]
+    assert engine._pullback_retry_after["COIN/USDT"] == 100.0
+
+
 # --- detect_ma7_reversal 拐頭偵測單元測試 ---
 
 def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):
@@ -3100,7 +3213,8 @@ def test_structured_entry_accepts_macd_improvement_without_reversal_candle():
     assert "MACD動能改善" in signal["reason"]
 
 
-def test_structured_entry_penalizes_contrary_btc_without_blocking():
+def test_structured_entry_penalizes_contrary_btc_when_explicitly_allowed(monkeypatch):
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
@@ -3122,6 +3236,47 @@ def test_structured_entry_penalizes_contrary_btc_without_blocking():
     assert contrary["score"] == aligned["score"] - strategy_module.BTC_REGIME_SCORE_PENALTY
     assert contrary["btc_regime_mode"] == "CONTRARY"
     assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
+
+
+def test_structured_entry_keeps_half_size_contrary_btc_for_structured_mode(monkeypatch):
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", False)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi"]] = [
+        99.96, 100.03, 100.04, 99.95, 300.0, 54.0,
+    ]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=-1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["btc_regime_mode"] == "CONTRARY"
+    assert signal["btc_allocation_factor"] == pytest.approx(0.5)
+
+
+def test_structured_short_rejects_oversold_rsi(monkeypatch):
+    monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["st_direction"] = -1
+    frame["kc_lower"] = 90.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.0
+    frame.loc[frame.index[-2], ["rsi", "macd_hist"]] = [34.0, 0.10]
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi", "macd_hist",
+    ]] = [100.04, 99.97, 100.05, 99.96, 300.0, 31.0, 0.05]
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.0, st_direction_1h=-1, btc_st_direction_1h=-1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert "RSI過冷" in signal["reason"]
 
 
 def test_structured_entry_remembers_recent_location_and_confirmation():
@@ -3576,6 +3731,7 @@ async def test_contrarian_bottom_buy_trailing_respects_safety_floor(tmp_path, mo
 @pytest.mark.anyio
 async def test_support_pullback_touch_waits_for_reclaim_before_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "reclaim.json"))
+    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
     monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
     account = PaperAccount()
     await account.place_limit_entry(
@@ -3599,6 +3755,7 @@ async def test_support_pullback_touch_waits_for_reclaim_before_entry(tmp_path, m
 @pytest.mark.anyio
 async def test_support_pullback_cancels_when_touch_keeps_moving_adverse(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "adverse.json"))
+    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
     account = PaperAccount()
     await account.place_limit_entry(
         "SOL/USDT", "LONG", 100.0, 50.0, sl=98.0, tp=0.0, atr=1.0,
@@ -3614,3 +3771,75 @@ async def test_support_pullback_cancels_when_touch_keeps_moving_adverse(tmp_path
     assert "SOL/USDT" not in account.positions
     assert "SOL/USDT" not in account.pending_limit_orders
     assert any("承接失敗" in row["text"] for row in account.logs)
+
+
+@pytest.mark.anyio
+async def test_support_pullback_cancels_when_reclaim_reward_risk_is_too_low(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "low_rr.json"))
+    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", True)
+    monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
+    account = PaperAccount()
+    await account.place_limit_entry(
+        "ZEC/USDT", "LONG", 100.0, 50.0, sl=99.4, tp=0.0, atr=1.0,
+        reason="SupportPullback_LONG", signal_score=87, post_only=True,
+        entry_context={
+            "entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.4,
+            "profit_profile": "BOUNCE", "bounce_target_pct": 0.0047,
+        },
+    )
+
+    await account.update_positions({"ZEC/USDT": 99.98})
+    await account.check_pending_limit_orders()
+    await account.update_positions({"ZEC/USDT": 100.06})
+    await account.check_pending_limit_orders()
+
+    assert "ZEC/USDT" not in account.positions
+    assert "ZEC/USDT" not in account.pending_limit_orders
+    assert any("回收後淨風報比" in row["text"] for row in account.logs)
+
+
+@pytest.mark.anyio
+async def test_support_pullback_default_paper_maker_fills_at_resting_limit(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "maker_fill.json"))
+    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", False)
+    account = PaperAccount()
+    await account.place_limit_entry(
+        "XMR/USDT", "LONG", 397.9811, 25.0, sl=396.0251, tp=0.0, atr=1.0,
+        reason="SupportPullback_LONG", signal_score=85, post_only=True,
+        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 396.0251},
+    )
+
+    await account.update_positions({"XMR/USDT": 396.31})
+    await account.check_pending_limit_orders()
+
+    assert "XMR/USDT" in account.positions
+    assert "XMR/USDT" not in account.pending_limit_orders
+    assert account.positions["XMR/USDT"]["entry_price"] == pytest.approx(397.9811)
+    assert any("紙上Maker成交" in row["text"] for row in account.logs)
+
+
+@pytest.mark.anyio
+async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "no_follow.json"))
+    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_SEC", 2700.0)
+    monkeypatch.setattr(pa_module, "BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", 0.002)
+    account = PaperAccount()
+    await account.open_position(
+        "ZEC/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=0.0,
+        reason="SupportPullback_LONG", signal_score=87,
+        entry_context={
+            "entry_mode": "SUPPORT_PULLBACK", "profit_profile": "BOUNCE",
+            "profit_room_pct": 0.01, "bounce_target_pct": 0.0078,
+        },
+    )
+    account.positions["ZEC/USDT"]["open_timestamp"] -= 2701.0
+    account.position_meta["ZEC/USDT"]["open_timestamp"] -= 2701.0
+
+    await account.update_positions({"ZEC/USDT": 99.9})
+
+    assert "ZEC/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "反彈逾時未延續平倉"
