@@ -2439,7 +2439,7 @@ async def test_structured_pending_revalidates_direction_mode_and_target(
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("bounce_target_pct", "low_room_exploration", "should_place"),
-    [(0.008, False, True), (0.004, False, False), (0.004, True, True)],
+    [(0.008, False, True), (0.004, False, False), (0.004, True, False)],
 )
 async def test_structured_rr_experiment_keeps_point_five_hard_floor(
     monkeypatch, bounce_target_pct, low_room_exploration, should_place,
@@ -2502,13 +2502,7 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
     assert bool(placed_orders) is should_place
     if should_place:
         rr = placed_orders[0]["entry_context"]["structured_net_rr"]
-        if low_room_exploration:
-            assert rr < 0.5
-            assert placed_orders[0]["amount_usdt"] == pytest.approx(
-                engine_module.TRADE_AMOUNT_USDT * 0.5
-            )
-        else:
-            assert 0.5 <= rr < 1.0
+        assert 0.5 <= rr < 1.0
 
 
 # --- detect_ma7_reversal 拐頭偵測單元測試 ---
@@ -4043,6 +4037,46 @@ async def test_support_pullback_default_paper_maker_fills_at_resting_limit(
     assert "XMR/USDT" not in account.pending_limit_orders
     assert account.positions["XMR/USDT"]["entry_price"] == pytest.approx(397.9811)
     assert any("紙上Maker成交" in row["text"] for row in account.logs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "entry_context",
+    [
+        {
+            "entry_mode": "SUPPORT_PULLBACK",
+            "btc_regime_at_entry": "CONTRARY",
+            "btc_allocation_factor": 0.5,
+        },
+        {
+            "entry_mode": "SUPPORT_PULLBACK",
+            "high_readiness_low_room": True,
+            "low_room_allocation_factor": 0.5,
+        },
+    ],
+)
+async def test_risky_support_pullback_requires_reclaim_even_when_global_flag_is_off(
+    tmp_path, monkeypatch, entry_context,
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "selective_reclaim.json"))
+    monkeypatch.setattr(pa_module, "PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM", False)
+    monkeypatch.setattr(pa_module, "SUPPORT_PULLBACK_RECLAIM_MIN_SEC", 0.0)
+    account = PaperAccount()
+    await account.place_limit_entry(
+        "PEOPLE/USDT", "LONG", 100.0, 25.0, sl=98.0, tp=0.0, atr=1.0,
+        reason="SupportPullback_LONG", signal_score=85, post_only=True,
+        entry_context=entry_context,
+    )
+
+    await account.update_positions({"PEOPLE/USDT": 99.98})
+    await account.check_pending_limit_orders()
+    assert "PEOPLE/USDT" not in account.positions
+    assert account.pending_limit_orders["PEOPLE/USDT"]["touched_at"] > 0
+
+    await account.update_positions({"PEOPLE/USDT": 100.06})
+    await account.check_pending_limit_orders()
+    assert "PEOPLE/USDT" in account.positions
+    assert account.positions["PEOPLE/USDT"]["reclaim_confirmed"] is True
 
 
 @pytest.mark.anyio

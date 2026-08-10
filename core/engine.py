@@ -1932,13 +1932,7 @@ class TradingEngine:
                     if STRUCTURED_NET_RR_FILTER_ENABLED
                     else STRUCTURED_NET_RR_HARD_FLOOR
                 )
-                high_readiness_low_room = bool(
-                    signal.get("high_readiness_low_room")
-                )
-                if (
-                    structured_net_rr + 1e-12 < required_net_rr
-                    and not high_readiness_low_room
-                ):
+                if structured_net_rr + 1e-12 < required_net_rr:
                     self.account.log(
                         f"🛑 {symbol} 結構反彈單淨風報比 {structured_net_rr:.2f}:1 低於 "
                         f"{required_net_rr:.2f}:1（已含雙邊費用與出場滑價），拒絕掛單",

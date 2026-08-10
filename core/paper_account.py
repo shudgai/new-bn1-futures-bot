@@ -61,7 +61,8 @@ ENTRY_CONTEXT_KEYS = (
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
     "profit_profile", "profit_room_pct",
     "bounce_capture_ratio", "bounce_target_pct",
-    "structured_net_rr",
+    "structured_net_rr", "high_readiness_low_room",
+    "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
@@ -420,7 +421,15 @@ class PaperAccount:
             )
             entry_mode = (info.get("entry_context") or {}).get("entry_mode")
 
-            if entry_mode == "SUPPORT_PULLBACK" and PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM:
+            entry_context = info.get("entry_context") or {}
+            selective_reclaim = (
+                bool(entry_context.get("high_readiness_low_room"))
+                or float(entry_context.get("btc_allocation_factor") or 1.0) < 1.0
+            )
+            if (
+                entry_mode == "SUPPORT_PULLBACK"
+                and (PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM or selective_reclaim)
+            ):
                 if not info.get("touched_at"):
                     if touched:
                         info["touched_at"] = time.time()

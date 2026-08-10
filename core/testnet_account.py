@@ -68,7 +68,8 @@ ENTRY_CONTEXT_KEYS = (
     "signal_candle_low", "signal_candle_high",
     "profit_profile", "profit_room_pct",
     "bounce_capture_ratio", "bounce_target_pct",
-    "structured_net_rr",
+    "structured_net_rr", "high_readiness_low_room",
+    "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
 )
 
