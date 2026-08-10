@@ -3455,7 +3455,30 @@ def test_support_pullback_rejects_confirmation_volume_below_point_three(monkeypa
         indicators_precomputed=True,
     )
     assert signal["action"] == "HOLD"
-    assert "量能（目前0.21x，需0.30–1.20x）" in signal["reason"]
+    assert "量能（目前0.210x，需0.30–1.20x）" in signal["reason"]
+
+
+def test_readiness_never_reports_100_when_volume_is_just_below_threshold(monkeypatch):
+    monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["kc_upper"] = 110.0
+    frame["atr"] = 0.3
+    frame["ema_20"] = 100.02
+    frame.loc[frame.index[-2], "rsi"] = 51.0
+    frame.loc[frame.index[-1], [
+        "open", "close", "high", "low", "volume", "rsi",
+    ]] = [99.96, 100.03, 100.04, 99.95, 149.5, 54.0]
+
+    signal = strategy.evaluate_structured_entry(
+        frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["readiness_score"] == 99
+    assert signal["readiness_components"]["volume"] == 9
+    assert "量能（目前0.299x，需0.30–1.20x）" in signal["reason"]
 
 
 def test_structured_entry_remembers_recent_location_and_confirmation():

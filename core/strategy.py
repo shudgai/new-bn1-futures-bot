@@ -830,6 +830,8 @@ class SuperTrendKeltnerStrategy:
                 / max(SUPPORT_PULLBACK_MAX_VOLUME_RATIO, 1e-12),
             )
         volume_points = round(10 * volume_progress)
+        if not volume_healthy:
+            volume_points = min(volume_points, 9)
         if side == "LONG":
             rsi_progress = min(max((rsi - (SUPPORT_PULLBACK_RSI_LONG_MIN - 10.0)) / 10.0, 0.0), 1.0)
             rsi_trending = rsi > previous_rsi
@@ -841,6 +843,14 @@ class SuperTrendKeltnerStrategy:
             (5 if adx >= ADX_QUALITY_MIN else round(5 * max(adx, 0.0) / max(ADX_QUALITY_MIN, 1e-12)))
             + (5 if MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT else 0)
         )
+        # 進度分可以接近滿分，但硬條件未通過時該項不得因 round() 進位
+        # 成滿分，否則會出現「100/100 但尚缺量能／RSI」的矛盾。
+        if not near_support:
+            location_points = min(location_points, 19)
+        if not rsi_ok:
+            rsi_points = min(rsi_points, 9)
+        if not quality_ok:
+            quality_points = min(quality_points, 9)
         readiness_components = {
             "trend": trend_points, "location": location_points,
             "reversal": reversal_points, "body": body_points,
@@ -848,8 +858,14 @@ class SuperTrendKeltnerStrategy:
             "quality": quality_points,
         }
         readiness_score = int(sum(readiness_components.values()))
+        prerequisites_ready = (
+            aligned and near_support and confirmation_recent
+            and volume_healthy and rsi_ok and quality_ok
+        )
+        if not prerequisites_ready:
+            readiness_score = min(readiness_score, 99)
 
-        if aligned and near_support and confirmation_recent and volume_healthy and rsi_ok and quality_ok:
+        if prerequisites_ready:
             reversal_desc = (
                 "收綠K反彈" if side == "LONG" else "收紅K反轉"
             ) if confirmation_memory["reversal"] else "MACD動能改善"
@@ -1020,7 +1036,7 @@ class SuperTrendKeltnerStrategy:
             )
         if not volume_healthy:
             missing.append(
-                f"量能（目前{volume_ratio:.2f}x，需{SUPPORT_PULLBACK_MIN_VOLUME_RATIO:.2f}–{SUPPORT_PULLBACK_MAX_VOLUME_RATIO:.2f}x）"
+                f"量能（目前{volume_ratio:.3f}x，需{SUPPORT_PULLBACK_MIN_VOLUME_RATIO:.2f}–{SUPPORT_PULLBACK_MAX_VOLUME_RATIO:.2f}x）"
             )
         if not rsi_ok:
             rsi_target = (
