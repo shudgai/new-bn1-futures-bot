@@ -92,8 +92,11 @@
         td { padding: 12px; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; }
         /* 表格欄位在窄螢幕容易被壓縮到重疊，改成只在自己的容器內橫向捲動 */
         .table-scroll {
+            display: block;
+            width: 100%;
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
+            touch-action: pan-x;
             padding-bottom: 8px;
         }
         .table-scroll table {
