@@ -1278,7 +1278,7 @@ class TradingEngine:
                     )
                     if initial_risk <= 0:
                         continue
-                    favorable_price = max(current_price, float(bar["high"])) if side == "LONG" else min(current_price, float(bar["low"]))
+                    favorable_price = current_price
                     peak_key = "structured_peak_price"
                     previous_peak = float(meta.get(peak_key) or entry_price)
                     peak = max(previous_peak, favorable_price) if side == "LONG" else min(previous_peak, favorable_price)
