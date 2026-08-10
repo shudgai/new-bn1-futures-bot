@@ -1298,10 +1298,10 @@ class TradingEngine:
                             trail_sl = min(trail_sl, entry_price * (1.0 - cost_pct))
                         improves = False
                         if side == "LONG":
-                            if peak > entry_price:
+                            if trail_sl >= entry_price:
                                 improves = (trail_sl > current_sl)
                         else:
-                            if peak < entry_price:
+                            if trail_sl <= entry_price:
                                 improves = (current_sl <= 0 or trail_sl < current_sl)
                         if improves:
                             locked = trail_sl >= entry_price if side == "LONG" else trail_sl <= entry_price
