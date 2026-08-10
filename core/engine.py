@@ -741,7 +741,7 @@ class TradingEngine:
             if adverse_deviation > EXECUTION_PRICE_MAX_DEVIATION_PCT:
                 # 執行市場對我們不利，且超過門檻 → 拒絕
                 self.account.log(
-                    f"🛑 {symbol} 執行市場不利偏差 {adverse_deviation:.2%}>"
+                    f"🛑 {symbol} 最佳價偏差（執行市場不利偏差） {adverse_deviation:.2%}>"
                     f"{EXECUTION_PRICE_MAX_DEVIATION_PCT:.2%}，拒絕下單"
                     f"（主網={main_price:.8g}，執行={execution_price:.8g}，方向={side}）",
                     "WARNING",

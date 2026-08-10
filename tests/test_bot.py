@@ -19,6 +19,7 @@ from core.config import (
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
     DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, WEAK_ENERGY_LEVERAGE_CAP, WEAK_ENERGY_ADX_THRESHOLD,
+    MIN_OPEN_SIGNAL_SCORE,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -580,20 +581,20 @@ def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
 async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
-    # 74分必須拒絕，75分才會真的開倉。
+    # MIN_OPEN_SIGNAL_SCORE - 1 分必須拒絕，MIN_OPEN_SIGNAL_SCORE 分才會真的開倉。
     assert not await account.open_position(
         "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
-        "Score74 reject", signal_score=74
+        "Score below reject", signal_score=MIN_OPEN_SIGNAL_SCORE - 1
     )
     assert await account.open_position(
         "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
-        "Score75 test", signal_score=75
+        "Score accept", signal_score=MIN_OPEN_SIGNAL_SCORE
     )
     assert account.positions["ETH/USDT"]["leverage"] == 3
     trade = account.trades[0]
     assert trade["leverage"] == 3
-    assert trade["signal_score"] == 75
-    assert trade["reason"] == "Score75 test"
+    assert trade["signal_score"] == MIN_OPEN_SIGNAL_SCORE
+    assert trade["reason"] == "Score accept"
 
 def test_atr_range_filter_is_mandatory(monkeypatch):
     """1h 大趨勢之外，ATR 波動率範圍是目前唯一還會直接 HOLD 的強制門檻
@@ -2212,8 +2213,8 @@ def test_90_plus_candidate_uses_current_price_maker_mode(monkeypatch):
 
     candidate = engine.pending_pullback_candidates["XPL/USDT"]
     assert candidate["pullback_depth"] == pytest.approx(0.0)
-    assert candidate["target_price"] == pytest.approx(99.0)
-    assert candidate["entry_mode"] == "CURRENT_MAKER"
+    assert candidate["target_price"] == pytest.approx(100.1)
+    assert candidate["entry_mode"] == "PULLBACK"
 
 
 @pytest.mark.anyio

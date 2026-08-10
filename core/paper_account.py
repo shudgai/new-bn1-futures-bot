@@ -934,8 +934,10 @@ class PaperAccount:
                     # 記錄目前反彈高點
                     meta["rebound_peak_pnl_pct"] = pnl_pct
                 elif pnl_pct > min_rebound_exit_pct:
-                    # 警報只做為視覺提示，不在這裡自動平倉，讓利潤能奔跑
-                    pass
+                    await self.close_position(
+                        symbol, curr_p, "獲利回吐警訊後反彈觸頂回落，把握高點平倉"
+                    )
+                    continue
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p
