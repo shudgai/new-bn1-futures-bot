@@ -1296,10 +1296,13 @@ class TradingEngine:
                             trail_sl = max(trail_sl, entry_price * (1.0 + cost_pct))
                         elif side == "SHORT" and trail_sl < entry_price:
                             trail_sl = min(trail_sl, entry_price * (1.0 - cost_pct))
-                        improves = (
-                            trail_sl > current_sl if side == "LONG"
-                            else current_sl <= 0 or trail_sl < current_sl
-                        )
+                        improves = False
+                        if side == "LONG":
+                            if peak > entry_price:
+                                improves = (trail_sl > current_sl)
+                        else:
+                            if peak < entry_price:
+                                improves = (current_sl <= 0 or trail_sl < current_sl)
                         if improves:
                             locked = trail_sl >= entry_price if side == "LONG" else trail_sl <= entry_price
                             await self.account.trail_stop_loss(
