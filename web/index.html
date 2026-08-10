@@ -91,7 +91,29 @@
         th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
         td { padding: 12px; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; }
         /* 表格欄位在窄螢幕容易被壓縮到重疊，改成只在自己的容器內橫向捲動 */
-        .table-scroll { overflow-x: auto; }
+        .table-scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 8px;
+        }
+        .table-scroll table {
+            min-width: 900px;
+        }
+        /* 美化滾動條，確保在手機上清晰可見且美觀 */
+        .table-scroll::-webkit-scrollbar {
+            height: 6px;
+        }
+        .table-scroll::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.03);
+            border-radius: 3px;
+        }
+        .table-scroll::-webkit-scrollbar-thumb {
+            background: rgba(0, 0, 0, 0.15);
+            border-radius: 3px;
+        }
+        .table-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 0, 0, 0.3);
+        }
 
         /* 手機版：右側面板改到內容下方、統計格數減少、表格橫向捲動避免整頁被撐開 */
         @media (max-width: 860px) {
