@@ -168,7 +168,11 @@ STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower()
 ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "false").lower() == "true"
 # 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
 # SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
-ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "true").lower() == "true"
+ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "true"
+# 突破分數不再因單根爆量直接給 95 分。近期紙上實績顯示，爆量市價追突破
+# 容易買在短線耗竭點；先以最低合格檔的小倉位/低槓桿試錯，待獨立樣本證明
+# 正期望後再調高。BTC 逆向時仍會在此基礎上扣分。
+BREAKOUT_ENTRY_SCORE = int(os.getenv("BREAKOUT_ENTRY_SCORE", "79"))
 STRUCTURED_VOLUME_MIN_RATIO = float(os.getenv("STRUCTURED_VOLUME_MIN_RATIO", "1.0"))
 STRUCTURED_SWING_LOOKBACK = int(os.getenv("STRUCTURED_SWING_LOOKBACK", "20"))
 STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "0.40"))
@@ -201,7 +205,8 @@ PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM = os.getenv(
 TREND_EXTENSION_MIN_ROOM_PCT = float(os.getenv("TREND_EXTENSION_MIN_ROOM_PCT", "0.012"))
 TREND_EXTENSION_MIN_VOLUME_RATIO = float(os.getenv("TREND_EXTENSION_MIN_VOLUME_RATIO", "0.60"))
 TREND_EXTENSION_MIN_BODY_ATR_MULT = float(os.getenv("TREND_EXTENSION_MIN_BODY_ATR_MULT", "0.20"))
-MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0040"))
+# 支撐/壓力回踩至少保留 1% 至前高/前低；避免只有交易成本等級空間仍開倉。
+MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0100"))
 # 實驗模式可停用 BOUNCE 淨風報比攔截，保留門檻方便之後用實績重新啟用。
 STRUCTURED_NET_RR_FILTER_ENABLED = os.getenv(
     "STRUCTURED_NET_RR_FILTER_ENABLED", "false"

@@ -3205,7 +3205,7 @@ async def test_trailing_sl_does_not_move_back(monkeypatch):
 def _structured_entry_frame():
     rows = 70
     return pd.DataFrame({
-        "open": [100.0] * rows, "high": [100.5] * rows,
+        "open": [100.0] * rows, "high": [102.0] * rows,
         "low": [99.5] * rows, "close": [100.0] * rows,
         "volume": [500.0] * rows, "vol_ma_20": [500.0] * rows,
         "atr": [1.0] * rows, "ema_20": [100.0] * rows,
@@ -3226,13 +3226,17 @@ def test_structured_entry_prioritizes_volume_confirmed_breakout(monkeypatch):
         frame, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_MARKET"
+    assert signal["action"] == "ENTER_LIMIT"
     assert signal["entry_mode"] == "BREAKOUT"
+    assert signal["score"] == 79
+    assert signal["target_price"] < signal["price"]
+    assert "爆量不追價" in signal["reason"]
 
 
 def test_structured_entry_uses_maker_for_quality_support_reversal():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
+    frame["high"] = 102.0
     frame["kc_upper"] = 110.0
     frame["atr"] = 0.3
     frame["ema_20"] = 100.02
@@ -3548,7 +3552,7 @@ def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
     assert signal["profit_room_pct"] >= 0.012
 
 
-def test_structured_entry_full_readiness_allows_cost_safe_low_room_at_half_size():
+def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor():
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 100.30
@@ -3561,10 +3565,10 @@ def test_structured_entry_full_readiness_allows_cost_safe_low_room_at_half_size(
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
-    assert signal["profit_room_pct"] < 0.004
-    assert signal["high_readiness_low_room"] is True
-    assert "滿準備度低空間探索半倉" in signal["reason"]
+    assert signal["action"] == "HOLD"
+    assert signal["profit_room_pct"] < 0.01
+    assert "獲利空間不足" in signal["reason"]
+    assert "最低1.00%" in signal["reason"]
 
 
 def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer():
@@ -3582,7 +3586,7 @@ def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer():
     )
     assert signal["action"] == "HOLD"
     assert "獲利空間不足" in signal["reason"]
-    assert "滿分成本安全線" in signal["reason"]
+    assert "最低1.00%" in signal["reason"]
 
 
 def test_structured_entry_rejects_weak_rsi_support_reversal():

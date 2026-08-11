@@ -29,6 +29,7 @@ from core.config import (
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
+    BREAKOUT_ENTRY_SCORE,
     ENABLE_1H_EMA50_FILTER, STRUCTURED_1H_EMA50_TOLERANCE_PCT,
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
     SUPPORT_PULLBACK_RSI_LONG_MAX, SUPPORT_PULLBACK_RSI_SHORT_MIN,
@@ -694,18 +695,10 @@ class SuperTrendKeltnerStrategy:
         structure_break = price > prior_high if side == "LONG" else price < prior_low
         if ENABLE_BREAKOUT_ENTRY and aligned and (kc_break or structure_break) and volume_ratio >= STRUCTURED_VOLUME_MIN_RATIO:
             trigger = "KC上軌" if side == "LONG" and kc_break else "KC下軌" if side == "SHORT" and kc_break else "前高" if side == "LONG" else "前低"
-            
-            # ✅ 新增副策略：如果突破時成交量暴增 >= 2.0 倍均量，判定為主力強勢掃貨，直接以市價單進場搶籌
-            if volume_ratio >= 2.0:
-                return {
-                    "action": "ENTER_MARKET", "entry_mode": "BREAKOUT",
-                    "score": 95 - btc_score_penalty,
-                    "target_price": price,
-                    "reason": f"Breakout_{side}｜🚀 [爆量強突破市價] 突破{trigger}｜量能{volume_ratio:.2f}x",
-                    "prior_high": prior_high, "prior_low": prior_low, **common,
-                }
-            
-            # 普通突破：維持原限價單等待回踩
+
+            # 爆量只代表突破候選，不代表可直接追價。實績顯示「量能 >= 2x
+            # 就給 95 分並市價進場」會在短線耗竭點取得最大倉位；所有突破
+            # 統一等待 EMA20 附近回踩，以 Maker 限價單成交。
             ema20 = float(curr["ema_20"])
             from core.config import BREAKOUT_PULLBACK_ATR_MULT
             if side == "LONG":
@@ -716,9 +709,9 @@ class SuperTrendKeltnerStrategy:
                 pullback_target = max(pullback_target, price * 1.0005)
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT",
-                "score": 90 - btc_score_penalty,
+                "score": BREAKOUT_ENTRY_SCORE - btc_score_penalty,
                 "target_price": pullback_target,
-                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜等回踩@{pullback_target:.6g}",
+                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜爆量不追價｜等回踩@{pullback_target:.6g}",
                 "prior_high": prior_high, "prior_low": prior_low, **common,
             }
 
@@ -951,31 +944,11 @@ class SuperTrendKeltnerStrategy:
                 if side == "LONG"
                 else max(0.0, (target_price - prior_low) / target_price)
             )
-            # 100/100 代表型態、位置、反轉、量能、RSI 與品質全部完成。
-            # 這類滿準備度訊號可在固定 0.40% 門檻下方做半倉探索，但預定
-            # 收割幅度扣除雙邊費用、出場滑價及 0.05% 淨利緩衝後仍須為正。
+            # 所有進場一律要求完整獲利空間；不再讓 100/100 訊號以半倉
+            # 繞過門檻，避免高準備度但只剩交易成本等級空間的低價值交易。
             candidate_capture_ratio = get_bounce_capture_ratio(score)
-            round_trip_cost_pct = 2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
-            full_readiness_room_floor = (
-                round_trip_cost_pct + 0.0005
-            ) / max(candidate_capture_ratio, 1e-12)
-            high_readiness_low_room = (
-                readiness_score >= 100
-                and profit_room_pct >= full_readiness_room_floor
-                and profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT
-            )
-            if (
-                profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT
-                and not high_readiness_low_room
-            ):
-                required_room_pct = (
-                    full_readiness_room_floor
-                    if readiness_score >= 100 else MIN_ENTRY_PROFIT_ROOM_PCT
-                )
-                room_floor_label = (
-                    "滿分成本安全線"
-                    if readiness_score >= 100 else "最低"
-                )
+            high_readiness_low_room = False
+            if profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT:
                 return {
                     "action": "HOLD", "side": side, "score": 0,
                     "readiness_score": readiness_score,
@@ -984,7 +957,7 @@ class SuperTrendKeltnerStrategy:
                     "profit_room_pct": profit_room_pct,
                     "reason": (
                         f"獲利空間不足：目前{profit_room_pct:.2%}<"
-                        f"{room_floor_label}{required_room_pct:.2%}，拒絕低價值進場"
+                        f"最低{MIN_ENTRY_PROFIT_ROOM_PCT:.2%}，拒絕低價值進場"
                     ),
                     **common,
                 }
