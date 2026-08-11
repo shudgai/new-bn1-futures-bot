@@ -96,11 +96,17 @@ if IS_TESTING:
     ONLY_CLOSE_ON_PROFIT = False
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = 0.0
     ENABLE_24H_TIME_FILTER = True
+    BOTTOM_FILTER_ENABLED = False
+    BOTTOM_OVERSOLD_RSI_15M_LIMIT = 35.0
+    BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = 65.0
 else:
     DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT = os.getenv("ONLY_CLOSE_ON_PROFIT", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = float(os.getenv("ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT", "0.1"))
     ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "true").lower() == "true"
+    BOTTOM_FILTER_ENABLED = os.getenv("BOTTOM_FILTER_ENABLED", "true").lower() == "true"
+    BOTTOM_OVERSOLD_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERSOLD_RSI_15M_LIMIT", "35.0"))
+    BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERBOUGHT_RSI_15M_LIMIT", "65.0"))
 # 是否在交易所端掛出「初始虧損停損」條件單。停用時仍會在本地保留
 # 計算出的 SL 作為觀察線，並由 MAX_ACCEPTABLE_LOSS_PCT 控制最終強制退出；
 # 獲利後的移動保本／移動停利不受此開關影響。

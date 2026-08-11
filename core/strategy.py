@@ -25,6 +25,7 @@ from core.config import (
     MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
     MA7_FAST_MIN_VOLUME_RATIO, MA7_DYNAMIC_ATR_FLOOR_PCT,
     MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
+    BOTTOM_FILTER_ENABLED, BOTTOM_OVERSOLD_RSI_15M_LIMIT, BOTTOM_OVERBOUGHT_RSI_15M_LIMIT,
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
@@ -69,6 +70,24 @@ def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
     if want_dir == 1:
         return float(recent['low'].min()) <= float(early['low'].min())
     return float(recent['high'].max()) >= float(early['high'].max())
+
+def detect_macd_divergence(df: pd.DataFrame, side: str, lookback: int = 30) -> bool:
+    if len(df) < lookback + 5:
+        return False
+    closes = df['close'].values
+    macd_hists = df['macd_hist'].values
+    
+    if side == "LONG":
+        # Bullish divergence: price is making new lows but MACD hist is rising
+        min_price_idx = -lookback + np.argmin(closes[-lookback:-3])
+        if closes[-1] <= closes[min_price_idx] * 1.01 and macd_hists[-1] > macd_hists[min_price_idx] + 1e-6:
+            return True
+    else:
+        # Bearish divergence: price is making new highs but MACD hist is falling
+        max_price_idx = -lookback + np.argmax(closes[-lookback:-3])
+        if closes[-1] >= closes[max_price_idx] * 0.99 and macd_hists[-1] < macd_hists[max_price_idx] - 1e-6:
+            return True
+    return False
 
 def compute_pullback_target(
     kc_edge: float, ema_20: float, atr: float, side: str, score: int
@@ -495,6 +514,12 @@ class SuperTrendKeltnerStrategy:
         rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
+        # 15m RSI 估算 (window = 14 * 3 = 42)
+        gain_15m = (delta.where(delta > 0, 0)).rolling(window=42).mean()
+        loss_15m = (-delta.where(delta < 0, 0)).rolling(window=42).mean()
+        rs_15m = gain_15m / (loss_15m + 1e-9)
+        df['rsi_15m'] = 100 - (100 / (1 + rs_15m))
+
         # MACD
         fast_ema = close.ewm(span=12, adjust=False).mean()
         slow_ema = close.ewm(span=26, adjust=False).mean()
@@ -866,6 +891,23 @@ class SuperTrendKeltnerStrategy:
             readiness_score = min(readiness_score, 99)
 
         if prerequisites_ready:
+            if BOTTOM_FILTER_ENABLED:
+                rsi_15m = float(curr["rsi_15m"]) if "rsi_15m" in curr and not pd.isna(curr["rsi_15m"]) else rsi
+                macd_div = detect_macd_divergence(df, side)
+                is_bottom_ok = False
+                if side == "LONG":
+                    is_bottom_ok = (rsi_15m <= BOTTOM_OVERSOLD_RSI_15M_LIMIT) or macd_div
+                else:
+                    is_bottom_ok = (rsi_15m >= BOTTOM_OVERBOUGHT_RSI_15M_LIMIT) or macd_div
+                if not is_bottom_ok:
+                    return {
+                        "action": "HOLD", "side": side, "score": 0,
+                        "readiness_score": readiness_score,
+                        "readiness_components": readiness_components,
+                        "reason": f"未滿足底部抄底條件：15m RSI({rsi_15m:.1f}) 未達限制，且無 MACD 背離偵測",
+                        **common
+                    }
+
             reversal_desc = (
                 "收綠K反彈" if side == "LONG" else "收紅K反轉"
             ) if confirmation_memory["reversal"] else "MACD動能改善"
