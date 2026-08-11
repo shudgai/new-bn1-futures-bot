@@ -724,9 +724,10 @@ async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monk
     meta = account.position_meta["DOGE/USDT"]
     assert meta["highest_pnl_pct"] == pytest.approx(0.01)
     assert meta["is_breakeven_moved"] is True
-    assert meta["tp"] == 0.0
-    assert account.positions["DOGE/USDT"]["tp"] == 0.0
+    assert meta["tp"] == 105.0
+    assert account.positions["DOGE/USDT"]["tp"] == 105.0
     assert any(order["type"] == "STOP_MARKET" for order in exchange.orders[previous_order_count:])
+    assert any(order["type"] == "TAKE_PROFIT_MARKET" for order in exchange.orders[previous_order_count:])
 
 
 @pytest.mark.anyio

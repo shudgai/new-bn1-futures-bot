@@ -824,9 +824,11 @@ class BinanceTestnetAccount:
                                     await self._create_protection_order(
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
-                                    if pos.get("tp"):
-                                        pos["tp"] = 0.0
-                                        meta["tp"] = 0.0
+                                    tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                        await self._create_protection_order(
+                                            symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
+                                        )
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 設置本地保本單失敗: {e}", "WARNING")
                         else:  # SHORT
@@ -844,9 +846,11 @@ class BinanceTestnetAccount:
                                     await self._create_protection_order(
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
-                                    if pos.get("tp"):
-                                        pos["tp"] = 0.0
-                                        meta["tp"] = 0.0
+                                    tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                        await self._create_protection_order(
+                                            symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
+                                        )
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 設置本地保本單失敗: {e}", "WARNING")
 
@@ -903,9 +907,11 @@ class BinanceTestnetAccount:
                             # 接管後，清空本地 SL/TP 條件記錄
                             meta["sl"] = 0.0
                             pos["sl"] = 0.0
-                            if pos.get("tp"):
-                                pos["tp"] = 0.0
-                                meta["tp"] = 0.0
+                            tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                            if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                await self._create_protection_order(
+                                    symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
+                                )
                             self.log(
                                 f"🎯 [原生 Trailing Tier{target_tier} – {tier_labels[target_tier]}] "
                                 f"{symbol} 浮盈 {profit_in_atr:.1f} ATR ({pnl_pct:.2%}) | "
@@ -977,9 +983,11 @@ class BinanceTestnetAccount:
                                     await self._create_protection_order(
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
-                                    if pos.get("tp"):
-                                        pos["tp"] = 0.0
-                                        meta["tp"] = 0.0
+                                    tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                        await self._create_protection_order(
+                                            symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
+                                        )
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
                         else:  # SHORT
@@ -998,9 +1006,11 @@ class BinanceTestnetAccount:
                                     await self._create_protection_order(
                                         symbol, close_side_trail, "STOP_MARKET", qty_trail, new_sl_price
                                     )
-                                    if pos.get("tp"):
-                                        pos["tp"] = 0.0
-                                        meta["tp"] = 0.0
+                                    tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                        await self._create_protection_order(
+                                            symbol, close_side_trail, "TAKE_PROFIT_MARKET", qty_trail, tp_price
+                                        )
                                 except Exception as e:
                                     self.log(f"⚠️ {symbol} 更新移動止利單失敗: {e}", "WARNING")
 
