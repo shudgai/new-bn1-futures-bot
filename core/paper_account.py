@@ -50,7 +50,7 @@ from core.config import (
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
 )
-from core.strategy import compute_net_reward_risk
+from core.strategy import compute_net_reward_risk, compute_sl_tp_distance
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -133,6 +133,37 @@ class PaperAccount:
     async def initialize(self) -> None:
         """純本地模擬，不用連線、不用載入交易所市場資料。"""
         self._check_daily_reset()
+        restored = False
+        if not DISABLE_STOP_LOSS:
+            for symbol, pos in self.positions.items():
+                if float(pos.get("sl") or 0.0) > 0:
+                    continue
+                meta = self.position_meta.setdefault(symbol, {})
+                entry_price = float(pos.get("entry_price") or 0.0)
+                if entry_price <= 0:
+                    continue
+                atr = float(pos.get("atr") or meta.get("atr") or entry_price * 0.015)
+                sl_distance, _ = compute_sl_tp_distance(entry_price, atr)
+                sl_price = (
+                    entry_price - sl_distance
+                    if pos.get("side") == "LONG"
+                    else entry_price + sl_distance
+                )
+                pos["sl"] = sl_price
+                meta["sl"] = sl_price
+                meta["atr"] = atr
+                if "initial_sl" in pos or "initial_sl" in meta:
+                    pos["initial_sl"] = sl_price
+                    pos["initial_risk"] = sl_distance
+                    meta["initial_sl"] = sl_price
+                    meta["initial_risk"] = sl_distance
+                self.log(
+                    f"🔧 [啟動保護遷移] {symbol} 已重建紙上硬停損 SL={sl_price:.8g}",
+                    "WARNING",
+                )
+                restored = True
+        if restored:
+            self.save_state()
         self.log("▶️ 紙上交易帳戶已啟動（純本地模擬，不連接真實交易所）")
 
     def load_state(self) -> None:
