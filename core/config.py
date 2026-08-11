@@ -163,9 +163,9 @@ MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05
 MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
 # --- 無 MA7 的結構化進出場 ---
 STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower() == "true"
-# 08/05實績：MOMENTUM_CROSS 18答033%勝率、總損益-4.21U，且輸家平均持倉(21.4分)
-# 反而比赏家(7.0分)還長，結構是反的；已正式停用。
-ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "false").lower() == "true"
+# Momentum Cross 提供較高的開倉頻率；仍保留分數、BTC方向、倉位與止損風控。
+# 可透過環境變數設為 false，切回只使用嚴格結構回踩入口。
+ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "true").lower() == "true"
 # 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
 # SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
 ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "true"
