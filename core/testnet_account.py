@@ -740,6 +740,17 @@ class BinanceTestnetAccount:
                     await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
                     continue
 
+            # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
+            if MAX_ACCEPTABLE_LOSS_PCT < 0:
+                current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
+                if current_loss_pct <= MAX_ACCEPTABLE_LOSS_PCT:
+                    self.log(
+                        f"🚨 [災難止損] {symbol} {side} 虧損 {current_loss_pct:.2%} 已觸碰或超過硬防線 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，強制市價平倉",
+                        "DANGER"
+                    )
+                    await self.close_position(symbol, curr_p, "本地最大虧損門檻觸發")
+                    continue
+
             # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全
             # 交給交易所 STOP_MARKET 處理，不再需要限價未成交後備。
             if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS and old_sl > 0:

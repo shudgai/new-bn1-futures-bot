@@ -31,6 +31,7 @@ from core.config import (
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT,
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO,
     ENABLE_24H_TIME_FILTER,
+    MAX_ACCEPTABLE_LOSS_PCT,
     PARTIAL_CLOSE_THRESHOLDS,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_TRIGGER_R_MULT,
@@ -909,6 +910,17 @@ class PaperAccount:
             if ENABLE_24H_TIME_FILTER and (now_ts - pos.get("open_timestamp", now_ts)) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
                 continue
+
+            # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
+            if MAX_ACCEPTABLE_LOSS_PCT < 0:
+                current_loss_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
+                if current_loss_pct <= MAX_ACCEPTABLE_LOSS_PCT:
+                    self.log(
+                        f"🚨 [紙上交易/災難止損] {symbol} {side} 虧損 {current_loss_pct:.2%} 已觸碰或超過硬防線 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，強制市價平倉",
+                        "DANGER"
+                    )
+                    await self.close_position(symbol, curr_p, "本地最大虧損門檻觸發")
+                    continue
 
             # SL/TP 本地觸價比對（沒有真實交易所保護單，價格穿越就在
             # 這裡直接判定平倉）

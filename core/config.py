@@ -119,7 +119,7 @@ ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
 # 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
-MAX_ACCEPTABLE_LOSS_PCT = float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "0"))
+MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "0"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "false").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "false").lower() == "true"
 MA7_EXIT_TIMEFRAME = os.getenv("MA7_EXIT_TIMEFRAME", "1m")
