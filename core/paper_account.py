@@ -29,6 +29,7 @@ from core.config import (
     DISABLE_STOP_LOSS,
     ONLY_CLOSE_ON_PROFIT,
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT,
+    CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO,
     ENABLE_24H_TIME_FILTER,
     PARTIAL_CLOSE_THRESHOLDS,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
@@ -553,10 +554,15 @@ class PaperAccount:
             close_fee = qty * exec_close_price * TAKER_FEE_RATE
             total_fee = open_fee + close_fee
             net_pnl = raw_pnl - total_fee
-            if net_pnl < ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT:
+            is_profit_enough = (
+                net_pnl >= ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT
+                and raw_pnl >= total_fee * CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO
+            )
+            if not is_profit_enough:
                 self.log(
                     f"Attempted to close position {symbol} {side} ({close_reason}), but skipped: "
-                    f"Net PnL is {net_pnl:.4f} USDT, which is less than minimum profit threshold {ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT} USDT. "
+                    f"Net PnL is {net_pnl:.4f} USDT, Raw PnL is {raw_pnl:.4f} USDT (Fee: {total_fee:.4f} USDT). "
+                    f"Required: Net PnL >= {ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT} USDT and Raw PnL >= {CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO}x Fee. "
                     f"Entry Price: {entry_price:.6g}, Current Price: {current_price:.6g}, Qty: {qty:.6g}.",
                     "WARNING"
                 )
