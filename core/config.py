@@ -16,6 +16,7 @@ SYMBOL_LEVERAGE = {
     "ADA/USDT": 6, "APT/USDT": 6, "DOGE/USDT": 6, "NEAR/USDT": 6,
     "SUI/USDT": 6, "TAO/USDT": 6, "FET/USDT": 6,
     "WIF/USDT": 3, "1000PEPE/USDT": 3,
+    "WLD/USDT": 3,   # 高波動 AI 概念幣，單次損失放大明顯，限 3x
 }
 
 def get_leverage(symbol: str) -> int:
@@ -85,8 +86,10 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # 不用再改程式碼。
 TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
-# 調整為 2.5 ATR：更寬鬆的初始止損距離，減少被掃出的機率
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.5"))
+# 調整為 1.8 ATR：收緊初始止損距離，降低每筆高波動幣種（如 WLD）的最大損失。
+# 原 2.5 ATR 在 5m 波動較大的幣種上止損空間過寬，導致停損時帳面損失偏高。
+# R:R = TAKE_PROFIT_MULTIPLIER(3.0) / STOP_LOSS_MULTIPLIER(1.8) = 1.67：1
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.8"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 import sys
@@ -306,6 +309,19 @@ MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.0015"))
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
 DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
+
+# --- 急速逆向閃崩防護（Rapid Adverse Drop Guard）---
+# 偵測單次 ticker 更新週期（約 5 秒）內，持倉方向出現的急速逆向移動。
+# 超過門檻時立即執行市價平倉，不等 K 線收線——應對閃崩（Flash Crash）行情。
+# ENABLE_RAPID_ADVERSE_DROP：功能開關，預設啟用。
+# RAPID_ADVERSE_DROP_PCT：單週期逆向移動門檻（無槓桿比例）。
+#   0.004 = 0.4%，以 5 秒週期換算約等於 4.8%/分鐘 的急速跌幅；
+#   以 50x 槓桿換算，倉位在單一 ticker 週期內已虧損約 20%。
+# RAPID_DROP_COOLDOWN_SEC：閃崩觸發後的冷卻秒數，防止在劇烈震盪中
+#   連續多次平倉（通常此時部位已平，冷卻保護只是防禦重入後再次觸發）。
+ENABLE_RAPID_ADVERSE_DROP = os.getenv("ENABLE_RAPID_ADVERSE_DROP", "true").lower() == "true"
+RAPID_ADVERSE_DROP_PCT    = float(os.getenv("RAPID_ADVERSE_DROP_PCT", "0.004"))
+RAPID_DROP_COOLDOWN_SEC   = float(os.getenv("RAPID_DROP_COOLDOWN_SEC", "30"))
 
 # --- BTC 大盤方向守門員 ---
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為

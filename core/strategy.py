@@ -153,10 +153,18 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     進出場 taker fee 後」仍至少符合 MIN_NET_REWARD_RISK，避免表面 1:2、
     實際因放寬止損與手續費只剩約 1:1.3。公式使用較保守的較高出場名目
     金額估算手續費，因此多空方向都不會低於設定值。"""
-    base_sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
+    atr_pct = atr / max(price, 1e-12)
+    if atr_pct >= 0.0045:
+        dynamic_sl_mult = 1.2
+    elif atr_pct >= 0.0030:
+        dynamic_sl_mult = 1.5
+    else:
+        dynamic_sl_mult = STOP_LOSS_MULTIPLIER
+
+    base_sl_distance = max(atr * dynamic_sl_mult, price * MIN_SL_DISTANCE_PCT)
     sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
     configured_tp_distance = base_sl_distance * (
-        TAKE_PROFIT_MULTIPLIER / STOP_LOSS_MULTIPLIER
+        TAKE_PROFIT_MULTIPLIER / max(dynamic_sl_mult, 1e-9)
     )
     fee_rate = max(0.0, min(TAKER_FEE_RATE, 0.99))
     net_risk_per_unit = sl_distance * (1 + fee_rate) + 2 * price * fee_rate

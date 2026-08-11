@@ -56,6 +56,9 @@ from core.config import (
     get_bounce_capture_ratio,
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
+    ENABLE_RAPID_ADVERSE_DROP,
+    RAPID_ADVERSE_DROP_PCT,
+    RAPID_DROP_COOLDOWN_SEC,
 )
 from core.strategy import compute_sl_tp_distance
 from core.notifier import notify_email
@@ -143,6 +146,10 @@ class BinanceTestnetAccount:
         self._pending_retry_streak: Dict[str, int] = {}
         # ✅ 修正 Bug2：平倉失敗後的冷卻計時器，防止網路抖動期間連續暴力重試 API
         self._close_retry_after: Dict[str, float] = {}
+        # 閃崩偵測：記錄上一次各 symbol 的 ticker 價格，用於計算單週期逆向幅度
+        self._last_ticker_prices: Dict[str, float] = {}
+        # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
+        self._rapid_drop_cooldown: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -740,6 +747,29 @@ class BinanceTestnetAccount:
                     await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
                     continue
 
+            # ── 急速逆向閃崩偵測（Rapid Adverse Drop Guard）──
+            # 在單次 ticker 更新周期（約 5 秒）內，若持倉方向屑生急速逆向移動超過門檣
+            # 則立即市價平倉，不等 K 線收線，應對閃崩（Flash Crash）行情。
+            if ENABLE_RAPID_ADVERSE_DROP:
+                prev_p = self._last_ticker_prices.get(symbol)
+                last_cd = self._rapid_drop_cooldown.get(symbol, 0.0)
+                if prev_p and prev_p > 0 and (now_ts - last_cd) > RAPID_DROP_COOLDOWN_SEC:
+                    adverse_move = (
+                        (prev_p - curr_p) / prev_p if side == "LONG"
+                        else (curr_p - prev_p) / prev_p
+                    )
+                    if adverse_move >= RAPID_ADVERSE_DROP_PCT:
+                        self.log(
+                            f"⚡ [閃崩偵測] {symbol} {side} 單次 ticker 周期急速逆向 "
+                            f"{adverse_move:.3%}（門檣 {RAPID_ADVERSE_DROP_PCT:.3%}），"
+                            f"當機立斷平倉！（前價: {prev_p:.6g} → 現價: {curr_p:.6g}）",
+                            "DANGER"
+                        )
+                        self._rapid_drop_cooldown[symbol] = now_ts
+                        self._last_ticker_prices[symbol] = curr_p
+                        await self.close_position(symbol, curr_p, "急速逆向閃崩觸發平倉")
+                        continue
+
             # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
             if MAX_ACCEPTABLE_LOSS_PCT < 0:
                 current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
@@ -1020,9 +1050,12 @@ class BinanceTestnetAccount:
                 continue
 
             self.position_meta[symbol] = meta
+            # 閃崩偵測：更新此週期的價格快照，供下一輪計算逆向幅度
+            self._last_ticker_prices[symbol] = curr_p
 
         self.save_state()
         return self.unrealized_pnl
+
 
     async def _create_orphan_protection(self, symbol: str, pos: dict, meta: dict) -> None:
         side = pos["side"]
