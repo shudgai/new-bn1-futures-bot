@@ -470,6 +470,31 @@ async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_pat
 
 
 @pytest.mark.anyio
+async def test_paper_account_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
+    monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
+    account = PaperAccount()
+
+    await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=500.0, reason="test", signal_score=80
+    )
+    account.positions["BTC/USDT"]["sl"] = 102.0
+    account.position_meta["BTC/USDT"]["sl"] = 102.0
+
+    await account.update_positions({"BTC/USDT": 110.0})
+    assert "BTC/USDT" in account.positions
+
+    await account.update_positions({"BTC/USDT": 102.0})
+
+    assert "BTC/USDT" not in account.positions
+    trade = account.trades[0]
+    assert trade["symbol"] == "BTC/USDT"
+    assert trade["reason"] == "峰值回吐平倉"
+
+
+@pytest.mark.anyio
 async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost(tmp_path, monkeypatch):
     """反彈觸頂回落平倉不能只看「有沒有從反彈高點回落」，還要蓋過來回
     成本（2x手續費+平倉滑價）才值得把握——實測ADA/USDT 08/01 17:01這筆

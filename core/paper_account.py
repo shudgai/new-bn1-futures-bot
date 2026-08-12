@@ -998,27 +998,6 @@ class PaperAccount:
                     await self.close_position(symbol, curr_p, "本地最大虧損門檻觸發")
                     continue
 
-            # SL/TP 本地觸價比對（沒有真實交易所保護單，價格穿越就在
-            # 這裡直接判定平倉）
-            sl_price = pos.get("sl", 0.0)
-            tp_price = pos.get("tp", 0.0)
-            if side == "LONG":
-                if tp_price > 0 and curr_p >= tp_price:
-                    await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
-                    continue
-                if sl_price > 0 and curr_p <= sl_price:
-                    reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    await self.close_position(symbol, curr_p, reason)
-                    continue
-            else:
-                if tp_price > 0 and curr_p <= tp_price:
-                    await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
-                    continue
-                if sl_price > 0 and curr_p >= sl_price:
-                    reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    await self.close_position(symbol, curr_p, reason)
-                    continue
-
             # 獲利了結參考提醒（跟 BinanceTestnetAccount 邏輯一致）：從高點
             # 回吐超過門檻時亮警訊。警訊亮起後不是一有反彈就立刻平倉——
             # 只要浮盈還在持續往上爬，就繼續讓它跑；只有等反彈自己也開始
@@ -1043,6 +1022,27 @@ class PaperAccount:
                 # 直接於峰值回吐時平倉，避免讓獲利峰值回撤後再反彈。
                 await self.close_position(symbol, curr_p, "峰值回吐平倉")
                 continue
+
+            # SL/TP 本地觸價比對（沒有真實交易所保護單，價格穿越就在
+            # 這裡直接判定平倉）
+            sl_price = pos.get("sl", 0.0)
+            tp_price = pos.get("tp", 0.0)
+            if side == "LONG":
+                if tp_price > 0 and curr_p >= tp_price:
+                    await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
+                    continue
+                if sl_price > 0 and curr_p <= sl_price:
+                    reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    await self.close_position(symbol, curr_p, reason)
+                    continue
+            else:
+                if tp_price > 0 and curr_p <= tp_price:
+                    await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
+                    continue
+                if sl_price > 0 and curr_p >= sl_price:
+                    reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
+                    await self.close_position(symbol, curr_p, reason)
+                    continue
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p

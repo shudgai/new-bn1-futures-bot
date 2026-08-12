@@ -571,6 +571,38 @@ async def test_refresh_flags_profit_alert_when_giveback_from_peak(tmp_path, monk
 
 
 @pytest.mark.anyio
+async def test_testnet_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+
+    account.position_meta["BTC/USDT"] = {
+        "sl": 102.0,
+        "tp": 500.0,
+        "atr": 1.0,
+        "highest_pnl_pct": 0.10,
+    }
+    exchange.positions = [{
+        "symbol": "BTCUSDT",
+        "positionAmt": "1",
+        "entryPrice": "100",
+        "markPrice": "102",
+        "leverage": "1",
+        "unRealizedProfit": "2",
+    }]
+    account.last_sync_at = 0
+
+    await account.update_positions({"BTC/USDT": 102.0})
+
+    assert "BTC/USDT" not in account.positions
+    trade = account.trades[0]
+    assert trade["symbol"] == "BTC/USDT"
+    assert trade["reason"] == "峰值回吐平倉"
+
+
+@pytest.mark.anyio
 async def test_refresh_no_profit_alert_when_still_near_peak(tmp_path, monkeypatch):
     """浮盈還貼在高點附近（回吐幅度小於門檻），不誤報。"""
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))

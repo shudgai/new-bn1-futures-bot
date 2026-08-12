@@ -670,6 +670,7 @@ class BinanceTestnetAccount:
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
             if profit_alert:
+                # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
                 await self.close_position(symbol, curr_p, "峰值回吐平倉")
                 continue
 
