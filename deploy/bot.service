@@ -1,0 +1,17 @@
+[Unit]
+Description=Binance Futures Bot
+After=network.target
+
+[Service]
+Type=simple
+# 使用 bash -lc 跳到含空白的專案目錄再啟動，避免路徑空白問題。
+ExecStart=/bin/bash -lc 'cd "/home/shudgai999/project/new bn" && ./start.sh'
+Restart=on-failure
+RestartSec=5
+# 若想用 systemd 管理環境變數，可改用 EnvironmentFile=/etc/default/binance-bot
+Environment=PORT=8006
+Environment=TRADE_AMOUNT_USDT=50.0
+Environment=MAX_TRADE_RISK_USDT=2.0
+
+[Install]
+WantedBy=multi-user.target

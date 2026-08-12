@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  bot:
+    build: .
+    container_name: binance-bot
+    ports:
+      - "8006:8006"
+    environment:
+      - PORT=8006
+      - TRADE_AMOUNT_USDT=50.0
+      - MAX_TRADE_RISK_USDT=2.0
+    restart: unless-stopped
+    volumes:
+      - ./:/app
