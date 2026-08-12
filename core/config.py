@@ -78,7 +78,7 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 筆數，只受可用餘額約束（回到原本的行為）。
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
-MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
+MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "20.0"))
 # TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
 # 不管 Testnet 帳戶實際餘額有多少（例如帳戶有 4600U，但先假裝只有 150U，
 # 觀察在這個額度下實際能開滿幾槽）。設 0（或不設）代表不封頂，直接用
