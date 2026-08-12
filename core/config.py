@@ -242,9 +242,9 @@ BREAKOUT_RR_CLOSE_FRACTION = float(os.getenv("BREAKOUT_RR_CLOSE_FRACTION", "0.5"
 STRUCTURED_EXIT_INTERVAL_SEC = float(os.getenv("STRUCTURED_EXIT_INTERVAL_SEC", "15"))
 # BREAKOUT 突破後限價回踩目標：在 EMA20 + BREAKOUT_PULLBACK_ATR_MULT * ATR 處掛單
 # 等待市場回踩回到中軌附近再進場，避免在突破高點直接市價追買
-# 0.8 ATR 表示限價設在 EMA20 上方0.8 個 ATR，讓回踩更深、進場更有利。
-BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "0.8"))
-# BREAKOUT 回踩掾單最長等候時間：超過此時間沒有回踩就撏單
+# 1.0 ATR 表示限價設在 EMA20 上方 1 個 ATR，回踩更深、進場更有利。
+BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "1.0"))
+# BREAKOUT 回踩掛單最長等候時間：超過此時間沒有回踩就撤單
 # 突破动能強勁時幾乎不回踩，此時單子成交未必是好做法；分析後可調整
 BREAKOUT_PULLBACK_TIMEOUT_SEC = float(os.getenv("BREAKOUT_PULLBACK_TIMEOUT_SEC", "300"))
 
@@ -612,7 +612,7 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
-SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0003"))     # 0.03% 市價單估計滑點預留（單邊）
+SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0001"))     # 0.01% 市價單估計滑點預留（單邊）
 
 # --- 急升急降過濾：排除短期劇烈波動的幣種 ---
 # RAPID_MOVE_WINDOW: 回看幾根5分K（3根=15分鐘）
