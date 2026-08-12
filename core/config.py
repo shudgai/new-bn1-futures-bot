@@ -61,7 +61,7 @@ def get_atr_based_leverage(atr_pct: float) -> int:
             return lev
     return 3
 
-TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "25.0"))
+TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
 MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "1.0"))
 
@@ -310,6 +310,9 @@ SOFT_WARNING_PERSIST_SEC = float(os.getenv("SOFT_WARNING_PERSIST_SEC", "300"))
 # ATR×倍數算出來的止損距離還是會縮到很窄，一樣容易被雜訊掃出。用這個下限
 # 保證止損距離不會低於此比例，止盈距離依 TAKE_PROFIT/STOP_LOSS 倍數比例同步放大。
 MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.0015"))
+# MAX_SL_DISTANCE_PCT：止損距離上限（佔進場價的比例），避免在極端 ATR 情況下
+# 止損被放得過寬，一次停損造成過大美元損失。預設 2%。
+MAX_SL_DISTANCE_PCT = float(os.getenv("MAX_SL_DISTANCE_PCT", "0.05"))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）

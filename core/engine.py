@@ -3,6 +3,7 @@ import re
 import time
 import ccxt.async_support as ccxt
 import pandas as pd
+import weakref
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
@@ -75,6 +76,33 @@ class TradingEngine:
             "options": {"defaultType": "future"},
         })
         self.execution_exchange.set_sandbox_mode(USE_TESTNET)
+        # Ensure exchanges are closed if TradingEngine is garbage-collected
+        def _close_exchanges(e1, e2):
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                try:
+                    # schedule coroutine on the running loop without creating
+                    # the coroutine object here (avoids un-awaited coroutine)
+                    loop.call_soon_threadsafe(lambda: asyncio.create_task(e1.close()))
+                    loop.call_soon_threadsafe(lambda: asyncio.create_task(e2.close()))
+                except Exception:
+                    pass
+            else:
+                try:
+                    asyncio.run(e1.close())
+                except Exception:
+                    pass
+                try:
+                    asyncio.run(e2.close())
+                except Exception:
+                    pass
+
+        weakref.finalize(self, _close_exchanges, self.exchange, self.execution_exchange)
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
@@ -2105,14 +2133,18 @@ class TradingEngine:
                 sl_dist = target_price - sl
                 # 確保 TP 滿足最少盈虧比 (MIN_NET_REWARD_RISK)
                 tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
-                tp = target_price + max(tp_distance, tp_dist_needed)
+                # 不讓停損大於停利：TP 距離至少要 >= SL 距離
+                tp_dist_final = max(tp_distance, tp_dist_needed, sl_dist)
+                tp = target_price + tp_dist_final
             else:
                 min_sl = target_price + (target_price * MIN_SL_DISTANCE_PCT)
                 max_sl = target_price + (2.0 * atr)
                 sl = max(min_sl, min(max_sl, structural_sl))
                 sl_dist = sl - target_price
                 tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
-                tp = target_price - max(tp_distance, tp_dist_needed)
+                # 不讓停損大於停利：TP 距離至少要 >= SL 距離
+                tp_dist_final = max(tp_distance, tp_dist_needed, sl_dist)
+                tp = target_price - tp_dist_final
         else:
             if side == "LONG":
                 sl, tp = target_price - sl_distance, target_price + tp_distance

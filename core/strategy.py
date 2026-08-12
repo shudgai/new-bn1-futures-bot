@@ -156,6 +156,12 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     金額估算手續費，因此多空方向都不會低於設定值。"""
     base_sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
     sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
+    # 上限止損距離，避免單筆止損過寬導致一次虧損吃掉整個獲利空間
+    try:
+        from core.config import MAX_SL_DISTANCE_PCT
+        sl_distance = min(sl_distance, price * float(MAX_SL_DISTANCE_PCT))
+    except Exception:
+        pass
     configured_tp_distance = base_sl_distance * (
         TAKE_PROFIT_MULTIPLIER / max(STOP_LOSS_MULTIPLIER, 1e-9)
     )
@@ -165,6 +171,9 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
         MIN_NET_REWARD_RISK * net_risk_per_unit + 2 * price * fee_rate
     ) / max(1 - fee_rate, 1e-9)
     tp_distance = max(configured_tp_distance, min_tp_distance)
+    # 確保止盈距離不小於止損距離，避免出現「停損大於停利」的情形。
+    if tp_distance < sl_distance:
+        tp_distance = sl_distance
     return sl_distance, tp_distance
 
 
