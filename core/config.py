@@ -61,9 +61,9 @@ def get_atr_based_leverage(atr_pct: float) -> int:
             return lev
     return 3
 
-TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
+TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "25.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
-MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "2.0"))
+MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "1.0"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
@@ -218,9 +218,10 @@ BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.75"))
 BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
 # 反彈單若長時間連交易成本等級的順向波動都沒有，代表承接／反壓並未延續；
 # 在仍處於虧損時提早退出，不等待完整硬停損。
-BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "3600")))
+# 預設延長至 7200 秒（2 小時），並放寬最小 MFE 要求
+BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "7200")))
 BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
-    0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.0023"))
+    0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.001"))
 )
 
 def get_bounce_capture_ratio(score: int) -> float:
