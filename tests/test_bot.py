@@ -215,20 +215,72 @@ def test_strategy_indicators():
 
 @pytest.mark.anyio
 async def test_paper_account_open_close(tmp_path, monkeypatch):
-    # 隔離測試：使用臨時空白狀態檔，不受真實持倉影響
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
     close_notifications = []
     account.on_trade_closed = lambda: close_notifications.append("closed")
     initial_bal = account.balance
-    success = await account.open_position("BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0, "Test Entry")
+    success = await account.open_position(
+        "BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0,
+        "Test Entry", leverage=2, apply_slippage=False,
+    )
     assert success is True
     assert "BTC/USDT" in account.positions
+    qty = account.positions["BTC/USDT"]["qty"]
+    open_fee = qty * 50000.0 * TAKER_FEE_RATE
+    assert account.balance == pytest.approx(initial_bal - 50.0 - open_fee)
+    assert account.get_available_balance() == pytest.approx(account.balance)
 
     close_success = await account.close_position("BTC/USDT", 51000.0, "Test Exit")
     assert close_success is True
     assert "BTC/USDT" not in account.positions
     assert close_notifications == ["closed"]
+    exec_close_price = 51000.0 * (1 - pa_module.SLIPPAGE_PCT)
+    raw_pnl = (exec_close_price - 50000.0) * qty
+    close_fee = qty * exec_close_price * TAKER_FEE_RATE
+    assert account.balance == pytest.approx(initial_bal - open_fee + raw_pnl - close_fee)
+    assert account.balance == pytest.approx(initial_bal + account.realized_pnl)
+
+
+@pytest.mark.anyio
+async def test_paper_partial_close_refunds_margin_and_pnl(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    account = PaperAccount()
+    initial_bal = account.balance
+    await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 110.0, "test",
+        leverage=2, apply_slippage=False,
+    )
+    qty = account.positions["BTC/USDT"]["qty"]
+    open_fee = qty * 100.0 * TAKER_FEE_RATE
+    assert await account.partial_close_position("BTC/USDT", 101.0, "1.5R", fraction=0.5)
+    exec_close_price = 101.0 * (1 - pa_module.SLIPPAGE_PCT)
+    close_qty = qty * 0.5
+    raw_pnl = (exec_close_price - 100.0) * close_qty
+    close_fee = exec_close_price * close_qty * TAKER_FEE_RATE
+    assert account.positions["BTC/USDT"]["margin"] == pytest.approx(25.0)
+    assert account.balance == pytest.approx(
+        initial_bal - 50.0 - open_fee + 25.0 + raw_pnl - close_fee
+    )
+
+
+def test_paper_account_migrates_legacy_accounting_once(tmp_path, monkeypatch):
+    state_file = tmp_path / "legacy_account.json"
+    state_file.write_text(json.dumps({
+        "balance": 900.0,
+        "realized_pnl": 2.0,
+        "positions": {},
+        "trades": [
+            {"action": "OPEN_LONG", "fee": 0.1},
+            {"action": "PARTIAL_CLOSE_LONG", "amount": 25.0, "pnl": 1.0},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(state_file))
+    account = PaperAccount()
+    assert account.balance == pytest.approx(926.1)
+    assert account.accounting_version == pa_module.ACCOUNTING_VERSION
+    reloaded = PaperAccount()
+    assert reloaded.balance == pytest.approx(926.1)
 
 
 @pytest.mark.anyio

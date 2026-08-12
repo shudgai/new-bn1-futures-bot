@@ -57,6 +57,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, "paper_account.json")
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+ACCOUNTING_VERSION = 2
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -127,6 +128,7 @@ class PaperAccount:
         self.entry_filter_last: dict = {}
         self.shadow_parameter_stats: dict = {}
         self.shadow_parameter_last: dict = {}
+        self.accounting_version: int = ACCOUNTING_VERSION
 
         self.load_state()
 
@@ -193,7 +195,45 @@ class PaperAccount:
         self.entry_filter_last = data.get("entry_filter_last", {})
         self.shadow_parameter_stats = data.get("shadow_parameter_stats", {})
         self.shadow_parameter_last = data.get("shadow_parameter_last", {})
+        stored_accounting_version = int(data.get("accounting_version", 1))
+        self.accounting_version = ACCOUNTING_VERSION
+        if stored_accounting_version < ACCOUNTING_VERSION:
+            recorded_open_fees = sum(
+                float(trade.get("fee") or 0.0)
+                for trade in self.trades
+                if str(trade.get("action", "")).startswith("OPEN_")
+            )
+            remaining_open_fees = sum(
+                float(pos.get("entry_price") or 0.0)
+                * float(pos.get("qty") or 0.0)
+                * TAKER_FEE_RATE
+                for pos in self.positions.values()
+            )
+            missing_partial_refunds = sum(
+                float(trade.get("amount") or 0.0) + float(trade.get("pnl") or 0.0)
+                for trade in self.trades
+                if str(trade.get("action", "")).startswith("PARTIAL_CLOSE_")
+            )
+            repair_amount = (
+                max(0.0, recorded_open_fees - remaining_open_fees)
+                + missing_partial_refunds
+            )
+            if repair_amount:
+                self.balance += repair_amount
+                if self.daily_start_balance > 0:
+                    self.daily_start_balance += repair_amount
+                self.logs.append({
+                    "time": get_taipei_time_short(),
+                    "timestamp": time.time(),
+                    "text": (
+                        "🔧 [紙上帳戶會計遷移] 已補回重複開倉費與分批平倉未入帳金額 "
+                        f"{repair_amount:.4f} USDT"
+                    ),
+                    "level": "WARNING",
+                })
         self.available_balance = self.get_available_balance()
+        if stored_accounting_version < ACCOUNTING_VERSION:
+            self.save_state()
 
     def save_state(self) -> None:
         data = {
@@ -214,6 +254,7 @@ class PaperAccount:
             "entry_filter_last": self.entry_filter_last,
             "shadow_parameter_stats": self.shadow_parameter_stats,
             "shadow_parameter_last": self.shadow_parameter_last,
+            "accounting_version": self.accounting_version,
         }
         tmp_file = f"{STATE_FILE}.tmp"
         try:
@@ -260,8 +301,8 @@ class PaperAccount:
         return hit, loss_pct
 
     def get_available_balance(self) -> float:
-        used_margin = sum(pos.get("margin", 0.0) for pos in self.positions.values())
-        return max(0.0, self.balance - used_margin)
+        # self.balance 已在開倉時扣除保證金；不可再扣一次持倉 margin。
+        return max(0.0, self.balance)
 
     async def open_position(
         self,
@@ -626,7 +667,8 @@ class PaperAccount:
                 if side == "LONG"
                 else (entry_price - exec_close_price) / entry_price
             )
-            self.balance += margin + net_pnl
+            # 開倉費已在 open_position() 扣除；這裡只扣平倉費，避免重複計費。
+            self.balance += margin + raw_pnl - close_fee
             self.realized_pnl += net_pnl
             self.last_closed_at[symbol] = time.time()
 
@@ -703,6 +745,9 @@ class PaperAccount:
             close_fee = exec_close_price * close_qty * TAKER_FEE_RATE
             total_fee = open_fee + close_fee
             net_pnl = raw_pnl - total_fee
+            released_margin = pos.get("margin", 0.0) * fraction
+            # 退回本次釋放的保證金及平倉損益；開倉費早已在進場時扣除。
+            self.balance += released_margin + raw_pnl - close_fee
             self.realized_pnl += net_pnl
 
             self.trades.insert(0, {
@@ -713,7 +758,7 @@ class PaperAccount:
                 "side": side,
                 "price": round(exec_close_price, 8),
                 "qty": round(close_qty, 8),
-                "amount": round(pos.get("margin", 0.0) * fraction, 4),
+                "amount": round(released_margin, 4),
                 "fee": round(total_fee, 4),
                 "pnl": round(net_pnl, 4),
                 "status": "PARTIAL_CLOSED",
@@ -723,7 +768,7 @@ class PaperAccount:
 
             remaining_qty = qty - close_qty
             pos["qty"] = remaining_qty
-            pos["margin"] = pos.get("margin", 0.0) * (1 - fraction)
+            pos["margin"] = pos.get("margin", 0.0) - released_margin
             meta["is_half_closed"] = True
             self.log(
                 f"💰 [紙上交易/分批止盈] {symbol} 平倉 {fraction:.0%} @ {exec_close_price:.6g} | "
