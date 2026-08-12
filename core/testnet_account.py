@@ -29,6 +29,7 @@ from core.config import (
     NET_PROFIT_GUARANTEE_BUFFER,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
+    PROFIT_ALERT_MIN_PEAK_PCT,
     get_leverage,
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
@@ -659,6 +660,19 @@ class BinanceTestnetAccount:
                     pos["bounce_target_pct"] = bounce_target_pct
                     meta["bounce_capture_ratio"] = bounce_capture_ratio
                     meta["bounce_target_pct"] = bounce_target_pct
+
+            profit_giveback_ratio = (
+                (highest_pnl - pnl_pct) / highest_pnl if highest_pnl > 0 else 0.0
+            )
+            profit_alert = (
+                highest_pnl >= PROFIT_ALERT_MIN_PEAK_PCT
+                and pnl_pct > 0
+                and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
+            )
+            if profit_alert:
+                await self.close_position(symbol, curr_p, "峰值回吐平倉")
+                continue
+
             if (
                 meta.get("profit_profile") == "BOUNCE"
                 and bounce_target_pct > 0

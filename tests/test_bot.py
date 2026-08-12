@@ -459,25 +459,14 @@ async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_pat
     assert "BTC/USDT" in account.positions
     assert account.positions["BTC/USDT"]["profit_alert"] is False
 
-    # 從高點回吐超過20%（10% -> 7.5%以下），警訊亮起，但這一次還沒回升，不平倉
+    # 從高點回吐超過20%（10% -> 7.5%以下），有足夠淨利可取，應該直接平倉。
     await account.update_positions({"BTC/USDT": 107.0})
-    assert "BTC/USDT" in account.positions
-    assert account.positions["BTC/USDT"]["profit_alert"] is True
-
-    # 反彈持續往上爬（108 -> 109），還沒觸頂，應該繼續持有讓它跑，不平倉
-    await account.update_positions({"BTC/USDT": 108.0})
-    assert "BTC/USDT" in account.positions
-    await account.update_positions({"BTC/USDT": 109.0})
-    assert "BTC/USDT" in account.positions
-
-    # 反彈本身開始回落（109 -> 108.5），找到這次反彈的高點了 -> 平倉
-    await account.update_positions({"BTC/USDT": 108.5})
 
     assert "BTC/USDT" not in account.positions
     trade = account.trades[0]
     assert trade["symbol"] == "BTC/USDT"
     assert trade["pnl"] > 0
-    assert trade["reason"] == "獲利回吐警訊後反彈觸頂回落，把握高點平倉"
+    assert trade["reason"] == "峰值回吐平倉"
 
 
 @pytest.mark.anyio

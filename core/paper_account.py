@@ -1036,30 +1036,13 @@ class PaperAccount:
             profit_giveback_ratio = (peak_pnl_pct - pnl_pct) / peak_pnl_pct if peak_pnl_pct > 0 else 0.0
             profit_alert = (
                 peak_pnl_pct >= PROFIT_ALERT_MIN_PEAK_PCT
-                and pnl_pct > 0
+                and pnl_pct > min_rebound_exit_pct
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
-            if peak_pnl_pct < PROFIT_ALERT_MIN_PEAK_PCT:
-                meta["rebound_peak_pnl_pct"] = None
-
-            # 警訊亮起後只要開始反彈，就持續追蹤「這波反彈自己的高點」，
-            # 不能只看 profit_alert 這個當下的旗標——反彈只要回升夠多，
-            # 回吐比例會自然低於 PROFIT_ALERT_GIVEBACK_RATIO 而讓 profit_alert
-            # 轉為 False，但這不代表反彈已經觸頂，只是還沒漲回一開始的
-            # 警訊而已，仍要繼續追蹤直到它真的開始回落。
-            rebound_peak_pnl_pct = meta.get("rebound_peak_pnl_pct")
-            if profit_alert or rebound_peak_pnl_pct is not None:
-                if pnl_pct >= peak_pnl_pct:
-                    # 反彈已經漲回、甚至超越原本的歷史高點
-                    meta["rebound_peak_pnl_pct"] = None
-                elif rebound_peak_pnl_pct is None or pnl_pct > rebound_peak_pnl_pct:
-                    # 記錄目前反彈高點
-                    meta["rebound_peak_pnl_pct"] = pnl_pct
-                elif pnl_pct > min_rebound_exit_pct:
-                    await self.close_position(
-                        symbol, curr_p, "獲利回吐警訊後反彈觸頂回落，把握高點平倉"
-                    )
-                    continue
+            if profit_alert:
+                # 直接於峰值回吐時平倉，避免讓獲利峰值回撤後再反彈。
+                await self.close_position(symbol, curr_p, "峰值回吐平倉")
+                continue
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p

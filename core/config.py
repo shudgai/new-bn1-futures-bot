@@ -86,11 +86,10 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # 不用再改程式碼。
 TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
-# 調整為 1.8 ATR：收緊初始止損距離，降低每筆高波動幣種（如 WLD）的最大損失。
-# 原 2.5 ATR 在 5m 波動較大的幣種上止損空間過寬，導致停損時帳面損失偏高。
-# R:R = TAKE_PROFIT_MULTIPLIER(3.0) / STOP_LOSS_MULTIPLIER(1.8) = 1.67：1
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.8"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.0"))
+# 調整為 1.4 ATR 止損、4.0 ATR 止盈，讓每筆部位有更大的獲利空間。
+# R:R = TAKE_PROFIT_MULTIPLIER(4.0) / STOP_LOSS_MULTIPLIER(1.4) = 2.86：1
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.4"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.0"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
 import sys
 IS_TESTING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
@@ -241,10 +240,10 @@ BREAKOUT_RR1_TARGET = float(os.getenv("BREAKOUT_RR1_TARGET", "1.5"))
 BREAKOUT_RR2_TARGET = float(os.getenv("BREAKOUT_RR2_TARGET", "2.5"))
 BREAKOUT_RR_CLOSE_FRACTION = float(os.getenv("BREAKOUT_RR_CLOSE_FRACTION", "0.5"))
 STRUCTURED_EXIT_INTERVAL_SEC = float(os.getenv("STRUCTURED_EXIT_INTERVAL_SEC", "15"))
-# BREAKOUT 突破後掾限價回踩目標：在 EMA20 + BREAKOUT_PULLBACK_ATR_MULT * ATR 處掾單
-# 等奖市場回踩回到中軌附近再進場，避免在突破高點直接市價追買
-# 0.5 ATR 表示限價設在 EMA20 上方0.5個ATR（窗口內德一點，避免就在等於 EMA20 時採購反而絢了外軌）
-BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "0.5"))
+# BREAKOUT 突破後限價回踩目標：在 EMA20 + BREAKOUT_PULLBACK_ATR_MULT * ATR 處掛單
+# 等待市場回踩回到中軌附近再進場，避免在突破高點直接市價追買
+# 0.8 ATR 表示限價設在 EMA20 上方0.8 個 ATR，讓回踩更深、進場更有利。
+BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "0.8"))
 # BREAKOUT 回踩掾單最長等候時間：超過此時間沒有回踩就撏單
 # 突破动能強勁時幾乎不回踩，此時單子成交未必是好做法；分析後可調整
 BREAKOUT_PULLBACK_TIMEOUT_SEC = float(os.getenv("BREAKOUT_PULLBACK_TIMEOUT_SEC", "300"))
