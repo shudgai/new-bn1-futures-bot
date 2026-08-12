@@ -2092,6 +2092,33 @@ def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
     )
 
 
+@pytest.mark.anyio
+async def test_sl_only_after_peak_prevents_early_stop(tmp_path, monkeypatch):
+    """如果設定 SL_ONLY_AFTER_PEAK_PCT，觸及 SL 但未曾達到峰值，應該暫不平倉；
+    只有當峰值達到門檻後再次觸及 SL 才會平倉。"""
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    # 啟用門檻 1%
+    monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.01)
+
+    account = PaperAccount()
+    # 開倉：entry 100, SL 95
+    await account.open_position(
+        "TEST/USDT", "LONG", 100.0, 50.0, sl=95.0, tp=110.0, reason="test", signal_score=80
+    )
+    # 初始 highest_pnl 為 0
+    assert account.position_meta["TEST/USDT"]["highest_pnl_pct"] == pytest.approx(0.0)
+
+    # 價格跌到 SL，應該不會平倉
+    await account.update_positions({"TEST/USDT": 95.0})
+    assert "TEST/USDT" in account.positions
+
+    # 模擬價格曾達到 2% 的峰值
+    account.position_meta["TEST/USDT"]["highest_pnl_pct"] = 0.02
+    # 再次跌回 SL，這次應該平倉
+    await account.update_positions({"TEST/USDT": 95.0})
+    assert "TEST/USDT" not in account.positions
+
+
 def test_trade_history_counts_only_classified_stop_losses():
     trades = [
         {

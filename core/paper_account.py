@@ -49,6 +49,7 @@ from core.config import (
     STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
+    SL_ONLY_AFTER_PEAK_PCT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance
 
@@ -1033,16 +1034,34 @@ class PaperAccount:
                     continue
                 if sl_price > 0 and curr_p <= sl_price:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    await self.close_position(symbol, curr_p, reason)
-                    continue
+                    # 僅在已啟用移動保本或部位曾達到設定峰值比例時，才把本地 SL 視為真正平倉
+                    highest_peak = float(meta.get("highest_pnl_pct") or 0.0)
+                    if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
+                        await self.close_position(symbol, curr_p, reason)
+                        continue
+                    else:
+                        # 忽略此輪穿越，視為觀察線；記錄日誌以便追蹤
+                        self.log(
+                            f"🔍 [紙上交易] {symbol} 觸及 SL={sl_price:.6g} 但未達峰值 {SL_ONLY_AFTER_PEAK_PCT:.4%}，暫不平倉",
+                            "INFO",
+                        )
+                        continue
             else:
                 if tp_price > 0 and curr_p <= tp_price:
                     await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
                     continue
                 if sl_price > 0 and curr_p >= sl_price:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    await self.close_position(symbol, curr_p, reason)
-                    continue
+                    highest_peak = float(meta.get("highest_pnl_pct") or 0.0)
+                    if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
+                        await self.close_position(symbol, curr_p, reason)
+                        continue
+                    else:
+                        self.log(
+                            f"🔍 [紙上交易] {symbol} 觸及 SL={sl_price:.6g} 但未達峰值 {SL_ONLY_AFTER_PEAK_PCT:.4%}，暫不平倉",
+                            "INFO",
+                        )
+                        continue
 
             unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
             pos["mark_price"] = curr_p
