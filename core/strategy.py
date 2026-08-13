@@ -947,6 +947,7 @@ class SuperTrendKeltnerStrategy:
             )
             # 所有進場一律要求完整獲利空間；不再讓 100/100 訊號以半倉
             # 繞過門檻，避免高準備度但只剩交易成本等級空間的低價值交易。
+            # 低空間小倉例外已關閉：若獲利空間不足 1%，直接拒絕不開倉。
             candidate_capture_ratio = get_bounce_capture_ratio(score)
             high_readiness_low_room = False
             if profit_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT:
@@ -1006,7 +1007,7 @@ class SuperTrendKeltnerStrategy:
                     f"{profit_profile_label}｜可用空間{profit_room_pct:.2%}｜"
                     f"{profit_exit_note}"
                     + (
-                        "｜滿準備度低空間探索半倉"
+                        "｜滿準備度低空間探索小倉"
                         if high_readiness_low_room else ""
                     )
                     + (

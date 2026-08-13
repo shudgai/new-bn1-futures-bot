@@ -2591,6 +2591,57 @@ async def test_structured_pending_revalidates_direction_mode_and_target(
     assert engine._pullback_retry_after["COIN/USDT"] == 100.0
 
 
+def test_structured_pullback_allows_low_room_small_limit_when_signal_is_strong(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    base = np.array([100.0] * 70, dtype=float)
+    frame = pd.DataFrame({
+        "open": base.copy(),
+        "high": base.copy() + 0.10,
+        "low": base.copy() - 0.10,
+        "close": base.copy() + 0.05,
+        "close_price_spike_filtered": base.copy() + 0.05,
+        "volume": [900.0] * 70,
+        "vol_ma_20": [1000.0] * 70,
+        "atr": [0.30] * 70,
+        "rsi": [55.0] * 70,
+        "adx": [35.0] * 70,
+        "kc_upper": [100.0] * 70,
+        "kc_lower": [98.0] * 70,
+        "kc_width": [2.0] * 70,
+        "ema_20": [100.0] * 70,
+        "ema_50": [100.0] * 70,
+        "st_direction": [1] * 70,
+        "macd_hist": np.linspace(0.1, 1.0, 70),
+        "macd_line": np.linspace(0.2, 1.2, 70),
+        "macd_signal": np.linspace(0.1, 1.0, 70),
+        "rsi_15m": [55.0] * 70,
+    })
+    frame.iloc[-1, frame.columns.get_loc("close")] = 100.05
+    frame.iloc[-1, frame.columns.get_loc("open")] = 99.95
+    frame.iloc[-1, frame.columns.get_loc("low")] = 99.80
+    frame.iloc[-1, frame.columns.get_loc("high")] = 100.15
+    frame.iloc[-2, frame.columns.get_loc("close")] = 99.98
+    frame.iloc[-2, frame.columns.get_loc("open")] = 99.97
+    frame.iloc[-2, frame.columns.get_loc("low")] = 99.75
+    frame.iloc[-2, frame.columns.get_loc("high")] = 100.10
+    frame.iloc[-1, frame.columns.get_loc("rsi")] = 60.0
+    frame.iloc[-2, frame.columns.get_loc("rsi")] = 55.0
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_structured_entry(
+        frame,
+        ema_50_1h=95.0,
+        st_direction_1h=1,
+        btc_st_direction_1h=1,
+        symbol="DOGE/USDT",
+        indicators_precomputed=True,
+    )
+
+    assert result["action"] == "HOLD"
+    assert "獲利空間不足" in result["reason"]
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("bounce_target_pct", "low_room_exploration", "should_place"),
