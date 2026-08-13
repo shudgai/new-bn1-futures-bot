@@ -1481,6 +1481,11 @@ class BinanceTestnetAccount:
                 "reason": reason,
                 "sl": sl_price,
                 "tp": tp_price,
+                # monitoring fields
+                **({
+                    "projected_net_rr": (lambda rp: (compute_net_reward_risk(execution_price, sl_price, rp)[0] if rp and rp > 0 else None))(float(entry_context.get("bounce_target_pct") or entry_context.get("profit_room_pct") or 0.0)),
+                    "profit_room_pct": float(entry_context.get("profit_room_pct") or entry_context.get("bounce_target_pct") or 0.0),
+                } if entry_context else {}),
                 "exchange_order_id": entry_order_id,
                 **entry_context,
             })

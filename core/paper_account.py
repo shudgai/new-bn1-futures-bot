@@ -417,6 +417,11 @@ class PaperAccount:
             "reason": reason,
             "sl": sl,
             "tp": pos["tp"],
+            # 監控：預估淨風報比（projected_net_rr）與獲利空間百分比
+            **({
+                "projected_net_rr": (lambda rp: (compute_net_reward_risk(execution_price, sl, rp)[0] if rp and rp > 0 else None))(float(entry_context.get("bounce_target_pct") or entry_context.get("profit_room_pct") or 0.0)),
+                "profit_room_pct": float(entry_context.get("profit_room_pct") or entry_context.get("bounce_target_pct") or 0.0),
+            } if entry_context else {}),
             **entry_context,
         })
         fill_note = "含滑點" if apply_slippage else "Maker限價成交"
