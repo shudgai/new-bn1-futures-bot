@@ -1197,7 +1197,12 @@ class SuperTrendKeltnerStrategy:
 
         # 層 B：個幣自身 1h SuperTrend 方向對齊
         # 1h SuperTrend 翻轉需要較長時間，比 price vs EMA50 準確 3~5 倍。
-        # 1h SuperTrend 方向檢查已禁用，允許逆勢進場
+        # 既然進場是以大方向作為風控，當 1h ST 與 5m 顯示相反方向時，
+        # 需直接擋單，避免在高週期逆勢中執行 5m MomentumCross 追價。
+        if st_direction_1h is not None and int(st_direction_1h) != 0 and st_dir != int(st_direction_1h):
+            return eligibility_hold(
+                f"Mandatory_Fail: MomentumCross_Not_Aligned(5m={st_dir},1h={int(st_direction_1h)})"
+            )
 
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），

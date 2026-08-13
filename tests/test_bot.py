@@ -913,6 +913,28 @@ def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
     assert "BTC_1h_ST_Contrary" in blocked["reason"]
 
 
+def test_momentum_cross_requires_matching_high_timeframe_direction(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _entry_score_frame(volume=1500.0, rsi=60.0, adx=35.0)
+    frame["rsi"] = [60.0] * 49 + [40.0]
+    frame["st_direction"] = [-1] * 50
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "ENABLE_MOMENTUM_CROSS_ENTRY", True)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    blocked = strategy.evaluate_signal(
+        frame,
+        ema_50_1h=95.0,
+        st_direction_1h=1,
+        btc_st_direction_1h=-1,
+        btc_st_flip_age=3,
+        symbol="DOGE/USDT",
+    )
+
+    assert blocked["action"] == "HOLD"
+    assert "MomentumCross_Not_Aligned" in blocked["reason"]
+
+
 def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
