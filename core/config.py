@@ -90,7 +90,7 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # R:R = TAKE_PROFIT_MULTIPLIER(4.0) / STOP_LOSS_MULTIPLIER(1.4) = 2.86：1
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.0"))
-DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "true").lower() == "true"
+DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "false").lower() == "true"
 import sys
 IS_TESTING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 if IS_TESTING:
@@ -165,9 +165,8 @@ MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05
 MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
 # --- 無 MA7 的結構化進出場 ---
 STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower() == "true"
-# Momentum Cross 提供較高的開倉頻率；仍保留分數、BTC方向、倉位與止損風控。
-# 可透過環境變數設為 false，切回只使用嚴格結構回踩入口。
-ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "true").lower() == "true"
+# Momentum Cross 提供較高的開倉頻率；預設關閉以降低低品質訊號。
+ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "false").lower() == "true"
 # 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
 # SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
 ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "true"
@@ -213,7 +212,7 @@ MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0100
 # 這樣能避免「看起來很強、但實際沒有足夠承接空間」的低價值交易被開倉。
 # 實驗模式可停用 BOUNCE 淨風報比攔截，保留門檻方便之後用實績重新啟用。
 STRUCTURED_NET_RR_FILTER_ENABLED = os.getenv(
-    "STRUCTURED_NET_RR_FILTER_ENABLED", "false"
+    "STRUCTURED_NET_RR_FILTER_ENABLED", "true"
 ).lower() == "true"
 STRUCTURED_MIN_NET_REWARD_RISK = float(os.getenv("STRUCTURED_MIN_NET_REWARD_RISK", "1.0"))
 STRUCTURED_NET_RR_HARD_FLOOR = float(
@@ -401,7 +400,7 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "71"))
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "81"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
