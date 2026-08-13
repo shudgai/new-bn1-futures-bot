@@ -1037,6 +1037,27 @@ class SuperTrendKeltnerStrategy:
             float(prev["rsi"]) > 50 and float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
         )
         if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
+            if side == "SHORT":
+                recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+                prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
+                close_broke_prev = float(curr.get("close", price)) < prev_close
+                reversal_confirmed = bool(
+                    close_broke_prev
+                    and float(curr.get("close", price)) < float(curr.get("open", price))
+                    and (
+                        float(curr.get("rsi", 50.0)) < 50.0
+                        or float(curr.get("macd_hist", 0.0)) < 0.0
+                    )
+                )
+                if recent_high_distance_pct <= 0.006 and not reversal_confirmed:
+                    return {
+                        "action": "HOLD",
+                        "side": side,
+                        "score": 0,
+                        "reason": f"MomentumCross_{side}｜近期高點附近未確認反轉（距前高{recent_high_distance_pct:.2%}，需先跌破前一根收盤與確認反轉）",
+                        **common,
+                    }
             triggers = []
             if macd_hist_cross or macd_line_cross:
                 triggers.append("MACD交叉")
@@ -1204,6 +1225,30 @@ class SuperTrendKeltnerStrategy:
             return eligibility_hold(
                 f"Mandatory_Fail: MomentumCross_Not_Aligned(5m={st_dir},1h={int(st_direction_1h)})"
             )
+
+        # 近期高點附近不允許直接反手開空：若價格仍在最近前高/壓力區附近，
+        # 但尚未出現確認的反轉 K 線、MACD 改善、或缺乏足夠回落空間，
+        # 直接拒絕開空，避免「高點還沒真正轉弱就追空」這種一路背離交易。
+        # 這條規則是為了避免短期反彈後立刻進場反手做空，尤其當價格仍
+        # 站在最近高點附近、而方向沒有確認轉弱時。
+        if st_dir == -1:
+            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
+            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            recent_peak_near = recent_high_distance_pct <= 0.006
+            prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
+            close_broke_prev = float(curr.get("close", price)) < prev_close
+            reversal_confirmed = bool(
+                close_broke_prev
+                and float(curr.get("close", price)) < float(curr.get("open", price))
+                and (
+                    float(curr.get("rsi", 50.0)) < 50.0
+                    or float(curr.get("macd_hist", 0.0)) < 0.0
+                )
+            )
+            if recent_peak_near and not reversal_confirmed:
+                return eligibility_hold(
+                    f"Mandatory_Fail: Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
+                )
 
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），

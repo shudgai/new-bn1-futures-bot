@@ -2642,6 +2642,57 @@ def test_structured_pullback_allows_low_room_small_limit_when_signal_is_strong(m
     assert "獲利空間不足" in result["reason"]
 
 
+def test_structured_short_near_recent_high_requires_reversal_confirmation(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    base = np.array([100.0] * 70, dtype=float)
+    frame = pd.DataFrame({
+        "open": base.copy(),
+        "high": base.copy() + 0.25,
+        "low": base.copy() - 0.20,
+        "close": base.copy(),
+        "close_price_spike_filtered": base.copy(),
+        "volume": [1200.0] * 70,
+        "vol_ma_20": [1000.0] * 70,
+        "atr": [0.30] * 70,
+        "rsi": [52.0] * 70,
+        "adx": [35.0] * 70,
+        "kc_upper": [100.0] * 70,
+        "kc_lower": [98.0] * 70,
+        "kc_width": [2.0] * 70,
+        "ema_20": [100.0] * 70,
+        "ema_50": [100.0] * 70,
+        "st_direction": [-1] * 70,
+        "macd_hist": np.linspace(-0.8, -0.2, 70),
+        "macd_line": np.linspace(0.2, 1.0, 70),
+        "macd_signal": np.linspace(0.4, 1.2, 70),
+        "rsi_15m": [50.0] * 70,
+    })
+    frame.iloc[-1, frame.columns.get_loc("close")] = 100.35
+    frame.iloc[-1, frame.columns.get_loc("open")] = 100.42
+    frame.iloc[-1, frame.columns.get_loc("low")] = 100.10
+    frame.iloc[-1, frame.columns.get_loc("high")] = 100.55
+    frame.iloc[-2, frame.columns.get_loc("close")] = 100.28
+    frame.iloc[-2, frame.columns.get_loc("open")] = 100.30
+    frame.iloc[-2, frame.columns.get_loc("low")] = 100.05
+    frame.iloc[-2, frame.columns.get_loc("high")] = 100.60
+    frame.iloc[-1, frame.columns.get_loc("rsi")] = 48.0
+    frame.iloc[-2, frame.columns.get_loc("rsi")] = 52.0
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_structured_entry(
+        frame,
+        ema_50_1h=101.0,
+        st_direction_1h=-1,
+        btc_st_direction_1h=-1,
+        symbol="UNI/USDT",
+        indicators_precomputed=True,
+    )
+
+    assert result["action"] == "HOLD"
+    assert "近期高點附近" in result["reason"]
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("bounce_target_pct", "low_room_exploration", "should_place"),
