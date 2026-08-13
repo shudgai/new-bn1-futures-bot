@@ -52,6 +52,8 @@ from core.config import (
     TRAILING_TIER3_TRIGGER_ATR_MULT,
     TRAILING_TIER2_LOCK_ATR_MULT,
     MAX_ACCEPTABLE_LOSS_PCT,
+    MIN_SL_DISTANCE_PCT,
+    STOP_LOSS_MULTIPLIER,
     ENABLE_DCA_LIMIT,
     DCA_STAGE_DEPTHS,
     get_bounce_capture_ratio,
@@ -1396,7 +1398,19 @@ class BinanceTestnetAccount:
                 execution_price + tp_distance if side == "LONG"
                 else execution_price - tp_distance
             )
-            sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl)) if not DISABLE_STOP_LOSS else 0.0
+            # Ensure SL sits on correct side and respect a minimum distance
+            if not DISABLE_STOP_LOSS:
+                atr_value = atr if atr > 0 else execution_price * 0.015
+                min_dist = max(price_ref * MIN_SL_DISTANCE_PCT, atr_value * STOP_LOSS_MULTIPLIER)
+                if side == "LONG":
+                    if adjusted_sl >= execution_price - 1e-12:
+                        adjusted_sl = execution_price - min_dist
+                else:
+                    if adjusted_sl <= execution_price + 1e-12:
+                        adjusted_sl = execution_price + min_dist
+                sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
+            else:
+                sl_price = 0.0
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
             if entry_context.get("initial_sl") is not None:
                 entry_context["initial_sl"] = sl_price

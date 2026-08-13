@@ -50,6 +50,8 @@ from core.config import (
     BOUNCE_NO_FOLLOW_THROUGH_SEC,
     BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT,
     SL_ONLY_AFTER_PEAK_PCT,
+    MIN_SL_DISTANCE_PCT,
+    STOP_LOSS_MULTIPLIER,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance
 
@@ -342,6 +344,19 @@ class PaperAccount:
             sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
         if DISABLE_STOP_LOSS:
             sl = 0.0
+        else:
+            # Ensure SL is on correct side and at least a conservative minimum distance
+            try:
+                effective_atr = atr if atr and atr > 0 else execution_price * 0.015
+                min_dist = max(execution_price * MIN_SL_DISTANCE_PCT, effective_atr * STOP_LOSS_MULTIPLIER)
+                if side == "LONG":
+                    if sl >= execution_price - 1e-12:
+                        sl = execution_price - min_dist
+                else:
+                    if sl <= execution_price + 1e-12:
+                        sl = execution_price + min_dist
+            except Exception:
+                pass
         qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
         fee = qty * execution_price * TAKER_FEE_RATE
         self.balance -= (amount_usdt + fee)
