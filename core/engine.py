@@ -1894,6 +1894,61 @@ class TradingEngine:
         self._drop_pullback_candidate(symbol, "現價 Post-Only 掛單失敗", now)
         return False
 
+    def _entry_direction_allowed(self, symbol: str, side: str, planned_price: float, log_on_fail: bool = True) -> bool:
+        """Final safeguard: ensure requested entry direction aligns with higher-timeframe filters.
+
+        Returns True if allowed, False if should be blocked.
+        """
+        # BTC regime guard
+        try:
+            from core.config import BTC_REGIME_FILTER_ENABLED, BTC_REGIME_ALLOW_CONTRARY, SYMBOL_1H_ST_FILTER_ENABLED, ENABLE_1H_EMA50_FILTER, STRUCTURED_1H_EMA50_TOLERANCE_PCT
+        except Exception:
+            BTC_REGIME_FILTER_ENABLED = False
+            BTC_REGIME_ALLOW_CONTRARY = False
+            SYMBOL_1H_ST_FILTER_ENABLED = False
+            ENABLE_1H_EMA50_FILTER = False
+            STRUCTURED_1H_EMA50_TOLERANCE_PCT = 0.0
+
+        want_dir = 1 if side == "LONG" else -1
+
+        # BTC regime check (global large-cap direction guard)
+        if BTC_REGIME_FILTER_ENABLED:
+            btc_dir = int(getattr(self, "btc_1h_st_direction", 0) or 0)
+            if btc_dir != 0 and btc_dir != want_dir and not BTC_REGIME_ALLOW_CONTRARY:
+                if log_on_fail and hasattr(self, "account"):
+                    self.account.log(f"🛑 {symbol} 拒絕開倉：BTC 大盤 1h 方向不符 (BTC={btc_dir})，禁止逆勢開倉", "WARNING")
+                return False
+
+        # Per-symbol 1h SuperTrend guard
+        if SYMBOL_1H_ST_FILTER_ENABLED:
+            sym_cache = getattr(self, "st_direction_1h_cache", {}) or {}
+            sym_dir = int(sym_cache.get(symbol) or 0)
+            if sym_dir != 0 and sym_dir != want_dir:
+                if log_on_fail and hasattr(self, "account"):
+                    self.account.log(f"🛑 {symbol} 拒絕開倉：個幣 1h SuperTrend 方向不符 (1h={sym_dir})，跳過本次進場", "WARNING")
+                return False
+
+        # 1h EMA50 filter: require planned price to be on the same side of EMA50
+        if ENABLE_1H_EMA50_FILTER:
+            ema_cache = getattr(self, "ema_50_1h_cache", {}) or {}
+            ema50 = ema_cache.get(symbol)
+            if ema50 is not None and ema50 > 0:
+                tol = 1.0 - STRUCTURED_1H_EMA50_TOLERANCE_PCT if want_dir == 1 else 1.0 + STRUCTURED_1H_EMA50_TOLERANCE_PCT
+                if want_dir == 1:
+                    # LONG requires price not significantly below EMA50
+                    if planned_price < ema50 * (1.0 - STRUCTURED_1H_EMA50_TOLERANCE_PCT):
+                        if log_on_fail and hasattr(self, "account"):
+                            self.account.log(f"🛑 {symbol} 拒絕開多單：價格低於1h EMA50 ({ema50:.6g})，方向不符", "WARNING")
+                        return False
+                else:
+                    # SHORT requires price not significantly above EMA50
+                    if planned_price > ema50 * (1.0 + STRUCTURED_1H_EMA50_TOLERANCE_PCT):
+                        if log_on_fail and hasattr(self, "account"):
+                            self.account.log(f"🛑 {symbol} 拒絕開空單：價格高於1h EMA50 ({ema50:.6g})，方向不符", "WARNING")
+                        return False
+
+        return True
+
     async def _place_structured_entry(
         self, symbol: str, signal: dict, live_price: float
     ) -> bool:
@@ -1918,6 +1973,9 @@ class TradingEngine:
         is_limit = signal.get("action") == "ENTER_LIMIT"
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
+        # 最後一道方向守門：避免在高週期趨勢不符時開錯方向
+        if not self._entry_direction_allowed(symbol, side, planned_price):
+            return False
         candle_low = float(signal.get("signal_candle_low") or planned_price)
         candle_high = float(signal.get("signal_candle_high") or planned_price)
 

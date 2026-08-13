@@ -183,6 +183,41 @@ def test_ma7_wait_detail_reports_first_turn_low_volume():
     assert "等待第2根" in text
 
 
+def test_entry_direction_guard_blocks_wrong_1h_st_and_ema50(monkeypatch):
+    import core.config as cfg
+    # Ensure predictable filter flags for this unit test
+    monkeypatch.setattr(cfg, "SYMBOL_1H_ST_FILTER_ENABLED", True)
+    monkeypatch.setattr(cfg, "BTC_REGIME_FILTER_ENABLED", False)
+    monkeypatch.setattr(cfg, "ENABLE_1H_EMA50_FILTER", True)
+
+    engine = object.__new__(TradingEngine)
+
+    class DummyAccount:
+        def __init__(self):
+            self.logs = []
+
+        def log(self, text, level="INFO"):
+            self.logs.append((text, level))
+
+    engine.account = DummyAccount()
+    # Simulate caches
+    engine.st_direction_1h_cache = {"AAA/USDT": -1}
+    engine.ema_50_1h_cache = {"AAA/USDT": 100.0}
+    engine.btc_1h_st_direction = 1
+
+    # Case 1: 1h ST is opposite (symbol is -1, want LONG=1)
+    allowed = engine._entry_direction_allowed("AAA/USDT", "LONG", planned_price=101.0)
+    assert allowed is False
+    assert any("1h SuperTrend" in msg for msg, _ in engine.account.logs)
+
+    engine.account.logs.clear()
+
+    # Case 2: EMA50 filter blocks SHORT when price is above EMA50
+    allowed2 = engine._entry_direction_allowed("AAA/USDT", "SHORT", planned_price=101.0)
+    assert allowed2 is False
+    assert any("1h EMA50" in msg or "EMA50" in msg for msg, _ in engine.account.logs)
+
+
 def test_eligibility_failure_returns_numeric_diagnostics(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_MAX + 1, adx=35.0)
