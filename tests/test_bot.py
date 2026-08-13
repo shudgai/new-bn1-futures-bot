@@ -2693,6 +2693,51 @@ def test_structured_short_near_recent_high_requires_reversal_confirmation(monkey
     assert "近期高點附近" in result["reason"]
 
 
+def test_structured_short_rejects_bullish_divergence_near_recent_low(monkeypatch):
+    strategy = SuperTrendKeltnerStrategy()
+    closes = np.linspace(101.0, 99.0, 70)
+    frame = pd.DataFrame({
+        "open": closes.copy() - 0.05,
+        "high": closes.copy() + 0.25,
+        "low": closes.copy() - 0.25,
+        "close": closes.copy(),
+        "close_price_spike_filtered": closes.copy(),
+        "volume": [1400.0] * 70,
+        "vol_ma_20": [1200.0] * 70,
+        "atr": [0.30] * 70,
+        "rsi": [45.0] * 70,
+        "adx": [35.0] * 70,
+        "kc_upper": [101.2] * 70,
+        "kc_lower": [98.8] * 70,
+        "kc_width": [2.4] * 70,
+        "ema_20": [100.0] * 70,
+        "ema_50": [100.0] * 70,
+        "st_direction": [-1] * 70,
+        "macd_hist": np.linspace(-1.5, 0.8, 70),
+        "macd_line": np.linspace(0.2, 1.4, 70),
+        "macd_signal": np.linspace(0.6, 0.9, 70),
+        "rsi_15m": [53.0] * 70,
+    })
+    frame.iloc[-1, frame.columns.get_loc("close")] = 99.15
+    frame.iloc[-1, frame.columns.get_loc("low")] = 99.00
+    frame.iloc[-1, frame.columns.get_loc("high")] = 99.40
+    frame.iloc[-1, frame.columns.get_loc("rsi")] = 42.0
+    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
+    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
+
+    result = strategy.evaluate_structured_entry(
+        frame,
+        ema_50_1h=100.5,
+        st_direction_1h=-1,
+        btc_st_direction_1h=-1,
+        symbol="SOL/USDT",
+        indicators_precomputed=True,
+    )
+
+    assert result["action"] == "HOLD"
+    assert "MACD 背離" in result["reason"]
+
+
 def test_limit_order_stays_on_maker_side_for_buy_and_short():
     account = PaperAccount()
     account.latest_prices = {"BTC/USDT": 100.0, "ETH/USDT": 100.0}
