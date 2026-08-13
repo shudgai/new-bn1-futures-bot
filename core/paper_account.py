@@ -427,6 +427,7 @@ class PaperAccount:
         signal_score: int = None,
         post_only: bool = True,
         entry_context: dict = None,
+        timeframe: str = "5m",
     ) -> bool:
         """非Post-Only對手價單立即成交；Post-Only保留至市價穿越掛單價。"""
         if not post_only:
@@ -460,6 +461,29 @@ class PaperAccount:
             return False
         if amount_usdt <= 0 or self.get_available_balance() < amount_usdt:
             return False
+
+        current_price = float(self.latest_prices.get(symbol, target_price) or target_price)
+        if current_price > 0:
+            from core.config import get_maker_limit_offset_pct, MAKER_LIMIT_ORDER_MIN_OFFSET_PCT
+            offset_pct = get_maker_limit_offset_pct(current_price, float(atr or 0.0), timeframe=timeframe)
+            if side == "LONG":
+                min_price = current_price * (1.0 - offset_pct)
+                max_price = current_price * (1.0 - MAKER_LIMIT_ORDER_MIN_OFFSET_PCT)
+                if target_price < min_price or target_price > max_price:
+                    self.log(
+                        f"🛑 {symbol} 多單掛單超出合理回踩區：目標價 {target_price:.8g} 不在 {min_price:.8g}～{max_price:.8g} 之間，拒絕掛單（週期={timeframe}, ATR={atr:.6g}, offset={offset_pct:.4%}）",
+                        "WARNING",
+                    )
+                    return False
+            elif side == "SHORT":
+                min_price = current_price * (1.0 + MAKER_LIMIT_ORDER_MIN_OFFSET_PCT)
+                max_price = current_price * (1.0 + offset_pct)
+                if target_price < min_price or target_price > max_price:
+                    self.log(
+                        f"🛑 {symbol} 空單掛單超出合理回踩區：目標價 {target_price:.8g} 不在 {min_price:.8g}～{max_price:.8g} 之間，拒絕掛單（週期={timeframe}, ATR={atr:.6g}, offset={offset_pct:.4%}）",
+                        "WARNING",
+                    )
+                    return False
 
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)

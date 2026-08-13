@@ -1501,6 +1501,7 @@ class BinanceTestnetAccount:
         signal_score: int = None,
         post_only: bool = True,
         entry_context: dict = None,
+        timeframe: str = "5m",
     ) -> bool:
         """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
         post_only=False 代表要求立即成交，改走 open_position() 市價單，不建立
@@ -1540,6 +1541,29 @@ class BinanceTestnetAccount:
                 "WARNING",
             )
             return False
+
+        current_price = float(self.tickers.get(symbol) or 0.0)
+        if current_price > 0:
+            from core.config import get_maker_limit_offset_pct, MAKER_LIMIT_ORDER_MIN_OFFSET_PCT
+            offset_pct = get_maker_limit_offset_pct(current_price, float(atr or 0.0), timeframe=timeframe)
+            if side == "LONG":
+                min_price = current_price * (1.0 - offset_pct)
+                max_price = current_price * (1.0 - MAKER_LIMIT_ORDER_MIN_OFFSET_PCT)
+                if target_price < min_price or target_price > max_price:
+                    self.log(
+                        f"🛑 {symbol} 多單掛單超出合理回踩區：目標價 {target_price:.8g} 不在 {min_price:.8g}～{max_price:.8g} 之間，拒絕掛單（週期={timeframe}, ATR={atr:.6g}, offset={offset_pct:.4%}）",
+                        "WARNING",
+                    )
+                    return False
+            elif side == "SHORT":
+                min_price = current_price * (1.0 + MAKER_LIMIT_ORDER_MIN_OFFSET_PCT)
+                max_price = current_price * (1.0 + offset_pct)
+                if target_price < min_price or target_price > max_price:
+                    self.log(
+                        f"🛑 {symbol} 空單掛單超出合理回踩區：目標價 {target_price:.8g} 不在 {min_price:.8g}～{max_price:.8g} 之間，拒絕掛單（週期={timeframe}, ATR={atr:.6g}, offset={offset_pct:.4%}）",
+                        "WARNING",
+                    )
+                    return False
         # 見 open_position() 同一道防線的說明：amount_usdt<=0 時 qty 會是 0，
         # 直接送進 exchange.amount_to_precision() 會炸出未捕捉的交易所例外，
         # 拖垮整個主迴圈，這裡提前擋掉。

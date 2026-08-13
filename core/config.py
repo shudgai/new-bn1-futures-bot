@@ -234,6 +234,28 @@ def get_bounce_capture_ratio(score: int) -> float:
 # 紙交易沒有真實委託簿，仍保留少量穿透才成交以模擬排隊，但避免 0.05%
 # 的舊門檻讓短效 Maker 單過度難成交。
 PAPER_MAKER_FILL_PENETRATION_PCT = float(os.getenv("PAPER_MAKER_FILL_PENETRATION_PCT", "0.0001"))
+# MAKER 限價單不能掛太靠近當前價（幾乎等於市價），也不能掛太深（幾乎等於極端回踩）。
+# 以 ATR 動態調整：ATR 越大、允許的回踩範圍越寬；ATR 小則更保守，避免市場波動小卻仍把限價掛太深。
+# 週期係數：5m 最保守，15m 中等，1h 可放寬，避免短週期雜訊導致進場過深。
+MAKER_LIMIT_ORDER_MIN_OFFSET_PCT = float(os.getenv("MAKER_LIMIT_ORDER_MIN_OFFSET_PCT", "0.0005"))
+MAKER_LIMIT_ORDER_MAX_OFFSET_PCT = float(os.getenv("MAKER_LIMIT_ORDER_MAX_OFFSET_PCT", "0.0080"))
+MAKER_LIMIT_ORDER_ATR_MULT = float(os.getenv("MAKER_LIMIT_ORDER_ATR_MULT", "2.5"))
+MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS = {
+    "5m": float(os.getenv("MAKER_LIMIT_ORDER_5M_FACTOR", "1.00")),
+    "15m": float(os.getenv("MAKER_LIMIT_ORDER_15M_FACTOR", "1.25")),
+    "1h": float(os.getenv("MAKER_LIMIT_ORDER_1H_FACTOR", "1.60")),
+}
+
+
+def get_maker_limit_offset_pct(price: float, atr: float, timeframe: str = "5m") -> float:
+    if price <= 0:
+        return MAKER_LIMIT_ORDER_MIN_OFFSET_PCT
+    factor = MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS.get(str(timeframe).lower(), MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS["5m"])
+    atr_pct = max(0.0, float(atr) / float(price))
+    offset_pct = atr_pct * MAKER_LIMIT_ORDER_ATR_MULT * factor
+    return min(max(offset_pct, MAKER_LIMIT_ORDER_MIN_OFFSET_PCT), MAKER_LIMIT_ORDER_MAX_OFFSET_PCT)
+
+
 BREAKOUT_HARD_STOP_ATR_MULT = float(os.getenv("BREAKOUT_HARD_STOP_ATR_MULT", "2.0"))  # 放寬至2 ATR避免突破後正常回踩被掃
 BREAKOUT_CANDLE_STOP_BUFFER_ATR = float(os.getenv("BREAKOUT_CANDLE_STOP_BUFFER_ATR", "0.1"))
 # 連續幾根5m已收盤K棒實體跌回EMA20以下才算KC失敗，防止單根回踩誤觸

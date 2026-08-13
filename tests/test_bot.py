@@ -2693,6 +2693,87 @@ def test_structured_short_near_recent_high_requires_reversal_confirmation(monkey
     assert "近期高點附近" in result["reason"]
 
 
+def test_limit_order_stays_on_maker_side_for_buy_and_short():
+    account = PaperAccount()
+    account.latest_prices = {"BTC/USDT": 100.0, "ETH/USDT": 100.0}
+    account.get_available_balance = lambda: 5000.0
+    account.save_state = lambda: None
+
+    buy_order = asyncio.run(account.place_limit_entry(
+        symbol="BTC/USDT",
+        side="LONG",
+        target_price=99.90,
+        amount_usdt=100.0,
+        sl=95.0,
+        tp=110.0,
+        reason="test_buy",
+        atr=1.0,
+        leverage=1,
+        signal_score=80,
+        post_only=True,
+        timeframe="5m",
+    ))
+    assert buy_order is True
+    assert 99.80 <= account.pending_limit_orders["BTC/USDT"]["target_price"] <= 99.95
+
+    short_order = asyncio.run(account.place_limit_entry(
+        symbol="ETH/USDT",
+        side="SHORT",
+        target_price=100.10,
+        amount_usdt=100.0,
+        sl=105.0,
+        tp=90.0,
+        reason="test_short",
+        atr=1.0,
+        leverage=1,
+        signal_score=80,
+        post_only=True,
+        timeframe="5m",
+    ))
+    assert short_order is True
+    assert 100.05 <= account.pending_limit_orders["ETH/USDT"]["target_price"] <= 100.20
+
+    assert asyncio.run(account.place_limit_entry(
+        symbol="BTC/USDT",
+        side="LONG",
+        target_price=99.20,
+        amount_usdt=100.0,
+        sl=95.0,
+        tp=110.0,
+        reason="too_deep",
+        atr=1.0,
+        leverage=1,
+        signal_score=80,
+        post_only=True,
+        timeframe="5m",
+    )) is False
+
+    assert asyncio.run(account.place_limit_entry(
+        symbol="ETH/USDT",
+        side="SHORT",
+        target_price=100.50,
+        amount_usdt=100.0,
+        sl=105.0,
+        tp=90.0,
+        reason="too_high",
+        atr=1.0,
+        leverage=1,
+        signal_score=80,
+        post_only=True,
+        timeframe="5m",
+    )) is False
+
+
+def test_maker_limit_offset_uses_timeframe_specific_factor():
+    from core.config import get_maker_limit_offset_pct
+
+    base = get_maker_limit_offset_pct(100.0, 0.2, timeframe="5m")
+    mid = get_maker_limit_offset_pct(100.0, 0.2, timeframe="15m")
+    long_h = get_maker_limit_offset_pct(100.0, 0.2, timeframe="1h")
+
+    assert base < mid < long_h
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("bounce_target_pct", "low_room_exploration", "should_place"),
