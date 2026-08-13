@@ -19,7 +19,7 @@ from core.config import (
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
     MA7_EXIT_MIN_HOLD_SEC, MA7_EXIT_MIN_ADVERSE_PCT, MA7_EXIT_MIN_ADVERSE_ATR_MULT, MA7_EXIT_TIMEFRAME,
-    ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP,
+    ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP, DISABLE_STOP_LOSS,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA7_EARLY_CONFIRM_SCANS,
     MA7_REVERSAL_MIN_ATR_MULT, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
@@ -1068,7 +1068,10 @@ class TradingEngine:
                             "DANGER"
                         )
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
-                        await self.account.close_position(symbol, curr_p, close_reason)
+                        if DISABLE_STOP_LOSS:
+                            self.account.log(f"⏸️ [自動停損已停用] 跳過自動平倉 {symbol} ({close_reason})", "INFO")
+                        else:
+                            await self.account.close_position(symbol, curr_p, close_reason)
                         self._soft_warning_since.pop(symbol, None)
                     else:
                         from core.config import ENABLE_SOFT_WARNING_TIGHTEN
@@ -1095,15 +1098,22 @@ class TradingEngine:
                                         (side == "LONG" and new_sl > current_sl)
                                         or (side == "SHORT" and new_sl < current_sl)
                                     )
-                                    if improved and await self.account.trail_stop_loss(
-                                        symbol, new_sl, mark_profit_locked=False
-                                    ):
-                                        position_meta["soft_warning_tightened"] = True
-                                        self.account.log(
-                                            f"⚠️ [軟性警訊收緊止損] {symbol} 持續{SOFT_WARNING_PERSIST_SEC:.0f}秒"
-                                            f"未解除✗警訊，止損從{current_sl:.6g}收緊到{new_sl:.6g}",
-                                            "WARNING",
-                                        )
+                                    if improved:
+                                        if DISABLE_STOP_LOSS:
+                                            self.account.log(
+                                                f"⏸️ [自動停損已停用] 跳過收緊止損 {symbol}",
+                                                "INFO",
+                                            )
+                                        else:
+                                            if await self.account.trail_stop_loss(
+                                                symbol, new_sl, mark_profit_locked=False
+                                            ):
+                                                position_meta["soft_warning_tightened"] = True
+                                                self.account.log(
+                                                    f"⚠️ [軟性警訊收緊止損] {symbol} 持續{SOFT_WARNING_PERSIST_SEC:.0f}秒"
+                                                    f"未解除✗警訊，止損從{current_sl:.6g}收緊到{new_sl:.6g}",
+                                                    "WARNING",
+                                                )
                         else:
                             # ma_ok恢復True，清空計時與旗標，允許下次重新觸發
                             self._soft_warning_since.pop(symbol, None)
@@ -1183,7 +1193,10 @@ class TradingEngine:
                             
                             # 強制將新止損對齊到交易所與本地
                             meta["sl"] = new_sl
-                            await self.account.trail_stop_loss(symbol, new_sl, mark_profit_locked=False)
+                            if DISABLE_STOP_LOSS:
+                                self.account.log(f"⏸️ [自動停損已停用] 跳過 DCA 重設止損 {symbol} -> {new_sl}", "INFO")
+                            else:
+                                await self.account.trail_stop_loss(symbol, new_sl, mark_profit_locked=False)
                             self.account.log(f"🔄 [DCA 均價對齊] {symbol} 加倉成交 (階 {dca_stage})，新均價 {position['entry_price']:.8g}，止損重設為 {new_sl:.8g}", "SUCCESS")
                     else:
                         meta["dca_last_qty"] = position["qty"]
@@ -1293,9 +1306,12 @@ class TradingEngine:
                                 f"🟡 [KC失敗關倉] {symbol} {side} {fail_reason}",
                                 "WARNING"
                             )
-                            await self.account.close_position(
-                                symbol, current_price, f"KC失敗({fail_reason})"
-                            )
+                            if DISABLE_STOP_LOSS:
+                                self.account.log(f"⏸️ [自動停損已停用] 跳過 KC 失敗自動平倉 {symbol} ({fail_reason})", "INFO")
+                            else:
+                                await self.account.close_position(
+                                    symbol, current_price, f"KC失敗({fail_reason})"
+                                )
                             continue
 
 
@@ -1333,9 +1349,12 @@ class TradingEngine:
                                 improves = (current_sl <= 0 or trail_sl < current_sl)
                         if improves:
                             locked = trail_sl >= entry_price if side == "LONG" else trail_sl <= entry_price
-                            await self.account.trail_stop_loss(
-                                symbol, trail_sl, mark_profit_locked=locked
-                            )
+                            if DISABLE_STOP_LOSS:
+                                self.account.log(f"⏸️ [自動停損已停用] 跳過移動止損 {symbol} -> {trail_sl}", "INFO")
+                            else:
+                                await self.account.trail_stop_loss(
+                                    symbol, trail_sl, mark_profit_locked=locked
+                                )
 
                     favorable_move = (
                         current_price - entry_price if side == "LONG"
@@ -1438,14 +1457,20 @@ class TradingEngine:
                                     f"📉 [EMA20趨勢止損] {symbol} 連續兩根 15m 收線跌破 EMA20 緩衝帶 (收盤={close_p2:.6g}/{close_p1:.6g}, 均線={ema20_val2:.6g}/{ema20_val1:.6g}, 緩衝={buffer2:.6g}/{buffer1:.6g})，執行平倉",
                                     "WARNING"
                                 )
-                                await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體跌破EMA20緩衝")
+                                if DISABLE_STOP_LOSS:
+                                    self.account.log(f"⏸️ [自動停損已停用] 跳過 15m EMA20 自動平倉 {symbol}", "INFO")
+                                else:
+                                    await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體跌破EMA20緩衝")
                         elif side == "SHORT":
                             if close_p1 > (ema20_val1 + buffer1) and close_p2 > (ema20_val2 + buffer2):
                                 self.account.log(
                                     f"📈 [EMA20趨勢止損] {symbol} 連續兩根 15m 收線突破 EMA20 緩衝帶 (收盤={close_p2:.6g}/{close_p1:.6g}, 均線={ema20_val2:.6g}/{ema20_val1:.6g}, 緩衝={buffer2:.6g}/{buffer1:.6g})，執行平倉",
                                     "WARNING"
                                 )
-                                await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體突破EMA20緩衝")
+                                if DISABLE_STOP_LOSS:
+                                    self.account.log(f"⏸️ [自動停損已停用] 跳過 15m EMA20 自動平倉 {symbol}", "INFO")
+                                else:
+                                    await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體突破EMA20緩衝")
                 
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
@@ -1500,11 +1525,17 @@ class TradingEngine:
                             if side == "LONG":
                                 new_sl = curr_p - trail_dist
                                 if new_sl > current_sl:
-                                    await self.account.trail_stop_loss(symbol, new_sl)
+                                    if DISABLE_STOP_LOSS:
+                                        self.account.log(f"⏸️ [自動停損已停用] 跳過移動止損 (loop) {symbol} -> {new_sl}", "INFO")
+                                    else:
+                                        await self.account.trail_stop_loss(symbol, new_sl)
                             elif side == "SHORT":
                                 new_sl = curr_p + trail_dist
                                 if new_sl < current_sl:
-                                    await self.account.trail_stop_loss(symbol, new_sl)
+                                    if DISABLE_STOP_LOSS:
+                                        self.account.log(f"⏸️ [自動停損已停用] 跳過移動止損 (loop) {symbol} -> {new_sl}", "INFO")
+                                    else:
+                                        await self.account.trail_stop_loss(symbol, new_sl)
                 await asyncio.sleep(60)  # 每 1 分鐘執行一次
             except asyncio.CancelledError:
                 break
@@ -2007,11 +2038,28 @@ class TradingEngine:
             )
             sl = max(sl, planned_price * (1.0 + MIN_SL_DISTANCE_PCT))
         initial_risk = abs(planned_price - sl)
+        # Ensure stop-loss is on the correct side and respects minimum distance.
+        from core.config import MIN_SL_DISTANCE_PCT, STOP_LOSS_MULTIPLIER
+        min_dist = max(planned_price * MIN_SL_DISTANCE_PCT, atr * STOP_LOSS_MULTIPLIER)
+        if side == "LONG":
+            if sl >= planned_price - 1e-12:
+                sl = planned_price - min_dist
+        else:
+            if sl <= planned_price + 1e-12:
+                sl = planned_price + min_dist
+        initial_risk = abs(planned_price - sl)
         if initial_risk <= 0:
             return False
         structured_net_rr = None
         if signal.get("profit_profile") == "BOUNCE":
             reward_pct = float(signal.get("bounce_target_pct") or 0.0)
+            # 若反彈配置但未計算出任何目標/空間，代表沒有獲利房間，拒絕開倉
+            if reward_pct <= 0:
+                self.account.log(
+                    f"🛑 {symbol} 反彈單未計算到獲利空間 (bounce_target_pct=0)，拒絕掛單",
+                    "WARNING",
+                )
+                return False
             if reward_pct > 0:
                 structured_net_rr, _, _ = compute_net_reward_risk(
                     planned_price, sl, reward_pct,

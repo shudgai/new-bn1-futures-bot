@@ -1787,6 +1787,10 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
+        if DISABLE_STOP_LOSS and not is_manual:
+            self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
+            return False
         if not is_manual and ONLY_CLOSE_ON_PROFIT:
             position = self.positions[symbol]
             side = position["side"]

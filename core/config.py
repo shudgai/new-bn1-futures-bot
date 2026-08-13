@@ -103,7 +103,8 @@ if IS_TESTING:
     BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = 65.0
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO = 0.0
 else:
-    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "false").lower() == "true"
+    # 使用者要求：僅允許手動停損，預設關閉自動停損與自動平倉相關功能
+    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "true").lower() == "true"
     ONLY_CLOSE_ON_PROFIT = os.getenv("ONLY_CLOSE_ON_PROFIT", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = float(os.getenv("ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT", "0.1"))
     ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "true").lower() == "true"
@@ -116,12 +117,14 @@ else:
 # 獲利後的移動保本／移動停利不受此開關影響。
 # 如果啟用了全局的 DISABLE_STOP_LOSS，此處會強制停用。
 ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
-    "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", "true"
+    "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", "false"
 ).lower() == "true" and not DISABLE_STOP_LOSS
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
 # 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
-MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "0"))
+# 將最大可接受虧損設為非常低（負值代表幾乎不會被硬性觸發），
+# 以避免程式自動按本地最大虧損門檻平倉。
+MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-1.0"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "false").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "false").lower() == "true"
 MA7_EXIT_TIMEFRAME = os.getenv("MA7_EXIT_TIMEFRAME", "1m")
@@ -284,7 +287,8 @@ ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
-ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "true").lower() == "true"
+# 關閉整體移動停利/移動止損機制，僅保留手動平倉行為
+ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true"
 # 觸發門檻改用每筆進場 ATR：2.0 ATR 保本、3.5 ATR 轉 runner 並鎖住
 # 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早補保本掃掉剛起跑的部位。
 TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.0"))
@@ -354,7 +358,8 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
 #   以 50x 槓桿換算，倉位在單一 ticker 週期內已虧損約 20%。
 # RAPID_DROP_COOLDOWN_SEC：閃崩觸發後的冷卻秒數，防止在劇烈震盪中
 #   連續多次平倉（通常此時部位已平，冷卻保護只是防禦重入後再次觸發）。
-ENABLE_RAPID_ADVERSE_DROP = os.getenv("ENABLE_RAPID_ADVERSE_DROP", "true").lower() == "true"
+# 關閉閃崩自動平倉偵測，避免非手動情況下自動市價平倉
+ENABLE_RAPID_ADVERSE_DROP = os.getenv("ENABLE_RAPID_ADVERSE_DROP", "false").lower() == "true"
 RAPID_ADVERSE_DROP_PCT    = float(os.getenv("RAPID_ADVERSE_DROP_PCT", "0.004"))
 RAPID_DROP_COOLDOWN_SEC   = float(os.getenv("RAPID_DROP_COOLDOWN_SEC", "30"))
 
