@@ -865,6 +865,16 @@ class PaperAccount:
             return False
         pos = self.positions[symbol]
         meta = self.position_meta.setdefault(symbol, {})
+        tp_price = float(pos.get("tp") or meta.get("tp") or 0.0)
+        if tp_price > 0:
+            try:
+                validate_sl_tp_pair(float(pos.get("entry_price") or meta.get("entry_price") or 0.0), pos["side"], new_sl_price, tp_price)
+            except ValueError:
+                self.log(
+                    f"🛑 {symbol} 移動止損更新失敗：SL/TP 方向或風報比不合法，忽略更新（SL={new_sl_price}，TP={tp_price}）",
+                    "WARNING",
+                )
+                return False
         pos["sl"] = new_sl_price
         meta["sl"] = new_sl_price
         if mark_profit_locked:

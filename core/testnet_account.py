@@ -2060,6 +2060,17 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        tp_price = float(meta.get("tp") or position.get("tp") or 0.0)
+        entry_price = float(position.get("entry_price") or meta.get("entry_price") or 0.0)
+        if tp_price > 0 and entry_price > 0:
+            try:
+                validate_sl_tp_pair(entry_price, position["side"], new_sl_price, tp_price)
+            except ValueError:
+                self.log(
+                    f"🛑 {symbol} 移動止損更新失敗：SL/TP 方向或風報比不合法，忽略更新（SL={new_sl_price}，TP={tp_price}）",
+                    "WARNING",
+                )
+                return False
         close_side = "sell" if position["side"] == "LONG" else "buy"
         qty = position["qty"]
         try:
@@ -2071,7 +2082,6 @@ class BinanceTestnetAccount:
                 symbol, close_side, "STOP_MARKET", qty, new_sl_price,
             )
             # 如果止利仍啟用，同步重建止利單
-            tp_price = meta.get("tp", 0.0)
             if tp_price > 0 and not DISABLE_TAKE_PROFIT:
                 await self._create_protection_order(
                     symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
