@@ -543,21 +543,21 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
 # 小幅獲利曾達0.30%後，若回落至0.20%便平倉；執行時仍以雙邊費用加
 # 預估滑點作最低安全線，避免鎖到帳面獲利、實際淨虧。
-EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.003"))
-EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.002"))
+EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.006"))
+EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.003"))
 # 結構反彈單的獲利窗口通常較短，較一般單提早保護；退出線仍必須高於
 # 雙邊手續費與預估滑價，避免帳面小利實際淨虧。
 BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0023")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0045")
 )
 BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0020")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0035")
 )
-TREND_EXTENSION_GUARD_TRIGGER_PCT = float(os.getenv("TREND_EXTENSION_GUARD_TRIGGER_PCT", "0.0045"))
-TREND_EXTENSION_GUARD_EXIT_PCT = float(os.getenv("TREND_EXTENSION_GUARD_EXIT_PCT", "0.0030"))
+TREND_EXTENSION_GUARD_TRIGGER_PCT = float(os.getenv("TREND_EXTENSION_GUARD_TRIGGER_PCT", "0.0065"))
+TREND_EXTENSION_GUARD_EXIT_PCT = float(os.getenv("TREND_EXTENSION_GUARD_EXIT_PCT", "0.0045"))
 TREND_EXTENSION_MIN_CAPTURE_RATIO = float(os.getenv("TREND_EXTENSION_MIN_CAPTURE_RATIO", "0.70"))
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0060"))
-TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0005"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0080"))
+TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0008"))
 # 有 initial_risk 的策略單改用 R 倍數啟動移動停利。到 1.5R 才開始保護，
 # 回吐空間保留 0.5R，因此啟動後至少鎖住約 1R；避免舊設定在 +1R 啟動、
 # 回吐 0.75R 後只留下約 +0.25R，形成平均贏單遠小於完整 -1R 止損。
