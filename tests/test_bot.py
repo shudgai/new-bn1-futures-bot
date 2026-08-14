@@ -57,6 +57,77 @@ def test_pullback_target_enforces_minimum_atr_distance_and_rejects_narrow_room()
     assert target == pytest.approx(100.0)
 
 
+def test_tail_end_rebound_guard_blocks_last_pulse_without_follow_through():
+    closes = [99.3, 99.6, 99.8, 100.2, 100.4, 100.5, 100.7, 100.3, 100.2, 100.1]
+    highs = [99.7, 99.9, 100.1, 100.5, 100.8, 101.0, 101.2, 100.8, 100.5, 100.4]
+    lows = [99.1, 99.4, 99.6, 99.9, 100.1, 100.2, 100.4, 100.0, 99.9, 99.8]
+    volumes = [1200, 1100, 1300, 1400, 1800, 2100, 2000, 900, 850, 800]
+    df = pd.DataFrame({
+        "close": closes * 6,
+        "high": highs * 6,
+        "low": lows * 6,
+        "volume": volumes * 6,
+        "rsi": [55.0] * 60,
+        "adx": [25.0] * 60,
+        "macd_hist": [0.2] * 60,
+        "macd_line": [0.3] * 60,
+        "macd_signal": [0.1] * 60,
+        "atr": [0.8] * 60,
+        "ema_20": [99.7] * 60,
+        "ema_50": [99.5] * 60,
+        "kc_upper": [101.0] * 60,
+        "kc_lower": [98.0] * 60,
+        "st_direction": [1] * 60,
+    })
+    df["vol_ma_20"] = df["volume"].rolling(20).mean()
+
+    guard = strategy_module.is_tail_end_rebound_guard(
+        df=df,
+        side="LONG",
+        price=100.35,
+        atr=0.8,
+        volume_ratio=0.72,
+    )
+
+    assert guard is True
+
+
+def test_high_score_but_weak_volume_or_low_rr_is_blocked():
+    df = pd.DataFrame({
+        "close": [100.0] * 60,
+        "high": [100.5] * 60,
+        "low": [99.5] * 60,
+        "volume": [100.0] * 60,
+        "vol_ma_20": [200.0] * 60,
+        "rsi": [74.0] * 60,
+        "adx": [30.0] * 60,
+        "macd_hist": [0.4] * 60,
+        "macd_line": [0.5] * 60,
+        "macd_signal": [0.2] * 60,
+        "atr": [0.8] * 60,
+        "ema_20": [100.0] * 60,
+        "ema_50": [99.9] * 60,
+        "st_direction": [1] * 60,
+        "kc_upper": [100.8] * 60,
+        "kc_lower": [99.2] * 60,
+    })
+
+    price = 100.1
+    atr = 0.8
+    volume_ratio = 0.5
+    result = strategy_module.evaluate_entry_quality_gate(
+        side="LONG",
+        price=price,
+        atr=atr,
+        volume_ratio=volume_ratio,
+        score=92,
+        df=df,
+    )
+
+    assert result["blocked"] is True
+    assert "量能" in result["reason"] or "盈虧比" in result["reason"]
+
+
 def test_recent_history_has_more_weight_than_older_trades():
     engine = object.__new__(TradingEngine)
     newest_win = [1.0, -1.0, -1.0, -1.0, -1.0]

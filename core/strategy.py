@@ -97,6 +97,106 @@ def detect_macd_divergence(df: pd.DataFrame, side: str, lookback: int = 30) -> b
             return True
     return False
 
+
+def is_tail_end_rebound_guard(
+    df: pd.DataFrame,
+    side: str,
+    price: float,
+    atr: float,
+    volume_ratio: float,
+    recent_bars: int = 8,
+    near_extreme_pct: float = 0.015,
+    weak_volume_ratio: float = 0.90,
+) -> bool:
+    """拒絕反彈尾段的最後一口：價格已接近最近極值，但量能弱且沒有延續。
+
+    這正是你前面那幾筆最典型的敗因：價格只是回到前高/前低附近，並沒有
+    形成確實的突破或持續動能，最後一筆反彈很容易在沒有延續時直接回吐，
+    把前面已獲利的部位整個吞掉。
+    """
+    if df is None or len(df) < recent_bars:
+        return False
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        return False
+    atr = float(atr or 0.0)
+    if atr <= 0:
+        return False
+
+    recent = df.iloc[-recent_bars:]
+    if side == "LONG":
+        recent_high = float(recent["high"].max())
+        prev_high = float(recent.iloc[:-1]["high"].max()) if len(recent) > 1 else recent_high
+        last_close = float(recent["close"].iloc[-1])
+        close_recent = float(recent["close"].iloc[-3]) if len(recent) >= 3 else last_close
+        near_extreme = price >= recent_high * (1.0 - near_extreme_pct)
+        no_follow_through = (
+            float(recent["high"].iloc[-1]) <= prev_high * 1.002
+            and last_close <= close_recent + 0.25 * atr
+        )
+        weak_flow = volume_ratio < weak_volume_ratio
+        return near_extreme and no_follow_through and weak_flow
+
+    recent_low = float(recent["low"].min())
+    prev_low = float(recent.iloc[:-1]["low"].min()) if len(recent) > 1 else recent_low
+    last_close = float(recent["close"].iloc[-1])
+    close_recent = float(recent["close"].iloc[-3]) if len(recent) >= 3 else last_close
+    near_extreme = price <= recent_low * (1.0 + near_extreme_pct)
+    no_follow_through = (
+        float(recent["low"].iloc[-1]) >= prev_low * 0.998
+        and last_close >= close_recent - 0.25 * atr
+    )
+    weak_flow = volume_ratio < weak_volume_ratio
+    return near_extreme and no_follow_through and weak_flow
+
+
+def evaluate_entry_quality_gate(
+    side: str,
+    price: float,
+    atr: float,
+    volume_ratio: float,
+    score: int,
+    df: pd.DataFrame | None = None,
+    min_rr: float = MIN_NET_REWARD_RISK,
+    min_volume_ratio: float = max(KELTNER_MIN_VOLUME_RATIO, 0.8),
+):
+    """全域進場品質檢查：任何分數高低，只要量能弱或淨盈虧比不足，都拒絕開倉。
+
+    這是對應你提出的核心要求：單筆虧損過大不能靠高分數掩蓋，低量能 /
+    低盈虧比的交易不開，因為這種交易在收益結構上本來就有負期望。
+    """
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        return {"blocked": False, "reason": "side invalid"}
+
+    volume_ratio = float(volume_ratio or 0.0)
+    if volume_ratio < float(min_volume_ratio):
+        return {
+            "blocked": True,
+            "reason": f"量能不足：{volume_ratio:.2f}x < {float(min_volume_ratio):.2f}x，拒絕開倉（不論分數 {score}）",
+            "kind": "volume",
+        }
+
+    price = float(price or 0.0)
+    atr = float(atr or 0.0)
+    if price <= 0 or atr <= 0:
+        return {"blocked": False, "reason": "price/atr invalid", "kind": "skip"}
+
+    sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
+    tp_distance = max(atr * TAKE_PROFIT_MULTIPLIER, sl_distance * min_rr)
+    sl_price = price - sl_distance if side == "LONG" else price + sl_distance
+    reward_pct = tp_distance / price
+    net_rr, _, _ = compute_net_reward_risk(price, sl_price, reward_pct)
+    if net_rr < float(min_rr):
+        return {
+            "blocked": True,
+            "reason": f"盈虧比不足：淨風報比 {net_rr:.2f}:1 < {float(min_rr):.2f}:1，拒絕開倉（不論分數 {score}）",
+            "kind": "rr",
+        }
+
+    return {"blocked": False, "reason": "quality ok", "kind": "pass"}
+
+
 def compute_pullback_target(
     kc_edge: float, ema_20: float, atr: float, side: str, score: int
 ) -> tuple[float, float, bool]:
@@ -692,6 +792,26 @@ class SuperTrendKeltnerStrategy:
         direction = int(curr["st_direction"])
         side = "LONG" if direction == 1 else "SHORT"
         price = float(curr["close"])
+        volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
+        quality_gate = evaluate_entry_quality_gate(
+            side=side,
+            price=price,
+            atr=float(curr["atr"]),
+            volume_ratio=volume_ratio,
+            score=0,
+            df=df,
+        )
+        if quality_gate["blocked"]:
+            return {
+                "action": "HOLD",
+                "side": side,
+                "score": 0,
+                "reason": quality_gate["reason"],
+                "btc_regime_mode": "ALIGNED",
+                "btc_allocation_factor": 1.0,
+                "volume_ratio": volume_ratio,
+                "price": price,
+            }
         atr = float(curr["atr"]) if not pd.isna(curr["atr"]) else price * 0.015
         volume = float(curr["volume"])
         volume_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
@@ -1319,6 +1439,32 @@ class SuperTrendKeltnerStrategy:
         prev = df.iloc[-2] if len(df) >= 2 else None
         overrides = dict(parameter_overrides or {})
         volume_min_ratio = float(overrides.get("volume_min_ratio", KELTNER_MIN_VOLUME_RATIO))
+        volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
+        st_dir = int(curr['st_direction'])
+        quality_gate = evaluate_entry_quality_gate(
+            side="LONG" if st_dir == 1 else "SHORT",
+            price=float(curr['close']),
+            atr=float(curr['atr']),
+            volume_ratio=volume_ratio,
+            score=0,
+            df=df,
+            min_volume_ratio=max(volume_min_ratio, 0.8),
+        )
+        if quality_gate["blocked"]:
+            return {
+                "action": "HOLD",
+                "reason": quality_gate["reason"],
+                "eligible": False,
+                "score_stage": "ELIGIBILITY",
+                "diagnostics": {
+                    "price": float(curr['close']),
+                    "atr": float(curr['atr']),
+                    "atr_pct": float(curr['atr'] / curr['close']) if float(curr['close']) > 0 else 0.0,
+                    "rsi": float(curr['rsi']),
+                    "adx": float(curr['adx']) if not pd.isna(curr['adx']) else 0.0,
+                    "volume_ratio": volume_ratio,
+                },
+            }
         atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
         rsi_long_max = float(overrides.get("rsi_long_max", RSI_LONG_MAX))
         rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
