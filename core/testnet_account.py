@@ -3,6 +3,7 @@ import json
 import os
 import time
 import ccxt.async_support as ccxt
+import re
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -238,6 +239,14 @@ class BinanceTestnetAccount:
             pass
 
     def log(self, message: str, level: str = "INFO") -> None:
+        # 視覺層過濾：將 'Mandatory_Fail: KEY(...)' 顯示成括號內的中文說明，或移除前綴並替換下劃線
+        if isinstance(message, str) and "Mandatory_Fail:" in message:
+            m = re.search(r"Mandatory_Fail:\s*[A-Za-z0-9_]+\(([^)]*)\)", message)
+            if m:
+                message = message.replace(m.group(0), m.group(1))
+            else:
+                message = re.sub(r"Mandatory_Fail:\s*", "", message).replace("_", " ")
+
         self.logs.append({
             "time": get_taipei_time_short(),
             "timestamp": time.time(),
