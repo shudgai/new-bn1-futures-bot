@@ -30,12 +30,13 @@ from core.config import (
     BREAKOUT_HARD_STOP_ATR_MULT, BREAKOUT_CANDLE_STOP_BUFFER_ATR,
     BREAKOUT_TRAILING_ATR_MULT, BREAKOUT_RR1_TARGET, BREAKOUT_RR2_TARGET,
     BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
-    BREAKOUT_KC_FAIL_CONFIRM_BARS,
+    BREAKOUT_KC_FAIL_CONFIRM_BARS, STOP_LOSS_MULTIPLIER,
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
 )
 from core.strategy import (
-    SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
-    compute_net_reward_risk, detect_ma7_reversal, has_volume_divergence,
+    SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
+    compute_pullback_target, compute_net_reward_risk, detect_ma7_reversal,
+    has_volume_divergence,
 )
 
 
@@ -1878,10 +1879,7 @@ class TradingEngine:
 
         atr = max(float(candidate.get("atr") or 0.0), live_price * 1e-6)
         sl_distance, tp_distance = compute_sl_tp_distance(live_price, atr)
-        if candidate["side"] == "LONG":
-            sl, tp = live_price - sl_distance, live_price + tp_distance
-        else:
-            sl, tp = live_price + sl_distance, live_price - tp_distance
+        sl, tp = build_sl_tp_for_side(live_price, candidate["side"], sl_distance, tp_distance)
         original_amount = candidate["amount_usdt"]
         candidate["amount_usdt"], projected_risk = cap_margin_to_trade_risk(
             original_amount, candidate["leverage"], live_price, sl,
@@ -2039,7 +2037,6 @@ class TradingEngine:
             sl = max(sl, planned_price * (1.0 + MIN_SL_DISTANCE_PCT))
         initial_risk = abs(planned_price - sl)
         # Ensure stop-loss is on the correct side and respects minimum distance.
-        from core.config import MIN_SL_DISTANCE_PCT, STOP_LOSS_MULTIPLIER
         min_dist = max(planned_price * MIN_SL_DISTANCE_PCT, atr * STOP_LOSS_MULTIPLIER)
         if side == "LONG":
             if sl >= planned_price - 1e-12:
@@ -2252,10 +2249,7 @@ class TradingEngine:
                 tp_dist_final = max(tp_distance, tp_dist_needed, sl_dist)
                 tp = target_price - tp_dist_final
         else:
-            if side == "LONG":
-                sl, tp = target_price - sl_distance, target_price + tp_distance
-            else:
-                sl, tp = target_price + sl_distance, target_price - tp_distance
+            sl, tp = build_sl_tp_for_side(target_price, side, sl_distance, tp_distance)
 
         leverage = self.symbol_rotation.get_dynamic_leverage(
             symbol, score, adx=ma7_sig.get("adx")
@@ -2424,10 +2418,7 @@ class TradingEngine:
                 continue
 
             sl_distance, tp_distance = compute_sl_tp_distance(fresh_target, fresh_atr)
-            if candidate["side"] == "LONG":
-                sl, tp = fresh_target - sl_distance, fresh_target + tp_distance
-            else:
-                sl, tp = fresh_target + sl_distance, fresh_target - tp_distance
+            sl, tp = build_sl_tp_for_side(fresh_target, candidate["side"], sl_distance, tp_distance)
             original_amount = candidate["amount_usdt"]
             candidate["amount_usdt"], projected_risk = cap_margin_to_trade_risk(
                 original_amount, candidate["leverage"], fresh_target, sl,

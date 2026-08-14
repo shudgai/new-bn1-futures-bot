@@ -64,7 +64,7 @@ from core.config import (
     RAPID_ADVERSE_DROP_PCT,
     RAPID_DROP_COOLDOWN_SEC,
 )
-from core.strategy import compute_sl_tp_distance
+from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
 from core.notifier import notify_email
 
 
@@ -1314,6 +1314,11 @@ class BinanceTestnetAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
+        try:
+            validate_sl_tp_pair(price, side, sl, tp)
+        except ValueError as exc:
+            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
+            return False
         await self._ensure_markets()
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)
@@ -1397,6 +1402,11 @@ class BinanceTestnetAccount:
                 key: value for key, value in dict(entry_context or {}).items()
                 if key in ENTRY_CONTEXT_KEYS
             }
+            try:
+                validate_sl_tp_pair(execution_price, side, sl, tp)
+            except ValueError as exc:
+                self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
+                return False
             sl_distance = abs(price_ref - sl)
             tp_distance = abs(tp - price_ref)
             adjusted_sl = (
@@ -1597,6 +1607,11 @@ class BinanceTestnetAccount:
         # 拖垮整個主迴圈，這裡提前擋掉。
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 掛單金額為 0，拒絕掛單", "WARNING")
+            return False
+        try:
+            validate_sl_tp_pair(target_price, side, sl, tp)
+        except ValueError as exc:
+            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
             return False
         await self._ensure_markets()
         # 現價 Post-Only 必須留在 maker 一側：多單最多掛最佳買價，空單

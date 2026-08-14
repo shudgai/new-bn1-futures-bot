@@ -54,7 +54,7 @@ from core.config import (
     MIN_SL_DISTANCE_PCT,
     STOP_LOSS_MULTIPLIER,
 )
-from core.strategy import compute_net_reward_risk, compute_sl_tp_distance
+from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -75,6 +75,7 @@ ENTRY_CONTEXT_KEYS = (
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
+    "eligibility_note",
 )
 
 
@@ -341,6 +342,11 @@ class PaperAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
+        try:
+            validate_sl_tp_pair(price, side, sl, tp)
+        except ValueError as exc:
+            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
+            return False
 
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score) if signal_score is not None else get_leverage(symbol)
@@ -492,9 +498,15 @@ class PaperAccount:
             return False
         if amount_usdt <= 0 or self.get_available_balance() < amount_usdt:
             return False
+        try:
+            validate_sl_tp_pair(target_price, side, sl, tp)
+        except ValueError as exc:
+            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
+            return False
 
-        current_price = float(self.latest_prices.get(symbol, target_price) or target_price)
-        if current_price > 0:
+        current_price = self.latest_prices.get(symbol)
+        # If we don't have a latest market price for this symbol, skip the maker-range sanity check
+        if current_price is not None and float(current_price) > 0:
             from core.config import get_maker_limit_offset_pct, MAKER_LIMIT_ORDER_MIN_OFFSET_PCT
             offset_pct = get_maker_limit_offset_pct(current_price, float(atr or 0.0), timeframe=timeframe)
             if side == "LONG":

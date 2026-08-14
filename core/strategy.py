@@ -39,7 +39,14 @@ from core.config import (
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
     TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
     get_bounce_capture_ratio,
+    HIGH_SCORE_ATR_LIMIT_PCT, HIGH_SCORE_THRESHOLD,
+    KELTNER_MIN_WIDTH_ATR_MULT_LONG, SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG,
+    SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED,
 )
+import core.config as _core_config
+
+# Ensure runtime config edits are respected when this module is reloaded during tests
+STRUCTURED_SUPPORT_NEAR_ATR = getattr(_core_config, "STRUCTURED_SUPPORT_NEAR_ATR", STRUCTURED_SUPPORT_NEAR_ATR)
 from core.indicators import bars_since_supertrend_flip
 from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
@@ -144,6 +151,60 @@ def classify_btc_regime(
     else:
         context["mode"] = "ALIGNED"
     return context
+
+
+def build_sl_tp_for_side(
+    price: float,
+    side: str,
+    sl_distance: float,
+    tp_distance: float = None,
+) -> tuple[float, float]:
+    """依方向計算真正的 SL/TP 價格，並強制保證：
+    - LONG: SL < price < TP
+    - SHORT: TP < price < SL
+    - TP 距離不小於 SL 距離，避免停損/停利誤配。
+    """
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        raise ValueError(f"Unsupported side: {side}")
+
+    sl_distance = float(abs(sl_distance or 0.0))
+    tp_distance = float(abs(tp_distance if tp_distance is not None else sl_distance))
+    if tp_distance < sl_distance:
+        tp_distance = sl_distance
+
+    if side == "LONG":
+        sl, tp = price - sl_distance, price + tp_distance
+    else:
+        sl, tp = price + sl_distance, price - tp_distance
+    validate_sl_tp_pair(price, side, sl, tp)
+    return sl, tp
+
+
+def validate_sl_tp_pair(price: float, side: str, sl: float, tp: float) -> None:
+    """進場前硬斷言：要求所有 SL/TP 必須與方向一致，且 TP 距離不小於 SL 距離。"""
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        raise ValueError(f"Unsupported side: {side}")
+    price = float(price)
+    sl = float(sl)
+    tp = float(tp)
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError(f"Invalid price for SL/TP validation: {price!r}")
+    if side == "LONG":
+        if not (sl < price and tp > price):
+            raise ValueError(f"LONG SL/TP invalid: price={price}, sl={sl}, tp={tp}")
+        if abs(tp - price) < abs(price - sl):
+            raise ValueError(
+                f"LONG TP must be at least as far as SL: price={price}, sl={sl}, tp={tp}"
+            )
+    else:
+        if not (tp < price and sl > price):
+            raise ValueError(f"SHORT SL/TP invalid: price={price}, sl={sl}, tp={tp}")
+        if abs(price - tp) < abs(sl - price):
+            raise ValueError(
+                f"SHORT TP must be at least as far as SL: price={price}, sl={sl}, tp={tp}"
+            )
 
 
 def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
@@ -652,19 +713,32 @@ class SuperTrendKeltnerStrategy:
         }
 
         if side == "LONG":
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            bearish_divergence = detect_macd_divergence(df, "SHORT")
-            if recent_high_distance_pct <= 0.006 and bearish_divergence:
-                return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"Mandatory_Fail: Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)",
-                    **common,
-                }
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            bearish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bearish_divergence = detect_macd_divergence(df, "SHORT")
+            if recent_high_distance_pct <= 0.015 and bearish_divergence:
+                # 記錄為診斷註記，不做硬性擋單，讓 scoring 決定最終行為
+                curr_reason = f"Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)"
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
         elif side == "SHORT":
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            recent_peak_near = recent_high_distance_pct <= 0.006
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            recent_peak_near = recent_high_distance_pct <= 0.015
             prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
             close_broke_prev = float(curr.get("close", price)) < prev_close
             reversal_confirmed = bool(
@@ -676,20 +750,25 @@ class SuperTrendKeltnerStrategy:
                 )
             )
             if recent_peak_near and not reversal_confirmed:
-                return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"Mandatory_Fail: Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)",
-                    **common,
-                }
-            recent_low = float(df.iloc[-25:-1]["low"].min()) if len(df) >= 25 else float(df["low"].min())
+                curr = curr.copy()
+                curr['eligibility_note'] = (
+                    f"Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
+                )
+            if "low" in df.columns and len(df) >= 25:
+                recent_low = float(df.iloc[-25:-1]["low"].min())
+            elif "low" in df.columns:
+                recent_low = float(df["low"].min())
+            else:
+                recent_low = price
             recent_low_distance_pct = abs(price - recent_low) / max(abs(recent_low), 1e-12)
-            bullish_divergence = detect_macd_divergence(df, "LONG")
-            if recent_low_distance_pct <= 0.006 and bullish_divergence:
-                return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"Mandatory_Fail: Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)",
-                    **common,
-                }
+            bullish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bullish_divergence = detect_macd_divergence(df, "LONG")
+            if recent_low_distance_pct <= 0.015 and bullish_divergence:
+                curr = curr.copy()
+                curr['eligibility_note'] = (
+                    f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
+                )
 
         # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
         if ENABLE_1H_EMA50_FILTER and not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
@@ -864,6 +943,39 @@ class SuperTrendKeltnerStrategy:
             if side == "LONG"
             else SUPPORT_PULLBACK_RSI_SHORT_MIN <= rsi <= SUPPORT_PULLBACK_RSI_SHORT_MAX and rsi < previous_rsi
         )
+        
+        # 【改進方案】強化多頭過濾：LONG 交易勝率 (53.42%) 與止損率 (24.66%) 均顯著遜於 SHORT
+        if side == "LONG":
+            # 提高多頭的量能要求（防止虛假突破）
+            min_volume_ratio_long = max(SUPPORT_PULLBACK_MIN_VOLUME_RATIO, SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG)
+            volume_healthy_long = volume_ma > 0 and volume_ratio >= min_volume_ratio_long
+            if not volume_healthy_long:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"多頭交易量能不足：{volume_ratio:.2f}x < {min_volume_ratio_long:.2f}x，避免虛假突破",
+                    **common,
+                }
+            
+            # 提高多頭的 RSI 進場門檻（防止追高）
+            rsi_long_min_enhanced = max(SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED)
+            if rsi < rsi_long_min_enhanced:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"多頭交易 RSI 門檻提高：{rsi:.1f} < {rsi_long_min_enhanced:.1f}，等待更強勢信號",
+                    **common,
+                }
+            
+            # 檢查 Keltner Channel 寬度（避免在通道極窄時進場）
+            kc_width = float(curr["kc_upper"]) - float(curr["kc_lower"])
+            kc_width_atr_mult = kc_width / max(atr, 1e-12)
+            min_kc_width_long = KELTNER_MIN_WIDTH_ATR_MULT_LONG * atr
+            if kc_width < min_kc_width_long:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"多頭 Keltner 通道過窄保護：{kc_width_atr_mult:.2f}x ATR < {KELTNER_MIN_WIDTH_ATR_MULT_LONG:.2f}x，通道擴張才進場",
+                    **common,
+                }
+        
         adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 0.0
         atr_pct = atr / price if price > 0 else 0.0
         quality_ok = ADX_QUALITY_MIN <= adx and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
@@ -933,9 +1045,27 @@ class SuperTrendKeltnerStrategy:
             readiness_score = min(readiness_score, 99)
 
         if prerequisites_ready:
+            # 【改進方案】高分值陷阱保護：95+ 分信號在極端波動時表現極差
+            if readiness_score >= HIGH_SCORE_THRESHOLD:
+                atr_pct = atr / price if price > 0 else 0.0
+                if atr_pct > HIGH_SCORE_ATR_LIMIT_PCT:
+                    return {
+                        "action": "HOLD", "side": side, "score": 0,
+                        "readiness_score": readiness_score,
+                        "readiness_components": readiness_components,
+                        "reason": (
+                            f"高分值信號波動過大保護：準備度 {readiness_score}/100 但 ATR% "
+                            f"{atr_pct:.4f} > 限制 {HIGH_SCORE_ATR_LIMIT_PCT:.4f}，"
+                            f"避免在極端行情進場"
+                        ),
+                        **common
+                    }
+            
             if BOTTOM_FILTER_ENABLED:
                 rsi_15m = float(curr["rsi_15m"]) if "rsi_15m" in curr and not pd.isna(curr["rsi_15m"]) else rsi
-                macd_div = detect_macd_divergence(df, side)
+                macd_div = False
+                if "macd_hist" in df.columns and "close" in df.columns:
+                    macd_div = detect_macd_divergence(df, side)
                 is_bottom_ok = False
                 if side == "LONG":
                     is_bottom_ok = (rsi_15m <= BOTTOM_OVERSOLD_RSI_15M_LIMIT) or macd_div
@@ -1078,8 +1208,14 @@ class SuperTrendKeltnerStrategy:
         )
         if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
             if side == "SHORT":
-                recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+                if "high" in df.columns and len(df) >= 25:
+                    recent_high = float(df.iloc[-25:-1]["high"].max())
+                    recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+                elif "high" in df.columns:
+                    recent_high = float(df["high"].max())
+                    recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+                else:
+                    recent_high_distance_pct = 1.0
                 prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
                 close_broke_prev = float(curr.get("close", price)) < prev_close
                 reversal_confirmed = bool(
@@ -1090,14 +1226,12 @@ class SuperTrendKeltnerStrategy:
                         or float(curr.get("macd_hist", 0.0)) < 0.0
                     )
                 )
-                if recent_high_distance_pct <= 0.006 and not reversal_confirmed:
-                    return {
-                        "action": "HOLD",
-                        "side": side,
-                        "score": 0,
-                        "reason": f"MomentumCross_{side}｜近期高點附近未確認反轉（距前高{recent_high_distance_pct:.2%}，需先跌破前一根收盤與確認反轉）",
-                        **common,
-                    }
+                if recent_high_distance_pct <= 0.015 and not reversal_confirmed:
+                    # 允許 MomentumCross 更寬鬆觸發：記錄診斷但不硬性擋單
+                    curr = curr.copy()
+                    curr['eligibility_note'] = (
+                        f"MomentumCross_{side}｜近期高點附近未確認反轉（距前高{recent_high_distance_pct:.2%}，需先跌破前一根收盤與確認反轉）"
+                    )
             triggers = []
             if macd_hist_cross or macd_line_cross:
                 triggers.append("MACD交叉")
@@ -1182,6 +1316,7 @@ class SuperTrendKeltnerStrategy:
         if not indicators_precomputed:
             df = self.compute_indicators(df)
         curr = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) >= 2 else None
         overrides = dict(parameter_overrides or {})
         volume_min_ratio = float(overrides.get("volume_min_ratio", KELTNER_MIN_VOLUME_RATIO))
         atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
@@ -1269,17 +1404,34 @@ class SuperTrendKeltnerStrategy:
         # 近期高/低點附近不允許直接反手開倉：若價格仍站在最近極值附近，
         # 但 MACD 仍顯示相反方向背離，直接拒絕開單，避免大幅反向追單。
         if st_dir == 1:
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            bearish_divergence = detect_macd_divergence(df, "SHORT")
-            if recent_high_distance_pct <= 0.006 and bearish_divergence:
-                return eligibility_hold(
-                    f"Mandatory_Fail: Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)"
-                )
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            bearish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bearish_divergence = detect_macd_divergence(df, "SHORT")
+            if recent_high_distance_pct <= 0.015 and bearish_divergence:
+                # 不再做硬性擋單，改為在分數/診斷中標記為品質下降，讓 scoring 決定是否開倉
+                # 將理由加入診斷以便日誌觀察
+                curr_reason = f"Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)"
+                # attach to diagnostics via an ad-hoc key
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
         elif st_dir == -1:
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            recent_peak_near = recent_high_distance_pct <= 0.006
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            recent_peak_near = recent_high_distance_pct <= 0.015
             prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
             close_broke_prev = float(curr.get("close", price)) < prev_close
             reversal_confirmed = bool(
@@ -1291,16 +1443,23 @@ class SuperTrendKeltnerStrategy:
                 )
             )
             if recent_peak_near and not reversal_confirmed:
-                return eligibility_hold(
-                    f"Mandatory_Fail: Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
-                )
-            recent_low = float(df.iloc[-25:-1]["low"].min()) if len(df) >= 25 else float(df["low"].min())
+                curr_reason = f"Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
+            if "low" in df.columns and len(df) >= 25:
+                recent_low = float(df.iloc[-25:-1]["low"].min())
+            elif "low" in df.columns:
+                recent_low = float(df["low"].min())
+            else:
+                recent_low = price
             recent_low_distance_pct = abs(price - recent_low) / max(abs(recent_low), 1e-12)
-            bullish_divergence = detect_macd_divergence(df, "LONG")
-            if recent_low_distance_pct <= 0.006 and bullish_divergence:
-                return eligibility_hold(
-                    f"Mandatory_Fail: Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
-                )
+            bullish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bullish_divergence = detect_macd_divergence(df, "LONG")
+            if recent_low_distance_pct <= 0.015 and bullish_divergence:
+                curr_reason = f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
 
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），

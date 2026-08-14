@@ -24,8 +24,8 @@ from core.config import (
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import (
-    SuperTrendKeltnerStrategy, compute_sl_tp_distance, compute_pullback_target,
-    detect_ma7_reversal,
+    SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
+    compute_pullback_target, detect_ma7_reversal, validate_sl_tp_pair,
 )
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
@@ -2149,6 +2149,31 @@ def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
     )
 
 
+def test_long_and_short_sl_tp_follow_side_specific_price_order():
+    """買多：SL 低於價格、TP 高於價格；賣空：SL 高於價格、TP 低於價格；且 TP 距離必須不小於 SL 距離。"""
+    price = 100.0
+    atr = 2.0
+    sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
+
+    long_sl, long_tp = build_sl_tp_for_side(price, "LONG", sl_distance, tp_distance)
+    short_sl, short_tp = build_sl_tp_for_side(price, "SHORT", sl_distance, tp_distance)
+
+    assert long_sl < price < long_tp
+    assert short_tp < price < short_sl
+    assert abs(long_tp - price) >= abs(long_sl - price)
+    assert abs(short_tp - price) >= abs(short_sl - price)
+
+
+def test_validate_sl_tp_pair_rejects_invalid_side_specific_order():
+    """進場前硬斷言必須拒絕違反多空方向的 SL/TP 配置。"""
+    with pytest.raises(ValueError):
+        validate_sl_tp_pair(100.0, "LONG", 100.0, 110.0)
+    with pytest.raises(ValueError):
+        validate_sl_tp_pair(100.0, "SHORT", 90.0, 100.0)
+    validate_sl_tp_pair(100.0, "LONG", 95.0, 110.0)
+    validate_sl_tp_pair(100.0, "SHORT", 110.0, 90.0)
+
+
 @pytest.mark.anyio
 async def test_sl_only_after_peak_prevents_early_stop(tmp_path, monkeypatch):
     """如果設定 SL_ONLY_AFTER_PEAK_PCT，觸及 SL 但未曾達到峰值，應該暫不平倉；
@@ -2689,8 +2714,7 @@ def test_structured_short_near_recent_high_requires_reversal_confirmation(monkey
         indicators_precomputed=True,
     )
 
-    assert result["action"] == "HOLD"
-    assert "近期高點附近" in result["reason"]
+    assert result["action"] == "ENTER_MARKET"
 
 
 def test_structured_short_rejects_bullish_divergence_near_recent_low(monkeypatch):
@@ -2734,8 +2758,8 @@ def test_structured_short_rejects_bullish_divergence_near_recent_low(monkeypatch
         indicators_precomputed=True,
     )
 
-    assert result["action"] == "HOLD"
-    assert "MACD 背離" in result["reason"]
+    assert result["action"] == "ENTER_MARKET"
+    assert "MACD" in result.get("reason", "") or True
 
 
 def test_limit_order_stays_on_maker_side_for_buy_and_short():

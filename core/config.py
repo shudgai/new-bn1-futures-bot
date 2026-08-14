@@ -165,8 +165,8 @@ MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05
 MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
 # --- 無 MA7 的結構化進出場 ---
 STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower() == "true"
-# Momentum Cross 提供較高的開倉頻率；預設關閉以降低低品質訊號。
-ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "false").lower() == "true"
+# Momentum Cross 提供較高的開倉頻率；為了提高成交率，預設開啟（可由 env 控制）
+ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "true").lower() == "true"
 # 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
 # SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
 ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "true"
@@ -176,7 +176,7 @@ ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "
 BREAKOUT_ENTRY_SCORE = int(os.getenv("BREAKOUT_ENTRY_SCORE", "79"))
 STRUCTURED_VOLUME_MIN_RATIO = float(os.getenv("STRUCTURED_VOLUME_MIN_RATIO", "1.0"))
 STRUCTURED_SWING_LOOKBACK = int(os.getenv("STRUCTURED_SWING_LOOKBACK", "20"))
-STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "0.40"))
+STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "4.00"))
 STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC = float(os.getenv("STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC", "300"))
 STRUCTURED_RSI_LONG_TRIGGER = float(os.getenv("STRUCTURED_RSI_LONG_TRIGGER", "51"))
 STRUCTURED_RSI_SHORT_TRIGGER = float(os.getenv("STRUCTURED_RSI_SHORT_TRIGGER", "49"))
@@ -401,7 +401,8 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "81"))
+# 放寬入場最低分數，預設 75 分以提高成交機會
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "75"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
@@ -487,7 +488,7 @@ TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.00
 # 3. ADX_DECLINE 衰退擋單：ADX 現在比 N 根前低且已低於 ADX_QUALITY_MIN，
 #    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
-ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "8.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # WEAK_ENERGY_ADX_THRESHOLD：進場當下 ADX 低於這個門檻（動能偏弱/中等，
@@ -844,5 +845,18 @@ ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "shudgai999@gmail.com")
 ENABLE_DCA_LIMIT = os.getenv("ENABLE_DCA_LIMIT", "false").lower() == "true"
 DCA_STAGE_DEPTHS = [float(d) for d in os.getenv("DCA_STAGE_DEPTHS", "0.03,0.05").split(",") if d.strip()]
 DCA_LIMIT_TIMEOUT_SEC = float(os.getenv("DCA_LIMIT_TIMEOUT_SEC", "14400.0"))
+
+# ====== 【改進方案】高分值陷阱保護 ======
+# 信號分數 95+ 時表現極差（勝率 33.33%，淨損 -19.4023），
+# 可能源於極端波動或流動性枯竭。在高分值時施加嚴格的 ATR_PCT 上限。
+HIGH_SCORE_ATR_LIMIT_PCT = float(os.getenv("HIGH_SCORE_ATR_LIMIT_PCT", "0.003"))
+HIGH_SCORE_THRESHOLD = int(os.getenv("HIGH_SCORE_THRESHOLD", "95"))
+
+# ====== 【改進方案】強化多頭過濾 ======
+# LONG 交易勝率 (53.42%) 與止損率 (24.66%) 均顯著遜於 SHORT。
+# 提高多頭進場的量能與 RSI 門檻，降低虛假突破的風險。
+KELTNER_MIN_WIDTH_ATR_MULT_LONG = float(os.getenv("KELTNER_MIN_WIDTH_ATR_MULT_LONG", "1.5"))
+SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG = float(os.getenv("SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG", "0.40"))
+SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED", "55"))
 
 
