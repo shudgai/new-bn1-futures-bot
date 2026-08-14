@@ -86,10 +86,11 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # 不用再改程式碼。
 TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
-# 調整為 1.4 ATR 止損、4.0 ATR 止盈，讓每筆部位有更大的獲利空間。
-# R:R = TAKE_PROFIT_MULTIPLIER(4.0) / STOP_LOSS_MULTIPLIER(1.4) = 2.86：1
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.0"))
+# 先調整成更接近常見的保守交易配置：1.5 ATR 止損、2.8 ATR 止盈，
+# 讓策略有足夠空間抓正常波段，但不至於把每筆單都收得過早。
+# R:R = TAKE_PROFIT_MULTIPLIER(2.8) / STOP_LOSS_MULTIPLIER(1.5) = 1.87：1
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.8"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "false").lower() == "true"
 import sys
 IS_TESTING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
@@ -103,12 +104,12 @@ if IS_TESTING:
     BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = 65.0
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO = 0.0
 else:
-    # 使用者要求：僅允許手動停損，預設關閉自動停損與自動平倉相關功能
-    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "true").lower() == "true"
+    # 先恢復自動停損，避免策略在沒有真正保護機制時一直被動平倉或長時間拖垮。
+    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT = os.getenv("ONLY_CLOSE_ON_PROFIT", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = float(os.getenv("ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT", "0.1"))
-    ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "true").lower() == "true"
-    BOTTOM_FILTER_ENABLED = os.getenv("BOTTOM_FILTER_ENABLED", "true").lower() == "true"
+    ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "false").lower() == "true"
+    BOTTOM_FILTER_ENABLED = os.getenv("BOTTOM_FILTER_ENABLED", "false").lower() == "true"
     BOTTOM_OVERSOLD_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERSOLD_RSI_15M_LIMIT", "35.0"))
     BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERBOUGHT_RSI_15M_LIMIT", "65.0"))
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO = float(os.getenv("CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO", "3.0"))
@@ -124,7 +125,9 @@ ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
 # 將最大可接受虧損設為非常低（負值代表幾乎不會被硬性觸發），
 # 以避免程式自動按本地最大虧損門檻平倉。
-MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-1.0"))
+# 允許的最大虧損設為 -15%（= 15% 虧損時拋出硬性平倉），避免長時間拖著
+# 讓策略在正常回檔中被動損失過多資金，同時仍保留一個安全底線。
+MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.15"))
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "false").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "false").lower() == "true"
 MA7_EXIT_TIMEFRAME = os.getenv("MA7_EXIT_TIMEFRAME", "1m")
