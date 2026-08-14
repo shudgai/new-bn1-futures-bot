@@ -222,8 +222,9 @@ BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.75"))
 BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
 # 反彈單若長時間連交易成本等級的順向波動都沒有，代表承接／反壓並未延續；
 # 在仍處於虧損時提早退出，不等待完整硬停損。
-# 預設延長至 7200 秒（2 小時），並放寬最小 MFE 要求
-BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "7200")))
+# BOUNCE_NO_FOLLOW_THROUGH_SEC: 若大於 0，當反彈在此時間內未出現足夠的
+# 有利波動（MFE）則提前平倉；設為 0 可關閉此機制。
+BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "0")))
 BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
     0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.001"))
 )
