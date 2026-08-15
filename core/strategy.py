@@ -305,6 +305,17 @@ def validate_sl_tp_pair(price: float, side: str, sl: float, tp: float) -> None:
     tp = float(tp)
     if not math.isfinite(price) or price <= 0:
         raise ValueError(f"Invalid price for SL/TP validation: {price!r}")
+    
+    # 如果 tp 為 0.0，代表不設止盈（或由動態指標/移動停利出場），此時只驗證止損 (SL)
+    if tp == 0.0:
+        if side == "LONG":
+            if not (sl < price):
+                raise ValueError(f"LONG SL invalid: price={price}, sl={sl}")
+        else:
+            if not (sl > price):
+                raise ValueError(f"SHORT SL invalid: price={price}, sl={sl}")
+        return
+
     if side == "LONG":
         if not (sl < price and tp > price):
             raise ValueError(f"LONG SL/TP invalid: price={price}, sl={sl}, tp={tp}")
