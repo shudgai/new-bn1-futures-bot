@@ -1385,6 +1385,10 @@ class SuperTrendKeltnerStrategy:
             return {
                 "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
                 "score": 80 - btc_score_penalty,
+                # MomentumCross follows an aligned 5m/1h trend. Treating it as
+                # a BOUNCE position makes the short-window bounce guard close it
+                # before the R-based trailing exit has a chance to run.
+                "profit_profile": "TREND_EXTENSION",
                 "reason": f"MomentumCross_{side}｜{'+'.join(triggers)}", **common,
             }
 

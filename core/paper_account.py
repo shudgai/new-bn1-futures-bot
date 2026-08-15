@@ -905,6 +905,23 @@ class PaperAccount:
             entry_p = pos["entry_price"]
             meta = self.position_meta.setdefault(symbol, {})
 
+            # Migrate positions opened before MomentumCross received an
+            # explicit trend profile. Those records were stored as BOUNCE
+            # with no room/target and hit the very tight bounce guard.
+            entry_mode = pos.get("entry_mode") or meta.get("entry_mode")
+            profit_profile = pos.get("profit_profile") or meta.get("profit_profile")
+            bounce_target = float(
+                pos.get("bounce_target_pct") or meta.get("bounce_target_pct") or 0.0
+            )
+            if (
+                entry_mode == "MOMENTUM_CROSS"
+                and profit_profile in (None, "BOUNCE")
+                and bounce_target <= 0
+            ):
+                profit_profile = "TREND_EXTENSION"
+                pos["profit_profile"] = profit_profile
+                meta["profit_profile"] = profit_profile
+
             pnl_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
             highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
             if pnl_pct > highest_pnl:

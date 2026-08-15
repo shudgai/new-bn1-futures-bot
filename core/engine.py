@@ -2048,7 +2048,10 @@ class TradingEngine:
         if initial_risk <= 0:
             return False
         structured_net_rr = None
-        if signal.get("profit_profile") == "BOUNCE":
+        profit_profile = signal.get("profit_profile") or (
+            "TREND_EXTENSION" if entry_mode == "MOMENTUM_CROSS" else "BOUNCE"
+        )
+        if profit_profile == "BOUNCE":
             reward_pct = float(signal.get("bounce_target_pct") or 0.0)
             # 若反彈配置但未計算出任何目標/空間，代表沒有獲利房間，拒絕開倉
             if reward_pct <= 0:
@@ -2109,7 +2112,7 @@ class TradingEngine:
             "btc_score_penalty": int(signal.get("btc_score_penalty") or 0),
             "btc_allocation_factor": btc_allocation_factor,
             "history_allocation_factor": history_allocation_factor,
-            "profit_profile": signal.get("profit_profile", "BOUNCE"),
+            "profit_profile": profit_profile,
             "profit_room_pct": float(signal.get("profit_room_pct") or 0.0),
             "bounce_capture_ratio": float(signal.get("bounce_capture_ratio") or 0.0),
             "bounce_target_pct": float(signal.get("bounce_target_pct") or 0.0),

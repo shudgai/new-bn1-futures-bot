@@ -4014,7 +4014,7 @@ def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
     frame["ema_20"] = 100.02
     frame["kc_upper"] = 110.0
     frame.loc[frame.index[-2], ["volume", "rsi", "adx", "macd_hist"]] = [250.0, 51.0, 25.0, 0.01]
-    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi", "adx", "macd_hist"]] = [99.94, 100.03, 100.05, 99.94, 300.0, 54.0, 26.0, 0.02]
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume", "rsi", "adx", "macd_hist"]] = [99.94, 100.03, 100.05, 99.94, 300.0, 56.0, 26.0, 0.02]
     signal = strategy.evaluate_structured_entry(
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
@@ -4085,13 +4085,37 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
     frame = _structured_entry_frame()
     frame["high"] = 106.0
     frame["kc_upper"] = 110.0
-    frame.loc[frame.index[-1], ["open", "close", "high", "macd_hist", "macd_line"]] = [104.8, 105.0, 105.2, 0.1, 0.1]
+    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.8, 105.0, 105.2, 56.0, 0.1, 0.1]
     signal = strategy.evaluate_structured_entry(
         frame, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
     assert signal["action"] == "ENTER_MARKET"
     assert signal["entry_mode"] == "MOMENTUM_CROSS"
+    assert signal["profit_profile"] == "TREND_EXTENSION"
+
+
+@pytest.mark.anyio
+async def test_legacy_momentum_cross_position_migrates_to_trend_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "momentum_profile.json"))
+    account = PaperAccount()
+    await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "momentum",
+        signal_score=80,
+        entry_context={
+            "entry_mode": "MOMENTUM_CROSS",
+            "profit_profile": "BOUNCE",
+            "profit_room_pct": 0.0,
+            "bounce_target_pct": 0.0,
+        },
+        apply_slippage=False,
+    )
+
+    await account.update_positions({"BTC/USDT": 100.24})
+
+    assert account.positions["BTC/USDT"]["profit_profile"] == "TREND_EXTENSION"
+    assert account.position_meta["BTC/USDT"]["profit_profile"] == "TREND_EXTENSION"
+    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
 
 
 @pytest.mark.anyio

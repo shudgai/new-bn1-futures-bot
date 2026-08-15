@@ -640,6 +640,22 @@ class BinanceTestnetAccount:
                 if dist_pct < 0.05:
                     self.log(f"🚨🚨🚨 [強平警戒] {symbol} {side} 距離強平價僅剩 {dist_pct:.2%}！強平價: {liq_p:.6g}, 當前價: {mark_p:.6g}", "DANGER")
 
+            # Backward compatibility for MomentumCross positions created
+            # before the signal carried an explicit trend profit profile.
+            entry_mode = pos.get("entry_mode") or meta.get("entry_mode")
+            profit_profile = pos.get("profit_profile") or meta.get("profit_profile")
+            bounce_target = float(
+                pos.get("bounce_target_pct") or meta.get("bounce_target_pct") or 0.0
+            )
+            if (
+                entry_mode == "MOMENTUM_CROSS"
+                and profit_profile in (None, "BOUNCE")
+                and bounce_target <= 0
+            ):
+                profit_profile = "TREND_EXTENSION"
+                pos["profit_profile"] = profit_profile
+                meta["profit_profile"] = profit_profile
+
             pnl_pct = (
                 (mark_p - entry_p) / entry_p
                 if side == "LONG" else (entry_p - mark_p) / entry_p
