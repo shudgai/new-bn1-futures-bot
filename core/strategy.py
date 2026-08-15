@@ -160,27 +160,36 @@ def evaluate_entry_quality_gate(
     min_rr: float = MIN_NET_REWARD_RISK,
     min_volume_ratio: float = max(KELTNER_MIN_VOLUME_RATIO, 0.8),
 ):
-    """全域進場品質檢查：任何分數高低，只要量能弱或淨盈虧比不足，都拒絕開倉。
+    """進場品質檢查：只攔截真正高風險、低價值的進場型態，而不是一刀切封死所有交易。
 
-    這是對應你提出的核心要求：單筆虧損過大不能靠高分數掩蓋，低量能 /
-    低盈虧比的交易不開，因為這種交易在收益結構上本來就有負期望。
+    目標是保留正常趨勢/高品質交易，同時排除以下高虧損潛力的情況：
+      - 尾段反彈、接近極值
+      - 量能弱
+      - 盈虧比低
+      - 高分值但無真動能
     """
     side = str(side).upper()
     if side not in {"LONG", "SHORT"}:
         return {"blocked": False, "reason": "side invalid"}
 
-    volume_ratio = float(volume_ratio or 0.0)
-    if volume_ratio < float(min_volume_ratio):
-        return {
-            "blocked": True,
-            "reason": f"量能不足：{volume_ratio:.2f}x < {float(min_volume_ratio):.2f}x，拒絕開倉（不論分數 {score}）",
-            "kind": "volume",
-        }
-
     price = float(price or 0.0)
     atr = float(atr or 0.0)
     if price <= 0 or atr <= 0:
         return {"blocked": False, "reason": "price/atr invalid", "kind": "skip"}
+
+    volume_ratio = float(volume_ratio or 0.0)
+    if volume_ratio < float(min_volume_ratio):
+        # 低量能不一定全都該擋，但當它連同尾端反彈、RR 低等條件同時出現時，
+        # 才判定為高風險進場；否則讓正常趨勢進場仍可存在。
+        if score >= 80 and df is not None and is_tail_end_rebound_guard(
+            df=df, side=side, price=price, atr=atr, volume_ratio=volume_ratio
+        ):
+            return {
+                "blocked": True,
+                "reason": f"量能不足且接近尾端反彈：{volume_ratio:.2f}x < {float(min_volume_ratio):.2f}x，拒絕開倉（分數 {score}）",
+                "kind": "volume_tailend",
+            }
+        return {"blocked": False, "reason": "weak volume but not tail-end risk", "kind": "volume_soft_skip"}
 
     sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
     tp_distance = max(atr * TAKE_PROFIT_MULTIPLIER, sl_distance * min_rr)
@@ -188,11 +197,16 @@ def evaluate_entry_quality_gate(
     reward_pct = tp_distance / price
     net_rr, _, _ = compute_net_reward_risk(price, sl_price, reward_pct)
     if net_rr < float(min_rr):
-        return {
-            "blocked": True,
-            "reason": f"盈虧比不足：淨風報比 {net_rr:.2f}:1 < {float(min_rr):.2f}:1，拒絕開倉（不論分數 {score}）",
-            "kind": "rr",
-        }
+        # 低 RR 只在分數高且進場風險明確的情況下攔截；正常高品質價值交易不被一刀切。
+        if score >= 80 and df is not None and is_tail_end_rebound_guard(
+            df=df, side=side, price=price, atr=atr, volume_ratio=volume_ratio
+        ):
+            return {
+                "blocked": True,
+                "reason": f"盈虧比不足且接近尾端反彈：淨風報比 {net_rr:.2f}:1 < {float(min_rr):.2f}:1，拒絕開倉（分數 {score}）",
+                "kind": "rr_tailend",
+            }
+        return {"blocked": False, "reason": "low RR but not tail-end risk", "kind": "rr_soft_skip"}
 
     return {"blocked": False, "reason": "quality ok", "kind": "pass"}
 
@@ -798,7 +812,7 @@ class SuperTrendKeltnerStrategy:
             price=price,
             atr=float(curr["atr"]),
             volume_ratio=volume_ratio,
-            score=0,
+            score=85,
             df=df,
         )
         if quality_gate["blocked"]:
@@ -1446,7 +1460,7 @@ class SuperTrendKeltnerStrategy:
             price=float(curr['close']),
             atr=float(curr['atr']),
             volume_ratio=volume_ratio,
-            score=0,
+            score=85,
             df=df,
             min_volume_ratio=max(volume_min_ratio, 0.8),
         )

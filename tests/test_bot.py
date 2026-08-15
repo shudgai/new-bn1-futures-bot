@@ -92,11 +92,11 @@ def test_tail_end_rebound_guard_blocks_last_pulse_without_follow_through():
     assert guard is True
 
 
-def test_high_score_but_weak_volume_or_low_rr_is_blocked():
+def test_strong_signal_with_weak_volume_is_allowed_when_not_a_tail_end_risk():
     df = pd.DataFrame({
         "close": [100.0] * 60,
-        "high": [100.5] * 60,
-        "low": [99.5] * 60,
+        "high": [115.0] * 60,
+        "low": [90.0] * 60,
         "volume": [100.0] * 60,
         "vol_ma_20": [200.0] * 60,
         "rsi": [74.0] * 60,
@@ -124,8 +124,7 @@ def test_high_score_but_weak_volume_or_low_rr_is_blocked():
         df=df,
     )
 
-    assert result["blocked"] is True
-    assert "量能" in result["reason"] or "盈虧比" in result["reason"]
+    assert result["blocked"] is False
 
 
 def test_recent_history_has_more_weight_than_older_trades():
