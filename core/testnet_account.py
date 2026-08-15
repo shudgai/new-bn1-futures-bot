@@ -154,6 +154,7 @@ class BinanceTestnetAccount:
         self._last_ticker_prices: Dict[str, float] = {}
         # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
         self._rapid_drop_cooldown: Dict[str, float] = {}
+        self.tickers: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -593,6 +594,7 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
     async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
+        self.tickers = ticker_prices
         await self.refresh()
 
         for symbol, pos in list(self.positions.items()):
