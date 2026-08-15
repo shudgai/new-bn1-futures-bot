@@ -221,8 +221,8 @@ STRUCTURED_MIN_NET_REWARD_RISK = float(os.getenv("STRUCTURED_MIN_NET_REWARD_RISK
 STRUCTURED_NET_RR_HARD_FLOOR = float(
     os.getenv("STRUCTURED_NET_RR_HARD_FLOOR", "0.5")
 )
-BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.75"))
-BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
+BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.80"))
+BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.85"))
 # 反彈單若長時間連交易成本等級的順向波動都沒有，代表承接／反壓並未延續；
 # 在仍處於虧損時提早退出，不等待完整硬停損。
 # BOUNCE_NO_FOLLOW_THROUGH_SEC: 若大於 0，當反彈在此時間內未出現足夠的
@@ -243,9 +243,10 @@ PAPER_MAKER_FILL_PENETRATION_PCT = float(os.getenv("PAPER_MAKER_FILL_PENETRATION
 # MAKER 限價單不能掛太靠近當前價（幾乎等於市價），也不能掛太深（幾乎等於極端回踩）。
 # 以 ATR 動態調整：ATR 越大、允許的回踩範圍越寬；ATR 小則更保守，避免市場波動小卻仍把限價掛太深。
 # 週期係數：5m 最保守，15m 中等，1h 可放寬，避免短週期雜訊導致進場過深。
+# 優化：從 2.5 ATR 降至 1.8 ATR，大幅提高掛單成交機率，讓利潤有機會跑上去。
 MAKER_LIMIT_ORDER_MIN_OFFSET_PCT = float(os.getenv("MAKER_LIMIT_ORDER_MIN_OFFSET_PCT", "0.0005"))
 MAKER_LIMIT_ORDER_MAX_OFFSET_PCT = float(os.getenv("MAKER_LIMIT_ORDER_MAX_OFFSET_PCT", "0.0080"))
-MAKER_LIMIT_ORDER_ATR_MULT = float(os.getenv("MAKER_LIMIT_ORDER_ATR_MULT", "2.5"))
+MAKER_LIMIT_ORDER_ATR_MULT = float(os.getenv("MAKER_LIMIT_ORDER_ATR_MULT", "1.8"))
 MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS = {
     "5m": float(os.getenv("MAKER_LIMIT_ORDER_5M_FACTOR", "1.00")),
     "15m": float(os.getenv("MAKER_LIMIT_ORDER_15M_FACTOR", "1.25")),
@@ -273,8 +274,8 @@ BREAKOUT_RR_CLOSE_FRACTION = float(os.getenv("BREAKOUT_RR_CLOSE_FRACTION", "0.5"
 STRUCTURED_EXIT_INTERVAL_SEC = float(os.getenv("STRUCTURED_EXIT_INTERVAL_SEC", "15"))
 # BREAKOUT 突破後限價回踩目標：在 EMA20 + BREAKOUT_PULLBACK_ATR_MULT * ATR 處掛單
 # 等待市場回踩回到中軌附近再進場，避免在突破高點直接市價追買
-# 1.0 ATR 表示限價設在 EMA20 上方 1 個 ATR，回踩更深、進場更有利。
-BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "1.0"))
+# 優化：從 1.0 ATR → 0.7 ATR，讓成交更容易、進場更快成交
+BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "0.7"))
 # BREAKOUT 回踩掛單最長等候時間：超過此時間沒有回踩就撤單
 # 突破动能強勁時幾乎不回踩，此時單子成交未必是好做法；分析後可調整
 BREAKOUT_PULLBACK_TIMEOUT_SEC = float(os.getenv("BREAKOUT_PULLBACK_TIMEOUT_SEC", "300"))
@@ -543,15 +544,17 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
 # 小幅獲利曾達0.30%後，若回落至0.20%便平倉；執行時仍以雙邊費用加
 # 預估滑點作最低安全線，避免鎖到帳面獲利、實際淨虧。
-EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.006"))
-EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.003"))
+# 優化：從 0.6% / 0.3% → 0.8% / 0.5%，讓利潤跑更上去再平倉
+EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.008"))
+EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.005"))
 # 結構反彈單的獲利窗口通常較短，較一般單提早保護；退出線仍必須高於
 # 雙邊手續費與預估滑價，避免帳面小利實際淨虧。
+# 優化：反彈單也調寬，從 0.45% / 0.35% → 0.60% / 0.45%
 BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0045")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0060")
 )
 BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0035")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0045")
 )
 TREND_EXTENSION_GUARD_TRIGGER_PCT = float(os.getenv("TREND_EXTENSION_GUARD_TRIGGER_PCT", "0.0065"))
 TREND_EXTENSION_GUARD_EXIT_PCT = float(os.getenv("TREND_EXTENSION_GUARD_EXIT_PCT", "0.0045"))
