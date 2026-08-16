@@ -1135,7 +1135,9 @@ class PaperAccount:
                     # 僅在已啟用移動保本或部位曾達到設定峰值比例時，才把本地 SL 視為真正平倉
                     highest_peak = float(meta.get("highest_pnl_pct") or 0.0)
                     if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
-                        await self.close_position(symbol, curr_p, reason)
+                        # Simulate an already-resting protective stop at its trigger;
+                        # close_position adds the configured market slippage.
+                        await self.close_position(symbol, sl_price, reason)
                         continue
                     else:
                         # 忽略此輪穿越，視為觀察線；記錄日誌以便追蹤
@@ -1152,7 +1154,9 @@ class PaperAccount:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     highest_peak = float(meta.get("highest_pnl_pct") or 0.0)
                     if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
-                        await self.close_position(symbol, curr_p, reason)
+                        # Simulate an already-resting protective stop at its trigger;
+                        # close_position adds the configured market slippage.
+                        await self.close_position(symbol, sl_price, reason)
                         continue
                     else:
                         self.log(

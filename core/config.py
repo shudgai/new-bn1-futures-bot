@@ -63,7 +63,7 @@ def get_atr_based_leverage(atr_pct: float) -> int:
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
-MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "1.0"))
+MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "0.50"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")

@@ -2254,10 +2254,13 @@ async def test_zero_sl_peak_threshold_executes_initial_stop_immediately(tmp_path
         reason="MomentumCross_SHORT", signal_score=80, apply_slippage=False,
     )
 
-    await account.update_positions({"GRVT/USDT": 101.0})
+    await account.update_positions({"GRVT/USDT": 105.0})
 
     assert "GRVT/USDT" not in account.positions
     assert "Stop-Loss" in account.trades[0]["reason"]
+    assert account.trades[0]["price"] == pytest.approx(
+        101.0 * (1 + pa_module.SLIPPAGE_PCT)
+    )
 
 
 @pytest.mark.anyio
