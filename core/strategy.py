@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
+    MIN_REWARD_RISK_RATIO,
     SLIPPAGE_PCT,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
     ENTRY_FRESHNESS_SCORE_MAX,
@@ -276,7 +277,7 @@ def build_sl_tp_for_side(
     """依方向計算真正的 SL/TP 價格，並強制保證：
     - LONG: SL < price < TP
     - SHORT: TP < price < SL
-    - TP 距離不小於 SL 距離，避免停損/停利誤配。
+    - TP/SL 毛風報比不低於 MIN_REWARD_RISK_RATIO。
     """
     side = str(side).upper()
     if side not in {"LONG", "SHORT"}:
@@ -284,8 +285,7 @@ def build_sl_tp_for_side(
 
     sl_distance = float(abs(sl_distance or 0.0))
     tp_distance = float(abs(tp_distance if tp_distance is not None else sl_distance))
-    if tp_distance < sl_distance:
-        tp_distance = sl_distance
+    tp_distance = max(tp_distance, sl_distance * MIN_REWARD_RISK_RATIO)
 
     if side == "LONG":
         sl, tp = price - sl_distance, price + tp_distance
@@ -295,8 +295,19 @@ def build_sl_tp_for_side(
     return sl, tp
 
 
-def validate_sl_tp_pair(price: float, side: str, sl: float, tp: float) -> None:
-    """進場前硬斷言：要求所有 SL/TP 必須與方向一致，且 TP 距離不小於 SL 距離。"""
+def validate_sl_tp_pair(
+    price: float,
+    side: str,
+    sl: float,
+    tp: float,
+    *,
+    allow_profit_lock: bool = False,
+) -> None:
+    """驗證保護價。
+
+    初始訂單強制套用毛風報比下限；追蹤停損已越過成本價時沒有下行風險，
+    呼叫端可用 ``allow_profit_lock=True`` 驗證價位順序而不套用初始 R:R。
+    """
     side = str(side).upper()
     if side not in {"LONG", "SHORT"}:
         raise ValueError(f"Unsupported side: {side}")
@@ -305,31 +316,38 @@ def validate_sl_tp_pair(price: float, side: str, sl: float, tp: float) -> None:
     tp = float(tp)
     if not math.isfinite(price) or price <= 0:
         raise ValueError(f"Invalid price for SL/TP validation: {price!r}")
-    
-    # 如果 tp 為 0.0，代表不設止盈（或由動態指標/移動停利出場），此時只驗證止損 (SL)
+
+    # tp=0 代表不設固定止盈，由 trailing 或動態指標出場。
     if tp == 0.0:
-        if side == "LONG":
-            if not (sl < price):
-                raise ValueError(f"LONG SL invalid: price={price}, sl={sl}")
-        else:
-            if not (sl > price):
-                raise ValueError(f"SHORT SL invalid: price={price}, sl={sl}")
+        if side == "LONG" and not (sl < price):
+            raise ValueError(f"LONG SL invalid: price={price}, sl={sl}")
+        if side == "SHORT" and not (sl > price):
+            raise ValueError(f"SHORT SL invalid: price={price}, sl={sl}")
+        return
+
+    if not all(math.isfinite(value) for value in (sl, tp)):
+        raise ValueError(f"Non-finite SL/TP: sl={sl!r}, tp={tp!r}")
+
+    if allow_profit_lock:
+        if side == "LONG" and not (sl < tp):
+            raise ValueError(f"LONG trailing SL must remain below TP: sl={sl}, tp={tp}")
+        if side == "SHORT" and not (tp < sl):
+            raise ValueError(f"SHORT trailing SL must remain above TP: sl={sl}, tp={tp}")
         return
 
     if side == "LONG":
-        if not (sl < price and tp > price):
+        if not (sl < price < tp):
             raise ValueError(f"LONG SL/TP invalid: price={price}, sl={sl}, tp={tp}")
-        if abs(tp - price) < abs(price - sl):
-            raise ValueError(
-                f"LONG TP must be at least as far as SL: price={price}, sl={sl}, tp={tp}"
-            )
+        gross_rr = abs(tp - price) / max(abs(price - sl), 1e-12)
     else:
-        if not (tp < price and sl > price):
+        if not (tp < price < sl):
             raise ValueError(f"SHORT SL/TP invalid: price={price}, sl={sl}, tp={tp}")
-        if abs(price - tp) < abs(sl - price):
-            raise ValueError(
-                f"SHORT TP must be at least as far as SL: price={price}, sl={sl}, tp={tp}"
-            )
+        gross_rr = abs(price - tp) / max(abs(sl - price), 1e-12)
+    if gross_rr + 1e-12 < MIN_REWARD_RISK_RATIO:
+        raise ValueError(
+            f"{side} reward/risk {gross_rr:.3f}:1 below minimum "
+            f"{MIN_REWARD_RISK_RATIO:.3f}:1"
+        )
 
 
 def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
@@ -357,9 +375,8 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
         MIN_NET_REWARD_RISK * net_risk_per_unit + 2 * price * fee_rate
     ) / max(1 - fee_rate, 1e-9)
     tp_distance = max(configured_tp_distance, min_tp_distance)
-    # 確保止盈距離不小於止損距離，避免出現「停損大於停利」的情形。
-    if tp_distance < sl_distance:
-        tp_distance = sl_distance
+    # 即使環境誤把 ATR 倍數設反，仍維持初始毛風報比硬下限。
+    tp_distance = max(tp_distance, sl_distance * MIN_REWARD_RISK_RATIO)
     return sl_distance, tp_distance
 
 

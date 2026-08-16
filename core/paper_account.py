@@ -13,6 +13,8 @@ from core.config import (
     MAX_DAILY_LOSS_PCT,
     MIN_OPEN_SIGNAL_SCORE,
     ENABLE_TRAILING_STOP,
+    ENABLE_EARLY_PROFIT_GUARD,
+    ENABLE_PROFIT_GIVEBACK_EXIT,
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
     BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
@@ -358,7 +360,10 @@ class PaperAccount:
             execution_price = price
         if apply_slippage:
             sl_distance = abs(price - sl)
+            tp_distance = abs(tp - price) if tp else 0.0
             sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
+            if tp_distance > 0:
+                tp = execution_price + tp_distance if side == "LONG" else execution_price - tp_distance
         if DISABLE_STOP_LOSS:
             sl = 0.0
         else:
@@ -868,7 +873,10 @@ class PaperAccount:
         tp_price = float(pos.get("tp") or meta.get("tp") or 0.0)
         if tp_price > 0:
             try:
-                validate_sl_tp_pair(float(pos.get("entry_price") or meta.get("entry_price") or 0.0), pos["side"], new_sl_price, tp_price)
+                validate_sl_tp_pair(
+                    float(pos.get("entry_price") or meta.get("entry_price") or 0.0),
+                    pos["side"], new_sl_price, tp_price, allow_profit_lock=True,
+                )
             except ValueError:
                 self.log(
                     f"🛑 {symbol} 移動止損更新失敗：SL/TP 方向或風報比不合法，忽略更新（SL={new_sl_price}，TP={tp_price}）",
@@ -1022,7 +1030,8 @@ class PaperAccount:
                 meta["dynamic_profit_floor_pct"] = early_guard_exit
                 pos["dynamic_profit_floor_pct"] = early_guard_exit
             if (
-                highest_pnl >= early_guard_trigger
+                ENABLE_EARLY_PROFIT_GUARD
+                and highest_pnl >= early_guard_trigger
                 and (is_trend_extension or highest_pnl < trailing_trigger)
                 and not meta.get("early_profit_guard_armed")
             ):
@@ -1039,7 +1048,8 @@ class PaperAccount:
                     "SUCCESS",
                 )
             if (
-                meta.get("early_profit_guard_armed")
+                ENABLE_EARLY_PROFIT_GUARD
+                and meta.get("early_profit_guard_armed")
                 and (is_trend_extension or highest_pnl < trailing_trigger)
                 and pnl_pct <= early_guard_exit
             ):
@@ -1117,7 +1127,7 @@ class PaperAccount:
                 and pnl_pct > min_rebound_exit_pct
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
-            if profit_alert:
+            if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
                 # 直接於峰值回吐時平倉，避免讓獲利峰值回撤後再反彈。
                 await self.close_position(symbol, curr_p, "峰值回吐平倉")
                 continue

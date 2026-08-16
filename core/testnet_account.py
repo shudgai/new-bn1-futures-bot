@@ -17,6 +17,8 @@ from core.config import (
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
     ENABLE_TRAILING_STOP,
+    ENABLE_EARLY_PROFIT_GUARD,
+    ENABLE_PROFIT_GIVEBACK_EXIT,
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
     BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
@@ -698,7 +700,7 @@ class BinanceTestnetAccount:
                 and pnl_pct > 0
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
-            if profit_alert:
+            if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
                 # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
                 await self.close_position(symbol, curr_p, "峰值回吐平倉")
                 continue
@@ -726,7 +728,7 @@ class BinanceTestnetAccount:
 
             # 結構反彈單專用的早期獲利保護。這層獨立於原生 Trailing，
             # 讓 Testnet 與紙上帳戶在小幅浮盈回吐時採取一致行為。
-            if meta.get("profit_profile") == "BOUNCE":
+            if ENABLE_EARLY_PROFIT_GUARD and meta.get("profit_profile") == "BOUNCE":
                 round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
                 early_guard_trigger = max(
                     BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
@@ -2082,7 +2084,10 @@ class BinanceTestnetAccount:
         entry_price = float(position.get("entry_price") or meta.get("entry_price") or 0.0)
         if tp_price > 0 and entry_price > 0:
             try:
-                validate_sl_tp_pair(entry_price, position["side"], new_sl_price, tp_price)
+                validate_sl_tp_pair(
+                    entry_price, position["side"], new_sl_price, tp_price,
+                    allow_profit_lock=True,
+                )
             except ValueError:
                 self.log(
                     f"🛑 {symbol} 移動止損更新失敗：SL/TP 方向或風報比不合法，忽略更新（SL={new_sl_price}，TP={tp_price}）",

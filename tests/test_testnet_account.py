@@ -573,6 +573,7 @@ async def test_refresh_flags_profit_alert_when_giveback_from_peak(tmp_path, monk
 @pytest.mark.anyio
 async def test_testnet_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
     exchange = FakeTestnetExchange()
     account = BinanceTestnetAccount(exchange)
@@ -663,6 +664,7 @@ async def test_testnet_early_profit_guard_closes_on_giveback(tmp_path, monkeypat
 @pytest.mark.anyio
 async def test_testnet_bounce_guard_immediately_places_stop_market(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
     monkeypatch.setattr(testnet_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0023)
     monkeypatch.setattr(testnet_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0020)
@@ -727,6 +729,7 @@ async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
 
 @pytest.mark.anyio
 async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", False)
@@ -862,7 +865,7 @@ async def test_partial_close_position(tmp_path, monkeypatch):
 
     # Open LONG position
     await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=105.0, reason="test", leverage=5
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=110.0, reason="test", leverage=5
     )
 
     pos = account.positions["DOGE/USDT"]

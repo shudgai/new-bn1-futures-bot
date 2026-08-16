@@ -91,6 +91,9 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # R:R = TAKE_PROFIT_MULTIPLIER(2.8) / STOP_LOSS_MULTIPLIER(1.5) = 1.87：1
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.8"))
+# 所有「有固定 TP」的初始訂單都必須通過這個毛風報比硬下限；淨風報比
+# 仍由下方 MIN_NET_REWARD_RISK（含手續費）採用更嚴格的門檻。
+MIN_REWARD_RISK_RATIO = float(os.getenv("MIN_REWARD_RISK_RATIO", "1.5"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "false").lower() == "true"
 import sys
 IS_TESTING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
@@ -327,6 +330,11 @@ NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALL
 # 正在被侵蝕，與其等它繼續吐回去，不如把握警訊後難得的一次反彈把獲利
 # 鎖住；BinanceTestnetAccount 目前這個旗標仍是純顯示，不會自動平倉。
 PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
+# 峰值回吐原本會直接平倉，會和正式 trailing 競爭並截短贏單；預設只保留
+# trailing。需要做舊策略對照時才顯式開啟。
+ENABLE_PROFIT_GIVEBACK_EXIT = os.getenv(
+    "ENABLE_PROFIT_GIVEBACK_EXIT", "false"
+).lower() == "true"
 # 小於0.5%的歷史峰值不啟動「回吐後反彈平倉」，避免剛蓋過手續費就把
 # 部位關掉；平倉當下另要求至少保留0.10%無槓桿淨空間。
 PROFIT_ALERT_MIN_PEAK_PCT = float(os.getenv("PROFIT_ALERT_MIN_PEAK_PCT", "0.005"))
@@ -547,6 +555,11 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # 優化：從 0.6% / 0.3% → 0.8% / 0.5%，讓利潤跑更上去再平倉
 EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.008"))
 EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.005"))
+# 小利保護常在尚未達到 1R 前結束交易，造成平均贏單小於完整停損；改為
+# opt-in，預設讓 1.5R trailing 接手並鎖住約 1R。
+ENABLE_EARLY_PROFIT_GUARD = os.getenv(
+    "ENABLE_EARLY_PROFIT_GUARD", "false"
+).lower() == "true"
 # 結構反彈單的獲利窗口通常較短，較一般單提早保護；退出線仍必須高於
 # 雙邊手續費與預估滑價，避免帳面小利實際淨虧。
 # 優化：反彈單也調寬，從 0.45% / 0.35% → 0.60% / 0.45%

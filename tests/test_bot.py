@@ -12,7 +12,7 @@ from core.config import (
     DEFAULT_SYMBOLS, get_position_multiplier, get_signal_leverage,
     RSI_LONG_THRESHOLD, FRESHNESS_DECAY_BARS, MIN_SCORE_THRESHOLD, ADX_QUALITY_MIN,
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, DISASTER_STOP_MULTIPLIER,
-    TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
+    TAKER_FEE_RATE, MIN_NET_REWARD_RISK, MIN_REWARD_RISK_RATIO,
     EARLY_PROFIT_GUARD_TRIGGER_PCT, EARLY_PROFIT_GUARD_EXIT_PCT,
     get_trailing_pullback_pct,
     STRONG_BREAKOUT_SCORE_THRESHOLD, RSI_LONG_MAX, RSI_SHORT_MIN,
@@ -319,6 +319,42 @@ def test_strategy_indicators():
     assert "atr" in res.columns
 
 @pytest.mark.anyio
+async def test_paper_entry_slippage_preserves_planned_reward_risk(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "slippage_rr.json"))
+    monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", False)
+    account = PaperAccount()
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 101.5, "test",
+        signal_score=80, apply_slippage=True,
+    )
+    pos = account.positions["BTC/USDT"]
+    actual_risk = pos["entry_price"] - pos["sl"]
+    actual_reward = pos["tp"] - pos["entry_price"]
+    assert actual_reward / actual_risk == pytest.approx(1.5)
+
+
+@pytest.mark.anyio
+async def test_paper_small_profit_exits_are_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "runner_mode.json"))
+    monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", True)
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", True)
+    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    account = PaperAccount()
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "runner",
+        signal_score=80, apply_slippage=False,
+        entry_context={"initial_sl": 99.0},
+    )
+
+    await account.update_positions({"BTC/USDT": 101.3})
+    await account.update_positions({"BTC/USDT": 100.7})
+
+    assert "BTC/USDT" in account.positions
+    assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
+
+
+@pytest.mark.anyio
 async def test_paper_account_open_close(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
@@ -413,6 +449,7 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
 @pytest.mark.anyio
 async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
     account = PaperAccount()
     await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
@@ -437,6 +474,7 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
 @pytest.mark.anyio
 async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "dynamic_peak.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
     account = PaperAccount()
     await account.open_position(
@@ -479,6 +517,7 @@ async def test_bounce_closes_at_configured_room_capture_target(tmp_path, monkeyp
 @pytest.mark.anyio
 async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
     account = PaperAccount()
     await account.open_position("BTC/USDT", "LONG", 100.0, 50.0, 90.0, 200.0, "test", signal_score=80)
@@ -552,6 +591,7 @@ async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_pat
     只有等反彈自己也開始回落（找到這次反彈的高點）時，才把握那個高點
     平倉。關掉移動停利避免SL價位干擾，單純測試這個邏輯。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
     monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
     monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
@@ -577,6 +617,7 @@ async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_pat
 @pytest.mark.anyio
 async def test_paper_account_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
     monkeypatch.setattr(pa_module, "PROFIT_ALERT_GIVEBACK_RATIO", 0.20)
     monkeypatch.setattr(pa_module, "PROFIT_ALERT_MIN_PEAK_PCT", 0.005)
@@ -2241,7 +2282,24 @@ def test_validate_sl_tp_pair_rejects_invalid_side_specific_order():
     with pytest.raises(ValueError):
         validate_sl_tp_pair(100.0, "SHORT", 90.0, 100.0)
     validate_sl_tp_pair(100.0, "LONG", 95.0, 110.0)
-    validate_sl_tp_pair(100.0, "SHORT", 110.0, 90.0)
+    validate_sl_tp_pair(100.0, "SHORT", 110.0, 85.0)
+
+
+def test_initial_sl_tp_enforces_configured_reward_risk_floor():
+    with pytest.raises(ValueError, match="below minimum"):
+        validate_sl_tp_pair(100.0, "LONG", 95.0, 106.0)
+    with pytest.raises(ValueError, match="below minimum"):
+        validate_sl_tp_pair(100.0, "SHORT", 105.0, 94.0)
+
+    long_sl, long_tp = build_sl_tp_for_side(100.0, "LONG", 10.0, 5.0)
+    short_sl, short_tp = build_sl_tp_for_side(100.0, "SHORT", 10.0, 5.0)
+    assert (long_tp - 100.0) / (100.0 - long_sl) == pytest.approx(MIN_REWARD_RISK_RATIO)
+    assert (100.0 - short_tp) / (short_sl - 100.0) == pytest.approx(MIN_REWARD_RISK_RATIO)
+
+
+def test_trailing_profit_lock_is_not_treated_as_initial_risk():
+    validate_sl_tp_pair(100.0, "LONG", 102.0, 110.0, allow_profit_lock=True)
+    validate_sl_tp_pair(100.0, "SHORT", 98.0, 90.0, allow_profit_lock=True)
 
 
 @pytest.mark.anyio
@@ -3451,7 +3509,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
 
     # Open a position LONG at 100
     await account.open_position(
-        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=105.0, reason="test", leverage=5
+        "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=95.0, tp=110.0, reason="test", leverage=5
     )
 
     engine = TradingEngine()
@@ -4629,6 +4687,7 @@ async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
 @pytest.mark.anyio
 async def test_bounce_early_profit_guard_captures_saga_sized_move(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_guard.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0023)
     monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", 0.0020)
     account = PaperAccount()
