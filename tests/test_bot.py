@@ -2245,6 +2245,22 @@ def test_validate_sl_tp_pair_rejects_invalid_side_specific_order():
 
 
 @pytest.mark.anyio
+async def test_zero_sl_peak_threshold_executes_initial_stop_immediately(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "immediate_stop.json"))
+    monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.0)
+    account = PaperAccount()
+    await account.open_position(
+        "GRVT/USDT", "SHORT", 100.0, 50.0, sl=101.0, tp=0.0,
+        reason="MomentumCross_SHORT", signal_score=80, apply_slippage=False,
+    )
+
+    await account.update_positions({"GRVT/USDT": 101.0})
+
+    assert "GRVT/USDT" not in account.positions
+    assert "Stop-Loss" in account.trades[0]["reason"]
+
+
+@pytest.mark.anyio
 async def test_sl_only_after_peak_prevents_early_stop(tmp_path, monkeypatch):
     """如果設定 SL_ONLY_AFTER_PEAK_PCT，觸及 SL 但未曾達到峰值，應該暫不平倉；
     只有當峰值達到門檻後再次觸及 SL 才會平倉。"""
