@@ -336,6 +336,7 @@ async def test_paper_entry_slippage_preserves_planned_reward_risk(tmp_path, monk
 @pytest.mark.anyio
 async def test_paper_small_profit_exits_are_opt_in(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "runner_mode.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", False)
@@ -447,8 +448,58 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    (
+        "side", "peak_price", "bank_price", "runner_price", "runner_bank",
+        "high_peak_price", "high_peak_bank",
+    ),
+    [
+        ("LONG", 100.35, 100.25, 101.0, 100.80, 102.0, 101.80),
+        ("SHORT", 99.65, 99.75, 99.0, 99.20, 98.0, 98.20),
+    ],
+)
+async def test_paper_profit_bank_turns_bankable_float_into_net_profit(
+    tmp_path, monkeypatch, side, peak_price, bank_price, runner_price, runner_bank,
+    high_peak_price, high_peak_bank,
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / f"profit_bank_{side}.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", True)
+    monkeypatch.setattr(pa_module, "PROFIT_BANK_TRIGGER_PCT", 0.0035)
+    monkeypatch.setattr(pa_module, "PROFIT_BANK_LOCK_PCT", 0.0025)
+    monkeypatch.setattr(pa_module, "PROFIT_BANK_CAPTURE_RATIO", 0.70)
+    monkeypatch.setattr(pa_module, "PROFIT_BANK_MIN_STEP_PCT", 0.0002)
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    account = PaperAccount()
+    initial_sl = 99.0 if side == "LONG" else 101.0
+    await account.open_position(
+        "BTC/USDT", side, 100.0, 50.0, initial_sl, 0.0, "profit bank",
+        leverage=2, signal_score=80, apply_slippage=False,
+    )
+
+    await account.update_positions({"BTC/USDT": peak_price})
+    position = account.positions["BTC/USDT"]
+    assert position["sl"] == pytest.approx(bank_price)
+    assert position["profit_bank_armed"] is True
+    assert position["is_breakeven_moved"] is True
+
+    # 峰值達 1% 時鎖 80%；達 2% 時鎖 90%，回吐比例隨利潤縮小。
+    await account.update_positions({"BTC/USDT": runner_price})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(runner_bank)
+
+    await account.update_positions({"BTC/USDT": high_peak_price})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(high_peak_bank)
+
+    stop_cross_price = high_peak_bank - 0.001 if side == "LONG" else high_peak_bank + 0.001
+    await account.update_positions({"BTC/USDT": stop_cross_price})
+    assert "BTC/USDT" not in account.positions
+    assert account.trades[0]["pnl"] > 0
+    assert "移動止利" in account.trades[0]["reason"]
+
+
+@pytest.mark.anyio
 async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
     account = PaperAccount()
@@ -474,6 +525,7 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
 @pytest.mark.anyio
 async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "dynamic_peak.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
     account = PaperAccount()
@@ -517,6 +569,7 @@ async def test_bounce_closes_at_configured_room_capture_target(tmp_path, monkeyp
 @pytest.mark.anyio
 async def test_paper_early_profit_guard_does_not_arm_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 1.0)
     account = PaperAccount()
@@ -739,14 +792,17 @@ async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_pa
 @pytest.mark.anyio
 async def test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "risk_trailing.json"))
-    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 0.0025)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
+    # 固定門檻刻意高於 1.5R：有 initial_risk 的單仍應依 R 倍數啟動，
+    # 否則會發生先分批獲利、剩餘倉又退回完整止損的情況。
+    monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 0.008)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_R_MULT", 1.5)
     monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_R_MULT", 0.5)
     account = PaperAccount()
     await account.open_position(
-        "BTC/USDT", "LONG", 100.0, 50.0, 99.0, 0.0, "structured",
+        "BTC/USDT", "LONG", 100.0, 50.0, 99.8, 0.0, "structured",
         atr=0.5, leverage=2, signal_score=80,
-        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.0, "initial_risk": 1.0},
+        entry_context={"entry_mode": "SUPPORT_PULLBACK", "initial_sl": 99.8, "initial_risk": 0.2},
     )
     position = account.positions["BTC/USDT"]
     entry = position["entry_price"]
@@ -4162,7 +4218,8 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
     frame = _structured_entry_frame()
     frame["high"] = 106.0
     frame["kc_upper"] = 110.0
-    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.8, 105.0, 105.2, 56.0, 0.1, 0.1]
+    frame.loc[frame.index[-2], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.5, 104.7, 104.8, 52.0, 0.1, 0.1]
+    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.7, 105.0, 105.2, 56.0, 0.2, 0.2]
     signal = strategy.evaluate_structured_entry(
         frame, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
@@ -4170,6 +4227,44 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
     assert signal["action"] == "ENTER_MARKET"
     assert signal["entry_mode"] == "MOMENTUM_CROSS"
     assert signal["profit_profile"] == "TREND_EXTENSION"
+
+    assert signal["momentum_continuation_confirmed"] is True
+    assert signal["profit_room_pct"] >= 0.0035
+
+
+def test_momentum_cross_waits_for_price_continuation(monkeypatch):
+    monkeypatch.setattr("core.strategy.ENABLE_MOMENTUM_CROSS_ENTRY", True)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["high"] = 106.0
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.5, 104.7, 104.9, 52.0, 0.1, 0.1]
+    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.7, 104.6, 105.0, 55.0, 0.2, 0.2]
+    signal = strategy.evaluate_structured_entry(
+        frame, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert signal["momentum_continuation_confirmed"] is False
+    assert "等待價格延續" in signal["reason"]
+
+
+def test_momentum_cross_rejects_profit_room_below_cost_buffer(monkeypatch):
+    monkeypatch.setattr("core.strategy.ENABLE_MOMENTUM_CROSS_ENTRY", True)
+    strategy = SuperTrendKeltnerStrategy()
+    frame = _structured_entry_frame()
+    frame["high"] = 105.30
+    frame["kc_upper"] = 110.0
+    frame.loc[frame.index[-2], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.5, 104.7, 104.8, 52.0, 0.1, 0.1]
+    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.7, 105.0, 105.1, 56.0, 0.2, 0.2]
+    signal = strategy.evaluate_structured_entry(
+        frame, st_direction_1h=1, btc_st_direction_1h=1,
+        indicators_precomputed=True,
+    )
+    assert signal["action"] == "HOLD"
+    assert signal["momentum_continuation_confirmed"] is True
+    assert signal["profit_room_pct"] < 0.0035
+    assert "預估獲利空間不足" in signal["reason"]
 
 
 @pytest.mark.anyio

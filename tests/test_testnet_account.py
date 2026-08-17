@@ -728,9 +728,50 @@ async def test_small_atr_profit_waits_instead_of_arming_loss_making_breakeven(
 
 
 @pytest.mark.anyio
+async def test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "profit_bank.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_PROFIT_BANK", True)
+    monkeypatch.setattr(testnet_module, "PROFIT_BANK_TRIGGER_PCT", 0.0035)
+    monkeypatch.setattr(testnet_module, "PROFIT_BANK_LOCK_PCT", 0.0025)
+    monkeypatch.setattr(testnet_module, "PROFIT_BANK_CAPTURE_RATIO", 0.70)
+    monkeypatch.setattr(testnet_module, "PROFIT_BANK_MIN_STEP_PCT", 0.0002)
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.position_meta["DOGE/USDT"] = {
+        "sl": 99.0, "tp": 105.0, "atr": 1.0,
+        "initial_risk": 1.0, "highest_pnl_pct": 0.0,
+    }
+    exchange.positions = [{
+        "symbol": "DOGEUSDT", "positionAmt": "10", "entryPrice": "100.0",
+        "markPrice": "100.35", "leverage": "5", "unRealizedProfit": "3.5",
+    }]
+    account.last_sync_at = 0
+
+    await account.update_positions({"DOGE/USDT": 100.35})
+
+    meta = account.position_meta["DOGE/USDT"]
+    assert meta["sl"] == pytest.approx(100.25)
+    assert meta["profit_bank_armed"] is True
+    assert meta["is_breakeven_moved"] is True
+    assert any(
+        order["type"] == "STOP_MARKET"
+        and float(order["params"]["triggerPrice"]) == pytest.approx(100.25)
+        for order in exchange.orders
+    )
+
+
+@pytest.mark.anyio
 async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monkeypatch):
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", True)
+    monkeypatch.setattr(testnet_module, "TRAILING_TRIGGER_PCT", 0.008)
+    monkeypatch.setattr(testnet_module, "TRAILING_TRIGGER_R_MULT", 1.5)
+    monkeypatch.setattr(testnet_module, "TRAILING_CALLBACK_R_MULT", 0.5)
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "USE_NATIVE_TRAILING_STOP", False)
     exchange = FakeTestnetExchange()
@@ -738,26 +779,28 @@ async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monk
     await account.initialize()
 
     account.position_meta["DOGE/USDT"] = {
-        "sl": 98.0,
+        "sl": 99.8,
         "tp": 105.0,
         "atr": 1.0,
+        "initial_risk": 0.2,
         "highest_pnl_pct": 0.0,
     }
     exchange.positions = [{
         "symbol": "DOGEUSDT",
         "positionAmt": "10",
         "entryPrice": "100.0",
-        "markPrice": "101.0",
+        "markPrice": "100.32",
         "leverage": "5",
-        "unRealizedProfit": "10",
+        "unRealizedProfit": "3.2",
     }]
     account.last_sync_at = 0
     previous_order_count = len(exchange.orders)
 
-    await account.update_positions({"DOGE/USDT": 101.0})
+    await account.update_positions({"DOGE/USDT": 100.32})
 
     meta = account.position_meta["DOGE/USDT"]
-    assert meta["highest_pnl_pct"] == pytest.approx(0.01)
+    # 0.32% 尚未達固定 0.8%，但已超過窄止損單的 1.5R（0.30%）。
+    assert meta["highest_pnl_pct"] == pytest.approx(0.0032)
     assert meta["is_breakeven_moved"] is True
     assert meta["tp"] == 105.0
     assert account.positions["DOGE/USDT"]["tp"] == 105.0

@@ -173,6 +173,14 @@ MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
 STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower() == "true"
 # Momentum Cross 提供較高的開倉頻率；為了提高成交率，預設開啟（可由 env 控制）
 ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "true").lower() == "true"
+# MomentumCross 不在交叉當根追價：下一根已收盤 K 棒必須沿訊號方向續走，
+# 且到最近結構高／低點仍保有足以覆蓋成本與鎖利目標的空間。
+MOMENTUM_CROSS_REQUIRE_CONTINUATION = os.getenv(
+    "MOMENTUM_CROSS_REQUIRE_CONTINUATION", "true"
+).lower() == "true"
+MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT = max(
+    0.0, float(os.getenv("MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT", "0.0035"))
+)
 # 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
 # SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
 ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "true"
@@ -669,6 +677,47 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
 SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0001"))     # 0.01% 市價單估計滑點預留（單邊）
+
+# 階梯式移動停利：峰值達 0.35% 後，至少鎖住 0.25% 價格利潤；
+# 峰值繼續擴大時保留至少 70%，保護線只往有利方向移動。
+ENABLE_PROFIT_BANK = os.getenv("ENABLE_PROFIT_BANK", "true").lower() == "true"
+PROFIT_BANK_TRIGGER_PCT = max(
+    float(os.getenv("PROFIT_BANK_TRIGGER_PCT", "0.0035")),
+    NET_PROFIT_GUARANTEE_BUFFER + SLIPPAGE_PCT,
+)
+PROFIT_BANK_LOCK_PCT = max(
+    float(os.getenv("PROFIT_BANK_LOCK_PCT", "0.0025")),
+    2 * TAKER_FEE_RATE + SLIPPAGE_PCT + 0.0001,
+)
+PROFIT_BANK_CAPTURE_RATIO = min(
+    0.95, max(0.50, float(os.getenv("PROFIT_BANK_CAPTURE_RATIO", "0.70")))
+)
+_PROFIT_BANK_CAPTURE_TIERS = [
+    (0.0300, 0.95),  # 峰值 >= 3.00%：最多回吐 5%
+    (0.0200, 0.90),  # 峰值 >= 2.00%：最多回吐 10%
+    (0.0150, 0.85),  # 峰值 >= 1.50%：最多回吐 15%
+    (0.0100, 0.80),  # 峰值 >= 1.00%：最多回吐 20%
+]
+
+def get_profit_bank_capture_ratio(
+    peak_profit_pct: float, base_capture_ratio: float = None,
+) -> float:
+    """利潤越高鎖得越緊，回傳應保留的峰值比例。"""
+    base = PROFIT_BANK_CAPTURE_RATIO if base_capture_ratio is None else min(
+        0.95, max(0.50, float(base_capture_ratio))
+    )
+    for threshold, capture_ratio in _PROFIT_BANK_CAPTURE_TIERS:
+        if peak_profit_pct + 1e-12 >= threshold:
+            return max(base, capture_ratio)
+    return base
+# Testnet 每次至少再推進 0.02% 才撤換交易所保護單，避免報價每跳都重掛。
+PROFIT_BANK_MIN_STEP_PCT = max(
+    0.0, float(os.getenv("PROFIT_BANK_MIN_STEP_PCT", "0.0002"))
+)
+# 最低鎖利必須低於首次啟動峰值，預留至少一份滑價距離。
+PROFIT_BANK_LOCK_PCT = min(
+    PROFIT_BANK_LOCK_PCT, max(0.0, PROFIT_BANK_TRIGGER_PCT - SLIPPAGE_PCT)
+)
 
 # --- 急升急降過濾：排除短期劇烈波動的幣種 ---
 # RAPID_MOVE_WINDOW: 回看幾根5分K（3根=15分鐘）

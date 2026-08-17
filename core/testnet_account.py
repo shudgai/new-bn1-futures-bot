@@ -30,6 +30,12 @@ from core.config import (
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_PULLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
+    ENABLE_PROFIT_BANK,
+    PROFIT_BANK_TRIGGER_PCT,
+    PROFIT_BANK_LOCK_PCT,
+    PROFIT_BANK_CAPTURE_RATIO,
+    get_profit_bank_capture_ratio,
+    PROFIT_BANK_MIN_STEP_PCT,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
     PROFIT_ALERT_MIN_PEAK_PCT,
@@ -726,6 +732,81 @@ class BinanceTestnetAccount:
                 await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                 continue
 
+            # 所有策略共用的階梯移動停利：至少鎖 0.25%，之後按
+            # 峰值保留比例持續上移；每次達最小步距才撤換交易所保護單。
+            if ENABLE_PROFIT_BANK and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT:
+                bank_lock_pct = min(
+                    max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
+                    max(0.0, highest_pnl - SLIPPAGE_PCT),
+                )
+                raw_bank_sl = entry_p * (
+                    1.0 + bank_lock_pct
+                    if side == "LONG" else 1.0 - bank_lock_pct
+                )
+                bank_sl = float(self.exchange.price_to_precision(symbol, raw_bank_sl))
+                min_step = entry_p * PROFIT_BANK_MIN_STEP_PCT
+                improves = (
+                    bank_sl > old_sl + min_step if side == "LONG"
+                    else old_sl <= 0.0 or bank_sl < old_sl - min_step
+                )
+                if improves:
+                    protection_installed = not ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                    close_side_bank = "sell" if side == "LONG" else "buy"
+                    tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                    if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                        try:
+                            await self._cancel_all_orders(symbol)
+                            await self._create_protection_order(
+                                symbol, close_side_bank, "STOP_MARKET", pos["qty"], bank_sl,
+                            )
+                            protection_installed = True
+                            if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_bank, "TAKE_PROFIT_MARKET",
+                                        pos["qty"], tp_price,
+                                    )
+                                except Exception as tp_exc:
+                                    self.log(
+                                        f"⚠️ [淨利入庫] {symbol} 入庫停損已建立，但 TP 重掛失敗："
+                                        f"{type(tp_exc).__name__}: {tp_exc}",
+                                        "WARNING",
+                                    )
+                        except Exception as exc:
+                            restored = False
+                            if old_sl > 0:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_bank, "STOP_MARKET", pos["qty"], old_sl,
+                                    )
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                        await self._create_protection_order(
+                                            symbol, close_side_bank, "TAKE_PROFIT_MARKET",
+                                            pos["qty"], tp_price,
+                                        )
+                                    restored = True
+                                except Exception:
+                                    pass
+                            self.log(
+                                f"⚠️ [淨利入庫] {symbol} 保護單建立失敗："
+                                f"{type(exc).__name__}: {exc}；"
+                                f"{'已恢復原停損' if restored else '原停損恢復失敗，下輪重試'}",
+                                "WARNING" if restored else "DANGER",
+                            )
+                    if protection_installed:
+                        meta["sl"] = bank_sl
+                        pos["sl"] = bank_sl
+                        meta["is_breakeven_moved"] = True
+                        pos["is_breakeven_moved"] = True
+                        meta["profit_bank_armed"] = True
+                        pos["profit_bank_armed"] = True
+                        old_sl = bank_sl
+                        self.log(
+                            f"📈 [階梯移動停利] {symbol} 峰值 {highest_pnl:.4%}，"
+                            f"已鎖 {bank_lock_pct:.4%}，保護線上移至 {bank_sl:.6g}",
+                            "SUCCESS",
+                        )
+
             # 結構反彈單專用的早期獲利保護。這層獨立於原生 Trailing，
             # 讓 Testnet 與紙上帳戶在小幅浮盈回吐時採取一致行為。
             if ENABLE_EARLY_PROFIT_GUARD and meta.get("profit_profile") == "BOUNCE":
@@ -1034,8 +1115,11 @@ class BinanceTestnetAccount:
                     )
                     initial_risk = float(pos.get("initial_risk") or meta.get("initial_risk") or 0.0)
                     risk_pct = initial_risk / entry_p if entry_p > 0 else 0.0
+                    # 有明確 initial_risk 的新單直接用 R 倍數啟動。
+                    # 固定百分比只供缺少風險資料的舊單使用，否則窄止損單
+                    # 會在 1.5R 已分批後，剩餘倉仍未獲 trailing 保護。
                     trailing_trigger = (
-                        max(configured_trigger, risk_pct * TRAILING_TRIGGER_R_MULT)
+                        risk_pct * TRAILING_TRIGGER_R_MULT
                         if risk_pct > 0 else configured_trigger
                     )
                     trailing_callback = (

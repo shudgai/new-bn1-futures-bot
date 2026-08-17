@@ -22,6 +22,12 @@ from core.config import (
     TRAILING_TRIGGER_PCT,
     TRAILING_CALLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
+    ENABLE_PROFIT_BANK,
+    PROFIT_BANK_TRIGGER_PCT,
+    PROFIT_BANK_LOCK_PCT,
+    PROFIT_BANK_CAPTURE_RATIO,
+    get_profit_bank_capture_ratio,
+    PROFIT_BANK_MIN_STEP_PCT,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
     PROFIT_ALERT_MIN_PEAK_PCT,
@@ -939,6 +945,36 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
+            # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
+            # 但保留部分回檔空間讓趨勢延伸。保護線永遠不會往回放寬。
+            if ENABLE_PROFIT_BANK and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT:
+                bank_lock_pct = min(
+                    max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
+                    max(0.0, highest_pnl - SLIPPAGE_PCT),
+                )
+                bank_sl = entry_p * (
+                    1.0 + bank_lock_pct
+                    if side == "LONG" else 1.0 - bank_lock_pct
+                )
+                current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                min_step = entry_p * PROFIT_BANK_MIN_STEP_PCT
+                improves = (
+                    bank_sl > current_sl + min_step if side == "LONG"
+                    else current_sl <= 0.0 or bank_sl < current_sl - min_step
+                )
+                if improves:
+                    pos["sl"] = bank_sl
+                    meta["sl"] = bank_sl
+                    pos["is_breakeven_moved"] = True
+                    meta["is_breakeven_moved"] = True
+                    pos["profit_bank_armed"] = True
+                    meta["profit_bank_armed"] = True
+                    self.log(
+                        f"📈 [階梯移動停利] {symbol} 峰值 {highest_pnl:.4%}，"
+                        f"已鎖 {bank_lock_pct:.4%}，保護線上移至 {bank_sl:.6g}",
+                        "SUCCESS",
+                    )
+
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
                 or meta.get("bounce_capture_ratio")
@@ -994,8 +1030,11 @@ class PaperAccount:
             # 舊單才沿用百分比門檻。止利線仍保證落在扣除成本後的安全區。
             initial_risk = float(pos.get("initial_risk") or meta.get("initial_risk") or 0.0)
             risk_pct = initial_risk / entry_p if entry_p > 0 else 0.0
+            # 新單有明確 initial_risk 時，R 倍數就是唯一一致的尺度。
+            # 若再和固定百分比取 max，窄止損單雖已在 1.5R 分批止盈，
+            # 剩餘部位卻可能尚未啟動 trailing，最後又回到原始 -1R 止損。
             trailing_trigger = (
-                max(configured_trigger, risk_pct * TRAILING_TRIGGER_R_MULT)
+                risk_pct * TRAILING_TRIGGER_R_MULT
                 if risk_pct > 0 else configured_trigger
             )
             trailing_callback = (
