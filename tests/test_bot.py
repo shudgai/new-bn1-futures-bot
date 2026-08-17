@@ -4219,9 +4219,9 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
     frame["high"] = 106.0
     frame["kc_upper"] = 110.0
     frame.loc[frame.index[-2], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.5, 104.7, 104.8, 52.0, 0.1, 0.1]
-    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.7, 105.0, 105.2, 56.0, 0.2, 0.2]
+    frame.loc[frame.index[-1], ["open", "close", "high", "rsi", "macd_hist", "macd_line"]] = [104.7, 105.0, 105.2, 52.0, 0.2, 0.2]
     signal = strategy.evaluate_structured_entry(
-        frame, st_direction_1h=1, btc_st_direction_1h=1,
+        frame, ema_50_1h=110.0, st_direction_1h=1, btc_st_direction_1h=1, symbol="BTC/USDT",
         indicators_precomputed=True,
     )
     assert signal["action"] == "ENTER_MARKET"

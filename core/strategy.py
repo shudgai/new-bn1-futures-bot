@@ -933,6 +933,109 @@ class SuperTrendKeltnerStrategy:
                     f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
                 )
 
+        # MomentumCross 只把交叉視為候選訊號。正式進場延後一根已收盤 K 棒，
+        # 要求收盤價沿訊號方向續走且交叉仍有效，避免沒有延續便立即追價。
+        pre_cross = df.iloc[-3]
+        macd_hist_cross = (
+            float(pre_cross["macd_hist"]) <= 0 < float(prev["macd_hist"])
+            if side == "LONG" else float(pre_cross["macd_hist"]) >= 0 > float(prev["macd_hist"])
+        )
+        macd_line_cross = (
+            float(pre_cross["macd_line"]) <= float(pre_cross["macd_signal"])
+            and float(prev["macd_line"]) > float(prev["macd_signal"])
+            and float(prev["macd_line"]) >= 0
+            if side == "LONG" else
+            float(pre_cross["macd_line"]) >= float(pre_cross["macd_signal"])
+            and float(prev["macd_line"]) < float(prev["macd_signal"])
+            and float(prev["macd_line"]) <= 0
+        )
+        rsi_cross = (
+            float(pre_cross["rsi"]) < 50 and float(prev["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
+            if side == "LONG" else
+            float(pre_cross["rsi"]) > 50 and float(prev["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
+        )
+        if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
+            trigger_still_valid = (
+                (macd_hist_cross and (
+                    float(curr["macd_hist"]) > 0 if side == "LONG"
+                    else float(curr["macd_hist"]) < 0
+                ))
+                or (macd_line_cross and (
+                    float(curr["macd_line"]) > float(curr["macd_signal"])
+                    if side == "LONG" else
+                    float(curr["macd_line"]) < float(curr["macd_signal"])
+                ))
+                or (rsi_cross and (
+                    float(curr["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
+                    if side == "LONG" else
+                    float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
+                ))
+            )
+            continuation_confirmed = (
+                price > float(prev["close"])
+                and price > float(curr["open"])
+                and trigger_still_valid
+                if side == "LONG" else
+                price < float(prev["close"])
+                and price < float(curr["open"])
+                and trigger_still_valid
+            )
+            if MOMENTUM_CROSS_REQUIRE_CONTINUATION and not continuation_confirmed:
+                signal_close = float(prev["close"])
+                direction_word = "高於" if side == "LONG" else "低於"
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "momentum_continuation_confirmed": False,
+                    "reason": (
+                        f"MomentumCross_{side} 等待價格延續：收盤 {price:.6g} 尚未"
+                        f"{direction_word}訊號棒收盤 {signal_close:.6g}，或交叉已失效"
+                    ),
+                    **common,
+                }
+
+            momentum_swing = df.iloc[-(STRUCTURED_SWING_LOOKBACK + 1):-1]
+            momentum_prior_high = float(momentum_swing["high"].max())
+            momentum_prior_low = float(momentum_swing["low"].min())
+            profit_room_pct = (
+                max(0.0, (momentum_prior_high - price) / price)
+                if side == "LONG" else
+                max(0.0, (price - momentum_prior_low) / price)
+            )
+            if profit_room_pct < MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "momentum_continuation_confirmed": continuation_confirmed,
+                    "profit_room_pct": profit_room_pct,
+                    "reason": (
+                        f"MomentumCross_{side} 預估獲利空間不足：目前"
+                        f"{profit_room_pct:.2%}<最低"
+                        f"{MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT:.2%}，拒絕進場"
+                    ),
+                    **common,
+                }
+
+            triggers = []
+            if macd_hist_cross or macd_line_cross:
+                triggers.append("MACD交叉")
+            if rsi_cross:
+                triggers.append("RSI穿越50")
+            trigger_text = "+".join(triggers)
+            return {
+                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
+                "score": 80 - btc_score_penalty,
+                "momentum_continuation_confirmed": continuation_confirmed,
+                "profit_room_pct": profit_room_pct,
+                # MomentumCross follows an aligned 5m/1h trend. Treating it as
+                # a BOUNCE position makes the short-window bounce guard close it
+                # before the R-based trailing exit has a chance to run.
+                "profit_profile": "TREND_EXTENSION",
+                "reason": (
+                    f"MomentumCross_{side}｜{trigger_text}｜價格延續確認｜"
+                    f"預估空間{profit_room_pct:.2%}"
+                ), **common,
+            }
+
+
         # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
         if ENABLE_1H_EMA50_FILTER and not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
             ema_lower_bound = ema_50_1h * (1.0 - STRUCTURED_1H_EMA50_TOLERANCE_PCT)
@@ -1349,105 +1452,6 @@ class SuperTrendKeltnerStrategy:
                     )
                 ),
                 **common,
-            }
-
-        # MomentumCross 只把交叉視為候選訊號。正式進場延後一根已收盤 K 棒，
-        # 要求收盤價沿訊號方向續走且交叉仍有效，避免沒有延續便立即追價。
-        pre_cross = df.iloc[-3]
-        macd_hist_cross = (
-            float(pre_cross["macd_hist"]) <= 0 < float(prev["macd_hist"])
-            if side == "LONG" else float(pre_cross["macd_hist"]) >= 0 > float(prev["macd_hist"])
-        )
-        macd_line_cross = (
-            float(pre_cross["macd_line"]) <= float(pre_cross["macd_signal"])
-            and float(prev["macd_line"]) > float(prev["macd_signal"])
-            and float(prev["macd_line"]) >= 0
-            if side == "LONG" else
-            float(pre_cross["macd_line"]) >= float(pre_cross["macd_signal"])
-            and float(prev["macd_line"]) < float(prev["macd_signal"])
-            and float(prev["macd_line"]) <= 0
-        )
-        rsi_cross = (
-            float(pre_cross["rsi"]) < 50 and float(prev["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
-            if side == "LONG" else
-            float(pre_cross["rsi"]) > 50 and float(prev["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
-        )
-        if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
-            trigger_still_valid = (
-                (macd_hist_cross and (
-                    float(curr["macd_hist"]) > 0 if side == "LONG"
-                    else float(curr["macd_hist"]) < 0
-                ))
-                or (macd_line_cross and (
-                    float(curr["macd_line"]) > float(curr["macd_signal"])
-                    if side == "LONG" else
-                    float(curr["macd_line"]) < float(curr["macd_signal"])
-                ))
-                or (rsi_cross and (
-                    float(curr["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
-                    if side == "LONG" else
-                    float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
-                ))
-            )
-            continuation_confirmed = (
-                price > float(prev["close"])
-                and price > float(curr["open"])
-                and trigger_still_valid
-                if side == "LONG" else
-                price < float(prev["close"])
-                and price < float(curr["open"])
-                and trigger_still_valid
-            )
-            if MOMENTUM_CROSS_REQUIRE_CONTINUATION and not continuation_confirmed:
-                signal_close = float(prev["close"])
-                direction_word = "高於" if side == "LONG" else "低於"
-                return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "momentum_continuation_confirmed": False,
-                    "reason": (
-                        f"MomentumCross_{side} 等待價格延續：收盤 {price:.6g} 尚未"
-                        f"{direction_word}訊號棒收盤 {signal_close:.6g}，或交叉已失效"
-                    ),
-                    **common,
-                }
-
-            profit_room_pct = (
-                max(0.0, (prior_high - price) / price)
-                if side == "LONG" else
-                max(0.0, (price - prior_low) / price)
-            )
-            if profit_room_pct < MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT:
-                return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "momentum_continuation_confirmed": continuation_confirmed,
-                    "profit_room_pct": profit_room_pct,
-                    "reason": (
-                        f"MomentumCross_{side} 預估獲利空間不足：目前"
-                        f"{profit_room_pct:.2%}<最低"
-                        f"{MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT:.2%}，拒絕進場"
-                    ),
-                    **common,
-                }
-
-            triggers = []
-            if macd_hist_cross or macd_line_cross:
-                triggers.append("MACD交叉")
-            if rsi_cross:
-                triggers.append("RSI穿越50")
-            trigger_text = "+".join(triggers)
-            return {
-                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
-                "score": 80 - btc_score_penalty,
-                "momentum_continuation_confirmed": continuation_confirmed,
-                "profit_room_pct": profit_room_pct,
-                # MomentumCross follows an aligned 5m/1h trend. Treating it as
-                # a BOUNCE position makes the short-window bounce guard close it
-                # before the R-based trailing exit has a chance to run.
-                "profit_profile": "TREND_EXTENSION",
-                "reason": (
-                    f"MomentumCross_{side}｜{trigger_text}｜價格延續確認｜"
-                    f"預估空間{profit_room_pct:.2%}"
-                ), **common,
             }
 
         missing = []
