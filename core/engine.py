@@ -2405,11 +2405,35 @@ class TradingEngine:
 
             candles_1m = await self.fetch_klines(symbol, timeframe="1m", limit=20)
             candidate_for_check = dict(candidate, target_price=fresh_target, atr=fresh_atr)
-            if not self._pullback_reversal_confirmed(candidate_for_check, candles_1m):
-                continue
+            
+            from core.config import ENABLE_TRAILING_ENTRY, TRAILING_REVERSAL_ATR_MULT, TRAILING_ENTRY_TYPE
+            
+            reversal_confirmed = False
+            use_post_only = True
             live_price = self.tickers.get(symbol, live_price)
+            
+            if ENABLE_TRAILING_ENTRY:
+                if "local_extreme" not in candidate:
+                    candidate["local_extreme"] = live_price
+                else:
+                    if candidate["side"] == "LONG":
+                        candidate["local_extreme"] = min(candidate["local_extreme"], live_price)
+                    else:
+                        candidate["local_extreme"] = max(candidate["local_extreme"], live_price)
+                
+                bounce_distance = abs(live_price - candidate["local_extreme"])
+                if bounce_distance >= TRAILING_REVERSAL_ATR_MULT * fresh_atr:
+                    reversal_confirmed = True
+                    use_post_only = (TRAILING_ENTRY_TYPE != "MARKET")
+                    self.account.log(f"📈 [Trailing Entry] {symbol} {candidate['side']} 從極值 {candidate['local_extreme']:.8g} 反彈 {bounce_distance/max(fresh_atr, 1e-12):.2f} ATR，確認進場", "INFO")
+            else:
+                reversal_confirmed = self._pullback_reversal_confirmed(candidate_for_check, candles_1m)
+                
+            if not reversal_confirmed:
+                continue
+
             reclaimed = live_price >= fresh_target if candidate["side"] == "LONG" else live_price <= fresh_target
-            if not reclaimed:
+            if not reclaimed and not ENABLE_TRAILING_ENTRY:
                 self._drop_pullback_candidate(symbol, "反轉確認後又跌回/漲回目標錯側", now)
                 continue
             committed = len(self.account.positions) + len(self.account.pending_limit_orders)
@@ -2420,11 +2444,13 @@ class TradingEngine:
                 self._drop_pullback_candidate(symbol, "可用保證金不足", now, cooldown=False)
                 continue
 
-            sl_distance, tp_distance = compute_sl_tp_distance(fresh_target, fresh_atr)
-            sl, tp = build_sl_tp_for_side(fresh_target, candidate["side"], sl_distance, tp_distance)
+            # 如果是 Trailing Entry Market，以 live_price 作為進場基準，止損基準設為 local_extreme 會更安全
+            entry_price_ref = live_price if (ENABLE_TRAILING_ENTRY and not use_post_only) else fresh_target
+            sl_distance, tp_distance = compute_sl_tp_distance(entry_price_ref, fresh_atr)
+            sl, tp = build_sl_tp_for_side(entry_price_ref, candidate["side"], sl_distance, tp_distance)
             original_amount = candidate["amount_usdt"]
             candidate["amount_usdt"], projected_risk = cap_margin_to_trade_risk(
-                original_amount, candidate["leverage"], fresh_target, sl,
+                original_amount, candidate["leverage"], entry_price_ref, sl,
             )
             if candidate["amount_usdt"] < original_amount - 0.01:
                 self.account.log(
@@ -2435,11 +2461,11 @@ class TradingEngine:
                 self._drop_pullback_candidate(symbol, "執行市場合約或價差驗證未通過", now)
                 continue
             placed = await self.account.place_limit_entry(
-                symbol=symbol, side=candidate["side"], target_price=fresh_target,
+                symbol=symbol, side=candidate["side"], target_price=entry_price_ref,
                 amount_usdt=candidate["amount_usdt"], sl=sl, tp=tp,
-                reason=f"Pullback_Confirmed_Limit | {candidate['reason']}", atr=fresh_atr,
+                reason=f"Trailing_Entry_Market | {candidate['reason']}" if ENABLE_TRAILING_ENTRY else f"Pullback_Confirmed_Limit | {candidate['reason']}", atr=fresh_atr,
                 leverage=candidate["leverage"], signal_score=candidate["score"],
-                post_only=True, entry_context={
+                post_only=use_post_only, entry_context={
                     "btc_regime_at_entry": candidate["btc_regime_mode"],
                     "btc_direction_1h_at_entry": candidate["btc_direction_1h"],
                     "btc_score_penalty": candidate["btc_score_penalty"],

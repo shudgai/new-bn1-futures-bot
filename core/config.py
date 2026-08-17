@@ -403,8 +403,8 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
 # 曾經允許高分訊號繞過此過濾（SYMBOL_1H_ST_FILTER_BYPASS_SCORE），但實測
 # 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
-# 順著1H大方向。已禁用此過濾以增加開倉機會。
-SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "false").lower() == "true"
+# 順著1H大方向。為了改善「一進場就吃虧損」的問題，已重新啟用此大週期過濾。
+SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
 # ENABLE_1H_EMA50_FILTER：是否啟用 1h EMA50 大週期趨勢過濾
 ENABLE_1H_EMA50_FILTER = os.getenv("ENABLE_1H_EMA50_FILTER", "true").lower() == "true"
 # 結構進場允許價格在 1h EMA50 附近小幅穿越，避免微小報價雜訊造成方向反覆拒單。
@@ -421,8 +421,8 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-# 放寬入場最低分數，預設 75 分以提高成交機會
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "75"))
+# 收緊入場最低分數，從 75 提高到 80，嚴格過濾低品質/勝率不高的訊號
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "80"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
@@ -502,13 +502,13 @@ TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.00
 # 1. ADX_MANDATORY_MIN（硬性底線）：ADX 低於此值直接 HOLD，連評分都不進入。
 #    盤整期 ADX 常落在 10~17，12 以下可確認為「完全無趨勢」，假突破最高發。
 #    設 12 而非直接用 ADX_QUALITY_MIN(15) 是刻意保守——只擋極端無動能場景，
-#    不大幅壓縮訊號數量；後續實測再視情況調高。
+#    不大幅壓縮訊號數量；後續實測再視情況調高。已提高到 12.0 減少假突破。
 # 2. ADX_QUALITY_MIN/FULL（軟性加分）：12~30 區間內按比例加分，越高越好，
 #    但不到最低門檻就加 0 分；超出 ADX_QUALITY_FULL 視為滿分。
 # 3. ADX_DECLINE 衰退擋單：ADX 現在比 N 根前低且已低於 ADX_QUALITY_MIN，
 #    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
-ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "8.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "12.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # WEAK_ENERGY_ADX_THRESHOLD：進場當下 ADX 低於這個門檻（動能偏弱/中等，
@@ -927,4 +927,9 @@ KELTNER_MIN_WIDTH_ATR_MULT_LONG = float(os.getenv("KELTNER_MIN_WIDTH_ATR_MULT_LO
 SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG = float(os.getenv("SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG", "0.40"))
 SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED", "55"))
 
-
+# ====== 【改進方案】動態反彈確認進場 (Trailing Entry) ======
+# 解決「進場點位不夠漂亮，一進場就吃虧損」的問題。
+# 確認反彈幅度後才進場，避免在暴跌中接飛刀。
+ENABLE_TRAILING_ENTRY = os.getenv("ENABLE_TRAILING_ENTRY", "true").lower() == "true"
+TRAILING_REVERSAL_ATR_MULT = float(os.getenv("TRAILING_REVERSAL_ATR_MULT", "0.15"))
+TRAILING_ENTRY_TYPE = os.getenv("TRAILING_ENTRY_TYPE", "MARKET") # 可選 "MARKET" 或是 "LIMIT_CHASE" (暫定使用 MARKET 以確保進場)

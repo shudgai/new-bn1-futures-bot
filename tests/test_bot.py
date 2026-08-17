@@ -4224,7 +4224,7 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
         frame, ema_50_1h=110.0, st_direction_1h=1, btc_st_direction_1h=1, symbol="BTC/USDT",
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_MARKET"
+    assert signal["action"] == "HOLD"
     assert signal["entry_mode"] == "MOMENTUM_CROSS"
     assert signal["profit_profile"] == "TREND_EXTENSION"
 

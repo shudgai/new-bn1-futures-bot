@@ -888,10 +888,17 @@ class SuperTrendKeltnerStrategy:
             if "macd_hist" in df.columns and "close" in df.columns:
                 bearish_divergence = detect_macd_divergence(df, "SHORT")
             if recent_high_distance_pct <= 0.015 and bearish_divergence:
-                # 記錄為診斷註記，不做硬性擋單，讓 scoring 決定最終行為
-                curr_reason = f"Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)"
-                curr = curr.copy()
-                curr['eligibility_note'] = curr_reason
+                # 拒絕在接近前高點時遇到 MACD 頂背離還繼續做多 (避免接頂)
+                return {
+                    "action": "HOLD",
+                    "reason": f"Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)",
+                    "side": side,
+                    "score": 0,
+                    "btc_regime_mode": "ALIGNED",
+                    "btc_allocation_factor": 1.0,
+                    "volume_ratio": volume_ratio,
+                    "price": price,
+                }
         elif side == "SHORT":
             if "high" in df.columns and len(df) >= 25:
                 recent_high = float(df.iloc[-25:-1]["high"].max())
@@ -928,10 +935,17 @@ class SuperTrendKeltnerStrategy:
             if "macd_hist" in df.columns and "close" in df.columns:
                 bullish_divergence = detect_macd_divergence(df, "LONG")
             if recent_low_distance_pct <= 0.015 and bullish_divergence:
-                curr = curr.copy()
-                curr['eligibility_note'] = (
-                    f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
-                )
+                # 拒絕在接近前低點時遇到 MACD 底背離還繼續做空 (避免接底)
+                return {
+                    "action": "HOLD",
+                    "reason": f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)",
+                    "side": side,
+                    "score": 0,
+                    "btc_regime_mode": "ALIGNED",
+                    "btc_allocation_factor": 1.0,
+                    "volume_ratio": volume_ratio,
+                    "price": price,
+                }
 
         # MomentumCross 只把交叉視為候選訊號。正式進場延後一根已收盤 K 棒，
         # 要求收盤價沿訊號方向續走且交叉仍有效，避免沒有延續便立即追價。
