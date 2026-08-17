@@ -297,7 +297,7 @@ ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "false").lower() == "true"
 # 移動止損的 ATR 倍數（預設 3 倍 ATR，動態適應市場波動範圍）
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
-MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "2.0"))
+MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.5"))
 ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
@@ -405,8 +405,10 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
 # 順著1H大方向。為了改善「一進場就吃虧損」的問題，已重新啟用此大週期過濾。
 SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
+# ENABLE_MACD_DIVERGENCE_FILTER：是否啟用 MACD 背離擋單
+ENABLE_MACD_DIVERGENCE_FILTER = os.getenv("ENABLE_MACD_DIVERGENCE_FILTER", "false").lower() == "true"
 # ENABLE_1H_EMA50_FILTER：是否啟用 1h EMA50 大週期趨勢過濾
-ENABLE_1H_EMA50_FILTER = os.getenv("ENABLE_1H_EMA50_FILTER", "true").lower() == "true"
+ENABLE_1H_EMA50_FILTER = os.getenv("ENABLE_1H_EMA50_FILTER", "false").lower() == "true"
 # 結構進場允許價格在 1h EMA50 附近小幅穿越，避免微小報價雜訊造成方向反覆拒單。
 STRUCTURED_1H_EMA50_TOLERANCE_PCT = float(
     os.getenv("STRUCTURED_1H_EMA50_TOLERANCE_PCT", "0.002")
@@ -475,7 +477,7 @@ PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
-KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
+KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.5"))  # 放寬量能門檻
 # BREAKOUT_CONFIRM_BARS：KC 突破需要「收盤確認」的防假突破機制。
 BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 # POST_BREAKOUT_VOL_SUSTAIN_RATIO：突破後量能持續性確認，用於 confirm_pullback_entry()。

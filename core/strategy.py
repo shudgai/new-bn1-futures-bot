@@ -82,6 +82,8 @@ def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
     return float(recent['high'].max()) >= float(early['high'].max())
 
 def detect_macd_divergence(df: pd.DataFrame, side: str, lookback: int = 30) -> bool:
+    if not getattr(_core_config, "ENABLE_MACD_DIVERGENCE_FILTER", True):
+        return False
     if len(df) < lookback + 5:
         return False
     closes = df['close'].values
