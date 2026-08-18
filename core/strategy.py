@@ -162,7 +162,7 @@ def evaluate_entry_quality_gate(
     score: int,
     df: pd.DataFrame | None = None,
     min_rr: float = MIN_NET_REWARD_RISK,
-    min_volume_ratio: float = max(KELTNER_MIN_VOLUME_RATIO, 0.8),
+    min_volume_ratio: float = KELTNER_MIN_VOLUME_RATIO,
 ):
     """進場品質檢查：只攔截真正高風險、低價值的進場型態，而不是一刀切封死所有交易。
 
@@ -1555,7 +1555,7 @@ class SuperTrendKeltnerStrategy:
             volume_ratio=volume_ratio,
             score=85,
             df=df,
-            min_volume_ratio=max(volume_min_ratio, 0.8),
+            min_volume_ratio=volume_min_ratio,
         )
         if quality_gate["blocked"]:
             return {
