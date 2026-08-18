@@ -54,6 +54,20 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 SELECTION_FILE = os.path.join(DATA_DIR, "symbol_selection.json")
 
 
+def _trade_ts(trade: dict) -> float:
+    """從交易記錄中取出 Unix 時間戳（秒）。
+    支援 timestamp（秒）和 id（毫秒）兩種欄位，找不到時回傳 0.0。
+    """
+    ts = trade.get("timestamp")
+    if isinstance(ts, (int, float)) and ts > 0:
+        return float(ts)
+    trade_id = trade.get("id")
+    if isinstance(trade_id, (int, float)) and trade_id > 0:
+        return float(trade_id) / 1000.0
+    return 0.0
+
+
+
 class SymbolRotation:
     def __init__(self, account):
         self.account = account
@@ -167,14 +181,22 @@ class SymbolRotation:
     def get_stop_cooldown_remaining(
         self, symbol: str, side: str, now: float = None,
     ) -> float:
-        """同幣同方向連續硬停損後的剩餘冷卻秒數。"""
+        """同幣同方向連續硬停損後的剩餘冷卻秒數。
+
+        只計算最近 CONSECUTIVE_STOP_COOLDOWN_SEC * 2 秒窗口內的止損，
+        避免很久以前的舊止損一直被算進 streak，封鎖久遠後的同方向進場。
+        """
         if CONSECUTIVE_STOP_COOLDOWN_SEC <= 0:
             return 0.0
+        _now = float(time.time() if now is None else now)
+        # 時間窗口：只看最近 max(冷卻時間*2, 24小時) 內的交易記錄
+        lookback_window = max(CONSECUTIVE_STOP_COOLDOWN_SEC * 2, 86400.0)
         closed = [
             trade for trade in self.account.trades
             if trade.get("symbol") == symbol
             and trade.get("side") == side
             and str(trade.get("action", "")).startswith("CLOSE")
+            and _trade_ts(trade) >= _now - lookback_window
         ]
         streak = 0
         latest_stop_at = 0.0
@@ -187,17 +209,12 @@ class SymbolRotation:
                 break
             streak += 1
             if latest_stop_at <= 0:
-                timestamp = trade.get("timestamp")
-                if isinstance(timestamp, (int, float)) and timestamp > 0:
-                    latest_stop_at = float(timestamp)
-                else:
-                    trade_id = trade.get("id")
-                    if isinstance(trade_id, (int, float)) and trade_id > 0:
-                        latest_stop_at = float(trade_id) / 1000.0
+                latest_stop_at = _trade_ts(trade)
         if streak < CONSECUTIVE_STOP_COOLDOWN_COUNT or latest_stop_at <= 0:
             return 0.0
-        elapsed = max(0.0, float(time.time() if now is None else now) - latest_stop_at)
+        elapsed = max(0.0, _now - latest_stop_at)
         return max(0.0, CONSECUTIVE_STOP_COOLDOWN_SEC - elapsed)
+
 
 
     @staticmethod

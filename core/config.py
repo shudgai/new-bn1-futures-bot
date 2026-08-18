@@ -191,6 +191,12 @@ BREAKOUT_ENTRY_SCORE = int(os.getenv("BREAKOUT_ENTRY_SCORE", "79"))
 STRUCTURED_VOLUME_MIN_RATIO = float(os.getenv("STRUCTURED_VOLUME_MIN_RATIO", "1.0"))
 STRUCTURED_SWING_LOOKBACK = int(os.getenv("STRUCTURED_SWING_LOOKBACK", "20"))
 STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "4.00"))
+# PRICE_NEAR_SUPPORT_PCT：evaluate_signal() 的強制條件。
+# 做多要求現價在最近 24 根 K 棒最低支撐位的此比例以內；
+# 做空要求現價在最近 24 根 K 棒最高壓力位的此比例以內。
+# 原本硬編碼為 3%，在趨勢延伸或中段盤整時幾乎永遠封鎖進場。
+# 設為 0 或負值則完全停用此條件（不建議，除非搭配其他進場過濾）。
+PRICE_NEAR_SUPPORT_PCT = float(os.getenv("PRICE_NEAR_SUPPORT_PCT", "0.08"))
 STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC = float(os.getenv("STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC", "300"))
 STRUCTURED_RSI_LONG_TRIGGER = float(os.getenv("STRUCTURED_RSI_LONG_TRIGGER", "51"))
 STRUCTURED_RSI_SHORT_TRIGGER = float(os.getenv("STRUCTURED_RSI_SHORT_TRIGGER", "49"))

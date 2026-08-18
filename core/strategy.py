@@ -54,6 +54,7 @@ from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     KC_TOUCH_LOOKBACK_BARS,
     MAINSTREAM_SYMBOLS, VOLUME_DIVERGENCE_LOOKBACK_BARS, VOLUME_DIVERGENCE_MAX_RATIO,
+    PRICE_NEAR_SUPPORT_PCT,
 )
 
 
@@ -1618,18 +1619,25 @@ class SuperTrendKeltnerStrategy:
         st_dir = curr['st_direction']
 
         # 計算支撐與壓力區（基於最近 24 根已收盤的 5m K棒）
-        if symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+        # PRICE_NEAR_SUPPORT_PCT：做多要求現價在支撐位 N% 以內；做空要求現價在壓力位 N% 以內。
+        # 設為 0（或負值）則完全停用此條件。預設 8%，比原本 3% 寬鬆，避免趨勢延伸時永遠進不了場。
+        _near_pct = float(getattr(_core_config, 'PRICE_NEAR_SUPPORT_PCT', PRICE_NEAR_SUPPORT_PCT))
+        if _near_pct > 0 and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
             past_24_bars = df.iloc[-25:-1]
             support_level = float(past_24_bars['low'].min())
             resistance_level = float(past_24_bars['high'].max())
 
-            # 做多：必須在支撐位 3% 內
-            if st_dir == 1 and price > support_level * 1.03:
-                return eligibility_hold(f"Mandatory_Fail: Price_Not_Near_Support({price:.6g}>{support_level:.6g}*1.03)")
+            # 做多：必須在支撐位 N% 內
+            if st_dir == 1 and price > support_level * (1.0 + _near_pct):
+                return eligibility_hold(
+                    f"Mandatory_Fail: Price_Not_Near_Support({price:.6g}>{support_level:.6g}*{1.0+_near_pct:.3f})"
+                )
 
-            # 做空：必須在壓力位 3% 內
-            if st_dir == -1 and price < resistance_level * 0.97:
-                return eligibility_hold(f"Mandatory_Fail: Price_Not_Near_Resistance({price:.6g}<{resistance_level:.6g}*0.97)")
+            # 做空：必須在壓力位 N% 內
+            if st_dir == -1 and price < resistance_level * (1.0 - _near_pct):
+                return eligibility_hold(
+                    f"Mandatory_Fail: Price_Not_Near_Resistance({price:.6g}<{resistance_level:.6g}*{1.0-_near_pct:.3f})"
+                )
 
         # 層 A：BTC 大盤風險調整。剛翻轉仍暫停；方向相反改為扣分與縮倉，
         # 讓真正相對強勢的個幣仍可在通過其餘品質與回踩確認後進場。
