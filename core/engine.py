@@ -2714,7 +2714,10 @@ class TradingEngine:
                         from core.strategy import detect_simple_ma7_signal
                         sig = detect_simple_ma7_signal(df, live_price)
                         if sig["detected"]:
-                            from core.config import TARGET_PERCENTAGE, MAX_NOTIONAL_USDT
+                            from core.config import TARGET_PERCENTAGE, MAX_NOTIONAL_USDT, MAX_SLOTS
+                            if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
+                                signal_progress.append(f"{coin} {direction_text} 資格未通過,槽位已滿({MAX_SLOTS})")
+                                continue
                             leverage = self.account.get_leverage()
                             max_bal = available_balance * TARGET_PERCENTAGE
                             notional = min(max_bal * leverage, MAX_NOTIONAL_USDT)
