@@ -2319,7 +2319,7 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
         
     ma7_change = abs(ma7_curr - ma7_prev)
     if ma7_change < MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:
-        return {"detected": False, "reason": f"MA7 change too small ({ma7_change:.4f} < {MA7_ATR_CHANGE_MIN_RATIO * atr14:.4f})"}
+        return {"detected": False, "reason": f"MA7 change too small ({ma7_change:.4f} < {MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:.4f})"}
         
     amplitude = float(curr['high'] - curr['low'])
     if amplitude > MA7_MAX_CANDLE_AMPLITUDE_MULT * atr14:
