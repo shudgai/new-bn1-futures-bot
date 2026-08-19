@@ -2310,7 +2310,7 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
 
     # Volatility / Candle checks
     from core.config import (
-        MA7_MIN_ATR_PCT, MA7_ATR_CHANGE_MIN_RATIO, MA7_MAX_CANDLE_AMPLITUDE_MULT,
+        MA7_MIN_ATR_PCT, MA7_ENTRY_ATR_CHANGE_MIN_RATIO, MA7_EXIT_ATR_CHANGE_MIN_RATIO, FIXED_STOP_LOSS_PCT, MA7_MAX_CANDLE_AMPLITUDE_MULT,
         MA7_MAX_CLOSE_CHANGE_MULT, MA7_MARK_PRICE_DEV_PCT
     )
 
@@ -2318,7 +2318,7 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
         return {"detected": False, "reason": f"Low ATR14 ({atr14:.4f} < {price * MA7_MIN_ATR_PCT:.4f})"}
         
     ma7_change = abs(ma7_curr - ma7_prev)
-    if ma7_change < MA7_ATR_CHANGE_MIN_RATIO * atr14:
+    if ma7_change < MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:
         return {"detected": False, "reason": f"MA7 change too small ({ma7_change:.4f} < {MA7_ATR_CHANGE_MIN_RATIO * atr14:.4f})"}
         
     amplitude = float(curr['high'] - curr['low'])
@@ -2367,7 +2367,7 @@ def check_simple_ma7_exit(df: pd.DataFrame, side: str) -> dict:
     Simple MA7 strategy exit conditions:
     - Long: MA7 peak (ma7[-3] < ma7[-2] > ma7[-1])
     - Short: MA7 valley (ma7[-3] > ma7[-2] < ma7[-1])
-    Ignores exit if MA7 change < 0.35 * ATR14 (low volatility).
+    Ignores exit if MA7 change < 0.25 * ATR14 (low volatility).
     """
     if len(df) < 14:
         return {"close": False, "reason": "Data too short"}
@@ -2392,10 +2392,10 @@ def check_simple_ma7_exit(df: pd.DataFrame, side: str) -> dict:
     ma7_prev = float(ma7.iloc[-2])
     ma7_prev2 = float(ma7.iloc[-3])
 
-    from core.config import MA7_ATR_CHANGE_MIN_RATIO
+    from core.config import MA7_ENTRY_ATR_CHANGE_MIN_RATIO, MA7_EXIT_ATR_CHANGE_MIN_RATIO, FIXED_STOP_LOSS_PCT
 
     ma7_change = abs(ma7_curr - ma7_prev)
-    if ma7_change < MA7_ATR_CHANGE_MIN_RATIO * atr14:
+    if ma7_change < MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:
         return {"close": False, "reason": "Low volatility: MA7 change too small"}
 
     if side == "LONG":

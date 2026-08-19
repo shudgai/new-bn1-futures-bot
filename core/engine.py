@@ -819,6 +819,7 @@ class TradingEngine:
         self.analysis_task = asyncio.create_task(self._analysis_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
+        asyncio.create_task(self._fixed_stop_loss_loop())
         # KC失敗、ATR追蹤、RR分批與1h翻向出場背景任務
         self.trend_follow_task = asyncio.create_task(self._run_structured_exits())
         # 舊移動停損任務保留但預設停用，避免與結構ATR追蹤衝突
@@ -996,6 +997,34 @@ class TradingEngine:
             except Exception as exc:
                 self.account.log(f"⚠️ [全市場掃描] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(SCAN_INTERVAL_SEC)
+
+
+    async def _fixed_stop_loss_loop(self):
+        """Runs every 10 seconds to check for a hard 0.5% stop loss using mark price"""
+        while self.is_running:
+            try:
+                for symbol, position in list(self.account.positions.items()):
+                    live_price = float(self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"])
+                    entry_price = float(position["entry_price"])
+                    side = position["side"]
+                    
+                    if entry_price > 0 and live_price > 0:
+                        if side == "LONG":
+                            pnl_pct = (live_price - entry_price) / entry_price
+                        else:
+                            pnl_pct = (entry_price - live_price) / entry_price
+                            
+                        import core.config as config
+                        if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
+                            self.account.log(f"🚨 [固定止損觸發] {symbol} 虧損達 {pnl_pct*100:.2f}% (現價 {live_price})，執行自動平倉", "DANGER")
+                            await self.account.close_position(symbol, live_price, "固定止損 (0.5%)")
+                
+                import asyncio
+                await asyncio.sleep(10)
+            except Exception as e:
+                self.account.log(f"⚠️ Fixed SL loop error: {str(e)}", "WARNING")
+                import asyncio
+                await asyncio.sleep(10)
 
     async def _position_trigger_loop(self):
         while self.is_running:
@@ -2701,7 +2730,7 @@ class TradingEngine:
                                     reason=sig["reason"]
                                 )
                             continue
-                                        self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
+                    self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:
                         self.account.save_state()
                         self._last_diagnostic_stats_save_at = now_time
