@@ -1069,24 +1069,27 @@ class SuperTrendKeltnerStrategy:
                 }
 
         # 計算支撐與壓力區（基於最近 24 根已收盤 of 5m K棒）
-        if not is_dca_check and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+        # PRICE_NEAR_SUPPORT_PCT=0 則停用此條件（與 evaluate_signal 保持一致）
+        _sp_near_pct = float(getattr(_core_config, 'PRICE_NEAR_SUPPORT_PCT', PRICE_NEAR_SUPPORT_PCT))
+        if not is_dca_check and _sp_near_pct > 0 and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
             past_24_bars = df.iloc[-25:-1]
             support_level = float(past_24_bars['low'].min())
             resistance_level = float(past_24_bars['high'].max())
 
-            # 做多：必須在支撐位 3% 內
-            if side == "LONG" and price > support_level * 1.03:
+            # 做多：必須在支撐位 N% 內
+            if side == "LONG" and price > support_level * (1.0 + _sp_near_pct):
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"價格不在支撐區3%內（當前 {price:.6g} > 支撐 {support_level:.6g}*1.03）", **common
+                    "reason": f"價格不在支撐區{_sp_near_pct:.0%}內（當前 {price:.6g} > 支撐 {support_level:.6g}*{1.0+_sp_near_pct:.3f}）", **common
                 }
 
-            # 做空：必須在壓力位 3% 內
-            if side == "SHORT" and price < resistance_level * 0.97:
+            # 做空：必須在壓力位 N% 內
+            if side == "SHORT" and price < resistance_level * (1.0 - _sp_near_pct):
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"價格不在壓力區3%內（當前 {price:.6g} < 壓力 {resistance_level:.6g}*0.97）", **common
+                    "reason": f"價格不在壓力區{_sp_near_pct:.0%}內（當前 {price:.6g} < 壓力 {resistance_level:.6g}*{1.0-_sp_near_pct:.3f}）", **common
                 }
+
 
         swing = df.iloc[-(STRUCTURED_SWING_LOOKBACK + 1):-1]
         prior_high = float(swing["high"].max())
@@ -2265,3 +2268,141 @@ class SuperTrendKeltnerStrategy:
             "btc_score_penalty": btc_regime["score_penalty"],
             "btc_allocation_factor": btc_regime["allocation_factor"],
         }
+
+
+def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict:
+    """
+    Simple MA7 strategy open conditions:
+    - Long: MA7 valley (ma7[-3] > ma7[-2] < ma7[-1]), Green Candle (close > open).
+    - Short: MA7 peak (ma7[-3] < ma7[-2] > ma7[-1]), Red Candle (close < open).
+    - Common: ATR14 >= 0.05%, MA7 change >= 35% ATR14, amplitude <= 3x ATR14, close change <= 3x ATR14, deviation <= 0.5%.
+    """
+    if len(df) < 14:
+        return {"detected": False, "reason": "Data too short"}
+
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    # Calculate ATR14
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    open_ = df['open']
+    
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = float(tr.rolling(window=14).mean().iloc[-1])
+
+    # Calculate MA7
+    ma7 = close.rolling(window=7).mean()
+    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
+        return {"detected": False, "reason": "MA7 not ready"}
+        
+    ma7_curr = float(ma7.iloc[-1])
+    ma7_prev = float(ma7.iloc[-2])
+    ma7_prev2 = float(ma7.iloc[-3])
+
+    price = float(live_price) if live_price is not None and float(live_price) > 0 else float(curr['close'])
+    if price <= 0:
+        return {"detected": False, "reason": "Invalid price"}
+
+    # Volatility / Candle checks
+    from core.config import (
+        MA7_MIN_ATR_PCT, MA7_ATR_CHANGE_MIN_RATIO, MA7_MAX_CANDLE_AMPLITUDE_MULT,
+        MA7_MAX_CLOSE_CHANGE_MULT, MA7_MARK_PRICE_DEV_PCT
+    )
+
+    if atr14 < price * MA7_MIN_ATR_PCT:
+        return {"detected": False, "reason": f"Low ATR14 ({atr14:.4f} < {price * MA7_MIN_ATR_PCT:.4f})"}
+        
+    ma7_change = abs(ma7_curr - ma7_prev)
+    if ma7_change < MA7_ATR_CHANGE_MIN_RATIO * atr14:
+        return {"detected": False, "reason": f"MA7 change too small ({ma7_change:.4f} < {MA7_ATR_CHANGE_MIN_RATIO * atr14:.4f})"}
+        
+    amplitude = float(curr['high'] - curr['low'])
+    if amplitude > MA7_MAX_CANDLE_AMPLITUDE_MULT * atr14:
+        return {"detected": False, "reason": f"Amplitude too large ({amplitude:.4f} > {MA7_MAX_CANDLE_AMPLITUDE_MULT * atr14:.4f})"}
+        
+    close_change = abs(float(curr['close']) - float(prev['close']))
+    if close_change > MA7_MAX_CLOSE_CHANGE_MULT * atr14:
+        return {"detected": False, "reason": f"Close change too large ({close_change:.4f} > {MA7_MAX_CLOSE_CHANGE_MULT * atr14:.4f})"}
+
+    dev_pct = abs(price - float(curr['close'])) / float(curr['close'])
+    if dev_pct > MA7_MARK_PRICE_DEV_PCT:
+        return {"detected": False, "reason": f"Mark price deviation too large ({dev_pct:.4%} > {MA7_MARK_PRICE_DEV_PCT:.4%})"}
+
+    # Valley/Peak check
+    is_green = float(curr['close']) > float(curr['open'])
+    is_red = float(curr['close']) < float(curr['open'])
+    
+    is_valley = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
+    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+
+    if is_valley and is_green:
+        return {
+            "detected": True,
+            "side": "LONG",
+            "score": 100,
+            "price": price,
+            "atr": atr14,
+            "reason": "MA7 Valley + Green Candle",
+        }
+    elif is_peak and is_red:
+        return {
+            "detected": True,
+            "side": "SHORT",
+            "score": 100,
+            "price": price,
+            "atr": atr14,
+            "reason": "MA7 Peak + Red Candle",
+        }
+
+    return {"detected": False, "reason": "No MA7 valley/peak or color mismatch"}
+
+
+def check_simple_ma7_exit(df: pd.DataFrame, side: str) -> dict:
+    """
+    Simple MA7 strategy exit conditions:
+    - Long: MA7 peak (ma7[-3] < ma7[-2] > ma7[-1])
+    - Short: MA7 valley (ma7[-3] > ma7[-2] < ma7[-1])
+    Ignores exit if MA7 change < 0.35 * ATR14 (low volatility).
+    """
+    if len(df) < 14:
+        return {"close": False, "reason": "Data too short"}
+
+    # Calculate ATR14
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = float(tr.rolling(window=14).mean().iloc[-1])
+
+    # Calculate MA7
+    ma7 = close.rolling(window=7).mean()
+    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
+        return {"close": False, "reason": "MA7 not ready"}
+        
+    ma7_curr = float(ma7.iloc[-1])
+    ma7_prev = float(ma7.iloc[-2])
+    ma7_prev2 = float(ma7.iloc[-3])
+
+    from core.config import MA7_ATR_CHANGE_MIN_RATIO
+
+    ma7_change = abs(ma7_curr - ma7_prev)
+    if ma7_change < MA7_ATR_CHANGE_MIN_RATIO * atr14:
+        return {"close": False, "reason": "Low volatility: MA7 change too small"}
+
+    if side == "LONG":
+        if ma7_prev2 < ma7_prev and ma7_curr < ma7_prev:
+            return {"close": True, "reason": "MA7 Peak (Long Exit)"}
+    elif side == "SHORT":
+        if ma7_prev2 > ma7_prev and ma7_curr > ma7_prev:
+            return {"close": True, "reason": "MA7 Valley (Short Exit)"}
+
+    return {"close": False, "reason": "No exit condition met"}

@@ -998,137 +998,25 @@ class TradingEngine:
                 await asyncio.sleep(SCAN_INTERVAL_SEC)
 
     async def _position_trigger_loop(self):
-        """持倉手動平倉參考指標：用 EMA20（策略本身 Keltner 通道用的同一條
-        基準線）跟近 20 根 5 分K的前低/前高，判斷「跌破均線」「跌破前低」
-        （多單）或「站上均線」「站上前高」（空單）。純粹是給使用者按網頁
-        「平倉」按鈕前參考用的視覺提示，不會觸發任何自動平倉，獨立成
-        背景任務、抓K線失敗或變慢也不影響主迴圈的止損止利判斷。"""
         while self.is_running:
             try:
                 for symbol, position in list(self.account.positions.items()):
-                    df = await self.fetch_klines(symbol, timeframe=MA7_EXIT_TIMEFRAME, limit=30)
-                    trigger = compute_position_trigger(df, position.get("side"))
-                    trigger["updated_at"] = time.time()
-                    # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
-                    # 反轉警訊。純顯示用（UI 用愛心圖示提示），不觸發任何平倉。
-                    # 警訊方向跟持倉方向相反：多單看「量縮頂背離」(want_dir=-1)，
-                    # 空單看「量縮底背離」(want_dir=1)。
-                    is_profitable = float(position.get("unrealized_pnl") or 0.0) > 0
-                    warn_dir = -1 if position.get("side") == "LONG" else 1
-                    trigger["volume_divergence_alert"] = bool(
-                        is_profitable and not df.empty and has_volume_divergence(df, warn_dir)
-                    )
-                    self.position_triggers[symbol] = trigger
-                    position_meta = self.account.position_meta.get(symbol, {})
-                    # Tier 1（本地保本，仍是靜態單）不算真正接管，5m強防線要繼續生效；
-                    # 只有 Tier 2+（交易所原生毫秒級追蹤）才屏蔽，理由同15m趨勢止損。
-                    has_native_trailing = position_meta.get("native_trailing_tier", 0) >= 2
-                    # 已經靠移動停利鎖到保本以上的部位，交給移動停利自己顧，
-                    # 5m防線只負責「還沒鎖利」的部位快速停損，避免鎖利後的
-                    # 正常拉回被誤判成反轉提早出場。
-                    is_profit_locked = bool(position_meta.get("is_breakeven_moved")) or has_native_trailing
-                    # MA7單獨反轉需通過「持倉時間＋逆向ATR幅度」閘門，避免
-                    # 4~8分鐘內的正常震盪造成純手續費磨損；EMA20緩衝帶與
-                    # 前低/前高同時失守屬結構破壞，仍立即退出。
-                    entry_p = float(position.get("entry_price") or 0.0)
-                    mark_p = float(df['close'].iloc[-1]) if not df.empty else (self.tickers.get(symbol) or entry_p)
-                    structural_strong = bool(
-                        trigger.get("ema_breach_confirmed")
-                        and trigger.get("structure_broken")
-                    )
-                    ma7_exit_ready, ma7_exit_gate = self._ma7_exit_ready(
-                        position, trigger, mark_p, time.time()
-                    )
-                    trigger["ma7_exit_ready"] = ma7_exit_ready
-                    trigger["ma7_exit_gate"] = ma7_exit_gate
-                    should_auto_close = bool(
-                        structural_strong
-                        or (trigger.get("ma7_reversed") and ma7_exit_ready)
-                    )
-                    bottom_grace, bottom_age = self._bottom_entry_grace(
-                        position, time.time()
-                    )
-                    trigger["bottom_entry_grace"] = bottom_grace
-                    trigger["bottom_entry_age_sec"] = bottom_age
-                    if bottom_grace:
-                        self._soft_warning_since.pop(symbol, None)
-                    if (
-                        ENABLE_STRONG_TRIGGER_AUTO_CLOSE
-                        and trigger.get("strong")
-                        and not is_profit_locked
-                        and not bottom_grace
-                        and should_auto_close
-                    ):
-                        close_reason = (
-                            f"{MA7_EXIT_TIMEFRAME}收線均線與結構防線同時失守"
-                            if structural_strong
-                            else f"{MA7_EXIT_TIMEFRAME} MA7轉彎反轉平倉"
-                        )
-                        self.account.log(
-                            f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
-                            "DANGER"
-                        )
-                        curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
-                        if DISABLE_STOP_LOSS:
-                            self.account.log(f"⏸️ [自動停損已停用] 跳過自動平倉 {symbol} ({close_reason})", "INFO")
-                        else:
-                            await self.account.close_position(symbol, curr_p, close_reason)
-                        self._soft_warning_since.pop(symbol, None)
-                    else:
-                        from core.config import ENABLE_SOFT_WARNING_TIGHTEN
-                        if (
-                            not is_profit_locked
-                            and not bottom_grace
-                            and ENABLE_SOFT_WARNING_TIGHTEN
-                        ):
-                            # 軟性警訊收緊止損：持續處於「✗」（ma_ok=false）但還沒
-                            # 升級成「⛔」超過 SOFT_WARNING_PERSIST_SEC，把止損往
-                            # 進場價方向收緊到「目前止損與進場價的中點」（只會變緊
-                            # 不會變鬆），降低風險但不直接平倉，介於「完全不管」跟
-                            # 「5m防線直接關倉」之間。
-                            if trigger.get("ma_ok") is False:
-                                since = self._soft_warning_since.setdefault(symbol, time.time())
-                            already_tightened = bool(position_meta.get("soft_warning_tightened"))
-                            if ENABLE_SOFT_WARNING_TIGHTEN and time.time() - since >= SOFT_WARNING_PERSIST_SEC and not already_tightened:
-                                side = position.get("side")
-                                current_sl = float(position.get("sl") or 0.0)
-                                entry_p2 = float(position.get("entry_price") or 0.0)
-                                if current_sl > 0 and entry_p2 > 0:
-                                    new_sl = (current_sl + entry_p2) / 2
-                                    improved = (
-                                        (side == "LONG" and new_sl > current_sl)
-                                        or (side == "SHORT" and new_sl < current_sl)
-                                    )
-                                    if improved:
-                                        if DISABLE_STOP_LOSS:
-                                            self.account.log(
-                                                f"⏸️ [自動停損已停用] 跳過收緊止損 {symbol}",
-                                                "INFO",
-                                            )
-                                        else:
-                                            if await self.account.trail_stop_loss(
-                                                symbol, new_sl, mark_profit_locked=False
-                                            ):
-                                                position_meta["soft_warning_tightened"] = True
-                                                self.account.log(
-                                                    f"⚠️ [軟性警訊收緊止損] {symbol} 持續{SOFT_WARNING_PERSIST_SEC:.0f}秒"
-                                                    f"未解除✗警訊，止損從{current_sl:.6g}收緊到{new_sl:.6g}",
-                                                    "WARNING",
-                                                )
-                        else:
-                            # ma_ok恢復True，清空計時與旗標，允許下次重新觸發
-                            self._soft_warning_since.pop(symbol, None)
-                            if position_meta.get("soft_warning_tightened"):
-                                position_meta["soft_warning_tightened"] = False
-                for symbol in set(self.position_triggers) - set(self.account.positions):
-                    self.position_triggers.pop(symbol, None)
-                    self._soft_warning_since.pop(symbol, None)
-                await asyncio.sleep(30)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
-                await asyncio.sleep(30)
+                    df = await self.fetch_klines(symbol, timeframe="1m", limit=30)
+                    from core.strategy import check_simple_ma7_exit
+                    exit_sig = check_simple_ma7_exit(df, position.get("side"))
+                    if exit_sig["close"]:
+                        self.account.log(f"🚨 [出場防線觸發] {symbol} {exit_sig['reason']}，執行自動平倉", "DANGER")
+                        curr_p = self.tickers.get(symbol) or df['close'].iloc[-1]
+                        await self.account.close_position(symbol, curr_p, exit_sig['reason'])
+                        
+                import core.config as config
+                sleep_sec = 1 if config.PAPER_TRADING else 5
+                import asyncio
+                await asyncio.sleep(sleep_sec)
+            except Exception as e:
+                self.account.log(f"⚠️ Trigger loop error: {str(e)}", "WARNING")
+                import asyncio
+                await asyncio.sleep(5)
 
     async def _run_structured_exits(self):
         """Manage structured positions with KC failure, ATR trail, RR scales, and 1h flips."""
@@ -2793,109 +2681,27 @@ class TradingEngine:
                             continue
 
                         live_price = float(self.tickers.get(symbol) or 0.0)
-                        df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
-                        if df.empty or len(df) < 50:
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,K線資料不足"
-                            )
-                            self._record_entry_filter(
-                                symbol, {"action": "HOLD", "reason": "K線資料不足",
-                                         "diagnostics": {"bars": int(len(df))}},
-                                direction_text, "kline_data_short",
-                            )
+                        df = await self.fetch_klines(symbol, timeframe="1m", limit=30)
+                        from core.strategy import detect_simple_ma7_signal
+                        sig = detect_simple_ma7_signal(df, live_price)
+                        if sig["detected"]:
+                            from core.config import TARGET_PERCENTAGE, MAX_NOTIONAL_USDT
+                            leverage = self.account.get_leverage()
+                            max_bal = available_balance * TARGET_PERCENTAGE
+                            notional = min(max_bal * leverage, MAX_NOTIONAL_USDT)
+                            amount = notional / live_price
+                            if amount > 0:
+                                await self.account.execute_trade(
+                                    symbol=symbol,
+                                    side=sig["side"],
+                                    amount_usdt=amount * live_price,
+                                    price=live_price,
+                                    sl_price=0,
+                                    tp_price=0,
+                                    reason=sig["reason"]
+                                )
                             continue
-
-                        # 取出 1h 快取值
-                        ema_50_1h = self.ema_50_1h_cache.get(symbol)
-
-                        # 防插針價格選擇 (SpikeFilter_L2)
-                        if 'close_price_spike_filtered' in df.columns and not pd.isna(df.iloc[-1]['close_price_spike_filtered']):
-                            price = float(df.iloc[-1]['close_price_spike_filtered'])
-                        else:
-                            price = float(df.iloc[-1]['close'])
-
-                        if live_price <= 0:
-                            live_price = price
-                            self.tickers[symbol] = price
-
-                        # 4.2 計算真實動態 ATR (非固定 1.5%)
-                        high = df['high']
-                        low = df['low']
-                        close = df['close']
-                        tr1 = high - low
-                        tr2 = (high - close.shift(1)).abs()
-                        tr3 = (low - close.shift(1)).abs()
-                        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                        real_atr = tr.rolling(window=10).mean().iloc[-1]
-                        if pd.isna(real_atr) or real_atr <= 0:
-                            real_atr = price * 0.015
-
-                        # 4.3 防插針檢查 (5x 真實 ATR)
-                        recent_high = df.iloc[-1]['high']
-                        recent_low = df.iloc[-1]['low']
-                        candle_spread = recent_high - recent_low
-
-                        if candle_spread > (real_atr * 5.0):
-                            self.account.log(f"🛡️ [防插針觸發] {symbol} 最新 K 線振幅過大 ({candle_spread:.4f} > 5x 真實ATR)，過濾潛在假突破訊號", "WARNING")
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,防插針過濾"
-                            )
-                            self._record_entry_filter(
-                                symbol, {"action": "HOLD", "reason": "防插針過濾",
-                                         "diagnostics": {"candle_spread_atr": float(candle_spread / real_atr)}},
-                                direction_text, "spike_filter",
-                            )
-                            continue
-
-                        # 三種無 MA7 的結構進場：突破市價、支撐回踩限價、動能交叉收盤市價。
-                        df = self.strategy.compute_indicators(df)
-                        structured_sig = self.strategy.evaluate_structured_entry(
-                            df,
-                            ema_50_1h=ema_50_1h,
-                            st_direction_1h=self.st_direction_1h_cache.get(symbol),
-                            btc_st_direction_1h=self.btc_1h_st_direction,
-                            symbol=symbol,
-                            indicators_precomputed=True,
-                        )
-                        current_direction = structured_sig.get("side", "LONG")
-                        action = structured_sig.get("action", "HOLD")
-                        self._record_entry_filter(
-                            symbol, structured_sig, current_direction,
-                            "structured_entry_ready" if action.startswith("ENTER_") else "structured_wait",
-                        )
-                        if action in ("ENTER_MARKET", "ENTER_LIMIT"):
-                            detected_candidates.append({
-                                "symbol": symbol,
-                                "signal": structured_sig,
-                                "price": float(live_price or structured_sig.get("price") or price),
-                                "score": int(structured_sig.get("score") or 0),
-                            })
-                            signal_progress.append(
-                                f"{coin} {current_direction} {structured_sig.get('score', 0)}分,"
-                                f"{structured_sig.get('entry_mode')}待下單"
-                            )
-                        else:
-                            readiness = structured_sig.get("readiness_score")
-                            readiness_text = (
-                                f"準備{int(readiness)}/100"
-                                if readiness is not None else "0分"
-                            )
-                            signal_progress.append(
-                                f"{coin} {current_direction} {readiness_text},"
-                                f"{structured_sig.get('reason', '等待結構訊號')}"
-                            )
-
-                    if detected_candidates:
-                        detected_candidates.sort(key=lambda item: item["score"], reverse=True)
-                        for candidate in detected_candidates:
-                            daily_halt_now, _ = self.account.daily_loss_limit_hit()
-                            if daily_halt_now:
-                                break
-                            await self._place_structured_entry(
-                                candidate["symbol"], candidate["signal"], candidate["price"]
-                            )
-
-                    self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
+                                        self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:
                         self.account.save_state()
                         self._last_diagnostic_stats_save_at = now_time
