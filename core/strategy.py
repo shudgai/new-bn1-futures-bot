@@ -2362,12 +2362,12 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
     return {"detected": False, "reason": "No MA7 valley/peak or color mismatch"}
 
 
-def check_simple_ma7_exit(df: pd.DataFrame, side: str) -> dict:
+def check_simple_ma7_exit(df: pd.DataFrame, position: dict) -> dict:
     """
     Simple MA7 strategy exit conditions:
-    - Long: MA7 peak (ma7[-3] < ma7[-2] > ma7[-1])
-    - Short: MA7 valley (ma7[-3] > ma7[-2] < ma7[-1])
-    Ignores exit if MA7 change < 0.25 * ATR14 (low volatility).
+    Tracks the highest/lowest MA7 since entry.
+    - Long: Exits if current MA7 <= highest_ma7 - (0.25 * ATR14)
+    - Short: Exits if current MA7 >= lowest_ma7 + (0.25 * ATR14)
     """
     if len(df) < 14:
         return {"close": False, "reason": "Data too short"}
@@ -2385,24 +2385,30 @@ def check_simple_ma7_exit(df: pd.DataFrame, side: str) -> dict:
 
     # Calculate MA7
     ma7 = close.rolling(window=7).mean()
-    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
+    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]):
         return {"close": False, "reason": "MA7 not ready"}
         
     ma7_curr = float(ma7.iloc[-1])
-    ma7_prev = float(ma7.iloc[-2])
-    ma7_prev2 = float(ma7.iloc[-3])
+    side = position.get("side")
 
-    from core.config import MA7_ENTRY_ATR_CHANGE_MIN_RATIO, MA7_EXIT_ATR_CHANGE_MIN_RATIO, FIXED_STOP_LOSS_PCT
-
-    ma7_change = abs(ma7_curr - ma7_prev)
-    if ma7_change < MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:
-        return {"close": False, "reason": "Low volatility: MA7 change too small"}
+    from core.config import MA7_EXIT_ATR_CHANGE_MIN_RATIO
 
     if side == "LONG":
-        if ma7_prev2 < ma7_prev and ma7_curr < ma7_prev:
-            return {"close": True, "reason": "MA7 Peak (Long Exit)"}
+        highest_ma7 = position.get("highest_ma7", ma7_curr)
+        if ma7_curr > highest_ma7:
+            position["highest_ma7"] = ma7_curr
+            highest_ma7 = ma7_curr
+            
+        if ma7_curr <= highest_ma7 - (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
+            return {"close": True, "reason": "MA7 Cumulative Peak Reversal (Long Exit)"}
+            
     elif side == "SHORT":
-        if ma7_prev2 > ma7_prev and ma7_curr > ma7_prev:
-            return {"close": True, "reason": "MA7 Valley (Short Exit)"}
+        lowest_ma7 = position.get("lowest_ma7", ma7_curr)
+        if ma7_curr < lowest_ma7:
+            position["lowest_ma7"] = ma7_curr
+            lowest_ma7 = ma7_curr
+            
+        if ma7_curr >= lowest_ma7 + (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
+            return {"close": True, "reason": "MA7 Cumulative Valley Reversal (Short Exit)"}
 
     return {"close": False, "reason": "No exit condition met"}

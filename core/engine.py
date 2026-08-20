@@ -1015,6 +1015,20 @@ class TradingEngine:
                             pnl_pct = (entry_price - live_price) / entry_price
                             
                         import core.config as config
+                        
+                        # Trailing Stop Logic
+                        highest_pnl = position.get("highest_pnl_pct", pnl_pct)
+                        if pnl_pct > highest_pnl:
+                            position["highest_pnl_pct"] = pnl_pct
+                            highest_pnl = pnl_pct
+                            
+                        if highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
+                            if pnl_pct <= highest_pnl - config.TRAILING_STOP_PULLBACK_PCT:
+                                self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落，執行自動平倉 (獲利 +{pnl_pct*100:.2f}%)", "SUCCESS")
+                                await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
+                                continue # Skip fixed stop loss check since it's closed
+                                
+                        # Fixed Stop Loss Logic
                         if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
                             self.account.log(f"🚨 [固定止損觸發] {symbol} 虧損達 {pnl_pct*100:.2f}% (現價 {live_price})，執行自動平倉", "DANGER")
                             await self.account.close_position(symbol, live_price, "固定止損 (0.5%)")
@@ -1032,7 +1046,7 @@ class TradingEngine:
                 for symbol, position in list(self.account.positions.items()):
                     df = await self.fetch_klines(symbol, timeframe="1m", limit=30)
                     from core.strategy import check_simple_ma7_exit
-                    exit_sig = check_simple_ma7_exit(df, position.get("side"))
+                    exit_sig = check_simple_ma7_exit(df, position)
                     if exit_sig["close"]:
                         self.account.log(f"🚨 [出場防線觸發] {symbol} {exit_sig['reason']}，執行自動平倉", "DANGER")
                         curr_p = self.tickers.get(symbol) or df['close'].iloc[-1]
