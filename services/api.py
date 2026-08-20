@@ -1,6 +1,7 @@
 import os
 import csv
 import io
+import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
@@ -238,3 +239,37 @@ async def manual_close(req: ManualCloseRequest):
     if not success:
         raise HTTPException(status_code=502, detail="Binance Testnet 平倉失敗")
     return {"status": "success", "message": f"手動平倉 {symbol}"}
+
+
+@app.get("/api/klines")
+async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
+    """取得K線資料，並計算 MA7, MA25, MA99 提供給前端圖表"""
+    try:
+        df = await engine.fetch_klines(symbol, timeframe=timeframe, limit=limit)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
+            
+        # 計算 MA
+        df['MA7'] = df['close'].rolling(window=7).mean()
+        df['MA25'] = df['close'].rolling(window=25).mean()
+        df['MA99'] = df['close'].rolling(window=99).mean()
+        
+        # 準備資料
+        result = []
+        for index, row in df.iterrows():
+            # TradingView 需要的 time 是 unix timestamp (seconds)
+            time_sec = int(index.timestamp())
+            result.append({
+                "time": time_sec,
+                "open": row['open'],
+                "high": row['high'],
+                "low": row['low'],
+                "close": row['close'],
+                "ma7": None if pd.isna(row['MA7']) else row['MA7'],
+                "ma25": None if pd.isna(row['MA25']) else row['MA25'],
+                "ma99": None if pd.isna(row['MA99']) else row['MA99'],
+            })
+            
+        return {"symbol": symbol, "timeframe": timeframe, "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -11,6 +11,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         :root {
             --bg: #f4f6f9;
@@ -157,7 +158,29 @@
         .input-group { margin-bottom: 12px; }
         .input-group label { display: block; font-size: 11px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
         .input-group input, .input-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 13px; }
-    </style>
+    
+        /* Chart Modal */
+        .chart-modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); z-index: 100;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .chart-modal {
+            background: #fff; width: 90%; max-width: 1000px; border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2); overflow: hidden;
+            display: flex; flex-direction: column;
+        }
+        .chart-modal-header {
+            padding: 16px 24px; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .chart-modal-title { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 12px; }
+        .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
+        .chart-modal-body { padding: 16px; height: 500px; width: 100%; position: relative; }
+        .chart-container { width: 100%; height: 100%; }
+        .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
+        .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
+</style>
 </head>
 <body>
     <div id="app">
@@ -177,13 +200,32 @@
             </div>
         </div>
 
+        
+        <!-- CHART MODAL -->
+        <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
+            <div class="chart-modal">
+                <div class="chart-modal-header">
+                    <div class="chart-modal-title">
+                        📈 {{ chartModal.symbol }} K線圖 
+                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">5m</span>
+                    </div>
+                    <button class="chart-modal-close" @click="closeChartModal">&times;</button>
+                </div>
+                <div class="chart-modal-body">
+                    <div v-if="chartModal.loading" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--muted)">載入中...</div>
+                    <div v-else-if="chartModal.error" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--down)">{{ chartModal.error }}</div>
+                    <div id="tv-chart" class="chart-container" :style="{ opacity: chartModal.loading || chartModal.error ? 0 : 1 }"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- MAIN LAYOUT -->
         <div class="container">
             <!-- LEFT CONTENT -->
             <div>
                 <!-- COIN STRIP (ALPHABETICAL ORDER) -->
                 <div class="coin-grid">
-                    <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card">
+                    <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card" @click="openChartModal(coin.sym)">
                         <div class="coin-name">
                             {{ coin.name }}
                             <span :class="['coin-direction', coin.direction ? coin.direction.toLowerCase() : '']">{{ coin.direction === 'BOTH' ? '雙向' : '' }}</span>
@@ -441,7 +483,19 @@
         createApp({
             data() {
                 return {
-                    bot: {
+                    
+                chartModal: {
+                    show: false,
+                    symbol: "",
+                    loading: false,
+                    error: "",
+                    chart: null,
+                    candlestickSeries: null,
+                    ma7Series: null,
+                    ma25Series: null,
+                    ma99Series: null,
+                },
+                bot: {
                         is_running: false,
                         strategy: '',
                         environment: 'binance_testnet',
@@ -532,6 +586,82 @@
                 }
             },
             methods: {
+
+            openChartModal(symbol) {
+                this.chartModal.symbol = symbol;
+                this.chartModal.show = true;
+                this.chartModal.loading = true;
+                this.chartModal.error = "";
+                
+                // Wait for DOM to render the modal container
+                this.$nextTick(() => {
+                    this.initChart();
+                    this.fetchChartData(symbol);
+                });
+            },
+            closeChartModal() {
+                this.chartModal.show = false;
+                if (this.chartModal.chart) {
+                    this.chartModal.chart.remove();
+                    this.chartModal.chart = null;
+                }
+            },
+            initChart() {
+                const container = document.getElementById('tv-chart');
+                if (!container) return;
+                
+                if (this.chartModal.chart) {
+                    this.chartModal.chart.remove();
+                }
+                
+                this.chartModal.chart = LightweightCharts.createChart(container, {
+                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
+                    grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    rightPriceScale: { borderColor: '#cccccc' },
+                    timeScale: { borderColor: '#cccccc', timeVisible: true },
+                });
+                
+                this.chartModal.candlestickSeries = this.chartModal.chart.addCandlestickSeries({
+                    upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
+                    wickUpColor: '#10b981', wickDownColor: '#ef4444'
+                });
+                
+                this.chartModal.ma7Series = this.chartModal.chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA7' });
+                this.chartModal.ma25Series = this.chartModal.chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA25' });
+                this.chartModal.ma99Series = this.chartModal.chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
+            },
+            async fetchChartData(symbol) {
+                try {
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=5m`);
+                    if (!res.ok) throw new Error("Failed to fetch K-lines");
+                    const json = await res.json();
+                    
+                    const candles = [];
+                    const ma7 = [];
+                    const ma25 = [];
+                    const ma99 = [];
+                    
+                    json.data.forEach(d => {
+                        candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
+                        if (d.ma7 !== null) ma7.push({ time: d.time, value: d.ma7 });
+                        if (d.ma25 !== null) ma25.push({ time: d.time, value: d.ma25 });
+                        if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
+                    });
+                    
+                    this.chartModal.candlestickSeries.setData(candles);
+                    this.chartModal.ma7Series.setData(ma7);
+                    this.chartModal.ma25Series.setData(ma25);
+                    this.chartModal.ma99Series.setData(ma99);
+                    
+                    this.chartModal.chart.timeScale().fitContent();
+                    this.chartModal.loading = false;
+                } catch (e) {
+                    this.chartModal.error = e.message;
+                    this.chartModal.loading = false;
+                }
+            },
+
                 getLeverage(symbol) {
                     return (this.bot.leverage_map && this.bot.leverage_map[symbol]) || this.bot.leverage;
                 },
