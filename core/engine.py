@@ -666,7 +666,8 @@ class TradingEngine:
     def _log_signal_progress(
         self, entries: List[str], now_time: float, symbols_snapshot: List[str]
     ) -> None:
-        if self.symbol_rotation.last_rotation_at <= 0:
+        import core.config as config
+        if getattr(config, "ENABLE_SYMBOL_ROTATION", True) and self.symbol_rotation.last_rotation_at <= 0:
             return
         if symbols_snapshot != list(DEFAULT_SYMBOLS):
             return
