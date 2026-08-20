@@ -258,7 +258,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
         result = []
         for index, row in df.iterrows():
             # TradingView 需要的 time 是 unix timestamp (seconds)
-            time_sec = int(index.timestamp())
+            time_sec = int(row['timestamp'] / 1000)
             result.append({
                 "time": time_sec,
                 "open": row['open'],
