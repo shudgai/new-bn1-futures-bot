@@ -810,6 +810,7 @@ def get_position_multiplier(score: int) -> float:
 # 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
 # Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
 SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "24"))
+ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "900"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
 # 等 SYMBOL_ROTATION_INTERVAL_SEC（預設15分鐘）才會換牌，尚未持倉的候選觀察

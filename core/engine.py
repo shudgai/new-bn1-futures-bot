@@ -814,7 +814,12 @@ class TradingEngine:
         self.task = asyncio.create_task(self._main_loop())
         # 幣種輪替（含 AI 呼叫，最壞情況耗時數十秒）獨立成背景任務，
         # 避免跟主迴圈共用同一個 await 鏈，卡住停損停利檢查。
-        self.rotation_task = asyncio.create_task(self._rotation_loop())
+        import core.config as config
+        if getattr(config, "ENABLE_SYMBOL_ROTATION", True):
+            self.rotation_task = asyncio.create_task(self._rotation_loop())
+        else:
+            self.rotation_task = None
+            self.account.log(f"⏸️ [自動幣種輪替] 已停用，鎖定預設 {len(config.DEFAULT_SYMBOLS)} 個幣種交易", "INFO")
         # 歷史分析是第三條完全獨立的工作，不等待主交易或幣種輪替。
         self.analysis_task = asyncio.create_task(self._analysis_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
@@ -980,13 +985,20 @@ class TradingEngine:
                             indicators_precomputed=True,
                         )
                         if sig["detected"] and symbol not in DEFAULT_SYMBOLS:
-                            DEFAULT_SYMBOLS.append(symbol)
-                            self.account.log(
-                                f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
-                                f"{sig.get('score', 65)}分已符合MA7拐頭條件（原本不在監控名單內），"
-                                f"已加入監控，交由主迴圈接手進場｜{sig['reason']}",
-                                "SUCCESS",
-                            )
+                            if getattr(config, "ENABLE_SYMBOL_ROTATION", True):
+                                DEFAULT_SYMBOLS.append(symbol)
+                                self.account.log(
+                                    f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
+                                    f"{sig.get('score', 65)}分已符合MA7拐頭條件（原本不在監控名單內），"
+                                    f"已加入監控，交由主迴圈接手進場｜{sig['reason']}",
+                                    "SUCCESS",
+                                )
+                            else:
+                                self.account.log(
+                                    f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
+                                    f"{sig.get('score', 65)}分符合進場條件，但因自動幣種輪替已關閉，略過加入監控清單",
+                                    "INFO"
+                                )
                     except Exception:
                         continue
                     await asyncio.sleep(0.05)
