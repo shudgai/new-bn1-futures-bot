@@ -2732,19 +2732,21 @@ class TradingEngine:
                             if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,槽位已滿({MAX_SLOTS})")
                                 continue
-                            leverage = self.account.get_leverage()
+                            from core.config import get_leverage
+                            leverage = get_leverage(symbol)
                             max_bal = available_balance * TARGET_PERCENTAGE
                             notional = min(max_bal * leverage, MAX_NOTIONAL_USDT)
                             amount = notional / live_price
                             if amount > 0:
-                                await self.account.execute_trade(
+                                await self.account.open_position(
                                     symbol=symbol,
                                     side=sig["side"],
                                     amount_usdt=amount * live_price,
                                     price=live_price,
-                                    sl_price=0,
-                                    tp_price=0,
-                                    reason=sig["reason"]
+                                    sl=0,
+                                    tp=0,
+                                    reason=sig["reason"],
+                                    leverage=leverage
                                 )
                             continue
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
