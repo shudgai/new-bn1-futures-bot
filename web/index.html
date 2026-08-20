@@ -590,8 +590,13 @@
                 
                 // Wait for DOM to render the modal container
                 this.$nextTick(() => {
-                    this.initChart();
-                    this.fetchChartData(symbol);
+                    try {
+                        this.initChart();
+                        this.fetchChartData(symbol);
+                    } catch (e) {
+                        this.chartModal.error = "圖表初始化失敗: " + e.message;
+                        this.chartModal.loading = false;
+                    }
                 });
             },
             closeChartModal() {
