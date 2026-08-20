@@ -489,11 +489,6 @@
                     symbol: "",
                     loading: false,
                     error: "",
-                    chart: null,
-                    candlestickSeries: null,
-                    ma7Series: null,
-                    ma25Series: null,
-                    ma99Series: null,
                 },
                 bot: {
                         is_running: false,
@@ -601,20 +596,20 @@
             },
             closeChartModal() {
                 this.chartModal.show = false;
-                if (this.chartModal.chart) {
-                    this.chartModal.chart.remove();
-                    this.chartModal.chart = null;
+                if (this._chart) {
+                    this._chart.remove();
+                    this._chart = null;
                 }
             },
             initChart() {
                 const container = document.getElementById('tv-chart');
                 if (!container) return;
                 
-                if (this.chartModal.chart) {
-                    this.chartModal.chart.remove();
+                if (this._chart) {
+                    this._chart.remove();
                 }
                 
-                this.chartModal.chart = LightweightCharts.createChart(container, {
+                this._chart = LightweightCharts.createChart(container, {
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -622,14 +617,14 @@
                     timeScale: { borderColor: '#cccccc', timeVisible: true },
                 });
                 
-                this.chartModal.candlestickSeries = this.chartModal.chart.addCandlestickSeries({
+                this._candlestickSeries = this._chart.addCandlestickSeries({
                     upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
                     wickUpColor: '#10b981', wickDownColor: '#ef4444'
                 });
                 
-                this.chartModal.ma7Series = this.chartModal.chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA7' });
-                this.chartModal.ma25Series = this.chartModal.chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA25' });
-                this.chartModal.ma99Series = this.chartModal.chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
+                this._ma7Series = this._chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA7' });
+                this._ma25Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA25' });
+                this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
             },
             async fetchChartData(symbol) {
                 try {
@@ -649,12 +644,12 @@
                         if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
                     });
                     
-                    this.chartModal.candlestickSeries.setData(candles);
-                    this.chartModal.ma7Series.setData(ma7);
-                    this.chartModal.ma25Series.setData(ma25);
-                    this.chartModal.ma99Series.setData(ma99);
+                    this._candlestickSeries.setData(candles);
+                    this._ma7Series.setData(ma7);
+                    this._ma25Series.setData(ma25);
+                    this._ma99Series.setData(ma99);
                     
-                    this.chartModal.chart.timeScale().fitContent();
+                    this._chart.timeScale().fitContent();
                     this.chartModal.loading = false;
                 } catch (e) {
                     this.chartModal.error = e.message;
