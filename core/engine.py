@@ -2156,9 +2156,14 @@ class TradingEngine:
         if amount < MIN_TRADE_USDT:
             self.account.log(f"🛑 {symbol} 風控縮減後金額 {amount:.2f}U 低於最小交易門檻 {MIN_TRADE_USDT}U，放棄掛單", "WARNING")
             return False
-        if self.account.get_available_balance() < amount:
-            self.account.log(f"🛑 {symbol} 可用餘額 {self.account.get_available_balance():.2f}U 不足 {amount:.2f}U，放棄掛單", "WARNING")
-            return False
+        available_bal = self.account.get_available_balance()
+        if available_bal < amount:
+            if available_bal >= MIN_TRADE_USDT:
+                self.account.log(f"⚠️ {symbol} 可用餘額 {available_bal:.2f}U 不足 {amount:.2f}U，改以剩餘餘額掛單", "WARNING")
+                amount = available_bal
+            else:
+                self.account.log(f"🛑 {symbol} 可用餘額 {available_bal:.2f}U 不足 {amount:.2f}U 且低於最小門檻，放棄掛單", "WARNING")
+                return False
         if not await self._execution_price_is_safe(symbol, side):
             return False
         entry_context = {
