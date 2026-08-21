@@ -2347,9 +2347,10 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
     if atr14 < price * MA7_MIN_ATR_PCT:
         return {"detected": False, "reason": f"Low ATR14 ({atr14:.4f} < {price * MA7_MIN_ATR_PCT:.4f})"}
         
-    ma7_change = abs(ma7_curr - ma7_prev)
-    if ma7_change < MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:
-        return {"detected": False, "reason": f"MA7 change too small ({ma7_change:.4f} < {MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14:.4f})"}
+    ma7_change_left = abs(ma7_prev2 - ma7_prev)
+    ma7_change_right = abs(ma7_curr - ma7_prev)
+    if ma7_change_left < MA7_ENTRY_ATR_CHANGE_MIN_RATIO * atr14 or ma7_change_right < MA7_ENTRY_ATR_CHANGE_MIN_RATIO * atr14:
+        return {"detected": False, "reason": f"MA7 fluctuation too small (L:{ma7_change_left:.4f}, R:{ma7_change_right:.4f} < {MA7_ENTRY_ATR_CHANGE_MIN_RATIO * atr14:.4f})"}
         
     amplitude = float(curr['high'] - curr['low'])
     if amplitude > MA7_MAX_CANDLE_AMPLITUDE_MULT * atr14:
