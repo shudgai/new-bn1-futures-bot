@@ -2421,30 +2421,32 @@ def check_simple_ma7_exit(df: pd.DataFrame, position: dict) -> dict:
 
     # Calculate MA7
     ma7 = close.rolling(window=7).mean()
-    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]):
+    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
         return {"close": False, "reason": "MA7 not ready"}
         
     ma7_curr = float(ma7.iloc[-1])
+    ma7_prev = float(ma7.iloc[-2])
+    ma7_prev2 = float(ma7.iloc[-3])
+
+    curr = df.iloc[-1]
+    is_green = float(curr['close']) > float(curr['open'])
+    is_red = float(curr['close']) < float(curr['open'])
+    
+    body_size = abs(float(curr['close']) - float(curr['open']))
+    candle_range = float(curr['high']) - float(curr['low'])
+    body_proportion = (body_size / candle_range) if candle_range > 0 else 0
+    
+    is_valley = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
+    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+
     side = position.get("side")
 
-    from core.config import MA7_EXIT_ATR_CHANGE_MIN_RATIO
-
     if side == "LONG":
-        highest_ma7 = position.get("highest_ma7", ma7_curr)
-        if ma7_curr > highest_ma7:
-            position["highest_ma7"] = ma7_curr
-            highest_ma7 = ma7_curr
-            
-        if ma7_curr <= highest_ma7 - (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
-            return {"close": True, "reason": "MA7 Cumulative Peak Reversal (Long Exit)"}
+        if is_peak and is_red and body_proportion >= 0.5:
+            return {"close": True, "reason": f"MA7高點反轉 (實體{int(body_proportion*100)}%)"}
             
     elif side == "SHORT":
-        lowest_ma7 = position.get("lowest_ma7", ma7_curr)
-        if ma7_curr < lowest_ma7:
-            position["lowest_ma7"] = ma7_curr
-            lowest_ma7 = ma7_curr
-            
-        if ma7_curr >= lowest_ma7 + (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
-            return {"close": True, "reason": "MA7 Cumulative Valley Reversal (Short Exit)"}
+        if is_valley and is_green and body_proportion >= 0.5:
+            return {"close": True, "reason": f"MA7谷底反轉 (實體{int(body_proportion*100)}%)"}
 
     return {"close": False, "reason": "No exit condition met"}
