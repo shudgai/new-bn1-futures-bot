@@ -116,7 +116,7 @@ async def get_status():
             str(score): ("symbol_max" if cap is None else cap)
             for score, cap in SIGNAL_LEVERAGE_CAPS
         },
-        "trade_amount": round(engine.account.balance / max(MAX_SLOTS, 1), 2) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
+        "trade_amount": round(engine.account.get_wallet_balance() / max(MAX_SLOTS, 1), 2) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
         "pullback_outcome_stats": dict(engine.account.pullback_outcome_stats),
         "entry_filter_stats": dict(engine.account.entry_filter_stats),
         "entry_filter_last": dict(engine.account.entry_filter_last),

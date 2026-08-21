@@ -327,6 +327,10 @@ class PaperAccount:
         # self.balance 已在開倉時扣除保證金；不可再扣一次持倉 margin。
         return max(0.0, self.balance)
 
+    def get_wallet_balance(self) -> float:
+        # 錢包餘額 = 可用餘額 (self.balance) + 已使用保證金
+        return self.balance + sum(float(p.get("margin", 0.0)) for p in self.positions.values())
+
     async def open_position(
         self,
         symbol: str,

@@ -1753,7 +1753,7 @@ class TradingEngine:
                     continue
                 target_price = computed_target
                 pullback_distance_atr = computed_distance / max(float(sig.get("atr") or real_atr), 1e-12)
-            dynamic_trade_amount = self.account.balance / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+            dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
             amount = dynamic_trade_amount
             pool[symbol] = {
                 "symbol": symbol,
@@ -2036,7 +2036,7 @@ class TradingEngine:
                         "WARNING",
                     )
                     return False
-        dynamic_trade_amount = self.account.balance / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+        dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
         amount = dynamic_trade_amount
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
         amount, projected_risk = cap_margin_to_trade_risk(
@@ -2135,7 +2135,7 @@ class TradingEngine:
             )
             return False
 
-        dynamic_trade_amount = self.account.balance / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+        dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
         amount_usdt = dynamic_trade_amount
         if self.account.get_available_balance() < amount_usdt:
             return False

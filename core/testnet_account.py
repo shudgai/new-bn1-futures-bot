@@ -296,6 +296,9 @@ class BinanceTestnetAccount:
     def get_available_balance(self) -> float:
         return max(0.0, self.available_balance)
 
+    def get_wallet_balance(self) -> float:
+        return self.balance
+
     async def initialize(self) -> None:
         if not self.credentials_configured():
             raise RuntimeError("8006 Testnet API Key 尚未設定")
