@@ -2373,23 +2373,26 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
     is_valley = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
     is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
 
+    body_proportion = (body_size / candle_range) if candle_range > 0 else 0
+    signal_score = int(body_proportion * 100)
+    
     if is_valley and is_green:
         return {
             "detected": True,
             "side": "LONG",
-            "score": 100,
+            "score": signal_score,
             "price": price,
             "atr": atr14,
-            "reason": "MA7 Valley + Green Candle",
+            "reason": f"MA7 Valley + Green Candle (Body {signal_score}%)",
         }
     elif is_peak and is_red:
         return {
             "detected": True,
             "side": "SHORT",
-            "score": 100,
+            "score": signal_score,
             "price": price,
             "atr": atr14,
-            "reason": "MA7 Peak + Red Candle",
+            "reason": f"MA7 Peak + Red Candle (Body {signal_score}%)",
         }
 
     return {"detected": False, "reason": "No MA7 valley/peak or color mismatch"}

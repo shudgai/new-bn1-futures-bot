@@ -2725,11 +2725,25 @@ class TradingEngine:
                         from core.strategy import detect_simple_ma7_signal
                         sig = detect_simple_ma7_signal(df, live_price)
                         if sig["detected"]:
-                            from core.config import TARGET_PERCENTAGE, MAX_NOTIONAL_USDT, MAX_SLOTS
+                        if sig["detected"]:
+                            sig["symbol"] = symbol
+                            sig["live_price"] = live_price
+                            detected_candidates.append(sig)
+                            continue
+
+                    if detected_candidates:
+                        # Sort by score descending (e.g. K-line body proportion)
+                        detected_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+                        from core.config import MAX_SLOTS, get_leverage, TRADE_AMOUNT_USDT
+                        for sig in detected_candidates:
+                            symbol = sig["symbol"]
+                            coin = symbol.replace("/USDT", "")
+                            direction_text = "多單" if sig["side"] == "LONG" else "空單"
+                            
                             if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,槽位已滿({MAX_SLOTS})")
                                 continue
-                            from core.config import get_leverage, TRADE_AMOUNT_USDT
+                                
                             leverage = get_leverage(symbol)
                             dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
                             if dynamic_trade_amount > 0:
@@ -2737,13 +2751,13 @@ class TradingEngine:
                                     symbol=symbol,
                                     side=sig["side"],
                                     amount_usdt=dynamic_trade_amount,
-                                    price=live_price,
+                                    price=sig["live_price"],
                                     sl=0,
                                     tp=0,
                                     reason=sig["reason"],
                                     leverage=leverage
                                 )
-                            continue
+
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:
                         self.account.save_state()
