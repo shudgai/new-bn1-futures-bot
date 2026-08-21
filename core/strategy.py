@@ -2428,25 +2428,27 @@ def check_simple_ma7_exit(df: pd.DataFrame, position: dict) -> dict:
     ma7_prev = float(ma7.iloc[-2])
     ma7_prev2 = float(ma7.iloc[-3])
 
-    curr = df.iloc[-1]
-    is_green = float(curr['close']) > float(curr['open'])
-    is_red = float(curr['close']) < float(curr['open'])
-    
-    body_size = abs(float(curr['close']) - float(curr['open']))
-    candle_range = float(curr['high']) - float(curr['low'])
-    body_proportion = (body_size / candle_range) if candle_range > 0 else 0
-    
-    is_valley = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
-    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    # 為了過濾 1 分鐘線的「小波動（微小V型反彈）」，必須等 MA7 確實偏離最高/最低點一定幅度才算「確定轉彎」
+    from core.config import MA7_EXIT_ATR_CHANGE_MIN_RATIO
 
     side = position.get("side")
 
     if side == "LONG":
-        if is_peak and is_red and body_proportion >= 0.5:
-            return {"close": True, "reason": f"MA7高點反轉 (實體{int(body_proportion*100)}%)"}
+        highest_ma7 = position.get("highest_ma7", ma7_curr)
+        if ma7_curr > highest_ma7:
+            position["highest_ma7"] = ma7_curr
+            highest_ma7 = ma7_curr
+            
+        if ma7_curr <= highest_ma7 - (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
+            return {"close": True, "reason": "MA7高點實質轉彎 (累積回落大於門檻)"}
             
     elif side == "SHORT":
-        if is_valley and is_green and body_proportion >= 0.5:
-            return {"close": True, "reason": f"MA7谷底反轉 (實體{int(body_proportion*100)}%)"}
+        lowest_ma7 = position.get("lowest_ma7", ma7_curr)
+        if ma7_curr < lowest_ma7:
+            position["lowest_ma7"] = ma7_curr
+            lowest_ma7 = ma7_curr
+            
+        if ma7_curr >= lowest_ma7 + (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
+            return {"close": True, "reason": "MA7谷底實質轉彎 (累積反彈大於門檻)"}
 
     return {"close": False, "reason": "No exit condition met"}
