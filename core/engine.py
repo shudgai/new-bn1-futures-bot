@@ -2730,16 +2730,14 @@ class TradingEngine:
                             if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,槽位已滿({MAX_SLOTS})")
                                 continue
-                            from core.config import get_leverage
+                            from core.config import get_leverage, TRADE_AMOUNT_USDT
                             leverage = get_leverage(symbol)
-                            max_bal = available_balance * TARGET_PERCENTAGE
-                            notional = min(max_bal * leverage, MAX_NOTIONAL_USDT)
-                            amount = notional / live_price
-                            if amount > 0:
+                            dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                            if dynamic_trade_amount > 0:
                                 await self.account.open_position(
                                     symbol=symbol,
                                     side=sig["side"],
-                                    amount_usdt=amount * live_price,
+                                    amount_usdt=dynamic_trade_amount,
                                     price=live_price,
                                     sl=0,
                                     tp=0,
