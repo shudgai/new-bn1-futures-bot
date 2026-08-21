@@ -321,12 +321,14 @@ def validate_sl_tp_pair(
     if not math.isfinite(price) or price <= 0:
         raise ValueError(f"Invalid price for SL/TP validation: {price!r}")
 
-    # tp=0 代表不設固定止盈，由 trailing 或動態指標出場。
-    if tp == 0.0:
+    if sl != 0.0:
         if side == "LONG" and not (sl < price):
             raise ValueError(f"LONG SL invalid: price={price}, sl={sl}")
         if side == "SHORT" and not (sl > price):
             raise ValueError(f"SHORT SL invalid: price={price}, sl={sl}")
+
+    # tp=0 代表不設固定止盈，由 trailing 或動態指標出場。
+    if tp == 0.0:
         return
 
     if not all(math.isfinite(value) for value in (sl, tp)):
