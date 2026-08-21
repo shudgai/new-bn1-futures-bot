@@ -285,6 +285,7 @@
                                 <th>入場價</th>
                                 <th>現價</th>
                                 <th>未實現損益（點擊平倉）</th>
+                                <th>開/平倉策略</th>
                                 <th>觸發</th>
                                 <th>數量</th>
                             </tr>
@@ -313,6 +314,7 @@
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
                                 </td>
+                                <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
                                     <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
                                         {{ pos.trigger && pos.trigger.ma_ok === false ? '✗' : '✓' }}

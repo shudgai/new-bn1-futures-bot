@@ -1036,8 +1036,8 @@ class TradingEngine:
                             highest_pnl = pnl_pct
                             
                         if highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
-                            if pnl_pct <= highest_pnl - config.TRAILING_STOP_PULLBACK_PCT:
-                                self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落，執行自動平倉 (獲利 +{pnl_pct*100:.2f}%)", "SUCCESS")
+                            if pnl_pct <= highest_pnl * config.TRAILING_STOP_RETAIN_PCT:
+                                self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落至 +{pnl_pct*100:.2f}%，執行自動平倉", "SUCCESS")
                                 await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
                                 continue # Skip fixed stop loss check since it's closed
                                 
