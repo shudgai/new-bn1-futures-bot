@@ -1030,9 +1030,9 @@ class TradingEngine:
                         import core.config as config
                         
                         # Trailing Stop Logic
-                        highest_pnl = position.get("highest_pnl_pct", pnl_pct)
+                        highest_pnl = position.get("peak_pnl_pct", pnl_pct)
                         if pnl_pct > highest_pnl:
-                            position["highest_pnl_pct"] = pnl_pct
+                            position["peak_pnl_pct"] = pnl_pct
                             highest_pnl = pnl_pct
                             
                         if highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
