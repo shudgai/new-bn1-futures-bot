@@ -2725,7 +2725,6 @@ class TradingEngine:
                         from core.strategy import detect_simple_ma7_signal
                         sig = detect_simple_ma7_signal(df, live_price)
                         if sig["detected"]:
-                        if sig["detected"]:
                             sig["symbol"] = symbol
                             sig["live_price"] = live_price
                             detected_candidates.append(sig)
