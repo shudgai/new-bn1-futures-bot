@@ -1043,8 +1043,7 @@ class TradingEngine:
                                 
                         # Fixed Stop Loss Logic
                         if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
-                            self.account.log(f"🚨 [固定止損觸發] {symbol} 虧損達 {pnl_pct*100:.2f}% (現價 {live_price})，執行自動平倉", "DANGER")
-                            await self.account.close_position(symbol, live_price, "固定止損 (0.5%)")
+                            await self.account.close_position(symbol, live_price, f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)")
                 
                 import asyncio
                 await asyncio.sleep(10)
