@@ -686,6 +686,7 @@ def detect_ma7_reversal(
         "fast_entry": False,
         "pullback_bottom_order": False,
         "entry_mode": "BREAKOUT_MOMENTUM",
+        "profit_profile": "TREND_EXTENSION",
         "target_price": None,
         "volume_ratio": volume_ratio,
         "rsi": float(rsi),
