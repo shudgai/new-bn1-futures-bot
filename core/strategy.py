@@ -613,10 +613,10 @@ def detect_ma7_reversal(
         else:
             return _no(f"RSI高於50（RSI={rsi:.1f}）")
 
-    # 4. 成交量放大 (Volume Ratio >= 1.0)
+    # 4. 成交量放大 (Volume Ratio >= STRUCTURED_VOLUME_MIN_RATIO)
     volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
-    if volume_ratio < 1.0:
-        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<1.0）")
+    if volume_ratio < STRUCTURED_VOLUME_MIN_RATIO:
+        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<{STRUCTURED_VOLUME_MIN_RATIO}）")
 
     # 所有核心條件均通過！開始設定訊號評分
     score = 72  # 基礎分高於 MIN_SCORE_THRESHOLD (71)
