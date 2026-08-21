@@ -155,7 +155,7 @@ async def get_prices():
         "tickers": visible_tickers(),
         "positions": positions_with_triggers(),
         "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),
-        "balance": round(engine.account.balance, 2),
+        "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
     }
 
 @app.post("/api/toggle")
