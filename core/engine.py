@@ -2905,8 +2905,7 @@ class TradingEngine:
                             await self._place_structured_entry(
                                 symbol,
                                 sig,
-                                sig["live_price"],
-                                now_time
+                                sig["live_price"]
                             )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
