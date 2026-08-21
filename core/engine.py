@@ -2878,7 +2878,6 @@ class TradingEngine:
                             btc_st_flip_age=self.btc_1h_st_flip_age,
                             btc_1m_turn=btc_1m_turn,
                             symbol=symbol,
-                            parameter_overrides=self._get_parameter_overrides(symbol),
                             live_price=live_price,
                         )
                         if sig["detected"]:
