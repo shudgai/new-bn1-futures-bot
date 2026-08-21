@@ -937,7 +937,9 @@ class PaperAccount:
                 meta["profit_profile"] = profit_profile
 
             pnl_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
-            highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
+            if "highest_pnl_pct" not in meta:
+                meta["highest_pnl_pct"] = pnl_pct
+            highest_pnl = meta["highest_pnl_pct"]
             if pnl_pct > highest_pnl:
                 highest_pnl = pnl_pct
                 meta["highest_pnl_pct"] = highest_pnl
@@ -1182,7 +1184,7 @@ class PaperAccount:
                 if sl_price > 0 and curr_p <= sl_price:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     # 僅在已啟用移動保本或部位曾達到設定峰值比例時，才把本地 SL 視為真正平倉
-                    highest_peak = float(meta.get("highest_pnl_pct") or 0.0)
+                    highest_peak = float(meta.get("highest_pnl_pct", -999.0))
                     if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
                         # Simulate an already-resting protective stop at its trigger;
                         # close_position adds the configured market slippage.
@@ -1201,7 +1203,7 @@ class PaperAccount:
                     continue
                 if sl_price > 0 and curr_p >= sl_price:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
-                    highest_peak = float(meta.get("highest_pnl_pct") or 0.0)
+                    highest_peak = float(meta.get("highest_pnl_pct", -999.0))
                     if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
                         # Simulate an already-resting protective stop at its trigger;
                         # close_position adds the configured market slippage.

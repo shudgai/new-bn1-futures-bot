@@ -1222,6 +1222,26 @@ class TradingEngine:
 
 
 
+                    # --- K 線反轉逃頂機制 ---
+                    # 獲利狀態下，若出現明顯的反轉 K 線 (多單遇到流星線，空單遇到錘頭線)，提早獲利了結。
+                    from core.indicators import analyze_candle_pattern
+                    candle_pattern = analyze_candle_pattern(bar)
+                    
+                    unrealized_pnl_pct = (current_price - position["entry_price"]) / position["entry_price"] if side == "LONG" else (position["entry_price"] - current_price) / position["entry_price"]
+                    # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
+                    if unrealized_pnl_pct > 0.002:
+                        early_exit_reason = ""
+                        if side == "LONG" and candle_pattern.get("is_shooting_star"):
+                            early_exit_reason = "高檔出現流星線 (Shooting Star)"
+                        elif side == "SHORT" and candle_pattern.get("is_hammer"):
+                            early_exit_reason = "低檔出現錘頭線 (Hammer)"
+                        
+                        if early_exit_reason:
+                            self.account.log(f"🚨 [K線型態逃頂] {symbol} {side} 獲利 {unrealized_pnl_pct:.2%}，{early_exit_reason} 提早平倉！", "SUCCESS")
+                            if not DISABLE_STOP_LOSS:
+                                await self.account.close_position(symbol, current_price, f"型態逃頂 ({early_exit_reason})")
+                            continue
+
                     if entry_mode == "BREAKOUT":
                         # 修正2：kc_failed 改為需要連續 BREAKOUT_KC_FAIL_CONFIRM_BARS 根
                         # 已收盤5m K棒實體（開盤+收盤）都在EMA20不利側才觸發關倉。
@@ -1733,12 +1753,8 @@ class TradingEngine:
                     continue
                 target_price = computed_target
                 pullback_distance_atr = computed_distance / max(float(sig.get("atr") or real_atr), 1e-12)
-            base_amount = min(
-                max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
-                TRADE_AMOUNT_USDT,
-            )
-            allocation_factor = float(sig.get("btc_allocation_factor", 1.0) or 1.0)
-            amount = base_amount * allocation_factor
+            dynamic_trade_amount = self.account.balance / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+            amount = dynamic_trade_amount
             pool[symbol] = {
                 "symbol": symbol,
                 "side": sig["side"],
@@ -1751,11 +1767,11 @@ class TradingEngine:
                 "atr": float(sig.get("atr") or real_atr),
                 "reason": sig.get("reason", ""),
                 "amount_usdt": amount,
-                "base_amount_usdt": base_amount,
+                "base_amount_usdt": amount,
                 "btc_regime_mode": sig.get("btc_regime_mode", "UNKNOWN"),
                 "btc_direction_1h": sig.get("btc_direction_1h", 0),
                 "btc_score_penalty": sig.get("btc_score_penalty", 0),
-                "btc_allocation_factor": allocation_factor,
+                "btc_allocation_factor": 1.0,
                 "btc_pre_penalty_score": sig.get("btc_pre_penalty_score", score),
                 "raw_signal_score": sig.get("raw_score", sig.get("btc_pre_penalty_score", score)),
                 "btc_adjusted_score": sig.get("btc_adjusted_score", score),
@@ -2020,21 +2036,8 @@ class TradingEngine:
                         "WARNING",
                     )
                     return False
-        amount = min(
-            max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
-            TRADE_AMOUNT_USDT,
-        )
-        history_factor_fn = getattr(
-            self.symbol_rotation, "get_history_allocation_factor", lambda _symbol, _side: 1.0
-        )
-        history_allocation_factor = history_factor_fn(symbol, side)
-        amount *= history_allocation_factor
-        low_room_allocation_factor = (
-            0.5 if signal.get("high_readiness_low_room") else 1.0
-        )
-        amount *= low_room_allocation_factor
-        btc_allocation_factor = float(signal.get("btc_allocation_factor") or 1.0)
-        amount *= btc_allocation_factor
+        dynamic_trade_amount = self.account.balance / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+        amount = dynamic_trade_amount
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price, sl,
@@ -2140,16 +2143,8 @@ class TradingEngine:
             )
             return False
 
-        base_amount = min(
-            max(TRADE_AMOUNT_USDT * get_position_multiplier(score), MIN_TRADE_USDT),
-            TRADE_AMOUNT_USDT,
-        )
-        allocation_factor = float(ma7_sig.get("btc_allocation_factor", 1.0) or 1.0)
-        is_contrarian_bottom_buy = bool(ma7_sig.get("is_contrarian_bottom_buy"))
-        # 逆勢承接信心水準比一般順勢單低，縮小下單金額控制風險。
-        if is_contrarian_bottom_buy:
-            allocation_factor *= CONTRARIAN_POSITION_SIZE_MULTIPLIER
-        amount_usdt = base_amount * allocation_factor
+        dynamic_trade_amount = self.account.balance / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+        amount_usdt = dynamic_trade_amount
         if self.account.get_available_balance() < amount_usdt:
             return False
 
@@ -2222,11 +2217,9 @@ class TradingEngine:
             entry_context={
                 "entry_mode": "MA7_BOTTOM_LIMIT" if is_bottom_order else "MA7_REVERSAL",
                 "btc_regime_at_entry": ma7_sig.get("btc_regime_mode", "UNKNOWN"),
-                "btc_allocation_factor": allocation_factor,
                 "ma7_curr": ma7_sig.get("ma7_curr"),
                 "ma7_prev": ma7_sig.get("ma7_prev"),
                 "ma7_prev2": ma7_sig.get("ma7_prev2"),
-                "is_contrarian_bottom_buy": is_contrarian_bottom_buy,
             },
         )
         if placed:

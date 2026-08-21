@@ -20,46 +20,28 @@ SYMBOL_LEVERAGE = {
 }
 
 def get_leverage(symbol: str) -> int:
-    return SYMBOL_LEVERAGE.get(symbol, LEVERAGE)
+    return 5
 
 # 訊號品質必須同時限制槓桿，避免最低門檻訊號仍套用 ETH 10x 等幣種上限。
 SIGNAL_LEVERAGE_CAPS = [
-    (90, None),  # 滿分訊號：可使用該幣種原始上限
-    (80, 6),     # 次高分：最高 6x
-    (70, 3),     # 最低合格分：最高 3x
+    (90, 5),
+    (80, 5),
+    (70, 5),
 ]
 
 def get_signal_leverage(symbol: str, score: int) -> int:
-    symbol_leverage = get_leverage(symbol)
-    for threshold, cap in SIGNAL_LEVERAGE_CAPS:
-        if score >= threshold:
-            return symbol_leverage if cap is None else min(symbol_leverage, cap)
-    return 1
+    return 5
 
 # --- 依實測 ATR% 分級槓桿（取代上面 SYMBOL_LEVERAGE 用市值猜的假設）---
-# SYMBOL_LEVERAGE 是憑「市值大小」猜這個幣波動小/大，本身沒有實測依據。
-# core/symbol_rotation.py 現在會用已經在抓的 5m K 線順便記錄每個幣種的
-# 實際 ATR%，有資料後改用這裡的門檻決定槓桿上限：波動越小給越高槓桿，
-# 波動越大給越低槓桿，跟策略本身的 MIN_ATR_PCT(0.15%)~MAX_ATR_PCT(0.6%)
-# 可交易區間對齊。還沒累積到資料的幣種，get_dynamic_leverage() 會退回
-# 上面的 SYMBOL_LEVERAGE 靜態表，行為不變。
-# 上限從 10x/8x/6x 降到 6x/5x/4x：實測 DOT/USDT ATR%=0.22%（落在 <0.30%
-# 這一級）用 8x 進場，止損觸發轉市價單滑價 0.66%，換算成 8x 槓桿的虧損
-# 放大到 -2.30 USDT（若沒放大槓桿只會是這個數字的一小部分）。「波動率
-# 低」不代表「不會有快速的價格跳動」，尤其測試網流動性淺、滑價風險本來
-# 就比實盤高，槓桿倍數再放大會把同樣的滑價百分比換算成更大的金額損失。
 ATR_LEVERAGE_TIERS = [
-    (0.002, 6),    # 實測 ATR% < 0.20% → 6x（原10x）
-    (0.003, 5),    # < 0.30% → 5x（原8x）
-    (0.0045, 4),   # < 0.45% → 4x（原6x）
-    (0.006, 3),    # < 0.60%（MAX_ATR_PCT 邊界）→ 3x
+    (0.002, 5),
+    (0.003, 5),
+    (0.0045, 5),
+    (0.006, 5),
 ]
 
 def get_atr_based_leverage(atr_pct: float) -> int:
-    for threshold, lev in ATR_LEVERAGE_TIERS:
-        if atr_pct < threshold:
-            return lev
-    return 3
+    return 5
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。

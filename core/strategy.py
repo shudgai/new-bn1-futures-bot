@@ -835,6 +835,10 @@ class SuperTrendKeltnerStrategy:
         if not indicators_precomputed:
             df = self.compute_indicators(df)
         curr, prev = df.iloc[-1], df.iloc[-2]
+        
+        from core.indicators import analyze_candle_pattern
+        candle_pattern = analyze_candle_pattern(curr)
+        
         direction = int(curr["st_direction"])
         side = "LONG" if direction == 1 else "SHORT"
         price = float(curr["close"])
@@ -1037,6 +1041,17 @@ class SuperTrendKeltnerStrategy:
             if rsi_cross:
                 triggers.append("RSI穿越50")
             trigger_text = "+".join(triggers)
+
+            # --- K 線形態防護：過濾假突破 ---
+            if side == "LONG" and candle_pattern.get("is_shooting_star"):
+                return eligibility_hold(
+                    f"MomentumCross_{side} 拒絕：出現流星線 (Shooting Star) 假突破"
+                )
+            if side == "SHORT" and candle_pattern.get("is_hammer"):
+                return eligibility_hold(
+                    f"MomentumCross_{side} 拒絕：出現錘頭線 (Hammer) 假突破"
+                )
+
             return {
                 "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
                 "score": 80 - btc_score_penalty,
@@ -1391,9 +1406,17 @@ class SuperTrendKeltnerStrategy:
             )
             rsi_score = round(min(rsi_strength / 8.0, 1.0) * 4)
             adx_score = round(min(max(adx - ADX_QUALITY_MIN, 0.0) / 18.0, 1.0) * 4)
+            
+            # --- K 線反轉形態加分 ---
+            pattern_score = 0
+            if side == "LONG" and candle_pattern.get("is_hammer"):
+                pattern_score = 5
+            elif side == "SHORT" and candle_pattern.get("is_shooting_star"):
+                pattern_score = 5
+
             score = max(
                 0,
-                min(91, 75 + body_score + support_score + rsi_score + adx_score)
+                min(91, 75 + body_score + support_score + rsi_score + adx_score + pattern_score)
                 - btc_score_penalty,
             )
             profit_room_pct = (
@@ -1548,6 +1571,11 @@ class SuperTrendKeltnerStrategy:
             df = self.compute_indicators(df)
         curr = df.iloc[-1]
         prev = df.iloc[-2] if len(df) >= 2 else None
+        
+        from core.indicators import analyze_candle_pattern
+        candle_pattern = analyze_candle_pattern(curr)
+        pattern_name = candle_pattern.get("pattern_name", "None")
+        
         overrides = dict(parameter_overrides or {})
         volume_min_ratio = float(overrides.get("volume_min_ratio", KELTNER_MIN_VOLUME_RATIO))
         volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
@@ -1574,6 +1602,7 @@ class SuperTrendKeltnerStrategy:
                     "rsi": float(curr['rsi']),
                     "adx": float(curr['adx']) if not pd.isna(curr['adx']) else 0.0,
                     "volume_ratio": volume_ratio,
+                    "candle_pattern": pattern_name,
                 },
             }
         atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
@@ -1608,6 +1637,7 @@ class SuperTrendKeltnerStrategy:
                 "st_direction_1h": int(st_direction_1h) if st_direction_1h is not None else None,
                 "btc_direction_1h": int(btc_st_direction_1h or 0),
                 "btc_flip_age": int(btc_st_flip_age),
+                "candle_pattern": pattern_name,
             }
 
         def eligibility_hold(reason: str) -> dict:
