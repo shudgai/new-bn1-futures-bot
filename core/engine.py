@@ -2057,8 +2057,6 @@ class TradingEngine:
             "btc_regime_at_entry": signal.get("btc_regime_mode", "ALIGNED"),
             "btc_direction_1h_at_entry": self.btc_1h_st_direction,
             "btc_score_penalty": int(signal.get("btc_score_penalty") or 0),
-            "btc_allocation_factor": btc_allocation_factor,
-            "history_allocation_factor": history_allocation_factor,
             "profit_profile": profit_profile,
             "profit_room_pct": float(signal.get("profit_room_pct") or 0.0),
             "bounce_capture_ratio": float(signal.get("bounce_capture_ratio") or 0.0),
@@ -2067,7 +2065,6 @@ class TradingEngine:
                 round(structured_net_rr, 4) if structured_net_rr is not None else None
             ),
             "high_readiness_low_room": bool(signal.get("high_readiness_low_room")),
-            "low_room_allocation_factor": low_room_allocation_factor,
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,
@@ -2086,12 +2083,7 @@ class TradingEngine:
             order_type = "支撐限價" if is_limit else "市價"
             self.account.log(
                 f"📝 [結構掛單] {symbol} {side} {entry_mode} {order_type} @ "
-                f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}｜"
-                f"歷史探索倉×{history_allocation_factor:.2f}"
-                + (
-                    f"｜滿準備低空間倉×{low_room_allocation_factor:.2f}"
-                    if low_room_allocation_factor < 1.0 else ""
-                ),
+                f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}",
                 "SUCCESS",
             )
         return bool(placed)
