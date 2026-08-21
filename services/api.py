@@ -103,7 +103,7 @@ async def get_status():
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
         "port": PORT,
-        "balance": round(engine.account.balance, 2),
+        "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
         "realized_pnl": round(engine.account.realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
         "leverage": LEVERAGE,
