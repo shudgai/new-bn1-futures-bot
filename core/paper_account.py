@@ -369,9 +369,10 @@ class PaperAccount:
         else:
             execution_price = price
         if apply_slippage:
-            sl_distance = abs(price - sl)
+            sl_distance = abs(price - sl) if sl > 0 else 0.0
             tp_distance = abs(tp - price) if tp else 0.0
-            sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
+            if sl > 0:
+                sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
             if tp_distance > 0:
                 tp = execution_price + tp_distance if side == "LONG" else execution_price - tp_distance
         if DISABLE_STOP_LOSS:
