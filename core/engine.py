@@ -2725,6 +2725,24 @@ class TradingEngine:
                     detected_candidates = []
 
                     now_time = time.time()
+                    
+                    # 抓取 BTC 1m 判斷即時轉彎方向
+                    btc_1m_turn = None
+                    try:
+                        btc_df_1m = await self.fetch_klines("BTC/USDT", timeframe="1m", limit=30)
+                        if not btc_df_1m.empty and len(btc_df_1m) >= 8:
+                            btc_live = float(self.tickers.get("BTC/USDT") or btc_df_1m['close'].iloc[-1])
+                            btc_target = float(btc_df_1m['close'].iloc[-8])
+                            btc_is_green = float(btc_df_1m['close'].iloc[-1]) > float(btc_df_1m['open'].iloc[-1])
+                            btc_is_red = float(btc_df_1m['close'].iloc[-1]) < float(btc_df_1m['open'].iloc[-1])
+                            
+                            if btc_live > btc_target and btc_is_green:
+                                btc_1m_turn = "LONG"
+                            elif btc_live < btc_target and btc_is_red:
+                                btc_1m_turn = "SHORT"
+                    except Exception as e:
+                        self.account.log(f"⚠️ 無法取得 BTC 1m 轉彎資料: {e}", "WARNING")
+
                     # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
                     # 用 list(...) 先拍一份快照，避免邊跑邊被換牌造成跳過或重複掃描。
                     symbols_snapshot = list(DEFAULT_SYMBOLS)
@@ -2858,6 +2876,7 @@ class TradingEngine:
                             st_direction_1h=st_direction_1h,
                             btc_st_direction_1h=self.btc_1h_st_direction,
                             btc_st_flip_age=self.btc_1h_st_flip_age,
+                            btc_1m_turn=btc_1m_turn,
                             symbol=symbol,
                             parameter_overrides=self._get_parameter_overrides(symbol),
                             live_price=live_price,

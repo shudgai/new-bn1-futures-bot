@@ -418,6 +418,7 @@ def detect_ma7_reversal(
     st_direction_1h: int = None,
     btc_st_direction_1h: int = 0,
     btc_st_flip_age: int = 999,
+    btc_1m_turn: str = None,
     symbol: str = None,
     parameter_overrides: dict = None,
     indicators_precomputed: bool = False,
@@ -565,16 +566,36 @@ def detect_ma7_reversal(
     if want_dir == -1 and rsi < rsi_short_min:
         return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
 
+    # ── 嚴格本尊K線與BTC同步確認 ──
+    is_green = float(curr['close']) > float(curr['open'])
+    is_red = float(curr['close']) < float(curr['open'])
+    
+    if want_dir == 1:
+        if not is_green:
+            return _no("多單需等K線收綠")
+        if btc_1m_turn is not None and btc_1m_turn != "LONG":
+            return _no("BTC 1m 未確認向上轉彎")
+    else:
+        if not is_red:
+            return _no("空單需等K線收紅")
+        if btc_1m_turn is not None and btc_1m_turn != "SHORT":
+            return _no("BTC 1m 未確認向下轉彎")
+
     # ── 結合方案：突破 Keltner 通道 (KC) + MACD/RSI 動能指標偏強 ──
-    # 1. 價格突破 KC 軌道
+    # 1. 價格突破 KC 軌道且不過度背離
     is_breakout = False
+    MAX_DEV = 0.005 # 最大允許突破邊界外 0.5%
     if want_dir == 1:
         if price > kc_upper:
+            if (price - kc_upper) / kc_upper > MAX_DEV:
+                return _no(f"追高風險：突破KC過大 ({(price - kc_upper)/kc_upper:.2%} > 0.5%)")
             is_breakout = True
         else:
             return _no(f"價格未突破KC上軌（{price:.6g}<={kc_upper:.6g}）")
     else:
         if price < kc_lower:
+            if (kc_lower - price) / kc_lower > MAX_DEV:
+                return _no(f"殺低風險：跌破KC過大 ({(kc_lower - price)/kc_lower:.2%} > 0.5%)")
             is_breakout = True
         else:
             return _no(f"價格未突破KC下軌（{price:.6g}>={kc_lower:.6g}）")
