@@ -20,28 +20,28 @@ SYMBOL_LEVERAGE = {
 }
 
 def get_leverage(symbol: str) -> int:
-    return 5
+    return LEVERAGE
 
 # 訊號品質必須同時限制槓桿，避免最低門檻訊號仍套用 ETH 10x 等幣種上限。
 SIGNAL_LEVERAGE_CAPS = [
-    (90, 5),
-    (80, 5),
-    (70, 5),
+    (90, LEVERAGE),
+    (80, LEVERAGE),
+    (70, LEVERAGE),
 ]
 
 def get_signal_leverage(symbol: str, score: int) -> int:
-    return 5
+    return LEVERAGE
 
 # --- 依實測 ATR% 分級槓桿（取代上面 SYMBOL_LEVERAGE 用市值猜的假設）---
 ATR_LEVERAGE_TIERS = [
-    (0.002, 5),
-    (0.003, 5),
-    (0.0045, 5),
-    (0.006, 5),
+    (0.002, LEVERAGE),
+    (0.003, LEVERAGE),
+    (0.0045, LEVERAGE),
+    (0.006, LEVERAGE),
 ]
 
 def get_atr_based_leverage(atr_pct: float) -> int:
-    return 5
+    return LEVERAGE
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
