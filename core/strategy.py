@@ -459,25 +459,26 @@ def detect_ma7_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    if require_strict_v:
-        # 嚴格轉彎條件：必須是由跌轉漲(或平轉漲)才算谷底，由漲轉跌(或平轉跌)才算高點
-        is_trough = (ma7_prev2 >= ma7_prev) and (ma7_curr > ma7_prev)
-        is_peak = (ma7_prev2 <= ma7_prev) and (ma7_curr < ma7_prev)
-    else:
-        # 放寬條件：只要 MA7 往上指就算轉彎 (不需要完整的 V 型)，隨時跟上趨勢
-        is_trough = (ma7_curr > ma7_prev)
-        is_peak = (ma7_curr < ma7_prev)
-        
+    # 原始嚴格條件（恢復最初版本）：
+    # 多單：先有一段下跌 (prev2 > prev) 再往上反彈 (curr > prev) = 真正的 V 型谷底
+    # 空單：先有一段上漲 (prev2 < prev) 再往下反彈 (curr < prev) = 真正的倒 V 型頂部
+    is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
+    is_peak   = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
     if want_dir == 1:
+        if ma7_curr <= ma25_curr:
+            return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.6f}, MA25={ma25_curr:.6f})")
         if not is_trough:
-            return _no("MA7 尚未向上指")
-        direction_note = "MA7 向上指 (LONG 谷底)"
+            return _no("MA7 未形成 V 型谷底")
+        direction_note = "MA7>MA25 + V型谷底 (LONG)"
     else:
+        if ma7_curr >= ma25_curr:
+            return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.6f}, MA25={ma25_curr:.6f})")
         if not is_peak:
-            return _no("MA7 尚未向下指")
-        direction_note = "MA7 向下指 (SHORT 高點)"
+            return _no("MA7 未形成倒 V 型峰頂")
+        direction_note = "MA7<MA25 + 倒V型峰頂 (SHORT)"
 
     # 完全符合，滿分通過
     score = 100
