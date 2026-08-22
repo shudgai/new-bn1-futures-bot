@@ -2222,37 +2222,21 @@ class TradingEngine:
             )
             return False
 
-        # 進場前先確認5分鐘週期沒有已經在反對這個方向——1分鐘MA7訊號跟
-        # 5分鐘出場防線是兩個獨立時間週期各自判斷，可能出現「1分鐘剛要
-        # 轉彎，但5分鐘早就已經跌破/站上防線」的情況，這種單一進場就會
-        # 立刻被5m強出場防線打掉（實測 NEAR/USDT 進場僅8秒就被5m防線
-        # 關倉）。這裡用跟出場防線同一套 compute_position_trigger 邏輯
-        # 先擋一次，避免進場即出場的無效交易。
-        trigger_df = await self.fetch_klines(symbol, timeframe=MA7_EXIT_TIMEFRAME, limit=30)
-        pre_entry_trigger = compute_position_trigger(trigger_df, side)
-        # strong 是5m已確認反轉，一律擋單。ma_ok=False 對已轉彎追價單仍
-        # 擋下；回撤底部Maker則容許短暫落在EMA不利側，否則無法低接。
-        is_bottom_order = bool(ma7_sig.get("pullback_bottom_order"))
-        if pre_entry_trigger.get("strong") or (
-            not is_bottom_order and pre_entry_trigger.get("ma_ok") is False
-        ):
-            self.account.log(
-                f"🛑 {symbol} MA7拐頭訊號成立但5分鐘週期已對{side}方向亮警訊"
-                f"（{', '.join(pre_entry_trigger.get('reasons', []))}），跳過本次進場",
-                "WARNING",
-            )
-            return False
+        # [已關閉] 5分鐘週期進場前過濾 — 因策略改為純1分鐘MA7方向，高時間周期過濾
+        # 會導致MA7已轉向但因5m/15m還在舊方向而錯失即時反手進場機會，故停用。
+        # trigger_df = await self.fetch_klines(symbol, timeframe=MA7_EXIT_TIMEFRAME, limit=30)
+        # pre_entry_trigger = compute_position_trigger(trigger_df, side)
+        # is_bottom_order = bool(ma7_sig.get("pullback_bottom_order"))
+        # if pre_entry_trigger.get("strong") or (
+        #     not is_bottom_order and pre_entry_trigger.get("ma_ok") is False
+        # ):
+        #     return False
 
-        trend_df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
-        trend_breach = self._trend_follow_breach(trend_df, side)
-        if trend_breach["breached"]:
-            direction_text = "跌破" if side == "LONG" else "突破"
-            self.account.log(
-                f"🛑 {symbol} MA7訊號成立但15分鐘已連續兩根{direction_text}EMA20緩衝帶，"
-                "若進場會立即符合趨勢出場條件，跳過本次進場",
-                "WARNING",
-            )
-            return False
+        # [已關閉] 15分鐘EMA20趨勢過濾 — 同上，純1分鐘策略不依賴15m趨勢方向。
+        # trend_df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
+        # trend_breach = self._trend_follow_breach(trend_df, side)
+        # if trend_breach["breached"]:
+        #     return False
 
         dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
         amount_usdt = dynamic_trade_amount
