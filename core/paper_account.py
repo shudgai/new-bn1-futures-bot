@@ -1044,10 +1044,22 @@ class PaperAccount:
                 risk_pct * TRAILING_TRIGGER_R_MULT
                 if risk_pct > 0 else configured_trigger
             )
-            trailing_callback = (
+            base_callback = (
                 max(TRAILING_CALLBACK_PCT, risk_pct * TRAILING_CALLBACK_R_MULT)
                 if risk_pct > 0 else TRAILING_CALLBACK_PCT
             )
+            # 動態縮小回吐幅度：利潤越高，回吐幅度越小
+            # 如果利潤達到 0.5%，回吐縮小為原來的 80%
+            # 如果利潤達到 1.0%，回吐縮小為原來的 50%
+            # 如果利潤達到 2.0% 以上，回吐縮小為原來的 30%
+            if highest_pnl >= 0.02:
+                trailing_callback = base_callback * 0.3
+            elif highest_pnl >= 0.01:
+                trailing_callback = base_callback * 0.5
+            elif highest_pnl >= 0.005:
+                trailing_callback = base_callback * 0.8
+            else:
+                trailing_callback = base_callback
 
             # 正式 1.5R 移動停利之前的早期保護層。曾有小幅有效浮盈後若
             # 明顯回吐，先在成本上方附近退出，避免 +0.3% 一路退成完整 -1R。

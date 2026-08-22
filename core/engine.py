@@ -2882,15 +2882,6 @@ class TradingEngine:
                         ma7_prev = float(df_1m['close'].rolling(7).mean().iloc[-2])
                         current_direction = "LONG" if ma7_curr > ma7_prev else "SHORT"
                         
-                        # 強制多空交替 (Stop and Reverse)
-                        last_open_side = None
-                        for trade in self.account.trades:
-                            if trade.get("symbol") == symbol and trade.get("action", "").startswith("OPEN_"):
-                                last_open_side = trade.get("side")
-                                break
-                        if last_open_side == current_direction:
-                            continue
-                        
                         from core.strategy import detect_ma7_reversal
                         sig = detect_ma7_reversal(
                             df_1m,

@@ -194,7 +194,6 @@ class SymbolRotation:
         closed = [
             trade for trade in self.account.trades
             if trade.get("symbol") == symbol
-            and trade.get("side") == side
             and str(trade.get("action", "")).startswith("CLOSE")
             and _trade_ts(trade) >= _now - lookback_window
         ]
