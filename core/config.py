@@ -743,7 +743,7 @@ MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
 # 假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是同一種情況，故允許
 # 繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件不受影響）。
 MAINSTREAM_SYMBOLS = {
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "AVAX/USDT"
+    "DOGE/USDT"
 }
 # VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
 # 價格極值。
