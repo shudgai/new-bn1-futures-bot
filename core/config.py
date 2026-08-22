@@ -839,10 +839,7 @@ AI_ADVISOR_WEIGHT = float(os.getenv("AI_ADVISOR_WEIGHT", "0.05"))
 # 高流動性候選池。已退場或近期反覆停損的
 # TAO/FET/APT/WIF/1000PEPE/ETH 不放回自動候選池。
 SYMBOL_CANDIDATE_POOL = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "NEAR/USDT", "AVAX/USDT",
-    "SUI/USDT", "ONDO/USDT", "AAVE/USDT", "LINK/USDT", "LTC/USDT",
-    "DOGE/USDT", "BCH/USDT", "UNI/USDT", "OP/USDT", "ARB/USDT",
-    "BNB/USDT",
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "AVAX/USDT"
 ]
 
 # 實績已確認為負期望的幣種暫停新倉；既有持倉仍由原 SL/TP 管理。

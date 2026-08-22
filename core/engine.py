@@ -973,7 +973,9 @@ class TradingEngine:
                             .mean().iloc[-1]
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        current_direction = "LONG" if int(df_1m.iloc[-1]["st_direction"]) == 1 else "SHORT"
+                        ma7 = float(df_1m['close'].rolling(7).mean().iloc[-1])
+                        ma25 = float(df_1m['close'].rolling(25).mean().iloc[-1])
+                        current_direction = "LONG" if ma7 > ma25 else "SHORT"
 
                         sig = detect_ma7_reversal(
                             df_1m,
@@ -2874,7 +2876,9 @@ class TradingEngine:
                             .mean().iloc[-1]
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        current_direction = "LONG" if int(df_1m.iloc[-1]["st_direction"]) == 1 else "SHORT"
+                        ma7 = float(df_1m['close'].rolling(7).mean().iloc[-1])
+                        ma25 = float(df_1m['close'].rolling(25).mean().iloc[-1])
+                        current_direction = "LONG" if ma7 > ma25 else "SHORT"
                         
                         from core.strategy import detect_ma7_reversal
                         sig = detect_ma7_reversal(
