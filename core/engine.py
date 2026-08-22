@@ -2879,8 +2879,8 @@ class TradingEngine:
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
                         ma7_curr = float(df_1m['close'].rolling(7).mean().iloc[-1])
-                        ma25_curr = float(df_1m['close'].rolling(25).mean().iloc[-1])
-                        current_direction = "LONG" if ma7_curr > ma25_curr else "SHORT"
+                        ma7_prev = float(df_1m['close'].rolling(7).mean().iloc[-2])
+                        current_direction = "LONG" if ma7_curr > ma7_prev else "SHORT"
                         
                         # 判斷是否需要嚴格 V 型轉彎
                         require_strict_v = False
