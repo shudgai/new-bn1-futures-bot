@@ -424,293 +424,83 @@ def detect_ma7_reversal(
     indicators_precomputed: bool = False,
     live_price: float = None,
 ) -> dict:
-    """1m MA7 回撤底部預掛與谷底（多單）/峰頂（空單）拐頭偵測。
-
-    觸發條件（以多單為例）：
-      ma7[-3] > ma7[-2] and ma7[-1] > ma7[-2]
-    即前一根 MA7 低於兩根前（確立谷底），且當前 MA7 已向上翻。
-
-    需同時通過：
-      - SuperTrend 方向對齊
-      - 1h ST 方向對齊（若啟用）
-      - ADX / ATR / RSI 基礎品質過濾
-      - BTC 大盤守門員
-      - KC 位置驗證：現價在 EMA20 同側（不能整個跑到通道另一邊）
-
-    回傳 {"detected": True/False, "reason": str, ...}
     """
-    if len(df) < 20:
-        return {"detected": False, "reason": "K線資料不足"}
+    純粹 MA7/MA25 交叉 + MA7 樞軸轉折 (Stop and Reverse)
+    - 多單：MA7 > MA25 且 MA7 形成 V 型谷底
+    - 空單：MA7 < MA25 且 MA7 形成倒 V 型峰頂
+    """
+    if len(df) < 25:
+        return {"detected": False, "reason": "K線資料不足25根"}
 
-    if not indicators_precomputed:
-        df = SuperTrendKeltnerStrategy().compute_indicators(df)
+    # 確保指標已計算
+    if 'ma7' not in df.columns:
+        df['ma7'] = df['close'].rolling(window=7).mean()
+    if 'ma25' not in df.columns:
+        df['ma25'] = df['close'].rolling(window=25).mean()
 
-    overrides = dict(parameter_overrides or {})
-    atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
-    rsi_long_max = float(overrides.get("rsi_long_max", RSI_LONG_MAX))
-    rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
-
-    curr = df.iloc[-1]
-    closed_price = (
-        curr['close_price_spike_filtered']
-        if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered']))
-        else curr['close']
-    )
-    price = float(live_price) if live_price is not None and float(live_price) > 0 else float(closed_price)
-    atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
-    rsi = curr['rsi']
-    adx = curr['adx'] if not np.isnan(curr['adx']) else 0.0
-    vol = curr['volume']
-    vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
-    ema_20 = curr['ema_20'] if not pd.isna(curr['ema_20']) else price
-    kc_upper = curr['kc_upper']
-    kc_lower = curr['kc_lower']
-    st_dir = int(curr['st_direction'])
-    want_dir = 1 if str(side).upper() == "LONG" else -1
-
+    # 取值
     ma7_series = df['ma7'].dropna()
-    ma7_curr = float(ma7_series.iloc[-1]) if len(ma7_series) > 0 else price
-    ma7_prev = float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else price
-    ma7_prev2 = float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else price
+    if len(ma7_series) < 3:
+        return {"detected": False, "reason": "MA7資料不足"}
 
-    # 提前計算品質分數（用於狀態待命時顯示預估分數，上限 89 避免誤觸 CURRENT_MAKER 路徑）
-    score = 65  # 固定評分基準；不得隨開倉門檻上調而灌高訊號分數
-    if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
-        score += 10  # 量能確認
-    if want_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
-        score += 5
-    elif want_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
-        score += 5
-    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
-    score += round(min(max(adx_ratio, 0.0), 1.0) * 9)  # ADX 品質最多 +9
-    score = min(score, 89)
+    ma25_series = df['ma25'].dropna()
+    if len(ma25_series) < 1:
+        return {"detected": False, "reason": "MA25資料不足"}
+
+    ma7_curr = float(ma7_series.iloc[-1])
+    ma7_prev = float(ma7_series.iloc[-2])
+    ma7_prev2 = float(ma7_series.iloc[-3])
+    ma25_curr = float(ma25_series.iloc[-1])
+    
+    price = float(live_price) if live_price else float(df['close'].iloc[-1])
+    atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
 
     def _no(reason: str) -> dict:
-        return {"detected": False, "reason": reason, "side": side, "score": score}
+        return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    # MA7 轉彎嚴格確認 (V型谷底 / 倒V型峰頂)
     is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
     is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    want_dir = 1 if str(side).upper() == "LONG" else -1
+
+    if want_dir == 1:
+        if ma7_curr <= ma25_curr:
+            return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
+        if not is_trough:
+            return _no("MA7 未形成 V 型谷底")
+        direction_note = "MA7>MA25 + V型谷底 (LONG)"
+    else:
+        if ma7_curr >= ma25_curr:
+            return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
+        if not is_peak:
+            return _no("MA7 未形成倒 V 型峰頂")
+        direction_note = "MA7<MA25 + 倒V型峰頂 (SHORT)"
+
+    # 完全符合，滿分通過
+    score = 100
     
-    if want_dir == 1 and not is_trough:
-        return _no("MA7 未形成 V 型谷底")
-    if want_dir == -1 and not is_peak:
-        return _no("MA7 未形成倒 V 型峰頂")
+    # 乖離率 (作為排序優選的參考，引擎在處理分數相同時，可以依據這個乖離程度決定優先級)
+    turn_sharpness = abs(ma7_curr - ma25_curr)
 
-    # SuperTrend 方向對齊
-    if st_dir != want_dir:
-        return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
-
-    # 1h SuperTrend 方向檢查已禁用，允許逆勢進場以增加開倉機會
-
-    # BTC 大盤守門員
-    btc_regime = classify_btc_regime(
-        st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol,
-    )
-    if btc_regime["hard_block"]:
-        if btc_regime["mode"] == "CONTRARY":
-            return _no("BTC 1h方向背離，禁止逆大盤進場")
-        return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
-
-    # 1h EMA50 方向檢查已禁用，允許逆勢進場
-
-    # ADX 硬性最低門檻 (動態調整：若 1h 趨勢對齊，放寬至 8.0)
-    dynamic_adx_min = ADX_MANDATORY_MIN
-    if st_direction_1h == want_dir:
-        dynamic_adx_min = max(8.0, ADX_MANDATORY_MIN - 2.0)
-    if adx < dynamic_adx_min:
-        return _no(f"ADX太低({adx:.1f}<{dynamic_adx_min})")
-
-    # SuperTrend 翻轉後已過根數 — 防趨勢尾部進場
-    # FRESHNESS_DECAY_BARS 是新鮮度衰減到 0 的根數上限，若超過其 70%
-    # 代表這根 ST 翻轉已相當陳舊，MA7 拐頭很可能只是尾部震盪，不再進場。
-    st_flip_age = bars_since_supertrend_flip(df['st_direction'])
-    max_allowed_flip_age = int(FRESHNESS_DECAY_BARS * 0.70)
-    if st_flip_age > max_allowed_flip_age:
-        return _no(f"SuperTrend翻轉過舊({st_flip_age}根>{max_allowed_flip_age}根)，趨勢尾部不進場")
-
-    # ADX 衰退且已低於能量門檻 — 動能退潮，硬性擋單（與主路徑 ADX_DECLINING_EXHAUSTED 對齊）。
-    # 絕對門檻原本用 ADX_QUALITY_MIN(15)，但實測 ONDO/USDT 這筆 ADX 從
-    # 36.3 一路衰退到 20 左右進場，衰退幅度很明顯（跌43%）卻因為還沒
-    # 低於15分而完全沒被擋到，進場後就遇到窄幅雜訊盤整停損。改用
-    # WEAK_ENERGY_ADX_THRESHOLD(22)，跟槓桿封頂門檻共用同一套「能量」
-    # 標準，衰退到這個中等能量區間就直接擋單，不再只是降槓桿了事。
-    adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
-    adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else float('nan')
-    adx_drop = (float(adx_prior) - float(adx)) if not math.isnan(float(adx_prior)) else 0.0
-    adx_declining_exhausted = (
-        not math.isnan(float(adx_prior))
-        and adx_drop >= max(ADX_DECLINE_MIN_DROP, float(adx_prior) * ADX_DECLINE_MIN_DROP_RATIO)
-        and adx < WEAK_ENERGY_ADX_THRESHOLD
-    )
-    if adx_declining_exhausted:
-        return _no(f"ADX動能衰退({adx:.1f}<{WEAK_ENERGY_ADX_THRESHOLD},跌{adx_drop:.1f})，趨勢尾部不進場")
-
-    # ATR 波動範圍
-    atr_pct = atr / price if price > 0 else 0
-    if atr_pct > MAX_ATR_PCT:
-        return _no(f"ATR過高({atr_pct:.2%})")
-    
-    # 計算最近 6 小時（72 根 5m K棒）的平均 ATR% 作為動態底線參考。
-    # 絕對下限由設定控制，讓低波動期可適度放寬，但仍排除幾乎無波動的雜訊。
-    atr_pct_series = df['atr'] / df['close']
-    rolling_atr_pct = float(atr_pct_series.rolling(window=72, min_periods=12).mean().iloc[-1])
-    dynamic_atr_min = min(
-        atr_min_pct,
-        max(MA7_DYNAMIC_ATR_FLOOR_PCT, rolling_atr_pct * 0.7),
-    )
-    is_contrarian_bottom_buy = False
-    if atr_pct < dynamic_atr_min:
-        # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯
-        # 萎縮，代表主力收手動能耗盡準備反轉，不是無動能的雜訊盤整，
-        # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
-        if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir):
-            pass
-        else:
-            # 逆勢承接（MA7_ContrarianBottomBuy）已停用：實測17%勝率、
-            # 12筆虧損7.18U，就算加上量能確認/縮小倉位/2根K棒確認等風控，
-            # 依然是跟1h趨勢對作，方向判斷本身不準的問題無法靠風控修正。
-            # 保留 is_contrarian_bottom_buy 相關的下游程式碼（分數/倉位/
-            # 移動停利觸發門檻），未來若要重新啟用只需在這裡恢復翻轉邏輯。
-            return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
-
-    # RSI 過熱/過冷
-    if want_dir == 1 and rsi > rsi_long_max:
-        return _no(f"RSI過熱({rsi:.1f}>{rsi_long_max:.1f})")
-    if want_dir == -1 and rsi < rsi_short_min:
-        return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
-
-    # ── 嚴格本尊K線與BTC同步確認 ──
-    is_green = float(curr['close']) > float(curr['open'])
-    is_red = float(curr['close']) < float(curr['open'])
-    
-    if want_dir == 1:
-        if not is_green:
-            return _no("多單需等K線收綠")
-        if btc_1m_turn is not None and btc_1m_turn != "LONG":
-            return _no("BTC 1m 未確認向上轉彎")
-    else:
-        if not is_red:
-            return _no("空單需等K線收紅")
-        if btc_1m_turn is not None and btc_1m_turn != "SHORT":
-            return _no("BTC 1m 未確認向下轉彎")
-
-    # ── 結合方案：突破 Keltner 通道 (KC) + MACD/RSI 動能指標偏強 ──
-    # 1. 價格突破 KC 軌道且不過度背離
-    is_breakout = False
-    MAX_DEV = 0.005 # 最大允許突破邊界外 0.5%
-    if want_dir == 1:
-        if price > kc_upper:
-            if (price - kc_upper) / kc_upper > MAX_DEV:
-                return _no(f"追高風險：突破KC過大 ({(price - kc_upper)/kc_upper:.2%} > 0.5%)")
-            is_breakout = True
-        else:
-            return _no(f"價格未突破KC上軌（{price:.6g}<={kc_upper:.6g}）")
-    else:
-        if price < kc_lower:
-            if (kc_lower - price) / kc_lower > MAX_DEV:
-                return _no(f"殺低風險：跌破KC過大 ({(kc_lower - price)/kc_lower:.2%} > 0.5%)")
-            is_breakout = True
-        else:
-            return _no(f"價格未突破KC下軌（{price:.6g}>={kc_lower:.6g}）")
-
-    # 2. MACD 零軸上方黃金交叉 / 多頭動能確認
-    if 'macd_line' not in df.columns:
-        return _no("MACD指標未計算")
-    macd_line = float(curr['macd_line'])
-    macd_signal = float(curr['macd_signal'])
-    macd_hist = float(curr['macd_hist'])
-
-    macd_ok = False
-    if want_dir == 1:
-        # MACD 黃金交叉且柱狀體為正
-        if macd_line > macd_signal and macd_hist > 0:
-            macd_ok = True
-        else:
-            return _no(f"MACD未呈現多頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
-    else:
-        # MACD 死亡交叉且柱狀體為負
-        if macd_line < macd_signal and macd_hist < 0:
-            macd_ok = True
-        else:
-            return _no(f"MACD未呈現空頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
-
-    # 3. RSI 突破 48 / 跌破 52 (放寬的多頭空頭動能確認)
-    rsi_ok = False
-    if want_dir == 1:
-        if rsi >= 48.0:
-            rsi_ok = True
-        else:
-            return _no(f"RSI低於48（RSI={rsi:.1f}）")
-    else:
-        if rsi <= 52.0:
-            rsi_ok = True
-        else:
-            return _no(f"RSI高於52（RSI={rsi:.1f}）")
-
-    # 4. 成交量放大 (Volume Ratio 放寬至 0.6)
-    volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
-    if volume_ratio < 0.6:
-        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<0.6）")
-
-    # 所有核心條件均通過！開始設定訊號評分
-    score = 72  # 基礎分高於 MIN_SCORE_THRESHOLD (71)
-    if volume_ratio >= 1.5:
-        score += 10
-    if want_dir == 1 and rsi >= 58.0:
-        score += 7
-    elif want_dir == -1 and rsi <= 42.0:
-        score += 7
-    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
-    score += round(min(max(adx_ratio, 0.0), 1.0) * 10)  # ADX 品質最多 +10
-    score = min(score, 89)
-
-    # 計算結構性止損位（參考過去 6 根已收盤 K 棒的波段高低點與 KC 軌道，外加 0.05 * ATR 緩衝避免精準掃單）
-    past_6_bars = df.iloc[-7:-1]
-    if want_dir == 1:
-        swing_low = float(past_6_bars['low'].min())
-        kc_lower_val = float(past_6_bars['kc_lower'].min())
-        structural_sl = min(swing_low, kc_lower_val) - 0.05 * atr
-    else:
-        swing_high = float(past_6_bars['high'].max())
-        kc_upper_val = float(past_6_bars['kc_upper'].max())
-        structural_sl = max(swing_high, kc_upper_val) + 0.05 * atr
-
-    # 為了向下相容，填入對應的 MA7 變數 (已在函式上方計算)
-
-    direction_note = "突破KC上軌+MACD金叉+RSI>=50" if want_dir == 1 else "跌破KC下軌+MACD死叉+RSI<=50"
     return {
         "detected": True,
         "side": side,
         "score": score,
         "price": float(price),
         "atr": float(atr),
-        "ema_20": float(ema_20),
-        "kc_upper": float(kc_upper),
-        "kc_lower": float(kc_lower),
         "ma7_curr": ma7_curr,
         "ma7_prev": ma7_prev,
         "ma7_prev2": ma7_prev2,
-        "ma7_projected": None,
+        "ma25_curr": ma25_curr,
+        "turn_sharpness": turn_sharpness,
         "early_projection": False,
         "fast_entry": False,
         "pullback_bottom_order": False,
-        "entry_mode": "BREAKOUT_MOMENTUM",
+        "entry_mode": "MA7_CROSS_PIVOT",
         "profit_profile": "TREND_EXTENSION",
         "target_price": None,
-        "volume_ratio": volume_ratio,
-        "rsi": float(rsi),
-        "adx": float(adx),
-        "btc_regime_mode": btc_regime["mode"],
-        "btc_allocation_factor": btc_regime["allocation_factor"],
-        "structural_sl": structural_sl,
+        "structural_sl": price * 0.9 if want_dir == 1 else price * 1.1, # Dummy SL, will be overridden or ignored
         "is_contrarian_bottom_buy": False,
-        "reason": (
-            f"Breakout_Momentum_{side}｜"
-            f"價格突破通道｜MACD黃金交叉｜RSI強勢｜"
-            + f"Volume Ratio={volume_ratio:.2f}｜"
-            + f"{direction_note}｜score={score}"
-        ),
+        "reason": f"Cross_Pivot_{side}｜{direction_note}｜score={score}"
     }
 
 

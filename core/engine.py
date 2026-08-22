@@ -2277,7 +2277,10 @@ class TradingEngine:
 
         # 結構性止損與風險界限保護
         structural_sl = ma7_sig.get("structural_sl")
-        if structural_sl is not None:
+        if ma7_sig.get("entry_mode") == "MA7_CROSS_PIVOT":
+            sl = None
+            tp = None
+        elif structural_sl is not None:
             if side == "LONG":
                 # 限制止損距離：最小不能低於 MIN_SL_DISTANCE_PCT，最大不能超過 2.0 * ATR
                 min_sl = target_price - (target_price * MIN_SL_DISTANCE_PCT)

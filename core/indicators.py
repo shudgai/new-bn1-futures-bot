@@ -23,101 +23,54 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
-    """持倉手動與自動平倉參考指標：用 EMA20（含ATR緩衝帶、需連續兩根收線
-    確認）與 MA7 拐頭判斷。
-    - 多單 (LONG)：MA7 峰頂後連續兩根已收盤 K 棒向下才觸發拐頭平倉警告。
-    - 空單 (SHORT)：MA7 谷底後連續兩根已收盤 K 棒向上才觸發拐頭平倉警告。
-    MA7 不再把峰谷後第一根反向 K 棒直接視為強制出場。
-    EMA20 判斷跟15m趨勢止損用同一套「ATR緩衝帶 + 連續兩根收線確認」，
-    避免窄幅盤整時單一根雜訊貼著均線來回就誤判為反轉（實測 RLC/USDT
-    07/31 20:30~21:08 這種原地雜訊晃動，單根判斷會頻繁觸發但根本沒有
-    真正反轉）。
+    """持倉平倉訊號 (Stop and Reverse)
+    與進場邏輯完全對稱，負責判斷何時平倉並反向開倉：
+    - 多單 (LONG)：當 MA7 < MA25 且出現 MA7 倒V型峰頂時平倉。
+    - 空單 (SHORT)：當 MA7 > MA25 且出現 MA7 V型谷底時平倉。
     """
-    min_len = max(lookback_bars + 1, 15)
-    if df is None or len(df) < min_len:
+    if df is None or len(df) < 25:
         return {
             "active": False, "ma_ok": True, "reasons": [], "strong": False,
             "ma7_reversed": False, "ema_breach_confirmed": False,
             "structure_broken": False, "atr": None,
         }
 
-    ema = df["close"].ewm(span=ma_period, adjust=False).mean()
-    ma7 = df["close"].rolling(window=7).mean()
+    # 計算均線
+    if 'ma7' not in df.columns:
+        df['ma7'] = df['close'].rolling(window=7).mean()
+    if 'ma25' not in df.columns:
+        df['ma25'] = df['close'].rolling(window=25).mean()
 
-    # ATR 緩衝帶，跟 15m 趨勢止損同一套公式
-    high_low = df["high"] - df["low"]
-    high_cp = (df["high"] - df["close"].shift()).abs()
-    low_cp = (df["low"] - df["close"].shift()).abs()
-    atr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1).rolling(window=14).mean()
+    ma7_curr = float(df['ma7'].iloc[-1])
+    ma7_prev = float(df['ma7'].iloc[-2])
+    ma7_prev2 = float(df['ma7'].iloc[-3])
+    ma25_curr = float(df['ma25'].iloc[-1])
 
-    curr_close = float(df["close"].iloc[-1])
-    curr_ema = float(ema.iloc[-1])
-    prev_close = float(df["close"].iloc[-2])
-    prev_ema = float(ema.iloc[-2])
-    curr_atr = float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else curr_close * 0.015
-    prev_atr = float(atr.iloc[-2]) if not pd.isna(atr.iloc[-2]) else prev_close * 0.015
-    curr_buffer = max(curr_close * 0.003, 0.5 * curr_atr)
-    prev_buffer = max(prev_close * 0.003, 0.5 * prev_atr)
-
-    ma7_curr = float(ma7.iloc[-1])
-    ma7_prev = float(ma7.iloc[-2])
-    ma7_prev2 = float(ma7.iloc[-3])
-    ma7_prev3 = float(ma7.iloc[-4])
+    is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
+    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
 
     reasons = []
-    prior_break = False
-    ma7_reversed = False
+    strong = False
 
     if side == "LONG":
-        # MA7 峰頂後連續兩根已收盤 K 棒向下，排除第一根假轉彎。
-        if ma7_prev2 > ma7_prev3 and ma7_prev < ma7_prev2 and ma7_curr < ma7_prev:
-            ma7_reversed = True
-            reasons.append("MA7連續兩根轉彎向下")
-
-        ema_breach_confirmed = (
-            curr_close < (curr_ema - curr_buffer) and prev_close < (prev_ema - prev_buffer)
-        )
-        ma_ok = curr_close >= curr_ema and not ma7_reversed
-        if curr_close < curr_ema:
-            reasons.append("跌破均線")
-        if ema_breach_confirmed:
-            reasons.append("連續兩根收線跌破EMA20緩衝帶")
-        prior_low = float(df["low"].iloc[-(lookback_bars + 1):-1].min())
-        if curr_close < prior_low:
-            reasons.append("跌破前低")
-            prior_break = True
+        if ma7_curr < ma25_curr and is_peak:
+            reasons.append("MA7<MA25 且出現 MA7 倒V型峰頂 (反向作空訊號)")
+            strong = True
     else:
-        # MA7 谷底後連續兩根已收盤 K 棒向上，排除第一根假轉彎。
-        if ma7_prev2 < ma7_prev3 and ma7_prev > ma7_prev2 and ma7_curr > ma7_prev:
-            ma7_reversed = True
-            reasons.append("MA7連續兩根轉彎向上")
-
-        ema_breach_confirmed = (
-            curr_close > (curr_ema + curr_buffer) and prev_close > (prev_ema + prev_buffer)
-        )
-        ma_ok = curr_close <= curr_ema and not ma7_reversed
-        if curr_close > curr_ema:
-            reasons.append("站上均線")
-        if ema_breach_confirmed:
-            reasons.append("連續兩根收線站上EMA20緩衝帶")
-        prior_high = float(df["high"].iloc[-(lookback_bars + 1):-1].max())
-        if curr_close > prior_high:
-            reasons.append("站上前高")
-            prior_break = True
-
-    strong = ma7_reversed or (ema_breach_confirmed and prior_break)
+        if ma7_curr > ma25_curr and is_trough:
+            reasons.append("MA7>MA25 且出現 MA7 V型谷底 (反向作多訊號)")
+            strong = True
 
     return {
         "active": bool(reasons),
-        "ma_ok": ma_ok,
+        "ma_ok": not strong,
         "reasons": reasons,
         "strong": strong,
-        "ma7_reversed": ma7_reversed,
-        "ema_breach_confirmed": ema_breach_confirmed,
-        "structure_broken": prior_break,
-        "atr": curr_atr,
+        "ma7_reversed": strong,
+        "ema_breach_confirmed": strong,
+        "structure_broken": strong,
+        "atr": float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015,
     }
-
 
 
 def bars_since_supertrend_flip(direction_series: pd.Series) -> int:
