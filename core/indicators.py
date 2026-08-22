@@ -59,12 +59,18 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     strong = False
 
     if side == "LONG":
-        if is_peak and not is_ma25_flat:
-            reasons.append("MA7 向下指 (反向作空訊號)")
+        if is_peak:
+            if is_ma25_flat:
+                reasons.append("MA7 向下指且盤整中 (提早平倉觀望)")
+            else:
+                reasons.append("MA7 向下指 (反向作空訊號)")
             strong = True
     else:
-        if is_trough and not is_ma25_flat:
-            reasons.append("MA7 向上指 (反向作多訊號)")
+        if is_trough:
+            if is_ma25_flat:
+                reasons.append("MA7 向上指且盤整中 (提早平倉觀望)")
+            else:
+                reasons.append("MA7 向上指 (反向作多訊號)")
             strong = True
 
     return {
