@@ -2882,12 +2882,16 @@ class TradingEngine:
                         ma7_prev = float(df_1m['close'].rolling(7).mean().iloc[-2])
                         current_direction = "LONG" if ma7_curr > ma7_prev else "SHORT"
                         
-                        # 判斷是否需要嚴格 V 型轉彎
+                        # 判斷是否需要嚴格 V 型轉彎，以及強制反向開倉
                         require_strict_v = False
                         if self.account.trades:
                             # 最新的一筆交易在 index 0
                             last_trade = self.account.trades[0]
                             if last_trade.get("symbol") == symbol and last_trade.get("action", "").startswith("CLOSE_"):
+                                last_side = last_trade.get("side", "LONG")
+                                # 根據用戶要求，不管上一次是頂端停利還是谷底停損，平倉後一律強制反向開倉
+                                current_direction = "SHORT" if last_side == "LONG" else "LONG"
+                                
                                 reason = last_trade.get("reason", "")
                                 if "移動" in reason or "Trailing" in reason or "鎖利" in reason:
                                     require_strict_v = True
