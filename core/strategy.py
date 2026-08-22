@@ -468,6 +468,11 @@ def detect_ma7_reversal(
     st_dir = int(curr['st_direction'])
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
+    ma7_series = df['ma7'].dropna()
+    ma7_curr = float(ma7_series.iloc[-1]) if len(ma7_series) > 0 else price
+    ma7_prev = float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else price
+    ma7_prev2 = float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else price
+
     # 提前計算品質分數（用於狀態待命時顯示預估分數，上限 89 避免誤觸 CURRENT_MAKER 路徑）
     score = 65  # 固定評分基準；不得隨開倉門檻上調而灌高訊號分數
     if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
@@ -482,6 +487,15 @@ def detect_ma7_reversal(
 
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": score}
+
+    # MA7 轉彎嚴格確認 (V型谷底 / 倒V型峰頂)
+    is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
+    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    
+    if want_dir == 1 and not is_trough:
+        return _no("MA7 未形成 V 型谷底")
+    if want_dir == -1 and not is_peak:
+        return _no("MA7 未形成倒 V 型峰頂")
 
     # SuperTrend 方向對齊
     if st_dir != want_dir:
@@ -621,23 +635,23 @@ def detect_ma7_reversal(
         else:
             return _no(f"MACD未呈現空頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
 
-    # 3. RSI 突破 50 (多頭動能確認)
+    # 3. RSI 突破 48 / 跌破 52 (放寬的多頭空頭動能確認)
     rsi_ok = False
     if want_dir == 1:
-        if rsi >= 50.0:
+        if rsi >= 48.0:
             rsi_ok = True
         else:
-            return _no(f"RSI低於50（RSI={rsi:.1f}）")
+            return _no(f"RSI低於48（RSI={rsi:.1f}）")
     else:
-        if rsi <= 50.0:
+        if rsi <= 52.0:
             rsi_ok = True
         else:
-            return _no(f"RSI高於50（RSI={rsi:.1f}）")
+            return _no(f"RSI高於52（RSI={rsi:.1f}）")
 
-    # 4. 成交量放大 (Volume Ratio >= STRUCTURED_VOLUME_MIN_RATIO)
+    # 4. 成交量放大 (Volume Ratio 放寬至 0.6)
     volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
-    if volume_ratio < STRUCTURED_VOLUME_MIN_RATIO:
-        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<{STRUCTURED_VOLUME_MIN_RATIO}）")
+    if volume_ratio < 0.6:
+        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<0.6）")
 
     # 所有核心條件均通過！開始設定訊號評分
     score = 72  # 基礎分高於 MIN_SCORE_THRESHOLD (71)
@@ -662,11 +676,7 @@ def detect_ma7_reversal(
         kc_upper_val = float(past_6_bars['kc_upper'].max())
         structural_sl = max(swing_high, kc_upper_val) + 0.05 * atr
 
-    # 為了向下相容，填入對應的 MA7 變數
-    ma7_series = df['ma7'].dropna()
-    ma7_curr = float(ma7_series.iloc[-1]) if len(ma7_series) > 0 else price
-    ma7_prev = float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else price
-    ma7_prev2 = float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else price
+    # 為了向下相容，填入對應的 MA7 變數 (已在函式上方計算)
 
     direction_note = "突破KC上軌+MACD金叉+RSI>=50" if want_dir == 1 else "跌破KC下軌+MACD死叉+RSI<=50"
     return {

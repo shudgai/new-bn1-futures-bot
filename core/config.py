@@ -536,10 +536,10 @@ ADX_DECLINE_LOOKBACK_BARS_1H = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS_1H", "6"
 EMA_EXTENSION_MAX_ATR_MULT = float(os.getenv("EMA_EXTENSION_MAX_ATR_MULT", "2.5"))
 
 # --- 動態 RSI 濾網 ---
-RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
-RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
-RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "75"))
-RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "25"))
+RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "48"))
+RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "52"))
+RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "80"))
+RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "20"))
 
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
