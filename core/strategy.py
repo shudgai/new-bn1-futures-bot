@@ -667,17 +667,7 @@ class SuperTrendKeltnerStrategy:
         direction = int(curr["st_direction"])
         side = "LONG" if direction == 1 else "SHORT"
         
-        is_green_curr = float(curr["close"]) > float(curr["open"])
-        is_green_prev = float(prev["close"]) > float(prev["open"])
-        is_red_curr = float(curr["close"]) < float(curr["open"])
-        is_red_prev = float(prev["close"]) < float(prev["open"])
-        
-        if side == "LONG" and not (is_green_curr and is_green_prev):
-            return {"action": "HOLD", "reason": "需要連續兩根綠K才能開多"}
-            
-        if side == "SHORT" and not (is_red_curr and is_red_prev):
-            return {"action": "HOLD", "reason": "需要連續兩根紅K才能開空"}
-            
+
         price = float(curr["close"])
         volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
         quality_gate = evaluate_entry_quality_gate(
