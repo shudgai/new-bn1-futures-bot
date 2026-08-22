@@ -176,9 +176,18 @@ async def manual_order(req: ManualOrderRequest):
         raise HTTPException(status_code=400, detail="幣種價格尚未載入")
 
     price = engine.tickers[symbol]
-    atr = price * 0.015
-    sl = price - (atr * 1.5) if side == "LONG" else price + (atr * 1.5)
-    tp = price + (atr * 3.0) if side == "LONG" else price - (atr * 3.0)
+
+    # 從最新 K 線計算真實 ATR 以便與自動下單規則一致
+    df = await engine.fetch_klines(symbol, timeframe="5m", limit=30)
+    if not df.empty and "atr" in df.columns:
+        atr = float(df["atr"].iloc[-1])
+    else:
+        atr = price * 0.015
+
+    from core.strategy import compute_sl_tp_distance, build_sl_tp_for_side
+    from core.config import get_leverage
+    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
+    sl, tp = build_sl_tp_for_side(price, side, sl_dist, tp_dist)
 
     success = await engine.account.open_position(
         symbol=symbol,
@@ -187,7 +196,10 @@ async def manual_order(req: ManualOrderRequest):
         amount_usdt=amount,
         sl=sl,
         tp=tp,
-        reason="手動下單"
+        reason=f"手動開倉_{side}",
+        atr=atr,
+        leverage=get_leverage(symbol),
+        signal_score=100
     )
     if not success:
         raise HTTPException(status_code=400, detail="已有該幣種持倉或系統異常")
