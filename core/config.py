@@ -71,8 +71,8 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # 先調整成更接近常見的保守交易配置：1.5 ATR 止損、2.8 ATR 止盈，
 # 讓策略有足夠空間抓正常波段，但不至於把每筆單都收得過早。
 # R:R = TAKE_PROFIT_MULTIPLIER(3.5) / STOP_LOSS_MULTIPLIER(2.0) = 1.75：1
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "3.0"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.5"))
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.5"))
 # 所有「有固定 TP」的初始訂單都必須通過這個毛風報比硬下限；淨風報比
 # 仍由下方 MIN_NET_REWARD_RISK（含手續費）採用更嚴格的門檻。
 MIN_REWARD_RISK_RATIO = float(os.getenv("MIN_REWARD_RISK_RATIO", "1.5"))
