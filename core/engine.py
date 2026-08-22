@@ -2751,38 +2751,79 @@ class TradingEngine:
                             df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=30)
                             cr_info = detect_ma7_ma25_cross_and_turn(df_cr)
                             cr_signal = cr_info.get("signal")
-                            
+                            cr_entry_type = cr_info.get("entry_type", "")
+
                             has_pos = symbol in self.account.positions
                             curr_side = self.account.positions[symbol]["side"] if has_pos else None
 
                             if cr_signal:
                                 live_price = float(df_cr['close'].iloc[-1])
-                                if has_pos and curr_side != cr_signal:
-                                    self.account.log(f"{symbol} MA7/MA25 連續轉向：平倉 {curr_side}，準備反向做 {cr_signal}", "INFO")
-                                    await self.account.close_position(
-                                        symbol,
-                                        live_price,
-                                        reason=f"連續轉向反轉_{cr_signal}"
-                                    )
-                                    has_pos = False
-                                
-                                if not has_pos:
-                                    self.account.log(f"{symbol} MA7/MA25 連續轉向：進場 {cr_signal}", "INFO")
-                                    atr = cr_info.get("atr", live_price * 0.015)
-                                    sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                    sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                    await self.account.open_position(
-                                        symbol=symbol,
-                                        side=cr_signal,
-                                        price=live_price,
-                                        amount_usdt=TRADE_AMOUNT_USDT,
-                                        sl=sl,
-                                        tp=tp,
-                                        reason=cr_info.get("reason", "ContinuousReverse"),
-                                        atr=atr,
-                                        leverage=get_leverage(symbol),
-                                        signal_score=100
-                                    )
+
+                                # --- 谷底/頂部轉折：SAR（Stop And Reverse）---
+                                # 谷底向上 → 平空倉 + 開多；頂部向下 → 平多倉 + 開空
+                                if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                                    if has_pos and curr_side != cr_signal:
+                                        self.account.log(
+                                            f"{symbol} [{cr_entry_type}] 轉折訊號：平倉 {curr_side}，準備反向做 {cr_signal}",
+                                            "INFO"
+                                        )
+                                        await self.account.close_position(
+                                            symbol,
+                                            live_price,
+                                            reason=f"轉折反轉_{cr_signal}_{cr_entry_type}"
+                                        )
+                                        has_pos = False
+
+                                    if not has_pos:
+                                        self.account.log(
+                                            f"{symbol} [{cr_entry_type}] 谷底/頂部訊號：進場 {cr_signal}",
+                                            "INFO"
+                                        )
+                                        atr = cr_info.get("atr", live_price * 0.015)
+                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                        await self.account.open_position(
+                                            symbol=symbol,
+                                            side=cr_signal,
+                                            price=live_price,
+                                            amount_usdt=TRADE_AMOUNT_USDT,
+                                            sl=sl,
+                                            tp=tp,
+                                            reason=cr_info.get("reason", cr_entry_type),
+                                            atr=atr,
+                                            leverage=get_leverage(symbol),
+                                            signal_score=100
+                                        )
+
+                                # --- MA7 穿越 MA25（金叉/死叉）：補開訊號 ---
+                                # 只有在無持倉時才補開，有持倉則不打擾
+                                elif cr_entry_type in ("MA_CROSS_UP", "MA_CROSS_DOWN"):
+                                    if not has_pos:
+                                        self.account.log(
+                                            f"{symbol} [{cr_entry_type}] MA7穿越MA25補開：進場 {cr_signal}",
+                                            "INFO"
+                                        )
+                                        atr = cr_info.get("atr", live_price * 0.015)
+                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                        await self.account.open_position(
+                                            symbol=symbol,
+                                            side=cr_signal,
+                                            price=live_price,
+                                            amount_usdt=TRADE_AMOUNT_USDT,
+                                            sl=sl,
+                                            tp=tp,
+                                            reason=cr_info.get("reason", cr_entry_type),
+                                            atr=atr,
+                                            leverage=get_leverage(symbol),
+                                            signal_score=85
+                                        )
+                                    else:
+                                        self.account.log(
+                                            f"{symbol} [{cr_entry_type}] MA7穿越訊號，已有 {curr_side} 持倉，不補開",
+                                            "DEBUG"
+                                        )
+
                             if symbol in self.account.positions:
                                 position = self.account.positions[symbol]
                                 sc = position.get("signal_score") or position.get("raw_signal_score")

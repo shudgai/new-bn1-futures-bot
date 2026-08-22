@@ -25,8 +25,12 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 def detect_ma7_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     """
     連續轉向策略核心邏輯：
-    - MA7 > MA25 且 MA7出現確認的頂部（向下轉折） => 產生 SHORT 訊號
-    - MA7 < MA25 且 MA7出現確認的谷底（向上轉折） => 產生 LONG 訊號
+
+    訊號優先序（由高到低）：
+    1. 谷底向上轉折（MA7 < MA25 且谷底確認）→ LONG 訊號，同時平倉空單
+    2. 頂部向下轉折（MA7 > MA25 且頂部確認）→ SHORT 訊號，同時平倉多單
+    3. MA7 向上穿越 MA25（死叉→金叉）→ LONG 補開訊號（谷底未成交的補救）
+    4. MA7 向下穿越 MA25（金叉→死叉）→ SHORT 補開訊號（頂部未成交的補救）
     """
     if df is None or len(df) < 25:
         return {"signal": None, "reason": "Not enough data"}
@@ -36,22 +40,56 @@ def detect_ma7_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     if 'ma25' not in df.columns:
         df['ma25'] = df['close'].rolling(window=25).mean()
 
-    ma7_curr = float(df['ma7'].iloc[-1])
-    ma7_prev = float(df['ma7'].iloc[-2])
+    ma7_curr  = float(df['ma7'].iloc[-1])
+    ma7_prev  = float(df['ma7'].iloc[-2])
     ma7_prev2 = float(df['ma7'].iloc[-3])
     ma25_curr = float(df['ma25'].iloc[-1])
-
-    # 結構確認：連續兩根 K 棒確認轉折
-    is_confirmed_peak = (ma7_curr < ma7_prev) and (ma7_prev < ma7_prev2)
-    is_confirmed_trough = (ma7_curr > ma7_prev) and (ma7_prev > ma7_prev2)
+    ma25_prev = float(df['ma25'].iloc[-2])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
 
+    # 連續兩根確認轉折
+    is_confirmed_peak   = (ma7_curr < ma7_prev)  and (ma7_prev < ma7_prev2)
+    is_confirmed_trough = (ma7_curr > ma7_prev)  and (ma7_prev > ma7_prev2)
+
+    # --- 優先訊號：谷底/頂部轉折 ---
+    if ma7_curr < ma25_curr and is_confirmed_trough:
+        return {
+            "signal": "LONG",
+            "entry_type": "TROUGH_TURN",
+            "reason": "MA7<MA25 且 MA7 谷底確認向上反轉 → 平空開多",
+            "atr": atr,
+        }
     if ma7_curr > ma25_curr and is_confirmed_peak:
-        return {"signal": "SHORT", "reason": "MA7>MA25 且 MA7 頂部確認向下反轉", "atr": atr}
-    elif ma7_curr < ma25_curr and is_confirmed_trough:
-        return {"signal": "LONG", "reason": "MA7<MA25 且 MA7 谷底確認向上反轉", "atr": atr}
+        return {
+            "signal": "SHORT",
+            "entry_type": "PEAK_TURN",
+            "reason": "MA7>MA25 且 MA7 頂部確認向下反轉 → 平多開空",
+            "atr": atr,
+        }
+
+    # --- 補開訊號：MA7 穿越 MA25（谷底後未能進場的補救）---
+    # 金叉：前根 ma7 <= ma25，本根 ma7 > ma25
+    ma7_cross_up   = (ma7_prev <= ma25_prev) and (ma7_curr > ma25_curr)
+    # 死叉：前根 ma7 >= ma25，本根 ma7 < ma25
+    ma7_cross_down = (ma7_prev >= ma25_prev) and (ma7_curr < ma25_curr)
+
+    if ma7_cross_up:
+        return {
+            "signal": "LONG",
+            "entry_type": "MA_CROSS_UP",
+            "reason": "MA7 向上穿越 MA25（金叉）→ 補開多單",
+            "atr": atr,
+        }
+    if ma7_cross_down:
+        return {
+            "signal": "SHORT",
+            "entry_type": "MA_CROSS_DOWN",
+            "reason": "MA7 向下穿越 MA25（死叉）→ 補開空單",
+            "atr": atr,
+        }
 
     return {"signal": None, "reason": ""}
+
 
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
