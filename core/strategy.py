@@ -458,22 +458,28 @@ def detect_ma7_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
-    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    # 放寬條件：只要 MA7 往上指就算轉彎 (不需要完整的 V 型)
+    is_trough = (ma7_curr > ma7_prev)
+    is_peak = (ma7_curr < ma7_prev)
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
+    # 判斷 MA25 是否平緩 (盤整過濾)
+    ma25_prev3 = float(ma25_series.iloc[-4]) if len(ma25_series) >= 4 else ma25_curr
+    ma25_diff = ma25_curr - ma25_prev3
+    is_ma25_flat = abs(ma25_diff) < (atr * 0.05)
+
     if want_dir == 1:
-        if ma7_curr <= ma25_curr:
-            return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_trough:
-            return _no("MA7 未形成 V 型谷底")
-        direction_note = "MA7>MA25 + V型谷底 (LONG)"
+            return _no("MA7 尚未向上指")
+        if is_ma25_flat:
+            return _no("MA25 呈平線 (盤整中)")
+        direction_note = "MA7 向上指 (LONG 谷底)"
     else:
-        if ma7_curr >= ma25_curr:
-            return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_peak:
-            return _no("MA7 未形成倒 V 型峰頂")
-        direction_note = "MA7<MA25 + 倒V型峰頂 (SHORT)"
+            return _no("MA7 尚未向下指")
+        if is_ma25_flat:
+            return _no("MA25 呈平線 (盤整中)")
+        direction_note = "MA7 向下指 (SHORT 高點)"
 
     # 完全符合，滿分通過
     score = 100
@@ -497,8 +503,9 @@ def detect_ma7_reversal(
         "pullback_bottom_order": False,
         "entry_mode": "MA7_CROSS_PIVOT",
         "profit_profile": "TREND_EXTENSION",
+        "action": "ENTER_MARKET",
         "target_price": None,
-        "structural_sl": price * 0.9 if want_dir == 1 else price * 1.1, # Dummy SL, will be overridden or ignored
+        "structural_sl": price * 0.9 if want_dir == 1 else price * 1.1,
         "is_contrarian_bottom_buy": False,
         "reason": f"Cross_Pivot_{side}｜{direction_note}｜score={score}"
     }

@@ -1110,7 +1110,7 @@ class TradingEngine:
                     if bottom_grace:
                         self._soft_warning_since.pop(symbol, None)
                     if (
-                        ENABLE_STRONG_TRIGGER_AUTO_CLOSE
+                        (ENABLE_STRONG_TRIGGER_AUTO_CLOSE or trigger.get("strong"))
                         and trigger.get("strong")
                         and not is_profit_locked
                         and not bottom_grace
@@ -1180,12 +1180,12 @@ class TradingEngine:
                 for symbol in set(self.position_triggers) - set(self.account.positions):
                     self.position_triggers.pop(symbol, None)
                     self._soft_warning_since.pop(symbol, None)
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
 
     async def _run_structured_exits(self):
         """Manage structured positions with KC failure, ATR trail, RR scales, and 1h flips."""
@@ -2075,9 +2075,10 @@ class TradingEngine:
         is_limit = signal.get("action") == "ENTER_LIMIT"
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
-        # 最後一道方向守門：避免在高週期趨勢不符時開錯方向
-        if not self._entry_direction_allowed(symbol, side, planned_price):
-            return False
+        # 最後一道方向守門：避免在高週期趨勢不符時開錯方向 (MA7_CROSS_PIVOT 策略除外)
+        if entry_mode != "MA7_CROSS_PIVOT":
+            if not self._entry_direction_allowed(symbol, side, planned_price):
+                return False
         candle_low = float(signal.get("signal_candle_low") or planned_price)
         candle_high = float(signal.get("signal_candle_high") or planned_price)
 
@@ -2836,16 +2837,17 @@ class TradingEngine:
                             )
                             continue
                         last_closed = self.account.last_closed_at.get(symbol)
-                        if last_closed is not None and (now_time - last_closed) < 900:
-                            remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,冷卻剩{remaining}分鐘"
-                            )
-                            self._record_entry_filter(
-                                symbol, {"action": "HOLD", "reason": "平倉冷卻"},
-                                direction_text, "post_close_cooldown",
-                            )
-                            continue
+                        # 停用 15 分鐘冷卻，讓 Stop and Reverse 能在平倉後立刻反向開倉
+                        # if last_closed is not None and (now_time - last_closed) < 900:
+                        #     remaining = max(0, int((900 - (now_time - last_closed)) / 60) + 1)
+                        #     signal_progress.append(
+                        #         f"{coin} {direction_text} 資格未通過,冷卻剩{remaining}分鐘"
+                        #     )
+                        #     self._record_entry_filter(
+                        #         symbol, {"action": "HOLD", "reason": "平倉冷卻"},
+                        #         direction_text, "post_close_cooldown",
+                        #     )
+                        #     continue
 
                         # 4.1 低流動性過濾
                         vol_24h = self.ticker_volumes.get(symbol, 0.0)
@@ -2876,9 +2878,18 @@ class TradingEngine:
                             .mean().iloc[-1]
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        ma7 = float(df_1m['close'].rolling(7).mean().iloc[-1])
-                        ma25 = float(df_1m['close'].rolling(25).mean().iloc[-1])
-                        current_direction = "LONG" if ma7 > ma25 else "SHORT"
+                        ma7_curr = float(df_1m['close'].rolling(7).mean().iloc[-1])
+                        ma7_prev = float(df_1m['close'].rolling(7).mean().iloc[-2])
+                        current_direction = "LONG" if ma7_curr > ma7_prev else "SHORT"
+                        
+                        # 強制多空交替 (Stop and Reverse)
+                        last_open_side = None
+                        for trade in self.account.trades:
+                            if trade.get("symbol") == symbol and trade.get("action", "").startswith("OPEN_"):
+                                last_open_side = trade.get("side")
+                                break
+                        if last_open_side == current_direction:
+                            continue
                         
                         from core.strategy import detect_ma7_reversal
                         sig = detect_ma7_reversal(
