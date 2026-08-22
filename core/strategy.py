@@ -435,7 +435,7 @@ def detect_ma7_reversal(
 
     # 確保指標已計算
     if 'ma7' not in df.columns:
-        df['ma7'] = df['close'].rolling(window=3).mean()
+        df['ma7'] = df['close'].rolling(window=7).mean()
     if 'ma25' not in df.columns:
         df['ma25'] = df['close'].rolling(window=25).mean()
 
@@ -544,7 +544,7 @@ class SuperTrendKeltnerStrategy:
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
         # MA7
-        df['ma7'] = close.rolling(window=3).mean()
+        df['ma7'] = close.rolling(window=7).mean()
 
         # 成交量均線
         df['vol_ma_20'] = volume.rolling(window=20).mean()
@@ -666,6 +666,18 @@ class SuperTrendKeltnerStrategy:
         
         direction = int(curr["st_direction"])
         side = "LONG" if direction == 1 else "SHORT"
+        
+        is_green_curr = float(curr["close"]) > float(curr["open"])
+        is_green_prev = float(prev["close"]) > float(prev["open"])
+        is_red_curr = float(curr["close"]) < float(curr["open"])
+        is_red_prev = float(prev["close"]) < float(prev["open"])
+        
+        if side == "LONG" and not (is_green_curr and is_green_prev):
+            return {"action": "HOLD", "reason": "需要連續兩根綠K才能開多"}
+            
+        if side == "SHORT" and not (is_red_curr and is_red_prev):
+            return {"action": "HOLD", "reason": "需要連續兩根紅K才能開空"}
+            
         price = float(curr["close"])
         volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
         quality_gate = evaluate_entry_quality_gate(
@@ -2151,7 +2163,7 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
     atr14 = float(tr.rolling(window=14).mean().iloc[-1])
 
     # Calculate MA7
-    ma7 = close.rolling(window=3).mean()
+    ma7 = close.rolling(window=7).mean()
     if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
         return {"detected": False, "reason": "MA7 not ready"}
         
@@ -2243,7 +2255,7 @@ def check_simple_ma7_exit(df: pd.DataFrame, position: dict) -> dict:
     atr14 = float(tr.rolling(window=14).mean().iloc[-1])
 
     # Calculate MA7
-    ma7 = close.rolling(window=3).mean()
+    ma7 = close.rolling(window=7).mean()
     if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
         return {"close": False, "reason": "MA7 not ready"}
         

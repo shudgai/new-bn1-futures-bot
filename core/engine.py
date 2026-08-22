@@ -1739,7 +1739,7 @@ class TradingEngine:
 
         # 1m MA7 拐頭向上/向下確認
         closes = candles_1m["close"].astype(float)
-        ma7 = closes.rolling(window=3).mean()
+        ma7 = closes.rolling(window=7).mean()
         if pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]):
             return False
         ma7_curr = ma7.iloc[-1]
@@ -2743,6 +2743,53 @@ class TradingEngine:
                     for symbol in symbols_snapshot:
                         direction_text = "雙向"
                         coin = symbol.replace("/USDT", "")
+
+                        from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
+                        if ENABLE_CONTINUOUS_REVERSE_MODE:
+                            from core.indicators import detect_ma7_ma25_cross_and_turn
+                            from core.strategy import build_sl_tp_for_side
+                            df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=30)
+                            cr_info = detect_ma7_ma25_cross_and_turn(df_cr)
+                            cr_signal = cr_info.get("signal")
+                            
+                            has_pos = symbol in self.account.positions
+                            curr_side = self.account.positions[symbol]["side"] if has_pos else None
+
+                            if cr_signal:
+                                live_price = float(df_cr['close'].iloc[-1])
+                                if has_pos and curr_side != cr_signal:
+                                    self.account.log(f"{symbol} MA7/MA25 連續轉向：平倉 {curr_side}，準備反向做 {cr_signal}", "INFO")
+                                    await self.account.close_position(
+                                        symbol,
+                                        live_price,
+                                        reason=f"連續轉向反轉_{cr_signal}"
+                                    )
+                                    has_pos = False
+                                
+                                if not has_pos:
+                                    self.account.log(f"{symbol} MA7/MA25 連續轉向：進場 {cr_signal}", "INFO")
+                                    atr = cr_info.get("atr", live_price * 0.015)
+                                    sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                                    sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                    await self.account.open_position(
+                                        symbol=symbol,
+                                        side=cr_signal,
+                                        price=live_price,
+                                        amount_usdt=TRADE_AMOUNT_USDT,
+                                        sl=sl,
+                                        tp=tp,
+                                        reason=cr_info.get("reason", "ContinuousReverse"),
+                                        atr=atr,
+                                        leverage=get_leverage(symbol),
+                                        signal_score=100
+                                    )
+                            if symbol in self.account.positions:
+                                position = self.account.positions[symbol]
+                                sc = position.get("signal_score") or position.get("raw_signal_score")
+                                position_direction = "多單" if position.get("side") == "LONG" else "空單"
+                                signal_progress.append(f"{coin} {position_direction} {int(sc) if sc else '--'}分,連續轉向持倉中")
+                            continue
+
                         if symbol in self.account.positions:
                             position = self.account.positions[symbol]
                             # signal_score 重啟後從交易所同步回來可能是 None

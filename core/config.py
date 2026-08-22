@@ -71,7 +71,7 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # 先調整成更接近常見的保守交易配置：1.5 ATR 止損、2.8 ATR 止盈，
 # 讓策略有足夠空間抓正常波段，但不至於把每筆單都收得過早。
 # R:R = TAKE_PROFIT_MULTIPLIER(3.5) / STOP_LOSS_MULTIPLIER(2.0) = 1.75：1
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "3.0"))
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "3.5"))
 # 所有「有固定 TP」的初始訂單都必須通過這個毛風報比硬下限；淨風報比
 # 仍由下方 MIN_NET_REWARD_RISK（含手續費）採用更嚴格的門檻。
@@ -230,6 +230,9 @@ BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUG
 BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
     0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.001"))
 )
+
+ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "false").lower() == "true"
+CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "5m")
 
 def get_bounce_capture_ratio(score: int) -> float:
     progress = min(1.0, max(0.0, (float(score or 75) - 75.0) / 16.0))
@@ -683,10 +686,10 @@ PROFIT_BANK_CAPTURE_RATIO = min(
     0.95, max(0.50, float(os.getenv("PROFIT_BANK_CAPTURE_RATIO", "0.70")))
 )
 _PROFIT_BANK_CAPTURE_TIERS = [
-    (0.0300, 0.95),  # 峰值 >= 3.00%：最多回吐 5%
-    (0.0200, 0.90),  # 峰值 >= 2.00%：最多回吐 10%
-    (0.0150, 0.85),  # 峰值 >= 1.50%：最多回吐 15%
-    (0.0100, 0.80),  # 峰值 >= 1.00%：最多回吐 20%
+    (0.0110, 0.95),  # 峰值 >= 1.10%：保留 95%
+    (0.0081, 0.90),  # 峰值 >= 0.81%：保留 90%
+    (0.0071, 0.80),  # 峰值 >= 0.71%：保留 80%
+    (0.0050, 0.70),  # 峰值 >= 0.50%：保留 70%
 ]
 
 def get_profit_bank_capture_ratio(
@@ -743,7 +746,7 @@ MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
 # 假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是同一種情況，故允許
 # 繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件不受影響）。
 MAINSTREAM_SYMBOLS = {
-    "DOGE/USDT"
+    "1000PEPE/USDT"
 }
 # VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
 # 價格極值。
@@ -924,7 +927,7 @@ TARGET_PERCENTAGE = float(os.getenv("TARGET_PERCENTAGE", "0.50"))
 MAX_NOTIONAL_USDT = float(os.getenv("MAX_NOTIONAL_USDT", "75.0"))
 MA7_ENTRY_ATR_CHANGE_MIN_RATIO = float(os.getenv("MA7_ENTRY_ATR_CHANGE_MIN_RATIO", "0.15"))
 MA7_EXIT_ATR_CHANGE_MIN_RATIO = float(os.getenv("MA7_EXIT_ATR_CHANGE_MIN_RATIO", "0.25"))
-FIXED_STOP_LOSS_PCT = float(os.getenv("FIXED_STOP_LOSS_PCT", "0.02"))
+FIXED_STOP_LOSS_PCT = float(os.getenv("FIXED_STOP_LOSS_PCT", "0.15"))
 TRAILING_STOP_ACTIVATION_PCT = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.0035"))
 TRAILING_STOP_RETAIN_PCT = float(os.getenv("TRAILING_STOP_RETAIN_PCT", "0.6"))
 MA7_MIN_ATR_PCT = float(os.getenv("MA7_MIN_ATR_PCT", "0.0005"))

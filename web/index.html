@@ -374,7 +374,7 @@
                                                'var(--muted)',
                                         fontSize: '11px'
                                     }">{{ t.status }}</td>
-                                    <td>{{ t.price.toFixed(4) }}</td>
+                                    <td>{{ t.price }}</td>
                                     <td>{{ t.amount }}</td>
                                     <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
                                     <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">

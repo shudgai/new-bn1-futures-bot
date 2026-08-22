@@ -22,6 +22,38 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
+def detect_ma7_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
+    """
+    連續轉向策略核心邏輯：
+    - MA7 > MA25 且 MA7出現確認的頂部（向下轉折） => 產生 SHORT 訊號
+    - MA7 < MA25 且 MA7出現確認的谷底（向上轉折） => 產生 LONG 訊號
+    """
+    if df is None or len(df) < 25:
+        return {"signal": None, "reason": "Not enough data"}
+
+    if 'ma7' not in df.columns:
+        df['ma7'] = df['close'].rolling(window=7).mean()
+    if 'ma25' not in df.columns:
+        df['ma25'] = df['close'].rolling(window=25).mean()
+
+    ma7_curr = float(df['ma7'].iloc[-1])
+    ma7_prev = float(df['ma7'].iloc[-2])
+    ma7_prev2 = float(df['ma7'].iloc[-3])
+    ma25_curr = float(df['ma25'].iloc[-1])
+
+    # 結構確認：連續兩根 K 棒確認轉折
+    is_confirmed_peak = (ma7_curr < ma7_prev) and (ma7_prev < ma7_prev2)
+    is_confirmed_trough = (ma7_curr > ma7_prev) and (ma7_prev > ma7_prev2)
+    atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
+
+    if ma7_curr > ma25_curr and is_confirmed_peak:
+        return {"signal": "SHORT", "reason": "MA7>MA25 且 MA7 頂部確認向下反轉", "atr": atr}
+    elif ma7_curr < ma25_curr and is_confirmed_trough:
+        return {"signal": "LONG", "reason": "MA7<MA25 且 MA7 谷底確認向上反轉", "atr": atr}
+
+    return {"signal": None, "reason": ""}
+
+
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
     """持倉平倉訊號 (Stop and Reverse)
     與進場邏輯完全對稱，負責判斷何時平倉並反向開倉：
@@ -37,7 +69,7 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
 
     # 計算均線
     if 'ma7' not in df.columns:
-        df['ma7'] = df['close'].rolling(window=3).mean()
+        df['ma7'] = df['close'].rolling(window=7).mean()
     if 'ma25' not in df.columns:
         df['ma25'] = df['close'].rolling(window=25).mean()
 
