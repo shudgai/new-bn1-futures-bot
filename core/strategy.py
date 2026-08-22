@@ -459,11 +459,10 @@ def detect_ma7_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    # 原始嚴格條件（恢復最初版本）：
-    # 多單：先有一段下跌 (prev2 > prev) 再往上反彈 (curr > prev) = 真正的 V 型谷底
-    # 空單：先有一段上漲 (prev2 < prev) 再往下反彈 (curr < prev) = 真正的倒 V 型頂部
-    is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
-    is_peak   = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    # 進場條件：MA7 方向（只要往上就是多，往下就是空）
+    # 出場由 compute_position_trigger 的 V 型確認負責
+    is_trough = (ma7_curr > ma7_prev)   # MA7 往上 = 多頭
+    is_peak   = (ma7_curr < ma7_prev)   # MA7 往下 = 空頭
 
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
@@ -471,14 +470,14 @@ def detect_ma7_reversal(
         if ma7_curr <= ma25_curr:
             return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.6f}, MA25={ma25_curr:.6f})")
         if not is_trough:
-            return _no("MA7 未形成 V 型谷底")
-        direction_note = "MA7>MA25 + V型谷底 (LONG)"
+            return _no("MA7 尚未向上指")
+        direction_note = "MA7>MA25 + MA7向上 (LONG)"
     else:
         if ma7_curr >= ma25_curr:
             return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.6f}, MA25={ma25_curr:.6f})")
         if not is_peak:
-            return _no("MA7 未形成倒 V 型峰頂")
-        direction_note = "MA7<MA25 + 倒V型峰頂 (SHORT)"
+            return _no("MA7 尚未向下指")
+        direction_note = "MA7<MA25 + MA7向下 (SHORT)"
 
     # 完全符合，滿分通過
     score = 100
