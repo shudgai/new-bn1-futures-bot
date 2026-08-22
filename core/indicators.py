@@ -37,7 +37,7 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
 
     # 計算均線
     if 'ma7' not in df.columns:
-        df['ma7'] = df['close'].rolling(window=7).mean()
+        df['ma7'] = df['close'].rolling(window=3).mean()
     if 'ma25' not in df.columns:
         df['ma25'] = df['close'].rolling(window=25).mean()
 

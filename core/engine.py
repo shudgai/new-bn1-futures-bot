@@ -973,7 +973,7 @@ class TradingEngine:
                             .mean().iloc[-1]
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        ma7 = float(df_1m['close'].rolling(7).mean().iloc[-1])
+                        ma7 = float(df_1m['close'].rolling(3).mean().iloc[-1])
                         ma25 = float(df_1m['close'].rolling(25).mean().iloc[-1])
                         current_direction = "LONG" if ma7 > ma25 else "SHORT"
 
@@ -1740,7 +1740,7 @@ class TradingEngine:
 
         # 1m MA7 拐頭向上/向下確認
         closes = candles_1m["close"].astype(float)
-        ma7 = closes.rolling(window=7).mean()
+        ma7 = closes.rolling(window=3).mean()
         if pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]):
             return False
         ma7_curr = ma7.iloc[-1]
