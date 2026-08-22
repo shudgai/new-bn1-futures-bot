@@ -441,19 +441,9 @@
                 <!-- MANUAL ORDER PANEL -->
                 <div class="card">
                     <div class="card-title">⚡ 手動開倉 (依策略自動配置止損/止盈)</div>
-                    <div class="input-group">
-                        <label>選擇幣種</label>
-                        <select v-model="manualOrder.symbol">
-                            <option v-for="sym in bot.symbols" :key="sym" :value="sym">{{ sym }}</option>
-                        </select>
-                    </div>
-                    <div class="input-group">
-                        <label>保證金 (USDT)</label>
-                        <input type="number" v-model.number="manualOrder.amount" min="5" step="5">
-                    </div>
-                    <div style="display:flex; gap:8px; margin-top:16px;">
-                        <button class="btn btn-success" @click="placeOrder('LONG')">做多 (LONG)</button>
-                        <button class="btn btn-danger" @click="placeOrder('SHORT')">做空 (SHORT)</button>
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')">做多 (LONG)</button>
+                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')">做空 (SHORT)</button>
                     </div>
                 </div>
 
@@ -799,9 +789,9 @@
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            symbol: this.manualOrder.symbol,
+                            symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : 'BTC/USDT',
                             side: side,
-                            amount: this.manualOrder.amount
+                            amount: 0
                         })
                     });
                     if (!res) return;
