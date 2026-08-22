@@ -48,29 +48,16 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
 
     is_trough = (ma7_curr > ma7_prev)
     is_peak = (ma7_curr < ma7_prev)
-
-    # 判斷 MA25 是否平緩 (盤整過濾)
-    atr_val = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
-    ma25_prev3 = float(df['ma25'].iloc[-4]) if len(df) >= 4 else ma25_curr
-    ma25_diff = ma25_curr - ma25_prev3
-    is_ma25_flat = abs(ma25_diff) < (atr_val * 0.05)
-
     reasons = []
     strong = False
 
     if side == "LONG":
         if is_peak:
-            if is_ma25_flat:
-                reasons.append("MA7 向下指且盤整中 (提早平倉觀望)")
-            else:
-                reasons.append("MA7 向下指 (反向作空訊號)")
+            reasons.append("MA7 向下指 (反向作空訊號)")
             strong = True
     else:
         if is_trough:
-            if is_ma25_flat:
-                reasons.append("MA7 向上指且盤整中 (提早平倉觀望)")
-            else:
-                reasons.append("MA7 向上指 (反向作多訊號)")
+            reasons.append("MA7 向上指 (反向作多訊號)")
             strong = True
 
     return {
