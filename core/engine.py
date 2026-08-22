@@ -1112,7 +1112,6 @@ class TradingEngine:
                     if (
                         (ENABLE_STRONG_TRIGGER_AUTO_CLOSE or trigger.get("strong"))
                         and trigger.get("strong")
-                        and not is_profit_locked
                         and not bottom_grace
                         and should_auto_close
                     ):
