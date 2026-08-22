@@ -51,6 +51,12 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     reasons = []
     strong = False
 
+    # 結構性反轉需要連續2根K棒都同向，避免一根K棒的微小波動就觸發強制平倉
+    # is_peak: MA7 本根向下指 (short-term)
+    # is_confirmed_peak: 前一根也向下（即 prev > prev2），才算結構確認
+    is_confirmed_peak = (ma7_curr < ma7_prev) and (ma7_prev < ma7_prev2)
+    is_confirmed_trough = (ma7_curr > ma7_prev) and (ma7_prev > ma7_prev2)
+
     if side == "LONG":
         if is_peak:
             reasons.append("MA7 向下指 (反向作空訊號)")
@@ -60,14 +66,17 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
             reasons.append("MA7 向上指 (反向作多訊號)")
             strong = True
 
+    # structural_strong 需要連續 2 根確認才成立，避免單根震盪即強制平倉
+    structural_confirmed = (is_confirmed_peak if side == "LONG" else is_confirmed_trough)
+
     return {
         "active": bool(reasons),
         "ma_ok": not strong,
         "reasons": reasons,
         "strong": strong,
         "ma7_reversed": strong,
-        "ema_breach_confirmed": strong,
-        "structure_broken": strong,
+        "ema_breach_confirmed": structural_confirmed,
+        "structure_broken": structural_confirmed,
         "atr": float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015,
     }
 
