@@ -412,7 +412,7 @@ def compute_net_reward_risk(
 
 
 def detect_ma7_reversal(
-    df: pd.DataFrame,
+    df: pd.DataFrame, 
     side: str,
     ema_50_1h: float = None,
     st_direction_1h: int = None,
@@ -458,9 +458,9 @@ def detect_ma7_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    # 嚴格轉彎條件：必須是由跌轉漲(或平轉漲)才算谷底，由漲轉跌(或平轉跌)才算高點
-    is_trough = (ma7_prev2 >= ma7_prev) and (ma7_curr > ma7_prev)
-    is_peak = (ma7_prev2 <= ma7_prev) and (ma7_curr < ma7_prev)
+    # 放寬條件：只要 MA7 往上指就算轉彎 (不需要完整的 V 型)，隨時跟上趨勢
+    is_trough = (ma7_curr > ma7_prev)
+    is_peak = (ma7_curr < ma7_prev)
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
     # 判斷 MA25 是否平緩 (盤整過濾)

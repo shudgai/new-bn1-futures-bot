@@ -2882,6 +2882,16 @@ class TradingEngine:
                         ma7_prev = float(df_1m['close'].rolling(7).mean().iloc[-2])
                         current_direction = "LONG" if ma7_curr > ma7_prev else "SHORT"
                         
+                        # 判斷是否需要嚴格 V 型轉彎
+                        require_strict_v = False
+                        if self.account.trades:
+                            # 最新的一筆交易在 index 0
+                            last_trade = self.account.trades[0]
+                            if last_trade.get("symbol") == symbol and last_trade.get("action", "").startswith("CLOSE_"):
+                                reason = last_trade.get("reason", "")
+                                if "移動" in reason or "Trailing" in reason or "鎖利" in reason:
+                                    require_strict_v = True
+                        
                         from core.strategy import detect_ma7_reversal
                         sig = detect_ma7_reversal(
                             df_1m,
@@ -2893,6 +2903,7 @@ class TradingEngine:
                             btc_1m_turn=btc_1m_turn,
                             symbol=symbol,
                             live_price=live_price,
+                            require_strict_v=require_strict_v,
                         )
                         if sig["detected"]:
                             if sig.get("score", 0) >= MIN_OPEN_SIGNAL_SCORE:
