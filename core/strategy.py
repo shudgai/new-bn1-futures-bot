@@ -467,17 +467,13 @@ def detect_ma7_reversal(
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
     if want_dir == 1:
-        if ma7_curr <= ma25_curr:
-            return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.6f}, MA25={ma25_curr:.6f})")
         if not is_trough:
             return _no("MA7 尚未向上指")
-        direction_note = "MA7>MA25 + MA7向上 (LONG)"
+        direction_note = "MA7向上 (LONG)"
     else:
-        if ma7_curr >= ma25_curr:
-            return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.6f}, MA25={ma25_curr:.6f})")
         if not is_peak:
             return _no("MA7 尚未向下指")
-        direction_note = "MA7<MA25 + MA7向下 (SHORT)"
+        direction_note = "MA7向下 (SHORT)"
 
     # 完全符合，滿分通過
     score = 100

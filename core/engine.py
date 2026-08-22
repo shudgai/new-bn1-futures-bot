@@ -2862,14 +2862,9 @@ class TradingEngine:
                             .mean().iloc[-1]
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        ma7_curr = float(df_1m['close'].rolling(7).mean().iloc[-1])
-                        ma25_curr = float(df_1m['close'].rolling(25).mean().iloc[-1])
-                        current_direction = "LONG" if ma7_curr > ma25_curr else "SHORT"
-                        
                         # 判斷是否需要嚴格 V 型轉彎
                         require_strict_v = False
                         if self.account.trades:
-                            # 最新的一筆交易在 index 0
                             last_trade = self.account.trades[0]
                             if last_trade.get("symbol") == symbol and last_trade.get("action", "").startswith("CLOSE_"):
                                 reason = last_trade.get("reason", "")
@@ -2877,26 +2872,26 @@ class TradingEngine:
                                     require_strict_v = True
                         
                         from core.strategy import detect_ma7_reversal
-                        sig = detect_ma7_reversal(
-                            df_1m,
-                            side=current_direction,
-                            ema_50_1h=ema_50_1h,
-                            st_direction_1h=st_direction_1h,
-                            btc_st_direction_1h=self.btc_1h_st_direction,
-                            btc_st_flip_age=self.btc_1h_st_flip_age,
-                            btc_1m_turn=btc_1m_turn,
-                            symbol=symbol,
-                            live_price=live_price,
-                            require_strict_v=require_strict_v,
-                        )
-                        if sig["detected"]:
-                            if sig.get("score", 0) >= MIN_OPEN_SIGNAL_SCORE:
-                                sig["symbol"] = symbol
-                                sig["live_price"] = live_price
-                                detected_candidates.append(sig)
-                            else:
-                                signal_progress.append(f"{coin} {current_direction} 資格未通過,分數不足({sig.get('score')})")
-                            continue
+                        for direction in ["LONG", "SHORT"]:
+                            sig = detect_ma7_reversal(
+                                df_1m,
+                                side=direction,
+                                ema_50_1h=ema_50_1h,
+                                st_direction_1h=st_direction_1h,
+                                btc_st_direction_1h=self.btc_1h_st_direction,
+                                btc_st_flip_age=self.btc_1h_st_flip_age,
+                                btc_1m_turn=btc_1m_turn,
+                                symbol=symbol,
+                                live_price=live_price,
+                                require_strict_v=require_strict_v,
+                            )
+                            if sig["detected"]:
+                                if sig.get("score", 0) >= MIN_OPEN_SIGNAL_SCORE:
+                                    sig["symbol"] = symbol
+                                    sig["live_price"] = live_price
+                                    detected_candidates.append(sig)
+                                else:
+                                    signal_progress.append(f"{coin} {direction} 資格未通過,分數不足({sig.get('score')})")
 
                     if detected_candidates:
                         # Sort by score descending
