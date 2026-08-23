@@ -244,6 +244,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     ma3_curr  = float(df['ma3'].iloc[-1])
     ma3_prev  = float(df['ma3'].iloc[-2])
     ma3_prev2 = float(df['ma3'].iloc[-3])
+    ma3_prev3 = float(df['ma3'].iloc[-4]) if len(df) >= 5 else ma3_prev2  # 第二根確認用
 
     ma5_curr  = float(df['ma5'].iloc[-1])
     ma5_prev  = float(df['ma5'].iloc[-2])
@@ -257,8 +258,15 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     cross_down = (ma5_prev >= ma25_prev) and (ma5_curr < ma25_curr)
 
     # 2. 判斷峰谷 (極速轉彎 - 改看 MA3)
-    is_trough = (ma3_curr > ma3_prev) and (ma3_prev < ma3_prev2)
-    is_peak = (ma3_curr < ma3_prev) and (ma3_prev > ma3_prev2)
+    # 第一根初彎：只是「可能要彎」，需待第二根同向才確認
+    is_peak_forming   = (ma3_curr < ma3_prev) and (ma3_prev > ma3_prev2)  # 第一根下彎
+    is_trough_forming = (ma3_curr > ma3_prev) and (ma3_prev < ma3_prev2)  # 第一根上彎
+    # 第二根確認：兩根連續同向——真頂峰 / 真谷底
+    is_peak_confirmed   = (ma3_curr < ma3_prev) and (ma3_prev < ma3_prev2) and (ma3_prev2 > ma3_prev3)
+    is_trough_confirmed = (ma3_curr > ma3_prev) and (ma3_prev > ma3_prev2) and (ma3_prev2 < ma3_prev3)
+    # 保留舊名稱相容（CROSS 路徑使用）
+    is_peak   = is_peak_confirmed
+    is_trough = is_trough_confirmed
 
     # 3. 判斷斜率 (動能疲乏過濾 - 改看 MA3)
     ma5_slope = ma5_curr - ma5_prev
@@ -326,13 +334,20 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
 
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        # 真實谷底轉彎：MA3彎頭 + 綠K + 價格突破 MA3 (極速反應)
-        is_true_trough = is_trough and is_green and (last_close > ma3_curr)
+        is_true_trough = is_trough_confirmed and is_green and (last_close > ma3_curr)
+        # 第一根上彎：只是形成中，需等待第二根確認
+        if is_trough_forming and not is_trough_confirmed:
+            return {
+                "signal": None,
+                "reason": f"MA3 初次上彎，等待確認是真谷底還是假反彈 (ADX={adx_curr:.1f})",
+                "pivot_confirmed": False,
+                "pivot_score": 0
+            }
         if is_true_trough:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA3 真谷底轉彎 (ADX={adx_curr:.1f}) → 改向多單",
+                "reason": f"空頭中 MA3 兩根確認谷底轉彎 (ADX={adx_curr:.1f}) → 改向多單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
@@ -341,6 +356,14 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
             return {
                 "signal": None,
                 "reason": "快到谷底或 MA3 已上彎，暫停無腦開空",
+                "pivot_confirmed": False,
+                "pivot_score": 0
+            }
+        elif ma5_slope >= 0:
+            # MA5 彎頭向上（大結構可能在轉折），空頭中不強求開空
+            return {
+                "signal": None,
+                "reason": f"MA5 已上彎，空頭中閱候確認方向 (ma5_slope={ma5_slope:.6f})",
                 "pivot_confirmed": False,
                 "pivot_score": 0
             }
@@ -353,16 +376,23 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
                 "pivot_confirmed": False,
                 "pivot_score": 50,
             }
-    
+
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        # 真實頂峰轉彎：MA3彎頭 + 紅K + 價格跌破 MA3 (極速反應)
-        is_true_peak = is_peak and is_red and (last_close < ma3_curr)
+        is_true_peak = is_peak_confirmed and is_red and (last_close < ma3_curr)
+        # 第一根下彎：不立刻開空，等待確認是真頂峰還是假突破
+        if is_peak_forming and not is_peak_confirmed:
+            return {
+                "signal": None,
+                "reason": f"MA3 初次向下彎，等待確認是真頂峰還是假突破 (ADX={adx_curr:.1f})",
+                "pivot_confirmed": False,
+                "pivot_score": 0
+            }
         if is_true_peak:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA3 真頂峰轉彎 (ADX={adx_curr:.1f}) → 改向空單",
+                "reason": f"多頭中 MA3 兩根確認頂峰轉彎 (ADX={adx_curr:.1f}) → 改向空單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
@@ -371,6 +401,14 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
             return {
                 "signal": None,
                 "reason": "快到頂峰或 MA3 已下彎，暫停無腦開多",
+                "pivot_confirmed": False,
+                "pivot_score": 0
+            }
+        elif ma5_slope <= 0:
+            # MA5 本身彎頭向下（大結構可能在轉折），不強求証實多單
+            return {
+                "signal": None,
+                "reason": f"MA5 已下彎，多頭中閱候確認方向再開倉 (ma5_slope={ma5_slope:.6f})",
                 "pivot_confirmed": False,
                 "pivot_score": 0
             }
