@@ -128,6 +128,10 @@
             .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
             table { font-size: 12px; }
             th, td { padding: 8px; }
+            /* 手機版隱藏 AI 分析卡 */
+            .ai-analysis-card { display: none !important; }
+            /* 手機版專屬買賣快捷列 */
+            .mobile-manual-trade-bar { display: flex !important; }
         }
 
         .up { color: var(--up); font-weight: 700; }
@@ -180,6 +184,8 @@
         .chart-container { width: 100%; height: 100%; }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
+        /* 桌面預設隱藏手機專屬快捷列 */
+        .mobile-manual-trade-bar { display: none; }
 </style>
 </head>
 <body>
@@ -448,6 +454,16 @@
                         <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')">做多 (LONG)</button>
                         <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')">做空 (SHORT)</button>
                     </div>
+                </div>
+
+                <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
+                <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px;">
+                    <button class="btn btn-success"
+                        style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
+                        @click="placeOrder('LONG')">&#x1F4C8; 買進 LONG</button>
+                    <button class="btn btn-danger"
+                        style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
+                        @click="placeOrder('SHORT')">&#x1F4C9; 賣出 SHORT</button>
                 </div>
 
                 <!-- AI TRADE HISTORY ANALYSIS -->

@@ -2792,7 +2792,7 @@ class TradingEngine:
                                     )
                                     has_pos = False  # 更新狀態
                                     curr_side = None
-                                    cr_signal = None
+                                    # 保留 cr_signal：允許同一週期的 TREND_LONG/SHORT 繼續補開
 
                                 elif curr_side == "SHORT" and ma3_curr > ma3_prev and is_green_candle:
                                     self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (綠K)，防禦性提早平倉空單！", "WARNING")
@@ -2803,7 +2803,7 @@ class TradingEngine:
                                     )
                                     has_pos = False  # 更新狀態
                                     curr_side = None
-                                    cr_signal = None
+                                    # 保留 cr_signal：允許同一週期的 TREND_SHORT/LONG 繼續補開
 
                             if cr_signal:
                                 last_close = float(df_cr['close'].iloc[-1])
