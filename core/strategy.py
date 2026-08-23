@@ -434,23 +434,31 @@ def detect_ma7_reversal(
         return {"detected": False, "reason": "K線資料不足25根"}
 
     # 確保指標已計算
+    if 'ma3' not in df.columns:
+        df['ma3'] = df['close'].rolling(window=3).mean()
     if 'ma7' not in df.columns:
         df['ma7'] = df['close'].rolling(window=7).mean()
     if 'ma25' not in df.columns:
         df['ma25'] = df['close'].rolling(window=25).mean()
 
     # 取值
+    ma3_series = df['ma3'].dropna()
+    if len(ma3_series) < 3:
+        return {"detected": False, "reason": "MA3資料不足"}
+
     ma7_series = df['ma7'].dropna()
-    if len(ma7_series) < 3:
+    if len(ma7_series) < 1:
         return {"detected": False, "reason": "MA7資料不足"}
 
     ma25_series = df['ma25'].dropna()
     if len(ma25_series) < 1:
         return {"detected": False, "reason": "MA25資料不足"}
 
+    ma3_curr = float(ma3_series.iloc[-1])
+    ma3_prev = float(ma3_series.iloc[-2])
+    ma3_prev2 = float(ma3_series.iloc[-3])
+    
     ma7_curr = float(ma7_series.iloc[-1])
-    ma7_prev = float(ma7_series.iloc[-2])
-    ma7_prev2 = float(ma7_series.iloc[-3])
     ma25_curr = float(ma25_series.iloc[-1])
     
     price = float(live_price) if live_price else float(df['close'].iloc[-1])
@@ -459,22 +467,23 @@ def detect_ma7_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    is_trough = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
-    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    # 使用 MA3 作為敏感轉折指標，減少開倉轉折延遲
+    is_trough = (ma3_prev2 > ma3_prev) and (ma3_curr > ma3_prev)
+    is_peak = (ma3_prev2 < ma3_prev) and (ma3_curr < ma3_prev)
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
     if want_dir == 1:
         if ma7_curr <= ma25_curr:
             return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_trough:
-            return _no("MA7 未形成 V 型谷底")
-        direction_note = "MA7>MA25 + V型谷底 (LONG)"
+            return _no("MA3 未形成 V 型谷底")
+        direction_note = "MA7>MA25 + MA3 V型谷底 (LONG)"
     else:
         if ma7_curr >= ma25_curr:
             return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_peak:
-            return _no("MA7 未形成倒 V 型峰頂")
-        direction_note = "MA7<MA25 + 倒V型峰頂 (SHORT)"
+            return _no("MA3 未形成倒 V 型峰頂")
+        direction_note = "MA7<MA25 + MA3 倒V型峰頂 (SHORT)"
 
     # 完全符合，滿分通過
     score = 100
@@ -489,8 +498,8 @@ def detect_ma7_reversal(
         "price": float(price),
         "atr": float(atr),
         "ma7_curr": ma7_curr,
-        "ma7_prev": ma7_prev,
-        "ma7_prev2": ma7_prev2,
+        "ma7_prev": float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else ma7_curr,
+        "ma7_prev2": float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else ma7_curr,
         "ma25_curr": ma25_curr,
         "turn_sharpness": turn_sharpness,
         "early_projection": False,
