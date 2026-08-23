@@ -253,6 +253,15 @@ async def manual_close(req: ManualCloseRequest):
     return {"status": "success", "message": f"手動平倉 {symbol}"}
 
 
+@app.post("/api/reset_account")
+async def reset_account():
+    """清空帳戶所有狀態（損益、交易記錄、持倉），重新從初始餘額開始。"""
+    if hasattr(engine.account, "reset_state"):
+        engine.account.reset_state()
+        return {"status": "success", "message": "帳戶已重置，損益與交易記錄已清空"}
+    raise HTTPException(status_code=501, detail="此帳戶類型不支援重置")
+
+
 @app.get("/api/klines")
 async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
     """取得K線資料，並計算 MA7, MA25, MA99 提供給前端圖表"""

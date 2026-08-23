@@ -1063,7 +1063,14 @@ class TradingEngine:
         while self.is_running:
             try:
                 for symbol, position in list(self.account.positions.items()):
-                    df = await self.fetch_klines(symbol, timeframe=MA7_EXIT_TIMEFRAME, limit=30)
+                    # 使用正確的 K 棒週期做平倉判斷：
+                    # CONTINUOUS_REVERSE 模式進場的部位用 5m（與進場相同），
+                    # 其他路徑仍用 MA7_EXIT_TIMEFRAME（預設 1m）。
+                    from core.config import CONTINUOUS_REVERSE_TIMEFRAME
+                    pos_reason = str(position.get("reason") or "")
+                    is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN"))
+                    exit_tf = CONTINUOUS_REVERSE_TIMEFRAME if is_cr_position else MA7_EXIT_TIMEFRAME
+                    df = await self.fetch_klines(symbol, timeframe=exit_tf, limit=30)
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
                     # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
@@ -1100,7 +1107,8 @@ class TradingEngine:
                     trigger["ma7_exit_gate"] = ma7_exit_gate
                     should_auto_close = bool(
                         structural_strong
-                        or (trigger.get("ma7_reversed") and ma7_exit_ready)
+                        or trigger.get("ma7_reversed")
+                        or trigger.get("is_panic_reversal")
                     )
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
@@ -1115,11 +1123,14 @@ class TradingEngine:
                         and not bottom_grace
                         and should_auto_close
                     ):
-                        close_reason = (
-                            f"{MA7_EXIT_TIMEFRAME}收線均線與結構防線同時失守"
-                            if structural_strong
-                            else f"{MA7_EXIT_TIMEFRAME} MA7轉彎反轉平倉"
-                        )
+                        if trigger.get("is_panic_reversal"):
+                            close_reason = f"{MA7_EXIT_TIMEFRAME}爆量K線反轉，緊急平倉"
+                        else:
+                            close_reason = (
+                                f"{MA7_EXIT_TIMEFRAME}收線均線與結構防線同時失守"
+                                if structural_strong
+                                else f"{MA7_EXIT_TIMEFRAME} MA7轉彎反轉平倉"
+                            )
                         self.account.log(
                             f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
                             "DANGER"
@@ -2759,21 +2770,10 @@ class TradingEngine:
                             if cr_signal:
                                 live_price = float(df_cr['close'].iloc[-1])
 
-                                # --- 谷底/頂部轉折：SAR（Stop And Reverse）---
-                                # 谷底向上 → 平空倉 + 開多；頂部向下 → 平多倉 + 開空
+                                # --- 谷底/頂部轉折：僅負責開倉 ---
+                                # 平倉由 _position_trigger_loop 的 compute_position_trigger 負責
+                                # (多單等到峰頂連續2根向下才平；空單等到谷底連續2根向上才平)
                                 if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
-                                    if has_pos and curr_side != cr_signal:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] 轉折訊號：平倉 {curr_side}，準備反向做 {cr_signal}",
-                                            "INFO"
-                                        )
-                                        await self.account.close_position(
-                                            symbol,
-                                            live_price,
-                                            reason=f"轉折反轉_{cr_signal}_{cr_entry_type}"
-                                        )
-                                        has_pos = False
-
                                     if not has_pos:
                                         self.account.log(
                                             f"{symbol} [{cr_entry_type}] 谷底/頂部訊號：進場 {cr_signal}",
@@ -2797,7 +2797,7 @@ class TradingEngine:
 
                                 # --- MA7 穿越 MA25（金叉/死叉）：補開訊號 ---
                                 # 只有在無持倉時才補開，有持倉則不打擾
-                                elif cr_entry_type in ("MA_CROSS_UP", "MA_CROSS_DOWN"):
+                                elif cr_entry_type in ("CROSS_UP", "CROSS_DOWN"):
                                     if not has_pos:
                                         self.account.log(
                                             f"{symbol} [{cr_entry_type}] MA7穿越MA25補開：進場 {cr_signal}",

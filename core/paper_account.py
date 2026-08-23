@@ -277,6 +277,37 @@ class PaperAccount:
         except Exception:
             pass
 
+    def reset_state(self) -> None:
+        """清空所有帳戶狀態，重新從初始餘額開始，並刪除持久化的 state 檔案。"""
+        self.balance = INITIAL_BALANCE
+        self.available_balance = INITIAL_BALANCE
+        self.realized_pnl = 0.0
+        self.unrealized_pnl = 0.0
+        self.positions = {}
+        self.position_meta = {}
+        self.pending_limit_orders = {}
+        self.latest_prices = {}
+        self.trades = []
+        self.logs = []
+        self.closing_lock = set()
+        self.last_closed_at = {}
+        self.daily_date = None
+        self.daily_start_balance = 0.0
+        self.daily_start_realized_pnl = 0.0
+        self.daily_halt_logged = False
+        self.pullback_outcome_stats = {}
+        self.entry_filter_stats = {}
+        self.entry_filter_last = {}
+        self.shadow_parameter_stats = {}
+        self.shadow_parameter_last = {}
+        # 刪除持久化檔案，避免下次重啟時讀回舊資料
+        try:
+            if os.path.exists(STATE_FILE):
+                os.remove(STATE_FILE)
+        except Exception:
+            pass
+        self.log("🔄 [帳戶重置] 已清空所有交易記錄與損益，從初始餘額重新開始", "WARNING")
+
     def log(self, message: str, level: str = "INFO") -> None:
         # 視覺層過濾：將 'Mandatory_Fail: KEY(...)' 顯示成括號內的中文說明，或移除前綴並替換下劃線
         if isinstance(message, str) and "Mandatory_Fail:" in message:

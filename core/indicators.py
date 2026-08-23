@@ -47,44 +47,38 @@ def detect_ma7_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     ma25_prev = float(df['ma25'].iloc[-2])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
 
-    # 連續兩根確認轉折
-    is_confirmed_peak   = (ma7_curr < ma7_prev)  and (ma7_prev < ma7_prev2)
-    is_confirmed_trough = (ma7_curr > ma7_prev)  and (ma7_prev > ma7_prev2)
-
-    # --- 優先訊號：谷底/頂部轉折 ---
-    if ma7_curr < ma25_curr and is_confirmed_trough:
+    is_trough = (ma7_curr > ma7_prev) and (ma7_prev < ma7_prev2)
+    is_peak = (ma7_curr < ma7_prev) and (ma7_prev > ma7_prev2)
+    
+    cross_up = (ma7_prev <= ma25_prev) and (ma7_curr > ma25_curr)
+    cross_down = (ma7_prev >= ma25_prev) and (ma7_curr < ma25_curr)
+    
+    if is_trough and ma7_curr < ma25_curr:
         return {
             "signal": "LONG",
             "entry_type": "TROUGH_TURN",
-            "reason": "MA7<MA25 且 MA7 谷底確認向上反轉 → 平空開多",
+            "reason": "MA7 < MA25 谷底向上轉折",
             "atr": atr,
         }
-    if ma7_curr > ma25_curr and is_confirmed_peak:
+    elif is_peak and ma7_curr > ma25_curr:
         return {
             "signal": "SHORT",
             "entry_type": "PEAK_TURN",
-            "reason": "MA7>MA25 且 MA7 頂部確認向下反轉 → 平多開空",
+            "reason": "MA7 > MA25 頂部向下轉折",
             "atr": atr,
         }
-
-    # --- 補開訊號：MA7 穿越 MA25（谷底後未能進場的補救）---
-    # 金叉：前根 ma7 <= ma25，本根 ma7 > ma25
-    ma7_cross_up   = (ma7_prev <= ma25_prev) and (ma7_curr > ma25_curr)
-    # 死叉：前根 ma7 >= ma25，本根 ma7 < ma25
-    ma7_cross_down = (ma7_prev >= ma25_prev) and (ma7_curr < ma25_curr)
-
-    if ma7_cross_up:
+    elif cross_up:
         return {
             "signal": "LONG",
-            "entry_type": "MA_CROSS_UP",
-            "reason": "MA7 向上穿越 MA25（金叉）→ 補開多單",
+            "entry_type": "CROSS_UP",
+            "reason": "MA7 向上穿越 MA25 (補開多單)",
             "atr": atr,
         }
-    if ma7_cross_down:
+    elif cross_down:
         return {
             "signal": "SHORT",
-            "entry_type": "MA_CROSS_DOWN",
-            "reason": "MA7 向下穿越 MA25（死叉）→ 補開空單",
+            "entry_type": "CROSS_DOWN",
+            "reason": "MA7 向下穿越 MA25 (補開空單)",
             "atr": atr,
         }
 
@@ -116,28 +110,31 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     ma7_prev2 = float(df['ma7'].iloc[-3])
     ma25_curr = float(df['ma25'].iloc[-1])
 
-    is_trough = (ma7_curr > ma7_prev)
-    is_peak = (ma7_curr < ma7_prev)
+    is_trough = (ma7_curr > ma7_prev) and (ma7_prev < ma7_prev2)
+    is_peak = (ma7_curr < ma7_prev) and (ma7_prev > ma7_prev2)
     reasons = []
     strong = False
 
-    # 結構性反轉需要連續2根K棒都同向，避免一根K棒的微小波動就觸發強制平倉
-    # is_peak: MA7 本根向下指 (short-term)
-    # is_confirmed_peak: 前一根也向下（即 prev > prev2），才算結構確認
-    is_confirmed_peak = (ma7_curr < ma7_prev) and (ma7_prev < ma7_prev2)
-    is_confirmed_trough = (ma7_curr > ma7_prev) and (ma7_prev > ma7_prev2)
+    # 平倉邏輯：「狀態觸發」而非「邊緣觸發」
+    # 空單 (SHORT) 持倉直到谷底確認：MA7 < MA25 且已連續 2 根 K 棒往上（谷底形成）
+    # 多單 (LONG) 持倉直到峰頂確認：MA7 > MA25 且已連續 2 根 K 棒往下（峰頂形成）
+    # 使用 is_confirmed_peak / is_confirmed_trough 確保不會因為一根震盪就平倉
+    is_confirmed_peak = (ma7_curr < ma7_prev) and (ma7_prev < ma7_prev2)      # 連續2根往下
+    is_confirmed_trough = (ma7_curr > ma7_prev) and (ma7_prev > ma7_prev2)    # 連續2根往上
 
     if side == "LONG":
-        if is_peak:
-            reasons.append("MA7 向下指 (反向作空訊號)")
+        # 多單平倉：MA7 > MA25（目前在高位峰頂區），且 MA7 已連續 2 根確認往下
+        if is_confirmed_peak and ma7_curr > ma25_curr:
+            reasons.append("MA7 峰頂連續向下確認 (平多單)")
             strong = True
     else:
-        if is_trough:
-            reasons.append("MA7 向上指 (反向作多訊號)")
+        # 空單平倉：MA7 < MA25（目前在低位谷底區），且 MA7 已連續 2 根確認往上
+        if is_confirmed_trough and ma7_curr < ma25_curr:
+            reasons.append("MA7 谷底連續向上確認 (平空單)")
             strong = True
 
-    # structural_strong 需要連續 2 根確認才成立，避免單根震盪即強制平倉
-    structural_confirmed = (is_confirmed_peak if side == "LONG" else is_confirmed_trough)
+    # structural_confirmed 與 strong 同步（已由上面的邏輯統一處理）
+    structural_confirmed = strong
 
     return {
         "active": bool(reasons),
@@ -145,6 +142,7 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         "reasons": reasons,
         "strong": strong,
         "ma7_reversed": strong,
+        "is_panic_reversal": False,
         "ema_breach_confirmed": structural_confirmed,
         "structure_broken": structural_confirmed,
         "atr": float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015,

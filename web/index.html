@@ -436,6 +436,9 @@
                     <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot">
                         {{ bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人' }}
                     </button>
+                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount">
+                        🔄 重置帳戶（清空損益與記錄）
+                    </button>
                 </div>
 
                 <!-- MANUAL ORDER PANEL -->
@@ -804,6 +807,17 @@
                         body: JSON.stringify({ symbol })
                     });
                     if (!res) return;
+                    await this.fetchStatus();
+                },
+                async resetAccount() {
+                    const confirmed = window.confirm(
+                        '⚠️ 確定要重置帳戶嗎？\n\n這將清空所有：\n• 交易記錄\n• 損益數據\n• 當前持倉\n\n此操作無法復原！'
+                    );
+                    if (!confirmed) return;
+                    const res = await this.authorizedFetch('/api/reset_account', { method: 'POST' });
+                    if (!res) return;
+                    const data = await res.json();
+                    window.alert('✅ ' + (data.message || '帳戶已重置'));
                     await this.fetchStatus();
                 }
             },
