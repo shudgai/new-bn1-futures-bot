@@ -270,11 +270,15 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     approaching_trough = (ma3_slope < 0) and (ma3_slope > min(0, ma3_slope_prev) * 0.5)
 
     adx_curr = float(df['adx'].iloc[-1])
-    # --- 趨勢強度濾網 ---
-    if adx_curr < 13.0:
+    # --- 趨勢強度濾網：讀取 config.ADX_MANDATORY_MIN，與 .env 設定保持同步 ---
+    try:
+        from core.config import ADX_MANDATORY_MIN as _adx_min
+    except Exception:
+        _adx_min = 12.0  # fallback 保守預設
+    if adx_curr < _adx_min:
         return {
             "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 13)",
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < {_adx_min})",
             "pivot_confirmed": False,
             "pivot_score": 0
         }

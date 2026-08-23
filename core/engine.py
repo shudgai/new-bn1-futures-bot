@@ -2771,10 +2771,10 @@ class TradingEngine:
                             curr_side = self.account.positions[symbol]["side"] if has_pos else None
 
                             # --- 防禦性提早平倉 (Defensive Early Exit) ---
-                            # 用戶要求：不要等到死叉或真峰頂，只要看到均線彎頭 (MA5 往下) 且是紅K，就立刻把多單平掉保命，後續再重新判斷開倉！
-                            if has_pos and 'ma5' in df_cr.columns:
-                                ma5_curr = float(df_cr['ma5'].iloc[-1])
-                                ma5_prev = float(df_cr['ma5'].iloc[-2])
+                            # 用戶要求：不要等到死叉或真峰頂，只要看到均線彎頭 (MA3 往下) 且是紅K，就立刻把多單平掉保命，後續再重新判斷開倉！
+                            if has_pos and 'ma3' in df_cr.columns:
+                                ma3_curr = float(df_cr['ma3'].iloc[-1])
+                                ma3_prev = float(df_cr['ma3'].iloc[-2])
                                 last_close = float(df_cr['close'].iloc[-1])
                                 last_open = float(df_cr['open'].iloc[-1])
                                 is_red_candle = last_close < last_open
@@ -2783,25 +2783,27 @@ class TradingEngine:
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
-                                if curr_side == "LONG" and ma5_curr < ma5_prev and is_red_candle:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA5 頂部彎頭向下 (紅K)，防禦性提早平倉多單！", "WARNING")
+                                if curr_side == "LONG" and ma3_curr < ma3_prev and is_red_candle:
+                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (紅K)，防禦性提早平倉多單！", "WARNING")
                                     await self.account.close_position(
                                         symbol=symbol,
                                         current_price=live_price,
-                                        close_reason="MA5 頂部彎頭向下 (防禦平多)"
+                                        close_reason="MA3 頂部彎頭向下 (防禦平多)"
                                     )
                                     has_pos = False  # 更新狀態
                                     curr_side = None
+                                    cr_signal = None
 
-                                elif curr_side == "SHORT" and ma5_curr > ma5_prev and is_green_candle:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA5 谷底彎頭向上 (綠K)，防禦性提早平倉空單！", "WARNING")
+                                elif curr_side == "SHORT" and ma3_curr > ma3_prev and is_green_candle:
+                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (綠K)，防禦性提早平倉空單！", "WARNING")
                                     await self.account.close_position(
                                         symbol=symbol,
                                         current_price=live_price,
-                                        close_reason="MA5 谷底彎頭向上 (防禦平空)"
+                                        close_reason="MA3 谷底彎頭向上 (防禦平空)"
                                     )
                                     has_pos = False  # 更新狀態
                                     curr_side = None
+                                    cr_signal = None
 
                             if cr_signal:
                                 last_close = float(df_cr['close'].iloc[-1])
