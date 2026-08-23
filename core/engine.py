@@ -2811,15 +2811,20 @@ class TradingEngine:
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
                                 # --- 活 K 線濾網 (Live Candle Color Filter) ---
-                                # 順勢確認：不允許在逆向顏色的 K 棒進場（空單不空在綠K、多單不多在紅K）
+                                # 用最後一根 K 棒的收盤/開盤判斷顏色（不用 live_price，避免 ticker
+                                # 微小跳動把空頭峰頂訊號誤殺——live_price > last_close 只說明
+                                # 目前報價比收盤高一點點，並不代表這根 K 棒是真正的綠 K）。
                                 if cr_entry_type in ("PEAK_TURN", "TROUGH_TURN"):
+                                    last_open_cr = float(df_cr['open'].iloc[-1])
+                                    candle_is_green = last_close > last_open_cr
+                                    candle_is_red   = last_close < last_open_cr
                                     is_confirmed_reversal = "提前轉向" in cr_info.get("reason", "")
                                     if not is_confirmed_reversal:
-                                        if cr_signal == "SHORT" and live_price > last_close:
+                                        if cr_signal == "SHORT" and candle_is_green:
                                             cr_signal = None  # 綠K，暫緩做空
-                                        elif cr_signal == "LONG" and live_price < last_close:
+                                        elif cr_signal == "LONG" and candle_is_red:
                                             cr_signal = None  # 紅K，暫緩做多
-                                
+
                                 if not cr_signal:
                                     continue
 
@@ -2896,6 +2901,36 @@ class TradingEngine:
                                     else:
                                         self.account.log(
                                             f"{symbol} [{cr_entry_type}] MA5穿越訊號，已有 {curr_side} 持倉，不補開",
+                                            "DEBUG"
+                                        )
+
+                                # --- 順勢延續進場（TREND_LONG / TREND_SHORT）---
+                                # indicators.py 在趨勢方向明確且 MA3 仍在延伸時會回傳這兩種
+                                # entry_type；若無持倉則補開順勢單，有同向持倉則不重複進場。
+                                elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
+                                    if not has_pos:
+                                        self.account.log(
+                                            f"{symbol} [{cr_entry_type}] 順勢延續：進場 {cr_signal}",
+                                            "INFO"
+                                        )
+                                        atr = cr_info.get("atr", live_price * 0.015)
+                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                        await self.account.open_position(
+                                            symbol=symbol,
+                                            side=cr_signal,
+                                            price=live_price,
+                                            amount_usdt=TRADE_AMOUNT_USDT,
+                                            sl=sl,
+                                            tp=tp,
+                                            reason=cr_info.get("reason", cr_entry_type),
+                                            atr=atr,
+                                            leverage=get_leverage(symbol),
+                                            signal_score=50
+                                        )
+                                    else:
+                                        self.account.log(
+                                            f"{symbol} [{cr_entry_type}] 順勢延續，已有 {curr_side} 持倉，不補開",
                                             "DEBUG"
                                         )
 
