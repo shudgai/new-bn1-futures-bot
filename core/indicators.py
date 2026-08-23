@@ -251,11 +251,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_peak = (ma5_curr < ma5_prev) and (ma5_prev > ma5_prev2)
 
     adx_curr = float(df['adx'].iloc[-1])
-    # 垃圾時間過濾：ADX 必須大於等於 20 才允許發布任何進場訊號
-    if adx_curr < 20.0:
+    # 垃圾時間過濾：ADX 必須大於等於 12 才允許發布任何進場訊號（原為15，依用戶要求調降以增加靈敏度）
+    if adx_curr < 12.0:
         return {
             "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 20)",
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 12)",
             "pivot_confirmed": False,
             "pivot_score": 0
         }

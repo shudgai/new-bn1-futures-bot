@@ -991,6 +991,8 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
+            current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+
             # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
             # 但保留部分回檔空間讓趨勢延伸。保護線永遠不會往回放寬。
             if ENABLE_PROFIT_BANK and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT:
@@ -1002,7 +1004,6 @@ class PaperAccount:
                     1.0 + bank_lock_pct
                     if side == "LONG" else 1.0 - bank_lock_pct
                 )
-                current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
                 min_step = entry_p * PROFIT_BANK_MIN_STEP_PCT
                 improves = (
                     bank_sl > current_sl + min_step if side == "LONG"
@@ -1040,20 +1041,26 @@ class PaperAccount:
                 if peak_usdt > prev_peak_usdt:
                     meta[peak_usdt_key] = peak_usdt
 
-                # 計算縮放比例：以 75U 倉位價值為基準
+                # 1. 自動計算手續費 (幣安 Taker 費率單程約 0.05%，來回 0.1%)
                 notional_value = qty * entry_p
-                scale_factor = max(0.1, notional_value / 75.0)
+                margin_used = notional_value / leverage
+                round_trip_fee = notional_value * 0.001
                 
-                dynamic_trigger = PROFIT_LOCK_TRIGGER_USDT * scale_factor
-                dynamic_floor = PROFIT_LOCK_FLOOR_USDT * scale_factor
-                dynamic_step = 1.0 * scale_factor  # 原本固定每 1 USDT 一格
+                # 2. 鎖利起點 = 手續費的 2 倍
+                base_trigger = round_trip_fee * 2.0
+                dynamic_trigger = base_trigger
+                dynamic_floor = base_trigger
+                
+                # 3. 階梯步距 = 依本金級距遞增
+                import math
+                if margin_used <= 200:
+                    dynamic_step = 1.0
+                else:
+                    dynamic_step = 1.0 + math.ceil((margin_used - 200.0) / 100.0)
 
                 if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
-                    # ── 階梯地板：每超過動態整數關口，地板就推上去 ──
-                    step_floor_usdt = max(
-                        dynamic_floor,
-                        int(peak_usdt / dynamic_step) * dynamic_step,
-                    )
+                    # ── 階梯地板：從起始點開始，每超過一階步距，地板推升 ──
+                    step_floor_usdt = dynamic_floor + int((peak_usdt - dynamic_trigger) / dynamic_step) * dynamic_step
                     notional_units = qty  # qty 已為合約張數
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if side == "LONG":
@@ -1071,8 +1078,8 @@ class PaperAccount:
                         trail_sl = entry_p - trail_price_move
                         lock_sl = min(floor_sl, trail_sl)
 
-                    # 最小推進步距（USDT）轉為價格步距（同樣乘上縮放比例）
-                    dynamic_min_step_usdt = PROFIT_LOCK_MIN_STEP_USDT * scale_factor
+                    # 最小推進步距（USDT）轉為價格步距（依步距等比例放大）
+                    dynamic_min_step_usdt = PROFIT_LOCK_MIN_STEP_USDT * dynamic_step
                     min_step_price = dynamic_min_step_usdt / max(notional_units, 1e-12)
                     improves = (
                         lock_sl > current_sl + min_step_price if side == "LONG"
