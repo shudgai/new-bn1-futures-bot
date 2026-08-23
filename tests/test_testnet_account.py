@@ -157,7 +157,7 @@ async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
     await account.initialize()
     success = await account.open_position(
         "DOGE/USDT", "LONG", 100.0, 50.0, 99.5, 103.0,
-        "MA7_Reversal_LONG", atr=1.0, leverage=5, signal_score=88,
+        "MA5_Reversal_LONG", atr=1.0, leverage=5, signal_score=88,
     )
 
     assert success is True
@@ -232,7 +232,7 @@ async def test_initialize_restores_exchange_stop_for_position_opened_in_local_mo
 
 @pytest.mark.anyio
 async def test_non_post_only_entry_executes_immediately_as_market(tmp_path, monkeypatch):
-    """MA7 指定 post_only=False 時必須立即成交，不可留下 GTC 掛單。"""
+    """MA5 指定 post_only=False 時必須立即成交，不可留下 GTC 掛單。"""
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(
@@ -244,8 +244,8 @@ async def test_non_post_only_entry_executes_immediately_as_market(tmp_path, monk
 
     success = await account.place_limit_entry(
         "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0, sl=98.0, tp=103.0,
-        reason="MA7_Reversal_LONG", atr=1.0, leverage=5, signal_score=89,
-        post_only=False, entry_context={"entry_mode": "MA7_REVERSAL"},
+        reason="MA5_Reversal_LONG", atr=1.0, leverage=5, signal_score=89,
+        post_only=False, entry_context={"entry_mode": "MA5_REVERSAL"},
     )
 
     assert success is True

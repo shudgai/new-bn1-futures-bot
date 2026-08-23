@@ -264,14 +264,14 @@ async def reset_account():
 
 @app.get("/api/klines")
 async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
-    """取得K線資料，並計算 MA7, MA25, MA99 提供給前端圖表"""
+    """取得K線資料，並計算 MA5, MA25, MA99 提供給前端圖表"""
     try:
         df = await engine.fetch_klines(symbol, timeframe=timeframe, limit=limit)
         if df.empty:
             raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
             
         # 計算 MA
-        df['MA7'] = df['close'].rolling(window=7).mean()
+        df['MA5'] = df['close'].rolling(window=7).mean()
         df['MA25'] = df['close'].rolling(window=25).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
         
@@ -286,7 +286,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
                 "high": row['high'],
                 "low": row['low'],
                 "close": row['close'],
-                "ma7": None if pd.isna(row['MA7']) else row['MA7'],
+                "ma5": None if pd.isna(row['MA5']) else row['MA5'],
                 "ma25": None if pd.isna(row['MA25']) else row['MA25'],
                 "ma99": None if pd.isna(row['MA99']) else row['MA99'],
             })

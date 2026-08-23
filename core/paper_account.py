@@ -61,6 +61,14 @@ from core.config import (
     SL_ONLY_AFTER_PEAK_PCT,
     MIN_SL_DISTANCE_PCT,
     STOP_LOSS_MULTIPLIER,
+    ENABLE_PROFIT_LOCK_USDT,
+    PROFIT_LOCK_TRIGGER_USDT,
+    PROFIT_LOCK_FLOOR_USDT,
+    PROFIT_LOCK_TRAIL_RATIO,
+    PROFIT_LOCK_MIN_STEP_USDT,
+    ENABLE_FIXED_PROFIT_LOCK_PCT,
+    FIXED_PROFIT_LOCK_TRIGGER_PCT,
+    FIXED_PROFIT_LOCK_FLOOR_PCT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -1013,11 +1021,129 @@ class PaperAccount:
                         "SUCCESS",
                     )
 
+            # ----------------------------------------------------------------
+            # 固定 USDT 金額鎖利（Profit Lock in USDT）
+            # 當未實現利潤（含槓桿）達到 PROFIT_LOCK_TRIGGER_USDT，
+            # 把止損推移到「至少還剩 PROFIT_LOCK_FLOOR_USDT 利潤」的位置。
+            # 峰值利潤繼續擴大時按 PROFIT_LOCK_TRAIL_RATIO 追蹤推移，
+            # 但保護線最低不低於 PROFIT_LOCK_FLOOR_USDT 對應的價位。
+            # ----------------------------------------------------------------
+            if ENABLE_PROFIT_LOCK_USDT and PROFIT_LOCK_TRIGGER_USDT > 0:
+                qty = float(pos.get("qty") or meta.get("qty") or 0.0)
+                leverage = float(pos.get("leverage") or meta.get("leverage") or 1.0)
+                # 帳面未實現利潤（USDT，已含槓桿）
+                unrealized_usdt = float(pos.get("unrealized_pnl") or 0.0)
+                # 峰值利潤（USDT）：持續追蹤歷史最高值
+                peak_usdt_key = "profit_lock_peak_usdt"
+                prev_peak_usdt = float(meta.get(peak_usdt_key) or 0.0)
+                peak_usdt = max(prev_peak_usdt, unrealized_usdt)
+                if peak_usdt > prev_peak_usdt:
+                    meta[peak_usdt_key] = peak_usdt
+
+                # 計算縮放比例：以 75U 倉位價值為基準
+                notional_value = qty * entry_p
+                scale_factor = max(0.1, notional_value / 75.0)
+                
+                dynamic_trigger = PROFIT_LOCK_TRIGGER_USDT * scale_factor
+                dynamic_floor = PROFIT_LOCK_FLOOR_USDT * scale_factor
+                dynamic_step = 1.0 * scale_factor  # 原本固定每 1 USDT 一格
+
+                if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
+                    # ── 階梯地板：每超過動態整數關口，地板就推上去 ──
+                    step_floor_usdt = max(
+                        dynamic_floor,
+                        int(peak_usdt / dynamic_step) * dynamic_step,
+                    )
+                    notional_units = qty  # qty 已為合約張數
+                    floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
+                    if side == "LONG":
+                        floor_sl = entry_p + floor_price_move
+                    else:
+                        floor_sl = entry_p - floor_price_move
+
+                    # 追蹤止損：峰值利潤對應的追蹤止損位（允許最多回撤 TRAIL_RATIO）
+                    trail_price_move = peak_usdt * (1.0 - PROFIT_LOCK_TRAIL_RATIO) / max(notional_units, 1e-12)
+                    if side == "LONG":
+                        trail_sl = entry_p + trail_price_move
+                        # 取兩者較優（較高），確保不低於階梯地板
+                        lock_sl = max(floor_sl, trail_sl)
+                    else:
+                        trail_sl = entry_p - trail_price_move
+                        lock_sl = min(floor_sl, trail_sl)
+
+                    # 最小推進步距（USDT）轉為價格步距（同樣乘上縮放比例）
+                    dynamic_min_step_usdt = PROFIT_LOCK_MIN_STEP_USDT * scale_factor
+                    min_step_price = dynamic_min_step_usdt / max(notional_units, 1e-12)
+                    improves = (
+                        lock_sl > current_sl + min_step_price if side == "LONG"
+                        else current_sl <= 0.0 or lock_sl < current_sl - min_step_price
+                    )
+                    if improves:
+                        pos["sl"] = lock_sl
+                        meta["sl"] = lock_sl
+                        pos["is_breakeven_moved"] = True
+                        meta["is_breakeven_moved"] = True
+                        pos["profit_lock_usdt_armed"] = True
+                        meta["profit_lock_usdt_armed"] = True
+                        locked_usdt = (
+                            (lock_sl - entry_p) * notional_units
+                            if side == "LONG"
+                            else (entry_p - lock_sl) * notional_units
+                        )
+                        self.log(
+                            f"🔒 [USDT鎖利] {symbol} 峰值 {peak_usdt:.2f}U，"
+                            f"保護線移至 {lock_sl:.6g}"
+                            f"（鎖定至少 {locked_usdt:.2f}U ／ 階梯地板 {step_floor_usdt:.0f}U）",
+                            "SUCCESS",
+                        )
+
+            # ----------------------------------------------------------------
+            # 固定百分比鎖利（Fixed Profit Lock by Unlevered %）
+            # 無槓桿利潤達到 FIXED_PROFIT_LOCK_TRIGGER_PCT（預設 0.6%），
+            # 立即把止損推移到「至少鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT 無槓桿利潤」
+            # 的價位，持倉不平倉，讓移動停利繼續往上追蹤。
+            # 僅往有利方向移動（只升不降/只降不升），不截斷後續空間。
+            # ----------------------------------------------------------------
+            if ENABLE_FIXED_PROFIT_LOCK_PCT and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0:
+                # 使用 highest_pnl（無槓桿利潤峰值）比對觸發門檻
+                if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT and entry_p > 0:
+                    # 計算「至少保留 FLOOR_PCT 利潤」需要的止損價
+                    floor_pct = FIXED_PROFIT_LOCK_FLOOR_PCT
+                    if side == "LONG":
+                        floor_sl_pct = entry_p * (1.0 + floor_pct)
+                    else:
+                        floor_sl_pct = entry_p * (1.0 - floor_pct)
+
+                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                    improves_pct = (
+                        floor_sl_pct > current_sl + entry_p * 0.00001 if side == "LONG"
+                        else (current_sl <= 0.0 or floor_sl_pct < current_sl - entry_p * 0.00001)
+                    )
+                    if improves_pct:
+                        pos["sl"] = floor_sl_pct
+                        meta["sl"] = floor_sl_pct
+                        pos["is_breakeven_moved"] = True
+                        meta["is_breakeven_moved"] = True
+                        pos["fixed_profit_lock_pct_armed"] = True
+                        meta["fixed_profit_lock_pct_armed"] = True
+                        locked_pct = (
+                            (floor_sl_pct - entry_p) / entry_p if side == "LONG"
+                            else (entry_p - floor_sl_pct) / entry_p
+                        )
+                        self.log(
+                            f"🔐 [固定鎖利] {symbol} 無槓桿峰值 {highest_pnl:.3%}，"
+                            f"保護線移至 {floor_sl_pct:.6g}"
+                            f"（鎖定 {locked_pct:.3%} / 門檻 {floor_pct:.3%}）"
+                            f"⟶ 移動停利繼續追蹤",
+                            "SUCCESS",
+                        )
+
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
                 or meta.get("bounce_capture_ratio")
                 or 0.0
             )
+
             bounce_target_pct = float(
                 pos.get("bounce_target_pct") or meta.get("bounce_target_pct") or 0.0
             )

@@ -22,10 +22,10 @@ from core.config import (
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_ALLOW_CONTRARY,
     BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR,
-    MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
-    MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
-    MA7_FAST_MIN_VOLUME_RATIO, MA7_DYNAMIC_ATR_FLOOR_PCT,
-    MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
+    MA5_EARLY_ENTRY_ENABLED, MA5_EARLY_MIN_ATR_MULT, MA5_REVERSAL_MIN_ATR_MULT,
+    MA5_FAST_ENTRY_ENABLED, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
+    MA5_FAST_MIN_VOLUME_RATIO, MA5_DYNAMIC_ATR_FLOOR_PCT,
+    MA5_BOTTOM_ENTRY_ENABLED, MA5_BOTTOM_OFFSET_ATR_MULT,
     BOTTOM_FILTER_ENABLED, BOTTOM_OVERSOLD_RSI_15M_LIMIT, BOTTOM_OVERBOUGHT_RSI_15M_LIMIT,
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
@@ -411,7 +411,7 @@ def compute_net_reward_risk(
     return ratio, net_reward, net_risk
 
 
-def detect_ma7_reversal(
+def detect_ma5_reversal(
     df: pd.DataFrame, 
     side: str,
     ema_50_1h: float = None,
@@ -426,39 +426,33 @@ def detect_ma7_reversal(
     require_strict_v: bool = False,
 ) -> dict:
     """
-    純粹 MA7/MA25 交叉 + MA7 樞軸轉折 (Stop and Reverse)
-    - 多單：MA7 > MA25 且 MA7 形成 V 型谷底
-    - 空單：MA7 < MA25 且 MA7 形成倒 V 型峰頂
+    純粹 MA5/MA25 交叉 + MA5 樞軸轉折 (Stop and Reverse)
+    - 多單：MA5 > MA25 且 MA5 形成 V 型谷底
+    - 空單：MA5 < MA25 且 MA5 形成倒 V 型峰頂
     """
     if len(df) < 25:
         return {"detected": False, "reason": "K線資料不足25根"}
 
     # 確保指標已計算
-    if 'ma3' not in df.columns:
-        df['ma3'] = df['close'].rolling(window=3).mean()
-    if 'ma7' not in df.columns:
-        df['ma7'] = df['close'].rolling(window=7).mean()
+    if 'ma5' not in df.columns:
+        df['ma5'] = df['close'].rolling(window=5).mean()
     if 'ma25' not in df.columns:
         df['ma25'] = df['close'].rolling(window=25).mean()
 
     # 取值
-    ma3_series = df['ma3'].dropna()
-    if len(ma3_series) < 3:
-        return {"detected": False, "reason": "MA3資料不足"}
-
-    ma7_series = df['ma7'].dropna()
-    if len(ma7_series) < 1:
-        return {"detected": False, "reason": "MA7資料不足"}
+    ma5_series = df['ma5'].dropna()
+    if len(ma5_series) < 1:
+        return {"detected": False, "reason": "MA5資料不足"}
 
     ma25_series = df['ma25'].dropna()
     if len(ma25_series) < 1:
         return {"detected": False, "reason": "MA25資料不足"}
 
-    ma3_curr = float(ma3_series.iloc[-1])
-    ma3_prev = float(ma3_series.iloc[-2])
-    ma3_prev2 = float(ma3_series.iloc[-3])
+    ma5_curr = float(ma5_series.iloc[-1])
+    ma5_prev = float(ma5_series.iloc[-2])
+    ma5_prev2 = float(ma5_series.iloc[-3])
     
-    ma7_curr = float(ma7_series.iloc[-1])
+    ma5_curr = float(ma5_series.iloc[-1])
     ma25_curr = float(ma25_series.iloc[-1])
     
     price = float(live_price) if live_price else float(df['close'].iloc[-1])
@@ -466,11 +460,15 @@ def detect_ma7_reversal(
 
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
+    # 取 MA3 來判斷轉折，反應最快
+    ma3_series = df['close'].rolling(window=3).mean().dropna()
+    if len(ma3_series) < 8:
+        return _no("MA3資料不足")
+    
+    ma3_curr = float(ma3_series.iloc[-1])
+    ma3_prev = float(ma3_series.iloc[-2])
+    ma3_prev2 = float(ma3_series.iloc[-3])
 
-    # MA3 轉折偵測（三合一方案）：
-    # 方案1：嚴格 V 型（原始邏輯，最即時）
-    # 方案2：寬鬆——連續 2 根同向 + 往前 8 根內找到過峰頂/谷底記憶
-    # 方案3：峰頂記憶延伸——峰頂後的持續下跌也視為有效
     want_dir = 1 if str(side).upper() == "LONG" else -1
 
     # 嚴格 V 型（方案1）
@@ -478,8 +476,8 @@ def detect_ma7_reversal(
     is_peak_strict   = (ma3_prev2 < ma3_prev) and (ma3_curr < ma3_prev)
 
     # 方案2 & 3：往前最多 8 根尋找峰頂/谷底記憶
-    PEAK_MEMORY_BARS = 12
-    ma3_window = ma3_series.iloc[-(PEAK_MEMORY_BARS + 2):].values  # 多取2根作為緩衝
+    PEAK_MEMORY_BARS = 4
+    ma3_window = ma3_series.iloc[-(PEAK_MEMORY_BARS + 2):].values
     had_peak_in_window = False
     had_trough_in_window = False
     for idx in range(1, len(ma3_window) - 1):
@@ -488,35 +486,32 @@ def detect_ma7_reversal(
         if ma3_window[idx] < ma3_window[idx - 1] and ma3_window[idx] < ma3_window[idx + 1]:
             had_trough_in_window = True
 
-    # 寬鬆觸發：當前 MA3 仍在下跌（curr < prev），且近 8 根內曾有峰頂
-    is_peak_extended   = (ma3_curr < ma3_prev) and had_peak_in_window
-    # 寬鬆觸發：當前 MA3 仍在上漲（curr > prev），且近 8 根內曾有谷底
-    is_trough_extended = (ma3_curr > ma3_prev) and had_trough_in_window
+    # 寬鬆觸發改為：已經轉向（curr > prev 谷底 或 curr < prev 峰頂）才允許記憶觸發，禁止在順勢時提早觸發
+    is_peak_extended   = (ma3_curr < ma3_prev) and had_peak_in_window and (ma3_prev > ma3_prev2)
+    is_trough_extended = (ma3_curr > ma3_prev) and had_trough_in_window and (ma3_prev < ma3_prev2)
 
     # 合併：嚴格 OR 寬鬆皆可進場
     is_trough = is_trough_strict or is_trough_extended
     is_peak   = is_peak_strict   or is_peak_extended
 
     if want_dir == 1:
-        if ma7_curr <= ma25_curr:
-            return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_trough:
-            return _no("MA3 未形成 V 型谷底（含8根內記憶）")
+            return _no("MA5 未形成 V 型谷底（含8根內記憶）")
         trigger_type = "嚴格V型" if is_trough_strict else "記憶延伸谷底"
-        direction_note = f"MA7>MA25 + MA3谷底[{trigger_type}] (LONG)"
+        ma_pos = "MA5>MA25" if ma5_curr > ma25_curr else "MA5<MA25(逆勢谷底)"
+        direction_note = f"{ma_pos} + MA5谷底[{trigger_type}] (LONG)"
     else:
-        if ma7_curr >= ma25_curr:
-            return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_peak:
-            return _no("MA3 未形成倒 V 型峰頂（含8根內記憶）")
+            return _no("MA5 未形成倒 V 型峰頂（含8根內記憶）")
         trigger_type = "嚴格倒V" if is_peak_strict else "記憶延伸峰頂"
-        direction_note = f"MA7<MA25 + MA3峰頂[{trigger_type}] (SHORT)"
+        ma_pos = "MA5<MA25" if ma5_curr < ma25_curr else "MA5>MA25(逆勢峰頂)"
+        direction_note = f"{ma_pos} + MA5峰頂[{trigger_type}] (SHORT)"
 
     # 完全符合，滿分通過
     score = 100
     
     # 乖離率 (作為排序優選的參考，引擎在處理分數相同時，可以依據這個乖離程度決定優先級)
-    turn_sharpness = abs(ma7_curr - ma25_curr)
+    turn_sharpness = abs(ma5_curr - ma25_curr)
 
     return {
         "detected": True,
@@ -524,15 +519,15 @@ def detect_ma7_reversal(
         "score": score,
         "price": float(price),
         "atr": float(atr),
-        "ma7_curr": ma7_curr,
-        "ma7_prev": float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else ma7_curr,
-        "ma7_prev2": float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else ma7_curr,
+        "ma5_curr": ma5_curr,
+        "ma5_prev": float(ma5_series.iloc[-2]) if len(ma5_series) > 1 else ma5_curr,
+        "ma5_prev2": float(ma5_series.iloc[-3]) if len(ma5_series) > 2 else ma5_curr,
         "ma25_curr": ma25_curr,
         "turn_sharpness": turn_sharpness,
         "early_projection": False,
         "fast_entry": False,
         "pullback_bottom_order": False,
-        "entry_mode": "MA7_CROSS_PIVOT",
+        "entry_mode": "MA5_CROSS_PIVOT",
         "profit_profile": "TREND_EXTENSION",
         "action": "ENTER_MARKET",
         "target_price": None,
@@ -580,8 +575,8 @@ class SuperTrendKeltnerStrategy:
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
-        # MA7
-        df['ma7'] = close.rolling(window=7).mean()
+        # MA5
+        df['ma5'] = close.rolling(window=5).mean()
 
         # 成交量均線
         df['vol_ma_20'] = volume.rolling(window=20).mean()
@@ -691,7 +686,7 @@ class SuperTrendKeltnerStrategy:
         symbol: str = None, indicators_precomputed: bool = False,
         is_dca_check: bool = False,
     ) -> dict:
-        """Three closed-bar entries without MA7: breakout, support pullback, momentum cross."""
+        """Three closed-bar entries without MA5: breakout, support pullback, momentum cross."""
         if len(df) < max(65, STRUCTURED_SWING_LOOKBACK + 2):
             return {"action": "HOLD", "reason": "5m K線資料不足"}
         if not indicators_precomputed:
@@ -2164,12 +2159,12 @@ class SuperTrendKeltnerStrategy:
         }
 
 
-def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict:
+def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict:
     """
-    Simple MA7 strategy open conditions:
-    - Long: MA7 valley (ma7[-3] > ma7[-2] < ma7[-1]), Green Candle (close > open).
-    - Short: MA7 peak (ma7[-3] < ma7[-2] > ma7[-1]), Red Candle (close < open).
-    - Common: ATR14 >= 0.05%, MA7 change >= 35% ATR14, amplitude <= 3x ATR14, close change <= 3x ATR14, deviation <= 0.5%.
+    Simple MA5 strategy open conditions:
+    - Long: MA5 valley (ma5[-3] > ma5[-2] < ma5[-1]), Green Candle (close > open).
+    - Short: MA5 peak (ma5[-3] < ma5[-2] > ma5[-1]), Red Candle (close < open).
+    - Common: ATR14 >= 0.05%, MA5 change >= 35% ATR14, amplitude <= 3x ATR14, close change <= 3x ATR14, deviation <= 0.5%.
     """
     if len(df) < 14:
         return {"detected": False, "reason": "Data too short"}
@@ -2189,14 +2184,14 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr14 = float(tr.rolling(window=14).mean().iloc[-1])
 
-    # Calculate MA7
-    ma7 = close.rolling(window=7).mean()
-    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
-        return {"detected": False, "reason": "MA7 not ready"}
+    # Calculate MA5
+    ma5 = close.rolling(window=5).mean()
+    if len(ma5) < 3 or pd.isna(ma5.iloc[-1]) or pd.isna(ma5.iloc[-2]) or pd.isna(ma5.iloc[-3]):
+        return {"detected": False, "reason": "MA5 not ready"}
         
-    ma7_curr = float(ma7.iloc[-1])
-    ma7_prev = float(ma7.iloc[-2])
-    ma7_prev2 = float(ma7.iloc[-3])
+    ma5_curr = float(ma5.iloc[-1])
+    ma5_prev = float(ma5.iloc[-2])
+    ma5_prev2 = float(ma5.iloc[-3])
 
     price = float(live_price) if live_price is not None and float(live_price) > 0 else float(curr['close'])
     if price <= 0:
@@ -2204,12 +2199,12 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
 
     # Volatility / Candle checks
     from core.config import (
-        MA7_MIN_ATR_PCT, MA7_ENTRY_ATR_CHANGE_MIN_RATIO, MA7_EXIT_ATR_CHANGE_MIN_RATIO, FIXED_STOP_LOSS_PCT, MA7_MAX_CANDLE_AMPLITUDE_MULT,
-        MA7_MAX_CLOSE_CHANGE_MULT, MA7_MARK_PRICE_DEV_PCT
+        MA5_MIN_ATR_PCT, MA5_ENTRY_ATR_CHANGE_MIN_RATIO, MA5_EXIT_ATR_CHANGE_MIN_RATIO, FIXED_STOP_LOSS_PCT, MA5_MAX_CANDLE_AMPLITUDE_MULT,
+        MA5_MAX_CLOSE_CHANGE_MULT, MA5_MARK_PRICE_DEV_PCT
     )
 
-    if atr14 < price * MA7_MIN_ATR_PCT:
-        return {"detected": False, "reason": f"Low ATR14 ({atr14:.4f} < {price * MA7_MIN_ATR_PCT:.4f})"}
+    if atr14 < price * MA5_MIN_ATR_PCT:
+        return {"detected": False, "reason": f"Low ATR14 ({atr14:.4f} < {price * MA5_MIN_ATR_PCT:.4f})"}
         
     body_size = abs(float(curr['close']) - float(curr['open']))
     candle_range = float(curr['high']) - float(curr['low'])
@@ -2217,23 +2212,23 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
         return {"detected": False, "reason": f"K-line body too small ({body_size / candle_range:.1%} < 50%)"}
         
     amplitude = float(curr['high'] - curr['low'])
-    if amplitude > MA7_MAX_CANDLE_AMPLITUDE_MULT * atr14:
-        return {"detected": False, "reason": f"Amplitude too large ({amplitude:.4f} > {MA7_MAX_CANDLE_AMPLITUDE_MULT * atr14:.4f})"}
+    if amplitude > MA5_MAX_CANDLE_AMPLITUDE_MULT * atr14:
+        return {"detected": False, "reason": f"Amplitude too large ({amplitude:.4f} > {MA5_MAX_CANDLE_AMPLITUDE_MULT * atr14:.4f})"}
         
     close_change = abs(float(curr['close']) - float(prev['close']))
-    if close_change > MA7_MAX_CLOSE_CHANGE_MULT * atr14:
-        return {"detected": False, "reason": f"Close change too large ({close_change:.4f} > {MA7_MAX_CLOSE_CHANGE_MULT * atr14:.4f})"}
+    if close_change > MA5_MAX_CLOSE_CHANGE_MULT * atr14:
+        return {"detected": False, "reason": f"Close change too large ({close_change:.4f} > {MA5_MAX_CLOSE_CHANGE_MULT * atr14:.4f})"}
 
     dev_pct = abs(price - float(curr['close'])) / float(curr['close'])
-    if dev_pct > MA7_MARK_PRICE_DEV_PCT:
-        return {"detected": False, "reason": f"Mark price deviation too large ({dev_pct:.4%} > {MA7_MARK_PRICE_DEV_PCT:.4%})"}
+    if dev_pct > MA5_MARK_PRICE_DEV_PCT:
+        return {"detected": False, "reason": f"Mark price deviation too large ({dev_pct:.4%} > {MA5_MARK_PRICE_DEV_PCT:.4%})"}
 
     # Valley/Peak check
     is_green = float(curr['close']) > float(curr['open'])
     is_red = float(curr['close']) < float(curr['open'])
     
-    is_valley = (ma7_prev2 > ma7_prev) and (ma7_curr > ma7_prev)
-    is_peak = (ma7_prev2 < ma7_prev) and (ma7_curr < ma7_prev)
+    is_valley = (ma5_prev2 > ma5_prev) and (ma5_curr > ma5_prev)
+    is_peak = (ma5_prev2 < ma5_prev) and (ma5_curr < ma5_prev)
 
     body_proportion = (body_size / candle_range) if candle_range > 0 else 0
     signal_score = int(body_proportion * 100)
@@ -2245,7 +2240,7 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
             "score": signal_score,
             "price": price,
             "atr": atr14,
-            "reason": f"MA7 Valley + Green Candle (Body {signal_score}%)",
+            "reason": f"MA5 Valley + Green Candle (Body {signal_score}%)",
         }
     elif is_peak and is_red:
         return {
@@ -2254,18 +2249,18 @@ def detect_simple_ma7_signal(df: pd.DataFrame, live_price: float = None) -> dict
             "score": signal_score,
             "price": price,
             "atr": atr14,
-            "reason": f"MA7 Peak + Red Candle (Body {signal_score}%)",
+            "reason": f"MA5 Peak + Red Candle (Body {signal_score}%)",
         }
 
-    return {"detected": False, "reason": "No MA7 valley/peak or color mismatch"}
+    return {"detected": False, "reason": "No MA5 valley/peak or color mismatch"}
 
 
-def check_simple_ma7_exit(df: pd.DataFrame, position: dict) -> dict:
+def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     """
-    Simple MA7 strategy exit conditions:
-    Tracks the highest/lowest MA7 since entry.
-    - Long: Exits if current MA7 <= highest_ma7 - (0.25 * ATR14)
-    - Short: Exits if current MA7 >= lowest_ma7 + (0.25 * ATR14)
+    Simple MA5 strategy exit conditions:
+    Tracks the highest/lowest MA5 since entry.
+    - Long: Exits if current MA5 <= highest_ma5 - (0.25 * ATR14)
+    - Short: Exits if current MA5 >= lowest_ma5 + (0.25 * ATR14)
     """
     if len(df) < 14:
         return {"close": False, "reason": "Data too short"}
@@ -2281,36 +2276,36 @@ def check_simple_ma7_exit(df: pd.DataFrame, position: dict) -> dict:
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr14 = float(tr.rolling(window=14).mean().iloc[-1])
 
-    # Calculate MA7
-    ma7 = close.rolling(window=7).mean()
-    if len(ma7) < 3 or pd.isna(ma7.iloc[-1]) or pd.isna(ma7.iloc[-2]) or pd.isna(ma7.iloc[-3]):
-        return {"close": False, "reason": "MA7 not ready"}
+    # Calculate MA5
+    ma5 = close.rolling(window=5).mean()
+    if len(ma5) < 3 or pd.isna(ma5.iloc[-1]) or pd.isna(ma5.iloc[-2]) or pd.isna(ma5.iloc[-3]):
+        return {"close": False, "reason": "MA5 not ready"}
         
-    ma7_curr = float(ma7.iloc[-1])
-    ma7_prev = float(ma7.iloc[-2])
-    ma7_prev2 = float(ma7.iloc[-3])
+    ma5_curr = float(ma5.iloc[-1])
+    ma5_prev = float(ma5.iloc[-2])
+    ma5_prev2 = float(ma5.iloc[-3])
 
-    # 為了過濾 1 分鐘線的「小波動（微小V型反彈）」，必須等 MA7 確實偏離最高/最低點一定幅度才算「確定轉彎」
-    from core.config import MA7_EXIT_ATR_CHANGE_MIN_RATIO
+    # 為了過濾 1 分鐘線的「小波動（微小V型反彈）」，必須等 MA5 確實偏離最高/最低點一定幅度才算「確定轉彎」
+    from core.config import MA5_EXIT_ATR_CHANGE_MIN_RATIO
 
     side = position.get("side")
 
     if side == "LONG":
-        highest_ma7 = position.get("highest_ma7", ma7_curr)
-        if ma7_curr > highest_ma7:
-            position["highest_ma7"] = ma7_curr
-            highest_ma7 = ma7_curr
+        highest_ma5 = position.get("highest_ma5", ma5_curr)
+        if ma5_curr > highest_ma5:
+            position["highest_ma5"] = ma5_curr
+            highest_ma5 = ma5_curr
             
-        if ma7_curr <= highest_ma7 - (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
-            return {"close": True, "reason": "MA7高點實質轉彎 (累積回落大於門檻)"}
+        if ma5_curr <= highest_ma5 - (MA5_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
+            return {"close": True, "reason": "MA5高點實質轉彎 (累積回落大於門檻)"}
             
     elif side == "SHORT":
-        lowest_ma7 = position.get("lowest_ma7", ma7_curr)
-        if ma7_curr < lowest_ma7:
-            position["lowest_ma7"] = ma7_curr
-            lowest_ma7 = ma7_curr
+        lowest_ma5 = position.get("lowest_ma5", ma5_curr)
+        if ma5_curr < lowest_ma5:
+            position["lowest_ma5"] = ma5_curr
+            lowest_ma5 = ma5_curr
             
-        if ma7_curr >= lowest_ma7 + (MA7_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
-            return {"close": True, "reason": "MA7谷底實質轉彎 (累積反彈大於門檻)"}
+        if ma5_curr >= lowest_ma5 + (MA5_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
+            return {"close": True, "reason": "MA5谷底實質轉彎 (累積反彈大於門檻)"}
 
     return {"close": False, "reason": "No exit condition met"}

@@ -641,7 +641,7 @@
                     wickUpColor: '#10b981', wickDownColor: '#ef4444'
                 });
                 
-                this._ma7Series = this._chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA7' });
+                this._ma5Series = this._chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA5' });
                 this._ma25Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA25' });
                 this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
             },
@@ -652,19 +652,19 @@
                     const json = await res.json();
                     
                     const candles = [];
-                    const ma7 = [];
+                    const ma5 = [];
                     const ma25 = [];
                     const ma99 = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
-                        if (d.ma7 !== null) ma7.push({ time: d.time, value: d.ma7 });
+                        if (d.ma5 !== null) ma5.push({ time: d.time, value: d.ma5 });
                         if (d.ma25 !== null) ma25.push({ time: d.time, value: d.ma25 });
                         if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
                     });
                     
                     this._candlestickSeries.setData(candles);
-                    this._ma7Series.setData(ma7);
+                    this._ma5Series.setData(ma5);
                     this._ma25Series.setData(ma25);
                     this._ma99Series.setData(ma99);
                     

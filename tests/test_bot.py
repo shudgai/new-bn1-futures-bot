@@ -25,7 +25,7 @@ from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
-    compute_pullback_target, detect_ma7_reversal, validate_sl_tp_pair,
+    compute_pullback_target, detect_ma5_reversal, validate_sl_tp_pair,
 )
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
@@ -220,33 +220,33 @@ def test_score_low_progress_displays_component_breakdown():
     assert "KC30/量20/RSI0/新鮮2/品質1" in text
 
 
-def test_ma7_wait_detail_reports_retracing_values_volume_and_rsi():
+def test_ma5_wait_detail_reports_retracing_values_volume_and_rsi():
     frame = pd.DataFrame({
-        "ma7": [1.69886, 1.69943, 1.70071, 1.70043],
+        "ma5": [1.69886, 1.69943, 1.70071, 1.70043],
         "atr": [0.01] * 4,
         "volume": [900.0, 900.0, 900.0, 1200.0],
         "vol_ma_20": [1000.0] * 4,
         "rsi": [47.1] * 4,
     })
 
-    text = TradingEngine._format_ma7_wait_detail(frame, "LONG")
+    text = TradingEngine._format_ma5_wait_detail(frame, "LONG")
 
     assert "回撤中，等待向上轉彎" in text
-    assert "MA7 1.69886→1.69943→1.70071→1.70043" in text
+    assert "MA5 1.69886→1.69943→1.70071→1.70043" in text
     assert "量1.20x/快線1.50x" in text
     assert "RSI 47.1" in text
 
 
-def test_ma7_wait_detail_reports_first_turn_low_volume():
+def test_ma5_wait_detail_reports_first_turn_low_volume():
     frame = pd.DataFrame({
-        "ma7": [100.3, 100.2, 99.9, 99.93],
+        "ma5": [100.3, 100.2, 99.9, 99.93],
         "atr": [0.3] * 4,
         "volume": [900.0, 900.0, 900.0, 1200.0],
         "vol_ma_20": [1000.0] * 4,
         "rsi": [55.0] * 4,
     })
 
-    text = TradingEngine._format_ma7_wait_detail(frame, "LONG")
+    text = TradingEngine._format_ma5_wait_detail(frame, "LONG")
 
     assert "已轉向第1根" in text
     assert "量能1.20x<1.50x" in text
@@ -426,7 +426,7 @@ def test_paper_account_migrates_legacy_accounting_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypatch):
     """紙上帳戶沒有真實交易所保護單，SL/TP要靠update_positions()逐輪
     比對現價才會觸發平倉。"""
@@ -589,7 +589,7 @@ def test_trailing_locks_at_least_seventy_percent_from_point_six_pct():
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 async def test_paper_account_trailing_stop_moves_sl_favorably(tmp_path, monkeypatch):
     """無槓桿利潤超過TRAILING_TRIGGER_PCT後，SL要往有利方向移動（多單
     上移），且標記is_breakeven_moved。"""
@@ -610,7 +610,7 @@ async def test_paper_account_trailing_stop_moves_sl_favorably(tmp_path, monkeypa
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 async def test_paper_account_trailing_sl_gap_through_labels_as_stop_loss_not_profit(tmp_path, monkeypatch):
     """移動停利已把SL推到成本價以上後(is_breakeven_moved=True)，若下一次
     檢查價格直接跳空跌破SL、跌到成本價以下(含手續費後淨損益為負)，
@@ -746,14 +746,14 @@ async def test_paper_account_daily_loss_limit_blocks_new_entries_only(tmp_path, 
 
 @pytest.mark.anyio
 async def test_paper_account_place_limit_entry_fills_immediately(tmp_path, monkeypatch):
-    """MA7拐頭進場用的是對手價直接成交，紙上帳戶沒有真實委託簿要排隊，
+    """MA5拐頭進場用的是對手價直接成交，紙上帳戶沒有真實委託簿要排隊，
     place_limit_entry應該直接視為立即成交，不會留在pending狀態。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
 
     placed = await account.place_limit_entry(
         "SOL/USDT", "SHORT", 150.0, 50.0, sl=155.0, tp=140.0,
-        reason="MA7_Reversal_SHORT", signal_score=89, post_only=False,
+        reason="MA5_Reversal_SHORT", signal_score=89, post_only=False,
     )
     assert placed is True
     assert "SOL/USDT" in account.positions
@@ -938,7 +938,7 @@ def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
     assert sum(result["score_components"].values()) == result["raw_score"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 def test_hard_filter_is_reported_as_eligibility_not_zero_score(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
@@ -956,7 +956,7 @@ def test_hard_filter_is_reported_as_eligibility_not_zero_score(monkeypatch):
     )
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 def test_initial_score_is_capped_at_100_and_stage_scores_are_explicit(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=2500.0, rsi=60.0, adx=50.0)
@@ -1233,7 +1233,7 @@ def test_unconfirmed_kc_breakout_cannot_qualify_on_other_scores(monkeypatch):
     assert "KC_Breakout_NoClose" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 def test_low_quality_breakout_is_rejected_even_when_total_score_qualifies(monkeypatch):
     """避免只靠 KC/量能/RSI/新鮮度湊分，品質細項太低仍不得登記回踩。"""
     strategy = SuperTrendKeltnerStrategy()
@@ -1299,7 +1299,7 @@ def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 def test_adx_decline_above_quality_floor_is_soft_penalty(monkeypatch):
     strategy = SuperTrendKeltnerStrategy()
     frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=30.0)
@@ -2151,43 +2151,43 @@ def test_position_trigger_short_ma_ok_true_when_price_still_below_ma():
 
 
 
-def test_position_trigger_long_single_ma7_turn_is_not_strong():
-    """峰頂後只有第一根 MA7 向下時，不得直接把多單強制平倉。"""
+def test_position_trigger_long_single_ma5_turn_is_not_strong():
+    """峰頂後只有第一根 MA5 向下時，不得直接把多單強制平倉。"""
     closes = [100.0] * 22 + [101.0, 99.0]
     result = compute_position_trigger(_trigger_frame(closes), "LONG")
 
-    assert result["ma7_reversed"] is False
-    assert not any("MA7" in reason for reason in result["reasons"])
+    assert result["ma5_reversed"] is False
+    assert not any("MA5" in reason for reason in result["reasons"])
     assert result["strong"] is False
 
 
-def test_position_trigger_long_two_closed_ma7_turns_are_strong():
-    """峰頂後連續兩根已收盤 MA7 向下，才確認多單反轉強警訊。"""
+def test_position_trigger_long_two_closed_ma5_turns_are_strong():
+    """峰頂後連續兩根已收盤 MA5 向下，才確認多單反轉強警訊。"""
     closes = [100.0] * 22 + [101.0, 99.0, 98.0]
     result = compute_position_trigger(_trigger_frame(closes), "LONG")
 
-    assert result["ma7_reversed"] is True
-    assert "MA7連續兩根轉彎向下" in result["reasons"]
+    assert result["ma5_reversed"] is True
+    assert "MA5連續兩根轉彎向下" in result["reasons"]
     assert result["strong"] is True
 
 
-def test_position_trigger_short_two_closed_ma7_turns_are_strong():
-    """空單採對稱規則：谷底後連續兩根已收盤 MA7 向上才確認反轉。"""
+def test_position_trigger_short_two_closed_ma5_turns_are_strong():
+    """空單採對稱規則：谷底後連續兩根已收盤 MA5 向上才確認反轉。"""
     closes = [100.0] * 22 + [99.0, 101.0, 102.0]
     result = compute_position_trigger(_trigger_frame(closes), "SHORT")
 
-    assert result["ma7_reversed"] is True
-    assert "MA7連續兩根轉彎向上" in result["reasons"]
+    assert result["ma5_reversed"] is True
+    assert "MA5連續兩根轉彎向上" in result["reasons"]
     assert result["strong"] is True
 
 
-def test_ma7_exit_gate_requires_ten_minute_hold(monkeypatch):
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
+def test_ma5_exit_gate_requires_ten_minute_hold(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_HOLD_SEC", 600.0)
     position = {
         "side": "LONG", "entry_price": 100.0, "open_timestamp": 500.0,
     }
 
-    ready, reason = TradingEngine._ma7_exit_ready(
+    ready, reason = TradingEngine._ma5_exit_ready(
         position, {"atr": 0.4}, mark_price=99.0, now=1000.0
     )
 
@@ -2195,15 +2195,15 @@ def test_ma7_exit_gate_requires_ten_minute_hold(monkeypatch):
     assert "8.3分<10分" in reason
 
 
-def test_ma7_exit_gate_requires_adverse_price_move(monkeypatch):
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_PCT", 0.002)
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_ATR_MULT", 0.5)
+def test_ma5_exit_gate_requires_adverse_price_move(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_HOLD_SEC", 600.0)
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_ADVERSE_PCT", 0.002)
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_ADVERSE_ATR_MULT", 0.5)
     position = {
         "side": "LONG", "entry_price": 100.0, "open_timestamp": 0.0,
     }
 
-    ready, reason = TradingEngine._ma7_exit_ready(
+    ready, reason = TradingEngine._ma5_exit_ready(
         position, {"atr": 1.0}, mark_price=99.7, now=700.0
     )
 
@@ -2211,15 +2211,15 @@ def test_ma7_exit_gate_requires_adverse_price_move(monkeypatch):
     assert "逆向0.30%<門檻0.50%" in reason
 
 
-def test_ma7_exit_gate_allows_mature_meaningful_reversal(monkeypatch):
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_PCT", 0.002)
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_ADVERSE_ATR_MULT", 0.5)
+def test_ma5_exit_gate_allows_mature_meaningful_reversal(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_HOLD_SEC", 600.0)
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_ADVERSE_PCT", 0.002)
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_ADVERSE_ATR_MULT", 0.5)
     position = {
         "side": "SHORT", "entry_price": 100.0, "open_timestamp": 0.0,
     }
 
-    ready, reason = TradingEngine._ma7_exit_ready(
+    ready, reason = TradingEngine._ma5_exit_ready(
         position, {"atr": 0.4}, mark_price=100.25, now=700.0
     )
 
@@ -2228,9 +2228,9 @@ def test_ma7_exit_gate_allows_mature_meaningful_reversal(monkeypatch):
 
 
 def test_bottom_entry_has_thirty_minute_soft_exit_grace(monkeypatch):
-    monkeypatch.setattr(engine_module, "MA7_BOTTOM_MIN_HOLD_SEC", 1800.0)
+    monkeypatch.setattr(engine_module, "MA5_BOTTOM_MIN_HOLD_SEC", 1800.0)
     position = {
-        "entry_mode": "MA7_BOTTOM_LIMIT", "open_timestamp": 1000.0,
+        "entry_mode": "MA5_BOTTOM_LIMIT", "open_timestamp": 1000.0,
     }
 
     active, age = TradingEngine._bottom_entry_grace(position, now=1600.0)
@@ -2248,12 +2248,12 @@ async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monke
     import asyncio
 
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    monkeypatch.setattr(engine_module, "MA7_BOTTOM_MIN_HOLD_SEC", 1800.0)
+    monkeypatch.setattr(engine_module, "MA5_BOTTOM_MIN_HOLD_SEC", 1800.0)
     account = PaperAccount()
     await account.open_position(
         "DOGE/USDT", "LONG", 100.0, amount_usdt=50.0,
         sl=95.0, tp=110.0, reason="bottom", signal_score=80,
-        entry_context={"entry_mode": "MA7_BOTTOM_LIMIT"},
+        entry_context={"entry_mode": "MA5_BOTTOM_LIMIT"},
     )
     engine = TradingEngine()
     engine.account = account
@@ -2270,7 +2270,7 @@ async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monke
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
     monkeypatch.setattr(engine_module, "compute_position_trigger", lambda df, side: {
         "active": True, "ma_ok": False, "reasons": ["均線與結構失守"],
-        "strong": True, "ma7_reversed": True,
+        "strong": True, "ma5_reversed": True,
         "ema_breach_confirmed": True, "structure_broken": True, "atr": 0.4,
     })
     original_sleep = asyncio.sleep
@@ -3115,12 +3115,12 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
         assert 0.5 <= rr < 1.0
 
 
-# --- detect_ma7_reversal 拐頭偵測單元測試 ---
+# --- detect_ma5_reversal 拐頭偵測單元測試 ---
 
-def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):
-    """for detect_ma7_reversal tests:
+def _ma5_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):
+    """for detect_ma5_reversal tests:
     - SuperTrend 方向與 side 一致
-    - 建構 MA7 谷底（LONG）或峰頂（SHORT）拐頭樣式
+    - 建構 MA5 谷底（LONG）或峰頂（SHORT）拐頭樣式
     - price >= EMA20 (LONG) 或 price <= EMA20 (SHORT)
     """
     # 為了滿足簡化 KC 位置條件：
@@ -3134,11 +3134,11 @@ def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 
         rsi = 60.0 if side == "LONG" else 40.0
 
     if side == "LONG":
-        ma7_vals = [100.0] * 46 + [100.10, 99.90, 99.98, 100.05]
+        ma5_vals = [100.0] * 46 + [100.10, 99.90, 99.98, 100.05]
         lows = [100.0] * 46 + [98.8, 98.8, 100.0, 100.0]
         highs = [101.0] * 50
     else:
-        ma7_vals = [100.0] * 46 + [99.90, 100.10, 100.02, 99.95]
+        ma5_vals = [100.0] * 46 + [99.90, 100.10, 100.02, 99.95]
         lows = [99.0] * 50
         highs = [100.0] * 46 + [101.2, 101.2, 100.0, 100.0]
     ema20 = 100.0
@@ -3158,68 +3158,68 @@ def _ma7_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 
         "ema_50": [ema20] * 50,
         "st_direction": [st_dir] * 50,
         "adx": [adx] * 50,
-        "ma7": ma7_vals,
+        "ma5": ma5_vals,
         "supertrend": [price] * 50,
         "kc_width": [2.0] * 50,
     })
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_ma7_score_baseline_does_not_rise_with_entry_threshold():
-    frame = _ma7_frame("LONG", adx=10.0, rsi=50.0, volume=100.0)
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_ma5_score_baseline_does_not_rise_with_entry_threshold():
+    frame = _ma5_frame("LONG", adx=10.0, rsi=50.0, volume=100.0)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is True
     assert result["score"] == 65
     assert result["score"] < MIN_SCORE_THRESHOLD
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_long():
-    """MA7 谷底拐頭向上，應正確偵測多單拐頭。"""
-    frame = _ma7_frame("LONG")
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_long():
+    """MA5 谷底拐頭向上，應正確偵測多單拐頭。"""
+    frame = _ma5_frame("LONG")
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is True, f"預期 detected=True, 卿因: {result.get('reason')}"
     assert result["side"] == "LONG"
     assert result["score"] >= MIN_SCORE_THRESHOLD
-    # MA7 谷底樣式: prev2 是最低點，後面兩根連續向上
-    assert result["ma7_curr"] > result["ma7_prev"]
-    assert result["ma7_prev"] > result["ma7_prev2"]
+    # MA5 谷底樣式: prev2 是最低點，後面兩根連續向上
+    assert result["ma5_curr"] > result["ma5_prev"]
+    assert result["ma5_prev"] > result["ma5_prev2"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_requires_two_closed_bars_after_turn():
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_requires_two_closed_bars_after_turn():
     """峰谷後只有第一根反向收線仍不進場，避免一個小反彈就被當成反轉。"""
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.20, 99.90, 100.05, 100.04]
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.20, 99.90, 100.05, 100.04]
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is False
     assert "連續兩根確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_rejects_tiny_closed_turn():
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_rejects_tiny_closed_turn():
     """即使已連續兩根向上，累計拐幅不足 0.10 ATR 仍屬價格雜訊。"""
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.010, 100.000, 100.006, 100.012]
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.010, 100.000, 100.006, 100.012]
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is False
-    assert "MA7轉彎幅度不足" in result["reason"]
+    assert "MA5轉彎幅度不足" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume(monkeypatch):
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_fast_entry_on_closed_micro_turn_with_volume(monkeypatch):
     """第一根收線微拐幅只有在1.5倍爆量時才可走快速入口。"""
-    monkeypatch.setattr(strategy_module, "MA7_FAST_ENTRY_ENABLED", True)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.93]
+    monkeypatch.setattr(strategy_module, "MA5_FAST_ENTRY_ENABLED", True)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.30, 100.20, 99.90, 99.93]
     frame.loc[frame.index[-1], "volume"] = 1500.0
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is True
     assert result["fast_entry"] is True
@@ -3228,14 +3228,14 @@ def test_detect_ma7_reversal_fast_entry_on_closed_micro_turn_with_volume(monkeyp
     assert "爆量微拐幅提前確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_uses_configured_dynamic_atr_floor(monkeypatch):
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_uses_configured_dynamic_atr_floor(monkeypatch):
     """低波動環境可依設定放寬至0.06%，但不會放寬到絕對下限以下。"""
-    monkeypatch.setattr(strategy_module, "MA7_DYNAMIC_ATR_FLOOR_PCT", 0.0006)
-    frame = _ma7_frame("LONG")
+    monkeypatch.setattr(strategy_module, "MA5_DYNAMIC_ATR_FLOOR_PCT", 0.0006)
+    frame = _ma5_frame("LONG")
     frame["atr"] = 0.06  # price 約100，ATR% 約0.06%
 
-    result = detect_ma7_reversal(
+    result = detect_ma5_reversal(
         frame,
         side="LONG",
         parameter_overrides={"atr_min_pct": 0.0010},
@@ -3245,7 +3245,7 @@ def test_detect_ma7_reversal_uses_configured_dynamic_atr_floor(monkeypatch):
     assert result["detected"] is True, result.get("reason")
 
     frame["atr"] = 0.04  # ATR% 約0.05%，低於絕對下限
-    result_below_floor = detect_ma7_reversal(
+    result_below_floor = detect_ma5_reversal(
         frame,
         side="LONG",
         parameter_overrides={"atr_min_pct": 0.0010},
@@ -3256,77 +3256,77 @@ def test_detect_ma7_reversal_uses_configured_dynamic_atr_floor(monkeypatch):
     assert "ATR過低" in result_below_floor["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_fast_entry_rejects_low_volume(monkeypatch):
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_fast_entry_rejects_low_volume(monkeypatch):
     """相同單根微拐幅若未達1.5倍均量，仍須等待第二根收線。"""
-    monkeypatch.setattr(strategy_module, "MA7_FAST_ENTRY_ENABLED", True)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.93]
+    monkeypatch.setattr(strategy_module, "MA5_FAST_ENTRY_ENABLED", True)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.30, 100.20, 99.90, 99.93]
     frame.loc[frame.index[-1], "volume"] = 1349.0
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is False
     assert "連續兩根確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_fast_entry_rejects_turn_over_point_two_atr(monkeypatch):
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_fast_entry_rejects_turn_over_point_two_atr(monkeypatch):
     """爆量也不能追超過0.20 ATR的轉彎，避免快速入口變成追價。"""
-    monkeypatch.setattr(strategy_module, "MA7_FAST_ENTRY_ENABLED", True)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 99.90, 99.97]
+    monkeypatch.setattr(strategy_module, "MA5_FAST_ENTRY_ENABLED", True)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.30, 100.20, 99.90, 99.97]
     frame.loc[frame.index[-1], "volume"] = 1800.0
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is False
     assert "連續兩根確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_early_long_uses_live_projection(monkeypatch):
-    """前兩個已收盤MA7仍下降，但即時價已讓下一個MA7上彎超過0.05 ATR。"""
-    monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_early_long_uses_live_projection(monkeypatch):
+    """前兩個已收盤MA5仍下降，但即時價已讓下一個MA5上彎超過0.05 ATR。"""
+    monkeypatch.setattr("core.strategy.MA5_EARLY_ENTRY_ENABLED", True)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-3:], "ma5"] = [100.20, 100.10, 99.90]
 
-    result = detect_ma7_reversal(
+    result = detect_ma5_reversal(
         frame, side="LONG", indicators_precomputed=True, live_price=100.0,
     )
 
     assert result["detected"] is True
     assert result["early_projection"] is True
-    assert result["ma7_curr"] > result["ma7_prev"]
+    assert result["ma5_curr"] > result["ma5_prev"]
     assert "盤中投影提前確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_early_short_uses_live_projection(monkeypatch):
-    """空單盤中投影與多單對稱：已收盤MA7上升、即時投影明顯下彎。"""
-    monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
-    frame = _ma7_frame("SHORT")
-    frame.loc[frame.index[-3:], "ma7"] = [99.80, 99.90, 100.10]
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_early_short_uses_live_projection(monkeypatch):
+    """空單盤中投影與多單對稱：已收盤MA5上升、即時投影明顯下彎。"""
+    monkeypatch.setattr("core.strategy.MA5_EARLY_ENTRY_ENABLED", True)
+    frame = _ma5_frame("SHORT")
+    frame.loc[frame.index[-3:], "ma5"] = [99.80, 99.90, 100.10]
 
-    result = detect_ma7_reversal(
+    result = detect_ma5_reversal(
         frame, side="SHORT", indicators_precomputed=True, live_price=100.0,
     )
 
     assert result["detected"] is True
     assert result["early_projection"] is True
-    assert result["ma7_curr"] < result["ma7_prev"]
+    assert result["ma5_curr"] < result["ma5_prev"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer(monkeypatch):
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_early_rejects_turn_below_atr_buffer(monkeypatch):
     """即時投影雖微幅翻向，但不足0.05 ATR時仍等待，避免單一tick假轉彎。"""
-    monkeypatch.setattr("core.strategy.MA7_EARLY_ENTRY_ENABLED", True)
+    monkeypatch.setattr("core.strategy.MA5_EARLY_ENTRY_ENABLED", True)
     # 此案例只驗證盤中投影門檻，關閉新的回撤底點預掛分支避免混入。
-    monkeypatch.setattr("core.strategy.MA7_BOTTOM_ENTRY_ENABLED", False)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-3:], "ma7"] = [100.20, 100.10, 99.90]
+    monkeypatch.setattr("core.strategy.MA5_BOTTOM_ENTRY_ENABLED", False)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-3:], "ma5"] = [100.20, 100.10, 99.90]
 
-    result = detect_ma7_reversal(
+    result = detect_ma5_reversal(
         frame, side="LONG", indicators_precomputed=True, live_price=99.82,
     )
 
@@ -3334,114 +3334,114 @@ def test_detect_ma7_reversal_early_rejects_turn_below_atr_buffer(monkeypatch):
     assert "盤中投影" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_pullback_long_places_bottom_limit_before_turn(monkeypatch):
-    """多單MA7連續回撤時，不等向上轉彎，先算出低於現價的KC底部掛單。"""
-    monkeypatch.setattr(strategy_module, "MA7_BOTTOM_ENTRY_ENABLED", True)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 100.10, 99.90]
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_pullback_long_places_bottom_limit_before_turn(monkeypatch):
+    """多單MA5連續回撤時，不等向上轉彎，先算出低於現價的KC底部掛單。"""
+    monkeypatch.setattr(strategy_module, "MA5_BOTTOM_ENTRY_ENABLED", True)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.30, 100.20, 100.10, 99.90]
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is True, result.get("reason")
     assert result["pullback_bottom_order"] is True
-    assert result["entry_mode"] == "MA7_BOTTOM_LIMIT"
+    assert result["entry_mode"] == "MA5_BOTTOM_LIMIT"
     assert result["target_price"] < result["price"]
     assert "回撤中預掛底點" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_ma7_pullback_bottom_limit_does_not_wait_for_kc_touch(monkeypatch):
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_ma5_pullback_bottom_limit_does_not_wait_for_kc_touch(monkeypatch):
     """底點預掛應在抵達KC下軌前送出，不能先要求歷史K棒已經觸底。"""
-    monkeypatch.setattr(strategy_module, "MA7_BOTTOM_ENTRY_ENABLED", True)
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [100.30, 100.20, 100.10, 99.90]
+    monkeypatch.setattr(strategy_module, "MA5_BOTTOM_ENTRY_ENABLED", True)
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [100.30, 100.20, 100.10, 99.90]
     frame["low"] = 100.0  # 全部尚未碰到 kc_lower=99
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is True, result.get("reason")
     assert result["pullback_bottom_order"] is True
     assert result["target_price"] < result["price"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_pullback_short_places_top_limit_before_turn(monkeypatch):
-    """空單對稱處理：MA7連續反彈時預掛高於現價的頂部賣單。"""
-    monkeypatch.setattr(strategy_module, "MA7_BOTTOM_ENTRY_ENABLED", True)
-    frame = _ma7_frame("SHORT")
-    frame.loc[frame.index[-4:], "ma7"] = [99.70, 99.80, 99.90, 100.10]
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_pullback_short_places_top_limit_before_turn(monkeypatch):
+    """空單對稱處理：MA5連續反彈時預掛高於現價的頂部賣單。"""
+    monkeypatch.setattr(strategy_module, "MA5_BOTTOM_ENTRY_ENABLED", True)
+    frame = _ma5_frame("SHORT")
+    frame.loc[frame.index[-4:], "ma5"] = [99.70, 99.80, 99.90, 100.10]
 
-    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="SHORT", indicators_precomputed=True)
 
     assert result["detected"] is True, result.get("reason")
     assert result["pullback_bottom_order"] is True
     assert result["target_price"] > result["price"]
 
 
-def test_ma7_early_timing_requires_two_consecutive_scans(monkeypatch):
-    monkeypatch.setattr(engine_module, "MA7_EARLY_CONFIRM_SCANS", 2)
+def test_ma5_early_timing_requires_two_consecutive_scans(monkeypatch):
+    monkeypatch.setattr(engine_module, "MA5_EARLY_CONFIRM_SCANS", 2)
     engine = object.__new__(TradingEngine)
-    engine._ma7_early_confirmations = {}
+    engine._ma5_early_confirmations = {}
     early = {"detected": True, "side": "LONG", "early_projection": True}
 
-    assert engine._ma7_timing_ready("BTC/USDT", early, 1.0) == (False, 1, 2)
-    assert engine._ma7_timing_ready("BTC/USDT", early, 2.0) == (True, 2, 2)
+    assert engine._ma5_timing_ready("BTC/USDT", early, 1.0) == (False, 1, 2)
+    assert engine._ma5_timing_ready("BTC/USDT", early, 2.0) == (True, 2, 2)
 
     # 一輪失效後必須重新從1開始，不得把不連續訊號累加。
-    assert engine._ma7_timing_ready("BTC/USDT", early, 3.0) == (False, 1, 2)
+    assert engine._ma5_timing_ready("BTC/USDT", early, 3.0) == (False, 1, 2)
     failed = {"detected": False, "side": "LONG"}
-    assert engine._ma7_timing_ready("BTC/USDT", failed, 4.0) == (False, 0, 2)
-    assert engine._ma7_timing_ready("BTC/USDT", early, 5.0) == (False, 1, 2)
+    assert engine._ma5_timing_ready("BTC/USDT", failed, 4.0) == (False, 0, 2)
+    assert engine._ma5_timing_ready("BTC/USDT", early, 5.0) == (False, 1, 2)
 
     # 已收盤三點轉彎不需等待盤中連續確認。
     closed = {"detected": True, "side": "LONG", "early_projection": False}
-    assert engine._ma7_timing_ready("BTC/USDT", closed, 6.0) == (True, 2, 2)
+    assert engine._ma5_timing_ready("BTC/USDT", closed, 6.0) == (True, 2, 2)
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_short():
-    """MA7 峰頂轉彎向下，應正確偵測空單拐頭。"""
-    frame = _ma7_frame("SHORT")
-    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_short():
+    """MA5 峰頂轉彎向下，應正確偵測空單拐頭。"""
+    frame = _ma5_frame("SHORT")
+    result = detect_ma5_reversal(frame, side="SHORT", indicators_precomputed=True)
     assert result["detected"] is True, f"預期 detected=True, 卿因: {result.get('reason')}"
     assert result["side"] == "SHORT"
     assert result["score"] >= MIN_SCORE_THRESHOLD
-    # MA7 峰頂樣式: prev2 是最高點，後面兩根連續向下
-    assert result["ma7_curr"] < result["ma7_prev"]
-    assert result["ma7_prev"] < result["ma7_prev2"]
+    # MA5 峰頂樣式: prev2 是最高點，後面兩根連續向下
+    assert result["ma5_curr"] < result["ma5_prev"]
+    assert result["ma5_prev"] < result["ma5_prev2"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_rejects_stale_short_peak():
-    """空單不得因為當前 MA7 仍低於舊峰頂就重複進場。"""
-    frame = _ma7_frame("SHORT")
-    frame.loc[frame.index[-3:], "ma7"] = [0.0413900, 0.0413814, 0.0413786]
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_rejects_stale_short_peak():
+    """空單不得因為當前 MA5 仍低於舊峰頂就重複進場。"""
+    frame = _ma5_frame("SHORT")
+    frame.loc[frame.index[-3:], "ma5"] = [0.0413900, 0.0413814, 0.0413786]
 
-    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="SHORT", indicators_precomputed=True)
 
     assert result["detected"] is False
     assert "最新四根未形成局部峰頂轉彎後連續兩根確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_rejects_stale_long_trough():
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_rejects_stale_long_trough():
     """多單同樣必須是上一根剛形成局部谷底，不接受舊谷底。"""
-    frame = _ma7_frame("LONG")
-    frame.loc[frame.index[-4:], "ma7"] = [99.90, 99.95, 100.00, 100.05]
+    frame = _ma5_frame("LONG")
+    frame.loc[frame.index[-4:], "ma5"] = [99.90, 99.95, 100.00, 100.05]
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
 
     assert result["detected"] is False
     assert "最新四根未形成局部谷底轉彎後連續兩根確認" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_no_signal_flat_ma7():
-    """MA7 完全平坦時，不應觸發拐頭訊號。"""
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_no_signal_flat_ma5():
+    """MA5 完全平坦時，不應觸發拐頭訊號。"""
     price = 100.0
-    # LONG 平坦 MA7: 無谷底轉彎
-    flat_ma7 = [100.0] * 50
+    # LONG 平坦 MA5: 無谷底轉彎
+    flat_ma5 = [100.0] * 50
     frame = pd.DataFrame({
         "close": [price] * 50,
         "close_price_spike_filtered": [price] * 50,
@@ -3455,20 +3455,20 @@ def test_detect_ma7_reversal_no_signal_flat_ma7():
         "ema_50": [price] * 50,
         "st_direction": [1] * 50,
         "adx": [25.0] * 50,
-        "ma7": flat_ma7,
+        "ma5": flat_ma5,
         "supertrend": [price] * 50,
         "kc_width": [2.0] * 50,
     })
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is False, f"預期 detected=False, 卿因: {result.get('reason')}"
     assert "谷底轉彎" in result["reason"]
 
 
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
-def test_detect_ma7_reversal_recency_and_dynamic_filters():
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
+def test_detect_ma5_reversal_recency_and_dynamic_filters():
     # Test 1: KC 下軌觸碰時效性 (前 KC_TOUCH_LOOKBACK_BARS 根已收盤未觸碰
     # 但更早以前有觸碰，應該被過濾)
-    frame = _ma7_frame("LONG")
+    frame = _ma5_frame("LONG")
     # 視窗外（更舊）的一根有觸碰過，但視窗內（最後 KC_TOUCH_LOOKBACK_BARS
     # 根已收盤）都沒有觸碰下軌
     window_start_idx = 49 - KC_TOUCH_LOOKBACK_BARS  # iloc[-(N+1):-1] 的起點
@@ -3476,44 +3476,44 @@ def test_detect_ma7_reversal_recency_and_dynamic_filters():
     for idx in range(window_start_idx, 50):
         frame.loc[frame.index[idx], "low"] = 100.0
 
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is False
     assert f"前{KC_TOUCH_LOOKBACK_BARS}根K棒未曾靠近或跌破KC下軌" in result["reason"]
 
     # Test 2: 動態 ADX 門檻放寬
     # 一般情況下 ADX = 9.0 會因為低於 10.0 而被過濾
-    frame_low_adx = _ma7_frame("LONG", adx=9.0)
-    result_fail = detect_ma7_reversal(frame_low_adx, side="LONG", indicators_precomputed=True)
+    frame_low_adx = _ma5_frame("LONG", adx=9.0)
+    result_fail = detect_ma5_reversal(frame_low_adx, side="LONG", indicators_precomputed=True)
     assert result_fail["detected"] is False
     assert "ADX太低" in result_fail["reason"]
 
     # 當 1h 趨勢方向對齊時，門檻放寬至 8.0，ADX = 9.0 應該能通過，且會計算出 structural_sl
-    result_pass = detect_ma7_reversal(frame_low_adx, side="LONG", st_direction_1h=1, indicators_precomputed=True)
+    result_pass = detect_ma5_reversal(frame_low_adx, side="LONG", st_direction_1h=1, indicators_precomputed=True)
     assert result_pass["detected"] is True
     assert result_pass["structural_sl"] is not None
     assert result_pass["structural_sl"] < result_pass["price"]
 
 
-def test_detect_ma7_reversal_contrarian_bottom_buy_disabled_on_low_atr_short():
-    """逆勢承接(MA7_ContrarianBottomBuy)已停用：實測12筆17%勝率、虧損
+def test_detect_ma5_reversal_contrarian_bottom_buy_disabled_on_low_atr_short():
+    """逆勢承接(MA5_ContrarianBottomBuy)已停用：實測12筆17%勝率、虧損
     7.18U，就算有量能確認/縮小倉位/2根K棒確認等風控，方向判斷本身不準
-    的問題無法用風控修正。即使MA7呈現真正的谷底型態，波動過低時也應該
+    的問題無法用風控修正。即使MA5呈現真正的谷底型態，波動過低時也應該
     直接跳過，不再翻轉成逆勢承接的多單買點。"""
-    frame = _ma7_frame("LONG")  # LONG 樣式：谷底型態 + KC下軌回踩 + price<=ema20
+    frame = _ma5_frame("LONG")  # LONG 樣式：谷底型態 + KC下軌回踩 + price<=ema20
     frame["st_direction"] = -1  # 但 SuperTrend 方向是 SHORT（原本要空）
     frame["atr"] = 0.04  # 0.04% 低於探索池 0.05% 下限
-    frame.loc[frame.index[47], "ma7"] = 99.85  # prev2（谷底）
-    frame.loc[frame.index[48], "ma7"] = 99.95  # prev（已站上谷底）
-    frame.loc[frame.index[49], "ma7"] = 100.05  # curr（繼續站上谷底）
+    frame.loc[frame.index[47], "ma5"] = 99.85  # prev2（谷底）
+    frame.loc[frame.index[48], "ma5"] = 99.95  # prev（已站上谷底）
+    frame.loc[frame.index[49], "ma5"] = 100.05  # curr（繼續站上谷底）
 
-    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="SHORT", indicators_precomputed=True)
     assert result["detected"] is False
     assert result.get("is_contrarian_bottom_buy") is not True
     assert "ATR過低" in result["reason"]
 
 
-def test_detect_ma7_reversal_no_contrarian_flip_without_real_bottom_shape():
-    """波動過低但MA7沒有真正谷底型態（平坦）時，不應翻轉成多單。"""
+def test_detect_ma5_reversal_no_contrarian_flip_without_real_bottom_shape():
+    """波動過低但MA5沒有真正谷底型態（平坦）時，不應翻轉成多單。"""
     price = 100.0
     frame = pd.DataFrame({
         "close": [price] * 50,
@@ -3530,28 +3530,28 @@ def test_detect_ma7_reversal_no_contrarian_flip_without_real_bottom_shape():
         "ema_50": [price] * 50,
         "st_direction": [-1] * 50,
         "adx": [25.0] * 50,
-        "ma7": [100.0] * 50,
+        "ma5": [100.0] * 50,
         "supertrend": [price] * 50,
         "kc_width": [2.0] * 50,
     })
-    result = detect_ma7_reversal(frame, side="SHORT", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="SHORT", indicators_precomputed=True)
     assert result["detected"] is False
     assert "ATR過低" in result["reason"]
 
 
-def test_detect_ma7_reversal_no_contrarian_flip_for_long_context():
+def test_detect_ma5_reversal_no_contrarian_flip_for_long_context():
     """波動過低發生在 LONG context（want_dir=1）時不翻轉，只處理
     SHORT->LONG（逆勢承接底部買點）這一種情況。"""
-    frame = _ma7_frame("LONG")
+    frame = _ma5_frame("LONG")
     frame["st_direction"] = 1
     frame["atr"] = 0.04
-    result = detect_ma7_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
     assert result["detected"] is False
     assert "ATR過低" in result["reason"]
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 async def test_trend_follow_exits_and_partial_close(monkeypatch):
     from tests.test_testnet_account import FakeTestnetExchange
     from core.testnet_account import BinanceTestnetAccount
@@ -3683,8 +3683,8 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_ma7_only_trigger_does_not_close_during_minimum_hold(tmp_path, monkeypatch):
-    """MA7單獨反轉即使strong=True，持倉未滿10分鐘仍交給固定SL保護。"""
+async def test_ma5_only_trigger_does_not_close_during_minimum_hold(tmp_path, monkeypatch):
+    """MA5單獨反轉即使strong=True，持倉未滿10分鐘仍交給固定SL保護。"""
     import asyncio
 
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
@@ -3712,12 +3712,12 @@ async def test_ma7_only_trigger_does_not_close_during_minimum_hold(tmp_path, mon
         engine_module,
         "compute_position_trigger",
         lambda df, side: {
-            "active": True, "ma_ok": False, "reasons": ["MA7連續兩根轉彎向下"],
-            "strong": True, "ma7_reversed": True,
+            "active": True, "ma_ok": False, "reasons": ["MA5連續兩根轉彎向下"],
+            "strong": True, "ma5_reversed": True,
             "ema_breach_confirmed": False, "structure_broken": False, "atr": 0.4,
         },
     )
-    monkeypatch.setattr(engine_module, "MA7_EXIT_MIN_HOLD_SEC", 600.0)
+    monkeypatch.setattr(engine_module, "MA5_EXIT_MIN_HOLD_SEC", 600.0)
 
     original_sleep = asyncio.sleep
     async def mock_sleep_stop(secs):
@@ -3728,8 +3728,8 @@ async def test_ma7_only_trigger_does_not_close_during_minimum_hold(tmp_path, mon
     await engine._position_trigger_loop()
 
     assert "DOGE/USDT" in account.positions
-    assert engine.position_triggers["DOGE/USDT"]["ma7_exit_ready"] is False
-    assert "持倉0.0分<10分" in engine.position_triggers["DOGE/USDT"]["ma7_exit_gate"]
+    assert engine.position_triggers["DOGE/USDT"]["ma5_exit_ready"] is False
+    assert "持倉0.0分<10分" in engine.position_triggers["DOGE/USDT"]["ma5_exit_gate"]
 
 
 @pytest.mark.anyio
@@ -4326,8 +4326,8 @@ async def test_structured_exit_scales_half_at_one_point_five_r(tmp_path, monkeyp
 
 
 @pytest.mark.anyio
-async def test_ma7_entry_skipped_when_15m_exit_was_already_active(tmp_path, monkeypatch):
-    """A fresh MA7 order must not open into an already-confirmed 15m exit."""
+async def test_ma5_entry_skipped_when_15m_exit_was_already_active(tmp_path, monkeypatch):
+    """A fresh MA5 order must not open into an already-confirmed 15m exit."""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     engine = TradingEngine()
     engine.account = PaperAccount()
@@ -4347,15 +4347,15 @@ async def test_ma7_entry_skipped_when_15m_exit_was_already_active(tmp_path, monk
         })
 
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    ma7_sig = {
+    ma5_sig = {
         "score": 89, "atr": 0.004, "structural_sl": None,
-        "reason": "MA7_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
+        "reason": "MA5_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
         "btc_allocation_factor": 1.0,
-        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
     }
 
-    placed = await engine._place_ma7_reversal_entry(
-        "EUL/USDT", "LONG", ma7_sig, 1.4305, 0.0
+    placed = await engine._place_ma5_reversal_entry(
+        "EUL/USDT", "LONG", ma5_sig, 1.4305, 0.0
     )
 
     assert placed is False
@@ -4367,8 +4367,8 @@ async def test_ma7_entry_skipped_when_15m_exit_was_already_active(tmp_path, monk
 
 
 @pytest.mark.anyio
-async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, monkeypatch):
-    """1分鐘MA7訊號成立，但5分鐘週期已經對同方向亮出強警訊（跟5m出場
+async def test_ma5_entry_skipped_when_5m_already_against_direction(tmp_path, monkeypatch):
+    """1分鐘MA5訊號成立，但5分鐘週期已經對同方向亮出強警訊（跟5m出場
     防線同一套判斷）時，進場前應該先擋下來，不要進了馬上被5m防線打掉
     （實測 NEAR/USDT 09:49:07 進場，09:49:15 僅8秒後就被5m防線關倉）。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
@@ -4389,13 +4389,13 @@ async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, mon
         })
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
 
-    ma7_sig = {
+    ma5_sig = {
         "score": 89, "atr": 1.0, "structural_sl": None,
-        "reason": "MA7_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
+        "reason": "MA5_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
         "btc_allocation_factor": 1.0,
-        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
     }
-    placed = await engine._place_ma7_reversal_entry("DOGE/USDT", "LONG", ma7_sig, 88.0, 0.0)
+    placed = await engine._place_ma5_reversal_entry("DOGE/USDT", "LONG", ma5_sig, 88.0, 0.0)
 
     assert placed is False
     assert "DOGE/USDT" not in engine.account.positions
@@ -4403,7 +4403,7 @@ async def test_ma7_entry_skipped_when_5m_already_against_direction(tmp_path, mon
 
 
 @pytest.mark.anyio
-async def test_ma7_entry_skipped_when_5m_is_on_adverse_ema_side(tmp_path, monkeypatch):
+async def test_ma5_entry_skipped_when_5m_is_on_adverse_ema_side(tmp_path, monkeypatch):
     """5m 尚未成為 strong，但價格已在 EMA20 不利側時也不逆向開新倉。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     engine = TradingEngine()
@@ -4422,15 +4422,15 @@ async def test_ma7_entry_skipped_when_5m_is_on_adverse_ema_side(tmp_path, monkey
         })
 
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    ma7_sig = {
+    ma5_sig = {
         "score": 89, "atr": 1.0, "structural_sl": None,
-        "reason": "MA7_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
+        "reason": "MA5_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
         "btc_allocation_factor": 1.0,
-        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
     }
 
-    placed = await engine._place_ma7_reversal_entry(
-        "DOGE/USDT", "LONG", ma7_sig, 99.0, 0.0
+    placed = await engine._place_ma5_reversal_entry(
+        "DOGE/USDT", "LONG", ma5_sig, 99.0, 0.0
     )
 
     assert placed is False
@@ -4492,7 +4492,7 @@ async def test_validate_mainstream_symbols_passes_when_all_valid(tmp_path, monke
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 async def test_soft_warning_tightens_sl_after_persist_threshold(tmp_path, monkeypatch):
     """持續處於✗警訊（ma_ok=false）超過 SOFT_WARNING_PERSIST_SEC（這裡
     monkeypatch成0秒方便測試立即觸發）、但還沒升級成⛔（strong）時，
@@ -4577,20 +4577,20 @@ async def test_contrarian_bottom_buy_uses_smaller_position_size(tmp_path, monkey
         })
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines_not_strong)
 
-    base_ma7_sig = {
+    base_ma5_sig = {
         "score": 82, "atr": 1.0, "structural_sl": None,
         "reason": "test", "btc_regime_mode": "UNKNOWN", "btc_allocation_factor": 1.0,
-        "ma7_curr": 1.0, "ma7_prev": 1.0, "ma7_prev2": 1.0,
+        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
     }
 
-    await engine._place_ma7_reversal_entry(
-        "BTC/USDT", "LONG", {**base_ma7_sig, "is_contrarian_bottom_buy": False}, 100.0, 0.0
+    await engine._place_ma5_reversal_entry(
+        "BTC/USDT", "LONG", {**base_ma5_sig, "is_contrarian_bottom_buy": False}, 100.0, 0.0
     )
     normal_margin = engine.account.positions["BTC/USDT"]["margin"]
     await engine.account.close_position("BTC/USDT", 100.0, "cleanup")
 
-    await engine._place_ma7_reversal_entry(
-        "BTC/USDT", "LONG", {**base_ma7_sig, "is_contrarian_bottom_buy": True}, 100.0, 0.0
+    await engine._place_ma5_reversal_entry(
+        "BTC/USDT", "LONG", {**base_ma5_sig, "is_contrarian_bottom_buy": True}, 100.0, 0.0
     )
     contrarian_margin = engine.account.positions["BTC/USDT"]["margin"]
 
@@ -4599,7 +4599,7 @@ async def test_contrarian_bottom_buy_uses_smaller_position_size(tmp_path, monkey
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="obsolete MA7/exit logic")
+@pytest.mark.skip(reason="obsolete MA5/exit logic")
 async def test_contrarian_bottom_buy_trailing_respects_safety_floor(tmp_path, monkeypatch):
     """小幅浮盈不足以涵蓋鎖利緩衝與交易成本時，一般單與逆勢單都不應
     提早啟動移動止利，避免把止損推到現價前方後立即掃出。"""
