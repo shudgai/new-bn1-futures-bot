@@ -198,6 +198,9 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     if df is None or len(df) < 25:
         return {"signal": None, "reason": "Not enough data", "pivot_confirmed": False, "pivot_score": 0}
 
+    if 'ma3' not in df.columns:
+        df = df.copy()
+        df['ma3'] = df['close'].rolling(window=3).mean()
     if 'ma5' not in df.columns:
         df = df.copy()
         df['ma5'] = df['close'].rolling(window=5).mean()
@@ -238,6 +241,10 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
         rs = avg_gain / (avg_loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
+    ma3_curr  = float(df['ma3'].iloc[-1])
+    ma3_prev  = float(df['ma3'].iloc[-2])
+    ma3_prev2 = float(df['ma3'].iloc[-3])
+
     ma5_curr  = float(df['ma5'].iloc[-1])
     ma5_prev  = float(df['ma5'].iloc[-2])
     ma5_prev2 = float(df['ma5'].iloc[-3])
@@ -245,104 +252,132 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     ma25_prev = float(df['ma25'].iloc[-2])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
 
-    # 1. 判斷交叉 (大反轉)
+    # 1. 判斷交叉 (大趨勢反轉 - 依然看 MA5/MA25)
     cross_up = (ma5_prev <= ma25_prev) and (ma5_curr > ma25_curr)
     cross_down = (ma5_prev >= ma25_prev) and (ma5_curr < ma25_curr)
 
-    # 2. 判斷峰谷 (回調結束)
-    is_trough = (ma5_curr > ma5_prev) and (ma5_prev < ma5_prev2)
-    is_peak = (ma5_curr < ma5_prev) and (ma5_prev > ma5_prev2)
+    # 2. 判斷峰谷 (極速轉彎 - 改看 MA3)
+    is_trough = (ma3_curr > ma3_prev) and (ma3_prev < ma3_prev2)
+    is_peak = (ma3_curr < ma3_prev) and (ma3_prev > ma3_prev2)
 
-    # 3. 判斷斜率 (動能疲乏過濾)
+    # 3. 判斷斜率 (動能疲乏過濾 - 改看 MA3)
     ma5_slope = ma5_curr - ma5_prev
-    ma5_slope_prev = ma5_prev - ma5_prev2
+    ma3_slope = ma3_curr - ma3_prev
+    ma3_slope_prev = ma3_prev - ma3_prev2
     
-    # 判斷多頭/空頭動能是否依然強勁（未出現疲乏）
-    # 條件：斜率方向正確，且當前斜率沒有大幅萎縮（至少維持前一根斜率的 30% 以上）
-    is_uptrend_steep = (ma5_slope > 0) and (ma5_slope >= max(0, ma5_slope_prev) * 0.3)
-    is_downtrend_steep = (ma5_slope < 0) and (ma5_slope <= min(0, ma5_slope_prev) * 0.3)
+    # 判斷是否快到頂峰/谷底 (極速動能嚴重衰退，MA3 斜率萎縮超過 50%)
+    approaching_peak = (ma3_slope > 0) and (ma3_slope < max(0, ma3_slope_prev) * 0.5)
+    approaching_trough = (ma3_slope < 0) and (ma3_slope > min(0, ma3_slope_prev) * 0.5)
 
     adx_curr = float(df['adx'].iloc[-1])
     # --- 趨勢強度濾網 ---
-    if adx_curr < 20.0:
+    if adx_curr < 13.0:
         return {
             "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 20)",
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 13)",
             "pivot_confirmed": False,
             "pivot_score": 0
         }
 
+    # 活 K 線濾網：確保轉向當下的 K 棒顏色正確，並防禦極端反轉K線 (長上下影線)
+    last_close = float(df['close'].iloc[-1])
+    last_open = float(df['open'].iloc[-1])
+    last_high = float(df['high'].iloc[-1])
+    last_low = float(df['low'].iloc[-1])
+    
+    is_green = last_close > last_open
+    is_red = last_close < last_open
+    
+    # 計算影線比例 (防禦圖表上的「長下影線誘空」與「長上影線誘多」陷阱)
+    candle_range = last_high - last_low
+    lower_wick = min(last_open, last_close) - last_low
+    upper_wick = last_high - max(last_open, last_close)
+    
+    # 如果下影線佔整根K線一半以上 (如槌子線)，嚴格禁止做空！
+    is_hammer_trap = (candle_range > 0) and (lower_wick / candle_range > 0.4)
+    # 如果上影線佔整根K線一半以上 (如避雷針)，嚴格禁止做多！
+    is_shooting_star_trap = (candle_range > 0) and (upper_wick / candle_range > 0.4)
+
     # 優先級 1：大反轉（金叉/死叉第一時間進場）
-    if cross_up:
+    # 加上 K 線顏色與斜率過濾，防止「均線延遲交叉」但價格已經反向彈飛的假訊號
+    if cross_up and is_green and ma5_slope > 0:
         return {
             "signal": "LONG",
             "entry_type": "CROSS_UP",
-            "reason": f"MA5 金叉 (ADX={adx_curr:.1f}) → 多單",
+            "reason": f"MA5 金叉 (ADX={adx_curr:.1f}) 且動能向上 → 多單",
             "atr": atr,
             "pivot_confirmed": True,
             "pivot_score": 80,
         }
-    elif cross_down:
+    elif cross_down and is_red and ma5_slope < 0:
         return {
             "signal": "SHORT",
             "entry_type": "CROSS_DOWN",
-            "reason": f"MA5 死叉 (ADX={adx_curr:.1f}) → 空單",
+            "reason": f"MA5 死叉 (ADX={adx_curr:.1f}) 且動能向下 → 空單",
             "atr": atr,
             "pivot_confirmed": True,
             "pivot_score": 80,
         }
 
-    # 活 K 線濾網：確保轉向當下的 K 棒顏色正確
-    last_close = float(df['close'].iloc[-1])
-    last_open = float(df['open'].iloc[-1])
-    is_green = last_close > last_open
-    is_red = last_close < last_open
 
-    # 優先級 2：強勢動能上車 vs 真實大反轉摸底
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        if is_trough and is_green:
+        # 真實谷底轉彎：MA3彎頭 + 綠K + 價格突破 MA3 (極速反應)
+        is_true_trough = is_trough and is_green and (last_close > ma3_curr)
+        if is_true_trough:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA5 谷底且為綠K (ADX={adx_curr:.1f}) → 無條件提前轉向多單",
+                "reason": f"空頭中 MA3 真谷底轉彎 (ADX={adx_curr:.1f}) → 改向多單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        
-        # 順勢逢高做空 (不一定要等頂峰，只要價格反彈靠近 MA5 且斜率夠陡)
-        if is_downtrend_steep and last_close >= ma5_curr and is_red:
+        elif approaching_trough or ma3_slope >= 0:
+            return {
+                "signal": None,
+                "reason": "快到谷底或 MA3 已上彎，暫停無腦開空",
+                "pivot_confirmed": False,
+                "pivot_score": 0
+            }
+        else:
             return {
                 "signal": "SHORT",
-                "entry_type": "PULLBACK_SHORT",
-                "reason": f"空頭反彈碰線且動能強勁 (斜率過濾) → 順勢逢高做空",
+                "entry_type": "TREND_SHORT",
+                "reason": f"空頭趨勢中 (ADX={adx_curr:.1f}) → 無腦開空單",
                 "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 90,
+                "pivot_confirmed": False,
+                "pivot_score": 50,
             }
     
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        if is_peak and is_red:
+        # 真實頂峰轉彎：MA3彎頭 + 紅K + 價格跌破 MA3 (極速反應)
+        is_true_peak = is_peak and is_red and (last_close < ma3_curr)
+        if is_true_peak:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA5 頂峰且為紅K (ADX={adx_curr:.1f}) → 無條件提前轉向空單",
+                "reason": f"多頭中 MA3 真頂峰轉彎 (ADX={adx_curr:.1f}) → 改向空單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        
-        # 順勢逢低做多 (不一定要等谷底，只要價格回踩 MA5 且斜率夠陡)
-        if is_uptrend_steep and last_close <= ma5_curr and is_green:
+        elif approaching_peak or ma3_slope <= 0:
+            return {
+                "signal": None,
+                "reason": "快到頂峰或 MA3 已下彎，暫停無腦開多",
+                "pivot_confirmed": False,
+                "pivot_score": 0
+            }
+        else:
             return {
                 "signal": "LONG",
-                "entry_type": "PULLBACK_LONG",
-                "reason": f"多頭回踩碰線且動能強勁 (斜率過濾) → 順勢逢低做多",
+                "entry_type": "TREND_LONG",
+                "reason": f"多頭趨勢中 (ADX={adx_curr:.1f}) → 無腦開多單",
                 "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 90,
+                "pivot_confirmed": False,
+                "pivot_score": 50,
             }
 
     return {
