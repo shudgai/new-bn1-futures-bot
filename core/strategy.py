@@ -467,23 +467,50 @@ def detect_ma7_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    # 使用 MA3 作為敏感轉折指標，減少開倉轉折延遲
-    is_trough = (ma3_prev2 > ma3_prev) and (ma3_curr > ma3_prev)
-    is_peak = (ma3_prev2 < ma3_prev) and (ma3_curr < ma3_prev)
+    # MA3 轉折偵測（三合一方案）：
+    # 方案1：嚴格 V 型（原始邏輯，最即時）
+    # 方案2：寬鬆——連續 2 根同向 + 往前 8 根內找到過峰頂/谷底記憶
+    # 方案3：峰頂記憶延伸——峰頂後的持續下跌也視為有效
     want_dir = 1 if str(side).upper() == "LONG" else -1
+
+    # 嚴格 V 型（方案1）
+    is_trough_strict = (ma3_prev2 > ma3_prev) and (ma3_curr > ma3_prev)
+    is_peak_strict   = (ma3_prev2 < ma3_prev) and (ma3_curr < ma3_prev)
+
+    # 方案2 & 3：往前最多 8 根尋找峰頂/谷底記憶
+    PEAK_MEMORY_BARS = 12
+    ma3_window = ma3_series.iloc[-(PEAK_MEMORY_BARS + 2):].values  # 多取2根作為緩衝
+    had_peak_in_window = False
+    had_trough_in_window = False
+    for idx in range(1, len(ma3_window) - 1):
+        if ma3_window[idx] > ma3_window[idx - 1] and ma3_window[idx] > ma3_window[idx + 1]:
+            had_peak_in_window = True
+        if ma3_window[idx] < ma3_window[idx - 1] and ma3_window[idx] < ma3_window[idx + 1]:
+            had_trough_in_window = True
+
+    # 寬鬆觸發：當前 MA3 仍在下跌（curr < prev），且近 8 根內曾有峰頂
+    is_peak_extended   = (ma3_curr < ma3_prev) and had_peak_in_window
+    # 寬鬆觸發：當前 MA3 仍在上漲（curr > prev），且近 8 根內曾有谷底
+    is_trough_extended = (ma3_curr > ma3_prev) and had_trough_in_window
+
+    # 合併：嚴格 OR 寬鬆皆可進場
+    is_trough = is_trough_strict or is_trough_extended
+    is_peak   = is_peak_strict   or is_peak_extended
 
     if want_dir == 1:
         if ma7_curr <= ma25_curr:
             return _no(f"MA7未在MA25之上 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_trough:
-            return _no("MA3 未形成 V 型谷底")
-        direction_note = "MA7>MA25 + MA3 V型谷底 (LONG)"
+            return _no("MA3 未形成 V 型谷底（含8根內記憶）")
+        trigger_type = "嚴格V型" if is_trough_strict else "記憶延伸谷底"
+        direction_note = f"MA7>MA25 + MA3谷底[{trigger_type}] (LONG)"
     else:
         if ma7_curr >= ma25_curr:
             return _no(f"MA7未在MA25之下 (MA7={ma7_curr:.4f}, MA25={ma25_curr:.4f})")
         if not is_peak:
-            return _no("MA3 未形成倒 V 型峰頂")
-        direction_note = "MA7<MA25 + MA3 倒V型峰頂 (SHORT)"
+            return _no("MA3 未形成倒 V 型峰頂（含8根內記憶）")
+        trigger_type = "嚴格倒V" if is_peak_strict else "記憶延伸峰頂"
+        direction_note = f"MA7<MA25 + MA3峰頂[{trigger_type}] (SHORT)"
 
     # 完全符合，滿分通過
     score = 100
