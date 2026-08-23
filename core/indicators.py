@@ -43,7 +43,10 @@ def _confirm_true_trough(df: pd.DataFrame, trough_lookback: int = 10) -> dict:
     if len(df) >= 3:
         vol_trough = float(df.iloc[-2].get("volume", 0) or 0)  # 谷底那根
         vol_after = float(df.iloc[-1].get("volume", 0) or 0)   # 反彈第一根
-        vol_expand_after = (vol_after >= vol_trough * 1.2) if vol_trough > 0 else False
+        is_green = float(df.iloc[-1].get("close", 0)) > float(df.iloc[-1].get("open", 0))
+        
+        # 放寬條件：只要反彈是綠 K，且量比谷底多，或是大於均量的 80%，就視為有主力進場
+        vol_expand_after = is_green and ((vol_after > vol_trough) or (vol_after >= vol_ma * 0.8))
     else:
         vol_expand_after = False
         vol_trough = vol_curr
@@ -53,7 +56,7 @@ def _confirm_true_trough(df: pd.DataFrame, trough_lookback: int = 10) -> dict:
         if vol_shrunk_at_bottom:
             reasons.append(f"谷底量縮({vol_trough:.0f} < 均量{vol_ma:.0f}的85%)")
         if vol_expand_after:
-            reasons.append(f"反彈量放大({vol_after:.0f} > 谷底{vol_trough:.0f}的120%)")
+            reasons.append(f"反彈綠K放量(量={vol_after:.0f})")
 
     # ----- 2. RSI 底背離 -----
     if "rsi" in df.columns and len(df) >= trough_lookback + 2:
@@ -250,12 +253,21 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_trough = (ma5_curr > ma5_prev) and (ma5_prev < ma5_prev2)
     is_peak = (ma5_curr < ma5_prev) and (ma5_prev > ma5_prev2)
 
+    # 3. 判斷斜率 (動能疲乏過濾)
+    ma5_slope = ma5_curr - ma5_prev
+    ma5_slope_prev = ma5_prev - ma5_prev2
+    
+    # 判斷多頭/空頭動能是否依然強勁（未出現疲乏）
+    # 條件：斜率方向正確，且當前斜率沒有大幅萎縮（至少維持前一根斜率的 30% 以上）
+    is_uptrend_steep = (ma5_slope > 0) and (ma5_slope >= max(0, ma5_slope_prev) * 0.3)
+    is_downtrend_steep = (ma5_slope < 0) and (ma5_slope <= min(0, ma5_slope_prev) * 0.3)
+
     adx_curr = float(df['adx'].iloc[-1])
-    # 垃圾時間過濾：ADX 必須大於等於 12 才允許發布任何進場訊號（原為15，依用戶要求調降以增加靈敏度）
-    if adx_curr < 12.0:
+    # --- 趨勢強度濾網 ---
+    if adx_curr < 20.0:
         return {
             "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 12)",
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 20)",
             "pivot_confirmed": False,
             "pivot_score": 0
         }
@@ -280,54 +292,65 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
             "pivot_score": 80,
         }
 
+    # 活 K 線濾網：確保轉向當下的 K 棒顏色正確
+    last_close = float(df['close'].iloc[-1])
+    last_open = float(df['open'].iloc[-1])
+    is_green = last_close > last_open
+    is_red = last_close < last_open
+
     # 優先級 2：強勢動能上車 vs 真實大反轉摸底
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        if is_trough:
-            trough_info = _confirm_true_trough(df)
-            if trough_info.get("confirmed"):
-                reasons_str = ", ".join(trough_info.get("reasons", []))
-                return {
-                    "signal": "LONG",
-                    "entry_type": "TROUGH_TURN",
-                    "reason": f"空頭中確認為真谷底 (ADX={adx_curr:.1f}, {reasons_str}) → 提前轉向多單",
-                    "atr": atr,
-                    "pivot_confirmed": True,
-                    "pivot_score": trough_info.get("score", 70),
-                }
-        # 否則無腦順勢追空（無視假小勾）
-        return {
-            "signal": "SHORT",
-            "entry_type": "PEAK_TURN",  # 借用舊名稱讓 engine 接收
-            "reason": f"強勢空頭 (MA5<MA25, ADX={adx_curr:.1f}) → 直接追空",
-            "atr": atr,
-            "pivot_confirmed": True,
-            "pivot_score": 75,
-        }
+        if is_trough and is_green:
+            return {
+                "signal": "LONG",
+                "entry_type": "TROUGH_TURN",
+                "reason": f"空頭中 MA5 谷底且為綠K (ADX={adx_curr:.1f}) → 無條件提前轉向多單",
+                "atr": atr,
+                "pivot_confirmed": True,
+                "pivot_score": 100,
+            }
+        
+        # 順勢逢高做空 (不一定要等頂峰，只要價格反彈靠近 MA5 且斜率夠陡)
+        if is_downtrend_steep and last_close >= ma5_curr and is_red:
+            return {
+                "signal": "SHORT",
+                "entry_type": "PULLBACK_SHORT",
+                "reason": f"空頭反彈碰線且動能強勁 (斜率過濾) → 順勢逢高做空",
+                "atr": atr,
+                "pivot_confirmed": True,
+                "pivot_score": 90,
+            }
     
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        if is_peak:
-            peak_info = _confirm_true_peak(df)
-            if peak_info.get("confirmed"):
-                reasons_str = ", ".join(peak_info.get("reasons", []))
-                return {
-                    "signal": "SHORT",
-                    "entry_type": "PEAK_TURN",
-                    "reason": f"多頭中確認為真峰頂 (ADX={adx_curr:.1f}, {reasons_str}) → 提前轉向空單",
-                    "atr": atr,
-                    "pivot_confirmed": True,
-                    "pivot_score": peak_info.get("score", 70),
-                }
-        # 否則無腦順勢追多（無視假回調）
-        return {
-            "signal": "LONG",
-            "entry_type": "TROUGH_TURN", # 借用舊名稱讓 engine 接收
-            "reason": f"強勢多頭 (MA5>MA25, ADX={adx_curr:.1f}) → 直接追多",
-            "atr": atr,
-            "pivot_confirmed": True,
-            "pivot_score": 75,
-        }
+        if is_peak and is_red:
+            return {
+                "signal": "SHORT",
+                "entry_type": "PEAK_TURN",
+                "reason": f"多頭中 MA5 頂峰且為紅K (ADX={adx_curr:.1f}) → 無條件提前轉向空單",
+                "atr": atr,
+                "pivot_confirmed": True,
+                "pivot_score": 100,
+            }
+        
+        # 順勢逢低做多 (不一定要等谷底，只要價格回踩 MA5 且斜率夠陡)
+        if is_uptrend_steep and last_close <= ma5_curr and is_green:
+            return {
+                "signal": "LONG",
+                "entry_type": "PULLBACK_LONG",
+                "reason": f"多頭回踩碰線且動能強勁 (斜率過濾) → 順勢逢低做多",
+                "atr": atr,
+                "pivot_confirmed": True,
+                "pivot_score": 90,
+            }
+
+    return {
+        "signal": None,
+        "reason": "等待轉向",
+        "pivot_confirmed": False,
+        "pivot_score": 0
+    }
 
     return {"signal": None, "reason": "", "pivot_confirmed": False, "pivot_score": 0}
 

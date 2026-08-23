@@ -1633,13 +1633,15 @@ class TradingEngine:
 
 
 
-    async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:
+    async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
             # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
             # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
+            if keep_live:
+                return df
             return drop_unclosed_candle(df, timeframe)
         except Exception as e:
             return pd.DataFrame()
@@ -2758,7 +2760,9 @@ class TradingEngine:
                         if ENABLE_CONTINUOUS_REVERSE_MODE:
                             from core.indicators import detect_ma5_ma25_cross_and_turn
                             from core.strategy import build_sl_tp_for_side
-                            df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100)
+                            df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
+                            if 'ma5' not in df_cr.columns:
+                                df_cr['ma5'] = df_cr['close'].rolling(window=5).mean()
                             cr_info = detect_ma5_ma25_cross_and_turn(df_cr)
                             cr_signal = cr_info.get("signal")
                             cr_entry_type = cr_info.get("entry_type", "")
