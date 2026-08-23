@@ -334,7 +334,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
 
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        is_true_trough = is_trough_confirmed and is_green and (last_close > ma3_curr)
+        # 谷底深度檢查：從 MA3 谷底到現在的恢復幅度必須 ≥ 0.4 ATR
+        # 避免一點小波動就觸發轉向（ma3_prev2 是兩根確認模式下的真正谷底）
+        trough_recovery = ma3_curr - ma3_prev2  # 恢復幅度
+        is_trough_deep = trough_recovery >= atr * 0.4
+        is_true_trough = is_trough_confirmed and is_green and (last_close > ma3_curr) and is_trough_deep
         # 第一根上彎：只是形成中，需等待第二根確認
         if is_trough_forming and not is_trough_confirmed:
             return {
@@ -347,7 +351,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA3 兩根確認谷底轉彎 (ADX={adx_curr:.1f}) → 改向多單",
+                "reason": f"空頭中 MA3 兩根確認谷底轉彎 (ADX={adx_curr:.1f}, 恢復幅={trough_recovery:.4g}≥{atr*0.4:.4g}ATR) → 改向多單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
@@ -379,7 +383,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
 
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        is_true_peak = is_peak_confirmed and is_red and (last_close < ma3_curr)
+        # 頂峰深度檢查：從 MA3 頂峰到現在的下跌幅度必須 ≥ 0.4 ATR
+        # 避免一點小波動就觸發轉向（ma3_prev2 是兩根確認模式下的真正頂峰）
+        peak_decline = ma3_prev2 - ma3_curr  # 下跌幅度
+        is_peak_deep = peak_decline >= atr * 0.4
+        is_true_peak = is_peak_confirmed and is_red and (last_close < ma3_curr) and is_peak_deep
         # 第一根下彎：不立刻開空，等待確認是真頂峰還是假突破
         if is_peak_forming and not is_peak_confirmed:
             return {
@@ -392,7 +400,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA3 兩根確認頂峰轉彎 (ADX={adx_curr:.1f}) → 改向空單",
+                "reason": f"多頭中 MA3 兩根確認頂峰轉彎 (ADX={adx_curr:.1f}, 下跌幅={peak_decline:.4g}≥{atr*0.4:.4g}ATR) → 改向空單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
