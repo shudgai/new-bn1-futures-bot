@@ -292,15 +292,25 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_choch_up = swing_high is not None and last_close > swing_high
     is_choch_down = swing_low is not None and last_close < swing_low
 
-    # 吞噬型態 (Engulfing)
+    # 吞噬型態 (Engulfing) - 放寬微小跳空容忍度 (0.01% 誤差)
     prev_open = float(open_p.iloc[-2])
     prev_close = float(close.iloc[-2])
-    is_bullish_engulfing = (prev_close < prev_open) and is_green and (last_close > prev_open) and (last_open <= prev_close)
-    is_bearish_engulfing = (prev_close > prev_open) and is_red and (last_close < prev_open) and (last_open >= prev_close)
+    tolerance = last_close * 0.0001
+    is_bullish_engulfing = (prev_close < prev_open) and is_green and (last_close > prev_open) and (last_open <= prev_close + tolerance)
+    is_bearish_engulfing = (prev_close > prev_open) and is_red and (last_close < prev_open) and (last_open >= prev_close - tolerance)
 
-    # 綜合「真反轉」確認分數 (剔除顏色雜訊，純看動能與結構破壞)
-    bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up, is_bullish_engulfing])
-    bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down, is_bearish_engulfing])
+    # 上一根是否為避雷針 (提早發現轉折)
+    prev_body = abs(prev_close - prev_open)
+    prev_high = float(high.iloc[-2])
+    prev_low = float(low.iloc[-2])
+    prev_upper_shadow = prev_high - max(prev_open, prev_close)
+    prev_lower_shadow = min(prev_open, prev_close) - prev_low
+    prev_is_bullish_pinbar = (prev_lower_shadow > prev_body * 2.0) and (prev_upper_shadow < prev_body)
+    prev_is_bearish_pinbar = (prev_upper_shadow > prev_body * 2.0) and (prev_lower_shadow < prev_body)
+
+    # 綜合「真反轉」確認分數 (只要符合任一強烈型態即 +1 分)
+    bull_confirm_score = sum([is_bullish_pinbar, prev_is_bullish_pinbar and is_green, is_bullish_div, is_choch_up, is_bullish_engulfing])
+    bear_confirm_score = sum([is_bearish_pinbar, prev_is_bearish_pinbar and is_red, is_bearish_div, is_choch_down, is_bearish_engulfing])
 
     # 優先級 1：大反轉（金叉/死叉第一時間進場）
     if cross_up:
