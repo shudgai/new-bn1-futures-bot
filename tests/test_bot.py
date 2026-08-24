@@ -522,8 +522,117 @@ async def test_engine_diminishing_2a_pivot_closes_short_and_opens_long_same_cycl
 
     assert result["opened_slot"] == 1
     assert engine.account.positions["BTC/USDT"]["side"] == "LONG"
-    assert any("2a053b4 反向訊號" in trade.get("reason", "") for trade in engine.account.trades)
-    assert any("2a053b4 立即反手" in log["text"] for log in engine.account.logs)
+    assert any("真峰谷方向切換" in trade.get("reason", "") for trade in engine.account.trades)
+    assert any("真峰谷反手" in log["text"] for log in engine.account.logs)
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_direction_lock_ignores_alignment_flip_without_pivot(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_direction_lock.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    assert await engine.account.open_position(
+        "BTC/USDT", "SHORT", 100.0, 45.0, 101.0, 0.0, "頂峰後空單",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    engine._pyramid_direction_lock["BTC/USDT"] = "SHORT"
+    frame = _diminishing_trend_frame("LONG")
+    monkeypatch.setattr(
+        engine_module, "detect_diminishing_pyramid_entry",
+        lambda *_args, **_kwargs: {
+            "signal": "LONG", "entry_type": "TREND_LONG",
+            "reason": "短線重新站上 MA25", "pivot_ready": False,
+            "atr": 1.0, "ma3": 100.0, "structural_stop": 99.0,
+        },
+    )
+    engine.tickers["BTC/USDT"] = 100.0
+
+    result = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+
+    assert result["signal"] is None
+    assert result["direction_locked"] is True
+    assert "等待真谷底才轉向" in result["reason"]
+    assert engine.account.positions["BTC/USDT"]["side"] == "SHORT"
+    assert not any(trade["action"] == "CLOSE_SHORT" for trade in engine.account.trades)
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_exit_bar_waits_then_reverses_on_confirmed_pivot(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_wait_pivot.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    frame = _diminishing_trend_frame("SHORT")
+    bar_id = int(float(frame["timestamp"].iloc[-1]))
+    engine._pyramid_reversal_wait["BTC/USDT"] = {
+        "original_side": "LONG", "exit_bar_id": bar_id, "reason": "提前平多",
+    }
+    pivot_signal = {
+        "signal": "SHORT", "entry_type": "PEAK_TURN",
+        "reason": "真頂峰成立", "pivot_ready": True,
+        "atr": 1.0, "ma3": 100.0, "structural_stop": 101.0,
+    }
+    monkeypatch.setattr(
+        engine_module, "detect_diminishing_pyramid_entry",
+        lambda *_args, **_kwargs: dict(pivot_signal),
+    )
+    engine.tickers["BTC/USDT"] = 100.0
+
+    same_bar = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+    assert same_bar["signal"] is None
+    assert same_bar["waiting_for_pivot"] is True
+    assert "同一根1m K不重開" in same_bar["reason"]
+    assert "BTC/USDT" not in engine.account.positions
+
+    next_frame = frame.copy()
+    next_frame.loc[next_frame.index[-1], "timestamp"] = bar_id + 60_000
+    reversed_entry = await engine._process_diminishing_pyramid_symbol("BTC/USDT", next_frame)
+    assert reversed_entry["opened_slot"] == 1
+    assert engine.account.positions["BTC/USDT"]["side"] == "SHORT"
+    assert "BTC/USDT" not in engine._pyramid_reversal_wait
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_false_breakout_resumes_original_direction(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_false_break.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    frame = _diminishing_trend_frame("LONG")
+    bar_id = int(float(frame["timestamp"].iloc[-1]))
+    engine._pyramid_reversal_wait["BTC/USDT"] = {
+        "original_side": "LONG", "exit_bar_id": bar_id - 60_000, "reason": "疑似向下突破",
+    }
+    monkeypatch.setattr(
+        engine_module, "detect_diminishing_pyramid_entry",
+        lambda *_args, **_kwargs: {
+            "signal": "LONG", "entry_type": "TREND_LONG",
+            "reason": "原多頭排列恢復", "pivot_ready": False,
+            "atr": 1.0, "ma3": 100.0, "structural_stop": 99.0,
+        },
+    )
+    engine.tickers["BTC/USDT"] = 100.0
+
+    result = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+
+    assert result["opened_slot"] == 1
+    assert engine.account.positions["BTC/USDT"]["side"] == "LONG"
+    assert "BTC/USDT" not in engine._pyramid_reversal_wait
+    assert any("假突破恢復" in log["text"] for log in engine.account.logs)
     await engine.exchange.close()
     await engine.execution_exchange.close()
 
@@ -3746,7 +3855,7 @@ def test_live_pivot_opens_immediately_with_partial_volume():
     assert live_result["live_pivot"] is True
 
 
-def test_live_peak_first_bend_opens_short_without_waiting_for_body_or_volume():
+def test_live_peak_first_bend_waits_when_volume_and_reversal_evidence_are_weak():
     frame = _fast_pivot_frame("SHORT", clear=False)
     frame.loc[frame.index[-1], ["high", "low", "volume"]] = [100.55, 100.30, 5.0]
 
@@ -3754,9 +3863,21 @@ def test_live_peak_first_bend_opens_short_without_waiting_for_body_or_volume():
     live_result = detect_ma5_ma25_cross_and_turn(frame, allow_live_pivot=True)
 
     assert closed_result["signal"] is None
-    assert live_result["signal"] == "SHORT"
-    assert live_result["entry_type"] == "PEAK_TURN"
-    assert live_result["live_pivot"] is True
+    assert live_result["signal"] is None
+    assert live_result["wait_right_side_confirmation"] is True
+    assert "頂峰第一彎證據不足" in live_result["reason"]
+
+
+def test_live_peak_first_bend_opens_early_on_high_volume_upper_wick():
+    frame = _fast_pivot_frame("SHORT", clear=False)
+    frame.loc[frame.index[-1], ["high", "low", "volume"]] = [101.20, 100.30, 160.0]
+
+    result = detect_ma5_ma25_cross_and_turn(frame, allow_live_pivot=True)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "PEAK_TURN"
+    assert result["live_pivot"] is True
+    assert "爆量長上影出貨" in result["reason"]
 
 
 def test_mixed_ma3_ma5_alignment_waits():

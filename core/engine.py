@@ -155,6 +155,11 @@ class TradingEngine:
         # 同一根 K、同一方向只允許成交一次，避免止盈後重複吃同一訊號。
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
         self._pyramid_last_entry_bar: Dict[str, tuple] = {}
+        # 提前平倉後不立刻補倉：等待真峰谷反轉；若原方向重新成立，
+        # 才視為假突破並沿原方向恢復。
+        self._pyramid_reversal_wait: Dict[str, dict] = {}
+        # 峰谷方向鎖：多頭階段只等真頂峰切空；空頭階段只等真谷底切多。
+        self._pyramid_direction_lock: Dict[str, str] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -2740,23 +2745,35 @@ class TradingEngine:
                     f"🚨 [Global Exit] {symbol} {slots} 槽全部平倉：{exit_info['reason']}",
                     "DANGER",
                 )
-                await self.account.close_position(
+                closed = await self.account.close_position(
                     symbol=symbol,
                     current_price=live_price,
                     close_reason=f"Global Exit: {exit_info['reason']}",
                 )
+                if closed:
+                    exit_bar_id = (
+                        int(float(frame["timestamp"].iloc[-1]))
+                        if "timestamp" in frame.columns else int(frame.index[-1])
+                    )
+                    self._pyramid_reversal_wait[symbol] = {
+                        "original_side": side,
+                        "exit_bar_id": exit_bar_id,
+                        "reason": exit_info["reason"],
+                    }
+                    self.account.log(
+                        f"⏸️ [峰谷等待] {symbol} 已平 {side}，本根不開倉；"
+                        f"等待真峰谷反轉或假突破恢復原方向",
+                        "INFO",
+                    )
                 continue
 
             # 獲利部位不在此處按峰谷提前平倉；依 2a053b4 行為交由
             # PaperAccount 的 USDT 固定鎖利與百分比移動停利繼續追蹤。
 
     async def _process_diminishing_pyramid_symbol(self, symbol: str, frame: pd.DataFrame) -> dict:
-        """Process the active 1m single-slot entry and 2a053b4 immediate reversal."""
+        """Wait for a confirmed pivot after exit, or resume after a false break."""
         signal = detect_diminishing_pyramid_entry(frame, allow_live_pivot=True)
         side = signal.get("signal")
-        if not side:
-            return signal
-
         last_bar_id = (
             int(float(frame["timestamp"].iloc[-1]))
             if "timestamp" in frame.columns else int(frame.index[-1])
@@ -2765,30 +2782,123 @@ class TradingEngine:
         fallback = float(frame["close"].iloc[-1])
         live_price = float(self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback)))
         position = self.account.positions.get(symbol)
-        if position and position.get("strategy_mode") != "DIMINISHING_PYRAMID":
-            return {"signal": None, "reason": "舊策略持倉中，待原風控平倉後切換兩槽模式"}
-        if position and position.get("side") != side:
-            if self._pyramid_last_entry_bar.get(symbol) == (side, 1, last_bar_id):
-                return {
-                    **signal,
-                    "signal": None,
-                    "reason": f"同一根 1m K 已反手 {side}，不重複交易",
-                    "repeat_entry_bar": True,
+
+        wait = self._pyramid_reversal_wait.get(symbol)
+        if wait is None and position is None:
+            recent_close = next((
+                trade for trade in self.account.trades
+                if trade.get("symbol") == symbol
+                and str(trade.get("action", "")).startswith("CLOSE_")
+                and trade.get("strategy_mode") == "DIMINISHING_PYRAMID"
+            ), None)
+            close_age = time.time() - float(self.account.last_closed_at.get(symbol, 0.0) or 0.0)
+            if recent_close and 0.0 <= close_age <= 120.0:
+                wait = {
+                    "original_side": recent_close.get("side"),
+                    "exit_bar_id": last_bar_id,
+                    "reason": recent_close.get("reason", "近期策略平倉"),
                 }
-            old_side = position.get("side")
-            self.account.log(
-                f"🔄 [2a053b4 立即反手] {symbol} {signal.get('entry_type')}："
-                f"平掉 {old_side}，同輪改開 {side}",
-                "WARNING",
+                self._pyramid_reversal_wait[symbol] = wait
+
+        # 若峰谷在平倉同一根才完成，先記住訊號；下一根才執行，
+        # 避免剛平倉又在同一根 K 立刻翻倉。
+        if wait and wait.get("confirmed_signal") and last_bar_id != wait.get("exit_bar_id"):
+            signal = dict(wait["confirmed_signal"])
+            side = signal.get("signal")
+
+        entry_type = signal.get("entry_type")
+        pivot_confirmed = bool(
+            side
+            and (signal.get("pivot_ready") or signal.get("pivot_confirmed"))
+            and entry_type in ("TROUGH_TURN", "PEAK_TURN")
+        )
+        locked_side = self._pyramid_direction_lock.get(symbol)
+        if locked_side is None and position and position.get("strategy_mode") == "DIMINISHING_PYRAMID":
+            locked_side = position.get("side")
+        if locked_side is None and wait:
+            locked_side = wait.get("original_side")
+        if pivot_confirmed:
+            locked_side = side
+            self._pyramid_direction_lock[symbol] = side
+        elif locked_side and side and side != locked_side:
+            signal = {
+                **signal,
+                "signal": None,
+                "reason": (
+                    f"方向鎖定 {locked_side}：不因短線排列改開 {side}；"
+                    f"等待真{'谷底' if locked_side == 'SHORT' else '頂峰'}才轉向"
+                ),
+                "direction_locked": True,
+            }
+            side = None
+        elif locked_side is None and side:
+            locked_side = side
+            self._pyramid_direction_lock[symbol] = side
+
+        if wait:
+            if wait.get("exit_bar_id") is None:
+                wait["exit_bar_id"] = last_bar_id
+            original_side = wait.get("original_side")
+            same_exit_bar = last_bar_id == wait.get("exit_bar_id")
+            reversal_confirmed = bool(pivot_confirmed and side != original_side)
+            fake_breakout_recovered = bool(
+                side == original_side
+                and (
+                    pivot_confirmed
+                    or entry_type == ("TREND_LONG" if original_side == "LONG" else "TREND_SHORT")
+                )
             )
+            if same_exit_bar:
+                if reversal_confirmed:
+                    wait["confirmed_signal"] = dict(signal)
+                return {
+                    **signal, "signal": None,
+                    "reason": f"已提前平 {original_side}，同一根1m K不重開；等待峰谷成立",
+                    "waiting_for_pivot": True,
+                }
+            if reversal_confirmed:
+                self._pyramid_reversal_wait.pop(symbol, None)
+                self.account.log(
+                    f"✅ [峰谷成立] {symbol} {entry_type}，方向切換為 {side}", "SUCCESS"
+                )
+            elif fake_breakout_recovered:
+                self._pyramid_reversal_wait.pop(symbol, None)
+                self._pyramid_direction_lock[symbol] = original_side
+                self.account.log(
+                    f"↩️ [假突破恢復] {symbol} 反轉未成立，恢復原方向 {original_side}",
+                    "SUCCESS",
+                )
+            else:
+                return {
+                    **signal, "signal": None,
+                    "reason": f"已平 {original_side}，等待真峰谷；若是假突破則等 {original_side} 重新成立",
+                    "waiting_for_pivot": True,
+                }
+
+        if not side:
+            return signal
+
+        if position and position.get("strategy_mode") != "DIMINISHING_PYRAMID":
+            return {"signal": None, "reason": "舊策略持倉中，待原風控平倉後切換單槽模式"}
+        if position and position.get("side") != side:
+            old_side = position.get("side")
+            if not pivot_confirmed:
+                return {
+                    **signal, "signal": None,
+                    "reason": f"目前鎖定 {old_side}，尚未形成真峰谷，不反向開 {side}",
+                    "direction_locked": True,
+                }
             closed = await self.account.close_position(
-                symbol=symbol,
-                current_price=live_price,
-                close_reason=f"2a053b4 反向訊號 ({signal.get('entry_type')})",
+                symbol=symbol, current_price=live_price,
+                close_reason=f"真峰谷方向切換 ({entry_type})",
             )
             if not closed:
-                return {**signal, "signal": None, "reason": f"{old_side} 平倉失敗，取消反手 {side}"}
+                return {**signal, "signal": None, "reason": f"{old_side} 平倉失敗，取消轉向"}
             position = None
+            self.account.log(
+                f"🔄 [真峰谷反手] {symbol} {entry_type}：平掉 {old_side}，改開 {side}",
+                "WARNING",
+            )
         if position and position.get("pyramid_pivot_partial_closed"):
             return {"signal": None, "reason": "峰谷已分批止盈，剩餘50%由2ATR TSL管理，不再加碼"}
         slots = list(position.get("slots") or [position]) if position else []
@@ -2903,8 +3013,21 @@ class TradingEngine:
                 # 幣種輪替已移到獨立的 _rotation_loop() 背景任務執行，
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
-                # 2. 更新與執行持倉部位
+                # 2. 更新與執行持倉部位。帳戶層固定鎖利/移動停利若在此平倉，
+                # 同樣進入峰谷等待，避免下一個掃描立刻補在峰頂或谷底附近。
+                pyramid_before_account_update = {
+                    symbol: position.get("side")
+                    for symbol, position in self.account.positions.items()
+                    if position.get("strategy_mode") == "DIMINISHING_PYRAMID"
+                }
                 await self.account.update_positions(self.tickers)
+                for symbol, original_side in pyramid_before_account_update.items():
+                    if symbol not in self.account.positions and symbol not in self._pyramid_reversal_wait:
+                        self._pyramid_reversal_wait[symbol] = {
+                            "original_side": original_side,
+                            "exit_bar_id": None,
+                            "reason": "固定鎖利／移動停利／帳戶保護平倉",
+                        }
                 # 冷卻時間唯一資料來源是 self.account.last_closed_at（見
                 # testnet_account.py），不管平倉是這裡的主迴圈觸發，還是
                 # /api/prices、/api/status 這些跟主迴圈不同步的網頁輪詢

@@ -555,6 +555,100 @@ def _confirm_true_peak(df: pd.DataFrame, peak_lookback: int = 10) -> dict:
     return {"confirmed": confirmed, "score": score, "reasons": reasons}
 
 
+def _score_reversal_evidence(df: pd.DataFrame, side: str, atr: float) -> dict:
+    """用量價、背離、布林收回及右側結構評估 1m 真峰谷。"""
+    if df is None or len(df) < 22 or side not in ("LONG", "SHORT"):
+        return {"confirmed": False, "score": 0, "strong_right_side": False,
+                "reasons": ["峰谷證據資料不足"]}
+
+    work = df.copy()
+    for name in ("open", "high", "low", "close", "volume"):
+        work[name] = pd.to_numeric(work[name], errors="coerce")
+    close = work["close"]
+    atr = max(float(atr or 0.0), abs(float(close.iloc[-1])) * 1e-6)
+    if "rsi" not in work.columns:
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+        work["rsi"] = 100 - 100 / (1 + gain / (loss + 1e-9))
+    else:
+        work["rsi"] = pd.to_numeric(work["rsi"], errors="coerce")
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    work["_macd_hist"] = macd - macd.ewm(span=9, adjust=False).mean()
+    boll_mid = close.rolling(20).mean()
+    boll_std = close.rolling(20).std(ddof=0)
+    work["_boll_upper"] = boll_mid + 2 * boll_std
+    work["_boll_lower"] = boll_mid - 2 * boll_std
+
+    last_two = work.iloc[-2:]
+    pivot_idx = last_two["low"].idxmin() if side == "LONG" else last_two["high"].idxmax()
+    pivot = work.loc[pivot_idx]
+    history = work.iloc[-22:-2]
+    reference_idx = history["low"].idxmin() if side == "LONG" else history["high"].idxmax()
+    reference = work.loc[reference_idx]
+    volume_average = float(history["volume"].mean())
+    pivot_volume = float(pivot["volume"] or 0.0)
+    candle_range = max(float(pivot["high"] - pivot["low"]), atr * 1e-6)
+    lower_wick = max(min(float(pivot["open"]), float(pivot["close"])) - float(pivot["low"]), 0.0)
+    upper_wick = max(float(pivot["high"]) - max(float(pivot["open"]), float(pivot["close"])), 0.0)
+    wick_ratio = (lower_wick if side == "LONG" else upper_wick) / candle_range
+    new_extreme = (float(pivot["low"]) <= float(reference["low"]) + atr * 0.10
+                   if side == "LONG" else
+                   float(pivot["high"]) >= float(reference["high"]) - atr * 0.10)
+    score, reasons = 0, []
+
+    if volume_average > 0 and pivot_volume >= volume_average * 1.40 and wick_ratio >= 0.35:
+        score += 3
+        reasons.append("爆量長下影止跌" if side == "LONG" else "爆量長上影出貨")
+    reference_volume = float(reference["volume"] or 0.0)
+    if new_extreme and reference_volume > 0 and pivot_volume <= reference_volume * 0.80:
+        score += 2
+        reasons.append("二腳底量縮、空壓枯竭" if side == "LONG" else "二次摸高量縮、買力枯竭")
+
+    pivot_rsi = float(pivot["rsi"]) if not pd.isna(pivot["rsi"]) else 50.0
+    reference_rsi = float(reference["rsi"]) if not pd.isna(reference["rsi"]) else 50.0
+    rsi_divergence = (new_extreme and pivot_rsi >= reference_rsi + 1.5
+                      if side == "LONG" else
+                      new_extreme and pivot_rsi <= reference_rsi - 1.5)
+    if rsi_divergence:
+        score += 2
+        reasons.append("RSI底背離" if side == "LONG" else "RSI頂背離")
+    pivot_macd, reference_macd = float(pivot["_macd_hist"]), float(reference["_macd_hist"])
+    macd_divergence = (new_extreme and pivot_macd > reference_macd
+                       if side == "LONG" else
+                       new_extreme and pivot_macd < reference_macd)
+    if macd_divergence:
+        score += 2
+        reasons.append("MACD底背離" if side == "LONG" else "MACD頂背離")
+
+    current, previous = work.iloc[-1], work.iloc[-2]
+    if side == "LONG":
+        pierced = bool((last_two["low"] < last_two["_boll_lower"]).fillna(False).any())
+        reclaimed = pierced and float(current["close"]) >= float(current["_boll_lower"])
+        strong_right_side = float(current["close"]) > float(previous["high"])
+    else:
+        pierced = bool((last_two["high"] > last_two["_boll_upper"]).fillna(False).any())
+        reclaimed = pierced and float(current["close"]) <= float(current["_boll_upper"])
+        strong_right_side = float(current["close"]) < float(previous["low"])
+    if reclaimed:
+        score += 2
+        reasons.append("刺穿布林下軌後收回" if side == "LONG" else "刺穿布林上軌後收回")
+    if strong_right_side:
+        score += 2
+        reasons.append("突破前一根高點、右側確認" if side == "LONG" else "跌破前一根低點、右側確認")
+
+    key_window = work.iloc[-17:-2]
+    near_key = (float(pivot["low"]) <= float(key_window["low"].min()) + atr * 0.25
+                if side == "LONG" else
+                float(pivot["high"]) >= float(key_window["high"].max()) - atr * 0.25)
+    if near_key:
+        score += 1
+        reasons.append("接近15m歷史支撐" if side == "LONG" else "接近15m歷史阻力")
+    return {"confirmed": bool(score >= 3 or strong_right_side), "score": score,
+            "strong_right_side": strong_right_side,
+            "reasons": reasons or ["無明顯量價、背離或結構證據"]}
+
+
 def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     """丟棄還沒收盤的最後一根 K 棒。
 
@@ -762,29 +856,68 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         and confirmed_peak_decline >= atr * 0.4 and near_recent_high
     )
 
+    trough_evidence = _score_reversal_evidence(df, "LONG", atr) if (clear_fast_trough or confirmed_trough) else None
+    peak_evidence = _score_reversal_evidence(df, "SHORT", atr) if (clear_fast_peak or confirmed_peak) else None
+
     if clear_fast_trough or confirmed_trough:
+        # 第一根 MA3 初彎最容易是假反轉；必須另有量價、背離、BOLL 或結構證據。
+        # 連續兩根同向的 confirmed_trough 本身已是右側確認，不再額外拖延。
+        trough_evidence_ready = trough_evidence["confirmed"] and (
+            not allow_live_pivot or trough_evidence["score"] >= 4
+            or trough_evidence["strong_right_side"]
+        )
+        if clear_fast_trough and not confirmed_trough and not trough_evidence_ready:
+            return {
+                "signal": None,
+                "reason": f"假反轉過濾：谷底第一彎證據不足 ({', '.join(trough_evidence['reasons'])})",
+                "pivot_confirmed": False,
+                "pivot_score": 0,
+                "pivot_evidence_score": trough_evidence["score"],
+                "wait_right_side_confirmation": True,
+            }
         rejected = reject_false_breakout("LONG")
         if rejected:
             return rejected
+        evidence_text = "、".join(trough_evidence["reasons"])
         return {
             "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": f"MA3 真谷底向上 (ADX={adx_curr:.1f}) → 立即開多",
+            "reason": f"MA3 真谷底向上 (ADX={adx_curr:.1f}; {evidence_text}) → 立即開多",
             "atr": atr, "pivot_confirmed": True,
             "pivot_score": 95 if clear_fast_trough else 100,
+            "pivot_evidence_score": trough_evidence["score"],
+            "pivot_evidence": trough_evidence["reasons"],
+            "right_side_confirmed": bool(confirmed_trough or trough_evidence["strong_right_side"]),
             "fast_pivot": bool(clear_fast_trough),
             "live_pivot": bool(allow_live_pivot),
             "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
 
     if clear_fast_peak or confirmed_peak:
+        peak_evidence_ready = peak_evidence["confirmed"] and (
+            not allow_live_pivot or peak_evidence["score"] >= 4
+            or peak_evidence["strong_right_side"]
+        )
+        if clear_fast_peak and not confirmed_peak and not peak_evidence_ready:
+            return {
+                "signal": None,
+                "reason": f"假反轉過濾：頂峰第一彎證據不足 ({', '.join(peak_evidence['reasons'])})",
+                "pivot_confirmed": False,
+                "pivot_score": 0,
+                "pivot_evidence_score": peak_evidence["score"],
+                "wait_right_side_confirmation": True,
+            }
         rejected = reject_false_breakout("SHORT")
         if rejected:
             return rejected
+        evidence_text = "、".join(peak_evidence["reasons"])
         return {
             "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": f"MA3 真頂峰向下 (ADX={adx_curr:.1f}) → 立即開空",
+            "reason": f"MA3 真頂峰向下 (ADX={adx_curr:.1f}; {evidence_text}) → 立即開空",
             "atr": atr, "pivot_confirmed": True,
             "pivot_score": 95 if clear_fast_peak else 100,
+            "pivot_evidence_score": peak_evidence["score"],
+            "pivot_evidence": peak_evidence["reasons"],
+            "right_side_confirmed": bool(confirmed_peak or peak_evidence["strong_right_side"]),
             "fast_pivot": bool(clear_fast_peak),
             "live_pivot": bool(allow_live_pivot),
             "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
