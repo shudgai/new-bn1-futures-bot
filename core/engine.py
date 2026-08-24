@@ -2843,17 +2843,37 @@ class TradingEngine:
                                         atr = cr_info.get("atr", live_price * 0.015)
                                         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
                                         sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                        total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                                        amount_usdt_market = total_usdt * 0.5
+                                        amount_usdt_limit = total_usdt * 0.5
+                                        limit_target_price = live_price - (atr * 0.5) if cr_signal == "LONG" else live_price + (atr * 0.5)
+
+                                        # 首倉 50%：立刻市價進場
                                         await self.account.open_position(
                                             symbol=symbol,
                                             side=cr_signal,
                                             price=live_price,
-                                            amount_usdt=self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
+                                            amount_usdt=amount_usdt_market,
                                             sl=sl,
                                             tp=tp,
-                                            reason=cr_info.get("reason", cr_entry_type),
+                                            reason=f"{cr_info.get('reason', cr_entry_type)} (首倉)",
                                             atr=atr,
                                             leverage=get_leverage(symbol),
                                             signal_score=100
+                                        )
+                                        # 補倉 50%：掛限價單等回踩
+                                        await self.account.place_limit_entry(
+                                            symbol=symbol,
+                                            side=cr_signal,
+                                            target_price=limit_target_price,
+                                            amount_usdt=amount_usdt_limit,
+                                            sl=sl,
+                                            tp=tp,
+                                            reason=f"{cr_info.get('reason', cr_entry_type)} (補倉限價)",
+                                            atr=atr,
+                                            leverage=get_leverage(symbol),
+                                            signal_score=100,
+                                            timeframe="1m"
                                         )
 
                                 # --- MA5 穿越 MA25（金叉/死叉）：反轉/補開訊號 ---
@@ -2879,17 +2899,37 @@ class TradingEngine:
                                         atr = cr_info.get("atr", live_price * 0.015)
                                         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
                                         sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                        total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                                        amount_usdt_market = total_usdt * 0.5
+                                        amount_usdt_limit = total_usdt * 0.5
+                                        limit_target_price = live_price - (atr * 0.5) if cr_signal == "LONG" else live_price + (atr * 0.5)
+
+                                        # 首倉 50%：立刻市價進場
                                         await self.account.open_position(
                                             symbol=symbol,
                                             side=cr_signal,
                                             price=live_price,
-                                            amount_usdt=self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
+                                            amount_usdt=amount_usdt_market,
                                             sl=sl,
                                             tp=tp,
-                                            reason=cr_info.get("reason", cr_entry_type),
+                                            reason=f"{cr_info.get('reason', cr_entry_type)} (首倉)",
                                             atr=atr,
                                             leverage=get_leverage(symbol),
                                             signal_score=85
+                                        )
+                                        # 補倉 50%：掛限價單等回踩
+                                        await self.account.place_limit_entry(
+                                            symbol=symbol,
+                                            side=cr_signal,
+                                            target_price=limit_target_price,
+                                            amount_usdt=amount_usdt_limit,
+                                            sl=sl,
+                                            tp=tp,
+                                            reason=f"{cr_info.get('reason', cr_entry_type)} (補倉限價)",
+                                            atr=atr,
+                                            leverage=get_leverage(symbol),
+                                            signal_score=85,
+                                            timeframe="1m"
                                         )
                                     else:
                                         self.account.log(
