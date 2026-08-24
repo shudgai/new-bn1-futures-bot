@@ -63,6 +63,16 @@ def cap_margin_to_trade_risk(
         amount *= MAX_TRADE_RISK_USDT / projected_loss
         projected_loss = MAX_TRADE_RISK_USDT
     return amount, projected_loss
+
+
+def _pyramid_profit_exit_allows_reentry(reason: str) -> bool:
+    """獲利保護平倉不代表趨勢反轉，可立即尋找同方向下一筆。"""
+    text = str(reason or "")
+    return any(token in text for token in (
+        "固定鎖利", "移動停利", "Trailing Take-Profit",
+    ))
+
+
 from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
@@ -2793,12 +2803,18 @@ class TradingEngine:
             ), None)
             close_age = time.time() - float(self.account.last_closed_at.get(symbol, 0.0) or 0.0)
             if recent_close and 0.0 <= close_age <= 120.0:
-                wait = {
-                    "original_side": recent_close.get("side"),
-                    "exit_bar_id": last_bar_id,
-                    "reason": recent_close.get("reason", "近期策略平倉"),
-                }
-                self._pyramid_reversal_wait[symbol] = wait
+                close_reason = recent_close.get("reason", "近期策略平倉")
+                original_side = recent_close.get("side")
+                if _pyramid_profit_exit_allows_reentry(close_reason):
+                    self._pyramid_direction_lock[symbol] = original_side
+                    self._pyramid_last_entry_bar.pop(symbol, None)
+                else:
+                    wait = {
+                        "original_side": original_side,
+                        "exit_bar_id": last_bar_id,
+                        "reason": close_reason,
+                    }
+                    self._pyramid_reversal_wait[symbol] = wait
 
         # 若峰谷在平倉同一根才完成，先記住訊號；下一根才執行，
         # 避免剛平倉又在同一根 K 立刻翻倉。
@@ -2812,10 +2828,12 @@ class TradingEngine:
             and (signal.get("pivot_ready") or signal.get("pivot_confirmed"))
             and entry_type in ("TROUGH_TURN", "PEAK_TURN")
         )
-        # 第一根 MA3 彎頭即使突破相鄰 K 線，也只能視為峰谷候選。
-        # 方向鎖必須等第二根確認，避免 MA25 下方一根綠 K 就由空翻多，
-        # 或 MA25 上方一根紅 K 就由多翻空。
-        pivot_confirmed = bool(pivot_candidate and not signal.get("fast_pivot"))
+        # 第一根 MA3 彎頭若只有單一證據仍是候選；量價、背離、BOLL／結構
+        # 累積達高可信門檻時可立即反手，否則等第二根確認。
+        pivot_confirmed = bool(
+            pivot_candidate
+            and (not signal.get("fast_pivot") or signal.get("fast_reversal_ready"))
+        )
         locked_side = self._pyramid_direction_lock.get(symbol)
         if locked_side is None and position and position.get("strategy_mode") == "DIMINISHING_PYRAMID":
             locked_side = position.get("side")
@@ -3017,8 +3035,8 @@ class TradingEngine:
                 # 幣種輪替已移到獨立的 _rotation_loop() 背景任務執行，
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
-                # 2. 更新與執行持倉部位。帳戶層固定鎖利/移動停利若在此平倉，
-                # 同樣進入峰谷等待，避免下一個掃描立刻補在峰頂或谷底附近。
+                # 2. 更新與執行持倉部位。固定鎖利／移動停利屬正常獲利收割，
+                # 保留原方向並立即續找下一筆；只有防禦退出才進峰谷等待。
                 pyramid_before_account_update = {
                     symbol: position.get("side")
                     for symbol, position in self.account.positions.items()
@@ -3027,11 +3045,25 @@ class TradingEngine:
                 await self.account.update_positions(self.tickers)
                 for symbol, original_side in pyramid_before_account_update.items():
                     if symbol not in self.account.positions and symbol not in self._pyramid_reversal_wait:
-                        self._pyramid_reversal_wait[symbol] = {
-                            "original_side": original_side,
-                            "exit_bar_id": None,
-                            "reason": "固定鎖利／移動停利／帳戶保護平倉",
-                        }
+                        recent_close = next((
+                            trade for trade in self.account.trades
+                            if trade.get("symbol") == symbol
+                            and str(trade.get("action", "")).startswith("CLOSE_")
+                        ), {})
+                        close_reason = recent_close.get("reason", "帳戶保護平倉")
+                        if _pyramid_profit_exit_allows_reentry(close_reason):
+                            self._pyramid_direction_lock[symbol] = original_side
+                            self._pyramid_last_entry_bar.pop(symbol, None)
+                            self.account.log(
+                                f"▶️ [趨勢續開] {symbol} 獲利平倉後保留 {original_side} 方向，立即尋找下一筆",
+                                "INFO",
+                            )
+                        else:
+                            self._pyramid_reversal_wait[symbol] = {
+                                "original_side": original_side,
+                                "exit_bar_id": None,
+                                "reason": close_reason,
+                            }
                 # 冷卻時間唯一資料來源是 self.account.last_closed_at（見
                 # testnet_account.py），不管平倉是這裡的主迴圈觸發，還是
                 # /api/prices、/api/status 這些跟主迴圈不同步的網頁輪詢

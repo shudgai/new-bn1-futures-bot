@@ -870,7 +870,6 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         # 連續兩根同向的 confirmed_trough 本身已是右側確認，不再額外拖延。
         trough_evidence_ready = trough_evidence["confirmed"] and (
             not allow_live_pivot or trough_evidence["score"] >= 4
-            or trough_evidence["strong_right_side"]
         )
         if clear_fast_trough and not confirmed_trough and not trough_evidence_ready:
             return {
@@ -894,6 +893,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
             "pivot_evidence": trough_evidence["reasons"],
             "right_side_confirmed": bool(confirmed_trough or trough_evidence["strong_right_side"]),
             "fast_pivot": bool(clear_fast_trough),
+            "fast_reversal_ready": bool(clear_fast_trough and trough_evidence["score"] >= 4),
             "live_pivot": bool(allow_live_pivot),
             "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
@@ -901,7 +901,6 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
     if clear_fast_peak or confirmed_peak:
         peak_evidence_ready = peak_evidence["confirmed"] and (
             not allow_live_pivot or peak_evidence["score"] >= 4
-            or peak_evidence["strong_right_side"]
         )
         if clear_fast_peak and not confirmed_peak and not peak_evidence_ready:
             return {
@@ -925,6 +924,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
             "pivot_evidence": peak_evidence["reasons"],
             "right_side_confirmed": bool(confirmed_peak or peak_evidence["strong_right_side"]),
             "fast_pivot": bool(clear_fast_peak),
+            "fast_reversal_ready": bool(clear_fast_peak and peak_evidence["score"] >= 4),
             "live_pivot": bool(allow_live_pivot),
             "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
