@@ -328,8 +328,8 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        elif is_peak:
-            # 沒形成谷底，反而形成峰頂，代表反彈結束、空頭延續
+        elif is_peak or (ma3_curr < ma3_prev and is_red):
+            # 沒形成谷底，反而形成峰頂（或只是順勢向下且收黑），代表反彈結束、空頭延續
             return {
                 "signal": "SHORT",
                 "entry_type": "TREND_SHORT",
@@ -350,8 +350,8 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        elif is_trough:
-            # 沒形成峰頂，反而形成谷底，代表回踩結束、多頭延續
+        elif is_trough or (ma3_curr > ma3_prev and is_green):
+            # 沒形成峰頂，反而形成谷底（或只是順勢向上且收綠），代表回踩結束、多頭延續
             return {
                 "signal": "LONG",
                 "entry_type": "TREND_LONG",
