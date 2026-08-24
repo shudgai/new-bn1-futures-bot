@@ -1055,7 +1055,7 @@ class PaperAccount:
                 elif margin_used <= 200:
                     trailing_gap = 1.0
                 else:
-                    trailing_gap = 1.0 + math.ceil((margin_used - 200.0) / 100.0) * 0.5
+                    trailing_gap = 1.0 + math.ceil((margin_used - 200.0) / 100.0) * 1.0
 
                 if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
                     # ── 固定呼吸空間追蹤：止損永遠距離峰值 trailing_gap，且保證至少鎖住手續費(dynamic_floor) ──
