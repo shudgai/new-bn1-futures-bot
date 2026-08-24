@@ -494,7 +494,9 @@ def detect_ma5_reversal(
     # 【重要修正】根據要求：均線向上時(MA5>MA25)，不能僅憑 1 根紅K就逆勢開空，必須有明確峰頂。
     # 因此，提早進場只允許在「順勢」時觸發，逆勢必須靠 strict 嚴格峰谷或 extended 記憶型態。
     current_close = float(df['close'].iloc[-1])
-    current_open = float(df['open'].iloc[-1])
+    # 預先計算指標或單元測試資料可能只有 close；缺少 open 時視為十字線，
+    # 仍由嚴格 MA3 峰谷與近期峰谷記憶判斷，不讓提早進場分支誤觸發。
+    current_open = float(df['open'].iloc[-1]) if 'open' in df.columns else current_close
     is_green_candle = current_close > current_open
     is_red_candle = current_close < current_open
 
@@ -1753,7 +1755,7 @@ class SuperTrendKeltnerStrategy:
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
-        adx_declining_exhausted = False  # --- 使用者要求：解除 ADX 限制，不再因為衰退阻擋開倉 ---
+        adx_declining_exhausted = adx_declining and adx < ADX_QUALITY_MIN
 
         # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
         # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。

@@ -232,7 +232,34 @@ BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
 )
 
 ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "false").lower() == "true"
-CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "5m")
+CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
+
+# --- 1m 趨勢追隨／遞減加碼（TSL 主導）---
+DIMINISHING_PYRAMID_ENABLED = os.getenv("DIMINISHING_PYRAMID_ENABLED", "true").lower() == "true"
+PYRAMID_SLOT1_BALANCE_PCT = float(os.getenv("PYRAMID_SLOT1_BALANCE_PCT", "0.95"))
+PYRAMID_SLOT2_REMAINING_PCT = float(os.getenv("PYRAMID_SLOT2_REMAINING_PCT", "0.50"))
+PYRAMID_MAX_SLOTS = int(os.getenv("PYRAMID_MAX_SLOTS", "1"))
+PYRAMID_TSL_ATR_MULT = float(os.getenv("PYRAMID_TSL_ATR_MULT", "2.0"))
+PYRAMID_HARD_STOP_ATR_MULT = float(os.getenv("PYRAMID_HARD_STOP_ATR_MULT", "1.2"))
+PYRAMID_EMERGENCY_REVERSAL_ATR_MULT = float(os.getenv("PYRAMID_EMERGENCY_REVERSAL_ATR_MULT", "0.8"))
+PYRAMID_BREAKEVEN_TRIGGER_ATR_MULT = float(os.getenv("PYRAMID_BREAKEVEN_TRIGGER_ATR_MULT", "1.0"))
+PYRAMID_SLOT2_MIN_PROFIT_ATR_MULT = float(os.getenv("PYRAMID_SLOT2_MIN_PROFIT_ATR_MULT", "0.5"))
+PYRAMID_SLOT2_REQUIRE_BREAKEVEN = os.getenv("PYRAMID_SLOT2_REQUIRE_BREAKEVEN", "true").lower() == "true"
+PYRAMID_PIVOT_LOOKBACK = int(os.getenv("PYRAMID_PIVOT_LOOKBACK", "8"))
+PYRAMID_PIVOT_MIN_PROFIT_ATR = float(os.getenv("PYRAMID_PIVOT_MIN_PROFIT_ATR", "1.0"))
+PYRAMID_PIVOT_CLOSE_FRACTION = float(os.getenv("PYRAMID_PIVOT_CLOSE_FRACTION", "1.00"))
+PYRAMID_PULLBACK_ZONE_ATR = float(os.getenv("PYRAMID_PULLBACK_ZONE_ATR", "0.35"))
+PYRAMID_ENTRY_MAX_MA_DISTANCE_ATR = float(os.getenv("PYRAMID_ENTRY_MAX_MA_DISTANCE_ATR", "0.65"))
+# 固定鎖利採「扣除開平倉手續費與預估平倉滑價後」的淨利金額。
+# 1.5U -> 2U -> 3U，3U 之後每增加 1U 再上移一階。
+PYRAMID_FIXED_LOCK_FIRST_USDT = float(os.getenv("PYRAMID_FIXED_LOCK_FIRST_USDT", "1.5"))
+PYRAMID_FIXED_LOCK_SECOND_USDT = float(os.getenv("PYRAMID_FIXED_LOCK_SECOND_USDT", "2.0"))
+PYRAMID_FIXED_LOCK_THIRD_USDT = float(os.getenv("PYRAMID_FIXED_LOCK_THIRD_USDT", "3.0"))
+PYRAMID_FIXED_LOCK_STEP_USDT = max(0.01, float(os.getenv("PYRAMID_FIXED_LOCK_STEP_USDT", "1.0")))
+PYRAMID_VOLUME_SPIKE_RATIO = float(os.getenv("PYRAMID_VOLUME_SPIKE_RATIO", "1.50"))
+PYRAMID_STRUCTURE_LOOKBACK = int(os.getenv("PYRAMID_STRUCTURE_LOOKBACK", "8"))
+PYRAMID_LIQUIDITY_GRAB_BARS = int(os.getenv("PYRAMID_LIQUIDITY_GRAB_BARS", "3"))
+PYRAMID_MIN_COST_MULT = float(os.getenv("PYRAMID_MIN_COST_MULT", "2.5"))
 
 def get_bounce_capture_ratio(score: int) -> float:
     progress = min(1.0, max(0.0, (float(score or 75) - 75.0) / 16.0))
@@ -741,7 +768,7 @@ PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT"
 # 與 ENABLE_TRAILING_STOP（移動停利）並行：兩套都啟用時同時運作，
 # 止損取「對持倉更有利（更高/更低）」的那個值。
 # ---------------------------------------------------------------------------
-ENABLE_FIXED_PROFIT_LOCK_PCT = os.getenv("ENABLE_FIXED_PROFIT_LOCK_PCT", "true").lower() == "true"
+ENABLE_FIXED_PROFIT_LOCK_PCT = os.getenv("ENABLE_FIXED_PROFIT_LOCK_PCT", "false").lower() == "true"
 # 觸發門檻：無槓桿利潤達到此值（小數，0.006=0.6%）時啟動鎖利
 FIXED_PROFIT_LOCK_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_TRIGGER_PCT", "0.006")))
 # 鎖利地板：止損移動後保證至少鎖住此比例（無槓桿）的利潤

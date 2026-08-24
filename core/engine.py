@@ -32,6 +32,11 @@ from core.config import (
     BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
     BREAKOUT_KC_FAIL_CONFIRM_BARS, STOP_LOSS_MULTIPLIER,
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
+    DIMINISHING_PYRAMID_ENABLED, PYRAMID_MAX_SLOTS,
+    PYRAMID_SLOT1_BALANCE_PCT, PYRAMID_SLOT2_REMAINING_PCT,
+    PYRAMID_HARD_STOP_ATR_MULT, PYRAMID_SLOT2_MIN_PROFIT_ATR_MULT,
+    PYRAMID_SLOT2_REQUIRE_BREAKEVEN,
+    PYRAMID_ENTRY_MAX_MA_DISTANCE_ATR,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
@@ -61,7 +66,12 @@ def cap_margin_to_trade_risk(
 from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
-from core.indicators import drop_unclosed_candle, compute_position_trigger
+from core.indicators import (
+    drop_unclosed_candle,
+    compute_position_trigger,
+    detect_diminishing_global_exit,
+    detect_diminishing_pyramid_entry,
+)
 
 class TradingEngine:
     def __init__(self):
@@ -144,6 +154,7 @@ class TradingEngine:
         self._continuous_alignment_wait: Dict[str, str] = {}
         # 同一根 K、同一方向只允許成交一次，避免止盈後重複吃同一訊號。
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
+        self._pyramid_last_entry_bar: Dict[str, tuple] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -2696,11 +2707,198 @@ class TradingEngine:
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
             self.account.save_state()
 
+    async def _apply_diminishing_global_exits(self) -> None:
+        """Run priority-1 CHoCH/MA-cross exits before account-level TSL checks."""
+        if not DIMINISHING_PYRAMID_ENABLED:
+            return
+        for symbol, position in list(self.account.positions.items()):
+            if position.get("strategy_mode") != "DIMINISHING_PYRAMID":
+                continue
+            frame = await self.fetch_klines(symbol, timeframe="1m", limit=60, keep_live=True)
+            side = position.get("side")
+            slots_data = list(position.get("slots") or [position])
+            references = [float(position.get("entry_price") or 0.0), float(position.get("mark_price") or 0.0)]
+            if side == "LONG":
+                references.extend(float(slot.get("highest_price") or slot.get("entry_price") or 0.0) for slot in slots_data)
+                adverse_reference = max(references)
+            else:
+                references.extend(float(slot.get("lowest_price") or slot.get("entry_price") or 0.0) for slot in slots_data)
+                adverse_reference = min(value for value in references if value > 0)
+            exit_info = detect_diminishing_global_exit(
+                frame,
+                side,
+                entry_price=float(position.get("entry_price") or 0.0),
+                atr=float(position.get("atr") or 0.0),
+                adverse_reference_price=adverse_reference,
+            )
+            fallback = float(frame["close"].iloc[-1]) if not frame.empty else float(position["entry_price"])
+            clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+            live_price = float(self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback)))
+            if exit_info.get("exit"):
+                slots = len(position.get("slots") or [position])
+                self.account.log(
+                    f"🚨 [Global Exit] {symbol} {slots} 槽全部平倉：{exit_info['reason']}",
+                    "DANGER",
+                )
+                await self.account.close_position(
+                    symbol=symbol,
+                    current_price=live_price,
+                    close_reason=f"Global Exit: {exit_info['reason']}",
+                )
+                continue
+
+            # 獲利部位不在此處按峰谷提前平倉；依 2a053b4 行為交由
+            # PaperAccount 的 USDT 固定鎖利與百分比移動停利繼續追蹤。
+
+    async def _process_diminishing_pyramid_symbol(self, symbol: str, frame: pd.DataFrame) -> dict:
+        """Process the active 1m single-slot entry and 2a053b4 immediate reversal."""
+        signal = detect_diminishing_pyramid_entry(frame, allow_live_pivot=True)
+        side = signal.get("signal")
+        if not side:
+            return signal
+
+        last_bar_id = (
+            int(float(frame["timestamp"].iloc[-1]))
+            if "timestamp" in frame.columns else int(frame.index[-1])
+        )
+        clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+        fallback = float(frame["close"].iloc[-1])
+        live_price = float(self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback)))
+        position = self.account.positions.get(symbol)
+        if position and position.get("strategy_mode") != "DIMINISHING_PYRAMID":
+            return {"signal": None, "reason": "舊策略持倉中，待原風控平倉後切換兩槽模式"}
+        if position and position.get("side") != side:
+            if self._pyramid_last_entry_bar.get(symbol) == (side, 1, last_bar_id):
+                return {
+                    **signal,
+                    "signal": None,
+                    "reason": f"同一根 1m K 已反手 {side}，不重複交易",
+                    "repeat_entry_bar": True,
+                }
+            old_side = position.get("side")
+            self.account.log(
+                f"🔄 [2a053b4 立即反手] {symbol} {signal.get('entry_type')}："
+                f"平掉 {old_side}，同輪改開 {side}",
+                "WARNING",
+            )
+            closed = await self.account.close_position(
+                symbol=symbol,
+                current_price=live_price,
+                close_reason=f"2a053b4 反向訊號 ({signal.get('entry_type')})",
+            )
+            if not closed:
+                return {**signal, "signal": None, "reason": f"{old_side} 平倉失敗，取消反手 {side}"}
+            position = None
+        if position and position.get("pyramid_pivot_partial_closed"):
+            return {"signal": None, "reason": "峰谷已分批止盈，剩餘50%由2ATR TSL管理，不再加碼"}
+        slots = list(position.get("slots") or [position]) if position else []
+        next_slot = len(slots) + 1
+        if next_slot > max(1, PYRAMID_MAX_SLOTS):
+            return {**signal, "reason": f"{side} 趨勢有效，已達 {PYRAMID_MAX_SLOTS} 槽上限"}
+        if self._pyramid_last_entry_bar.get(symbol) == (side, next_slot, last_bar_id):
+            return {
+                **signal,
+                "signal": None,
+                "reason": f"同一根 1m K 已執行 Slot {next_slot}，等待下一根形成新峰谷",
+                "repeat_entry_bar": True,
+            }
+
+        available = float(self.account.get_available_balance())
+        atr = float(signal["atr"])
+        live_ma3 = float(signal["ma3"])
+        live_ma_distance_atr = max(
+            0.0,
+            (live_price - live_ma3) / max(atr, live_price * 1e-12)
+            if side == "LONG" else
+            (live_ma3 - live_price) / max(atr, live_price * 1e-12),
+        )
+        if live_ma_distance_atr > max(0.0, PYRAMID_ENTRY_MAX_MA_DISTANCE_ATR):
+            return {
+                **signal,
+                "signal": None,
+                "reason": f"訊號成立但現價已順向離 MA3 {live_ma_distance_atr:.2f}ATR，等待回踩再開倉",
+                "execution_too_far": True,
+                "live_ma_distance_atr": live_ma_distance_atr,
+            }
+        structural_stop = float(signal["structural_stop"])
+        hard_stop_distance = atr * max(0.1, PYRAMID_HARD_STOP_ATR_MULT)
+        if side == "LONG":
+            structural_stop = min(
+                max(structural_stop, live_price - hard_stop_distance),
+                live_price - atr * 0.10,
+            )
+        else:
+            structural_stop = max(
+                min(structural_stop, live_price + hard_stop_distance),
+                live_price + atr * 0.10,
+            )
+
+        if next_slot == 1:
+            margin = available * PYRAMID_SLOT1_BALANCE_PCT
+            opened = await self.account.open_position(
+                symbol=symbol,
+                side=side,
+                price=live_price,
+                amount_usdt=margin,
+                sl=structural_stop,
+                tp=0.0,
+                reason=f"Slot 1: {signal['reason']}",
+                atr=atr,
+                leverage=5,
+                signal_score=90,
+                entry_context={
+                    "strategy_mode": "DIMINISHING_PYRAMID",
+                    "pyramid_slot": 1,
+                    "entry_trigger": signal.get("entry_type"),
+                    "structural_stop": structural_stop,
+                    "profit_profile": "TREND_EXTENSION",
+                },
+            )
+        else:
+            slot1 = slots[0]
+            slot1_entry = float(slot1.get("entry_price") or position["entry_price"])
+            slot1_atr = max(float(slot1.get("atr") or atr), live_price * 1e-12)
+            slot1_profit_atr = (
+                (live_price - slot1_entry) / slot1_atr
+                if side == "LONG" else (slot1_entry - live_price) / slot1_atr
+            )
+            if slot1_profit_atr < PYRAMID_SLOT2_MIN_PROFIT_ATR_MULT:
+                return {
+                    **signal,
+                    "reason": f"Slot 2 等待 Slot 1 浮盈至少 {PYRAMID_SLOT2_MIN_PROFIT_ATR_MULT:.1f} ATR",
+                }
+            if PYRAMID_SLOT2_REQUIRE_BREAKEVEN and not bool(slot1.get("breakeven_armed")):
+                return {**signal, "reason": "Slot 2 等待 Slot 1 止損移至含成本保本線"}
+            margin = available * PYRAMID_SLOT2_REMAINING_PCT
+            add_slot = getattr(self.account, "add_position_slot", None)
+            if add_slot is None:
+                return {**signal, "reason": "目前執行帳戶尚不支援同幣第二槽"}
+            opened = await add_slot(
+                symbol=symbol,
+                side=side,
+                price=live_price,
+                amount_usdt=margin,
+                sl=structural_stop,
+                reason=f"Slot 2 added: Slot 1 in profit; {signal['reason']}",
+                atr=atr,
+                leverage=5,
+                signal_score=90,
+            )
+
+        if opened:
+            self._pyramid_last_entry_bar[symbol] = (side, next_slot, last_bar_id)
+            return {**signal, "opened_slot": next_slot, "margin": margin}
+        return {**signal, "reason": f"Slot {next_slot} 下單未成交"}
+
     async def _main_loop(self):
         while self.is_running:
             try:
                 # 1. 更新實時價格
                 await self.update_market_prices()
+
+                # Priority 1：先處理 1m 結構破位／MA3-MA5 反向交叉，再讓帳戶
+                # 更新 Priority 2 的 2 ATR TSL，確保全局硬退出永遠先執行。
+                await self._apply_diminishing_global_exits()
 
                 # 幣種輪替已移到獨立的 _rotation_loop() 背景任務執行，
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
@@ -2762,6 +2960,24 @@ class TradingEngine:
 
                         from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
                         if ENABLE_CONTINUOUS_REVERSE_MODE:
+                            if DIMINISHING_PYRAMID_ENABLED:
+                                pyramid_frame = await self.fetch_klines(
+                                    symbol, timeframe="1m", limit=100, keep_live=True
+                                )
+                                pyramid_info = await self._process_diminishing_pyramid_symbol(
+                                    symbol, pyramid_frame
+                                )
+                                position = self.account.positions.get(symbol)
+                                if position:
+                                    slot_count = len(position.get("slots") or [position])
+                                    direction = "多單" if position.get("side") == "LONG" else "空單"
+                                    signal_progress.append(
+                                        f"{coin} {direction} {slot_count}/{PYRAMID_MAX_SLOTS}槽，固定鎖利＋移動停利"
+                                    )
+                                elif pyramid_info.get("reason"):
+                                    signal_progress.append(f"{coin} {pyramid_info['reason']}")
+                                continue
+
                             from core.indicators import detect_ma5_ma25_cross_and_turn
                             from core.strategy import build_sl_tp_for_side
                             # 一般方向訊號只使用已收盤 K；活動 K 在 MA3 第一彎與 K 色同向時

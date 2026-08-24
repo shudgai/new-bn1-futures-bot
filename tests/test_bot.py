@@ -31,7 +31,8 @@ from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import (
     compute_position_trigger, detect_ma5_ma25_cross_and_turn, drop_unclosed_candle,
-    get_dynamic_adx_floor,
+    get_dynamic_adx_floor, detect_diminishing_global_exit,
+    detect_diminishing_pyramid_entry, detect_diminishing_profit_pivot,
 )
 from core.engine import TradingEngine, cap_margin_to_trade_risk
 
@@ -58,6 +59,473 @@ def test_pullback_target_enforces_minimum_atr_distance_and_rejects_narrow_room()
     assert room_ok is False
     assert distance == pytest.approx(0.05)
     assert target == pytest.approx(100.0)
+
+
+def _diminishing_trend_frame(side="LONG", size=40):
+    rising = side == "LONG"
+    closes = np.linspace(100.0, 104.0, size) if rising else np.linspace(104.0, 100.0, size)
+    frame = pd.DataFrame({
+        "open": closes - 0.03 if rising else closes + 0.03,
+        "high": closes + 0.12,
+        "low": closes - 0.12,
+        "close": closes,
+        "volume": [100.0] * size,
+        "timestamp": np.arange(size) * 60_000,
+    })
+    if rising:
+        frame.loc[size - 1, ["open", "high", "low", "close", "volume"]] = [103.75, 103.85, 103.35, 103.825, 200.0]
+    else:
+        frame.loc[size - 1, ["open", "high", "low", "close", "volume"]] = [100.25, 100.65, 100.15, 100.175, 200.0]
+    return frame
+
+
+@pytest.mark.parametrize(("side", "zone"), [("LONG", "BULLISH"), ("SHORT", "BEARISH")])
+def test_diminishing_entry_uses_2a_aligned_trend_with_new_risk_controls(side, zone):
+    result = detect_diminishing_pyramid_entry(_diminishing_trend_frame(side))
+
+    assert result["signal"] == side
+    assert result["trend_zone"] == zone
+    assert result["entry_type"] == ("TREND_LONG" if side == "LONG" else "TREND_SHORT")
+    assert result["volume_ratio"] >= 1.5
+
+
+def test_diminishing_global_exit_closes_on_adverse_ma_cross():
+    frame = _diminishing_trend_frame("LONG")
+    frame.loc[frame.index[-2:], "close"] = [102.0, 100.0]
+    frame.loc[frame.index[-2:], "low"] = [101.9, 99.9]
+
+    result = detect_diminishing_global_exit(frame, "LONG")
+
+    assert result["exit"] is True
+    assert result["adverse_cross"] is True or result["structure_broken"] is True
+
+
+def test_diminishing_global_exit_requires_adverse_atr_and_reversal_confirmation():
+    frame = _diminishing_trend_frame("LONG")
+    frame.loc[frame.index[-2], ["open", "high", "low", "close"]] = [105.0, 105.2, 104.8, 105.0]
+    frame.loc[frame.index[-1], ["open", "high", "low", "close", "volume"]] = [104.7, 104.8, 103.9, 104.0, 200.0]
+
+    result = detect_diminishing_global_exit(
+        frame, "LONG", entry_price=104.0, atr=1.0, adverse_reference_price=105.0,
+    )
+
+    assert result["emergency_reversal"] is True
+    assert result["adverse_move_atr"] == pytest.approx(1.0)
+    assert result["emergency_confirmations"]
+
+
+def test_diminishing_global_exit_ignores_small_adverse_move_even_with_ma3_turn():
+    frame = _diminishing_trend_frame("LONG")
+    frame.loc[frame.index[-2:], "close"] = [104.8, 104.4]
+
+    result = detect_diminishing_global_exit(
+        frame, "LONG", entry_price=104.0, atr=1.0, adverse_reference_price=105.0,
+    )
+
+    assert result["emergency_reversal"] is False
+    assert result["adverse_move_atr"] == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize(("side", "pivot_name"), [("LONG", "頂峰"), ("SHORT", "谷底")])
+def test_diminishing_profit_pivot_confirms_closed_peak_or_trough(side, pivot_name):
+    frame = _diminishing_trend_frame(side)
+    if side == "LONG":
+        frame.loc[frame.index[-3], ["open", "high", "low", "close"]] = [103.8, 104.2, 103.7, 104.0]
+        frame.loc[frame.index[-2], ["open", "high", "low", "close"]] = [104.0, 106.3, 103.9, 106.0]
+        frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [105.0, 105.1, 102.4, 102.5]
+    else:
+        frame.loc[frame.index[-3], ["open", "high", "low", "close"]] = [100.2, 100.3, 99.8, 100.0]
+        frame.loc[frame.index[-2], ["open", "high", "low", "close"]] = [100.0, 100.1, 97.7, 98.0]
+        frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [99.0, 101.6, 98.9, 101.5]
+
+    result = detect_diminishing_profit_pivot(frame, side)
+
+    assert result["pivot"] is True
+    assert result["pivot_name"] == pivot_name
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_profit_pivot_keeps_runner_for_2a_trailing(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_pivot.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    assert await engine.account.open_position(
+        "BTC/USDT", "LONG", 100.0, 45.0, 98.8, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    engine.tickers["BTC/USDT"] = 101.5
+
+    async def fake_fetch(*_args, **_kwargs):
+        return _diminishing_trend_frame("LONG")
+
+    monkeypatch.setattr(engine, "fetch_klines", fake_fetch)
+    monkeypatch.setattr(engine_module, "detect_diminishing_global_exit", lambda *_args, **_kwargs: {"exit": False})
+    await engine._apply_diminishing_global_exits()
+
+    assert "BTC/USDT" in engine.account.positions
+    assert not any(trade["action"] == "CLOSE_LONG" for trade in engine.account.trades)
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+def test_diminishing_entry_rejects_liquidity_grab_returned_inside_three_bars():
+    frame = _diminishing_trend_frame("LONG")
+    frame.loc[frame.index[-11:-3], "high"] = 105.0
+    frame.loc[frame.index[-3], "high"] = 110.0
+
+    result = detect_diminishing_pyramid_entry(frame)
+
+    assert result["signal"] is None
+    assert result["liquidity_grab"] is True
+
+
+def test_diminishing_entry_requires_projected_move_three_times_cost(monkeypatch):
+    monkeypatch.setattr("core.config.PYRAMID_MIN_COST_MULT", 100.0)
+
+    result = detect_diminishing_pyramid_entry(_diminishing_trend_frame("LONG"))
+
+    assert result["signal"] is None
+    assert result["cost_filter"] is True
+
+
+@pytest.mark.anyio
+async def test_paper_diminishing_slots_use_2a_trailing_profit(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid.json"))
+    monkeypatch.setattr(pa_module, "PYRAMID_MAX_SLOTS", 2)
+    account = PaperAccount()
+    account.balance = 150.0
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 45.0, 96.0, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    remaining = account.get_available_balance()
+    slot2_margin = remaining * 0.50
+    assert await account.add_position_slot(
+        "BTC/USDT", "LONG", 101.0, slot2_margin, 97.0, "Slot 2 added: Slot 1 in profit",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+    )
+    position = account.positions["BTC/USDT"]
+    assert len(position["slots"]) == 2
+    assert position["margin"] == pytest.approx(45.0 + slot2_margin)
+
+    await account.update_positions({"BTC/USDT": 104.0})
+    trailing_sl = account.positions["BTC/USDT"]["sl"]
+    assert trailing_sl > 103.8
+    assert account.positions["BTC/USDT"]["fixed_profit_lock_usdt_armed"] is True
+    await account.update_positions({"BTC/USDT": trailing_sl - 0.01})
+    assert "BTC/USDT" not in account.positions
+
+
+@pytest.mark.anyio
+async def test_paper_diminishing_uses_2a_fixed_lock_and_trailing(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_breakeven.json"))
+    account = PaperAccount()
+    account.balance = 150.0
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 45.0, 98.8, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+
+    await account.update_positions({"BTC/USDT": 101.0})
+
+    position = account.positions["BTC/USDT"]
+    assert position["fixed_profit_lock_usdt_armed"] is True
+    assert position["pyramid_locked_net_usdt"] == pytest.approx(2.0)
+    close_exec = position["sl"] * (1 - pa_module.SLIPPAGE_PCT)
+    locked_net = position["qty"] * (close_exec - position["entry_price"]) - (
+        position["qty"] * position["entry_price"] * TAKER_FEE_RATE
+        + position["qty"] * close_exec * TAKER_FEE_RATE
+    )
+    assert locked_net == pytest.approx(2.0)
+
+
+@pytest.mark.anyio
+async def test_paper_diminishing_fixed_lock_arms_before_2a_trailing(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_fixed_lock.json"))
+    account = PaperAccount()
+    account.balance = 150.0
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 45.0, 98.8, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+
+    await account.update_positions({"BTC/USDT": 100.79})
+
+    meta = account.position_meta["BTC/USDT"]
+    assert meta["fixed_profit_lock_usdt_armed"] is True
+    assert meta["pyramid_locked_net_usdt"] == pytest.approx(1.5)
+    position = account.positions["BTC/USDT"]
+    close_exec = position["sl"] * (1 - pa_module.SLIPPAGE_PCT)
+    locked_net = position["qty"] * (close_exec - position["entry_price"]) - (
+        position["qty"] * position["entry_price"] * TAKER_FEE_RATE
+        + position["qty"] * close_exec * TAKER_FEE_RATE
+    )
+    assert locked_net == pytest.approx(1.5)
+    assert not any("移動停利/2a053b4" in log["text"] for log in account.logs)
+
+
+@pytest.mark.parametrize(("peak_net_usdt", "expected_lock_usdt"), [
+    (1.6, 1.5),
+    (2.1, 2.0),
+    (3.1, 3.0),
+    (4.1, 4.0),
+])
+@pytest.mark.anyio
+async def test_paper_diminishing_fixed_lock_usdt_ladder(
+    tmp_path, monkeypatch, peak_net_usdt, expected_lock_usdt
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_usdt_ladder.json"))
+    account = PaperAccount()
+    account.balance = 150.0
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 45.0, 98.8, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    position = account.positions["BTC/USDT"]
+    qty = position["qty"]
+    entry_price = position["entry_price"]
+    peak_exec = (
+        peak_net_usdt / qty + entry_price * (1 + TAKER_FEE_RATE)
+    ) / (1 - TAKER_FEE_RATE)
+    peak_market = peak_exec / (1 - pa_module.SLIPPAGE_PCT)
+
+    await account.update_positions({"BTC/USDT": peak_market})
+
+    meta = account.position_meta["BTC/USDT"]
+    assert meta["pyramid_locked_net_usdt"] == pytest.approx(expected_lock_usdt)
+
+
+@pytest.mark.anyio
+async def test_paper_diminishing_fixed_lock_usdt_ladder_for_short(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_short_ladder.json"))
+    account = PaperAccount()
+    account.balance = 150.0
+    assert await account.open_position(
+        "BTC/USDT", "SHORT", 100.0, 45.0, 101.2, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    position = account.positions["BTC/USDT"]
+    qty = position["qty"]
+    entry_price = position["entry_price"]
+    peak_exec = (
+        entry_price * (1 - TAKER_FEE_RATE) - 3.1 / qty
+    ) / (1 + TAKER_FEE_RATE)
+    peak_market = peak_exec / (1 + pa_module.SLIPPAGE_PCT)
+
+    await account.update_positions({"BTC/USDT": peak_market})
+
+    position = account.positions["BTC/USDT"]
+    meta = account.position_meta["BTC/USDT"]
+    assert meta["pyramid_locked_net_usdt"] == pytest.approx(3.0)
+    close_exec = position["sl"] * (1 + pa_module.SLIPPAGE_PCT)
+    locked_net = position["qty"] * (position["entry_price"] - close_exec) - (
+        position["qty"] * position["entry_price"] * TAKER_FEE_RATE
+        + position["qty"] * close_exec * TAKER_FEE_RATE
+    )
+    assert locked_net >= 3.0
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_uses_single_slot_with_95pct_balance(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "engine_pyramid.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    engine.account.positions = {}
+    engine.account.position_meta = {}
+    frame = _diminishing_trend_frame("LONG")
+    signal = detect_diminishing_pyramid_entry(frame)
+    monkeypatch.setattr(engine_module, "detect_diminishing_pyramid_entry", lambda _frame, **_kwargs: dict(signal))
+    engine.tickers["BTC/USDT"] = 103.825
+
+    first = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+    assert first["opened_slot"] == 1
+    assert first["margin"] == pytest.approx(142.5)
+    position = engine.account.positions["BTC/USDT"]
+    assert abs(position["entry_price"] - position["sl"]) <= (
+        position["atr"] * engine_module.PYRAMID_HARD_STOP_ATR_MULT + 1e-9
+    )
+    engine.tickers["BTC/USDT"] = 104.60
+    blocked = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+    assert "已達 1 槽上限" in blocked["reason"]
+    assert len(engine.account.positions["BTC/USDT"]["slots"]) == 1
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+def test_diminishing_entry_rejects_chasing_far_from_ma():
+    frame = _diminishing_trend_frame("LONG")
+    frame.loc[frame.index[-1], ["open", "high", "close"]] = [104.00, 104.25, 104.20]
+
+    result = detect_diminishing_pyramid_entry(frame)
+
+    assert result["signal"] is None
+    assert result["execution_too_far"] is True
+    assert "避免追高" in result["reason"]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_diminishing_entry_accepts_aligned_trend_without_volume_spike(side):
+    frame = _diminishing_trend_frame(side)
+    frame.loc[frame.index[-1], "volume"] = 100.0
+
+    result = detect_diminishing_pyramid_entry(frame)
+
+    assert result["signal"] == side
+    assert result["entry_type"] == ("TREND_LONG" if side == "LONG" else "TREND_SHORT")
+    assert result["volume_ratio"] < 1.5
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_reentry_requires_a_new_pivot_bar(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_new_pivot.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    frame = _diminishing_trend_frame("LONG")
+    signal = detect_diminishing_pyramid_entry(frame)
+    monkeypatch.setattr(engine_module, "detect_diminishing_pyramid_entry", lambda _frame, **_kwargs: dict(signal))
+    last_bar_id = int(float(frame["timestamp"].iloc[-1]))
+    engine._pyramid_last_entry_bar["BTC/USDT"] = ("LONG", 1, last_bar_id)
+
+    result = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+
+    assert result["signal"] is None
+    assert result["repeat_entry_bar"] is True
+    assert "下一根形成新峰谷" in result["reason"]
+    assert "BTC/USDT" not in engine.account.positions
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+@pytest.mark.parametrize(("side", "entry_type"), [("LONG", "TROUGH_TURN"), ("SHORT", "PEAK_TURN")])
+def test_diminishing_hybrid_keeps_fast_2a_pivot_when_ma25_aligned(monkeypatch, side, entry_type):
+    frame = _diminishing_trend_frame(side)
+    monkeypatch.setattr(
+        "core.indicators.detect_ma5_ma25_cross_and_turn",
+        lambda *_args, **_kwargs: {
+            "signal": side,
+            "entry_type": entry_type,
+            "reason": f"MA3 快速{entry_type}",
+            "pivot_confirmed": True,
+        },
+    )
+
+    result = detect_diminishing_pyramid_entry(frame)
+
+    assert result["signal"] == side
+    assert result["entry_type"] == entry_type
+    assert result["pivot_ready"] is True
+
+
+def test_diminishing_peak_above_ma25_opens_short_immediately(monkeypatch):
+    frame = _diminishing_trend_frame("LONG")
+    monkeypatch.setattr(
+        "core.indicators.detect_ma5_ma25_cross_and_turn",
+        lambda *_args, **_kwargs: {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "MA3 真頂峰向下", "pivot_confirmed": True,
+        },
+    )
+
+    result = detect_diminishing_pyramid_entry(frame, allow_live_pivot=True)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "PEAK_TURN"
+    assert result["trend_zone"] == "PIVOT_REVERSAL"
+
+
+def test_diminishing_mixed_ma25_zone_keeps_2a_trough_pivot(monkeypatch):
+    frame = _diminishing_trend_frame("LONG")
+    prepared = frame.copy()
+    pivot_price = float(prepared["close"].iloc[-1])
+    prepared["ma3"] = pivot_price
+    prepared["ma5"] = pivot_price - 0.01
+    prepared["ma25"] = pivot_price
+    prepared["atr"] = 1.0
+    prepared.loc[prepared.index[-1], ["ma3", "ma5", "ma25"]] = [
+        pivot_price + 0.01, pivot_price - 0.01, pivot_price,
+    ]
+    monkeypatch.setattr("core.indicators._prepare_pyramid_indicators", lambda _frame: prepared)
+    monkeypatch.setattr(
+        "core.indicators.detect_ma5_ma25_cross_and_turn",
+        lambda *_args, **_kwargs: {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "MA3 真谷底向上", "pivot_confirmed": True,
+        },
+    )
+
+    result = detect_diminishing_pyramid_entry(frame, allow_live_pivot=True)
+
+    assert result["signal"] == "LONG"
+    assert result["entry_type"] == "TROUGH_TURN"
+    assert result["trend_zone"] == "PIVOT_REVERSAL"
+
+
+
+def test_diminishing_bearish_zone_does_not_short_while_ma3_turns_up(monkeypatch):
+    frame = _diminishing_trend_frame("SHORT")
+    prepared = frame.copy()
+    prepared["ma3"] = 99.0
+    prepared["ma5"] = 99.0
+    prepared["ma25"] = 100.0
+    prepared["atr"] = 1.0
+    prepared.loc[prepared.index[-2], "ma3"] = 98.8
+    prepared.loc[prepared.index[-1], ["open", "close", "ma3"]] = [99.2, 99.0, 99.1]
+    monkeypatch.setattr("core.indicators._prepare_pyramid_indicators", lambda _frame: prepared)
+    monkeypatch.setattr(
+        "core.indicators.detect_ma5_ma25_cross_and_turn",
+        lambda *_args, **_kwargs: {
+            "signal": "SHORT", "entry_type": "TREND_SHORT",
+            "reason": "均線仍在 MA25 下方", "pivot_confirmed": False,
+        },
+    )
+
+    result = detect_diminishing_pyramid_entry(frame, allow_live_pivot=True)
+
+    assert result["signal"] is None
+    assert result["ma3_turn_confirmation"] is False
+    assert "谷底上彎時禁止追空" in result["reason"]
+
+
+@pytest.mark.anyio
+async def test_engine_diminishing_2a_pivot_closes_short_and_opens_long_same_cycle(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_reverse.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    assert await engine.account.open_position(
+        "BTC/USDT", "SHORT", 100.0, 45.0, 101.0, 0.0, "舊空單",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    frame = _diminishing_trend_frame("LONG")
+    monkeypatch.setattr(
+        engine_module, "detect_diminishing_pyramid_entry",
+        lambda *_args, **_kwargs: {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "MA3 真谷底向上 → 立即開多", "pivot_confirmed": True,
+            "atr": 1.0, "ma3": 100.0, "structural_stop": 99.0,
+        },
+    )
+    engine.tickers["BTC/USDT"] = 100.0
+
+    result = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+
+    assert result["opened_slot"] == 1
+    assert engine.account.positions["BTC/USDT"]["side"] == "LONG"
+    assert any("2a053b4 反向訊號" in trade.get("reason", "") for trade in engine.account.trades)
+    assert any("2a053b4 立即反手" in log["text"] for log in engine.account.logs)
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
 
 
 def test_tail_end_rebound_guard_blocks_last_pulse_without_follow_through():

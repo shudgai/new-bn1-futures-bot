@@ -5,6 +5,360 @@ import numpy as np
 
 TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
+
+def _prepare_pyramid_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Return an isolated frame with the indicators required by the 1m pyramid strategy."""
+    frame = df.copy()
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    frame["ma3"] = close.rolling(3).mean()
+    frame["ma5"] = close.rolling(5).mean()
+    frame["ma25"] = close.rolling(25).mean()
+    if "atr" not in frame.columns:
+        high = pd.to_numeric(frame["high"], errors="coerce")
+        low = pd.to_numeric(frame["low"], errors="coerce")
+        true_range = pd.concat(
+            [(high - low), (high - close.shift()).abs(), (low - close.shift()).abs()],
+            axis=1,
+        ).max(axis=1)
+        frame["atr"] = true_range.ewm(alpha=1 / 14, adjust=False).mean()
+    return frame
+
+
+def detect_diminishing_pyramid_entry(
+    df: pd.DataFrame, allow_live_pivot: bool = False
+) -> dict:
+    """融合 2a053b4 快速 MA3 峰谷與新版防追價風控的 1m 進場。"""
+    from core.config import (
+        PYRAMID_LIQUIDITY_GRAB_BARS,
+        PYRAMID_ENTRY_MAX_MA_DISTANCE_ATR,
+        PYRAMID_MIN_COST_MULT,
+        PYRAMID_PULLBACK_ZONE_ATR,
+        PYRAMID_STRUCTURE_LOOKBACK,
+        PYRAMID_TSL_ATR_MULT,
+        PYRAMID_VOLUME_SPIKE_RATIO,
+        SLIPPAGE_PCT,
+        TAKER_FEE_RATE,
+    )
+
+    if df is None or len(df) < 30:
+        return {"signal": None, "reason": "1m 資料不足"}
+    frame = _prepare_pyramid_indicators(df)
+    current = frame.iloc[-1]
+    previous = frame.iloc[-2]
+    values = [current.get(name) for name in ("close", "open", "high", "low", "ma3", "ma5", "ma25", "atr")]
+    if any(pd.isna(value) for value in values):
+        return {"signal": None, "reason": "1m 指標尚未完成暖機"}
+
+    close = float(current["close"])
+    open_price = float(current["open"])
+    high = float(current["high"])
+    low = float(current["low"])
+    ma3 = float(current["ma3"])
+    ma5 = float(current["ma5"])
+    ma25 = float(current["ma25"])
+    atr = max(float(current["atr"]), close * 1e-6)
+    bullish_zone = ma3 > ma25 and ma5 > ma25
+    bearish_zone = ma3 < ma25 and ma5 < ma25
+
+    # 2a053b4 的峰谷必須優先於 MA25 排列判斷。谷底剛上彎時 MA3 常會先
+    # 穿越 MA25、MA5 還來不及跟上；若先擋 MIXED，最重要的第一彎會被漏掉。
+    fast_signal = detect_ma5_ma25_cross_and_turn(
+        frame, allow_live_pivot=allow_live_pivot
+    )
+    if not fast_signal.get("signal"):
+        return {
+            **fast_signal,
+            "trend_zone": "BULLISH" if bullish_zone else "BEARISH",
+        }
+    entry_type = fast_signal.get("entry_type") or (
+        "TREND_LONG" if fast_signal.get("signal") == "LONG" else "TREND_SHORT"
+    )
+    pivot_override = bool(
+        fast_signal.get("pivot_confirmed")
+        and entry_type in ("TROUGH_TURN", "PEAK_TURN")
+    )
+    if pivot_override:
+        side = fast_signal["signal"]
+        bullish_zone = side == "LONG"
+        bearish_zone = side == "SHORT"
+    else:
+        if not bullish_zone and not bearish_zone:
+            return {
+                "signal": None,
+                "reason": "MA3、MA5 分居 MA25 兩側且尚無真峰谷，暫不開倉",
+                "trend_zone": "MIXED",
+            }
+        side = "LONG" if bullish_zone else "SHORT"
+
+    if fast_signal.get("signal") != side and not pivot_override:
+        return {
+            "signal": None,
+            "reason": f"MA3、MA5 位於 MA25 {'上方' if bullish_zone else '下方'}，拒絕逆勢 {fast_signal.get('signal')}",
+            "trend_zone": "BULLISH" if bullish_zone else "BEARISH",
+            "alignment_blocked": True,
+        }
+    if entry_type in ("TREND_LONG", "TREND_SHORT"):
+        candle_confirms = close > open_price if side == "LONG" else close < open_price
+        ma3_turn_confirms = (
+            ma3 > float(previous["ma3"])
+            if side == "LONG" else ma3 < float(previous["ma3"])
+        )
+        if not candle_confirms or not ma3_turn_confirms:
+            return {
+                "signal": None,
+                "reason": (
+                    f"{side} 均線同側，但 MA3 尚未同向；"
+                    f"谷底上彎時禁止追空、頂峰下彎時禁止追多"
+                ),
+                "trend_zone": "BULLISH" if bullish_zone else "BEARISH",
+                "candle_confirmation": False,
+                "ma3_turn_confirmation": False,
+            }
+
+    # 只限制「順勢方向」的乖離：多單價格高於 MA3、空單價格低於 MA3
+    # 才視為追價；回踩到 MA3 另一側反而是更好的成交位置。
+    ma_distance_atr = max(
+        0.0,
+        (close - ma3) / atr if side == "LONG" else (ma3 - close) / atr,
+    )
+    if ma_distance_atr > max(0.0, PYRAMID_ENTRY_MAX_MA_DISTANCE_ATR):
+        return {
+            "signal": None,
+            "reason": f"{side} 趨勢成立，但現價順向離 MA3 {ma_distance_atr:.2f}ATR，避免追高／追空",
+            "trend_zone": "BULLISH" if bullish_zone else "BEARISH",
+            "execution_too_far": True,
+            "ma_distance_atr": ma_distance_atr,
+        }
+
+    zone_buffer = atr * max(0.0, PYRAMID_PULLBACK_ZONE_ATR)
+    zone_low = ma3 - zone_buffer
+    zone_high = ma3 + zone_buffer
+    touched_ma_zone = low <= zone_high and high >= zone_low
+
+    body = abs(close - open_price)
+    candle_range = max(high - low, close * 1e-9)
+    upper_wick = high - max(open_price, close)
+    lower_wick = min(open_price, close) - low
+    prior_volume = pd.to_numeric(frame["volume"].iloc[-21:-1], errors="coerce")
+    average_volume = float(prior_volume.mean()) if len(prior_volume) else 0.0
+    volume_ratio = float(current.get("volume", 0.0) or 0.0) / average_volume if average_volume > 0 else 0.0
+    long_pinbar = (
+        close > open_price
+        and lower_wick >= max(body * 2.0, atr * 0.15)
+        and upper_wick <= candle_range * 0.35
+        and volume_ratio >= PYRAMID_VOLUME_SPIKE_RATIO
+    )
+    short_pinbar = (
+        close < open_price
+        and upper_wick >= max(body * 2.0, atr * 0.15)
+        and lower_wick <= candle_range * 0.35
+        and volume_ratio >= PYRAMID_VOLUME_SPIKE_RATIO
+    )
+
+    lookback = max(3, int(PYRAMID_STRUCTURE_LOOKBACK))
+    local_window = frame.iloc[-(lookback + 2):-2]
+    local_high = float(local_window["high"].max())
+    local_low = float(local_window["low"].min())
+    retest_buffer = zone_buffer
+    breakout_retest_long = (
+        float(previous["close"]) > local_high
+        and low <= local_high + retest_buffer
+        and close >= local_high
+    )
+    breakout_retest_short = (
+        float(previous["close"]) < local_low
+        and high >= local_low - retest_buffer
+        and close <= local_low
+    )
+
+    grab_bars = max(1, int(PYRAMID_LIQUIDITY_GRAB_BARS))
+    liquidity_grab = False
+    for offset in range(2, min(grab_bars + 2, len(frame) - lookback)):
+        breakout_bar = frame.iloc[-offset]
+        range_before_breakout = frame.iloc[-(offset + lookback):-offset]
+        prior_range_high = float(range_before_breakout["high"].max())
+        prior_range_low = float(range_before_breakout["low"].min())
+        returned_inside = (
+            side == "LONG"
+            and float(breakout_bar["high"]) > prior_range_high + atr * 0.50
+            and close < prior_range_high
+        ) or (
+            side == "SHORT"
+            and float(breakout_bar["low"]) < prior_range_low - atr * 0.50
+            and close > prior_range_low
+        )
+        if returned_inside:
+            liquidity_grab = True
+            break
+    if liquidity_grab:
+        return {"signal": None, "reason": f"{side} 流動性掃單後收回前區間，忽略假突破", "liquidity_grab": True}
+
+    trigger = entry_type
+    fast_entry = entry_type in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN")
+    if not touched_ma_zone and not fast_entry:
+        return {
+            "signal": None,
+            "reason": f"{side} 均線同側，等待價格回踩 MA3 附近再現價進場",
+            "trend_zone": "BULLISH" if bullish_zone else "BEARISH",
+            "pullback_touched": touched_ma_zone,
+            "volume_ratio": volume_ratio,
+        }
+
+    projected_move_pct = PYRAMID_TSL_ATR_MULT * atr / max(close, 1e-12)
+    round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
+    if projected_move_pct < PYRAMID_MIN_COST_MULT * round_trip_cost_pct:
+        return {
+            "signal": None,
+            "reason": f"預估波幅 {projected_move_pct:.3%} 不足交易成本 {round_trip_cost_pct:.3%} 的 {PYRAMID_MIN_COST_MULT:.1f} 倍",
+            "cost_filter": True,
+        }
+
+    structural_stop = local_low if side == "LONG" else local_high
+    return {
+        "signal": side,
+        "entry_type": trigger,
+        "reason": f"融合版 1m {side}: {fast_signal.get('reason', trigger)}",
+        "trend_zone": "PIVOT_REVERSAL" if pivot_override else ("BULLISH" if bullish_zone else "BEARISH"),
+        "atr": atr,
+        "ma3": ma3,
+        "ma5": ma5,
+        "ma25": ma25,
+        "ma_distance_atr": ma_distance_atr,
+        "pivot_ready": bool(fast_signal.get("pivot_confirmed")),
+        "structural_stop": structural_stop,
+        "volume_ratio": volume_ratio,
+        "projected_move_pct": projected_move_pct,
+    }
+
+
+def detect_diminishing_global_exit(
+    df: pd.DataFrame,
+    side: str,
+    entry_price: float = None,
+    atr: float = None,
+    adverse_reference_price: float = None,
+) -> dict:
+    """Priority-1 exit: CHoCH/cross plus a confirmed 0.8 ATR emergency reversal."""
+    from core.config import (
+        PYRAMID_EMERGENCY_REVERSAL_ATR_MULT,
+        PYRAMID_STRUCTURE_LOOKBACK,
+        PYRAMID_VOLUME_SPIKE_RATIO,
+    )
+
+    if df is None or len(df) < 30 or side not in ("LONG", "SHORT"):
+        return {"exit": False, "reason": "資料不足"}
+    frame = _prepare_pyramid_indicators(df)
+    current = frame.iloc[-1]
+    previous = frame.iloc[-2]
+    close = float(current["close"])
+    ma3 = frame["ma3"]
+    ma5 = frame["ma5"]
+    adverse_cross = (
+        float(ma3.iloc[-2]) >= float(ma5.iloc[-2]) and float(ma3.iloc[-1]) < float(ma5.iloc[-1])
+        if side == "LONG"
+        else float(ma3.iloc[-2]) <= float(ma5.iloc[-2]) and float(ma3.iloc[-1]) > float(ma5.iloc[-1])
+    )
+    lookback = max(3, int(PYRAMID_STRUCTURE_LOOKBACK))
+    structure = frame.iloc[-(lookback + 1):-1]
+    structural_level = float(structure["low"].min()) if side == "LONG" else float(structure["high"].max())
+    structure_broken = close < structural_level if side == "LONG" else close > structural_level
+
+    # 急速反轉必須同時具備「至少 0.8 ATR 不利回撤」與一項反轉證據，
+    # 避免只有單根影線或一般回踩就把趨勢單洗掉。
+    valid_atr = max(float(atr or 0.0), close * 1e-12)
+    reference = float(adverse_reference_price or entry_price or close)
+    adverse_distance = max(0.0, reference - close) if side == "LONG" else max(0.0, close - reference)
+    adverse_move_atr = adverse_distance / valid_atr if atr and float(atr) > 0 else 0.0
+    ma3_turn = (
+        float(ma3.iloc[-1]) < float(ma3.iloc[-2])
+        if side == "LONG" else float(ma3.iloc[-1]) > float(ma3.iloc[-2])
+    )
+    open_price = float(current.get("open", close))
+    adverse_candle = close < open_price if side == "LONG" else close > open_price
+    prior_volume = pd.to_numeric(frame["volume"].iloc[-21:-1], errors="coerce") if "volume" in frame else pd.Series(dtype=float)
+    average_volume = float(prior_volume.mean()) if len(prior_volume) else 0.0
+    volume_ratio = float(current.get("volume", 0.0) or 0.0) / average_volume if average_volume > 0 else 0.0
+    adverse_volume_spike = adverse_candle and volume_ratio >= PYRAMID_VOLUME_SPIKE_RATIO
+    prior_structure_break = (
+        close < float(previous["low"])
+        if side == "LONG" else close > float(previous["high"])
+    )
+    emergency_confirmations = []
+    if ma3_turn:
+        emergency_confirmations.append("MA3反向")
+    if adverse_volume_spike:
+        emergency_confirmations.append("放量反向K")
+    if prior_structure_break:
+        emergency_confirmations.append("突破前一根結構")
+    emergency_reversal = (
+        adverse_move_atr >= PYRAMID_EMERGENCY_REVERSAL_ATR_MULT
+        and bool(emergency_confirmations)
+    )
+    reasons = []
+    if structure_broken:
+        reasons.append(f"CHoCH 結構破位 {structural_level:.6g}")
+    if adverse_cross:
+        reasons.append("MA3/MA5 反向交叉")
+    if emergency_reversal:
+        reasons.append(
+            f"緊急反轉 {adverse_move_atr:.2f}ATR + {'/'.join(emergency_confirmations)}"
+        )
+    return {
+        "exit": bool(reasons),
+        "reason": " + ".join(reasons),
+        "structural_level": structural_level,
+        "adverse_cross": adverse_cross,
+        "structure_broken": structure_broken,
+        "emergency_reversal": emergency_reversal,
+        "adverse_move_atr": adverse_move_atr,
+        "emergency_confirmations": emergency_confirmations,
+    }
+
+
+def detect_diminishing_profit_pivot(df: pd.DataFrame, side: str) -> dict:
+    """Confirm a closed-candle peak for longs or trough for shorts."""
+    from core.config import PYRAMID_PIVOT_LOOKBACK
+
+    lookback = max(3, int(PYRAMID_PIVOT_LOOKBACK))
+    if df is None or len(df) < lookback + 5 or side not in ("LONG", "SHORT"):
+        return {"pivot": False, "reason": "峰谷資料不足"}
+    frame = _prepare_pyramid_indicators(df)
+    current = frame.iloc[-1]
+    previous = frame.iloc[-2]
+    ma3 = frame["ma3"]
+    if any(pd.isna(ma3.iloc[index]) for index in (-3, -2, -1)):
+        return {"pivot": False, "reason": "MA3峰谷尚未暖機"}
+
+    history = frame.iloc[-(lookback + 2):-2]
+    close = float(current["close"])
+    open_price = float(current.get("open", close))
+    if side == "LONG":
+        extreme_confirmed = float(previous["high"]) >= float(history["high"].max())
+        first_ma3_turn = float(ma3.iloc[-2]) >= float(ma3.iloc[-3]) and float(ma3.iloc[-1]) < float(ma3.iloc[-2])
+        reversal_candle = close < open_price and close < float(ma3.iloc[-1])
+        pivot_name = "頂峰"
+        pivot_price = float(previous["high"])
+    else:
+        extreme_confirmed = float(previous["low"]) <= float(history["low"].min())
+        first_ma3_turn = float(ma3.iloc[-2]) <= float(ma3.iloc[-3]) and float(ma3.iloc[-1]) > float(ma3.iloc[-2])
+        reversal_candle = close > open_price and close > float(ma3.iloc[-1])
+        pivot_name = "谷底"
+        pivot_price = float(previous["low"])
+
+    pivot = extreme_confirmed and first_ma3_turn and reversal_candle
+    return {
+        "pivot": pivot,
+        "pivot_name": pivot_name,
+        "pivot_price": pivot_price,
+        "extreme_confirmed": extreme_confirmed,
+        "first_ma3_turn": first_ma3_turn,
+        "reversal_candle": reversal_candle,
+        "reason": (
+            f"{pivot_name}確認：近{lookback}根極值 + MA3首次反向 + 反向K收回MA3"
+            if pivot else f"等待{pivot_name}完整確認"
+        ),
+    }
+
 def get_dynamic_adx_floor(df: pd.DataFrame, direction: int) -> tuple[float, bool]:
     """Return the ADX floor and whether price is in a strong directional trend."""
     from core.config import ADX_MANDATORY_MIN, ADX_STRONG_TREND_MIN
@@ -637,4 +991,3 @@ def analyze_candle_pattern(candle: pd.Series) -> dict:
         "pattern_name": pattern_name,
         "body_ratio": body_ratio,
     }
-
