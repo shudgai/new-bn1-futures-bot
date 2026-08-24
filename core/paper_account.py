@@ -69,14 +69,6 @@ from core.config import (
     ENABLE_FIXED_PROFIT_LOCK_PCT,
     FIXED_PROFIT_LOCK_TRIGGER_PCT,
     FIXED_PROFIT_LOCK_FLOOR_PCT,
-    MIN_TRADE_USDT,
-    PYRAMID_MAX_SLOTS,
-    PYRAMID_EARLY_GROSS_TRIGGER_USDT,
-    PYRAMID_EARLY_LOCK_NET_USDT,
-    PYRAMID_FIXED_LOCK_FIRST_USDT,
-    PYRAMID_FIXED_LOCK_SECOND_USDT,
-    PYRAMID_FIXED_LOCK_THIRD_USDT,
-    PYRAMID_FIXED_LOCK_STEP_USDT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -100,7 +92,6 @@ ENTRY_CONTEXT_KEYS = (
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
     "eligibility_note",
-    "strategy_mode", "pyramid_slot", "entry_trigger", "structural_stop",
 )
 
 
@@ -470,19 +461,6 @@ class PaperAccount:
             "profit_alert": False,
             **entry_context,
         }
-        pos["slots"] = [{
-            "slot": 1,
-            "entry_price": execution_price,
-            "qty": qty,
-            "margin": amount_usdt,
-            "atr": pos["atr"],
-            "hard_sl": sl,
-            "tsl": sl,
-            "highest_price": execution_price,
-            "lowest_price": execution_price,
-            "open_timestamp": now,
-            "reason": reason,
-        }]
         self.positions[symbol] = pos
         self.position_meta[symbol] = {
             "sl": sl, "tp": pos["tp"], "atr": pos["atr"],
@@ -522,112 +500,6 @@ class PaperAccount:
         self.log(
             f"🚀 [紙上交易] 開倉成功 [{side}] {symbol} @ {execution_price:.6g} "
             f"({leverage}x，{fill_note}，SL={sl:.6g}, TP={pos['tp']:.6g})",
-            "SUCCESS",
-        )
-        self.save_state()
-        return True
-
-    async def add_position_slot(
-        self,
-        symbol: str,
-        side: str,
-        price: float,
-        amount_usdt: float,
-        sl: float,
-        reason: str,
-        atr: float,
-        leverage: int = None,
-        signal_score: int = None,
-        apply_slippage: bool = True,
-    ) -> bool:
-        """Add Slot 2 to an existing same-direction paper position."""
-        if symbol not in self.positions or symbol in self.closing_lock:
-            return False
-        pos = self.positions[symbol]
-        if pos.get("side") != side:
-            self.log(f"🛑 {symbol} 加碼方向 {side} 與現有 {pos.get('side')} 不同", "WARNING")
-            return False
-        slots = pos.setdefault("slots", [{
-            "slot": 1,
-            "entry_price": float(pos["entry_price"]),
-            "qty": float(pos["qty"]),
-            "margin": float(pos.get("margin", 0.0)),
-            "atr": float(pos.get("atr") or atr),
-            "hard_sl": float(pos.get("sl") or 0.0),
-            "tsl": float(pos.get("sl") or 0.0),
-            "highest_price": float(pos.get("mark_price") or pos["entry_price"]),
-            "lowest_price": float(pos.get("mark_price") or pos["entry_price"]),
-            "open_timestamp": float(pos.get("open_timestamp") or time.time()),
-            "reason": pos.get("reason", "舊持倉轉為 Slot 1"),
-        }])
-        if len(slots) >= max(1, PYRAMID_MAX_SLOTS):
-            return False
-        amount_usdt = max(0.0, float(amount_usdt))
-        if amount_usdt < MIN_TRADE_USDT:
-            self.log(f"🛑 {symbol} Slot 2 金額 {amount_usdt:.2f} < 最低 {MIN_TRADE_USDT:.2f}", "WARNING")
-            return False
-        leverage = int(leverage or pos.get("leverage") or get_leverage(symbol))
-        execution_price = float(price)
-        if apply_slippage:
-            execution_price *= 1 + SLIPPAGE_PCT if side == "LONG" else 1 - SLIPPAGE_PCT
-        qty = amount_usdt * leverage / max(execution_price, 1e-12)
-        fee = qty * execution_price * TAKER_FEE_RATE
-        if self.get_available_balance() + 1e-12 < amount_usdt + fee:
-            self.log(f"🛑 {symbol} Slot 2 可用餘額不足", "WARNING")
-            return False
-
-        old_qty = float(pos["qty"])
-        new_qty = old_qty + qty
-        old_entry = float(pos["entry_price"])
-        aggregate_entry = (old_entry * old_qty + execution_price * qty) / max(new_qty, 1e-12)
-        now = time.time()
-        slot_number = len(slots) + 1
-        slot = {
-            "slot": slot_number,
-            "entry_price": execution_price,
-            "qty": qty,
-            "margin": amount_usdt,
-            "atr": float(atr),
-            "hard_sl": float(sl),
-            "tsl": float(sl),
-            "highest_price": execution_price,
-            "lowest_price": execution_price,
-            "open_timestamp": now,
-            "reason": reason,
-        }
-        slots.append(slot)
-        self.balance -= amount_usdt + fee
-        pos["qty"] = new_qty
-        pos["entry_price"] = aggregate_entry
-        pos["margin"] = float(pos.get("margin", 0.0)) + amount_usdt
-        pos["atr"] = (float(pos.get("atr") or atr) * old_qty + float(atr) * qty) / max(new_qty, 1e-12)
-        pos["sl"] = max(float(pos.get("sl") or 0.0), float(sl)) if side == "LONG" else min(
-            value for value in (float(pos.get("sl") or 0.0), float(sl)) if value > 0
-        )
-        pos["pyramid_slot"] = slot_number
-        self.position_meta.setdefault(symbol, {})["slots"] = slots
-        self.trades.insert(0, {
-            "id": int(now * 1000),
-            "time": get_taipei_now_str("%m/%d %H:%M:%S"),
-            "symbol": symbol,
-            "action": f"ADD_{side}",
-            "side": side,
-            "price": round(execution_price, 8),
-            "qty": round(qty, 8),
-            "amount": amount_usdt,
-            "fee": round(fee, 4),
-            "pnl": 0.0,
-            "status": "OPEN",
-            "leverage": leverage,
-            "signal_score": signal_score,
-            "slot": slot_number,
-            "reason": reason,
-            "sl": sl,
-            "tp": 0.0,
-        })
-        self.log(
-            f"➕ [紙上交易] Slot {slot_number} 加碼成功 [{side}] {symbol} @ {execution_price:.6g}，"
-            f"保證金 {amount_usdt:.2f} USDT（Slot 1 已獲利且趨勢仍有效）",
             "SUCCESS",
         )
         self.save_state()
@@ -1024,11 +896,6 @@ class PaperAccount:
             remaining_qty = qty - close_qty
             pos["qty"] = remaining_qty
             pos["margin"] = pos.get("margin", 0.0) - released_margin
-            if pos.get("strategy_mode") == "DIMINISHING_PYRAMID":
-                remaining_fraction = max(0.0, 1.0 - fraction)
-                for slot in pos.get("slots") or []:
-                    slot["qty"] = float(slot.get("qty") or 0.0) * remaining_fraction
-                    slot["margin"] = float(slot.get("margin") or 0.0) * remaining_fraction
             meta["is_half_closed"] = True
             self.log(
                 f"💰 [紙上交易/分批止盈] {symbol} 平倉 {fraction:.0%} @ {exec_close_price:.6g} | "
@@ -1125,168 +992,6 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-
-            # 1m 遞減加碼策略先處理固定鎖利與移動停利，再由 engine 檢查
-            # 結構/MA 全局退出；已建立的獲利保護不會再被 Global Exit 搶先覆蓋。
-            if pos.get("strategy_mode") == "DIMINISHING_PYRAMID":
-                slots = pos.setdefault("slots", [{
-                    "slot": 1,
-                    "entry_price": entry_p,
-                    "qty": float(pos["qty"]),
-                    "margin": float(pos.get("margin", 0.0)),
-                    "atr": float(pos.get("atr") or entry_p * 0.015),
-                    "hard_sl": current_sl,
-                    "tsl": current_sl,
-                    "highest_price": max(entry_p, curr_p),
-                    "lowest_price": min(entry_p, curr_p),
-                    "open_timestamp": float(pos.get("open_timestamp") or now_ts),
-                    "reason": pos.get("reason", "舊持倉轉為 Slot 1"),
-                }])
-                for slot in slots:
-                    slot["highest_price"] = max(float(slot.get("highest_price") or slot["entry_price"]), curr_p)
-                    slot["lowest_price"] = min(float(slot.get("lowest_price") or slot["entry_price"]), curr_p)
-
-                protection_updated = False
-                # 淨利金額固定鎖利：1.5U -> 2U -> 3U，之後每 +1U
-                # 上移一階。保護價反推時已預扣開平倉手續費及平倉滑價，
-                # 因此鎖定金額是預估「實拿淨利」，不是未扣成本的浮盈。
-                qty = float(pos.get("qty") or 0.0)
-                if side == "LONG":
-                    peak_market_price = max(float(slot["highest_price"]) for slot in slots)
-                    peak_exec_price = peak_market_price * (1.0 - SLIPPAGE_PCT)
-                    peak_raw_pnl = (peak_exec_price - entry_p) * qty
-                else:
-                    peak_market_price = min(float(slot["lowest_price"]) for slot in slots)
-                    peak_exec_price = peak_market_price * (1.0 + SLIPPAGE_PCT)
-                    peak_raw_pnl = (entry_p - peak_exec_price) * qty
-                peak_gross_usdt = (
-                    (peak_market_price - entry_p) * qty
-                    if side == "LONG" else
-                    (entry_p - peak_market_price) * qty
-                )
-                peak_net_usdt = peak_raw_pnl - (
-                    entry_p * qty * TAKER_FEE_RATE
-                    + peak_exec_price * qty * TAKER_FEE_RATE
-                )
-                recorded_peak_net = max(
-                    float(meta.get("pyramid_peak_net_usdt") or float("-inf")),
-                    peak_net_usdt,
-                )
-                meta["pyramid_peak_net_usdt"] = recorded_peak_net
-                pos["pyramid_peak_net_usdt"] = recorded_peak_net
-                meta["pyramid_peak_gross_usdt"] = max(
-                    float(meta.get("pyramid_peak_gross_usdt") or float("-inf")),
-                    peak_gross_usdt,
-                )
-                pos["pyramid_peak_gross_usdt"] = meta["pyramid_peak_gross_usdt"]
-
-                locked_net_usdt = 0.0
-                if recorded_peak_net + 1e-9 >= PYRAMID_FIXED_LOCK_THIRD_USDT:
-                    extra_steps = int(
-                        (recorded_peak_net - PYRAMID_FIXED_LOCK_THIRD_USDT + 1e-9)
-                        // PYRAMID_FIXED_LOCK_STEP_USDT
-                    )
-                    locked_net_usdt = (
-                        PYRAMID_FIXED_LOCK_THIRD_USDT
-                        + extra_steps * PYRAMID_FIXED_LOCK_STEP_USDT
-                    )
-                elif recorded_peak_net + 1e-9 >= PYRAMID_FIXED_LOCK_SECOND_USDT:
-                    locked_net_usdt = PYRAMID_FIXED_LOCK_SECOND_USDT
-                elif recorded_peak_net + 1e-9 >= PYRAMID_FIXED_LOCK_FIRST_USDT:
-                    locked_net_usdt = PYRAMID_FIXED_LOCK_FIRST_USDT
-                elif (
-                    meta["pyramid_peak_gross_usdt"] + 1e-9 >= PYRAMID_EARLY_GROSS_TRIGGER_USDT
-                    and recorded_peak_net + 1e-9 >= PYRAMID_EARLY_LOCK_NET_USDT
-                ):
-                    locked_net_usdt = PYRAMID_EARLY_LOCK_NET_USDT
-
-                previous_locked_net = float(meta.get("pyramid_locked_net_usdt") or 0.0)
-                if qty > 0 and locked_net_usdt > previous_locked_net + 1e-9:
-                    # LONG net = q * [close_exec*(1-fee) - entry*(1+fee)]
-                    # SHORT net = q * [entry*(1-fee) - close_exec*(1+fee)]
-                    if side == "LONG":
-                        desired_exec_price = (
-                            locked_net_usdt / qty + entry_p * (1.0 + TAKER_FEE_RATE)
-                        ) / (1.0 - TAKER_FEE_RATE)
-                        fixed_sl = desired_exec_price / (1.0 - SLIPPAGE_PCT)
-                    else:
-                        desired_exec_price = (
-                            entry_p * (1.0 - TAKER_FEE_RATE) - locked_net_usdt / qty
-                        ) / (1.0 + TAKER_FEE_RATE)
-                        fixed_sl = desired_exec_price / (1.0 + SLIPPAGE_PCT)
-                    old_sl = float(pos.get("sl") or 0.0)
-                    improves = fixed_sl > old_sl if side == "LONG" else old_sl <= 0 or fixed_sl < old_sl
-                    if improves:
-                        protection_updated = True
-                        pos["sl"] = fixed_sl
-                        meta["sl"] = fixed_sl
-                        pos["is_breakeven_moved"] = True
-                        meta["is_breakeven_moved"] = True
-                        pos["fixed_profit_lock_usdt_armed"] = True
-                        meta["fixed_profit_lock_usdt_armed"] = True
-                        pos["pyramid_locked_net_usdt"] = locked_net_usdt
-                        meta["pyramid_locked_net_usdt"] = locked_net_usdt
-                        self.log(
-                            f"🔐 [固定鎖利/USDT] {symbol} 峰值毛利 {meta['pyramid_peak_gross_usdt']:.2f}U、"
-                            f"預估淨利 {recorded_peak_net:.2f}U，"
-                            f"鎖定淨利 {locked_net_usdt:.2f}U，保護線 {fixed_sl:.6g}",
-                            "SUCCESS",
-                        )
-
-                # 2a053b4 百分比移動停利：0.8% 啟動、按回吐幅度追蹤；
-                # 利潤越大，允許的回吐比例自動縮小。
-                trailing_callback = TRAILING_CALLBACK_PCT
-                if highest_pnl >= 0.02:
-                    trailing_callback *= 0.3
-                elif highest_pnl >= 0.01:
-                    trailing_callback *= 0.5
-                elif highest_pnl >= 0.005:
-                    trailing_callback *= 0.8
-                if ENABLE_TRAILING_STOP and highest_pnl >= TRAILING_TRIGGER_PCT:
-                    old_sl = float(pos.get("sl") or 0.0)
-                    if side == "LONG":
-                        trailing_sl = max(
-                            entry_p * (1.0 + highest_pnl - trailing_callback),
-                            entry_p * (1.0 + NET_PROFIT_GUARANTEE_BUFFER),
-                        )
-                        improves = trailing_sl > old_sl
-                    else:
-                        trailing_sl = min(
-                            entry_p * (1.0 - highest_pnl + trailing_callback),
-                            entry_p * (1.0 - NET_PROFIT_GUARANTEE_BUFFER),
-                        )
-                        improves = old_sl <= 0 or trailing_sl < old_sl
-                    if improves:
-                        protection_updated = True
-                        pos["sl"] = trailing_sl
-                        meta["sl"] = trailing_sl
-                        pos["is_breakeven_moved"] = True
-                        meta["is_breakeven_moved"] = True
-                        self.log(
-                            f"📈 [移動停利/2a053b4] {symbol} 峰值 {highest_pnl:.3%}，"
-                            f"保護線 {trailing_sl:.6g}（回吐 {trailing_callback:.3%}）",
-                            "SUCCESS",
-                        )
-
-                global_tsl = float(pos.get("sl") or current_sl)
-                pos["tp"] = 0.0
-                unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
-                pos["mark_price"] = curr_p
-                pos["unrealized_pnl"] = unrealized
-                pos["peak_pnl_pct"] = highest_pnl
-                pos["profit_alert"] = False
-                total_unrealized += unrealized
-                tsl_hit = (not protection_updated) and (
-                    curr_p <= global_tsl if side == "LONG" else curr_p >= global_tsl
-                )
-                if tsl_hit:
-                    reason = (
-                        "固定鎖利／移動停利觸發"
-                        if pos.get("is_breakeven_moved") else
-                        "結構硬停損觸發"
-                    )
-                    await self.close_position(symbol, global_tsl, reason)
-                continue
 
             # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
             # 但保留部分回檔空間讓趨勢延伸。保護線永遠不會往回放寬。

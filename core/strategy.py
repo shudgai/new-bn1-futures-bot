@@ -49,7 +49,7 @@ import core.config as _core_config
 
 # Ensure runtime config edits are respected when this module is reloaded during tests
 STRUCTURED_SUPPORT_NEAR_ATR = getattr(_core_config, "STRUCTURED_SUPPORT_NEAR_ATR", STRUCTURED_SUPPORT_NEAR_ATR)
-from core.indicators import bars_since_supertrend_flip, get_dynamic_adx_floor
+from core.indicators import bars_since_supertrend_flip
 from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     KC_TOUCH_LOOKBACK_BARS,
@@ -89,7 +89,7 @@ def detect_macd_divergence(df: pd.DataFrame, side: str, lookback: int = 30) -> b
         return False
     closes = df['close'].values
     macd_hists = df['macd_hist'].values
-
+    
     if side == "LONG":
         # Bullish divergence: price is making new lows but MACD hist is rising
         min_price_idx = -lookback + np.argmin(closes[-lookback:-3])
@@ -412,7 +412,7 @@ def compute_net_reward_risk(
 
 
 def detect_ma5_reversal(
-    df: pd.DataFrame,
+    df: pd.DataFrame, 
     side: str,
     ema_50_1h: float = None,
     st_direction_1h: int = None,
@@ -426,9 +426,9 @@ def detect_ma5_reversal(
     require_strict_v: bool = False,
 ) -> dict:
     """
-    MA5/MA25 趨勢方向 + MA3 樞軸轉折 (Stop and Reverse)
-    - 多單：MA5 > MA25，並由 MA3 確認 V 型谷底
-    - 空單：MA5 < MA25，並由 MA3 確認倒 V 型峰頂
+    純粹 MA5/MA25 交叉 + MA5 樞軸轉折 (Stop and Reverse)
+    - 多單：MA5 > MA25 且 MA5 形成 V 型谷底
+    - 空單：MA5 < MA25 且 MA5 形成倒 V 型峰頂
     """
     if len(df) < 25:
         return {"detected": False, "reason": "K線資料不足25根"}
@@ -449,20 +449,22 @@ def detect_ma5_reversal(
         return {"detected": False, "reason": "MA25資料不足"}
 
     ma5_curr = float(ma5_series.iloc[-1])
+    ma5_prev = float(ma5_series.iloc[-2])
+    ma5_prev2 = float(ma5_series.iloc[-3])
+    
+    ma5_curr = float(ma5_series.iloc[-1])
     ma25_curr = float(ma25_series.iloc[-1])
-
+    
     price = float(live_price) if live_price else float(df['close'].iloc[-1])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
 
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
-    # MA3 專門判斷短線轉折；MA5/MA25 只負責趨勢方向。
-    if 'ma3' not in df.columns:
-        df['ma3'] = df['close'].rolling(window=3).mean()
-    ma3_series = df['ma3'].dropna()
+    # 取 MA3 來判斷轉折，反應最快
+    ma3_series = df['close'].rolling(window=3).mean().dropna()
     if len(ma3_series) < 8:
         return _no("MA3資料不足")
-
+    
     ma3_curr = float(ma3_series.iloc[-1])
     ma3_prev = float(ma3_series.iloc[-2])
     ma3_prev2 = float(ma3_series.iloc[-3])
@@ -474,7 +476,7 @@ def detect_ma5_reversal(
     is_peak_strict   = (ma3_prev2 < ma3_prev) and (ma3_curr < ma3_prev)
 
     # 方案2 & 3：往前最多 8 根尋找峰頂/谷底記憶
-    PEAK_MEMORY_BARS = 8
+    PEAK_MEMORY_BARS = 4
     ma3_window = ma3_series.iloc[-(PEAK_MEMORY_BARS + 2):].values
     had_peak_in_window = False
     had_trough_in_window = False
@@ -484,63 +486,30 @@ def detect_ma5_reversal(
         if ma3_window[idx] < ma3_window[idx - 1] and ma3_window[idx] < ma3_window[idx + 1]:
             had_trough_in_window = True
 
-    # 記憶觸發要求目前斜率已經轉向，並且最近 8 根內確實出現過峰谷。
-    # 不再重複嚴格條件的 prev/prev2 比較，否則記憶分支永遠無法擴展觸發。
-    is_peak_extended = (ma3_curr < ma3_prev) and had_peak_in_window
-    is_trough_extended = (ma3_curr > ma3_prev) and had_trough_in_window
+    # 寬鬆觸發改為：已經轉向（curr > prev 谷底 或 curr < prev 峰頂）才允許記憶觸發，禁止在順勢時提早觸發
+    is_peak_extended   = (ma3_curr < ma3_prev) and had_peak_in_window and (ma3_prev > ma3_prev2)
+    is_trough_extended = (ma3_curr > ma3_prev) and had_trough_in_window and (ma3_prev < ma3_prev2)
 
-    # 提早進場（無腦開倉放寬版）：
-    # 只要當前 K 線收綠/紅，就視為有轉折跡象，不等完整的 V 型
-    # 【重要修正】根據要求：均線向上時(MA5>MA25)，不能僅憑 1 根紅K就逆勢開空，必須有明確峰頂。
-    # 因此，提早進場只允許在「順勢」時觸發，逆勢必須靠 strict 嚴格峰谷或 extended 記憶型態。
-    current_close = float(df['close'].iloc[-1])
-    # 預先計算指標或單元測試資料可能只有 close；缺少 open 時視為十字線，
-    # 仍由嚴格 MA3 峰谷與近期峰谷記憶判斷，不讓提早進場分支誤觸發。
-    current_open = float(df['open'].iloc[-1]) if 'open' in df.columns else current_close
-    is_green_candle = current_close > current_open
-    is_red_candle = current_close < current_open
-
-    is_uptrend = ma5_curr > ma25_curr
-    is_downtrend = ma5_curr < ma25_curr
-
-    early_trough = is_uptrend and is_green_candle and (ma3_curr >= ma3_prev or ma3_prev <= ma3_prev2)
-    early_peak = is_downtrend and is_red_candle and (ma3_curr <= ma3_prev or ma3_prev >= ma3_prev2)
-
-    # 合併：嚴格 OR 寬鬆 OR 提早皆可進場
-    is_trough = is_trough_strict or is_trough_extended or early_trough
-    is_peak   = is_peak_strict   or is_peak_extended or early_peak
-
-    # ── 嚴格順勢 + 加強確認 (過濾假突破) ──
-    ma5_prev = float(ma5_series.iloc[-2]) if len(ma5_series) > 1 else ma5_curr
-    ma5_bending_up = ma5_curr > ma5_prev
-    ma5_bending_down = ma5_curr < ma5_prev
+    # 合併：嚴格 OR 寬鬆皆可進場
+    is_trough = is_trough_strict or is_trough_extended
+    is_peak   = is_peak_strict   or is_peak_extended
 
     if want_dir == 1:
         if not is_trough:
-            return _no("MA3 未形成 V 型谷底（含8根內記憶）")
-
-        # 要開多單：如果現在是跌勢 (MA5 < MA25)，絕對禁止逆勢開多
-        if is_downtrend:
-            return _no("MA5 < MA25 (逆勢)，絕對順勢模式，拒絕假跌破開多")
-
-        trigger_type = "嚴格V型" if is_trough_strict else "記憶延伸谷底" if is_trough_extended else "提早放寬"
+            return _no("MA5 未形成 V 型谷底（含8根內記憶）")
+        trigger_type = "嚴格V型" if is_trough_strict else "記憶延伸谷底"
         ma_pos = "MA5>MA25" if ma5_curr > ma25_curr else "MA5<MA25(逆勢谷底)"
-        direction_note = f"{ma_pos} + MA3谷底[{trigger_type}] (LONG)"
+        direction_note = f"{ma_pos} + MA5谷底[{trigger_type}] (LONG)"
     else:
         if not is_peak:
-            return _no("MA3 未形成倒 V 型峰頂（含8根內記憶）")
-
-        # 要開空單：如果現在是漲勢 (MA5 > MA25)，絕對禁止逆勢開空
-        if is_uptrend:
-            return _no("MA5 > MA25 (逆勢)，絕對順勢模式，拒絕假回調開空")
-
-        trigger_type = "嚴格倒V" if is_peak_strict else "記憶延伸峰頂" if is_peak_extended else "提早放寬"
+            return _no("MA5 未形成倒 V 型峰頂（含8根內記憶）")
+        trigger_type = "嚴格倒V" if is_peak_strict else "記憶延伸峰頂"
         ma_pos = "MA5<MA25" if ma5_curr < ma25_curr else "MA5>MA25(逆勢峰頂)"
-        direction_note = f"{ma_pos} + MA3峰頂[{trigger_type}] (SHORT)"
+        direction_note = f"{ma_pos} + MA5峰頂[{trigger_type}] (SHORT)"
 
     # 完全符合，滿分通過
     score = 100
-
+    
     # 乖離率 (作為排序優選的參考，引擎在處理分數相同時，可以依據這個乖離程度決定優先級)
     turn_sharpness = abs(ma5_curr - ma25_curr)
 
@@ -606,8 +575,7 @@ class SuperTrendKeltnerStrategy:
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
-        # MA3 負責快速峰谷轉折，MA5 負責中短線方向。
-        df['ma3'] = close.rolling(window=3).mean()
+        # MA5
         df['ma5'] = close.rolling(window=5).mean()
 
         # 成交量均線
@@ -724,13 +692,13 @@ class SuperTrendKeltnerStrategy:
         if not indicators_precomputed:
             df = self.compute_indicators(df)
         curr, prev = df.iloc[-1], df.iloc[-2]
-
+        
         from core.indicators import analyze_candle_pattern
         candle_pattern = analyze_candle_pattern(curr)
-
+        
         direction = int(curr["st_direction"])
         side = "LONG" if direction == 1 else "SHORT"
-
+        
 
         price = float(curr["close"])
         volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
@@ -1135,7 +1103,7 @@ class SuperTrendKeltnerStrategy:
             if side == "LONG"
             else SUPPORT_PULLBACK_RSI_SHORT_MIN <= rsi <= SUPPORT_PULLBACK_RSI_SHORT_MAX and rsi < previous_rsi
         )
-
+        
         # 【改進方案】強化多頭過濾：LONG 交易勝率 (53.42%) 與止損率 (24.66%) 均顯著遜於 SHORT
         if side == "LONG":
             # 提高多頭的量能要求（防止虛假突破）
@@ -1147,7 +1115,7 @@ class SuperTrendKeltnerStrategy:
                     "reason": f"多頭交易量能不足：{volume_ratio:.2f}x < {min_volume_ratio_long:.2f}x，避免虛假突破",
                     **common,
                 }
-
+            
             # 提高多頭的 RSI 進場門檻（防止追高）
             rsi_long_min_enhanced = max(SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED)
             if rsi < rsi_long_min_enhanced:
@@ -1156,7 +1124,7 @@ class SuperTrendKeltnerStrategy:
                     "reason": f"多頭交易 RSI 門檻提高：{rsi:.1f} < {rsi_long_min_enhanced:.1f}，等待更強勢信號",
                     **common,
                 }
-
+            
             # 檢查 Keltner Channel 寬度（避免在通道極窄時進場）
             kc_width = float(curr["kc_upper"]) - float(curr["kc_lower"])
             kc_width_atr_mult = kc_width / max(atr, 1e-12)
@@ -1167,7 +1135,7 @@ class SuperTrendKeltnerStrategy:
                     "reason": f"多頭 Keltner 通道過窄保護：{kc_width_atr_mult:.2f}x ATR < {KELTNER_MIN_WIDTH_ATR_MULT_LONG:.2f}x，通道擴張才進場",
                     **common,
                 }
-
+        
         adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 0.0
         atr_pct = atr / price if price > 0 else 0.0
         quality_ok = ADX_QUALITY_MIN <= adx and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
@@ -1252,7 +1220,7 @@ class SuperTrendKeltnerStrategy:
                         ),
                         **common
                     }
-
+            
             if BOTTOM_FILTER_ENABLED:
                 rsi_15m = float(curr["rsi_15m"]) if "rsi_15m" in curr and not pd.isna(curr["rsi_15m"]) else rsi
                 macd_div = False
@@ -1297,7 +1265,7 @@ class SuperTrendKeltnerStrategy:
             )
             rsi_score = round(min(rsi_strength / 8.0, 1.0) * 4)
             adx_score = round(min(max(adx - ADX_QUALITY_MIN, 0.0) / 18.0, 1.0) * 4)
-
+            
             # --- K 線反轉形態加分 ---
             pattern_score = 0
             if side == "LONG" and candle_pattern.get("is_hammer"):
@@ -1462,11 +1430,11 @@ class SuperTrendKeltnerStrategy:
             df = self.compute_indicators(df)
         curr = df.iloc[-1]
         prev = df.iloc[-2] if len(df) >= 2 else None
-
+        
         from core.indicators import analyze_candle_pattern
         candle_pattern = analyze_candle_pattern(curr)
         pattern_name = candle_pattern.get("pattern_name", "None")
-
+        
         overrides = dict(parameter_overrides or {})
         volume_min_ratio = float(overrides.get("volume_min_ratio", KELTNER_MIN_VOLUME_RATIO))
         volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
@@ -1655,11 +1623,8 @@ class SuperTrendKeltnerStrategy:
         # 盤整期假突破發生率最高，直接 HOLD 不進入評分系統。
         # 注意：ADX 衰退擋單（D2，見下方）是另一種機制，兩者互補不衝突：
         # 這裡擋「太低」，D2 擋「方向沒變但動能在退潮」。
-        adx_floor, strong_trend = get_dynamic_adx_floor(df, st_dir)
-        # --- 使用者要求：解除 ADX 限制，不再因為 ADX 過低而阻擋開倉 ---
-        # if adx < adx_floor:
-        #     adx_mode = "Strong_Trend" if strong_trend else "Range"
-        #     return eligibility_hold(f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{adx_floor:.1f};mode={adx_mode})")
+        if adx < ADX_MANDATORY_MIN:
+            return eligibility_hold(f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{ADX_MANDATORY_MIN})")
 
         # 波動率過濾：ATR 佔價格比例太高或太低都不開倉。
         # 太高：SL/TP 用 ATR 倍數算出來的停損距離會被放大，同樣倉位金額下
@@ -1755,7 +1720,7 @@ class SuperTrendKeltnerStrategy:
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
-        adx_declining_exhausted = adx_declining and adx < ADX_QUALITY_MIN
+        adx_declining_exhausted = adx_declining and adx < WEAK_ENERGY_ADX_THRESHOLD
 
         # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
         # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。
@@ -2212,7 +2177,7 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     low = df['low']
     close = df['close']
     open_ = df['open']
-
+    
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
@@ -2223,7 +2188,7 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     ma5 = close.rolling(window=5).mean()
     if len(ma5) < 3 or pd.isna(ma5.iloc[-1]) or pd.isna(ma5.iloc[-2]) or pd.isna(ma5.iloc[-3]):
         return {"detected": False, "reason": "MA5 not ready"}
-
+        
     ma5_curr = float(ma5.iloc[-1])
     ma5_prev = float(ma5.iloc[-2])
     ma5_prev2 = float(ma5.iloc[-3])
@@ -2240,16 +2205,16 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
 
     if atr14 < price * MA5_MIN_ATR_PCT:
         return {"detected": False, "reason": f"Low ATR14 ({atr14:.4f} < {price * MA5_MIN_ATR_PCT:.4f})"}
-
+        
     body_size = abs(float(curr['close']) - float(curr['open']))
     candle_range = float(curr['high']) - float(curr['low'])
     if candle_range > 0 and (body_size / candle_range) < 0.5:
         return {"detected": False, "reason": f"K-line body too small ({body_size / candle_range:.1%} < 50%)"}
-
+        
     amplitude = float(curr['high'] - curr['low'])
     if amplitude > MA5_MAX_CANDLE_AMPLITUDE_MULT * atr14:
         return {"detected": False, "reason": f"Amplitude too large ({amplitude:.4f} > {MA5_MAX_CANDLE_AMPLITUDE_MULT * atr14:.4f})"}
-
+        
     close_change = abs(float(curr['close']) - float(prev['close']))
     if close_change > MA5_MAX_CLOSE_CHANGE_MULT * atr14:
         return {"detected": False, "reason": f"Close change too large ({close_change:.4f} > {MA5_MAX_CLOSE_CHANGE_MULT * atr14:.4f})"}
@@ -2261,13 +2226,13 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     # Valley/Peak check
     is_green = float(curr['close']) > float(curr['open'])
     is_red = float(curr['close']) < float(curr['open'])
-
+    
     is_valley = (ma5_prev2 > ma5_prev) and (ma5_curr > ma5_prev)
     is_peak = (ma5_prev2 < ma5_prev) and (ma5_curr < ma5_prev)
 
     body_proportion = (body_size / candle_range) if candle_range > 0 else 0
     signal_score = int(body_proportion * 100)
-
+    
     if is_valley and is_green:
         return {
             "detected": True,
@@ -2304,7 +2269,7 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     high = df['high']
     low = df['low']
     close = df['close']
-
+    
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
@@ -2315,7 +2280,7 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     ma5 = close.rolling(window=5).mean()
     if len(ma5) < 3 or pd.isna(ma5.iloc[-1]) or pd.isna(ma5.iloc[-2]) or pd.isna(ma5.iloc[-3]):
         return {"close": False, "reason": "MA5 not ready"}
-
+        
     ma5_curr = float(ma5.iloc[-1])
     ma5_prev = float(ma5.iloc[-2])
     ma5_prev2 = float(ma5.iloc[-3])
@@ -2330,16 +2295,16 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
         if ma5_curr > highest_ma5:
             position["highest_ma5"] = ma5_curr
             highest_ma5 = ma5_curr
-
+            
         if ma5_curr <= highest_ma5 - (MA5_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
             return {"close": True, "reason": "MA5高點實質轉彎 (累積回落大於門檻)"}
-
+            
     elif side == "SHORT":
         lowest_ma5 = position.get("lowest_ma5", ma5_curr)
         if ma5_curr < lowest_ma5:
             position["lowest_ma5"] = ma5_curr
             lowest_ma5 = ma5_curr
-
+            
         if ma5_curr >= lowest_ma5 + (MA5_EXIT_ATR_CHANGE_MIN_RATIO * atr14):
             return {"close": True, "reason": "MA5谷底實質轉彎 (累積反彈大於門檻)"}
 
