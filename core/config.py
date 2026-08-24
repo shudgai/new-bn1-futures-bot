@@ -720,7 +720,7 @@ PROFIT_BANK_LOCK_PCT = min(
 # 與百分比制 PROFIT_BANK 並存，兩套都啟用時各自獨立計算，止損取
 # 「更有利」的那個值（只往有利方向移動，永不放寬）。
 # ---------------------------------------------------------------------------
-ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "false").lower() == "true"
+ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "true").lower() == "true"
 # 觸發門檻：未實現利潤達到此值（USDT）時開始鎖利
 PROFIT_LOCK_TRIGGER_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_TRIGGER_USDT", "4.0")))
 # 鎖利地板：止損移動後保證至少保留此值（USDT）的利潤

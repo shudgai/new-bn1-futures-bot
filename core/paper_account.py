@@ -1023,13 +1023,10 @@ class PaperAccount:
                     )
 
             # ----------------------------------------------------------------
-            # 固定 USDT 金額鎖利（Profit Lock in USDT）
-            # 當未實現利潤（含槓桿）達到 PROFIT_LOCK_TRIGGER_USDT，
-            # 把止損推移到「至少還剩 PROFIT_LOCK_FLOOR_USDT 利潤」的位置。
-            # 峰值利潤繼續擴大時按 PROFIT_LOCK_TRAIL_RATIO 追蹤推移，
-            # 但保護線最低不低於 PROFIT_LOCK_FLOOR_USDT 對應的價位。
+            # 動態階梯鎖利 (Dynamic Tiered Profit Lock)
+            # 自動計算手續費2倍為起點，依照本金級距遞增步距
             # ----------------------------------------------------------------
-            if ENABLE_PROFIT_LOCK_USDT and PROFIT_LOCK_TRIGGER_USDT > 0:
+            if ENABLE_PROFIT_LOCK_USDT:
                 qty = float(pos.get("qty") or meta.get("qty") or 0.0)
                 leverage = float(pos.get("leverage") or meta.get("leverage") or 1.0)
                 # 帳面未實現利潤（USDT，已含槓桿）
@@ -1068,39 +1065,24 @@ class PaperAccount:
                     else:
                         floor_sl = entry_p - floor_price_move
 
-                    # 追蹤止損：峰值利潤對應的追蹤止損位（允許最多回撤 TRAIL_RATIO）
-                    trail_price_move = peak_usdt * (1.0 - PROFIT_LOCK_TRAIL_RATIO) / max(notional_units, 1e-12)
-                    if side == "LONG":
-                        trail_sl = entry_p + trail_price_move
-                        # 取兩者較優（較高），確保不低於階梯地板
-                        lock_sl = max(floor_sl, trail_sl)
-                    else:
-                        trail_sl = entry_p - trail_price_move
-                        lock_sl = min(floor_sl, trail_sl)
-
-                    # 最小推進步距（USDT）轉為價格步距（依步距等比例放大）
-                    dynamic_min_step_usdt = PROFIT_LOCK_MIN_STEP_USDT * dynamic_step
-                    min_step_price = dynamic_min_step_usdt / max(notional_units, 1e-12)
-                    improves = (
-                        lock_sl > current_sl + min_step_price if side == "LONG"
-                        else current_sl <= 0.0 or lock_sl < current_sl - min_step_price
+                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                    improves_usdt = (
+                        floor_sl > current_sl + entry_p * 0.00001 if side == "LONG" 
+                        else current_sl <= 0 or floor_sl < current_sl - entry_p * 0.00001
                     )
-                    if improves:
-                        pos["sl"] = lock_sl
-                        meta["sl"] = lock_sl
+                    
+                    if improves_usdt:
+                        pos["sl"] = floor_sl
+                        meta["sl"] = floor_sl
                         pos["is_breakeven_moved"] = True
                         meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = True
                         meta["profit_lock_usdt_armed"] = True
-                        locked_usdt = (
-                            (lock_sl - entry_p) * notional_units
-                            if side == "LONG"
-                            else (entry_p - lock_sl) * notional_units
-                        )
+                        
                         self.log(
-                            f"🔒 [USDT鎖利] {symbol} 峰值 {peak_usdt:.2f}U，"
-                            f"保護線移至 {lock_sl:.6g}"
-                            f"（鎖定至少 {locked_usdt:.2f}U ／ 階梯地板 {step_floor_usdt:.0f}U）",
+                            f"🔐 [階梯鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
+                            f"(本金 {margin_used:.0f}U，步距 {dynamic_step}U)，"
+                            f"鎖定 {step_floor_usdt:.2f}U，保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
 
