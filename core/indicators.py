@@ -314,9 +314,29 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     prev_is_bullish_pinbar = (prev_lower_shadow > prev_body * 2.0) and (prev_upper_shadow < prev_body) and (prev_range >= min_range)
     prev_is_bearish_pinbar = (prev_upper_shadow > prev_body * 2.0) and (prev_lower_shadow < prev_body) and (prev_range >= min_range)
 
+    # 5. 連續動能確認 (解決單一K棒看不出真假的問題，連續多根同色代表趨勢成型)
+    is_prev2_close = float(close.iloc[-3])
+    is_prev2_open = float(open_p.iloc[-3])
+    is_prev_red = prev_close < prev_open
+    is_prev2_red = is_prev2_close < is_prev2_open
+    is_prev_green = prev_close > prev_open
+    is_prev2_green = is_prev2_close > is_prev2_open
+    
+    consecutive_red_score = 0
+    if is_red and is_prev_red:
+        consecutive_red_score += 1
+        if is_prev2_red:
+            consecutive_red_score += 1 # 三連黑 (Three Black Crows) 總共 +2 分
+            
+    consecutive_green_score = 0
+    if is_green and is_prev_green:
+        consecutive_green_score += 1
+        if is_prev2_green:
+            consecutive_green_score += 1 # 三連紅 (Three White Soldiers) 總共 +2 分
+
     # 綜合「真反轉」確認分數 (只要符合任一強烈型態即 +1 分)
-    bull_confirm_score = sum([is_bullish_pinbar, prev_is_bullish_pinbar and is_green, is_bullish_div, is_choch_up, is_bullish_engulfing])
-    bear_confirm_score = sum([is_bearish_pinbar, prev_is_bearish_pinbar and is_red, is_bearish_div, is_choch_down, is_bearish_engulfing])
+    bull_confirm_score = sum([is_bullish_pinbar, prev_is_bullish_pinbar and is_green, is_bullish_div, is_choch_up, is_bullish_engulfing, consecutive_green_score])
+    bear_confirm_score = sum([is_bearish_pinbar, prev_is_bearish_pinbar and is_red, is_bearish_div, is_choch_down, is_bearish_engulfing, consecutive_red_score])
 
     # 優先級 1：大反轉（金叉/死叉第一時間進場）
     if cross_up:
