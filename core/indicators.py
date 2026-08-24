@@ -292,6 +292,12 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_choch_up = swing_high is not None and last_close > swing_high
     is_choch_down = swing_low is not None and last_close < swing_low
 
+    # 吞噬型態 (Engulfing)
+    prev_open = float(open_p.iloc[-2])
+    prev_close = float(close.iloc[-2])
+    is_bullish_engulfing = (prev_close < prev_open) and is_green and (last_close > prev_open) and (last_open <= prev_close)
+    is_bearish_engulfing = (prev_close > prev_open) and is_red and (last_close < prev_open) and (last_open >= prev_close)
+
     # 綜合「真反轉」確認分數 (剔除顏色雜訊，純看動能與結構破壞)
     bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up, is_bullish_engulfing])
     bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down, is_bearish_engulfing])
