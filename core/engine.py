@@ -2824,6 +2824,13 @@ class TradingEngine:
                                 # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
                                 if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
                                     should_open = False
+
+                                    # ── 取消反向限價掛單，防止多空並存 ──
+                                    pending = self.account.pending_limit_orders.get(symbol)
+                                    if pending and pending.get("side") != cr_signal:
+                                        self.account.log(f"🗑️ {symbol} 發現反向限價掛單 ({pending.get('side')})，立即取消！", "WARNING")
+                                        self.account.pending_limit_orders.pop(symbol, None)
+
                                     if not has_pos:
                                         should_open = True
                                     elif curr_side != cr_signal:
@@ -2834,6 +2841,8 @@ class TradingEngine:
                                             close_reason=f"反向訊號 ({cr_entry_type})"
                                         )
                                         should_open = True
+                                    # 同方向已持倉，不重複開
+                                    # (curr_side == cr_signal => should_open stays False)
 
                                     if should_open:
                                         self.account.log(
