@@ -1050,7 +1050,9 @@ class PaperAccount:
                 
                 # 3. 階梯步距 = 依本金級距遞增
                 import math
-                if margin_used <= 200:
+                if margin_used <= 100:
+                    dynamic_step = 0.5
+                elif margin_used <= 200:
                     dynamic_step = 1.0
                 else:
                     dynamic_step = 1.0 + math.ceil((margin_used - 200.0) / 100.0)
