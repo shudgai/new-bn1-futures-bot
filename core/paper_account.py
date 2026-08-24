@@ -1051,11 +1051,11 @@ class PaperAccount:
                 # 3. 呼吸空間 (Trailing Gap) = 依本金級距遞增
                 import math
                 if margin_used <= 100:
-                    trailing_gap = 1.5
+                    trailing_gap = 0.5
                 elif margin_used <= 200:
-                    trailing_gap = 3.0
+                    trailing_gap = 1.0
                 else:
-                    trailing_gap = 3.0 + math.ceil((margin_used - 200.0) / 100.0) * 1.5
+                    trailing_gap = 1.0 + math.ceil((margin_used - 200.0) / 100.0) * 0.5
 
                 if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
                     # ── 固定呼吸空間追蹤：止損永遠距離峰值 trailing_gap，且保證至少鎖住手續費(dynamic_floor) ──
