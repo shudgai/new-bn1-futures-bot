@@ -5,6 +5,44 @@ import numpy as np
 
 TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
+def get_dynamic_adx_floor(df: pd.DataFrame, direction: int) -> tuple[float, bool]:
+    """Return the ADX floor and whether price is in a strong directional trend."""
+    from core.config import ADX_MANDATORY_MIN, ADX_STRONG_TREND_MIN
+
+    normal_floor = float(ADX_MANDATORY_MIN)
+    strong_floor = float(ADX_STRONG_TREND_MIN)
+    if df is None or len(df) < 5 or int(direction or 0) not in (-1, 1):
+        return normal_floor, False
+
+    close = pd.to_numeric(df["close"], errors="coerce")
+    ma5 = pd.to_numeric(df["ma5"], errors="coerce") if "ma5" in df.columns else close.rolling(5).mean()
+    ma25 = (
+        pd.to_numeric(df["ma25"], errors="coerce")
+        if "ma25" in df.columns else close.rolling(25, min_periods=5).mean()
+    )
+    if "atr" in df.columns:
+        atr = float(pd.to_numeric(df["atr"], errors="coerce").iloc[-1])
+    else:
+        recent = close.iloc[-5:]
+        atr = float((recent.max() - recent.min()) or 0.0)
+
+    values = [close.iloc[-3], close.iloc[-2], close.iloc[-1], ma5.iloc[-2], ma5.iloc[-1], ma25.iloc[-1], atr]
+    if any(pd.isna(value) for value in values) or atr <= 0:
+        return normal_floor, False
+
+    if direction == 1:
+        closes_aligned = close.iloc[-3] < close.iloc[-2] < close.iloc[-1]
+        averages_aligned = ma5.iloc[-1] > ma5.iloc[-2] and close.iloc[-1] > ma5.iloc[-1] > ma25.iloc[-1]
+        directional_move = float(close.iloc[-1] - close.iloc[-3])
+    else:
+        closes_aligned = close.iloc[-3] > close.iloc[-2] > close.iloc[-1]
+        averages_aligned = ma5.iloc[-1] < ma5.iloc[-2] and close.iloc[-1] < ma5.iloc[-1] < ma25.iloc[-1]
+        directional_move = float(close.iloc[-3] - close.iloc[-1])
+
+    strong_trend = bool(closes_aligned and averages_aligned and directional_move >= 0.5 * atr)
+    return (strong_floor if strong_trend else normal_floor), strong_trend
+
+
 
 # ---------------------------------------------------------------------------
 # 真頂峰 / 真谷底 確認輔助函式
@@ -179,7 +217,7 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
-def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
+def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = False) -> dict:
     """
     連續轉向策略核心邏輯（優化版：純交叉 + 順勢回調上車）
 
@@ -278,15 +316,13 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     approaching_trough = (ma3_slope < 0) and (ma3_slope > min(0, ma3_slope_prev) * 0.5)
 
     adx_curr = float(df['adx'].iloc[-1])
-    # --- 趨勢強度濾網：讀取 config.ADX_MANDATORY_MIN，與 .env 設定保持同步 ---
-    try:
-        from core.config import ADX_MANDATORY_MIN as _adx_min
-    except Exception:
-        _adx_min = 12.0  # fallback 保守預設
+    # 強勢單邊走勢使用 ADX 10；盤整或方向不明仍使用 ADX 15。
+    trend_direction = 1 if ma5_curr > ma25_curr else -1 if ma5_curr < ma25_curr else 0
+    _adx_min, strong_trend = get_dynamic_adx_floor(df, trend_direction)
     if adx_curr < _adx_min:
         return {
             "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < {_adx_min})",
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < {_adx_min:.1f}; 模式={'強趨勢' if strong_trend else '盤整'})",
             "pivot_confirmed": False,
             "pivot_score": 0
         }
@@ -310,136 +346,136 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     # 如果上影線佔整根K線一半以上 (如避雷針)，嚴格禁止做多！
     is_shooting_star_trap = (candle_range > 0) and (upper_wick / candle_range > 0.4)
 
-    # 優先級 1：大反轉（金叉/死叉第一時間進場）
-    # 加上 K 線顏色與斜率過濾，防止「均線延遲交叉」但價格已經反向彈飛的假訊號
-    if cross_up and is_green and ma5_slope > 0:
+    # Fake-breakout volume filter: the closed confirmation candle needs at least 0.8x prior volume.
+    min_confirmation_volume_ratio = 0.65 if allow_live_pivot else 0.8
+    if 'volume' in df.columns:
+        prior_volume = df['volume'].iloc[-21:-1]
+        average_volume = float(prior_volume.mean()) if len(prior_volume) else 0.0
+        current_volume = float(df['volume'].iloc[-1])
+        volume_ratio = current_volume / average_volume if average_volume > 0 else 0.0
+    else:
+        volume_ratio = 0.0
+
+    def reject_false_breakout(side: str):
+        if side == "LONG" and is_shooting_star_trap:
+            return {"signal": None, "reason": "假突破過濾：多單確認K帶長上影線", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
+        if side == "SHORT" and is_hammer_trap:
+            return {"signal": None, "reason": "假突破過濾：空單確認K帶長下影線", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
+        # 活動 K 的成交量仍在累積；峰谷第一彎已由 MA3 方向、K 色與影線確認，
+        # 不再等待量能比例，以免已平倉卻錯過立即反手。
+        if not allow_live_pivot and volume_ratio < min_confirmation_volume_ratio:
+            return {"signal": None, "reason": f"假突破過濾：確認量能 {volume_ratio:.2f}x < {min_confirmation_volume_ratio:.2f}x", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
+        return None
+
+    # 峰谷反轉優先：嚴格形態成立時不等待 MA5 越過 MA25，避免確認太晚追高追低。
+    candle_body = abs(last_close - last_open)
+    fast_trough_recovery = ma3_curr - ma3_prev
+    fast_peak_decline = ma3_prev - ma3_curr
+    prior_lows = df['low'].iloc[-9:-1]
+    prior_highs = df['high'].iloc[-9:-1]
+    near_recent_low = bool(len(prior_lows)) and last_low <= float(prior_lows.min()) + atr * 0.25
+    near_recent_high = bool(len(prior_highs)) and last_high >= float(prior_highs.max()) - atr * 0.25
+    confirmed_trough_recovery = ma3_curr - ma3_prev2
+    confirmed_peak_decline = ma3_prev2 - ma3_curr
+    live_fast_trough = (
+        allow_live_pivot and is_trough_forming and is_green
+        and last_close > ma3_curr and not is_shooting_star_trap
+    )
+    live_fast_peak = (
+        allow_live_pivot and is_peak_forming and is_red
+        and last_close < ma3_curr and not is_hammer_trap
+    )
+    clear_fast_trough = live_fast_trough or (
+        is_trough_forming and is_green and last_close > ma3_curr
+        and fast_trough_recovery >= atr * 0.20
+        and candle_body >= atr * 0.45
+        and volume_ratio >= min_confirmation_volume_ratio
+        and near_recent_low and not is_shooting_star_trap
+    )
+    clear_fast_peak = live_fast_peak or (
+        is_peak_forming and is_red and last_close < ma3_curr
+        and fast_peak_decline >= atr * 0.20
+        and candle_body >= atr * 0.45
+        and volume_ratio >= min_confirmation_volume_ratio
+        and near_recent_high and not is_hammer_trap
+    )
+    confirmed_trough = (
+        is_trough_confirmed and is_green and last_close > ma3_curr
+        and confirmed_trough_recovery >= atr * 0.4 and near_recent_low
+    )
+    confirmed_peak = (
+        is_peak_confirmed and is_red and last_close < ma3_curr
+        and confirmed_peak_decline >= atr * 0.4 and near_recent_high
+    )
+
+    if clear_fast_trough or confirmed_trough:
+        rejected = reject_false_breakout("LONG")
+        if rejected:
+            return rejected
         return {
-            "signal": "LONG",
-            "entry_type": "CROSS_UP",
-            "reason": f"MA5 金叉 (ADX={adx_curr:.1f}) 且動能向上 → 多單",
-            "atr": atr,
-            "pivot_confirmed": True,
-            "pivot_score": 80,
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": f"MA3 真谷底向上 (ADX={adx_curr:.1f}) → 立即開多",
+            "atr": atr, "pivot_confirmed": True,
+            "pivot_score": 95 if clear_fast_trough else 100,
+            "fast_pivot": bool(clear_fast_trough),
+            "live_pivot": bool(allow_live_pivot),
+            "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
-    elif cross_down and is_red and ma5_slope < 0:
+
+    if clear_fast_peak or confirmed_peak:
+        rejected = reject_false_breakout("SHORT")
+        if rejected:
+            return rejected
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": f"MA3 真頂峰向下 (ADX={adx_curr:.1f}) → 立即開空",
+            "atr": atr, "pivot_confirmed": True,
+            "pivot_score": 95 if clear_fast_peak else 100,
+            "fast_pivot": bool(clear_fast_peak),
+            "live_pivot": bool(allow_live_pivot),
+            "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
+        }
+
+    # 開倉方向只依 MA3、MA5 相對 MA25 的共同位置決定。
+    # 風控（ADX、量能、長影線）仍須通過，但不得在均線下方做多或上方做空。
+    both_below_ma25 = ma3_curr < ma25_curr and ma5_curr < ma25_curr
+    both_above_ma25 = ma3_curr > ma25_curr and ma5_curr > ma25_curr
+
+    if both_below_ma25:
+        rejected = reject_false_breakout("SHORT")
+        if rejected:
+            return rejected
         return {
             "signal": "SHORT",
-            "entry_type": "CROSS_DOWN",
-            "reason": f"MA5 死叉 (ADX={adx_curr:.1f}) 且動能向下 → 空單",
+            "entry_type": "TREND_SHORT",
+            "reason": f"MA3、MA5 同在 MA25 下方 (ADX={adx_curr:.1f}) → 現價開空",
             "atr": atr,
-            "pivot_confirmed": True,
-            "pivot_score": 80,
+            "pivot_confirmed": False,
+            "pivot_score": 85,
+            "ma_alignment": "BELOW",
         }
 
-
-    # 空頭趨勢中 (MA5 < MA25)
-    if ma5_curr < ma25_curr:
-        # 谷底深度檢查：從 MA3 谷底到現在的恢復幅度必須 ≥ 0.4 ATR
-        # 避免一點小波動就觸發轉向（ma3_prev2 是兩根確認模式下的真正谷底）
-        trough_recovery = ma3_curr - ma3_prev2  # 恢復幅度
-        is_trough_deep = trough_recovery >= atr * 0.4
-        is_true_trough = is_trough_confirmed and is_green and (last_close > ma3_curr) and is_trough_deep
-        # 第一根上彎：只是形成中，需等待第二根確認
-        if is_trough_forming and not is_trough_confirmed:
-            return {
-                "signal": None,
-                "reason": f"MA3 初次上彎，等待確認是真谷底還是假反彈 (ADX={adx_curr:.1f})",
-                "pivot_confirmed": False,
-                "pivot_score": 0
-            }
-        if is_true_trough:
-            return {
-                "signal": "LONG",
-                "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA3 兩根確認谷底轉彎 (ADX={adx_curr:.1f}, 恢復幅={trough_recovery:.4g}≥{atr*0.4:.4g}ATR) → 改向多單",
-                "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 100,
-            }
-        elif approaching_trough or ma3_slope >= 0:
-            return {
-                "signal": None,
-                "reason": "快到谷底或 MA3 已上彎，暫停無腦開空",
-                "pivot_confirmed": False,
-                "pivot_score": 0
-            }
-        elif ma5_slope >= 0:
-            # MA5 彎頭向上（大結構可能在轉折），空頭中不強求開空
-            return {
-                "signal": None,
-                "reason": f"MA5 已上彎，空頭中閱候確認方向 (ma5_slope={ma5_slope:.6f})",
-                "pivot_confirmed": False,
-                "pivot_score": 0
-            }
-        else:
-            return {
-                "signal": "SHORT",
-                "entry_type": "TREND_SHORT",
-                "reason": f"空頭趨勢中 (ADX={adx_curr:.1f}) → 無腦開空單",
-                "atr": atr,
-                "pivot_confirmed": False,
-                "pivot_score": 50,
-            }
-
-    # 多頭趨勢中 (MA5 > MA25)
-    if ma5_curr > ma25_curr:
-        # 頂峰深度檢查：從 MA3 頂峰到現在的下跌幅度必須 ≥ 0.4 ATR
-        # 避免一點小波動就觸發轉向（ma3_prev2 是兩根確認模式下的真正頂峰）
-        peak_decline = ma3_prev2 - ma3_curr  # 下跌幅度
-        is_peak_deep = peak_decline >= atr * 0.4
-        is_true_peak = is_peak_confirmed and is_red and (last_close < ma3_curr) and is_peak_deep
-        # 第一根下彎：不立刻開空，等待確認是真頂峰還是假突破
-        if is_peak_forming and not is_peak_confirmed:
-            return {
-                "signal": None,
-                "reason": f"MA3 初次向下彎，等待確認是真頂峰還是假突破 (ADX={adx_curr:.1f})",
-                "pivot_confirmed": False,
-                "pivot_score": 0
-            }
-        if is_true_peak:
-            return {
-                "signal": "SHORT",
-                "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA3 兩根確認頂峰轉彎 (ADX={adx_curr:.1f}, 下跌幅={peak_decline:.4g}≥{atr*0.4:.4g}ATR) → 改向空單",
-                "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 100,
-            }
-        elif approaching_peak or ma3_slope <= 0:
-            return {
-                "signal": None,
-                "reason": "快到頂峰或 MA3 已下彎，暫停無腦開多",
-                "pivot_confirmed": False,
-                "pivot_score": 0
-            }
-        elif ma5_slope <= 0:
-            # MA5 本身彎頭向下（大結構可能在轉折），不強求証實多單
-            return {
-                "signal": None,
-                "reason": f"MA5 已下彎，多頭中閱候確認方向再開倉 (ma5_slope={ma5_slope:.6f})",
-                "pivot_confirmed": False,
-                "pivot_score": 0
-            }
-        else:
-            return {
-                "signal": "LONG",
-                "entry_type": "TREND_LONG",
-                "reason": f"多頭趨勢中 (ADX={adx_curr:.1f}) → 無腦開多單",
-                "atr": atr,
-                "pivot_confirmed": False,
-                "pivot_score": 50,
-            }
+    if both_above_ma25:
+        rejected = reject_false_breakout("LONG")
+        if rejected:
+            return rejected
+        return {
+            "signal": "LONG",
+            "entry_type": "TREND_LONG",
+            "reason": f"MA3、MA5 同在 MA25 上方 (ADX={adx_curr:.1f}) → 現價開多",
+            "atr": atr,
+            "pivot_confirmed": False,
+            "pivot_score": 85,
+            "ma_alignment": "ABOVE",
+        }
 
     return {
         "signal": None,
-        "reason": "等待轉向",
+        "reason": "MA3、MA5 分居 MA25 兩側，等待方向一致",
         "pivot_confirmed": False,
-        "pivot_score": 0
+        "pivot_score": 0,
+        "ma_alignment": "MIXED",
     }
-
-    return {"signal": None, "reason": "", "pivot_confirmed": False, "pivot_score": 0}
-
-
 
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:

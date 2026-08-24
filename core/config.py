@@ -492,16 +492,15 @@ TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.00
 
 # --- ADX 趨勢強度濾網 ---
 # 兩層防線分開設計：
-# 1. ADX_MANDATORY_MIN（硬性底線）：ADX 低於此值直接 HOLD，連評分都不進入。
-#    盤整期 ADX 常落在 10~17，12 以下可確認為「完全無趨勢」，假突破最高發。
-#    設 12 而非直接用 ADX_QUALITY_MIN(15) 是刻意保守——只擋極端無動能場景，
-#    不大幅壓縮訊號數量；後續實測再視情況調高。已提高到 12.0 減少假突破。
-# 2. ADX_QUALITY_MIN/FULL（軟性加分）：12~30 區間內按比例加分，越高越好，
+# 1. 盤整或方向不明使用 ADX_MANDATORY_MIN=15。
+#    價格與 MA5/MA25 明確同向推進時，改用 ADX_STRONG_TREND_MIN=10。
+# 2. ADX_QUALITY_MIN/FULL（軟性加分）：15~30 區間內按比例加分，越高越好，
 #    但不到最低門檻就加 0 分；超出 ADX_QUALITY_FULL 視為滿分。
 # 3. ADX_DECLINE 衰退擋單：ADX 現在比 N 根前低且已低於 ADX_QUALITY_MIN，
 #    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
-ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "12.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "15.0"))  # 盤整／方向不明門檻
+ADX_STRONG_TREND_MIN = float(os.getenv("ADX_STRONG_TREND_MIN", "10.0"))  # 明確單邊趨勢門檻
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # WEAK_ENERGY_ADX_THRESHOLD：進場當下 ADX 低於這個門檻（動能偏弱/中等，

@@ -29,7 +29,10 @@ from core.strategy import (
 )
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
-from core.indicators import compute_position_trigger
+from core.indicators import (
+    compute_position_trigger, detect_ma5_ma25_cross_and_turn, drop_unclosed_candle,
+    get_dynamic_adx_floor,
+)
 from core.engine import TradingEngine, cap_margin_to_trade_risk
 
 
@@ -1288,6 +1291,8 @@ def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
     從 19.51 降到 14.67 才進場，方向沒變、新鮮度分數也還高，是新鮮度
     抓不到的另一種末端趨勢樣貌，必須直接擋單而不是只扣分。"""
     strategy = SuperTrendKeltnerStrategy()
+    monkeypatch.setattr(strategy_module, "ADX_MANDATORY_MIN", 14.0)
+    monkeypatch.setattr("core.config.ADX_MANDATORY_MIN", 14.0)
     frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
     frame.loc[44:49, "adx"] = [19.5, 18.8, 17.6, 16.5, 15.7, 14.7]
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
@@ -3115,7 +3120,272 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
         assert 0.5 <= rr < 1.0
 
 
+def _continuous_cross_frame(side="LONG", volume=100.0, wick_trap=False):
+    size = 30
+    if side == "LONG":
+        ma5 = [99.0] * (size - 2) + [99.0, 101.0]
+        open_prices = [100.0] * size
+        close_prices = [100.0] * (size - 1) + [101.0]
+        high_prices = [101.1] * size
+        low_prices = [99.9] * size
+        if wick_trap:
+            high_prices[-1] = 103.0
+    else:
+        ma5 = [101.0] * (size - 2) + [101.0, 99.0]
+        open_prices = [100.0] * size
+        close_prices = [100.0] * (size - 1) + [99.0]
+        high_prices = [100.1] * size
+        low_prices = [98.9] * size
+        if wick_trap:
+            low_prices[-1] = 97.0
+    return pd.DataFrame({
+        "open": open_prices,
+        "high": high_prices,
+        "low": low_prices,
+        "close": close_prices,
+        "volume": [100.0] * (size - 1) + [volume],
+        "ma3": (
+            [101.0] * (size - 3) + [101.0, 100.5, 100.8]
+            if side == "LONG"
+            else [99.0] * (size - 3) + [99.0, 99.5, 99.2]
+        ),
+        "ma5": ma5,
+        "ma25": [100.0] * size,
+        "adx": [20.0] * size,
+        "atr": [1.0] * size,
+    })
+
+
+def test_aligned_ma3_ma5_above_ma25_opens_long():
+    result = detect_ma5_ma25_cross_and_turn(_continuous_cross_frame())
+
+    assert result["signal"] == "LONG"
+    assert result["entry_type"] == "TROUGH_TURN"
+    assert result["ma_alignment"] == "ABOVE"
+
+
+def test_below_ma25_accepts_repeated_lower_high_pullback():
+    frame = _continuous_cross_frame(side="SHORT")
+    frame.loc[frame.index[-8:-2], "high"] = 101.0
+    frame.loc[frame.index[-1], ["open", "high", "low", "close", "ma3", "ma5"]] = [99.3, 99.4, 98.9, 99.0, 99.2, 99.0]
+
+    result = detect_ma5_ma25_cross_and_turn(frame)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "TREND_SHORT"
+    assert result["ma_alignment"] == "BELOW"
+
+
+def test_below_ma25_opens_at_market_without_waiting_for_pullback():
+    frame = _continuous_cross_frame(side="SHORT")
+    frame["ma3"] = [99.0] * len(frame)
+
+    result = detect_ma5_ma25_cross_and_turn(frame)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "TREND_SHORT"
+    assert "現價開空" in result["reason"]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_aligned_trend_opens_at_market_without_waiting_for_better_price(side):
+    frame = _continuous_cross_frame(side=side)
+    if side == "LONG":
+        frame.loc[frame.index[-1], ["open", "high", "low", "close", "ma3"]] = [102.0, 103.1, 101.9, 103.0, 102.0]
+    else:
+        frame.loc[frame.index[-1], ["open", "high", "low", "close", "ma3"]] = [98.0, 98.1, 96.9, 97.0, 98.0]
+
+    result = detect_ma5_ma25_cross_and_turn(frame)
+
+    assert result["signal"] == side
+    assert result["entry_type"] == ("TREND_LONG" if side == "LONG" else "TREND_SHORT")
+
+
+def test_continuous_cross_rejects_adx_below_hard_floor():
+    frame = _continuous_cross_frame()
+    frame["adx"] = 14.9
+
+    result = detect_ma5_ma25_cross_and_turn(frame)
+
+    assert result["signal"] is None
+    assert "盤整過濾" in result["reason"]
+
+
+def test_continuous_cross_rejects_low_confirmation_volume():
+    result = detect_ma5_ma25_cross_and_turn(
+        _continuous_cross_frame(volume=70.0)
+    )
+
+    assert result["signal"] is None
+    assert "確認量能 0.70x" in result["reason"]
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_continuous_cross_rejects_adverse_long_wick(side):
+    result = detect_ma5_ma25_cross_and_turn(
+        _continuous_cross_frame(side=side, wick_trap=True)
+    )
+
+    assert result["signal"] is None
+    assert "長上影線" in result["reason"] if side == "LONG" else "長下影線" in result["reason"]
+
+
+def _fast_pivot_frame(side: str, clear: bool = True):
+    size = 30
+    is_trough = side == "LONG"
+    frame = pd.DataFrame({
+        "open": [100.0] * size,
+        "high": [100.1] * size,
+        "low": [99.9] * size,
+        "close": [100.0] * size,
+        "volume": [100.0] * size,
+        "ma3": [100.0] * size,
+        "ma5": ([99.0] * size if is_trough else [101.0] * size),
+        "ma25": [100.0] * size,
+        "adx": [20.0] * size,
+        "atr": [1.0] * size,
+    })
+    if is_trough:
+        frame.loc[size - 3:, "ma3"] = [100.0, 99.5, 99.8 if clear else 99.6]
+        frame.loc[size - 1, ["open", "high", "low", "close"]] = [99.5, 100.1, 99.4, 100.0 if clear else 99.65]
+    else:
+        frame.loc[size - 3:, "ma3"] = [100.0, 100.5, 100.2 if clear else 100.4]
+        frame.loc[size - 1, ["open", "high", "low", "close"]] = [100.5, 100.6, 99.9, 100.0 if clear else 100.35]
+    return frame
+
+
+@pytest.mark.parametrize(("pivot_side", "entry_type"), [("LONG", "TROUGH_TURN"), ("SHORT", "PEAK_TURN")])
+def test_confirmed_pivot_has_priority_over_ma25_alignment(pivot_side, entry_type):
+    result = detect_ma5_ma25_cross_and_turn(_fast_pivot_frame(pivot_side, clear=True))
+
+    assert result["signal"] == pivot_side
+    assert result["entry_type"] == entry_type
+    assert result["pivot_confirmed"] is True
+    assert result["pivot_score"] == 95
+
+
+def test_live_pivot_opens_immediately_with_partial_volume():
+    frame = _fast_pivot_frame("LONG", clear=True)
+    frame.loc[frame.index[-1], "volume"] = 70.0
+
+    closed_result = detect_ma5_ma25_cross_and_turn(frame)
+    live_result = detect_ma5_ma25_cross_and_turn(frame, allow_live_pivot=True)
+
+    assert closed_result["signal"] is None
+    assert closed_result["pivot_confirmed"] is False
+    assert live_result["signal"] == "LONG"
+    assert live_result["entry_type"] == "TROUGH_TURN"
+    assert live_result["live_pivot"] is True
+
+
+def test_live_peak_first_bend_opens_short_without_waiting_for_body_or_volume():
+    frame = _fast_pivot_frame("SHORT", clear=False)
+    frame.loc[frame.index[-1], ["high", "low", "volume"]] = [100.55, 100.30, 5.0]
+
+    closed_result = detect_ma5_ma25_cross_and_turn(frame)
+    live_result = detect_ma5_ma25_cross_and_turn(frame, allow_live_pivot=True)
+
+    assert closed_result["signal"] is None
+    assert live_result["signal"] == "SHORT"
+    assert live_result["entry_type"] == "PEAK_TURN"
+    assert live_result["live_pivot"] is True
+
+
+def test_mixed_ma3_ma5_alignment_waits():
+    frame = _fast_pivot_frame("LONG", clear=False)
+    frame["ma3"] = [101.0] * len(frame)
+    frame["ma5"] = [99.0] * len(frame)
+
+    result = detect_ma5_ma25_cross_and_turn(frame)
+
+    assert result["signal"] is None
+    assert result["ma_alignment"] == "MIXED"
+    assert "等待方向一致" in result["reason"]
+
+
+@pytest.mark.parametrize(
+    ("direction", "closes", "expected_floor"),
+    [
+        (1, [100.0, 100.2, 100.5, 100.9, 101.4], 10.0),
+        (-1, [101.4, 101.2, 100.9, 100.5, 100.0], 10.0),
+        (1, [100.0, 100.1, 100.0, 100.1, 100.0], 15.0),
+    ],
+)
+def test_dynamic_adx_floor(direction, closes, expected_floor):
+    frame = pd.DataFrame({"close": closes, "atr": [1.0] * 5})
+    frame["ma5"] = [99.0, 99.1, 99.2, 99.4, 99.7] if direction == 1 else [102.0, 101.9, 101.7, 101.5, 101.3]
+    frame["ma25"] = [98.5] * 5 if direction == 1 else [102.5] * 5
+
+    floor, strong = get_dynamic_adx_floor(frame, direction)
+
+    assert floor == pytest.approx(expected_floor)
+    assert strong is (expected_floor == 10.0)
+
+
+def test_drop_unclosed_candle_excludes_live_entry_bar(monkeypatch):
+    now_sec = 2_000_000_000.0
+    monkeypatch.setattr("core.indicators.time.time", lambda: now_sec)
+    now_ms = int(now_sec * 1000)
+    frame = pd.DataFrame({
+        "timestamp": [now_ms - 120_000, now_ms - 30_000],
+        "close": [100.0, 101.0],
+    })
+
+    closed = drop_unclosed_candle(frame, "1m")
+
+    assert closed["close"].tolist() == [100.0]
+
+
 # --- detect_ma5_reversal 拐頭偵測單元測試 ---
+
+def test_compute_indicators_includes_ma3():
+    frame = pd.DataFrame({
+        "open": range(1, 31),
+        "high": [value + 1 for value in range(1, 31)],
+        "low": [value - 1 for value in range(1, 31)],
+        "close": range(1, 31),
+        "volume": [100.0] * 30,
+    })
+
+    computed = SuperTrendKeltnerStrategy().compute_indicators(frame)
+
+    assert "ma3" in computed.columns
+    assert computed["ma3"].iloc[-1] == pytest.approx(29.0)
+
+
+def test_detect_ma5_reversal_uses_ma3_pivot_and_labels_reason():
+    frame = pd.DataFrame({
+        "close": [100.0] * 25,
+        "high": [101.0] * 25,
+        "low": [99.0] * 25,
+        "ma3": [100.0] * 22 + [100.2, 99.8, 100.1],
+        "ma5": [101.0] * 25,
+        "ma25": [100.0] * 25,
+        "atr": [1.0] * 25,
+    })
+
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is True
+    assert "MA3谷底" in result["reason"]
+
+
+def test_detect_ma5_reversal_uses_recent_ma3_trough_memory():
+    frame = pd.DataFrame({
+        "close": [100.0] * 25,
+        "high": [101.0] * 25,
+        "low": [99.0] * 25,
+        "ma3": [100.0] * 17 + [100.2, 99.7, 100.0, 100.1, 100.15, 100.2, 100.25, 100.3],
+        "ma5": [101.0] * 25,
+        "ma25": [100.0] * 25,
+        "atr": [1.0] * 25,
+    })
+
+    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
+
+    assert result["detected"] is True
+    assert "記憶延伸谷底" in result["reason"]
+
 
 def _ma5_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):
     """for detect_ma5_reversal tests:

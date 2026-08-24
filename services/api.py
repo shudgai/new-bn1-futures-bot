@@ -271,7 +271,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
             raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
             
         # 計算 MA
-        df['MA5'] = df['close'].rolling(window=7).mean()
+        df['MA5'] = df['close'].rolling(window=5).mean()
         df['MA25'] = df['close'].rolling(window=25).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
         
@@ -292,5 +292,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
             })
             
         return {"symbol": symbol, "timeframe": timeframe, "data": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
