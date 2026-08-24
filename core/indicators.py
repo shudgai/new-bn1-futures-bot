@@ -292,8 +292,8 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_choch_down = swing_low is not None and last_close < swing_low
 
     # 綜合「真反轉」確認分數 (剔除顏色雜訊，純看動能與結構破壞)
-    bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up])
-    bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down])
+    bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up, is_bullish_engulfing])
+    bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down, is_bearish_engulfing])
 
     # 優先級 1：大反轉（金叉/死叉第一時間進場）
     if cross_up:
