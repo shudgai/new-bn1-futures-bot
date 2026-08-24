@@ -274,12 +274,17 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     rsi_curr = float(df['rsi'].iloc[-1])
     rsi_prev = float(df['rsi'].iloc[-2])
     
+    # 4. 判斷真反轉型態 (加入 ATR 動能濾網，過濾微型雜訊)
+    min_body = atr * 0.3
+    min_range = atr * 0.5
+    
     # 量價特徵：Pinbar
     body = abs(last_close - last_open)
+    candle_range = last_high - last_low
     upper_shadow = last_high - max(last_open, last_close)
     lower_shadow = min(last_open, last_close) - last_low
-    is_bullish_pinbar = (lower_shadow > body * 2.0) and (upper_shadow < body)
-    is_bearish_pinbar = (upper_shadow > body * 2.0) and (lower_shadow < body)
+    is_bullish_pinbar = (lower_shadow > body * 2.0) and (upper_shadow < body) and (candle_range >= min_range)
+    is_bearish_pinbar = (upper_shadow > body * 2.0) and (lower_shadow < body) and (candle_range >= min_range)
     
     # 動能背離特徵
     # 谷底背離：MACD 柱狀圖縮腳向上 或 RSI 超賣區回升
@@ -292,21 +297,22 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_choch_up = swing_high is not None and last_close > swing_high
     is_choch_down = swing_low is not None and last_close < swing_low
 
-    # 吞噬型態 (Engulfing) - 放寬微小跳空容忍度 (0.01% 誤差)
+    # 吞噬型態 (Engulfing) - 放寬微小跳空容忍度 (0.01% 誤差) + 必須有足夠實體大小
     prev_open = float(open_p.iloc[-2])
     prev_close = float(close.iloc[-2])
+    prev_body = abs(prev_close - prev_open)
     tolerance = last_close * 0.0001
-    is_bullish_engulfing = (prev_close < prev_open) and is_green and (last_close > prev_open) and (last_open <= prev_close + tolerance)
-    is_bearish_engulfing = (prev_close > prev_open) and is_red and (last_close < prev_open) and (last_open >= prev_close - tolerance)
+    is_bullish_engulfing = (prev_close < prev_open) and is_green and (last_close > prev_open) and (last_open <= prev_close + tolerance) and (body >= min_body or prev_body >= min_body)
+    is_bearish_engulfing = (prev_close > prev_open) and is_red and (last_close < prev_open) and (last_open >= prev_close - tolerance) and (body >= min_body or prev_body >= min_body)
 
     # 上一根是否為避雷針 (提早發現轉折)
-    prev_body = abs(prev_close - prev_open)
     prev_high = float(high.iloc[-2])
     prev_low = float(low.iloc[-2])
+    prev_range = prev_high - prev_low
     prev_upper_shadow = prev_high - max(prev_open, prev_close)
     prev_lower_shadow = min(prev_open, prev_close) - prev_low
-    prev_is_bullish_pinbar = (prev_lower_shadow > prev_body * 2.0) and (prev_upper_shadow < prev_body)
-    prev_is_bearish_pinbar = (prev_upper_shadow > prev_body * 2.0) and (prev_lower_shadow < prev_body)
+    prev_is_bullish_pinbar = (prev_lower_shadow > prev_body * 2.0) and (prev_upper_shadow < prev_body) and (prev_range >= min_range)
+    prev_is_bearish_pinbar = (prev_upper_shadow > prev_body * 2.0) and (prev_lower_shadow < prev_body) and (prev_range >= min_range)
 
     # 綜合「真反轉」確認分數 (只要符合任一強烈型態即 +1 分)
     bull_confirm_score = sum([is_bullish_pinbar, prev_is_bullish_pinbar and is_green, is_bullish_div, is_choch_up, is_bullish_engulfing])
