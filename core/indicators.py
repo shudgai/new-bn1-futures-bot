@@ -319,7 +319,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     # 優先級 2：真峰谷確認 & 優先級 3：順勢上車
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        if is_trough and is_green and bull_confirm_score >= 1:
+        if is_trough and is_green and bull_confirm_score >= 0:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
@@ -341,7 +341,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        if is_peak and is_red and bear_confirm_score >= 1:
+        if is_peak and is_red and bear_confirm_score >= 0:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
