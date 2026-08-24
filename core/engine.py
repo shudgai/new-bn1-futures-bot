@@ -2807,11 +2807,15 @@ class TradingEngine:
             side = signal.get("signal")
 
         entry_type = signal.get("entry_type")
-        pivot_confirmed = bool(
+        pivot_candidate = bool(
             side
             and (signal.get("pivot_ready") or signal.get("pivot_confirmed"))
             and entry_type in ("TROUGH_TURN", "PEAK_TURN")
         )
+        # 第一根 MA3 彎頭即使突破相鄰 K 線，也只能視為峰谷候選。
+        # 方向鎖必須等第二根確認，避免 MA25 下方一根綠 K 就由空翻多，
+        # 或 MA25 上方一根紅 K 就由多翻空。
+        pivot_confirmed = bool(pivot_candidate and not signal.get("fast_pivot"))
         locked_side = self._pyramid_direction_lock.get(symbol)
         if locked_side is None and position and position.get("strategy_mode") == "DIMINISHING_PYRAMID":
             locked_side = position.get("side")

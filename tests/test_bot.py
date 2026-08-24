@@ -529,6 +529,42 @@ async def test_engine_diminishing_2a_pivot_closes_short_and_opens_long_same_cycl
 
 
 @pytest.mark.anyio
+async def test_engine_diminishing_one_green_fast_trough_cannot_flip_short_to_long(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_fast_trough_lock.json"))
+    engine = TradingEngine()
+    engine.account = PaperAccount()
+    engine.account.balance = 150.0
+    assert await engine.account.open_position(
+        "BTC/USDT", "SHORT", 100.0, 45.0, 101.0, 0.0, "short trend",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    engine._pyramid_direction_lock["BTC/USDT"] = "SHORT"
+    frame = _diminishing_trend_frame("SHORT")
+    monkeypatch.setattr(
+        engine_module, "detect_diminishing_pyramid_entry",
+        lambda *_args, **_kwargs: {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "one green candle", "pivot_confirmed": True,
+            "fast_pivot": True, "ma_alignment": "BELOW",
+            "atr": 1.0, "ma3": 99.0, "structural_stop": 98.0,
+        },
+    )
+    engine.tickers["BTC/USDT"] = 100.0
+
+    result = await engine._process_diminishing_pyramid_symbol("BTC/USDT", frame)
+
+    assert result["signal"] is None
+    assert result["direction_locked"] is True
+    assert engine.account.positions["BTC/USDT"]["side"] == "SHORT"
+    assert not any(trade["action"] == "CLOSE_SHORT" for trade in engine.account.trades)
+    await engine.exchange.close()
+    await engine.execution_exchange.close()
+
+
+@pytest.mark.anyio
 async def test_engine_diminishing_direction_lock_ignores_alignment_flip_without_pivot(
     tmp_path, monkeypatch
 ):
