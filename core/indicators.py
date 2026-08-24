@@ -341,11 +341,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     # 優先級 2：真峰谷確認 & 優先級 3：順勢上車
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        if (is_trough or (ma3_curr > ma3_prev and is_green)) and bull_confirm_score >= 1:
+        if (is_trough or (ma3_curr > ma3_prev and is_green)) and bull_confirm_score >= 2:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA5 谷底且滿足真反轉 (>=1項結構條件) → 轉向多單",
+                "reason": f"空頭中 MA5 谷底且滿足強烈真反轉 (>=2項結構條件) → 轉向多單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
@@ -363,11 +363,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        if is_peak and is_red and bear_confirm_score >= 1:
+        if is_peak and is_red and bear_confirm_score >= 2:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA5 頂峰且滿足真反轉 (>=1項結構條件) → 轉向空單",
+                "reason": f"多頭中 MA5 頂峰且滿足強烈真反轉 (>=2項結構條件) → 轉向空單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
