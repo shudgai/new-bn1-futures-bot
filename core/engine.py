@@ -2810,7 +2810,7 @@ class TradingEngine:
 
                                 # --- 活 K 線濾網 (Live Candle Color Filter) ---
                                 # 順勢確認：不允許在逆向顏色的 K 棒進場（空單不空在綠K、多單不多在紅K）
-                                if cr_entry_type in ("PEAK_TURN", "TROUGH_TURN"):
+                                if cr_entry_type in ("PEAK_TURN", "TROUGH_TURN", "TREND_LONG", "TREND_SHORT"):
                                     is_confirmed_reversal = "提前轉向" in cr_info.get("reason", "")
                                     if not is_confirmed_reversal:
                                         if cr_signal == "SHORT" and live_price > last_close:
@@ -2822,7 +2822,7 @@ class TradingEngine:
                                     continue
 
                                 # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
-                                if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                                if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
                                     should_open = False
                                     if not has_pos:
                                         should_open = True
