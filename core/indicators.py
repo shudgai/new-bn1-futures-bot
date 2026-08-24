@@ -264,10 +264,10 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
 
     adx_curr = float(df['adx'].iloc[-1])
     # --- 趨勢強度濾網 ---
-    if adx_curr < 20.0:
+    if adx_curr < 13.0:
         return {
             "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 20)",
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 13)",
             "pivot_confirmed": False,
             "pivot_score": 0
         }
