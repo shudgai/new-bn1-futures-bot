@@ -2756,7 +2756,7 @@ class TradingEngine:
                         direction_text = "雙向"
                         coin = symbol.replace("/USDT", "")
 
-                        from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
+                        from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, MAX_SLOTS, get_leverage
                         if ENABLE_CONTINUOUS_REVERSE_MODE:
                             from core.indicators import detect_ma5_ma25_cross_and_turn
                             from core.strategy import build_sl_tp_for_side
@@ -2847,7 +2847,7 @@ class TradingEngine:
                                             symbol=symbol,
                                             side=cr_signal,
                                             price=live_price,
-                                            amount_usdt=TRADE_AMOUNT_USDT,
+                                            amount_usdt=self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
                                             sl=sl,
                                             tp=tp,
                                             reason=cr_info.get("reason", cr_entry_type),
@@ -2883,7 +2883,7 @@ class TradingEngine:
                                             symbol=symbol,
                                             side=cr_signal,
                                             price=live_price,
-                                            amount_usdt=TRADE_AMOUNT_USDT,
+                                            amount_usdt=self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
                                             sl=sl,
                                             tp=tp,
                                             reason=cr_info.get("reason", cr_entry_type),
