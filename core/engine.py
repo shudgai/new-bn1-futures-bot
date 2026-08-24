@@ -2873,7 +2873,8 @@ class TradingEngine:
                                             atr=atr,
                                             leverage=get_leverage(symbol),
                                             signal_score=100,
-                                            timeframe="1m"
+                                            timeframe="1m",
+                                            entry_context={"dca_stage": 2},
                                         )
 
                                 # --- MA5 穿越 MA25（金叉/死叉）：反轉/補開訊號 ---
