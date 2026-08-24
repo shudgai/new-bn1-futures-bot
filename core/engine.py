@@ -2817,7 +2817,21 @@ class TradingEngine:
                                             cr_signal = None  # 綠K，暫緩做空
                                         elif cr_signal == "LONG" and live_price < last_close:
                                             cr_signal = None  # 紅K，暫緩做多
-                                
+
+                                # --- 橫盤濾網 (Sideways Filter) ---
+                                # MA5 與 MA25 差距 < 0.15%：兩線黏在一起 = 盤整！不開倉，等待趨勢成型
+                                if cr_signal and 'ma5' in df_cr.columns and 'ma25' in df_cr.columns:
+                                    ma5_now = float(df_cr['ma5'].iloc[-1])
+                                    ma25_now = float(df_cr['ma25'].iloc[-1])
+                                    if ma25_now > 0:
+                                        ma_spread_pct = abs(ma5_now - ma25_now) / ma25_now
+                                        if ma_spread_pct < 0.0015:  # 差距 < 0.15%
+                                            self.account.log(
+                                                f"⏸️ {symbol} 橫盤濾網：MA5/MA25 差距僅 {ma_spread_pct:.4%}，跳過開倉（盤整中）",
+                                                "INFO"
+                                            )
+                                            cr_signal = None
+
                                 if not cr_signal:
                                     continue
 
