@@ -823,6 +823,12 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
     prior_highs = df['high'].iloc[-9:-1]
     near_recent_low = bool(len(prior_lows)) and last_low <= float(prior_lows.min()) + atr * 0.25
     near_recent_high = bool(len(prior_highs)) and last_high >= float(prior_highs.max()) - atr * 0.25
+    confirmed_prior_lows = df['low'].iloc[-9:-3]
+    confirmed_prior_highs = df['high'].iloc[-9:-3]
+    pivot_low = float(df['low'].iloc[-3:].min())
+    pivot_high = float(df['high'].iloc[-3:].max())
+    confirmed_near_recent_low = bool(len(confirmed_prior_lows)) and pivot_low <= float(confirmed_prior_lows.min()) + atr * 0.25
+    confirmed_near_recent_high = bool(len(confirmed_prior_highs)) and pivot_high >= float(confirmed_prior_highs.max()) - atr * 0.25
     confirmed_trough_recovery = ma3_curr - ma3_prev2
     confirmed_peak_decline = ma3_prev2 - ma3_curr
     live_fast_trough = (
@@ -849,11 +855,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
     )
     confirmed_trough = (
         is_trough_confirmed and is_green and last_close > ma3_curr
-        and confirmed_trough_recovery >= atr * 0.4 and near_recent_low
+        and confirmed_trough_recovery >= atr * 0.4 and confirmed_near_recent_low
     )
     confirmed_peak = (
         is_peak_confirmed and is_red and last_close < ma3_curr
-        and confirmed_peak_decline >= atr * 0.4 and near_recent_high
+        and confirmed_peak_decline >= atr * 0.4 and confirmed_near_recent_high
     )
 
     trough_evidence = _score_reversal_evidence(df, "LONG", atr) if (clear_fast_trough or confirmed_trough) else None

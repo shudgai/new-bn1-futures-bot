@@ -3841,6 +3841,21 @@ def test_confirmed_pivot_has_priority_over_ma25_alignment(pivot_side, entry_type
     assert result["pivot_score"] == 95
 
 
+def test_confirmed_peak_uses_the_actual_peak_bar_not_the_lower_confirmation_high():
+    frame = _fast_pivot_frame("SHORT", clear=False)
+    frame.loc[frame.index[-4:], "ma3"] = [100.0, 100.6, 100.3, 99.9]
+    frame.loc[frame.index[-3], ["open", "high", "low", "close"]] = [100.4, 101.2, 100.3, 101.0]
+    frame.loc[frame.index[-2], ["open", "high", "low", "close"]] = [100.8, 100.9, 100.1, 100.2]
+    frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [100.1, 100.15, 99.5, 99.6]
+
+    result = detect_ma5_ma25_cross_and_turn(frame)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "PEAK_TURN"
+    assert result["pivot_confirmed"] is True
+    assert result["right_side_confirmed"] is True
+
+
 def test_live_pivot_opens_immediately_with_partial_volume():
     frame = _fast_pivot_frame("LONG", clear=True)
     frame.loc[frame.index[-1], "volume"] = 70.0
