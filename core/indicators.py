@@ -179,63 +179,66 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
+
+def _find_swing_points(df: pd.DataFrame, window: int = 5):
+    if len(df) < window * 2 + 1:
+        return None, None
+    
+    # 找最近的波段高低點
+    highs = df['high'].values
+    lows = df['low'].values
+    
+    last_swing_high = None
+    last_swing_low = None
+    
+    for i in range(len(df) - window - 1, window - 1, -1):
+        if last_swing_high is None and all(highs[i] >= highs[i-window:i]) and all(highs[i] >= highs[i+1:i+window+1]):
+            last_swing_high = highs[i]
+        if last_swing_low is None and all(lows[i] <= lows[i-window:i]) and all(lows[i] <= lows[i+1:i+window+1]):
+            last_swing_low = lows[i]
+        if last_swing_high is not None and last_swing_low is not None:
+            break
+            
+    return last_swing_high, last_swing_low
+
 def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     """
-    連續轉向策略核心邏輯（優化版：純交叉 + 順勢回調上車）
-
-    ✅ 進場邏輯 1（大反轉）：
-        - MA5 從下方穿越 MA25（金叉）→ LONG
-        - MA5 從上方穿越 MA25（死叉）→ SHORT
-    
-    ✅ 進場邏輯 2（順勢回調上車 - 解決錯過大趨勢的問題）：
-        - 空頭延續 (MA5 < MA25)：出現小反彈結束，MA5 形成峰頂往下 → SHORT (PEAK_TURN)
-        - 多頭延續 (MA5 > MA25)：出現小回調結束，MA5 形成谷底往上 → LONG (TROUGH_TURN)
-
-    ✅ 避開舊邏輯陷阱：
-        - 舊邏輯是在 MA5 < MA25 時找「谷底做多」(逆勢摸底)
-        - 新邏輯是在 MA5 < MA25 時找「峰頂做空」(順勢做空)
+    連續轉向策略核心邏輯（升級版：真峰谷確認機制）
     """
     if df is None or len(df) < 25:
         return {"signal": None, "reason": "Not enough data", "pivot_confirmed": False, "pivot_score": 0}
 
-    if 'ma5' not in df.columns:
-        df = df.copy()
-        df['ma5'] = df['close'].rolling(window=5).mean()
-    if 'ma25' not in df.columns:
-        df = df.copy()
-        df['ma25'] = df['close'].rolling(window=25).mean()
+    df = df.copy()
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    open_p = df['open']
+    volume = df['volume'] if 'volume' in df.columns else pd.Series(0, index=df.index)
 
-    # 計算 ADX (14) 如果不存在
-    if 'adx' not in df.columns:
-        adx_period = 14
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        
-        tr1 = high - low
-        tr2 = (high - close.shift(1)).abs()
-        tr3 = (low - close.shift(1)).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        
-        up_move = high.diff()
-        down_move = -low.diff()
-        plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
-        minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
-        
-        tr_smooth = tr.ewm(alpha=1 / adx_period, adjust=False).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
-        minus_di = 100 * (minus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
-        df['adx'] = dx.ewm(alpha=1 / adx_period, adjust=False).mean()
+    if 'ma5' not in df.columns: df['ma5'] = close.rolling(window=5).mean()
+    if 'ma25' not in df.columns: df['ma25'] = close.rolling(window=25).mean()
 
-    # 計算 RSI (14) 如果不存在
+    # 計算 MACD
+    if 'macd' not in df.columns:
+        exp1 = close.ewm(span=12, adjust=False).mean()
+        exp2 = close.ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['macdsignal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macdhist'] = df['macd'] - df['macdsignal']
+
+    # 計算 BOLL
+    if 'boll_upper' not in df.columns:
+        ma20 = close.rolling(window=20).mean()
+        std20 = close.rolling(window=20).std()
+        df['boll_upper'] = ma20 + (std20 * 2)
+        df['boll_lower'] = ma20 - (std20 * 2)
+
+    # 計算 RSI
     if 'rsi' not in df.columns:
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-        rs = avg_gain / (avg_loss + 1e-9)
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+        rs = gain / (loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
 
     ma5_curr  = float(df['ma5'].iloc[-1])
@@ -249,35 +252,51 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     cross_up = (ma5_prev <= ma25_prev) and (ma5_curr > ma25_curr)
     cross_down = (ma5_prev >= ma25_prev) and (ma5_curr < ma25_curr)
 
-    # 2. 判斷峰谷 (回調結束)
+    # 2. 判斷基本峰谷
     is_trough = (ma5_curr > ma5_prev) and (ma5_prev < ma5_prev2)
     is_peak = (ma5_curr < ma5_prev) and (ma5_prev > ma5_prev2)
 
-    # 3. 判斷斜率 (動能疲乏過濾)
-    ma5_slope = ma5_curr - ma5_prev
-    ma5_slope_prev = ma5_prev - ma5_prev2
+    last_close = float(close.iloc[-1])
+    last_open = float(open_p.iloc[-1])
+    last_high = float(high.iloc[-1])
+    last_low = float(low.iloc[-1])
+    is_green = last_close > last_open
+    is_red = last_close < last_open
     
-    # 判斷多頭/空頭動能是否依然強勁（未出現疲乏）
-    # 條件：斜率方向正確，且當前斜率沒有大幅萎縮（至少維持前一根斜率的 30% 以上）
-    is_uptrend_steep = (ma5_slope > 0) and (ma5_slope >= max(0, ma5_slope_prev) * 0.3)
-    is_downtrend_steep = (ma5_slope < 0) and (ma5_slope <= min(0, ma5_slope_prev) * 0.3)
+    # 3. 取得進階指標與型態
+    macd_hist = float(df['macdhist'].iloc[-1])
+    macd_hist_prev = float(df['macdhist'].iloc[-2])
+    rsi_curr = float(df['rsi'].iloc[-1])
+    rsi_prev = float(df['rsi'].iloc[-2])
+    
+    # 量價特徵：Pinbar
+    body = abs(last_close - last_open)
+    upper_shadow = last_high - max(last_open, last_close)
+    lower_shadow = min(last_open, last_close) - last_low
+    is_bullish_pinbar = (lower_shadow > body * 2.0) and (upper_shadow < body)
+    is_bearish_pinbar = (upper_shadow > body * 2.0) and (lower_shadow < body)
+    
+    # 動能背離特徵
+    # 谷底背離：MACD 柱狀圖縮腳向上 或 RSI 超賣區回升
+    is_bullish_div = (macd_hist > macd_hist_prev and macd_hist_prev < 0) or (rsi_curr > rsi_prev and rsi_prev < 35)
+    # 峰頂背離：MACD 柱狀圖縮頭向下 或 RSI 超買區回落
+    is_bearish_div = (macd_hist < macd_hist_prev and macd_hist_prev > 0) or (rsi_curr < rsi_prev and rsi_prev > 65)
+    
+    # 結構破位 CHoCH
+    swing_high, swing_low = _find_swing_points(df, window=5)
+    is_choch_up = swing_high is not None and last_close > swing_high
+    is_choch_down = swing_low is not None and last_close < swing_low
 
-    adx_curr = float(df['adx'].iloc[-1])
-    # --- 趨勢強度濾網 ---
-    if adx_curr < 13.0:
-        return {
-            "signal": None,
-            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < 13)",
-            "pivot_confirmed": False,
-            "pivot_score": 0
-        }
+    # 綜合「真反轉」確認分數
+    bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up, is_green])
+    bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down, is_red])
 
     # 優先級 1：大反轉（金叉/死叉第一時間進場）
     if cross_up:
         return {
             "signal": "LONG",
             "entry_type": "CROSS_UP",
-            "reason": f"MA5 金叉 (ADX={adx_curr:.1f}) → 多單",
+            "reason": "MA5 金叉 → 多單",
             "atr": atr,
             "pivot_confirmed": True,
             "pivot_score": 80,
@@ -286,63 +305,35 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
         return {
             "signal": "SHORT",
             "entry_type": "CROSS_DOWN",
-            "reason": f"MA5 死叉 (ADX={adx_curr:.1f}) → 空單",
+            "reason": "MA5 死叉 → 空單",
             "atr": atr,
             "pivot_confirmed": True,
             "pivot_score": 80,
         }
 
-    # 活 K 線濾網：確保轉向當下的 K 棒顏色正確
-    last_close = float(df['close'].iloc[-1])
-    last_open = float(df['open'].iloc[-1])
-    is_green = last_close > last_open
-    is_red = last_close < last_open
-
-    # 優先級 2：強勢動能上車 vs 真實大反轉摸底
-    # 空頭趨勢中 (MA5 < MA25)
+    # 優先級 2：真峰谷確認
+    # 空頭趨勢中 (MA5 < MA25) 找真谷底
     if ma5_curr < ma25_curr:
-        if is_trough and is_green:
+        if is_trough and bull_confirm_score >= 2:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA5 谷底且為綠K (ADX={adx_curr:.1f}) → 無條件提前轉向多單",
+                "reason": f"空頭中 MA5 谷底且滿足真反轉 ({bull_confirm_score}項條件) → 轉向多單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        
-        # 順勢逢高做空 (不一定要等頂峰，只要價格反彈靠近 MA5 且斜率夠陡)
-        if is_downtrend_steep and last_close >= ma5_curr and is_red:
-            return {
-                "signal": "SHORT",
-                "entry_type": "PULLBACK_SHORT",
-                "reason": f"空頭反彈碰線且動能強勁 (斜率過濾) → 順勢逢高做空",
-                "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 90,
-            }
     
-    # 多頭趨勢中 (MA5 > MA25)
+    # 多頭趨勢中 (MA5 > MA25) 找真峰頂
     if ma5_curr > ma25_curr:
-        if is_peak and is_red:
+        if is_peak and bear_confirm_score >= 2:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA5 頂峰且為紅K (ADX={adx_curr:.1f}) → 無條件提前轉向空單",
+                "reason": f"多頭中 MA5 頂峰且滿足真反轉 ({bear_confirm_score}項條件) → 轉向空單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
-            }
-        
-        # 順勢逢低做多 (不一定要等谷底，只要價格回踩 MA5 且斜率夠陡)
-        if is_uptrend_steep and last_close <= ma5_curr and is_green:
-            return {
-                "signal": "LONG",
-                "entry_type": "PULLBACK_LONG",
-                "reason": f"多頭回踩碰線且動能強勁 (斜率過濾) → 順勢逢低做多",
-                "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 90,
             }
 
     return {
@@ -351,11 +342,6 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
         "pivot_confirmed": False,
         "pivot_score": 0
     }
-
-    return {"signal": None, "reason": "", "pivot_confirmed": False, "pivot_score": 0}
-
-
-
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
     """持倉平倉訊號（優化版：純 MA5 穿越 MA25 換向）
