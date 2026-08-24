@@ -252,9 +252,13 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     cross_up = (ma5_prev <= ma25_prev) and (ma5_curr > ma25_curr)
     cross_down = (ma5_prev >= ma25_prev) and (ma5_curr < ma25_curr)
 
-    # 2. 判斷基本峰谷
-    is_trough = (ma5_curr > ma5_prev) and (ma5_prev < ma5_prev2)
-    is_peak = (ma5_curr < ma5_prev) and (ma5_prev > ma5_prev2)
+    # 2. 判斷基本峰谷 (提早偵測：改用更敏銳的 MA3 判定轉折，減少進場延遲)
+    ma3_curr = float(df['ma3'].iloc[-1])
+    ma3_prev = float(df['ma3'].iloc[-2])
+    ma3_prev2 = float(df['ma3'].iloc[-3])
+    
+    is_trough = (ma3_curr > ma3_prev) and (ma3_prev < ma3_prev2)
+    is_peak = (ma3_curr < ma3_prev) and (ma3_prev > ma3_prev2)
 
     last_close = float(close.iloc[-1])
     last_open = float(open_p.iloc[-1])
@@ -287,9 +291,9 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     is_choch_up = swing_high is not None and last_close > swing_high
     is_choch_down = swing_low is not None and last_close < swing_low
 
-    # 綜合「真反轉」確認分數
-    bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up, is_green])
-    bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down, is_red])
+    # 綜合「真反轉」確認分數 (剔除顏色雜訊，純看動能與結構破壞)
+    bull_confirm_score = sum([is_bullish_pinbar, is_bullish_div, is_choch_up])
+    bear_confirm_score = sum([is_bearish_pinbar, is_bearish_div, is_choch_down])
 
     # 優先級 1：大反轉（金叉/死叉第一時間進場）
     if cross_up:
@@ -314,11 +318,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     # 優先級 2：真峰谷確認 & 優先級 3：順勢上車
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        if is_trough and bull_confirm_score >= 3:
+        if is_trough and is_green and bull_confirm_score >= 1:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA5 谷底且滿足真反轉 ({bull_confirm_score}項條件) → 轉向多單",
+                "reason": f"空頭中 MA5 谷底且滿足真反轉 (>=1項結構條件) → 轉向多單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
@@ -336,11 +340,11 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        if is_peak and bear_confirm_score >= 3:
+        if is_peak and is_red and bear_confirm_score >= 1:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA5 頂峰且滿足真反轉 ({bear_confirm_score}項條件) → 轉向空單",
+                "reason": f"多頭中 MA5 頂峰且滿足真反轉 (>=1項結構條件) → 轉向空單",
                 "atr": atr,
                 "pivot_confirmed": True,
                 "pivot_score": 100,
