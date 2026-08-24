@@ -215,6 +215,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     open_p = df['open']
     volume = df['volume'] if 'volume' in df.columns else pd.Series(0, index=df.index)
 
+    if 'ma3' not in df.columns: df['ma3'] = close.rolling(window=3).mean()
     if 'ma5' not in df.columns: df['ma5'] = close.rolling(window=5).mean()
     if 'ma25' not in df.columns: df['ma25'] = close.rolling(window=25).mean()
 
