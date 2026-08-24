@@ -361,7 +361,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     # 優先級 2：真峰谷確認 & 優先級 3：順勢上車
     # 空頭趨勢中 (MA5 < MA25)
     if ma5_curr < ma25_curr:
-        if (is_trough or (ma3_curr > ma3_prev and is_green)) and bull_confirm_score >= 2:
+        if (is_trough or ma3_curr > ma3_prev) and is_green and bull_confirm_score >= 2:
             return {
                 "signal": "LONG",
                 "entry_type": "TROUGH_TURN",
@@ -370,8 +370,8 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        elif (is_peak or (ma3_curr < ma3_prev and is_red)) and bear_confirm_score >= 1:
-            # 沒形成谷底，反而形成峰頂（或只是順勢向下且收黑），且出現強烈空頭反轉訊號 → 代表反彈結束、空頭延續
+        elif (is_peak or ma3_curr < ma3_prev) and is_red and bear_confirm_score >= 1:
+            # 沒形成谷底，反而形成峰頂（或只是順勢向下），且收黑、出現空頭反轉訊號 → 代表反彈結束、空頭延續
             return {
                 "signal": "SHORT",
                 "entry_type": "TREND_SHORT",
@@ -383,7 +383,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     
     # 多頭趨勢中 (MA5 > MA25)
     if ma5_curr > ma25_curr:
-        if is_peak and is_red and bear_confirm_score >= 2:
+        if (is_peak or ma3_curr < ma3_prev) and is_red and bear_confirm_score >= 2:
             return {
                 "signal": "SHORT",
                 "entry_type": "PEAK_TURN",
@@ -392,8 +392,8 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
                 "pivot_confirmed": True,
                 "pivot_score": 100,
             }
-        elif (is_trough or (ma3_curr > ma3_prev and is_green)) and bull_confirm_score >= 1:
-            # 沒形成峰頂，反而形成谷底（或只是順勢向上且收綠），且出現強烈多頭反轉訊號 → 代表回踩結束、多頭延續
+        elif (is_trough or ma3_curr > ma3_prev) and is_green and bull_confirm_score >= 1:
+            # 沒形成峰頂，反而形成谷底（或只是順勢向上），且收綠、出現多頭反轉訊號 → 代表回踩結束、多頭延續
             return {
                 "signal": "LONG",
                 "entry_type": "TREND_LONG",
