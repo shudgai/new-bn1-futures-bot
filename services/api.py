@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    TAKER_FEE_RATE, MAX_SLOTS
+    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -33,6 +33,18 @@ def visible_tickers():
             result[symbol] = price
     return result
 
+def estimated_net_unrealized_pnl() -> float:
+    """估算全部持倉此刻市價平倉後，扣雙邊手續費與平倉滑價的淨利。"""
+    total = 0.0
+    for pos in engine.account.positions.values():
+        entry = float(pos.get("entry_price") or 0.0)
+        mark = float(pos.get("mark_price") or entry)
+        qty = float(pos.get("qty") or 0.0)
+        raw = (mark - entry) * qty if pos.get("side") == "LONG" else (entry - mark) * qty
+        total += raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
+    return total
+
+
 def positions_with_triggers():
     """持倉列表附加手動平倉參考指標（跌破/站上均線、跌破前低/站上前高），
     純參考用途，不影響自動止損止利。"""
@@ -40,6 +52,11 @@ def positions_with_triggers():
     for symbol, pos in engine.account.positions.items():
         merged = dict(pos)
         merged["trigger"] = engine.position_triggers.get(symbol, {"active": False, "reasons": []})
+        entry = float(merged.get("entry_price") or 0.0)
+        mark = float(merged.get("mark_price") or entry)
+        qty = float(merged.get("qty") or 0.0)
+        raw = (mark - entry) * qty if merged.get("side") == "LONG" else (entry - mark) * qty
+        merged["estimated_net_unrealized_pnl"] = raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
         result.append(merged)
     return result
 
@@ -106,6 +123,7 @@ async def get_status():
         "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
         "realized_pnl": round(engine.account.realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
+        "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
         "leverage": LEVERAGE,
         "leverage_map": {
             symbol: engine.symbol_rotation.get_dynamic_leverage(symbol, 100)
@@ -123,6 +141,7 @@ async def get_status():
         "shadow_parameter_stats": dict(engine.account.shadow_parameter_stats),
         "shadow_parameter_last": dict(engine.account.shadow_parameter_last),
         "taker_fee_rate": TAKER_FEE_RATE,
+        "slippage_pct": SLIPPAGE_PCT,
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
         "symbol_rotation": engine.symbol_rotation.status(),
@@ -150,11 +169,13 @@ async def get_status():
 @app.get("/api/prices")
 async def get_prices():
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
+    unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "tickers": visible_tickers(),
         "positions": positions_with_triggers(),
-        "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),
+        "unrealized_pnl": round(unrealized, 2),
+        "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
         "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
     }
 

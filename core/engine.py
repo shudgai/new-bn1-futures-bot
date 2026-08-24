@@ -3028,10 +3028,6 @@ class TradingEngine:
                 # 1. 更新實時價格
                 await self.update_market_prices()
 
-                # Priority 1：先處理 1m 結構破位／MA3-MA5 反向交叉，再讓帳戶
-                # 更新 Priority 2 的 2 ATR TSL，確保全局硬退出永遠先執行。
-                await self._apply_diminishing_global_exits()
-
                 # 幣種輪替已移到獨立的 _rotation_loop() 背景任務執行，
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
@@ -3064,6 +3060,11 @@ class TradingEngine:
                                 "exit_bar_id": None,
                                 "reason": close_reason,
                             }
+
+                # 固定鎖利／移動停利先更新並執行；仍有持倉時，才檢查
+                # CHoCH、MA 交叉與緊急反轉，避免 Global Exit 搶先吃掉已鎖利潤。
+                await self._apply_diminishing_global_exits()
+
                 # 冷卻時間唯一資料來源是 self.account.last_closed_at（見
                 # testnet_account.py），不管平倉是這裡的主迴圈觸發，還是
                 # /api/prices、/api/status 這些跟主迴圈不同步的網頁輪詢

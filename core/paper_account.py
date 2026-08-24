@@ -71,6 +71,8 @@ from core.config import (
     FIXED_PROFIT_LOCK_FLOOR_PCT,
     MIN_TRADE_USDT,
     PYRAMID_MAX_SLOTS,
+    PYRAMID_EARLY_GROSS_TRIGGER_USDT,
+    PYRAMID_EARLY_LOCK_NET_USDT,
     PYRAMID_FIXED_LOCK_FIRST_USDT,
     PYRAMID_FIXED_LOCK_SECOND_USDT,
     PYRAMID_FIXED_LOCK_THIRD_USDT,
@@ -1124,9 +1126,8 @@ class PaperAccount:
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
 
-            # 1m 遞減加碼策略只使用結構/MA 全局停損與每槽 2 ATR TSL。
-            # 全局停損由 engine 在呼叫 update_positions() 前優先處理；到這裡
-            # 才更新 TSL，因此不會被舊固定 TP、峰值回吐或百分比 trailing 搶先退出。
+            # 1m 遞減加碼策略先處理固定鎖利與移動停利，再由 engine 檢查
+            # 結構/MA 全局退出；已建立的獲利保護不會再被 Global Exit 搶先覆蓋。
             if pos.get("strategy_mode") == "DIMINISHING_PYRAMID":
                 slots = pos.setdefault("slots", [{
                     "slot": 1,
@@ -1158,6 +1159,11 @@ class PaperAccount:
                     peak_market_price = min(float(slot["lowest_price"]) for slot in slots)
                     peak_exec_price = peak_market_price * (1.0 + SLIPPAGE_PCT)
                     peak_raw_pnl = (entry_p - peak_exec_price) * qty
+                peak_gross_usdt = (
+                    (peak_market_price - entry_p) * qty
+                    if side == "LONG" else
+                    (entry_p - peak_market_price) * qty
+                )
                 peak_net_usdt = peak_raw_pnl - (
                     entry_p * qty * TAKER_FEE_RATE
                     + peak_exec_price * qty * TAKER_FEE_RATE
@@ -1168,6 +1174,11 @@ class PaperAccount:
                 )
                 meta["pyramid_peak_net_usdt"] = recorded_peak_net
                 pos["pyramid_peak_net_usdt"] = recorded_peak_net
+                meta["pyramid_peak_gross_usdt"] = max(
+                    float(meta.get("pyramid_peak_gross_usdt") or float("-inf")),
+                    peak_gross_usdt,
+                )
+                pos["pyramid_peak_gross_usdt"] = meta["pyramid_peak_gross_usdt"]
 
                 locked_net_usdt = 0.0
                 if recorded_peak_net + 1e-9 >= PYRAMID_FIXED_LOCK_THIRD_USDT:
@@ -1183,6 +1194,11 @@ class PaperAccount:
                     locked_net_usdt = PYRAMID_FIXED_LOCK_SECOND_USDT
                 elif recorded_peak_net + 1e-9 >= PYRAMID_FIXED_LOCK_FIRST_USDT:
                     locked_net_usdt = PYRAMID_FIXED_LOCK_FIRST_USDT
+                elif (
+                    meta["pyramid_peak_gross_usdt"] + 1e-9 >= PYRAMID_EARLY_GROSS_TRIGGER_USDT
+                    and recorded_peak_net + 1e-9 >= PYRAMID_EARLY_LOCK_NET_USDT
+                ):
+                    locked_net_usdt = PYRAMID_EARLY_LOCK_NET_USDT
 
                 previous_locked_net = float(meta.get("pyramid_locked_net_usdt") or 0.0)
                 if qty > 0 and locked_net_usdt > previous_locked_net + 1e-9:
@@ -1211,7 +1227,8 @@ class PaperAccount:
                         pos["pyramid_locked_net_usdt"] = locked_net_usdt
                         meta["pyramid_locked_net_usdt"] = locked_net_usdt
                         self.log(
-                            f"🔐 [固定鎖利/USDT] {symbol} 峰值淨利 {recorded_peak_net:.2f}U，"
+                            f"🔐 [固定鎖利/USDT] {symbol} 峰值毛利 {meta['pyramid_peak_gross_usdt']:.2f}U、"
+                            f"預估淨利 {recorded_peak_net:.2f}U，"
                             f"鎖定淨利 {locked_net_usdt:.2f}U，保護線 {fixed_sl:.6g}",
                             "SUCCESS",
                         )

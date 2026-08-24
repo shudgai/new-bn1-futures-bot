@@ -269,6 +269,37 @@ async def test_paper_diminishing_fixed_lock_arms_before_2a_trailing(tmp_path, mo
     assert not any("移動停利/2a053b4" in log["text"] for log in account.logs)
 
 
+@pytest.mark.anyio
+async def test_paper_diminishing_gross_two_usdt_arms_early_one_usdt_net_lock(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "pyramid_early_gross_lock.json"))
+    account = PaperAccount()
+    account.balance = 200.0
+    assert await account.open_position(
+        "BTC/USDT", "SHORT", 100.0, 130.0, 101.2, 0.0, "Slot 1",
+        atr=1.0, leverage=5, signal_score=90, apply_slippage=False,
+        entry_context={"strategy_mode": "DIMINISHING_PYRAMID", "pyramid_slot": 1},
+    )
+    position = account.positions["BTC/USDT"]
+    peak_market = position["entry_price"] - 2.10 / position["qty"]
+
+    await account.update_positions({"BTC/USDT": peak_market})
+
+    position = account.positions["BTC/USDT"]
+    assert position["pyramid_peak_gross_usdt"] == pytest.approx(2.10)
+    assert position["pyramid_peak_net_usdt"] < 1.5
+    assert position["pyramid_locked_net_usdt"] == pytest.approx(1.0)
+    assert position["fixed_profit_lock_usdt_armed"] is True
+    lock_price = position["sl"]
+
+    await account.update_positions({"BTC/USDT": lock_price})
+
+    assert "BTC/USDT" not in account.positions
+    close_trade = next(t for t in account.trades if t["action"] == "CLOSE_SHORT")
+    assert close_trade["pnl"] == pytest.approx(1.0, abs=0.02)
+
+
 @pytest.mark.parametrize(("peak_net_usdt", "expected_lock_usdt"), [
     (1.6, 1.5),
     (2.1, 2.0),

@@ -248,14 +248,14 @@
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">總累計損益</div>
-                        <div :class="['stat-val', (bot.realized_pnl + bot.unrealized_pnl) > 0 ? 'up' : (bot.realized_pnl + bot.unrealized_pnl) < 0 ? 'down' : '']">
-                            {{ (bot.realized_pnl + bot.unrealized_pnl) > 0 ? '+' : '' }}{{ (bot.realized_pnl + bot.unrealized_pnl).toFixed(2) }}
+                        <div :class="['stat-val', (bot.realized_pnl + bot.estimated_net_unrealized_pnl) > 0 ? 'up' : (bot.realized_pnl + bot.estimated_net_unrealized_pnl) < 0 ? 'down' : '']">
+                            {{ (bot.realized_pnl + bot.estimated_net_unrealized_pnl) > 0 ? '+' : '' }}{{ (bot.realized_pnl + bot.estimated_net_unrealized_pnl).toFixed(2) }}
                         </div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">未實現損益</div>
-                        <div :class="['stat-val', bot.unrealized_pnl > 0 ? 'up' : bot.unrealized_pnl < 0 ? 'down' : '']">
-                            {{ bot.unrealized_pnl > 0 ? '+' : '' }}{{ bot.unrealized_pnl.toFixed(2) }}
+                        <div class="stat-label">預估未實現淨利（扣費）</div>
+                        <div :class="['stat-val', bot.estimated_net_unrealized_pnl > 0 ? 'up' : bot.estimated_net_unrealized_pnl < 0 ? 'down' : '']">
+                            {{ bot.estimated_net_unrealized_pnl > 0 ? '+' : '' }}{{ bot.estimated_net_unrealized_pnl.toFixed(2) }}
                         </div>
                     </div>
                     <div class="stat-box">
@@ -290,7 +290,7 @@
                                 <th>幣種</th>
                                 <th>入場價</th>
                                 <th>現價</th>
-                                <th>未實現損益（點擊平倉）</th>
+                                <th>預估淨利（扣費，點擊平倉）</th>
                                 <th>開/平倉策略</th>
                                 <th>觸發</th>
                                 <th>數量</th>
@@ -529,6 +529,7 @@
                         balance: 0,
                         realized_pnl: 0,
                         unrealized_pnl: 0,
+                        estimated_net_unrealized_pnl: 0,
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
@@ -722,13 +723,18 @@
                         || null;
                 },
                 getPosUnrealizedPnl(pos) {
+                    if (pos.estimated_net_unrealized_pnl !== undefined) {
+                        return Number(pos.estimated_net_unrealized_pnl) || 0;
+                    }
                     const curr = this.getCurrPrice(pos.symbol);
                     if (!curr) return 0;
-                    if (pos.side === 'LONG') {
-                        return (curr - pos.entry_price) * pos.qty;
-                    } else {
-                        return (pos.entry_price - curr) * pos.qty;
-                    }
+                    const raw = pos.side === 'LONG'
+                        ? (curr - pos.entry_price) * pos.qty
+                        : (pos.entry_price - curr) * pos.qty;
+                    const feeRate = this.bot.taker_fee_rate || 0.0005;
+                    const slippage = this.bot.slippage_pct || 0.0001;
+                    return raw - (pos.entry_price + curr) * pos.qty * feeRate
+                        - curr * pos.qty * slippage;
                 },
                 getPosRoePct(pos) {
                     const pnl = this.getPosUnrealizedPnl(pos);
@@ -781,6 +787,7 @@
                         if (data.positions) this.bot.positions = data.positions;
                         if (data.balance !== undefined) this.bot.balance = data.balance;
                         if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
+                        if (data.estimated_net_unrealized_pnl !== undefined) this.bot.estimated_net_unrealized_pnl = data.estimated_net_unrealized_pnl;
                     } catch (e) {
                         // silent
                     }
