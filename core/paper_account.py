@@ -1048,18 +1048,18 @@ class PaperAccount:
                 dynamic_trigger = base_trigger
                 dynamic_floor = base_trigger
                 
-                # 3. 階梯步距 = 依本金級距遞增
+                # 3. 呼吸空間 (Trailing Gap) = 依本金級距遞增
                 import math
                 if margin_used <= 100:
-                    dynamic_step = 0.5
+                    trailing_gap = 1.5
                 elif margin_used <= 200:
-                    dynamic_step = 1.0
+                    trailing_gap = 3.0
                 else:
-                    dynamic_step = 1.0 + math.ceil((margin_used - 200.0) / 100.0)
+                    trailing_gap = 3.0 + math.ceil((margin_used - 200.0) / 100.0) * 1.5
 
                 if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
-                    # ── 階梯地板：從起始點開始，每超過一階步距，地板推升 ──
-                    step_floor_usdt = dynamic_floor + int((peak_usdt - dynamic_trigger) / dynamic_step) * dynamic_step
+                    # ── 固定呼吸空間追蹤：止損永遠距離峰值 trailing_gap，且保證至少鎖住手續費(dynamic_floor) ──
+                    step_floor_usdt = max(dynamic_floor, peak_usdt - trailing_gap)
                     notional_units = qty  # qty 已為合約張數
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if side == "LONG":
@@ -1082,8 +1082,8 @@ class PaperAccount:
                         meta["profit_lock_usdt_armed"] = True
                         
                         self.log(
-                            f"🔐 [階梯鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"(本金 {margin_used:.0f}U，步距 {dynamic_step}U)，"
+                            f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
+                            f"(本金 {margin_used:.0f}U，呼吸空間 {trailing_gap}U)，"
                             f"鎖定 {step_floor_usdt:.2f}U，保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
