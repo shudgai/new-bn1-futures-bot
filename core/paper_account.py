@@ -84,10 +84,9 @@ ACCOUNTING_VERSION = 2
 
 
 def get_profit_lock_giveback_usdt(margin_used: float, peak_usdt: float) -> float:
-    """本金每滿一個100U級距增加1U，獲利放大後至少保留25%呼吸空間。"""
+    """本金每滿一個100U級距增加1U的門檻，但回吐距離固定為級距的 0.8U (即回吐 80%)。"""
     capital_gap = float(max(1, math.ceil(max(float(margin_used), 0.0) / 100.0)))
-    proportional_gap = max(0.0, float(peak_usdt)) * PROFIT_LOCK_TRAIL_RATIO
-    return max(capital_gap, proportional_gap)
+    return capital_gap * 0.8
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -1028,30 +1027,6 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-            
-            # ----------------------------------------------------------------
-            # 動態 3U 分批止盈 (Dynamic 3U Partial Take Profit)
-            # ----------------------------------------------------------------
-            qty_current = float(pos.get("qty") or meta.get("qty") or 0.0)
-            leverage = float(pos.get("leverage") or meta.get("leverage") or 1.0)
-            notional_value = qty_current * entry_p
-            unrealized_usdt = pnl_pct * notional_value
-            
-            # 目標：基礎 3U，隨總餘額比例放大 (至少 3U)
-            total_account_value = self.balance + sum(float(p.get("margin", 0.0)) for p in self.positions.values())
-            target_usdt = 3.0 * max(1.0, total_account_value / 150.0)
-            
-            if unrealized_usdt >= target_usdt and not meta.get("is_half_closed"):
-                success = await self.partial_close_position(
-                    symbol, curr_p, f"達動態目標 {target_usdt:.1f}U，分批止盈 50%", fraction=0.5
-                )
-                if success:
-                    meta["is_half_closed"] = True
-                    self.save_state()
-                    # 更新當前的 qty 與 pnl 等避免後續計算錯誤
-                    qty_current = float(self.positions[symbol]["qty"])
-                    notional_value = qty_current * entry_p
-                    unrealized_usdt = pnl_pct * notional_value
 
             profit_lock_updated_this_cycle = False
 

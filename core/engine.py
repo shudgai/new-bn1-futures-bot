@@ -3034,149 +3034,58 @@ class TradingEngine:
                         ):
                             continue
 
-                        from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, MAX_SLOTS, get_leverage
+                        from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, TRADE_AMOUNT_USDT, MAX_SLOTS, get_leverage
                         if ENABLE_CONTINUOUS_REVERSE_MODE:
                             from core.strategy import build_sl_tp_for_side
-                            df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
-                            if 'ma3' not in df_cr.columns:
-                                df_cr['ma3'] = df_cr['close'].rolling(window=3).mean()
-                            if 'ma5' not in df_cr.columns:
-                                df_cr['ma5'] = df_cr['close'].rolling(window=5).mean()
-                            if 'ma25' not in df_cr.columns:
-                                df_cr['ma25'] = df_cr['close'].rolling(window=25).mean()
-                            angle_pivot = detect_ma_angle_pivot(df_cr)
-                            cr_signal = angle_pivot.get("side")
-                            cr_entry_type = str(angle_pivot.get("entry_type") or "")
-                            reversal_event_key = angle_pivot.get("event_key")
-                            alignment_state = (
-                                "ANGLE_PEAK_DOWN" if cr_signal == "SHORT"
-                                else "ANGLE_TROUGH_UP" if cr_signal == "LONG"
-                                else "WAIT_TRUE_ANGLE_PIVOT"
-                            )
-                            is_pattern_or_momentum = (
-                                "提早進場" in angle_pivot.get("reason", "")
-                                or "動能追擊" in angle_pivot.get("reason", "")
-                                or "尖角" in angle_pivot.get("reason", "")
-                            )
-                            confirmed_true_reversal = bool(
-                                cr_signal
-                                and (
-                                    (float(angle_pivot.get("ma3_turn_atr") or 0.0) >= 0.75
-                                     and float(angle_pivot.get("ma5_turn_atr") or 0.0) >= 0.50
-                                     and float(angle_pivot.get("turn_angle_atr") or 0.0) >= 0.25)
-                                    or is_pattern_or_momentum
-                                )
-                            )
-                            pivot_age_bars = int(angle_pivot.get("pivot_age_bars") or 999)
-                            cr_info = {
-                                "reason": angle_pivot.get("reason", "等待真峰谷轉角"),
-                                "atr": angle_pivot.get("atr"),
-                            }
+                            
                             has_pos = symbol in self.account.positions
-                            curr_side = self.account.positions[symbol]["side"] if has_pos else None
-                            # 空倉只在局部峰谷確認後前2根進場，避免服務重啟或
-                            # 曾鎖利平倉後，拿第4根已大幅延伸的舊訊號追高殺低。
-                            # 已有反向持倉仍可用最多4根累積彎幅確認真正反轉。
-                            if not has_pos and cr_signal and pivot_age_bars > 4:
-                                cr_signal = None
-                            if has_pos and curr_side == cr_signal:
-                                self._last_ma_reversal_sides[symbol] = curr_side
-                            if (
-                                not has_pos
-                                and reversal_event_key is not None
-                                and self._handled_ma_reversal_events.get(symbol) == reversal_event_key
-                            ):
-                                cr_signal = None
-
-                            if cr_signal:
-                                last_close = float(df_cr['close'].iloc[-1])
-                                clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
-                                live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
-
-                                # MA3／MA5累積轉角確認真峰谷後使用市價；不依賴K色或MA25交叉。
-                                # 有反向持倉時同一輪先平倉，再立即開反向單。
-                                if cr_entry_type in ("PEAK_ANGLE_DOWN", "TROUGH_ANGLE_UP", "MOMENTUM_DOWN", "MOMENTUM_UP", "TREND_REENTRY_DOWN", "TREND_REENTRY_UP"):
-                                    should_open = False
-
-                                    # ── 取消反向限價掛單，防止多空並存 ──
+                            
+                            if not has_pos:
+                                # 無腦開倉 (SAR)：找出最後一次平倉方向
+                                last_closed_side = None
+                                for trade in self.account.trades:
+                                    if trade.get("symbol") == symbol and trade.get("action", "").startswith("CLOSE_"):
+                                        last_closed_side = trade.get("side")
+                                        break
+                                
+                                # 反轉方向，如果沒有歷史紀錄，預設先開 LONG
+                                cr_signal = "SHORT" if last_closed_side == "LONG" else "LONG"
+                                
+                                live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
+                                if live_price > 0:
+                                    self.account.log(
+                                        f"🚨 {symbol} 偵測到空倉，執行無腦SAR！上次平倉方向: {last_closed_side} -> 立即反手開 {cr_signal}",
+                                        "WARNING"
+                                    )
+                                    atr = live_price * 0.015
+                                    sl_dist = live_price * 0.1  # 給予極大止損，主要靠階梯鎖利和反向訊號(若有)
+                                    tp_dist = 0.0
+                                    sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                                    
+                                    total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                                    
                                     pending = self.account.pending_limit_orders.get(symbol)
-                                    if pending and pending.get("side") != cr_signal:
-                                        self.account.log(f"🗑️ {symbol} 發現反向限價掛單 ({pending.get('side')})，立即取消！", "WARNING")
-                                        self.account.pending_limit_orders.pop(symbol, None)
-
-                                    if not has_pos:
-                                        should_open = True
-                                    elif curr_side != cr_signal:
+                                    if pending:
+                                        await self.account.cancel_pending_limit(symbol, "執行無腦開倉，取消掛單")
                                         
-                                        # 新增：如果剛開倉不到 30 秒，且不是重磅訊號，則忽略（防盤整期 3 秒內連續假訊號洗盤）
-                                        last_open_time = self.account.positions[symbol].get("open_timestamp", 0)
-                                        is_heavy = "MA3回落0.2" in str(cr_entry_type) or "MA3反彈0.2" in str(cr_entry_type) or "尖角" in str(cr_entry_type)
-                                        if time.time() - last_open_time < 30 and not is_heavy:
-                                            # 紀錄已過濾
-                                            continue
-                                        self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
-                                        closed_for_reversal = await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason=f"反向訊號 ({cr_entry_type})"
-                                        )
-                                        if not closed_for_reversal:
-                                            self.account.log(
-                                                f"⚠️ {symbol} 真峰谷平倉失敗，暫不開反向單",
-                                                "WARNING",
-                                            )
-                                            continue
-                                        should_open = True
-                                    elif curr_side == cr_signal and self.account.position_meta.get(symbol, {}).get("is_half_closed"):
-                                        self.account.log(f"🔋 {symbol} 發現已分批止盈的閒置資金，準備執行加碼！", "INFO")
-                                        should_open = True
-                                    elif reversal_event_key is not None:
-                                        self._handled_ma_reversal_events[symbol] = reversal_event_key
-                                    # 同方向已持倉，不重複開
-                                    # (curr_side == cr_signal => should_open stays False)
-
-                                    if should_open:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] MA方向規則：市價進場 {cr_signal}",
-                                            "INFO",
-                                        )
-                                        atr = float(cr_info.get("atr") or live_price * 0.015)
-                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        
-                                        target_total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
-                                        total_usdt = target_total_usdt
-                                        if has_pos and curr_side == cr_signal:
-                                            # 加碼時只投入差額，補滿原本的 target_total_usdt
-                                            current_margin = self.account.positions[symbol].get("margin", 0.0)
-                                            total_usdt = max(0.0, target_total_usdt - current_margin)
-                                            
-                                        pending = self.account.pending_limit_orders.get(symbol)
-                                        if pending:
-                                            await self.account.cancel_pending_limit(
-                                                symbol, "方向成立，改用市價開倉"
-                                            )
-                                        opened_for_reversal = await self.account.open_position(
-                                            symbol=symbol,
-                                            side=cr_signal,
-                                            price=live_price,
-                                            amount_usdt=total_usdt,
-                                            sl=sl,
-                                            tp=tp,
-                                            reason=cr_info.get("reason", cr_entry_type),
-                                            atr=atr,
-                                            leverage=get_leverage(symbol),
-                                            signal_score=100,
-                                            entry_context={
-                                                "entry_mode": "MA_ALIGNMENT_MARKET",
-                                                "strategy_mode": "CONTINUOUS_REVERSE",
-                                                "ma_alignment": alignment_state,
-                                            },
-                                        )
-                                        if opened_for_reversal:
-                                            self._last_ma_reversal_sides[symbol] = cr_signal
-                                            if reversal_event_key is not None:
-                                                self._handled_ma_reversal_events[symbol] = reversal_event_key
+                                    opened_for_reversal = await self.account.open_position(
+                                        symbol=symbol,
+                                        side=cr_signal,
+                                        price=live_price,
+                                        amount_usdt=total_usdt,
+                                        sl=sl,
+                                        tp=tp,
+                                        reason="無腦SAR反手循環",
+                                        atr=atr,
+                                        leverage=get_leverage(symbol),
+                                        signal_score=100,
+                                        entry_context={
+                                            "entry_mode": "BRAINLESS_SAR",
+                                            "strategy_mode": "CONTINUOUS_REVERSE",
+                                        },
+                                    )
+                                    if opened_for_reversal:
+                                        self._last_ma_reversal_sides[symbol] = cr_signal
 
 
                             if symbol in self.account.positions:
