@@ -2798,9 +2798,11 @@ class TradingEngine:
                             # 用戶最新要求：將防禦機制獨立切換至 1 分鐘級別 (1m)，以達到最極致敏銳的反應速度。
                             df_defense = await self.fetch_klines(symbol, timeframe="1m", limit=10)
                             if has_pos and df_defense is not None and not df_defense.empty:
-                                df_defense['ma3'] = ta.sma(df_defense['close'], length=3)
+                                df_defense['ma3'] = df_defense['close'].rolling(window=3).mean()
+                                df_defense['ma5'] = df_defense['close'].rolling(window=5).mean()
                                 ma3_curr = float(df_defense['ma3'].iloc[-1])
                                 ma3_prev = float(df_defense['ma3'].iloc[-2])
+                                ma5_curr = float(df_defense['ma5'].iloc[-1])
                                 last_close = float(df_defense['close'].iloc[-1])
                                 last_open = float(df_defense['open'].iloc[-1])
                                 last_high = float(df_defense['high'].iloc[-1])
@@ -2857,12 +2859,13 @@ class TradingEngine:
 
                                 # 一般 MA3 彎頭防禦 (尖端反轉)
                                 if not long_wick_closed:
-                                    if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr:
-                                        self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (收盤 < MA3)，防禦性提早平倉多單！", "WARNING")
+                                    # 過濾假突破：除了 MA3 彎頭，收盤價必須強勢穿過 MA5，才算是真反轉，否則視為無效的小反彈
+                                    if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr and last_close < ma5_curr:
+                                        self.account.log(f"🛡️ {symbol} 偵測到 1m MA3 頂部彎頭向下 (收盤 < MA5)，防禦性提早平倉多單！", "WARNING")
                                         closed = await self.account.close_position(
                                             symbol=symbol,
                                             current_price=live_price,
-                                            close_reason="MA3 頂部彎頭向下 (防禦平多)"
+                                            close_reason="1m MA3 頂部彎頭向下 (防禦平多)"
                                         )
                                         if closed:
                                             has_pos = False
@@ -2872,12 +2875,12 @@ class TradingEngine:
                                             cr_signal = "SHORT"
                                             cr_entry_type = "PEAK_TURN"
     
-                                    elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr:
-                                        self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (收盤 > MA3)，防禦性提早平倉空單！", "WARNING")
+                                    elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr and last_close > ma5_curr:
+                                        self.account.log(f"🛡️ {symbol} 偵測到 1m MA3 谷底彎頭向上 (收盤 > MA5)，防禦性提早平倉空單！", "WARNING")
                                         closed = await self.account.close_position(
                                             symbol=symbol,
                                             current_price=live_price,
-                                            close_reason="MA3 谷底彎頭向上 (防禦平空)"
+                                            close_reason="1m MA3 谷底彎頭向上 (防禦平空)"
                                         )
                                         if closed:
                                             has_pos = False
