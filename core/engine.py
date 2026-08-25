@@ -3133,48 +3133,48 @@ class TradingEngine:
                                     elif regime == "SHORT" and cr_signal == "LONG" and not is_true_trough:
                                         cr_signal = None  # 在空頭趨勢中，忽略非真谷底的小多頭訊號
                                 
-                                # 決定開倉方向
+                                # 決定開倉方向 (取消無腦接刀，改為等待明確訊號)
                                 if cr_signal:
                                     sar_signal = cr_signal
                                     sar_reason = f"均線訊號進場 ({cr_entry_type})"
-                                else:
-                                    sar_signal = regime
-                                    sar_reason = f"順大勢接刀 (Regime: {regime})"
-
-                                live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
-                                if live_price > 0:
-                                    self.account.log(f"🚨 {symbol} 偵測到空倉，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
-                                    atr = live_price * 0.015
-                                    sl_dist = live_price * 0.1  # 寬止損，主要靠 0.8U 階梯與反向訊號
-                                    sl, tp = build_sl_tp_for_side(live_price, sar_signal, sl_dist, 0.0)
-                                    total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
                                     
-                                    pending = self.account.pending_limit_orders.get(symbol)
-                                    if pending:
-                                        await self.account.cancel_pending_limit(symbol, "執行空倉接回，取消掛單")
+                                    live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
+                                    if live_price > 0:
+                                        self.account.log(f"🚨 {symbol} 偵測到空倉，等待到明確訊號，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
+                                        atr = live_price * 0.015
+                                        sl_dist = live_price * 0.1  # 寬止損，主要靠 0.8U 階梯與反向訊號
+                                        sl, tp = build_sl_tp_for_side(live_price, sar_signal, sl_dist, 0.0)
+                                        total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
                                         
-                                    opened = await self.account.open_position(
-                                        symbol=symbol,
-                                        side=sar_signal,
-                                        price=live_price,
-                                        amount_usdt=total_usdt,
-                                        sl=sl,
-                                        tp=tp,
-                                        reason=sar_reason,
-                                        atr=atr,
-                                        leverage=get_leverage(symbol),
-                                        signal_score=100,
-                                        entry_context={
-                                            "entry_mode": "BRAINLESS_SAR" if not cr_signal else "MA_ALIGNMENT_MARKET",
-                                            "strategy_mode": "CONTINUOUS_REVERSE",
-                                        },
-                                    )
-                                    if opened:
-                                        self._last_ma_reversal_sides[symbol] = sar_signal
-                                        if reversal_event_key is not None:
-                                            self._handled_ma_reversal_events[symbol] = reversal_event_key
+                                        pending = self.account.pending_limit_orders.get(symbol)
+                                        if pending:
+                                            await self.account.cancel_pending_limit(symbol, "執行空倉接回，取消掛單")
                                             
-                                # 已經處理完空倉進場，直接跳過後續的 MA 翻單邏輯
+                                        opened = await self.account.open_position(
+                                            symbol=symbol,
+                                            side=sar_signal,
+                                            price=live_price,
+                                            amount_usdt=total_usdt,
+                                            sl=sl,
+                                            tp=tp,
+                                            reason=sar_reason,
+                                            atr=atr,
+                                            leverage=get_leverage(symbol),
+                                            signal_score=100,
+                                            entry_context={
+                                                "entry_mode": "MA_ALIGNMENT_MARKET",
+                                                "strategy_mode": "SIGNAL_WAITING",
+                                            },
+                                        )
+                                        if opened:
+                                            self._last_ma_reversal_sides[symbol] = sar_signal
+                                            if reversal_event_key is not None:
+                                                self._handled_ma_reversal_events[symbol] = reversal_event_key
+                                else:
+                                    # 如果沒有訊號，或者訊號被過濾掉了（小波動），就保持空手等待
+                                    pass
+                                                
+                                # 已經處理完空倉進場（無論有無開倉），直接跳過後續的 MA 翻單邏輯
                                 continue
 
                             if cr_signal:
