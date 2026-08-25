@@ -180,6 +180,11 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
         pre_slope = (ma3[peak_i] - ma3[peak_i - 1]) / atr if peak_i > 0 else 0.0
         post_slope = (ma3[-1] - ma3[peak_i]) / max(bars_after, 1) / atr
         angle = pre_slope - post_slope
+        
+        # 乖離率過濾：如果離 MA25 夠遠（> 1.2 ATR），算是真頂峰，MA3 只要微彎（0.30）就立刻反轉
+        ma25_dist = (ma3[peak_i] - ma25[peak_i]) / atr if ma25_available else 0.0
+        overextended_peak = ma25_dist >= 1.2 and ma3_drop >= 0.30
+        
         ma5_left_peak = ma5_drop >= 0.30
         normal_turn = ma3_drop >= 0.60 and ma5_drop >= 0.30
         sharp_turn = ma3_drop >= 0.80 and ma5_drop > 0.10
@@ -191,6 +196,7 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
             or (pattern_turn and angle >= 0.25)
             or ma3_sharp_angle
             or heavy_drop
+            or overextended_peak
         )
         return peak_ok, ma3_drop, ma5_drop, angle
 
@@ -204,16 +210,21 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
         pre_slope = (ma3[trough_i] - ma3[trough_i - 1]) / atr if trough_i > 0 else 0.0
         post_slope = (ma3[-1] - ma3[trough_i]) / max(bars_after, 1) / atr
         angle = post_slope - pre_slope
+        
+        # 乖離率過濾：如果離 MA25 夠遠（> 1.2 ATR），算是真谷底，MA3 只要微彎（0.30）就立刻反轉
+        ma25_dist = (ma25[trough_i] - ma3[trough_i]) / atr if ma25_available else 0.0
+        overextended_trough = ma25_dist >= 1.2 and ma3_rise >= 0.30
+        
         ma5_left_trough = ma5_rise >= 0.30
         normal_turn = ma3_rise >= 0.60 and ma5_rise >= 0.30
         sharp_turn = ma3_rise >= 0.80 and ma5_rise > 0.10
         pattern_turn = has_bullish_pattern and ma3_rise >= 0.50
         ma3_sharp_angle = angle >= 0.40 and ma3_rise >= 0.60
-        print(f"[DEBUG] Trough check: i={trough_i} ma3_rise={ma3_rise:.3f} ma5_rise={ma5_rise:.3f} angle={angle:.3f} ma3_sharp={ma3_sharp_angle} pattern={pattern_turn}")
         trough_ok = (
             (ma5_left_trough and angle >= 0.30 and (normal_turn or sharp_turn))
             or (pattern_turn and angle >= 0.25)
             or ma3_sharp_angle
+            or overextended_trough
         )
         return trough_ok, ma3_rise, ma5_rise, angle
 
@@ -3088,6 +3099,124 @@ class TradingEngine:
                             ):
                                 cr_signal = None
 
+                            # 谷峰前除了不開倉外，也要先平倉 (極端延伸主動獲利了結)
+                            if has_pos:
+                                ma3_val = float(df_cr['ma3'].iloc[-1])
+                                ma25_val = float(df_cr['ma25'].iloc[-1]) if 'ma25' in df_cr.columns and not pd.isna(df_cr['ma25'].iloc[-1]) else 0.0
+                                live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
+                                atr_val = float(df_cr['atr'].iloc[-1]) if 'atr' in df_cr.columns else max(live_price * 0.015, 1e-12)
+                                
+                                close_reason = None
+                                if curr_side == "LONG":
+                                    if live_price > ma3_val + atr_val * 0.8:
+                                        close_reason = "暴漲衝頂，預防回落強制平多"
+                                    elif ma25_val > 0 and ma3_val - ma25_val >= 1.2 * atr_val:
+                                        close_reason = "乖離過大(近峰頂)，預防回落強制平多"
+                                elif curr_side == "SHORT":
+                                    if live_price < ma3_val - atr_val * 0.8:
+                                        close_reason = "暴跌到底，預防反彈強制平空"
+                                    elif ma25_val > 0 and ma25_val - ma3_val >= 1.2 * atr_val:
+                                        close_reason = "乖離過大(近谷底)，預防反彈強制平空"
+                                        
+                                if close_reason:
+                                    self.account.log(f"🚨 {symbol} 偵測到極端延伸，執行谷峰前強制平倉！理由: {close_reason}", "WARNING")
+                                    closed = await self.account.close_position(
+                                        symbol=symbol,
+                                        current_price=live_price,
+                                        close_reason=close_reason
+                                    )
+                                    if closed:
+                                        has_pos = False
+                                        curr_side = None
+
+                            if not has_pos:
+                                # 判斷大趨勢 (Regime)
+                                ma3_val = float(df_cr['ma3'].iloc[-1])
+                                ma5_val = float(df_cr['ma5'].iloc[-1])
+                                ma25_val = float(df_cr['ma25'].iloc[-1]) if 'ma25' in df_cr.columns and not pd.isna(df_cr['ma25'].iloc[-1]) else 0.0
+                                
+                                if ma25_val > 0:
+                                    if ma3_val > ma25_val and ma5_val > ma25_val:
+                                        regime = "LONG"
+                                    elif ma3_val < ma25_val and ma5_val < ma25_val:
+                                        regime = "SHORT"
+                                    else:
+                                        regime = "FLAT"  # 均線糾纏，死魚盤
+                                else:
+                                    regime = "FLAT"
+
+                                # 嚴格過濾 cr_signal (只允許順勢，或真實峰谷逆轉)
+                                if cr_signal:
+                                    is_true_peak = cr_entry_type == "PEAK_ANGLE_DOWN"
+                                    is_true_trough = cr_entry_type == "TROUGH_ANGLE_UP"
+                                    
+                                    if regime == "LONG" and cr_signal == "SHORT" and not is_true_peak:
+                                        cr_signal = None  # 在多頭趨勢中，忽略非真峰頂的小空頭訊號
+                                    elif regime == "SHORT" and cr_signal == "LONG" and not is_true_trough:
+                                        cr_signal = None  # 在空頭趨勢中，忽略非真谷底的小多頭訊號
+                                
+                                live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
+                                
+                                # 決定開倉方向
+                                if cr_signal:
+                                    sar_signal = cr_signal
+                                    sar_reason = f"均線訊號進場 ({cr_entry_type})"
+                                else:
+                                    # 如果沒有明確訊號，根據乖離率決定是否要「順大勢無腦接刀」
+                                    atr_val = float(df_cr['atr'].iloc[-1]) if 'atr' in df_cr.columns else max(live_price * 0.015, 1e-12)
+                                    ma25_dist = abs(ma3_val - ma25_val) / atr_val if ma25_val > 0 else 0.0
+                                    
+                                    if regime == "FLAT":
+                                        sar_signal = None  # 死魚盤不開倉
+                                    elif ma25_dist >= 1.2:
+                                        sar_signal = None  # 快到峰頂/谷底前 (乖離過大)，冷靜不開倉，等待明確訊號
+                                    elif regime == "LONG" and live_price > ma3_val + atr_val * 0.8:
+                                        sar_signal = None  # 暴漲中 (追高)，等價格降下來再買
+                                    elif regime == "SHORT" and live_price < ma3_val - atr_val * 0.8:
+                                        sar_signal = None  # 暴跌中 (追空)，等價格彈上來再空
+                                    else:
+                                        sar_signal = regime
+                                        chase_dist = abs(live_price - ma3_val) / atr_val
+                                        sar_reason = f"順大勢接刀 (Regime: {regime}, MA25_Dist: {ma25_dist:.1f}, MA3_Dist: {chase_dist:.1f})"
+                                    
+                                if sar_signal and live_price > 0:
+                                    self.account.log(f"🚨 {symbol} 偵測到空倉，條件達成，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
+                                    atr = live_price * 0.015
+                                    sl_dist = live_price * 0.1  # 寬止損，主要靠 0.8U 階梯與反向訊號
+                                    sl, tp = build_sl_tp_for_side(live_price, sar_signal, sl_dist, 0.0)
+                                    total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                                    
+                                    pending = self.account.pending_limit_orders.get(symbol)
+                                    if pending:
+                                        await self.account.cancel_pending_limit(symbol, "執行空倉接回，取消掛單")
+                                        
+                                    opened = await self.account.open_position(
+                                        symbol=symbol,
+                                        side=sar_signal,
+                                        price=live_price,
+                                        amount_usdt=total_usdt,
+                                        sl=sl,
+                                        tp=tp,
+                                        reason=sar_reason,
+                                        atr=atr,
+                                        leverage=get_leverage(symbol),
+                                        signal_score=100,
+                                        entry_context={
+                                            "entry_mode": "MA_ALIGNMENT_MARKET" if cr_signal else "REGIME_REENTRY",
+                                            "strategy_mode": "SIGNAL_WAITING" if not sar_signal else "CONTINUOUS_REVERSE",
+                                        },
+                                    )
+                                    if opened:
+                                        self._last_ma_reversal_sides[symbol] = sar_signal
+                                        if reversal_event_key is not None:
+                                            self._handled_ma_reversal_events[symbol] = reversal_event_key
+                                else:
+                                    # 如果沒有訊號，或者訊號被過濾掉了（小波動），就保持空手等待
+                                    pass
+                                                
+                                # 已經處理完空倉進場（無論有無開倉），直接跳過後續的 MA 翻單邏輯
+                                continue
+
                             if cr_signal:
                                 last_close = float(df_cr['close'].iloc[-1])
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
@@ -3107,18 +3236,24 @@ class TradingEngine:
                                     if not has_pos:
                                         should_open = True
                                     elif curr_side != cr_signal:
-                                        
-                                        # 新增：如果剛開倉不到 30 秒，且不是重磅訊號，則忽略（防盤整期 3 秒內連續假訊號洗盤）
+                                        # 嚴格過濾：如果已經有倉位，只有「真峰谷 (PEAK/TROUGH)」才能觸發強制反手。
+                                        # 忽略「動能追擊」或「中途追車」這類單純 K 線顏色改變的小波動。
+                                        is_true_reversal = cr_entry_type in ("PEAK_ANGLE_DOWN", "TROUGH_ANGLE_UP")
+                                        if not is_true_reversal:
+                                            self.account.log(f"🛡️ {symbol} 忽略小波動反向訊號 ({cr_entry_type})，保持當前 {curr_side} 倉位", "INFO")
+                                            continue
+                                            
+                                        # 防盤整期 30 秒內連續假訊號洗盤
                                         last_open_time = self.account.positions[symbol].get("open_timestamp", 0)
                                         is_heavy = "MA3回落0.2" in str(cr_entry_type) or "MA3反彈0.2" in str(cr_entry_type) or "尖角" in str(cr_entry_type)
                                         if time.time() - last_open_time < 30 and not is_heavy:
-                                            # 紀錄已過濾
                                             continue
-                                        self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
+                                            
+                                        self.account.log(f"🚨 {symbol} 偵測到真實峰谷轉折 ({cr_entry_type})，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
                                         closed_for_reversal = await self.account.close_position(
                                             symbol=symbol,
                                             current_price=live_price,
-                                            close_reason=f"反向訊號 ({cr_entry_type})"
+                                            close_reason=f"真實反轉訊號 ({cr_entry_type})"
                                         )
                                         if not closed_for_reversal:
                                             self.account.log(
