@@ -3179,9 +3179,16 @@ class TradingEngine:
                                     elif regime == "SHORT" and live_price < ma3_val - atr_val * 0.8:
                                         sar_signal = None  # 暴跌中 (追空)，等價格彈上來再空
                                     else:
-                                        sar_signal = regime
-                                        chase_dist = abs(live_price - ma3_val) / atr_val
-                                        sar_reason = f"順大勢接回 (Regime: {regime}, MA25_Dist: {ma25_dist:.1f}, MA3_Dist: {chase_dist:.1f})"
+                                        candle_open = float(df_cr['open'].iloc[-1])
+                                        if regime == "LONG" and live_price >= candle_open:
+                                            sar_signal = None  # 上漲趨勢只在紅K買進 (不追高)
+                                        elif regime == "SHORT" and live_price <= candle_open:
+                                            sar_signal = None  # 下跌趨勢只在綠K賣出 (不追空)
+                                        else:
+                                            sar_signal = regime
+                                            chase_dist = abs(live_price - ma3_val) / atr_val
+                                            color_str = "紅K" if regime == "LONG" else "綠K"
+                                            sar_reason = f"順大勢接回 ({color_str}進場, Regime: {regime}, MA25_Dist: {ma25_dist:.1f}, MA3_Dist: {chase_dist:.1f})"
                                 if sar_signal and live_price > 0:
                                     self.account.log(f"🚨 {symbol} 偵測到空倉，條件達成，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
                                     atr = live_price * 0.015
