@@ -3145,16 +3145,20 @@ class TradingEngine:
                                 else:
                                     regime = "FLAT"
 
-                                # 嚴格過濾 cr_signal (只允許真實峰谷逆轉，拒絕單根K線動能假突破)
+                                # 嚴格過濾 cr_signal (過濾掉單根K線造成的假突破，只留真實轉折)
                                 if cr_signal:
                                     is_true_peak = cr_entry_type == "PEAK_ANGLE_DOWN"
                                     is_true_trough = cr_entry_type == "TROUGH_ANGLE_UP"
                                     is_heavy_rebound = "MA3反彈" in str(cr_entry_type) or "MA3回落" in str(cr_entry_type)
                                     
-                                    if not (is_true_peak or is_true_trough or is_heavy_rebound):
-                                        self.account.log(f"🛡️ {symbol} 忽略單根K線弱訊號 ({cr_entry_type})，堅持等待真實峰谷轉折", "INFO")
+                                    # 既然要看趨勢：在空頭趨勢中，絕對不允許因為一根綠K或弱多頭訊號就開多單！
+                                    if cr_signal == "LONG" and regime != "LONG" and not is_true_trough:
+                                        self.account.log(f"🛡️ {symbol} 趨勢非向上，忽略弱多頭訊號 ({cr_entry_type})", "INFO")
                                         cr_signal = None
-                                
+                                    elif cr_signal == "SHORT" and regime != "SHORT" and not is_true_peak:
+                                        self.account.log(f"🛡️ {symbol} 趨勢非向下，忽略弱空頭訊號 ({cr_entry_type})", "INFO")
+                                        cr_signal = None
+                                        
                                 live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
                                 
                                 # 決定開倉方向
@@ -3162,7 +3166,22 @@ class TradingEngine:
                                     sar_signal = cr_signal
                                     sar_reason = f"均線訊號進場 ({cr_entry_type})"
                                 else:
-                                    sar_signal = None  # 取消無腦接刀，完全依賴明確的趨勢訊號進場
+                                    # 趨勢向上(向下)繼續開同向的單 (順大勢接回)
+                                    atr_val = float(df_cr['atr'].iloc[-1]) if 'atr' in df_cr.columns else max(live_price * 0.015, 1e-12)
+                                    ma25_dist = abs(ma3_val - ma25_val) / atr_val if ma25_val > 0 else 0.0
+                                    
+                                    if regime == "FLAT":
+                                        sar_signal = None  # 死魚盤不開倉
+                                    elif ma25_dist >= 1.2:
+                                        sar_signal = None  # 快到峰頂/谷底前 (乖離過大)，冷靜不開倉，等待明確訊號
+                                    elif regime == "LONG" and live_price > ma3_val + atr_val * 0.8:
+                                        sar_signal = None  # 暴漲中 (追高)，等價格降下來再買
+                                    elif regime == "SHORT" and live_price < ma3_val - atr_val * 0.8:
+                                        sar_signal = None  # 暴跌中 (追空)，等價格彈上來再空
+                                    else:
+                                        sar_signal = regime
+                                        chase_dist = abs(live_price - ma3_val) / atr_val
+                                        sar_reason = f"順大勢接回 (Regime: {regime}, MA25_Dist: {ma25_dist:.1f}, MA3_Dist: {chase_dist:.1f})"
                                 if sar_signal and live_price > 0:
                                     self.account.log(f"🚨 {symbol} 偵測到空倉，條件達成，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
                                     atr = live_price * 0.015
