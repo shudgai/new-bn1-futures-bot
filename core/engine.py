@@ -3110,12 +3110,12 @@ class TradingEngine:
                                 if curr_side == "LONG":
                                     if live_price > ma3_val + atr_val * 0.8:
                                         close_reason = "暴漲衝頂，預防回落強制平多"
-                                    elif ma25_val > 0 and ma3_val - ma25_val >= 1.2 * atr_val:
+                                    elif ma25_val > 0 and ma3_val - ma25_val >= 2.5 * atr_val:
                                         close_reason = "乖離過大(近峰頂)，預防回落強制平多"
                                 elif curr_side == "SHORT":
                                     if live_price < ma3_val - atr_val * 0.8:
                                         close_reason = "暴跌到底，預防反彈強制平空"
-                                    elif ma25_val > 0 and ma25_val - ma3_val >= 1.2 * atr_val:
+                                    elif ma25_val > 0 and ma25_val - ma3_val >= 2.5 * atr_val:
                                         close_reason = "乖離過大(近谷底)，預防反彈強制平空"
                                         
                                 if close_reason:
@@ -3172,7 +3172,7 @@ class TradingEngine:
                                     
                                     if regime == "FLAT":
                                         sar_signal = None  # 死魚盤不開倉
-                                    elif ma25_dist >= 1.2:
+                                    elif ma25_dist >= 2.5:
                                         sar_signal = None  # 快到峰頂/谷底前 (乖離過大)，冷靜不開倉，等待明確訊號
                                     elif regime == "LONG" and live_price > ma3_val + atr_val * 0.8:
                                         sar_signal = None  # 暴漲中 (追高)，等價格降下來再買
