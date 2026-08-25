@@ -3159,18 +3159,24 @@ class TradingEngine:
                                     if not has_pos:
                                         should_open = True
                                     elif curr_side != cr_signal:
-                                        
-                                        # 新增：如果剛開倉不到 30 秒，且不是重磅訊號，則忽略（防盤整期 3 秒內連續假訊號洗盤）
+                                        # 嚴格過濾：如果已經有倉位，只有「真峰谷 (PEAK/TROUGH)」才能觸發強制反手。
+                                        # 忽略「動能追擊」或「中途追車」這類單純 K 線顏色改變的小波動。
+                                        is_true_reversal = cr_entry_type in ("PEAK_ANGLE_DOWN", "TROUGH_ANGLE_UP")
+                                        if not is_true_reversal:
+                                            self.account.log(f"🛡️ {symbol} 忽略小波動反向訊號 ({cr_entry_type})，保持當前 {curr_side} 倉位", "INFO")
+                                            continue
+                                            
+                                        # 防盤整期 30 秒內連續假訊號洗盤
                                         last_open_time = self.account.positions[symbol].get("open_timestamp", 0)
                                         is_heavy = "MA3回落0.2" in str(cr_entry_type) or "MA3反彈0.2" in str(cr_entry_type) or "尖角" in str(cr_entry_type)
                                         if time.time() - last_open_time < 30 and not is_heavy:
-                                            # 紀錄已過濾
                                             continue
-                                        self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
+                                            
+                                        self.account.log(f"🚨 {symbol} 偵測到真實峰谷轉折 ({cr_entry_type})，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
                                         closed_for_reversal = await self.account.close_position(
                                             symbol=symbol,
                                             current_price=live_price,
-                                            close_reason=f"反向訊號 ({cr_entry_type})"
+                                            close_reason=f"真實反轉訊號 ({cr_entry_type})"
                                         )
                                         if not closed_for_reversal:
                                             self.account.log(
