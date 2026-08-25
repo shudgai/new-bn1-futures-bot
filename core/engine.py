@@ -3140,9 +3140,14 @@ class TradingEngine:
                                         sar_signal = None  # 死魚盤不開倉
                                     elif ma25_dist >= 1.2:
                                         sar_signal = None  # 快到峰頂/谷底前 (乖離過大)，冷靜不開倉，等待明確訊號
+                                    elif regime == "LONG" and live_price > ma3_val + atr_val * 0.8:
+                                        sar_signal = None  # 暴漲中 (追高)，等價格降下來再買
+                                    elif regime == "SHORT" and live_price < ma3_val - atr_val * 0.8:
+                                        sar_signal = None  # 暴跌中 (追空)，等價格彈上來再空
                                     else:
                                         sar_signal = regime
-                                        sar_reason = f"順大勢接刀 (Regime: {regime}, Dist: {ma25_dist:.1f})"
+                                        chase_dist = abs(live_price - ma3_val) / atr_val
+                                        sar_reason = f"順大勢接刀 (Regime: {regime}, MA25_Dist: {ma25_dist:.1f}, MA3_Dist: {chase_dist:.1f})"
                                     
                                 if sar_signal and live_price > 0:
                                     self.account.log(f"🚨 {symbol} 偵測到空倉，條件達成，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
