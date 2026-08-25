@@ -2803,12 +2803,21 @@ class TradingEngine:
                                 last_high = float(df_cr['high'].iloc[-1])
                                 last_low = float(df_cr['low'].iloc[-1])
                                 
-                                candle_range = last_high - last_low
-                                lower_wick = min(last_open, last_close) - last_low
-                                upper_wick = last_high - max(last_open, last_close)
+                                candle_range_1 = last_high - last_low
+                                lower_wick_1 = min(last_open, last_close) - last_low
+                                upper_wick_1 = last_high - max(last_open, last_close)
                                 
-                                is_long_lower_wick = candle_range > 0 and (lower_wick / candle_range > 0.6)
-                                is_long_upper_wick = candle_range > 0 and (upper_wick / candle_range > 0.6)
+                                prev_close = float(df_cr['close'].iloc[-2])
+                                prev_open = float(df_cr['open'].iloc[-2])
+                                prev_high = float(df_cr['high'].iloc[-2])
+                                prev_low = float(df_cr['low'].iloc[-2])
+                                
+                                candle_range_2 = prev_high - prev_low
+                                lower_wick_2 = min(prev_open, prev_close) - prev_low
+                                upper_wick_2 = prev_high - max(prev_open, prev_close)
+                                
+                                is_long_lower_wick = (candle_range_1 > 0 and lower_wick_1 / candle_range_1 > 0.6) or (candle_range_2 > 0 and lower_wick_2 / candle_range_2 > 0.6)
+                                is_long_upper_wick = (candle_range_1 > 0 and upper_wick_1 / candle_range_1 > 0.6) or (candle_range_2 > 0 and upper_wick_2 / candle_range_2 > 0.6)
 
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
@@ -2843,7 +2852,7 @@ class TradingEngine:
                                         long_wick_closed = True
                                         cr_signal = None  # 不要交易先平倉，再看下面是什麼情況
 
-                                # 一般 MA3 彎頭防禦
+                                # 一般 MA3 彎頭防禦 (尖端反轉)
                                 if not long_wick_closed:
                                     if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr:
                                         self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (收盤 < MA3)，防禦性提早平倉多單！", "WARNING")
@@ -2856,6 +2865,9 @@ class TradingEngine:
                                             has_pos = False
                                             curr_side = None
                                             self._continuous_alignment_wait.pop(symbol, None)
+                                            # 防禦平多後，強制覆蓋 cr_signal 為 SHORT，讓下方開倉流程立刻翻空 (馬上反向開倉)
+                                            cr_signal = "SHORT"
+                                            cr_entry_type = "PEAK_TURN"
     
                                     elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr:
                                         self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (收盤 > MA3)，防禦性提早平倉空單！", "WARNING")
@@ -2868,7 +2880,7 @@ class TradingEngine:
                                             has_pos = False
                                             curr_side = None
                                             self._continuous_alignment_wait.pop(symbol, None)
-                                            # 防禦平空後，強制覆蓋 cr_signal 為 LONG，讓下方開倉流程立刻翻多
+                                            # 防禦平空後，強制覆蓋 cr_signal 為 LONG，讓下方開倉流程立刻翻多 (馬上反向開倉)
                                             cr_signal = "LONG"
                                             cr_entry_type = "TROUGH_TURN"
 
