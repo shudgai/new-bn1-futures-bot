@@ -5,6 +5,44 @@ import numpy as np
 
 TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
+def get_dynamic_adx_floor(df: pd.DataFrame, direction: int) -> tuple[float, bool]:
+    """Return the ADX floor and whether price is in a strong directional trend."""
+    from core.config import ADX_MANDATORY_MIN, ADX_STRONG_TREND_MIN
+
+    normal_floor = float(ADX_MANDATORY_MIN)
+    strong_floor = float(ADX_STRONG_TREND_MIN)
+    if df is None or len(df) < 5 or int(direction or 0) not in (-1, 1):
+        return normal_floor, False
+
+    close = pd.to_numeric(df["close"], errors="coerce")
+    ma5 = pd.to_numeric(df["ma5"], errors="coerce") if "ma5" in df.columns else close.rolling(5).mean()
+    ma25 = (
+        pd.to_numeric(df["ma25"], errors="coerce")
+        if "ma25" in df.columns else close.rolling(25, min_periods=5).mean()
+    )
+    if "atr" in df.columns:
+        atr = float(pd.to_numeric(df["atr"], errors="coerce").iloc[-1])
+    else:
+        recent = close.iloc[-5:]
+        atr = float((recent.max() - recent.min()) or 0.0)
+
+    values = [close.iloc[-3], close.iloc[-2], close.iloc[-1], ma5.iloc[-2], ma5.iloc[-1], ma25.iloc[-1], atr]
+    if any(pd.isna(value) for value in values) or atr <= 0:
+        return normal_floor, False
+
+    if direction == 1:
+        closes_aligned = close.iloc[-3] < close.iloc[-2] < close.iloc[-1]
+        averages_aligned = ma5.iloc[-1] > ma5.iloc[-2] and close.iloc[-1] > ma5.iloc[-1] > ma25.iloc[-1]
+        directional_move = float(close.iloc[-1] - close.iloc[-3])
+    else:
+        closes_aligned = close.iloc[-3] > close.iloc[-2] > close.iloc[-1]
+        averages_aligned = ma5.iloc[-1] < ma5.iloc[-2] and close.iloc[-1] < ma5.iloc[-1] < ma25.iloc[-1]
+        directional_move = float(close.iloc[-3] - close.iloc[-1])
+
+    strong_trend = bool(closes_aligned and averages_aligned and directional_move >= 0.5 * atr)
+    return (strong_floor if strong_trend else normal_floor), strong_trend
+
+
 
 # ---------------------------------------------------------------------------
 # 真頂峰 / 真谷底 確認輔助函式
@@ -179,68 +217,72 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
-
-def _find_swing_points(df: pd.DataFrame, window: int = 5):
-    if len(df) < window * 2 + 1:
-        return None, None
-    
-    # 找最近的波段高低點
-    highs = df['high'].values
-    lows = df['low'].values
-    
-    last_swing_high = None
-    last_swing_low = None
-    
-    for i in range(len(df) - window - 1, window - 1, -1):
-        if last_swing_high is None and all(highs[i] >= highs[i-window:i]) and all(highs[i] >= highs[i+1:i+window+1]):
-            last_swing_high = highs[i]
-        if last_swing_low is None and all(lows[i] <= lows[i-window:i]) and all(lows[i] <= lows[i+1:i+window+1]):
-            last_swing_low = lows[i]
-        if last_swing_high is not None and last_swing_low is not None:
-            break
-            
-    return last_swing_high, last_swing_low
-
-def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
+def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = False) -> dict:
     """
-    連續轉向策略核心邏輯（升級版：真峰谷確認機制）
+    連續轉向策略核心邏輯（優化版：純交叉 + 順勢回調上車）
+
+    ✅ 進場邏輯 1（大反轉）：
+        - MA5 從下方穿越 MA25（金叉）→ LONG
+        - MA5 從上方穿越 MA25（死叉）→ SHORT
+    
+    ✅ 進場邏輯 2（順勢回調上車 - 解決錯過大趨勢的問題）：
+        - 空頭延續 (MA5 < MA25)：出現小反彈結束，MA5 形成峰頂往下 → SHORT (PEAK_TURN)
+        - 多頭延續 (MA5 > MA25)：出現小回調結束，MA5 形成谷底往上 → LONG (TROUGH_TURN)
+
+    ✅ 避開舊邏輯陷阱：
+        - 舊邏輯是在 MA5 < MA25 時找「谷底做多」(逆勢摸底)
+        - 新邏輯是在 MA5 < MA25 時找「峰頂做空」(順勢做空)
     """
     if df is None or len(df) < 25:
         return {"signal": None, "reason": "Not enough data", "pivot_confirmed": False, "pivot_score": 0}
 
-    df = df.copy()
-    close = df['close']
-    high = df['high']
-    low = df['low']
-    open_p = df['open']
-    volume = df['volume'] if 'volume' in df.columns else pd.Series(0, index=df.index)
+    if 'ma3' not in df.columns:
+        df = df.copy()
+        df['ma3'] = df['close'].rolling(window=3).mean()
+    if 'ma5' not in df.columns:
+        df = df.copy()
+        df['ma5'] = df['close'].rolling(window=5).mean()
+    if 'ma25' not in df.columns:
+        df = df.copy()
+        df['ma25'] = df['close'].rolling(window=25).mean()
 
-    if 'ma3' not in df.columns: df['ma3'] = close.rolling(window=3).mean()
-    if 'ma5' not in df.columns: df['ma5'] = close.rolling(window=5).mean()
-    if 'ma25' not in df.columns: df['ma25'] = close.rolling(window=25).mean()
+    # 計算 ADX (14) 如果不存在
+    if 'adx' not in df.columns:
+        adx_period = 14
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        up_move = high.diff()
+        down_move = -low.diff()
+        plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
+        minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
+        
+        tr_smooth = tr.ewm(alpha=1 / adx_period, adjust=False).mean()
+        plus_di = 100 * (plus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
+        minus_di = 100 * (minus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+        df['adx'] = dx.ewm(alpha=1 / adx_period, adjust=False).mean()
 
-    # 計算 MACD
-    if 'macd' not in df.columns:
-        exp1 = close.ewm(span=12, adjust=False).mean()
-        exp2 = close.ewm(span=26, adjust=False).mean()
-        df['macd'] = exp1 - exp2
-        df['macdsignal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        df['macdhist'] = df['macd'] - df['macdsignal']
-
-    # 計算 BOLL
-    if 'boll_upper' not in df.columns:
-        ma20 = close.rolling(window=20).mean()
-        std20 = close.rolling(window=20).std()
-        df['boll_upper'] = ma20 + (std20 * 2)
-        df['boll_lower'] = ma20 - (std20 * 2)
-
-    # 計算 RSI
+    # 計算 RSI (14) 如果不存在
     if 'rsi' not in df.columns:
-        delta = close.diff()
-        gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
-        loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
-        rs = gain / (loss + 1e-9)
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+        rs = avg_gain / (avg_loss + 1e-9)
         df['rsi'] = 100 - (100 / (1 + rs))
+
+    ma3_curr  = float(df['ma3'].iloc[-1])
+    ma3_prev  = float(df['ma3'].iloc[-2])
+    ma3_prev2 = float(df['ma3'].iloc[-3])
+    ma3_prev3 = float(df['ma3'].iloc[-4]) if len(df) >= 5 else ma3_prev2  # 第二根確認用
 
     ma5_curr  = float(df['ma5'].iloc[-1])
     ma5_prev  = float(df['ma5'].iloc[-2])
@@ -249,166 +291,192 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame) -> dict:
     ma25_prev = float(df['ma25'].iloc[-2])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
 
-    # 1. 判斷交叉 (大反轉)
+    # 1. 判斷交叉 (大趨勢反轉 - 依然看 MA5/MA25)
     cross_up = (ma5_prev <= ma25_prev) and (ma5_curr > ma25_curr)
     cross_down = (ma5_prev >= ma25_prev) and (ma5_curr < ma25_curr)
 
-    # 2. 判斷基本峰谷 (提早偵測：改用更敏銳的 MA3 判定轉折，減少進場延遲)
-    ma3_curr = float(df['ma3'].iloc[-1])
-    ma3_prev = float(df['ma3'].iloc[-2])
-    ma3_prev2 = float(df['ma3'].iloc[-3])
-    
-    is_trough = (ma3_curr > ma3_prev) and (ma3_prev < ma3_prev2)
-    is_peak = (ma3_curr < ma3_prev) and (ma3_prev > ma3_prev2)
+    # 2. 判斷峰谷 (極速轉彎 - 改看 MA3)
+    # 第一根初彎：只是「可能要彎」，需待第二根同向才確認
+    is_peak_forming   = (ma3_curr < ma3_prev) and (ma3_prev > ma3_prev2)  # 第一根下彎
+    is_trough_forming = (ma3_curr > ma3_prev) and (ma3_prev < ma3_prev2)  # 第一根上彎
+    # 第二根確認：兩根連續同向——真頂峰 / 真谷底
+    is_peak_confirmed   = (ma3_curr < ma3_prev) and (ma3_prev < ma3_prev2) and (ma3_prev2 > ma3_prev3)
+    is_trough_confirmed = (ma3_curr > ma3_prev) and (ma3_prev > ma3_prev2) and (ma3_prev2 < ma3_prev3)
+    # 保留舊名稱相容（CROSS 路徑使用）
+    is_peak   = is_peak_confirmed
+    is_trough = is_trough_confirmed
 
-    last_close = float(close.iloc[-1])
-    last_open = float(open_p.iloc[-1])
-    last_high = float(high.iloc[-1])
-    last_low = float(low.iloc[-1])
+    # 3. 判斷斜率 (動能疲乏過濾 - 改看 MA3)
+    ma5_slope = ma5_curr - ma5_prev
+    ma3_slope = ma3_curr - ma3_prev
+    ma3_slope_prev = ma3_prev - ma3_prev2
+    
+    # 判斷是否快到頂峰/谷底 (極速動能嚴重衰退，MA3 斜率萎縮超過 50%)
+    approaching_peak = (ma3_slope > 0) and (ma3_slope < max(0, ma3_slope_prev) * 0.5)
+    approaching_trough = (ma3_slope < 0) and (ma3_slope > min(0, ma3_slope_prev) * 0.5)
+
+    adx_curr = float(df['adx'].iloc[-1])
+    # 強勢單邊走勢使用 ADX 10；盤整或方向不明仍使用 ADX 15。
+    trend_direction = 1 if ma5_curr > ma25_curr else -1 if ma5_curr < ma25_curr else 0
+    _adx_min, strong_trend = get_dynamic_adx_floor(df, trend_direction)
+    if adx_curr < _adx_min:
+        return {
+            "signal": None,
+            "reason": f"盤整過濾 (ADX = {adx_curr:.1f} < {_adx_min:.1f}; 模式={'強趨勢' if strong_trend else '盤整'})",
+            "pivot_confirmed": False,
+            "pivot_score": 0
+        }
+
+    # 活 K 線濾網：確保轉向當下的 K 棒顏色正確，並防禦極端反轉K線 (長上下影線)
+    last_close = float(df['close'].iloc[-1])
+    last_open = float(df['open'].iloc[-1])
+    last_high = float(df['high'].iloc[-1])
+    last_low = float(df['low'].iloc[-1])
+    
     is_green = last_close > last_open
     is_red = last_close < last_open
     
-    # 3. 取得進階指標與型態
-    macd_hist = float(df['macdhist'].iloc[-1])
-    macd_hist_prev = float(df['macdhist'].iloc[-2])
-    rsi_curr = float(df['rsi'].iloc[-1])
-    rsi_prev = float(df['rsi'].iloc[-2])
-    
-    # 4. 判斷真反轉型態 (加入 ATR 動能濾網，過濾微型雜訊)
-    min_body = atr * 0.3
-    min_range = atr * 0.5
-    
-    # 量價特徵：Pinbar
-    body = abs(last_close - last_open)
+    # 計算影線比例 (防禦圖表上的「長下影線誘空」與「長上影線誘多」陷阱)
     candle_range = last_high - last_low
-    upper_shadow = last_high - max(last_open, last_close)
-    lower_shadow = min(last_open, last_close) - last_low
-    is_bullish_pinbar = (lower_shadow > body * 2.0) and (upper_shadow < body) and (candle_range >= min_range)
-    is_bearish_pinbar = (upper_shadow > body * 2.0) and (lower_shadow < body) and (candle_range >= min_range)
+    lower_wick = min(last_open, last_close) - last_low
+    upper_wick = last_high - max(last_open, last_close)
     
-    # 動能背離特徵
-    # 谷底背離：MACD 柱狀圖縮腳向上 或 RSI 超賣區回升
-    is_bullish_div = (macd_hist > macd_hist_prev and macd_hist_prev < 0) or (rsi_curr > rsi_prev and rsi_prev < 35)
-    # 峰頂背離：MACD 柱狀圖縮頭向下 或 RSI 超買區回落
-    is_bearish_div = (macd_hist < macd_hist_prev and macd_hist_prev > 0) or (rsi_curr < rsi_prev and rsi_prev > 65)
-    
-    # 結構破位 CHoCH
-    swing_high, swing_low = _find_swing_points(df, window=5)
-    is_choch_up = swing_high is not None and last_close > swing_high
-    is_choch_down = swing_low is not None and last_close < swing_low
+    # 如果下影線佔整根K線一半以上 (如槌子線)，嚴格禁止做空！
+    is_hammer_trap = (candle_range > 0) and (lower_wick / candle_range > 0.4)
+    # 如果上影線佔整根K線一半以上 (如避雷針)，嚴格禁止做多！
+    is_shooting_star_trap = (candle_range > 0) and (upper_wick / candle_range > 0.4)
 
-    # 吞噬型態 (Engulfing) - 放寬微小跳空容忍度 (0.01% 誤差) + 必須有足夠實體大小
-    prev_open = float(open_p.iloc[-2])
-    prev_close = float(close.iloc[-2])
-    prev_body = abs(prev_close - prev_open)
-    tolerance = last_close * 0.0001
-    is_bullish_engulfing = (prev_close < prev_open) and is_green and (last_close > prev_open) and (last_open <= prev_close + tolerance) and (body >= min_body or prev_body >= min_body)
-    is_bearish_engulfing = (prev_close > prev_open) and is_red and (last_close < prev_open) and (last_open >= prev_close - tolerance) and (body >= min_body or prev_body >= min_body)
+    # Fake-breakout volume filter: the closed confirmation candle needs at least 0.8x prior volume.
+    min_confirmation_volume_ratio = 0.65 if allow_live_pivot else 0.8
+    if 'volume' in df.columns:
+        prior_volume = df['volume'].iloc[-21:-1]
+        average_volume = float(prior_volume.mean()) if len(prior_volume) else 0.0
+        current_volume = float(df['volume'].iloc[-1])
+        volume_ratio = current_volume / average_volume if average_volume > 0 else 0.0
+    else:
+        volume_ratio = 0.0
 
-    # 上一根是否為避雷針 (提早發現轉折)
-    prev_high = float(high.iloc[-2])
-    prev_low = float(low.iloc[-2])
-    prev_range = prev_high - prev_low
-    prev_upper_shadow = prev_high - max(prev_open, prev_close)
-    prev_lower_shadow = min(prev_open, prev_close) - prev_low
-    prev_is_bullish_pinbar = (prev_lower_shadow > prev_body * 2.0) and (prev_upper_shadow < prev_body) and (prev_range >= min_range)
-    prev_is_bearish_pinbar = (prev_upper_shadow > prev_body * 2.0) and (prev_lower_shadow < prev_body) and (prev_range >= min_range)
+    def reject_false_breakout(side: str):
+        if side == "LONG" and is_shooting_star_trap:
+            return {"signal": None, "reason": "假突破過濾：多單確認K帶長上影線", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
+        if side == "SHORT" and is_hammer_trap:
+            return {"signal": None, "reason": "假突破過濾：空單確認K帶長下影線", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
+        # 活動 K 的成交量仍在累積；峰谷第一彎已由 MA3 方向、K 色與影線確認，
+        # 不再等待量能比例，以免已平倉卻錯過立即反手。
+        if not allow_live_pivot and volume_ratio < min_confirmation_volume_ratio:
+            return {"signal": None, "reason": f"假突破過濾：確認量能 {volume_ratio:.2f}x < {min_confirmation_volume_ratio:.2f}x", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
+        return None
 
-    # 5. 連續動能確認 (解決單一K棒看不出真假的問題，連續多根同色代表趨勢成型)
-    is_prev2_close = float(close.iloc[-3])
-    is_prev2_open = float(open_p.iloc[-3])
-    is_prev_red = prev_close < prev_open
-    is_prev2_red = is_prev2_close < is_prev2_open
-    is_prev_green = prev_close > prev_open
-    is_prev2_green = is_prev2_close > is_prev2_open
-    
-    consecutive_red_score = 0
-    if is_red and is_prev_red:
-        consecutive_red_score += 1
-        if is_prev2_red:
-            consecutive_red_score += 1 # 三連黑 (Three Black Crows) 總共 +2 分
-            
-    consecutive_green_score = 0
-    if is_green and is_prev_green:
-        consecutive_green_score += 1
-        if is_prev2_green:
-            consecutive_green_score += 1 # 三連紅 (Three White Soldiers) 總共 +2 分
+    # 峰谷反轉優先：嚴格形態成立時不等待 MA5 越過 MA25，避免確認太晚追高追低。
+    candle_body = abs(last_close - last_open)
+    fast_trough_recovery = ma3_curr - ma3_prev
+    fast_peak_decline = ma3_prev - ma3_curr
+    prior_lows = df['low'].iloc[-9:-1]
+    prior_highs = df['high'].iloc[-9:-1]
+    near_recent_low = bool(len(prior_lows)) and last_low <= float(prior_lows.min()) + atr * 0.25
+    near_recent_high = bool(len(prior_highs)) and last_high >= float(prior_highs.max()) - atr * 0.25
+    confirmed_trough_recovery = ma3_curr - ma3_prev2
+    confirmed_peak_decline = ma3_prev2 - ma3_curr
+    live_fast_trough = (
+        allow_live_pivot and is_trough_forming and is_green
+        and last_close > ma3_curr and not is_shooting_star_trap
+    )
+    live_fast_peak = (
+        allow_live_pivot and is_peak_forming and is_red
+        and last_close < ma3_curr and not is_hammer_trap
+    )
+    clear_fast_trough = live_fast_trough or (
+        is_trough_forming and is_green and last_close > ma3_curr
+        and fast_trough_recovery >= atr * 0.20
+        and candle_body >= atr * 0.45
+        and volume_ratio >= min_confirmation_volume_ratio
+        and near_recent_low and not is_shooting_star_trap
+    )
+    clear_fast_peak = live_fast_peak or (
+        is_peak_forming and is_red and last_close < ma3_curr
+        and fast_peak_decline >= atr * 0.20
+        and candle_body >= atr * 0.45
+        and volume_ratio >= min_confirmation_volume_ratio
+        and near_recent_high and not is_hammer_trap
+    )
+    confirmed_trough = (
+        is_trough_confirmed and is_green and last_close > ma3_curr
+        and confirmed_trough_recovery >= atr * 0.4 and near_recent_low
+    )
+    confirmed_peak = (
+        is_peak_confirmed and is_red and last_close < ma3_curr
+        and confirmed_peak_decline >= atr * 0.4 and near_recent_high
+    )
 
-    # 綜合「真反轉」確認分數 (只要符合任一強烈型態即 +1 分)
-    bull_confirm_score = sum([is_bullish_pinbar, prev_is_bullish_pinbar and is_green, is_bullish_div, is_choch_up, is_bullish_engulfing, consecutive_green_score])
-    bear_confirm_score = sum([is_bearish_pinbar, prev_is_bearish_pinbar and is_red, is_bearish_div, is_choch_down, is_bearish_engulfing, consecutive_red_score])
-
-    # 優先級 1：大反轉（金叉/死叉第一時間進場）
-    if cross_up:
+    if clear_fast_trough or confirmed_trough:
+        rejected = reject_false_breakout("LONG")
+        if rejected:
+            return rejected
         return {
-            "signal": "LONG",
-            "entry_type": "CROSS_UP",
-            "reason": "MA5 金叉 → 多單",
-            "atr": atr,
-            "pivot_confirmed": True,
-            "pivot_score": 80,
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": f"MA3 真谷底向上 (ADX={adx_curr:.1f}) → 立即開多",
+            "atr": atr, "pivot_confirmed": True,
+            "pivot_score": 95 if clear_fast_trough else 100,
+            "fast_pivot": bool(clear_fast_trough),
+            "live_pivot": bool(allow_live_pivot),
+            "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
-    elif cross_down:
+
+    if clear_fast_peak or confirmed_peak:
+        rejected = reject_false_breakout("SHORT")
+        if rejected:
+            return rejected
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": f"MA3 真頂峰向下 (ADX={adx_curr:.1f}) → 立即開空",
+            "atr": atr, "pivot_confirmed": True,
+            "pivot_score": 95 if clear_fast_peak else 100,
+            "fast_pivot": bool(clear_fast_peak),
+            "live_pivot": bool(allow_live_pivot),
+            "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
+        }
+
+    # 開倉方向只依 MA3、MA5 相對 MA25 的共同位置決定。
+    # 風控（ADX、量能、長影線）仍須通過，但不得在均線下方做多或上方做空。
+    both_below_ma25 = ma3_curr < ma25_curr and ma5_curr < ma25_curr
+    both_above_ma25 = ma3_curr > ma25_curr and ma5_curr > ma25_curr
+
+    if both_below_ma25:
+        rejected = reject_false_breakout("SHORT")
+        if rejected:
+            return rejected
         return {
             "signal": "SHORT",
-            "entry_type": "CROSS_DOWN",
-            "reason": "MA5 死叉 → 空單",
+            "entry_type": "TREND_SHORT",
+            "reason": f"MA3、MA5 同在 MA25 下方 (ADX={adx_curr:.1f}) → 現價開空",
             "atr": atr,
-            "pivot_confirmed": True,
-            "pivot_score": 80,
+            "pivot_confirmed": False,
+            "pivot_score": 85,
+            "ma_alignment": "BELOW",
         }
 
-    # 優先級 2：真峰谷確認 & 優先級 3：順勢上車
-    # 空頭趨勢中 (MA5 < MA25)
-    if ma5_curr < ma25_curr:
-        if (is_trough or ma3_curr > ma3_prev) and is_green and bull_confirm_score >= 2:
-            return {
-                "signal": "LONG",
-                "entry_type": "TROUGH_TURN",
-                "reason": f"空頭中 MA5 谷底且滿足強烈真反轉 (>=2項結構條件) → 轉向多單",
-                "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 100,
-            }
-        elif (is_peak or ma3_curr < ma3_prev) and is_red and bear_confirm_score >= 1:
-            # 沒形成谷底，反而形成峰頂（或只是順勢向下），且收黑、出現空頭反轉訊號 → 代表反彈結束、空頭延續
-            return {
-                "signal": "SHORT",
-                "entry_type": "TREND_SHORT",
-                "reason": "空頭中 MA5 反彈後轉下 (回調結束) → 順勢空單",
-                "atr": atr,
-                "pivot_confirmed": False,
-                "pivot_score": 50,
-            }
-    
-    # 多頭趨勢中 (MA5 > MA25)
-    if ma5_curr > ma25_curr:
-        if (is_peak or ma3_curr < ma3_prev) and is_red and bear_confirm_score >= 2:
-            return {
-                "signal": "SHORT",
-                "entry_type": "PEAK_TURN",
-                "reason": f"多頭中 MA5 頂峰且滿足強烈真反轉 (>=2項結構條件) → 轉向空單",
-                "atr": atr,
-                "pivot_confirmed": True,
-                "pivot_score": 100,
-            }
-        elif (is_trough or ma3_curr > ma3_prev) and is_green and bull_confirm_score >= 1:
-            # 沒形成峰頂，反而形成谷底（或只是順勢向上），且收綠、出現多頭反轉訊號 → 代表回踩結束、多頭延續
-            return {
-                "signal": "LONG",
-                "entry_type": "TREND_LONG",
-                "reason": "多頭中 MA5 回踩後轉上 (回踩結束) → 順勢多單",
-                "atr": atr,
-                "pivot_confirmed": False,
-                "pivot_score": 50,
-            }
+    if both_above_ma25:
+        rejected = reject_false_breakout("LONG")
+        if rejected:
+            return rejected
+        return {
+            "signal": "LONG",
+            "entry_type": "TREND_LONG",
+            "reason": f"MA3、MA5 同在 MA25 上方 (ADX={adx_curr:.1f}) → 現價開多",
+            "atr": atr,
+            "pivot_confirmed": False,
+            "pivot_score": 85,
+            "ma_alignment": "ABOVE",
+        }
 
     return {
         "signal": None,
-        "reason": "等待轉向",
+        "reason": "MA3、MA5 分居 MA25 兩側，等待方向一致",
         "pivot_confirmed": False,
-        "pivot_score": 0
+        "pivot_score": 0,
+        "ma_alignment": "MIXED",
     }
+
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
     """持倉平倉訊號（優化版：純 MA5 穿越 MA25 換向）
