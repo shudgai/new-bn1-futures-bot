@@ -180,6 +180,11 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
         pre_slope = (ma3[peak_i] - ma3[peak_i - 1]) / atr if peak_i > 0 else 0.0
         post_slope = (ma3[-1] - ma3[peak_i]) / max(bars_after, 1) / atr
         angle = pre_slope - post_slope
+        
+        # 乖離率過濾：如果離 MA25 夠遠（> 1.2 ATR），算是真頂峰，MA3 只要微彎（0.30）就立刻反轉
+        ma25_dist = (ma3[peak_i] - ma25[peak_i]) / atr if ma25_available else 0.0
+        overextended_peak = ma25_dist >= 1.2 and ma3_drop >= 0.30
+        
         ma5_left_peak = ma5_drop >= 0.30
         normal_turn = ma3_drop >= 0.60 and ma5_drop >= 0.30
         sharp_turn = ma3_drop >= 0.80 and ma5_drop > 0.10
@@ -191,6 +196,7 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
             or (pattern_turn and angle >= 0.25)
             or ma3_sharp_angle
             or heavy_drop
+            or overextended_peak
         )
         return peak_ok, ma3_drop, ma5_drop, angle
 
@@ -204,16 +210,21 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
         pre_slope = (ma3[trough_i] - ma3[trough_i - 1]) / atr if trough_i > 0 else 0.0
         post_slope = (ma3[-1] - ma3[trough_i]) / max(bars_after, 1) / atr
         angle = post_slope - pre_slope
+        
+        # 乖離率過濾：如果離 MA25 夠遠（> 1.2 ATR），算是真谷底，MA3 只要微彎（0.30）就立刻反轉
+        ma25_dist = (ma25[trough_i] - ma3[trough_i]) / atr if ma25_available else 0.0
+        overextended_trough = ma25_dist >= 1.2 and ma3_rise >= 0.30
+        
         ma5_left_trough = ma5_rise >= 0.30
         normal_turn = ma3_rise >= 0.60 and ma5_rise >= 0.30
         sharp_turn = ma3_rise >= 0.80 and ma5_rise > 0.10
         pattern_turn = has_bullish_pattern and ma3_rise >= 0.50
         ma3_sharp_angle = angle >= 0.40 and ma3_rise >= 0.60
-        print(f"[DEBUG] Trough check: i={trough_i} ma3_rise={ma3_rise:.3f} ma5_rise={ma5_rise:.3f} angle={angle:.3f} ma3_sharp={ma3_sharp_angle} pattern={pattern_turn}")
         trough_ok = (
             (ma5_left_trough and angle >= 0.30 and (normal_turn or sharp_turn))
             or (pattern_turn and angle >= 0.25)
             or ma3_sharp_angle
+            or overextended_trough
         )
         return trough_ok, ma3_rise, ma5_rise, angle
 
