@@ -526,6 +526,7 @@ TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.00
 #    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
 ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "12.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_STRONG_TREND_MIN = float(os.getenv("ADX_STRONG_TREND_MIN", "10.0"))  # 明確單邊趨勢門檻
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # WEAK_ENERGY_ADX_THRESHOLD：進場當下 ADX 低於這個門檻（動能偏弱/中等，

@@ -2908,7 +2908,7 @@ class TradingEngine:
                                 # 直接讀取即可，不需額外記錄。
                                 _last_close_ts = self.account.last_closed_at.get(symbol, 0.0)
                                 _cooldown_sec = 5.0
-                                _elapsed = now - _last_close_ts
+                                _elapsed = now_time - _last_close_ts
                                 if not has_pos and _elapsed < _cooldown_sec:
                                     self.account.log(
                                         f"⏳ [{symbol}] 平倉後冷靜期：距上次平倉 {_elapsed:.1f}s < {_cooldown_sec:.0f}s，"
