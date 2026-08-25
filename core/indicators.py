@@ -421,38 +421,38 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         and confirmed_peak_decline >= atr * 0.4 and near_recent_high
     )
 
-    # 判斷整體趨勢方向，確保順勢交易，禁止逆勢摸底/摸頭
-    both_below_ma25 = ma3_curr < ma25_curr and ma5_curr < ma25_curr
-    both_above_ma25 = ma3_curr > ma25_curr and ma5_curr > ma25_curr
-
-    if (clear_fast_trough or confirmed_trough) and both_above_ma25:
+    if clear_fast_trough or confirmed_trough:
         rejected = reject_false_breakout("LONG")
         if rejected:
             return rejected
         return {
             "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": f"MA3 真谷底向上且在 MA25 上方 (順勢) (ADX={adx_curr:.1f}) → 立即開多",
+            "reason": f"MA3 真谷底向上 (ADX={adx_curr:.1f}) → 立即開多",
             "atr": atr, "pivot_confirmed": True,
             "pivot_score": 95 if clear_fast_trough else 100,
             "fast_pivot": bool(clear_fast_trough),
             "live_pivot": bool(allow_live_pivot),
-            "ma_alignment": "ABOVE",
+            "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
 
-    if (clear_fast_peak or confirmed_peak) and both_below_ma25:
+    if clear_fast_peak or confirmed_peak:
         rejected = reject_false_breakout("SHORT")
         if rejected:
             return rejected
         return {
             "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": f"MA3 真頂峰向下且在 MA25 下方 (順勢) (ADX={adx_curr:.1f}) → 立即開空",
+            "reason": f"MA3 真頂峰向下 (ADX={adx_curr:.1f}) → 立即開空",
             "atr": atr, "pivot_confirmed": True,
             "pivot_score": 95 if clear_fast_peak else 100,
             "fast_pivot": bool(clear_fast_peak),
             "live_pivot": bool(allow_live_pivot),
-            "ma_alignment": "BELOW",
+            "ma_alignment": "ABOVE" if ma3_curr > ma25_curr and ma5_curr > ma25_curr else "BELOW" if ma3_curr < ma25_curr and ma5_curr < ma25_curr else "MIXED",
         }
 
+    # 開倉方向只依 MA3、MA5 相對 MA25 的共同位置決定。
+    # 風控（ADX、量能、長影線）仍須通過，但不得在均線下方做多或上方做空。
+    both_below_ma25 = ma3_curr < ma25_curr and ma5_curr < ma25_curr
+    both_above_ma25 = ma3_curr > ma25_curr and ma5_curr > ma25_curr
 
     if both_below_ma25:
         rejected = reject_false_breakout("SHORT")
