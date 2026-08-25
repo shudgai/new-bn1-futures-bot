@@ -3100,20 +3100,46 @@ class TradingEngine:
                                 cr_signal = None
 
                             if not has_pos:
-                                # 無腦開倉 (SAR)：找出最後一次平倉方向
+                                # 找出最後一次平倉方向 (用於糾纏時的 fallback)
                                 last_closed_side = None
                                 for trade in self.account.trades:
                                     if trade.get("symbol") == symbol and trade.get("action", "").startswith("CLOSE_"):
                                         last_closed_side = trade.get("side")
                                         break
                                 
-                                # 優先採用當前的 MA 轉折訊號，如果沒有，則執行無腦反向
+                                # 判斷大趨勢 (Regime)
+                                ma3_val = float(df_cr['ma3'].iloc[-1])
+                                ma5_val = float(df_cr['ma5'].iloc[-1])
+                                ma25_val = float(df_cr['ma25'].iloc[-1]) if 'ma25' in df_cr.columns and not pd.isna(df_cr['ma25'].iloc[-1]) else 0.0
+                                
+                                if ma25_val > 0:
+                                    if ma3_val > ma25_val and ma5_val > ma25_val:
+                                        regime = "LONG"
+                                    elif ma3_val < ma25_val and ma5_val < ma25_val:
+                                        regime = "SHORT"
+                                    else:
+                                        # 均線糾纏，沿用傳統 SAR
+                                        regime = "SHORT" if last_closed_side == "LONG" else "LONG"
+                                else:
+                                    regime = "SHORT" if last_closed_side == "LONG" else "LONG"
+
+                                # 嚴格過濾 cr_signal (只允許順勢，或真實峰谷逆轉)
+                                if cr_signal:
+                                    is_true_peak = cr_entry_type == "PEAK_ANGLE_DOWN"
+                                    is_true_trough = cr_entry_type == "TROUGH_ANGLE_UP"
+                                    
+                                    if regime == "LONG" and cr_signal == "SHORT" and not is_true_peak:
+                                        cr_signal = None  # 在多頭趨勢中，忽略非真峰頂的小空頭訊號
+                                    elif regime == "SHORT" and cr_signal == "LONG" and not is_true_trough:
+                                        cr_signal = None  # 在空頭趨勢中，忽略非真谷底的小多頭訊號
+                                
+                                # 決定開倉方向
                                 if cr_signal:
                                     sar_signal = cr_signal
-                                    sar_reason = f"均線訊號接回 ({cr_entry_type})"
+                                    sar_reason = f"均線訊號進場 ({cr_entry_type})"
                                 else:
-                                    sar_signal = "SHORT" if last_closed_side == "LONG" else "LONG"
-                                    sar_reason = f"SAR無腦反手 (上次平倉: {last_closed_side})"
+                                    sar_signal = regime
+                                    sar_reason = f"順大勢接刀 (Regime: {regime})"
 
                                 live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
                                 if live_price > 0:
