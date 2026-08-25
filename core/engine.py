@@ -2806,8 +2806,8 @@ class TradingEngine:
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
-                                if curr_side == "LONG" and ma3_curr < ma3_prev and is_red_candle and last_close < ma3_curr:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (紅K且收盤 < MA3)，防禦性提早平倉多單！", "WARNING")
+                                if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr:
+                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (收盤 < MA3)，防禦性提早平倉多單！", "WARNING")
                                     closed = await self.account.close_position(
                                         symbol=symbol,
                                         current_price=live_price,
@@ -2818,8 +2818,8 @@ class TradingEngine:
                                         curr_side = None
                                         self._continuous_alignment_wait.pop(symbol, None)
 
-                                elif curr_side == "SHORT" and ma3_curr > ma3_prev and is_green_candle and last_close > ma3_curr:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (綠K且收盤 > MA3)，防禦性提早平倉空單！", "WARNING")
+                                elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr:
+                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (收盤 > MA3)，防禦性提早平倉空單！", "WARNING")
                                     closed = await self.account.close_position(
                                         symbol=symbol,
                                         current_price=live_price,
