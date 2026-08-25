@@ -926,7 +926,7 @@ SYMBOL_CANDIDATE_POOL[:] = [
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
 # SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（24）覆寫，這裡先湊到
 # 24 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
-_env_symbols = os.getenv("SYMBOLS", "").strip()
+_env_symbols = os.getenv("DEFAULT_SYMBOLS", os.getenv("SYMBOLS", "")).strip()
 if _env_symbols:
     DEFAULT_SYMBOLS = [s.strip() for s in _env_symbols.split(",") if s.strip()]
 else:
