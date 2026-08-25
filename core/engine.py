@@ -3127,6 +3127,9 @@ class TradingEngine:
                                             )
                                             continue
                                         should_open = True
+                                    elif curr_side == cr_signal and self.account.position_meta.get(symbol, {}).get("is_half_closed"):
+                                        self.account.log(f"🔋 {symbol} 發現已分批止盈的閒置資金，準備執行加碼！", "INFO")
+                                        should_open = True
                                     elif reversal_event_key is not None:
                                         self._handled_ma_reversal_events[symbol] = reversal_event_key
                                     # 同方向已持倉，不重複開
@@ -3140,7 +3143,14 @@ class TradingEngine:
                                         atr = float(cr_info.get("atr") or live_price * 0.015)
                                         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
                                         sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                                        
+                                        target_total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
+                                        total_usdt = target_total_usdt
+                                        if has_pos and curr_side == cr_signal:
+                                            # 加碼時只投入差額，補滿原本的 target_total_usdt
+                                            current_margin = self.account.positions[symbol].get("margin", 0.0)
+                                            total_usdt = max(0.0, target_total_usdt - current_margin)
+                                            
                                         pending = self.account.pending_limit_orders.get(symbol)
                                         if pending:
                                             await self.account.cancel_pending_limit(

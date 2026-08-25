@@ -395,8 +395,14 @@ class PaperAccount:
         entry_context: dict = None,
         apply_slippage: bool = True,
     ) -> bool:
-        if symbol in self.positions or symbol in self.closing_lock:
+        if symbol in self.closing_lock:
             return False
+        
+        is_top_up = symbol in self.positions
+        if is_top_up:
+            if self.positions[symbol]["side"] != side:
+                self.log(f"🛑 {symbol} 已有反向倉位，拒絕加碼", "WARNING")
+                return False
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕開倉", "WARNING")
             return False
@@ -452,36 +458,55 @@ class PaperAccount:
             entry_context["initial_sl"] = sl
             entry_context["initial_risk"] = abs(execution_price - sl)
         now = time.time()
-        pos = {
-            "symbol": symbol,
-            "side": side,
-            "entry_price": execution_price,
-            "qty": qty,
-            "margin": amount_usdt,
-            "leverage": leverage,
-            "sl": sl,
-            "tp": tp if not DISABLE_TAKE_PROFIT else 0.0,
-            "atr": atr if atr > 0 else execution_price * 0.015,
-            "open_timestamp": now,
-            "open_time": get_taipei_now_str(),
-            "reason": reason,
-            "signal_score": signal_score,
-            "mark_price": execution_price,
-            "unrealized_pnl": 0.0,
-            "peak_pnl_pct": 0.0,
-            "profit_alert": False,
-            **entry_context,
-        }
-        self.positions[symbol] = pos
-        self.position_meta[symbol] = {
-            "sl": sl, "tp": pos["tp"], "atr": pos["atr"],
-            "open_timestamp": now, "open_time": pos["open_time"],
-            "reason": reason, "signal_score": signal_score,
-            "is_breakeven_moved": False,
-            "highest_pnl_pct": 0.0,
-            "peak_profit_updated_at": now,
-            **entry_context,
-        }
+        
+        if is_top_up:
+            pos = self.positions[symbol]
+            old_qty = pos["qty"]
+            old_price = pos["entry_price"]
+            new_qty = old_qty + qty
+            new_price = (old_qty * old_price + qty * execution_price) / new_qty
+            
+            pos["qty"] = new_qty
+            pos["entry_price"] = new_price
+            pos["margin"] = pos.get("margin", 0.0) + amount_usdt
+            pos["reason"] = f"{pos.get('reason', '')} + 加碼({reason})"
+            
+            meta = self.position_meta.get(symbol, {})
+            meta["is_half_closed"] = False
+            self.position_meta[symbol] = meta
+            self.log(f"📈 [加碼成功] {symbol} {side}，投入 {amount_usdt:.2f}U，新均價 {new_price:.6g}，總數量 {new_qty:.6g}", "SUCCESS")
+        else:
+            pos = {
+                "symbol": symbol,
+                "side": side,
+                "entry_price": execution_price,
+                "qty": qty,
+                "margin": amount_usdt,
+                "leverage": leverage,
+                "sl": sl,
+                "tp": tp if not DISABLE_TAKE_PROFIT else 0.0,
+                "atr": atr if atr > 0 else execution_price * 0.015,
+                "open_timestamp": now,
+                "open_time": get_taipei_now_str(),
+                "reason": reason,
+                "signal_score": signal_score,
+                "mark_price": execution_price,
+                "unrealized_pnl": 0.0,
+                "peak_pnl_pct": 0.0,
+                "profit_alert": False,
+                **entry_context,
+            }
+            self.positions[symbol] = pos
+            self.position_meta[symbol] = {
+                "sl": sl, "tp": pos["tp"], "atr": pos["atr"],
+                "open_timestamp": now, "open_time": pos["open_time"],
+                "reason": reason, "signal_score": signal_score,
+                "is_breakeven_moved": False,
+                "highest_pnl_pct": 0.0,
+                "peak_profit_updated_at": now,
+                "is_half_closed": False,
+                **entry_context,
+            }
 
         self.trades.insert(0, {
             "id": int(now * 1000),
@@ -1003,6 +1028,31 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+            
+            # ----------------------------------------------------------------
+            # 動態 3U 分批止盈 (Dynamic 3U Partial Take Profit)
+            # ----------------------------------------------------------------
+            qty_current = float(pos.get("qty") or meta.get("qty") or 0.0)
+            leverage = float(pos.get("leverage") or meta.get("leverage") or 1.0)
+            notional_value = qty_current * entry_p
+            unrealized_usdt = pnl_pct * notional_value
+            
+            # 目標：基礎 3U，隨總餘額比例放大 (至少 3U)
+            total_account_value = self.balance + sum(float(p.get("margin", 0.0)) for p in self.positions.values())
+            target_usdt = 3.0 * max(1.0, total_account_value / 150.0)
+            
+            if unrealized_usdt >= target_usdt and not meta.get("is_half_closed"):
+                success = await self.partial_close_position(
+                    symbol, curr_p, f"達動態目標 {target_usdt:.1f}U，分批止盈 50%", fraction=0.5
+                )
+                if success:
+                    meta["is_half_closed"] = True
+                    self.save_state()
+                    # 更新當前的 qty 與 pnl 等避免後續計算錯誤
+                    qty_current = float(self.positions[symbol]["qty"])
+                    notional_value = qty_current * entry_p
+                    unrealized_usdt = pnl_pct * notional_value
+
             profit_lock_updated_this_cycle = False
 
             # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
