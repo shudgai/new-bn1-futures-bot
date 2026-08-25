@@ -3099,6 +3099,36 @@ class TradingEngine:
                             ):
                                 cr_signal = None
 
+                            # 谷峰前除了不開倉外，也要先平倉 (極端延伸主動獲利了結)
+                            if has_pos:
+                                ma3_val = float(df_cr['ma3'].iloc[-1])
+                                ma25_val = float(df_cr['ma25'].iloc[-1]) if 'ma25' in df_cr.columns and not pd.isna(df_cr['ma25'].iloc[-1]) else 0.0
+                                live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
+                                atr_val = float(df_cr['atr'].iloc[-1]) if 'atr' in df_cr.columns else max(live_price * 0.015, 1e-12)
+                                
+                                close_reason = None
+                                if curr_side == "LONG":
+                                    if live_price > ma3_val + atr_val * 0.8:
+                                        close_reason = "暴漲衝頂，預防回落強制平多"
+                                    elif ma25_val > 0 and ma3_val - ma25_val >= 1.2 * atr_val:
+                                        close_reason = "乖離過大(近峰頂)，預防回落強制平多"
+                                elif curr_side == "SHORT":
+                                    if live_price < ma3_val - atr_val * 0.8:
+                                        close_reason = "暴跌到底，預防反彈強制平空"
+                                    elif ma25_val > 0 and ma25_val - ma3_val >= 1.2 * atr_val:
+                                        close_reason = "乖離過大(近谷底)，預防反彈強制平空"
+                                        
+                                if close_reason:
+                                    self.account.log(f"🚨 {symbol} 偵測到極端延伸，執行谷峰前強制平倉！理由: {close_reason}", "WARNING")
+                                    closed = await self.account.close_position(
+                                        symbol=symbol,
+                                        current_price=live_price,
+                                        close_reason=close_reason
+                                    )
+                                    if closed:
+                                        has_pos = False
+                                        curr_side = None
+
                             if not has_pos:
                                 # 判斷大趨勢 (Regime)
                                 ma3_val = float(df_cr['ma3'].iloc[-1])
