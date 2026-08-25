@@ -3162,23 +3162,7 @@ class TradingEngine:
                                     sar_signal = cr_signal
                                     sar_reason = f"均線訊號進場 ({cr_entry_type})"
                                 else:
-                                    # 如果沒有明確訊號，根據乖離率決定是否要「順大勢無腦接刀」
-                                    atr_val = float(df_cr['atr'].iloc[-1]) if 'atr' in df_cr.columns else max(live_price * 0.015, 1e-12)
-                                    ma25_dist = abs(ma3_val - ma25_val) / atr_val if ma25_val > 0 else 0.0
-                                    
-                                    if regime == "FLAT":
-                                        sar_signal = None  # 死魚盤不開倉
-                                    elif ma25_dist >= 1.2:
-                                        sar_signal = None  # 快到峰頂/谷底前 (乖離過大)，冷靜不開倉，等待明確訊號
-                                    elif regime == "LONG" and live_price > ma3_val + atr_val * 0.8:
-                                        sar_signal = None  # 暴漲中 (追高)，等價格降下來再買
-                                    elif regime == "SHORT" and live_price < ma3_val - atr_val * 0.8:
-                                        sar_signal = None  # 暴跌中 (追空)，等價格彈上來再空
-                                    else:
-                                        sar_signal = regime
-                                        chase_dist = abs(live_price - ma3_val) / atr_val
-                                        sar_reason = f"順大勢接刀 (Regime: {regime}, MA25_Dist: {ma25_dist:.1f}, MA3_Dist: {chase_dist:.1f})"
-                                    
+                                    sar_signal = None  # 取消無腦接刀，完全依賴明確的趨勢訊號進場
                                 if sar_signal and live_price > 0:
                                     self.account.log(f"🚨 {symbol} 偵測到空倉，條件達成，立即市價進場！方向: {sar_signal} | 理由: {sar_reason}", "INFO")
                                     atr = live_price * 0.015
