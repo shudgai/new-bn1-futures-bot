@@ -83,15 +83,13 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ACCOUNTING_VERSION = 2
 
 
-def get_profit_lock_giveback_usdt(margin_used: float, peak_usdt: float) -> float:
+def get_profit_lock_giveback_usdt(peak_usdt: float) -> float:
     """
-    雙軌制回吐邏輯：
-    1. 初期固定回吐：本金每滿 100U 給予固定的 0.8U 呼吸空間。
+    雙軌制回吐邏輯（已拔除本金級距，純絕對值）：
+    1. 初期固定回吐：給予固定的 0.8U 呼吸空間。
     2. 大波段比例回吐：當利潤放大時，至少給予峰值利潤 20% 的呼吸空間。
-    取兩者最大值，確保初期不被震出，後期有足夠空間。
     """
-    capital_gap = float(max(1, math.ceil(max(float(margin_used), 0.0) / 100.0)))
-    fixed_giveback = capital_gap * 0.8
+    fixed_giveback = 0.8
     proportional_giveback = max(0.0, float(peak_usdt)) * 0.20
     return max(fixed_giveback, proportional_giveback)
 ENTRY_CONTEXT_KEYS = (
@@ -1095,12 +1093,9 @@ class PaperAccount:
                 # 2. 最低保護利潤為來回手續費的2倍。
                 minimum_profit_floor = round_trip_fee * 2.0
 
-                # 3. 本金級距的最低呼吸空間：<=100U為1U、(100,200]為2U，
-                # 之後每增加100U再增加1U。峰值擴大後，至少允許回吐25%，
-                # 重現曾讓約11U贏單持續奔跑的峰值回吐特性。
-                capital_gap_usdt = float(max(1, math.ceil(max(margin_used, 0.0) / 100.0)))
-                trailing_gap_usdt = get_profit_lock_giveback_usdt(margin_used, peak_usdt)
-                activation_peak_usdt = minimum_profit_floor + capital_gap_usdt
+                # 3. 本金級距的最低呼吸空間：已廢除，改為絕對值
+                trailing_gap_usdt = get_profit_lock_giveback_usdt(peak_usdt)
+                activation_peak_usdt = minimum_profit_floor + trailing_gap_usdt
 
                 # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
                 # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
