@@ -3052,23 +3052,7 @@ class TradingEngine:
                                             f"{symbol} [{cr_entry_type}] MA5穿越MA25：進場 {cr_signal}",
                                             "INFO"
                                         )
-                                        atr = cr_info.get("atr", live_price * 0.015)
-                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        opened = await self.account.open_position(
-                                            symbol=symbol,
-                                            side=cr_signal,
-                                            price=live_price,
-                                            amount_usdt=TRADE_AMOUNT_USDT,
-                                            sl=sl,
-                                            tp=tp,
-                                            reason=cr_info.get("reason", cr_entry_type),
-                                            atr=atr,
-                                            leverage=get_leverage(symbol),
-                                            signal_score=85
-                                        )
-                                        if opened:
-                                            self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
+
                                     else:
                                         self.account.log(
                                             f"{symbol} [{cr_entry_type}] MA5穿越訊號，已有 {curr_side} 持倉，不補開",
@@ -3095,9 +3079,10 @@ class TradingEngine:
 
                                     if not has_pos:
                                         self.account.log(
-                                            f"{symbol} [{cr_entry_type}] 順勢延續：進場 {cr_signal}",
-                                            "INFO"
+                                            f"⏳ {symbol} [{cr_entry_type}] 順勢訊號 ({cr_signal})：依照指示，空手時不中途追車，耐心等待真正的峰頂/谷底或交叉轉彎！",
+                                            "DEBUG"
                                         )
+                                        continue
                                         atr = cr_info.get("atr", live_price * 0.015)
                                         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
                                         sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
