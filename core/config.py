@@ -753,7 +753,7 @@ PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "4.0
 # 追蹤回撤：峰值利潤繼續擴大時，允許最多回撤峰值利潤的幾成（0~1）
 # 例如 0.25 = 峰值 10 USDT 時，止損在 10*(1-0.25)=7.5 USDT 利潤處
 # 但永不低於 PROFIT_LOCK_FLOOR_USDT
-PROFIT_LOCK_TRAIL_RATIO = min(0.90, max(0.0, float(os.getenv("PROFIT_LOCK_TRAIL_RATIO", "0.25"))))
+PROFIT_LOCK_TRAIL_RATIO = max(0.0, float(os.getenv("PROFIT_LOCK_TRAIL_RATIO", "0.25")))
 # 最小推進步距（USDT），避免止損每次報價波動都重算重掛
 PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT", "0.5")))
 

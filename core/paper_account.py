@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 import re
@@ -80,6 +81,13 @@ STATE_FILE = os.path.join(DATA_DIR, "paper_account.json")
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ACCOUNTING_VERSION = 2
+
+
+def get_profit_lock_giveback_usdt(margin_used: float, peak_usdt: float) -> float:
+    """本金每滿一個100U級距增加1U，獲利放大後至少保留25%呼吸空間。"""
+    capital_gap = float(max(1, math.ceil(max(float(margin_used), 0.0) / 100.0)))
+    proportional_gap = max(0.0, float(peak_usdt)) * PROFIT_LOCK_TRAIL_RATIO
+    return max(capital_gap, proportional_gap)
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -995,6 +1003,7 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+            profit_lock_updated_this_cycle = False
 
             # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
             # 但保留部分回檔空間讓趨勢延伸。保護線永遠不會往回放寬。
@@ -1051,29 +1060,23 @@ class PaperAccount:
                 margin_used = notional_value / leverage
                 round_trip_fee = notional_value * 0.001
                 
-                # 2. 鎖利起點 = 手續費的 2 倍
-                base_trigger = round_trip_fee * 2.0
-                dynamic_floor = base_trigger
-                
-                # 3. 呼吸空間 (Trailing Gap)：每 100U 本金增加 3U 回吐空間
-                import math
-                trailing_gap = max(
-                    3.0,
-                    float(math.ceil(margin_used / 100.0)) * 3.0,
-                )
+                # 2. 最低保護利潤為來回手續費的2倍。
+                minimum_profit_floor = round_trip_fee * 2.0
 
-                # 累積半個呼吸空間後啟動：避免剛蓋過手續費就貼近價格，
-                # 也不必等到完整回吐空間全部賺到才開始保護。
-                dynamic_trigger = max(
-                    PROFIT_LOCK_TRIGGER_USDT,
-                    dynamic_floor + trailing_gap * 0.5,
-                )
+                # 3. 本金級距的最低呼吸空間：<=100U為1U、(100,200]為2U，
+                # 之後每增加100U再增加1U。峰值擴大後，至少允許回吐25%，
+                # 重現曾讓約11U贏單持續奔跑的峰值回吐特性。
+                capital_gap_usdt = float(max(1, math.ceil(max(margin_used, 0.0) / 100.0)))
+                trailing_gap_usdt = get_profit_lock_giveback_usdt(margin_used, peak_usdt)
+                activation_peak_usdt = minimum_profit_floor + capital_gap_usdt
 
-                if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
-                    # 峰值百分比追蹤：預設保留峰值75%（允許回吐25%），
-                    # 且保護線最低一定鎖住來回手續費的2倍。
-                    protected_ratio = 1.0 - PROFIT_LOCK_TRAIL_RATIO
-                    step_floor_usdt = max(dynamic_floor, peak_usdt * protected_ratio)
+                # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
+                # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
+                if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
+                    step_floor_usdt = max(
+                        minimum_profit_floor,
+                        peak_usdt - trailing_gap_usdt,
+                    )
                     notional_units = qty  # qty 已為合約張數
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if side == "LONG":
@@ -1082,10 +1085,9 @@ class PaperAccount:
                         floor_sl = entry_p - floor_price_move
 
                     current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                    min_step_price = PROFIT_LOCK_MIN_STEP_USDT / max(qty, 1e-12)
                     improves_usdt = (
-                        floor_sl > current_sl + min_step_price if side == "LONG"
-                        else current_sl <= 0 or floor_sl < current_sl - min_step_price
+                        floor_sl > current_sl + entry_p * 1e-12 if side == "LONG"
+                        else current_sl <= 0 or floor_sl < current_sl - entry_p * 1e-12
                     )
                     
                     if improves_usdt:
@@ -1095,10 +1097,13 @@ class PaperAccount:
                         meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = True
                         meta["profit_lock_usdt_armed"] = True
+                        pos["profit_lock_mode"] = "CAPITAL_TIER_OR_25PCT"
+                        meta["profit_lock_mode"] = "CAPITAL_TIER_OR_25PCT"
+                        profit_lock_updated_this_cycle = True
                         
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"(本金 {margin_used:.0f}U，保留峰值 {protected_ratio:.0%})，"
+                            f"(本金 {margin_used:.0f}U，允許回吐 {trailing_gap_usdt:.2f}U)，"
                             f"鎖定 {step_floor_usdt:.2f}U，保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
@@ -1375,7 +1380,11 @@ class PaperAccount:
                 and pnl_pct > min_rebound_exit_pct
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
-            if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
+            if (
+                ENABLE_PROFIT_GIVEBACK_EXIT
+                and not ENABLE_PROFIT_LOCK_USDT
+                and profit_alert
+            ):
                 # 直接於峰值回吐時平倉，避免讓獲利峰值回撤後再反彈。
                 await self.close_position(symbol, curr_p, "峰值回吐平倉")
                 continue
@@ -1385,10 +1394,12 @@ class PaperAccount:
             sl_price = pos.get("sl", 0.0)
             tp_price = pos.get("tp", 0.0)
             if side == "LONG":
-                if tp_price > 0 and curr_p >= tp_price:
+                if tp_price > 0 and curr_p >= tp_price and not ENABLE_PROFIT_LOCK_USDT:
                     await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
                     continue
-                if sl_price > 0 and curr_p <= sl_price:
+                peak_lock_armed = bool(meta.get("profit_lock_usdt_armed"))
+                long_sl_hit = curr_p < sl_price if peak_lock_armed else curr_p <= sl_price
+                if sl_price > 0 and long_sl_hit and not profit_lock_updated_this_cycle:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     # 僅在已啟用移動保本或部位曾達到設定峰值比例時，才把本地 SL 視為真正平倉
                     highest_peak = float(meta.get("highest_pnl_pct", -999.0))
@@ -1405,10 +1416,12 @@ class PaperAccount:
                         )
                         continue
             else:
-                if tp_price > 0 and curr_p <= tp_price:
+                if tp_price > 0 and curr_p <= tp_price and not ENABLE_PROFIT_LOCK_USDT:
                     await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
                     continue
-                if sl_price > 0 and curr_p >= sl_price:
+                peak_lock_armed = bool(meta.get("profit_lock_usdt_armed"))
+                short_sl_hit = curr_p > sl_price if peak_lock_armed else curr_p >= sl_price
+                if sl_price > 0 and short_sl_hit and not profit_lock_updated_this_cycle:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     highest_peak = float(meta.get("highest_pnl_pct", -999.0))
                     if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
