@@ -180,15 +180,15 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
         pre_slope = (ma3[peak_i] - ma3[peak_i - 1]) / atr if peak_i > 0 else 0.0
         post_slope = (ma3[-1] - ma3[peak_i]) / max(bars_after, 1) / atr
         angle = pre_slope - post_slope
-        ma5_left_peak = ma5_drop >= 0.05
-        normal_turn = ma3_drop >= 0.12 and ma5_drop >= 0.05
-        sharp_turn = ma3_drop >= 0.20 and ma5_drop > 0.0
-        pattern_turn = has_bearish_pattern and ma3_drop >= 0.08
-        ma3_sharp_angle = angle >= 0.20 and ma3_drop >= 0.12
-        heavy_drop = ma3_drop >= 0.25 and ma5_drop >= 0.08
+        ma5_left_peak = ma5_drop >= 0.30
+        normal_turn = ma3_drop >= 0.60 and ma5_drop >= 0.30
+        sharp_turn = ma3_drop >= 0.80 and ma5_drop > 0.10
+        pattern_turn = has_bearish_pattern and ma3_drop >= 0.50
+        ma3_sharp_angle = angle >= 0.40 and ma3_drop >= 0.60
+        heavy_drop = ma3_drop >= 0.90 and ma5_drop >= 0.30
         peak_ok = (
-            (ma5_left_peak and angle >= 0.10 and (normal_turn or sharp_turn))
-            or (pattern_turn and angle >= 0.08)
+            (ma5_left_peak and angle >= 0.30 and (normal_turn or sharp_turn))
+            or (pattern_turn and angle >= 0.25)
             or ma3_sharp_angle
             or heavy_drop
         )
@@ -204,16 +204,15 @@ def detect_ma_angle_pivot(df: pd.DataFrame) -> dict:
         pre_slope = (ma3[trough_i] - ma3[trough_i - 1]) / atr if trough_i > 0 else 0.0
         post_slope = (ma3[-1] - ma3[trough_i]) / max(bars_after, 1) / atr
         angle = post_slope - pre_slope
-        ma5_left_trough = ma5_rise >= 0.03
-        normal_turn = ma3_rise >= 0.08 and ma5_rise >= 0.03
-        sharp_turn = ma3_rise >= 0.18 and ma5_rise > 0.0
-        pattern_turn = has_bullish_pattern and ma3_rise >= 0.04
-        ma3_sharp_angle = angle >= 0.15 and ma3_rise >= 0.08
+        ma5_left_trough = ma5_rise >= 0.30
+        normal_turn = ma3_rise >= 0.60 and ma5_rise >= 0.30
+        sharp_turn = ma3_rise >= 0.80 and ma5_rise > 0.10
+        pattern_turn = has_bullish_pattern and ma3_rise >= 0.50
+        ma3_sharp_angle = angle >= 0.40 and ma3_rise >= 0.60
         print(f"[DEBUG] Trough check: i={trough_i} ma3_rise={ma3_rise:.3f} ma5_rise={ma5_rise:.3f} angle={angle:.3f} ma3_sharp={ma3_sharp_angle} pattern={pattern_turn}")
         trough_ok = (
-
-            (ma5_left_trough and angle >= 0.08 and (normal_turn or sharp_turn))
-            or (pattern_turn and angle >= 0.04)
+            (ma5_left_trough and angle >= 0.30 and (normal_turn or sharp_turn))
+            or (pattern_turn and angle >= 0.25)
             or ma3_sharp_angle
         )
         return trough_ok, ma3_rise, ma5_rise, angle
