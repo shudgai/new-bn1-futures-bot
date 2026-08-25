@@ -458,19 +458,18 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         rejected = reject_false_breakout("SHORT")
         if rejected:
             return rejected
-        if not (is_green or is_all_red):
+        if ma3_curr >= ma3_prev:
             return {
                 "signal": None,
-                "reason": f"空頭趨勢中等待綠K回調 (當前為紅K，且動能未達連3紅) (ADX={adx_curr:.1f})",
+                "reason": f"空頭趨勢中，但 MA3 未確認向下 (ADX={adx_curr:.1f})，暫緩追空",
                 "pivot_confirmed": False,
                 "pivot_score": 0,
                 "ma_alignment": "BELOW",
             }
-        reason_str = "MA3、MA5 同在 MA25 下方且逢綠K回調" if is_green else "MA3、MA5 同在 MA25 下方且連3紅K強勢下跌"
         return {
             "signal": "SHORT",
             "entry_type": "TREND_SHORT",
-            "reason": f"{reason_str} (ADX={adx_curr:.1f}) → 現價開空",
+            "reason": f"MA3、MA5 同在 MA25 下方且 MA3 順勢向下 (ADX={adx_curr:.1f}) → 現價開空",
             "atr": atr,
             "pivot_confirmed": False,
             "pivot_score": 85,
@@ -481,19 +480,18 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         rejected = reject_false_breakout("LONG")
         if rejected:
             return rejected
-        if not (is_red or is_all_green):
+        if ma3_curr <= ma3_prev:
             return {
                 "signal": None,
-                "reason": f"多頭趨勢中等待紅K回調 (當前為綠K，且動能未達連3綠) (ADX={adx_curr:.1f})",
+                "reason": f"多頭趨勢中，但 MA3 未確認向上 (ADX={adx_curr:.1f})，暫緩追多",
                 "pivot_confirmed": False,
                 "pivot_score": 0,
                 "ma_alignment": "ABOVE",
             }
-        reason_str = "MA3、MA5 同在 MA25 上方且逢紅K回調" if is_red else "MA3、MA5 同在 MA25 上方且連3綠K強勢上漲"
         return {
             "signal": "LONG",
             "entry_type": "TREND_LONG",
-            "reason": f"{reason_str} (ADX={adx_curr:.1f}) → 現價開多",
+            "reason": f"MA3、MA5 同在 MA25 上方且 MA3 順勢向上 (ADX={adx_curr:.1f}) → 現價開多",
             "atr": atr,
             "pivot_confirmed": False,
             "pivot_score": 85,
