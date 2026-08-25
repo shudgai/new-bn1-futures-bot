@@ -41,6 +41,8 @@ from core.config import (
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO,
     ENABLE_24H_TIME_FILTER,
     MAX_ACCEPTABLE_LOSS_PCT,
+    MAX_POSITION_MARGIN_LOSS_RATIO,
+    cap_stop_loss_to_margin_risk,
     PARTIAL_CLOSE_THRESHOLDS,
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_TRIGGER_R_MULT,
@@ -429,6 +431,7 @@ class PaperAccount:
                         sl = execution_price + min_dist
             except Exception:
                 pass
+            sl = cap_stop_loss_to_margin_risk(execution_price, side, sl, leverage)
         qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
         fee = qty * execution_price * TAKER_FEE_RATE
         self.balance -= (amount_usdt + fee)
@@ -995,7 +998,12 @@ class PaperAccount:
 
             # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
             # 但保留部分回檔空間讓趨勢延伸。保護線永遠不會往回放寬。
-            if ENABLE_PROFIT_BANK and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT:
+            # 啟用 U 額回吐時，以它作為唯一移動鎖利，避免百分比保護線提前收緊。
+            if (
+                ENABLE_PROFIT_BANK
+                and not ENABLE_PROFIT_LOCK_USDT
+                and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT
+            ):
                 bank_lock_pct = min(
                     max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
                     max(0.0, highest_pnl - SLIPPAGE_PCT),
@@ -1029,8 +1037,9 @@ class PaperAccount:
             if ENABLE_PROFIT_LOCK_USDT:
                 qty = float(pos.get("qty") or meta.get("qty") or 0.0)
                 leverage = float(pos.get("leverage") or meta.get("leverage") or 1.0)
-                # 帳面未實現利潤（USDT，已含槓桿）
-                unrealized_usdt = float(pos.get("unrealized_pnl") or 0.0)
+                notional_value = qty * entry_p
+                # 直接用本輪價格計算，避免讀取上一輪 pos 快取而延遲啟動。
+                unrealized_usdt = pnl_pct * notional_value
                 # 峰值利潤（USDT）：持續追蹤歷史最高值
                 peak_usdt_key = "profit_lock_peak_usdt"
                 prev_peak_usdt = float(meta.get(peak_usdt_key) or 0.0)
@@ -1039,27 +1048,32 @@ class PaperAccount:
                     meta[peak_usdt_key] = peak_usdt
 
                 # 1. 自動計算手續費 (幣安 Taker 費率單程約 0.05%，來回 0.1%)
-                notional_value = qty * entry_p
                 margin_used = notional_value / leverage
                 round_trip_fee = notional_value * 0.001
                 
                 # 2. 鎖利起點 = 手續費的 2 倍
                 base_trigger = round_trip_fee * 2.0
-                dynamic_trigger = base_trigger
                 dynamic_floor = base_trigger
                 
-                # 3. 呼吸空間 (Trailing Gap) = 依本金級距遞增
+                # 3. 呼吸空間 (Trailing Gap)：每 100U 本金增加 3U 回吐空間
                 import math
-                if margin_used <= 100:
-                    trailing_gap = 0.5
-                elif margin_used <= 200:
-                    trailing_gap = 1.0
-                else:
-                    trailing_gap = 1.0 + math.ceil((margin_used - 200.0) / 100.0) * 1.0
+                trailing_gap = max(
+                    3.0,
+                    float(math.ceil(margin_used / 100.0)) * 3.0,
+                )
+
+                # 累積半個呼吸空間後啟動：避免剛蓋過手續費就貼近價格，
+                # 也不必等到完整回吐空間全部賺到才開始保護。
+                dynamic_trigger = max(
+                    PROFIT_LOCK_TRIGGER_USDT,
+                    dynamic_floor + trailing_gap * 0.5,
+                )
 
                 if peak_usdt + 1e-9 >= dynamic_trigger and qty > 0 and entry_p > 0:
-                    # ── 固定呼吸空間追蹤：止損永遠距離峰值 trailing_gap，且保證至少鎖住手續費(dynamic_floor) ──
-                    step_floor_usdt = max(dynamic_floor, peak_usdt - trailing_gap)
+                    # 峰值百分比追蹤：預設保留峰值75%（允許回吐25%），
+                    # 且保護線最低一定鎖住來回手續費的2倍。
+                    protected_ratio = 1.0 - PROFIT_LOCK_TRAIL_RATIO
+                    step_floor_usdt = max(dynamic_floor, peak_usdt * protected_ratio)
                     notional_units = qty  # qty 已為合約張數
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if side == "LONG":
@@ -1068,9 +1082,10 @@ class PaperAccount:
                         floor_sl = entry_p - floor_price_move
 
                     current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                    min_step_price = PROFIT_LOCK_MIN_STEP_USDT / max(qty, 1e-12)
                     improves_usdt = (
-                        floor_sl > current_sl + entry_p * 0.00001 if side == "LONG" 
-                        else current_sl <= 0 or floor_sl < current_sl - entry_p * 0.00001
+                        floor_sl > current_sl + min_step_price if side == "LONG"
+                        else current_sl <= 0 or floor_sl < current_sl - min_step_price
                     )
                     
                     if improves_usdt:
@@ -1083,7 +1098,7 @@ class PaperAccount:
                         
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"(本金 {margin_used:.0f}U，呼吸空間 {trailing_gap}U)，"
+                            f"(本金 {margin_used:.0f}U，保留峰值 {protected_ratio:.0%})，"
                             f"鎖定 {step_floor_usdt:.2f}U，保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
@@ -1095,7 +1110,11 @@ class PaperAccount:
             # 的價位，持倉不平倉，讓移動停利繼續往上追蹤。
             # 僅往有利方向移動（只升不降/只降不升），不截斷後續空間。
             # ----------------------------------------------------------------
-            if ENABLE_FIXED_PROFIT_LOCK_PCT and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0:
+            if (
+                ENABLE_FIXED_PROFIT_LOCK_PCT
+                and not ENABLE_PROFIT_LOCK_USDT
+                and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
+            ):
                 # 使用 highest_pnl（無槓桿利潤峰值）比對觸發門檻
                 if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT and entry_p > 0:
                     # 計算「至少保留 FLOOR_PCT 利潤」需要的止損價
@@ -1237,6 +1256,7 @@ class PaperAccount:
                 pos["dynamic_profit_floor_pct"] = early_guard_exit
             if (
                 ENABLE_EARLY_PROFIT_GUARD
+                and not ENABLE_PROFIT_LOCK_USDT
                 and highest_pnl >= early_guard_trigger
                 and (is_trend_extension or highest_pnl < trailing_trigger)
                 and not meta.get("early_profit_guard_armed")
@@ -1255,6 +1275,7 @@ class PaperAccount:
                 )
             if (
                 ENABLE_EARLY_PROFIT_GUARD
+                and not ENABLE_PROFIT_LOCK_USDT
                 and meta.get("early_profit_guard_armed")
                 and (is_trend_extension or highest_pnl < trailing_trigger)
                 and pnl_pct <= early_guard_exit
@@ -1274,7 +1295,11 @@ class PaperAccount:
                 await self.close_position(symbol, guard_price, close_reason)
                 continue
 
-            if ENABLE_TRAILING_STOP and highest_pnl >= trailing_trigger:
+            if (
+                ENABLE_TRAILING_STOP
+                and not ENABLE_PROFIT_LOCK_USDT
+                and highest_pnl >= trailing_trigger
+            ):
                 old_sl = pos.get("sl", 0.0)
                 if side == "LONG":
                     trail_sl = entry_p * (1.0 + highest_pnl - trailing_callback)
@@ -1300,6 +1325,23 @@ class PaperAccount:
             # 24小時時間過濾
             if ENABLE_24H_TIME_FILTER and (now_ts - pos.get("open_timestamp", now_ts)) >= 86400:
                 await self.close_position(symbol, curr_p, "時間過濾 (24h 無效震盪離場)")
+                continue
+
+            # 動態本金防線：單筆毛虧損達實際投入保證金的設定比例即平倉。
+            margin_used = float(pos.get("margin") or 0.0)
+            leverage = float(pos.get("leverage") or 1.0)
+            if margin_used <= 0:
+                margin_used = abs(entry_p * float(pos.get("qty") or 0.0)) / max(leverage, 1.0)
+            max_margin_loss_usdt = margin_used * MAX_POSITION_MARGIN_LOSS_RATIO
+            current_loss_usdt = max(0.0, -pnl_pct * margin_used * leverage)
+            if max_margin_loss_usdt > 0 and current_loss_usdt >= max_margin_loss_usdt:
+                self.log(
+                    f"🚨 [紙上交易/動態本金防線] {symbol} {side} 毛虧損 "
+                    f"{current_loss_usdt:.2f}U 已達本金上限 {max_margin_loss_usdt:.2f}U "
+                    f"({MAX_POSITION_MARGIN_LOSS_RATIO:.0%})，強制市價平倉",
+                    "DANGER",
+                )
+                await self.close_position(symbol, curr_p, "動態本金最大虧損門檻觸發")
                 continue
 
             # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)

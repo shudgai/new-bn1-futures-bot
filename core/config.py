@@ -113,6 +113,30 @@ ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
 # 允許的最大虧損設為 -15%（= 15% 虧損時拋出硬性平倉），避免長時間拖著
 # 讓策略在正常回檔中被動損失過多資金，同時仍保留一個安全底線。
 MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.15"))
+# 單筆動態金額防線：最大毛虧損不得超過該筆實際投入保證金的比例。
+# 使用比例而非固定 USDT，未來本金變動時不必重新修改程式。
+MAX_POSITION_MARGIN_LOSS_RATIO = max(
+    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.10"))
+)
+
+
+def cap_stop_loss_to_margin_risk(
+    entry_price: float, side: str, stop_price: float, leverage: float
+) -> float:
+    """把初始止損收緊至保證金風險上限；既有更緊的止損保持不變。"""
+    if MAX_POSITION_MARGIN_LOSS_RATIO <= 0 or entry_price <= 0 or leverage <= 0:
+        return stop_price
+    adverse_price_pct = MAX_POSITION_MARGIN_LOSS_RATIO / leverage
+    risk_stop = (
+        entry_price * (1.0 - adverse_price_pct)
+        if side == "LONG"
+        else entry_price * (1.0 + adverse_price_pct)
+    )
+    if stop_price <= 0:
+        return risk_stop
+    return max(stop_price, risk_stop) if side == "LONG" else min(stop_price, risk_stop)
+
+
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "false").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "false").lower() == "true"
 MA5_EXIT_TIMEFRAME = os.getenv("MA5_EXIT_TIMEFRAME", "1m")

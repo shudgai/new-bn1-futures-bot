@@ -100,6 +100,7 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
     monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
     monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", True)
+    monkeypatch.setattr(testnet_module, "MAX_POSITION_MARGIN_LOSS_RATIO", 0.10)
     monkeypatch.setattr(
         BinanceTestnetAccount,
         "credentials_configured",
@@ -114,8 +115,8 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
         "LONG",
         100.0,
         50.0,
-        98.0,
-        103.0,
+        95.0,
+        110.0,
         "Fast_Keltner_SuperTrend",
         atr=1.0,
         leverage=5,
@@ -133,6 +134,7 @@ async def test_testnet_account_places_entry_stop_and_take_profit(tmp_path, monke
     ]
     assert exchange.orders[1]["params"]["reduceOnly"] == "true"
     assert exchange.orders[2]["params"]["reduceOnly"] == "true"
+    assert exchange.orders[1]["params"]["triggerPrice"] == "98.0"
 
 
 @pytest.mark.anyio
@@ -146,6 +148,7 @@ async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
     monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
     monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", False)
     monkeypatch.setattr(testnet_module, "MAX_ACCEPTABLE_LOSS_PCT", -0.02)
+    monkeypatch.setattr(testnet_module, "MAX_POSITION_MARGIN_LOSS_RATIO", 0.0)
     monkeypatch.setattr(
         BinanceTestnetAccount,
         "credentials_configured",
@@ -185,6 +188,53 @@ async def test_disabled_exchange_initial_stop_waits_until_local_max_loss(
     account.last_sync_at = 0
     await account.update_positions({"DOGE/USDT": 97.5})
     assert close_reasons == ["本地最大虧損門檻觸發"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_margin_loss_guard_scales_with_actual_margin(
+    tmp_path, monkeypatch
+):
+    """50U 保證金的10%風險上限為5U，5倍槓桿約在價格逆向2%時觸發。"""
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "testnet.json"))
+    monkeypatch.setattr(testnet_module, "DISABLE_TAKE_PROFIT", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", False)
+    monkeypatch.setattr(testnet_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(testnet_module, "MAX_ACCEPTABLE_LOSS_PCT", -0.03)
+    monkeypatch.setattr(testnet_module, "MAX_POSITION_MARGIN_LOSS_RATIO", 0.10)
+    monkeypatch.setattr(
+        BinanceTestnetAccount,
+        "credentials_configured",
+        staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+
+    await account.initialize()
+    success = await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 110.0,
+        "MA5_Reversal_LONG", atr=1.0, leverage=5, signal_score=88,
+    )
+    assert success is True
+
+    close_reasons = []
+
+    async def record_close(_symbol, _price, reason):
+        close_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(account, "close_position", record_close)
+
+    exchange.positions[0]["markPrice"] = "98.5"
+    exchange.positions[0]["unRealizedProfit"] = "-3.75"
+    account.last_sync_at = 0
+    await account.update_positions({"DOGE/USDT": 98.5})
+    assert close_reasons == []
+
+    exchange.positions[0]["markPrice"] = "97.9"
+    exchange.positions[0]["unRealizedProfit"] = "-5.25"
+    account.last_sync_at = 0
+    await account.update_positions({"DOGE/USDT": 97.9})
+    assert close_reasons == ["動態本金最大虧損門檻觸發"]
 
 
 @pytest.mark.anyio

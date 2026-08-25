@@ -61,6 +61,8 @@ from core.config import (
     TRAILING_TIER3_TRIGGER_ATR_MULT,
     TRAILING_TIER2_LOCK_ATR_MULT,
     MAX_ACCEPTABLE_LOSS_PCT,
+    MAX_POSITION_MARGIN_LOSS_RATIO,
+    cap_stop_loss_to_margin_risk,
     MIN_SL_DISTANCE_PCT,
     STOP_LOSS_MULTIPLIER,
     ENABLE_DCA_LIMIT,
@@ -900,6 +902,23 @@ class BinanceTestnetAccount:
                         await self.close_position(symbol, curr_p, "急速逆向閃崩觸發平倉")
                         continue
 
+            # 動態本金防線：以實際投入保證金為基準，未來本金放大時自動縮放。
+            margin_used = float(pos.get("margin") or 0.0)
+            leverage = float(pos.get("leverage") or 1.0)
+            if margin_used <= 0:
+                margin_used = abs(entry_p * float(pos.get("qty") or 0.0)) / max(leverage, 1.0)
+            max_margin_loss_usdt = margin_used * MAX_POSITION_MARGIN_LOSS_RATIO
+            current_loss_usdt = max(0.0, -pnl_pct * margin_used * leverage)
+            if max_margin_loss_usdt > 0 and current_loss_usdt >= max_margin_loss_usdt:
+                self.log(
+                    f"🚨 [動態本金防線] {symbol} {side} 毛虧損 "
+                    f"{current_loss_usdt:.2f}U 已達本金上限 {max_margin_loss_usdt:.2f}U "
+                    f"({MAX_POSITION_MARGIN_LOSS_RATIO:.0%})，強制市價平倉",
+                    "DANGER",
+                )
+                await self.close_position(symbol, curr_p, "動態本金最大虧損門檻觸發")
+                continue
+
             # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
             if MAX_ACCEPTABLE_LOSS_PCT < 0:
                 current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
@@ -1201,6 +1220,9 @@ class BinanceTestnetAccount:
         else:
             sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
             tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
+        if not DISABLE_STOP_LOSS:
+            sl_price = cap_stop_loss_to_margin_risk(entry_p, side, sl_price, pos["leverage"])
+            sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
@@ -1243,6 +1265,10 @@ class BinanceTestnetAccount:
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
                 continue
             close_side = "sell" if pos["side"] == "LONG" else "buy"
+            sl_price = cap_stop_loss_to_margin_risk(
+                pos["entry_price"], pos["side"], sl_price, pos["leverage"]
+            )
+            sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
             try:
                 await self._cancel_all_orders(symbol)
                 await self._create_protection_order(
@@ -1537,6 +1563,9 @@ class BinanceTestnetAccount:
                 sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             else:
                 sl_price = 0.0
+            if not DISABLE_STOP_LOSS:
+                sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
+                sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
             if entry_context.get("initial_sl") is not None:
                 entry_context["initial_sl"] = sl_price

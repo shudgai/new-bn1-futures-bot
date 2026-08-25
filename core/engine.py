@@ -2564,7 +2564,7 @@ class TradingEngine:
                 # 若價格已經走遠、型態不再成立，策略本身自然回HOLD，不需要額外
                 # 冷卻機制硬擋——避免因為冷卻而錯過還在成立的真實訊號，也不會
                 # 變成無腦追價，追不追完全看MA5型態當下是否仍然成立。
-                if entry_mode not in ("MA5_REVERSAL", "MA5_BOTTOM_LIMIT"):
+                if entry_mode not in ("MA5_REVERSAL", "MA5_BOTTOM_LIMIT", "MA_ALIGNMENT"):
                     self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
                 continue
             if entry_mode in ("SUPPORT_PULLBACK", "BREAKOUT"):
@@ -2636,7 +2636,7 @@ class TradingEngine:
                         self._pullback_retry_after[symbol] = now
                         continue
 
-            if entry_mode in ("CURRENT_MAKER", "MA5_REVERSAL", "MA5_BOTTOM_LIMIT", "SUPPORT_PULLBACK", "BREAKOUT"):
+            if entry_mode in ("CURRENT_MAKER", "MA5_REVERSAL", "MA5_BOTTOM_LIMIT", "MA_ALIGNMENT", "SUPPORT_PULLBACK", "BREAKOUT"):
                 # 90+現價單、MA5拐頭單與回撤底單只短暫存活15秒；底單逾時後
                 # 由下一輪重算KC底價，不在舊單上套用回踩二次確認與目標漂移。
                 # BREAKOUT 回踩限價掛單不需要 confirm_pullback_entry，
@@ -2726,7 +2726,14 @@ class TradingEngine:
                 available_balance = self.account.get_available_balance()
                 if TEST_BUDGET_CAP_USDT > 0:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
-                if not daily_halt and available_balance >= MIN_TRADE_USDT:
+                # 滿倉時可用餘額會是 0，但既有持倉仍必須繼續掃描反向訊號；
+                # 否則 100% 倉位永遠進不了下方的防禦平倉／強制反轉邏輯。
+                has_managed_position = any(
+                    symbol in self.account.positions for symbol in DEFAULT_SYMBOLS
+                )
+                if not daily_halt and (
+                    available_balance >= MIN_TRADE_USDT or has_managed_position
+                ):
                     signal_progress = []
                     detected_candidates = []
 
@@ -2756,87 +2763,127 @@ class TradingEngine:
                         direction_text = "雙向"
                         coin = symbol.replace("/USDT", "")
 
+                        # 餘額不足時只管理已有持倉的幣種，避免因放行反轉掃描而
+                        # 讓其他空倉幣種嘗試超額開倉。反向平倉釋放的餘額可在
+                        # 同一幣種後續流程中立即用於反手。
+                        if (
+                            available_balance < MIN_TRADE_USDT
+                            and symbol not in self.account.positions
+                        ):
+                            continue
+
                         from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, MAX_SLOTS, get_leverage
                         if ENABLE_CONTINUOUS_REVERSE_MODE:
                             from core.indicators import detect_ma5_ma25_cross_and_turn
                             from core.strategy import build_sl_tp_for_side
                             df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
+                            if 'ma3' not in df_cr.columns:
+                                df_cr['ma3'] = df_cr['close'].rolling(window=3).mean()
                             if 'ma5' not in df_cr.columns:
                                 df_cr['ma5'] = df_cr['close'].rolling(window=5).mean()
-                            cr_info = detect_ma5_ma25_cross_and_turn(df_cr)
-                            cr_signal = cr_info.get("signal")
-                            cr_entry_type = cr_info.get("entry_type", "")
+                            if 'ma25' not in df_cr.columns:
+                                df_cr['ma25'] = df_cr['close'].rolling(window=25).mean()
+                            cr_info = dict(detect_ma5_ma25_cross_and_turn(df_cr))
+                            raw_entry_type = str(cr_info.get("entry_type") or "")
+                            last_close = float(df_cr['close'].iloc[-1])
+                            ma3_now = float(df_cr['ma3'].iloc[-1])
+                            ma3_prev = float(df_cr['ma3'].iloc[-2])
+                            ma5_now = float(df_cr['ma5'].iloc[-1])
+                            ma5_prev = float(df_cr['ma5'].iloc[-2])
+                            ma25_now = float(df_cr['ma25'].iloc[-1])
+                            above_now = ma3_now > ma25_now and ma5_now > ma25_now
+                            below_now = ma3_now < ma25_now and ma5_now < ma25_now
+                            above_confirmed = all(
+                                float(df_cr['ma3'].iloc[i]) > float(df_cr['ma25'].iloc[i])
+                                and float(df_cr['ma5'].iloc[i]) > float(df_cr['ma25'].iloc[i])
+                                for i in (-3, -2)
+                            )
+                            below_confirmed = all(
+                                float(df_cr['ma3'].iloc[i]) < float(df_cr['ma25'].iloc[i])
+                                and float(df_cr['ma5'].iloc[i]) < float(df_cr['ma25'].iloc[i])
+                                for i in (-3, -2)
+                            )
+                            # 大紅／綠 K 已穿越 MA25，且 MA3、MA5 同步轉向時，
+                            # 不再等待兩根收 K；只有仍在 MA25 原側的小彎頭才視為假突破。
+                            peak_breakdown_now = (
+                                last_close < ma25_now
+                                and ma3_now < ma5_now
+                                and ma3_now < ma3_prev
+                                and ma5_now < ma5_prev
+                            )
+                            trough_breakout_now = (
+                                last_close > ma25_now
+                                and ma3_now > ma5_now
+                                and ma3_now > ma3_prev
+                                and ma5_now > ma5_prev
+                            )
 
                             has_pos = symbol in self.account.positions
                             curr_side = self.account.positions[symbol]["side"] if has_pos else None
-
-                            # --- 防禦性提早平倉 (Defensive Early Exit) ---
-                            # 用戶要求：不要等到死叉或真峰頂，只要看到均線彎頭 (MA5 往下) 且是紅K，就立刻把多單平掉保命，後續再重新判斷開倉！
-                            if has_pos and 'ma5' in df_cr.columns:
-                                ma5_curr = float(df_cr['ma5'].iloc[-1])
-                                ma5_prev = float(df_cr['ma5'].iloc[-2])
-                                last_close = float(df_cr['close'].iloc[-1])
-                                last_open = float(df_cr['open'].iloc[-1])
-                                is_red_candle = last_close < last_open
-                                is_green_candle = last_close > last_open
-
-                                clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
-                                live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
-
-                                if curr_side == "LONG" and ma5_curr < ma5_prev and is_red_candle:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA5 頂部彎頭向下 (紅K)，防禦性提早平倉多單！", "WARNING")
-                                    await self.account.close_position(
-                                        symbol=symbol,
-                                        current_price=live_price,
-                                        close_reason="MA5 頂部彎頭向下 (防禦平多)"
-                                    )
-                                    has_pos = False  # 更新狀態
-                                    curr_side = None
-
-                                elif curr_side == "SHORT" and ma5_curr > ma5_prev and is_green_candle:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA5 谷底彎頭向上 (綠K)，防禦性提早平倉空單！", "WARNING")
-                                    await self.account.close_position(
-                                        symbol=symbol,
-                                        current_price=live_price,
-                                        close_reason="MA5 谷底彎頭向上 (防禦平空)"
-                                    )
-                                    has_pos = False  # 更新狀態
-                                    curr_side = None
+                            confirmed_true_reversal = False
+                            alignment_state = "MIXED"
+                            if has_pos and curr_side == "LONG" and (
+                                peak_breakdown_now or (below_now and below_confirmed)
+                            ):
+                                cr_signal = "SHORT"
+                                cr_entry_type = "PEAK_CONFIRMED_DOWN"
+                                confirmed_true_reversal = True
+                                alignment_state = "BELOW_CONFIRMED"
+                                cr_info["reason"] = "價格跌破 MA25 且 MA3、MA5 同步向下，真峰頂向下"
+                            elif has_pos and curr_side == "SHORT" and (
+                                trough_breakout_now or (above_now and above_confirmed)
+                            ):
+                                cr_signal = "LONG"
+                                cr_entry_type = "TROUGH_CONFIRMED_UP"
+                                confirmed_true_reversal = True
+                                alignment_state = "ABOVE_CONFIRMED"
+                                cr_info["reason"] = "價格突破 MA25 且 MA3、MA5 同步向上，真谷底向上"
+                            elif not has_pos:
+                                # 空倉不在成熟趨勢末端追價：必須等回踩／反彈結束，
+                                # MA3、MA5 再次同向後才用市價進場。
+                                if (
+                                    above_now
+                                    and raw_entry_type == "TREND_LONG"
+                                    and ma3_now > ma3_prev
+                                    and ma5_now > ma5_prev
+                                ):
+                                    cr_signal = "LONG"
+                                    cr_entry_type = "TREND_LONG"
+                                    alignment_state = "ABOVE_PULLBACK_DONE"
+                                    cr_info["reason"] = "MA25 上方回踩結束，MA3、MA5 同步向上"
+                                elif (
+                                    below_now
+                                    and raw_entry_type == "TREND_SHORT"
+                                    and ma3_now < ma3_prev
+                                    and ma5_now < ma5_prev
+                                ):
+                                    cr_signal = "SHORT"
+                                    cr_entry_type = "TREND_SHORT"
+                                    alignment_state = "BELOW_REBOUND_DONE"
+                                    cr_info["reason"] = "MA25 下方反彈結束，MA3、MA5 同步向下"
+                                else:
+                                    cr_signal = None
+                            elif above_now:
+                                cr_signal = "LONG"
+                                cr_entry_type = "TREND_LONG"
+                                alignment_state = "ABOVE"
+                            elif below_now:
+                                cr_signal = "SHORT"
+                                cr_entry_type = "TREND_SHORT"
+                                alignment_state = "BELOW"
+                            else:
+                                cr_signal = None
 
                             if cr_signal:
                                 last_close = float(df_cr['close'].iloc[-1])
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
-                                # --- 活 K 線濾網 (Live Candle Color Filter) ---
-                                # 順勢確認：不允許在逆向顏色的 K 棒進場（空單不空在綠K、多單不多在紅K）
-                                if cr_entry_type in ("PEAK_TURN", "TROUGH_TURN", "TREND_LONG", "TREND_SHORT"):
-                                    is_confirmed_reversal = "提前轉向" in cr_info.get("reason", "")
-                                    if not is_confirmed_reversal:
-                                        if cr_signal == "SHORT" and live_price > last_close:
-                                            cr_signal = None  # 綠K，暫緩做空
-                                        elif cr_signal == "LONG" and live_price < last_close:
-                                            cr_signal = None  # 紅K，暫緩做多
+                                # MA方向成立後使用市價；空倉必須先完成回踩／反彈，
+                                # 持倉反手則必須通過真峰谷結構確認。
 
-                                # --- 橫盤濾網 (Sideways Filter) ---
-                                # MA5 與 MA25 差距 < 0.15%：兩線黏在一起 = 盤整！不開倉，等待趨勢成型
-                                if cr_signal and 'ma5' in df_cr.columns and 'ma25' in df_cr.columns:
-                                    ma5_now = float(df_cr['ma5'].iloc[-1])
-                                    ma25_now = float(df_cr['ma25'].iloc[-1])
-                                    if ma25_now > 0:
-                                        ma_spread_pct = abs(ma5_now - ma25_now) / ma25_now
-                                        if ma_spread_pct < 0.0015:  # 差距 < 0.15%
-                                            self.account.log(
-                                                f"⏸️ {symbol} 橫盤濾網：MA5/MA25 差距僅 {ma_spread_pct:.4%}，跳過開倉（盤整中）",
-                                                "INFO"
-                                            )
-                                            cr_signal = None
-
-                                if not cr_signal:
-                                    continue
-
-                                # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
-                                if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
+                                # 真峰谷可即時反手；空倉只接受回踩／反彈完成的順勢訊號。
+                                if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN", "PEAK_CONFIRMED_DOWN", "TROUGH_CONFIRMED_UP", "TREND_LONG", "TREND_SHORT"):
                                     should_open = False
 
                                     # ── 取消反向限價掛單，防止多空並存 ──
@@ -2848,6 +2895,13 @@ class TradingEngine:
                                     if not has_pos:
                                         should_open = True
                                     elif curr_side != cr_signal:
+                                        if not confirmed_true_reversal:
+                                            self.account.log(
+                                                f"⏸️ {symbol} {cr_entry_type} 尚非確認真峰谷，"
+                                                f"視為可能假突破，不平倉反手",
+                                                "INFO",
+                                            )
+                                            continue
                                         self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
                                         await self.account.close_position(
                                             symbol=symbol,
@@ -2860,76 +2914,18 @@ class TradingEngine:
 
                                     if should_open:
                                         self.account.log(
-                                            f"{symbol} [{cr_entry_type}] 谷底/頂部訊號：進場 {cr_signal}",
-                                            "INFO"
+                                            f"{symbol} [{cr_entry_type}] MA方向規則：市價進場 {cr_signal}",
+                                            "INFO",
                                         )
-                                        atr = cr_info.get("atr", live_price * 0.015)
+                                        atr = float(cr_info.get("atr") or live_price * 0.015)
                                         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
                                         sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
                                         total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
-                                        strong_move = (
-                                            bool(cr_info.get("pivot_confirmed"))
-                                            and float(cr_info.get("pivot_score") or 0) >= 80
-                                        )
-                                        if strong_move:
-                                            # 強勢上漲／下跌：帳戶餘額 100% 市價進場
-                                            await self.account.open_position(
-                                                symbol=symbol,
-                                                side=cr_signal,
-                                                price=live_price,
-                                                amount_usdt=total_usdt,
-                                                sl=sl,
-                                                tp=tp,
-                                                reason=cr_info.get("reason", cr_entry_type),
-                                                atr=atr,
-                                                leverage=get_leverage(symbol),
-                                                signal_score=100
+                                        pending = self.account.pending_limit_orders.get(symbol)
+                                        if pending:
+                                            await self.account.cancel_pending_limit(
+                                                symbol, "方向成立，改用市價開倉"
                                             )
-                                        else:
-                                            # 一般順勢訊號：帳戶餘額 100% 掛回踩限價單
-                                            limit_target_price = (
-                                                live_price - atr * 0.5
-                                                if cr_signal == "LONG"
-                                                else live_price + atr * 0.5
-                                            )
-                                            await self.account.place_limit_entry(
-                                                symbol=symbol,
-                                                side=cr_signal,
-                                                target_price=limit_target_price,
-                                                amount_usdt=total_usdt,
-                                                sl=sl,
-                                                tp=tp,
-                                                reason=cr_info.get("reason", cr_entry_type),
-                                                atr=atr,
-                                                leverage=get_leverage(symbol),
-                                                signal_score=100,
-                                                timeframe=CONTINUOUS_REVERSE_TIMEFRAME,
-                                            )
-                                # --- MA5 穿越 MA25（金叉/死叉）：反轉/補開訊號 ---
-                                # 如果無持倉，直接開倉；如果有持倉且方向相反，強制平倉反轉！
-                                elif cr_entry_type in ("CROSS_UP", "CROSS_DOWN"):
-                                    should_open = False
-                                    if not has_pos:
-                                        should_open = True
-                                    elif curr_side != cr_signal:
-                                        self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
-                                        await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason=f"死叉/金叉反向訊號 ({cr_entry_type})"
-                                        )
-                                        should_open = True
-                                        
-                                    if should_open:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] MA5穿越MA25：進場 {cr_signal}",
-                                            "INFO"
-                                        )
-                                        atr = cr_info.get("atr", live_price * 0.015)
-                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        total_usdt = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
-                                        # MA5 金叉／死叉屬強勢方向訊號：帳戶餘額 100% 市價進場
                                         await self.account.open_position(
                                             symbol=symbol,
                                             side=cr_signal,
@@ -2940,13 +2936,14 @@ class TradingEngine:
                                             reason=cr_info.get("reason", cr_entry_type),
                                             atr=atr,
                                             leverage=get_leverage(symbol),
-                                            signal_score=85
+                                            signal_score=100,
+                                            entry_context={
+                                                "entry_mode": "MA_ALIGNMENT_MARKET",
+                                                "strategy_mode": "CONTINUOUS_REVERSE",
+                                                "ma_alignment": alignment_state,
+                                            },
                                         )
-                                    else:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] MA5穿越訊號，已有 {curr_side} 持倉，不補開",
-                                            "DEBUG"
-                                        )
+
 
                             if symbol in self.account.positions:
                                 position = self.account.positions[symbol]
