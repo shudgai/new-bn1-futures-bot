@@ -2795,22 +2795,25 @@ class TradingEngine:
 
                             # --- 防禦性提早平倉 (Defensive Early Exit) ---
                             # 用戶要求：不要等到死叉或真峰頂，只要看到均線彎頭 (MA3 往下) 且是紅K，就立刻把多單平掉保命，後續再重新判斷開倉！
-                            if has_pos and 'ma3' in df_cr.columns:
-                                ma3_curr = float(df_cr['ma3'].iloc[-1])
-                                ma3_prev = float(df_cr['ma3'].iloc[-2])
-                                last_close = float(df_cr['close'].iloc[-1])
-                                last_open = float(df_cr['open'].iloc[-1])
-                                last_high = float(df_cr['high'].iloc[-1])
-                                last_low = float(df_cr['low'].iloc[-1])
+                            # 用戶最新要求：將防禦機制獨立切換至 1 分鐘級別 (1m)，以達到最極致敏銳的反應速度。
+                            df_defense = await self.fetch_klines(symbol, timeframe="1m", limit=10)
+                            if has_pos and df_defense is not None and not df_defense.empty:
+                                df_defense['ma3'] = ta.sma(df_defense['close'], length=3)
+                                ma3_curr = float(df_defense['ma3'].iloc[-1])
+                                ma3_prev = float(df_defense['ma3'].iloc[-2])
+                                last_close = float(df_defense['close'].iloc[-1])
+                                last_open = float(df_defense['open'].iloc[-1])
+                                last_high = float(df_defense['high'].iloc[-1])
+                                last_low = float(df_defense['low'].iloc[-1])
                                 
                                 candle_range_1 = last_high - last_low
                                 lower_wick_1 = min(last_open, last_close) - last_low
                                 upper_wick_1 = last_high - max(last_open, last_close)
                                 
-                                prev_close = float(df_cr['close'].iloc[-2])
-                                prev_open = float(df_cr['open'].iloc[-2])
-                                prev_high = float(df_cr['high'].iloc[-2])
-                                prev_low = float(df_cr['low'].iloc[-2])
+                                prev_close = float(df_defense['close'].iloc[-2])
+                                prev_open = float(df_defense['open'].iloc[-2])
+                                prev_high = float(df_defense['high'].iloc[-2])
+                                prev_low = float(df_defense['low'].iloc[-2])
                                 
                                 candle_range_2 = prev_high - prev_low
                                 lower_wick_2 = min(prev_open, prev_close) - prev_low
