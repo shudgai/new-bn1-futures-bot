@@ -84,9 +84,16 @@ ACCOUNTING_VERSION = 2
 
 
 def get_profit_lock_giveback_usdt(margin_used: float, peak_usdt: float) -> float:
-    """本金每滿一個100U級距增加1U的門檻，但回吐距離固定為級距的 0.8U (即回吐 80%)。"""
+    """
+    雙軌制回吐邏輯：
+    1. 初期固定回吐：本金每滿 100U 給予固定的 0.8U 呼吸空間。
+    2. 大波段比例回吐：當利潤放大時，至少給予峰值利潤 20% 的呼吸空間。
+    取兩者最大值，確保初期不被震出，後期有足夠空間。
+    """
     capital_gap = float(max(1, math.ceil(max(float(margin_used), 0.0) / 100.0)))
-    return capital_gap * 0.8
+    fixed_giveback = capital_gap * 0.8
+    proportional_giveback = max(0.0, float(peak_usdt)) * 0.20
+    return max(fixed_giveback, proportional_giveback)
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
