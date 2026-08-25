@@ -3145,15 +3145,15 @@ class TradingEngine:
                                 else:
                                     regime = "FLAT"
 
-                                # 嚴格過濾 cr_signal (只允許順勢，或真實峰谷逆轉)
+                                # 嚴格過濾 cr_signal (只允許真實峰谷逆轉，拒絕單根K線動能假突破)
                                 if cr_signal:
                                     is_true_peak = cr_entry_type == "PEAK_ANGLE_DOWN"
                                     is_true_trough = cr_entry_type == "TROUGH_ANGLE_UP"
+                                    is_heavy_rebound = "MA3反彈" in str(cr_entry_type) or "MA3回落" in str(cr_entry_type)
                                     
-                                    if regime == "LONG" and cr_signal == "SHORT" and not is_true_peak:
-                                        cr_signal = None  # 在多頭趨勢中，忽略非真峰頂的小空頭訊號
-                                    elif regime == "SHORT" and cr_signal == "LONG" and not is_true_trough:
-                                        cr_signal = None  # 在空頭趨勢中，忽略非真谷底的小多頭訊號
+                                    if not (is_true_peak or is_true_trough or is_heavy_rebound):
+                                        self.account.log(f"🛡️ {symbol} 忽略單根K線弱訊號 ({cr_entry_type})，堅持等待真實峰谷轉折", "INFO")
+                                        cr_signal = None
                                 
                                 live_price = self.tickers.get(symbol.replace(':USDT', ''), self.tickers.get(symbol, 0.0))
                                 
