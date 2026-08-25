@@ -2800,38 +2800,77 @@ class TradingEngine:
                                 ma3_prev = float(df_cr['ma3'].iloc[-2])
                                 last_close = float(df_cr['close'].iloc[-1])
                                 last_open = float(df_cr['open'].iloc[-1])
-                                is_red_candle = last_close < last_open
-                                is_green_candle = last_close > last_open
+                                last_high = float(df_cr['high'].iloc[-1])
+                                last_low = float(df_cr['low'].iloc[-1])
+                                
+                                candle_range = last_high - last_low
+                                lower_wick = min(last_open, last_close) - last_low
+                                upper_wick = last_high - max(last_open, last_close)
+                                
+                                is_long_lower_wick = candle_range > 0 and (lower_wick / candle_range > 0.6)
+                                is_long_upper_wick = candle_range > 0 and (upper_wick / candle_range > 0.6)
 
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
-
-                                if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (收盤 < MA3)，防禦性提早平倉多單！", "WARNING")
+                                
+                                # 爆量長影線防禦：遇到長影線（圖表陷阱/極端反轉）先平倉，且強制休息不開新倉
+                                long_wick_closed = False
+                                if curr_side == "LONG" and (is_long_upper_wick or is_long_lower_wick) and last_close >= ma3_curr:
+                                    self.account.log(f"🛡️ {symbol} 峰頂出現長影線 K 線 (上/下影線過長)，防禦性平多先出場！", "WARNING")
                                     closed = await self.account.close_position(
                                         symbol=symbol,
                                         current_price=live_price,
-                                        close_reason="MA3 頂部彎頭向下 (防禦平多)"
+                                        close_reason="峰頂長影線防禦 (不反手)"
                                     )
                                     if closed:
                                         has_pos = False
                                         curr_side = None
                                         self._continuous_alignment_wait.pop(symbol, None)
+                                        long_wick_closed = True
+                                        cr_signal = None  # 不要交易先平倉，再看下面是什麼情況
 
-                                elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr:
-                                    self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (收盤 > MA3)，防禦性提早平倉空單！", "WARNING")
+                                elif curr_side == "SHORT" and (is_long_upper_wick or is_long_lower_wick) and last_close <= ma3_curr:
+                                    self.account.log(f"🛡️ {symbol} 谷底出現長影線 K 線 (上/下影線過長)，防禦性平空先出場！", "WARNING")
                                     closed = await self.account.close_position(
                                         symbol=symbol,
                                         current_price=live_price,
-                                        close_reason="MA3 谷底彎頭向上 (防禦平空)"
+                                        close_reason="谷底長影線防禦 (不反手)"
                                     )
                                     if closed:
                                         has_pos = False
                                         curr_side = None
                                         self._continuous_alignment_wait.pop(symbol, None)
-                                        # 防禦平空後，強制覆蓋 cr_signal 為 LONG，讓下方開倉流程立刻翻多
-                                        cr_signal = "LONG"
-                                        cr_entry_type = "TROUGH_TURN"
+                                        long_wick_closed = True
+                                        cr_signal = None  # 不要交易先平倉，再看下面是什麼情況
+
+                                # 一般 MA3 彎頭防禦
+                                if not long_wick_closed:
+                                    if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr:
+                                        self.account.log(f"🛡️ {symbol} 偵測到 MA3 頂部彎頭向下 (收盤 < MA3)，防禦性提早平倉多單！", "WARNING")
+                                        closed = await self.account.close_position(
+                                            symbol=symbol,
+                                            current_price=live_price,
+                                            close_reason="MA3 頂部彎頭向下 (防禦平多)"
+                                        )
+                                        if closed:
+                                            has_pos = False
+                                            curr_side = None
+                                            self._continuous_alignment_wait.pop(symbol, None)
+    
+                                    elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr:
+                                        self.account.log(f"🛡️ {symbol} 偵測到 MA3 谷底彎頭向上 (收盤 > MA3)，防禦性提早平倉空單！", "WARNING")
+                                        closed = await self.account.close_position(
+                                            symbol=symbol,
+                                            current_price=live_price,
+                                            close_reason="MA3 谷底彎頭向上 (防禦平空)"
+                                        )
+                                        if closed:
+                                            has_pos = False
+                                            curr_side = None
+                                            self._continuous_alignment_wait.pop(symbol, None)
+                                            # 防禦平空後，強制覆蓋 cr_signal 為 LONG，讓下方開倉流程立刻翻多
+                                            cr_signal = "LONG"
+                                            cr_entry_type = "TROUGH_TURN"
 
                             expected_side = self._continuous_alignment_wait.get(symbol)
                             if expected_side:
