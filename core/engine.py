@@ -2925,7 +2925,7 @@ class TradingEngine:
                                     last_open_cr = float(df_cr_entry['open'].iloc[-1])
                                     candle_is_green = last_close > last_open_cr
                                     candle_is_red   = last_close < last_open_cr
-                                    is_confirmed_reversal = "提前轉向" in cr_info.get("reason", "")
+                                    is_confirmed_reversal = "提前轉向" in cr_info.get("reason", "") or cr_info.get("_defense_triggered", False)
                                     if not is_confirmed_reversal:
                                         if cr_signal == "SHORT" and candle_is_green:
                                             cr_signal = None  # 綠K，暫緩做空
