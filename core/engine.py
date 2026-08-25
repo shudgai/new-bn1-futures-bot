@@ -2909,7 +2909,7 @@ class TradingEngine:
                                 _last_close_ts = self.account.last_closed_at.get(symbol, 0.0)
                                 _cooldown_sec = 5.0
                                 _elapsed = now_time - _last_close_ts
-                                if not has_pos and _elapsed < _cooldown_sec:
+                                if not has_pos and _elapsed < _cooldown_sec and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
                                     self.account.log(
                                         f"⏳ [{symbol}] 平倉後冷靜期：距上次平倉 {_elapsed:.1f}s < {_cooldown_sec:.0f}s，"
                                         f"暫緩 {cr_signal} 開倉",

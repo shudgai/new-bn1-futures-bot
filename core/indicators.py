@@ -445,10 +445,18 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         rejected = reject_false_breakout("SHORT")
         if rejected:
             return rejected
+        if not is_green:
+            return {
+                "signal": None,
+                "reason": f"空頭趨勢中等待綠K回調 (當前為紅K) (ADX={adx_curr:.1f})",
+                "pivot_confirmed": False,
+                "pivot_score": 0,
+                "ma_alignment": "BELOW",
+            }
         return {
             "signal": "SHORT",
             "entry_type": "TREND_SHORT",
-            "reason": f"MA3、MA5 同在 MA25 下方 (ADX={adx_curr:.1f}) → 現價開空",
+            "reason": f"MA3、MA5 同在 MA25 下方且逢綠K回調 (ADX={adx_curr:.1f}) → 現價開空",
             "atr": atr,
             "pivot_confirmed": False,
             "pivot_score": 85,
@@ -459,10 +467,18 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         rejected = reject_false_breakout("LONG")
         if rejected:
             return rejected
+        if not is_red:
+            return {
+                "signal": None,
+                "reason": f"多頭趨勢中等待紅K回調 (當前為綠K) (ADX={adx_curr:.1f})",
+                "pivot_confirmed": False,
+                "pivot_score": 0,
+                "ma_alignment": "ABOVE",
+            }
         return {
             "signal": "LONG",
             "entry_type": "TREND_LONG",
-            "reason": f"MA3、MA5 同在 MA25 上方 (ADX={adx_curr:.1f}) → 現價開多",
+            "reason": f"MA3、MA5 同在 MA25 上方且逢紅K回調 (ADX={adx_curr:.1f}) → 現價開多",
             "atr": atr,
             "pivot_confirmed": False,
             "pivot_score": 85,
