@@ -65,6 +65,9 @@ from core.config import (
     MIN_SL_DISTANCE_PCT,
     STOP_LOSS_MULTIPLIER,
     ENABLE_PROFIT_LOCK_USDT,
+    PROFIT_LOCK_FEE_MULTIPLIER,
+    PROFIT_LOCK_LADDER_STEP_USDT,
+    PROFIT_LOCK_GIVEBACK_USDT,
     PROFIT_LOCK_TRIGGER_USDT,
     PROFIT_LOCK_FLOOR_USDT,
     PROFIT_LOCK_TRAIL_RATIO,
@@ -84,16 +87,8 @@ ACCOUNTING_VERSION = 2
 
 
 def get_profit_lock_giveback_usdt(peak_usdt: float) -> float:
-    """
-    固定回吐 0.5U：
-    保護線 = 峰值利潤 - 0.5U（永遠只允許回吐 0.5U，不管利潤有多大）
-    配合 1U 階梯步距使用：
-      峰值  1U → 鎖住  0.5U
-      峰值  2U → 鎖住  1.5U
-      峰值  3U → 鎖住  2.5U
-      ...以此類推
-    """
-    return 0.5
+    """Return the fixed 0.8 USDT giveback used by the 1U profit ladder."""
+    return PROFIT_LOCK_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -779,8 +774,12 @@ class PaperAccount:
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
-        # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
-        if DISABLE_STOP_LOSS and not is_manual:
+        # 全域停損關閉時，一般自動平倉仍拒絕；已啟動的 USDT 階梯鎖利例外。
+        profit_lock_close = bool(
+            self.position_meta.get(symbol, {}).get("profit_lock_usdt_armed")
+            and close_reason == "觸發移動止利 (Trailing Take-Profit)"
+        )
+        if DISABLE_STOP_LOSS and not is_manual and not profit_lock_close:
             reject_key = (symbol, close_reason)
             now_ts = time.time()
             if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
@@ -1080,8 +1079,7 @@ class PaperAccount:
                     )
 
             # ----------------------------------------------------------------
-            # 動態階梯鎖利 (Dynamic Tiered Profit Lock)
-            # 自動計算手續費2倍為起點，依照本金級距遞增步距
+            # 動態階梯鎖利：雙邊手續費的倍數為第一條保護線，之後每 1U 推進。
             # ----------------------------------------------------------------
             if ENABLE_PROFIT_LOCK_USDT:
                 qty = float(pos.get("qty") or meta.get("qty") or 0.0)
@@ -1097,11 +1095,10 @@ class PaperAccount:
                     meta[peak_usdt_key] = peak_usdt
 
                 # 1. 自動計算手續費 (幣安 Taker 費率單程約 0.05%，來回 0.1%)
-                margin_used = notional_value / leverage
-                round_trip_fee = notional_value * 0.001
+                round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
                 
                 # 2. 最低保護利潤為來回手續費的2倍。
-                minimum_profit_floor = round_trip_fee * 2.0
+                minimum_profit_floor = round_trip_fee * PROFIT_LOCK_FEE_MULTIPLIER
 
                 # 3. 本金級距的最低呼吸空間：已廢除，改為絕對值
                 trailing_gap_usdt = get_profit_lock_giveback_usdt(peak_usdt)
@@ -1110,14 +1107,12 @@ class PaperAccount:
                 # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
                 # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
                 if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
-                    # 1U 階梯：峰值每超過 1U 整數就推進一格
-                    # 例：峰值 1.2U → 鎖 0.5U；峰值 2.7U → 鎖 1.5U；峰值 5.1U → 鎖 4.5U
-                    ladder_step = 1.0  # 每 1U 升一格
-                    peak_floor_ladder = (peak_usdt // ladder_step) * ladder_step  # 向下取整到 1U
-                    step_floor_usdt = max(
-                        minimum_profit_floor,
-                        peak_floor_ladder - trailing_gap_usdt,
+                    # 第一階鎖住雙邊手續費 x2；峰值每再增加 1U，保護線增加 1U。
+                    ladder_step = PROFIT_LOCK_LADDER_STEP_USDT
+                    completed_steps = math.floor(
+                        max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
                     )
+                    step_floor_usdt = minimum_profit_floor + completed_steps * ladder_step
                     notional_units = qty
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if side == "LONG":
@@ -1138,13 +1133,13 @@ class PaperAccount:
                         meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = True
                         meta["profit_lock_usdt_armed"] = True
-                        pos["profit_lock_mode"] = "1U_LADDER_0.5U_TRAIL"
-                        meta["profit_lock_mode"] = "1U_LADDER_0.5U_TRAIL"
+                        pos["profit_lock_mode"] = "1U_LADDER_0.8U_TRAIL"
+                        meta["profit_lock_mode"] = "1U_LADDER_0.8U_TRAIL"
                         profit_lock_updated_this_cycle = True
                         
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"→ 1U階梯鎖 {step_floor_usdt:.2f}U（回吐0.5U），保護線 {floor_sl:.6g}",
+                            f"→ 1U階梯鎖 {step_floor_usdt:.2f}U（回吐0.8U），保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
 

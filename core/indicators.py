@@ -413,17 +413,13 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
         volume_ratio = 0.0
 
     def reject_false_breakout(side: str):
-        # 無腦秒轉向：如果是即時訊號，不防禦任何長影線陷阱
-        if allow_live_pivot:
-            return None
-            
+        # 即時與收線訊號都必須通過假突破防護；假突破不開倉、不反手。
         if side == "LONG" and is_shooting_star_trap:
             return {"signal": None, "reason": "假突破過濾：多單確認K帶長上影線", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
         if side == "SHORT" and is_hammer_trap:
             return {"signal": None, "reason": "假突破過濾：空單確認K帶長下影線", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
-        # 活動 K 的成交量仍在累積；峰谷第一彎已由 MA3 方向、K 色與影線確認，
-        # 不再等待量能比例，以免已平倉卻錯過立即反手。
-        if not allow_live_pivot and volume_ratio < min_confirmation_volume_ratio:
+        # 活動 K 雖然量能仍在累積，但不足門檻仍視為假突破，不開倉。
+        if volume_ratio < min_confirmation_volume_ratio:
             return {"signal": None, "reason": f"假突破過濾：確認量能 {volume_ratio:.2f}x < {min_confirmation_volume_ratio:.2f}x", "pivot_confirmed": False, "pivot_score": 0, "volume_ratio": volume_ratio}
         return None
 
@@ -503,14 +499,48 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
             "is_trough_early": is_trough_forming_early,
         }
 
-    # 開倉方向只依 MA3、MA5 相對 MA25 的共同位置決定。
-    # 風控（ADX、量能、長影線）仍須通過，但不得在均線下方做多或上方做空。
+    # 無腦波段方向只看 MA3：峰頂往谷底開空，谷底往峰頂開多。
+    # 同方向已有持倉時由 engine 保持原單，不重複加倉。
     both_below_ma25 = ma3_curr < ma25_curr and ma5_curr < ma25_curr
     both_above_ma25 = ma3_curr > ma25_curr and ma5_curr > ma25_curr
 
+    if ma3_curr < ma3_prev:
+        rejected = reject_false_breakout("SHORT")
+        if rejected:
+            rejected.update({"is_peak_early": is_peak_forming_early, "is_trough_early": is_trough_forming_early})
+            return rejected
+        return {
+            "signal": "SHORT",
+            "entry_type": "TREND_SHORT",
+            "reason": f"MA3 峰頂往谷底下降 (ADX={adx_curr:.1f}) → 無腦開空",
+            "atr": atr,
+            "pivot_confirmed": False,
+            "pivot_score": 85,
+            "ma_alignment": "ABOVE" if both_above_ma25 else "BELOW" if both_below_ma25 else "MIXED",
+            "is_peak_early": is_peak_forming_early,
+            "is_trough_early": is_trough_forming_early,
+        }
+
+    if ma3_curr > ma3_prev:
+        rejected = reject_false_breakout("LONG")
+        if rejected:
+            rejected.update({"is_peak_early": is_peak_forming_early, "is_trough_early": is_trough_forming_early})
+            return rejected
+        return {
+            "signal": "LONG",
+            "entry_type": "TREND_LONG",
+            "reason": f"MA3 谷底往峰頂上升 (ADX={adx_curr:.1f}) → 無腦開多",
+            "atr": atr,
+            "pivot_confirmed": False,
+            "pivot_score": 85,
+            "ma_alignment": "ABOVE" if both_above_ma25 else "BELOW" if both_below_ma25 else "MIXED",
+            "is_peak_early": is_peak_forming_early,
+            "is_trough_early": is_trough_forming_early,
+        }
+
     return {
         "signal": None,
-        "reason": "A組等待 MA3 明確 V／倒V 轉彎，不在趨勢中途開倉",
+        "reason": "MA3 目前走平，等待往峰頂或谷底移動",
         "pivot_confirmed": False,
         "pivot_score": 0,
         "ma_alignment": "BELOW" if both_below_ma25 else "ABOVE" if both_above_ma25 else "MIXED",

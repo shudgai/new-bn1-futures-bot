@@ -152,7 +152,6 @@ class TradingEngine:
         self._continuous_alignment_wait: Dict[str, str] = {}
         # 同一根 K、同一方向只允許成交一次，避免止盈後重複吃同一訊號。
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
-        self._continuous_consolidation_locks: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -1198,10 +1197,25 @@ class TradingEngine:
                         and trigger.get("structure_broken")
                     )
                     trigger["ma5_exit_ready"] = True
-                    trigger["ma5_exit_gate"] = "MA3轉向即出場"
+                    from core.indicators import detect_ma5_ma25_cross_and_turn
+                    exit_signal_info = detect_ma5_ma25_cross_and_turn(
+                        df, allow_live_pivot=True
+                    )
+                    false_breakout_hold = str(
+                        exit_signal_info.get("reason", "")
+                    ).startswith("假突破過濾")
+                    trigger["false_breakout_hold"] = false_breakout_hold
+                    trigger["ma5_exit_gate"] = (
+                        "假突破：保持原持倉方向"
+                        if false_breakout_hold
+                        else "MA3轉向即出場"
+                    )
                     should_auto_close = bool(
-                        trigger.get("ma5_reversed")
-                        or trigger.get("is_panic_reversal")
+                        not false_breakout_hold
+                        and (
+                            trigger.get("ma5_reversed")
+                            or trigger.get("is_panic_reversal")
+                        )
                     )
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
@@ -2875,85 +2889,18 @@ class TradingEngine:
                     )
                     if uses_live_pivot:
                         cr_info = live_pivot_info
+                    elif str(live_pivot_info.get("reason", "")).startswith("假突破過濾"):
+                        # 活動 K 已判定為假突破時，不得退回上一根收線訊號開倉。
+                        cr_info = live_pivot_info
+                        uses_live_pivot = True
                 df_cr_entry = df_cr if uses_live_pivot else df_cr_signal
                 cr_signal = cr_info.get("signal")
                 cr_entry_type = cr_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
 
-                # Group A only executes confirmed MA3 V or inverted-V pivots.
-                if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                    cr_signal = None
-
                 has_pos = symbol in self.account.positions
                 curr_side = self.account.positions[symbol]["side"] if has_pos else None
-
-                consolidation = self._detect_ma3_consolidation(df_cr_signal)
-                consolidation_lock = self._continuous_consolidation_locks.get(symbol)
-                if consolidation.get("detected"):
-                    self._continuous_consolidation_locks[symbol] = {
-                        "range_high": consolidation["range_high"],
-                        "range_low": consolidation["range_low"],
-                        "atr": consolidation["atr"],
-                        "locked_at": time.time(),
-                    }
-                    cr_signal = None
-                    if has_pos:
-                        fallback_price = float(df_cr_signal["close"].iloc[-1])
-                        clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
-                        exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
-                        closed = await self.account.close_position(
-                            symbol=symbol,
-                            current_price=exit_price,
-                            close_reason="MA3 盤整確認：平倉等待突破",
-                            is_manual=True
-                        )
-                        if closed:
-                            self.account.log(
-                                f"{symbol} MA3 盤整確認：已平倉並鎖定重新進場",
-                                "WARNING",
-                            )
-                    signal_progress.append(f"{coin} 盤整鎖定，等待區間突破")
-                    return signal_progress, detected_candidates
-
-                if consolidation_lock:
-                    if has_pos:
-                        fallback_price = float(df_cr_signal["close"].iloc[-1])
-                        clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
-                        exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
-                        await self.account.close_position(
-                            symbol=symbol,
-                            current_price=exit_price,
-                            close_reason="MA3 盤整鎖定仍生效",
-                            is_manual=True
-                        )
-                        signal_progress.append(f"{coin} 盤整鎖定，正在平掉既有持倉")
-                        return signal_progress, detected_candidates
-
-                    closed_price = float(df_cr_signal["close"].iloc[-1])
-                    lock_atr = max(float(consolidation_lock.get("atr") or 0.0), 1e-12)
-                    recent_ma3 = df_cr_entry["ma3"].dropna().astype(float).iloc[-12:]
-                    pivot_amplitude_atr = 0.0
-                    if len(recent_ma3) >= 2 and cr_signal == "LONG":
-                        pivot_amplitude_atr = (float(recent_ma3.iloc[-1]) - float(recent_ma3.min())) / lock_atr
-                    elif len(recent_ma3) >= 2 and cr_signal == "SHORT":
-                        pivot_amplitude_atr = (float(recent_ma3.max()) - float(recent_ma3.iloc[-1])) / lock_atr
-                    breakout_ready = bool(
-                        cr_signal == "LONG"
-                        and closed_price > float(consolidation_lock["range_high"])
-                        or cr_signal == "SHORT"
-                        and closed_price < float(consolidation_lock["range_low"])
-                    )
-                    if cr_signal and breakout_ready and pivot_amplitude_atr >= 0.20:
-                        self._continuous_consolidation_locks.pop(symbol, None)
-                        self.account.log(
-                            f"{symbol} 盤整突破確認，解除鎖定並允許 {cr_signal} entry",
-                            "SUCCESS",
-                        )
-                    else:
-                        cr_signal = None
-                        signal_progress.append(f"{coin} 盤整鎖定，突破尚未確認")
-                        return signal_progress, detected_candidates
 
                 entry_bar_id = (
                     int(float(df_cr_entry['timestamp'].iloc[-1]))
@@ -3095,12 +3042,13 @@ class TradingEngine:
                             should_open = True
                         elif curr_side != cr_signal:
                             self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
-                            await self.account.close_position(
+                            closed = await self.account.close_position(
                                 symbol=symbol,
                                 current_price=live_price,
-                                close_reason=f"死叉/金叉反向訊號 ({cr_entry_type})"
+                                close_reason=f"死叉/金叉反向訊號 ({cr_entry_type})",
+                                is_manual=True,
                             )
-                            should_open = True
+                            should_open = bool(closed)
 
                         if should_open:
                             self.account.log(
@@ -3143,6 +3091,7 @@ class TradingEngine:
                                 symbol=symbol,
                                 current_price=live_price,
                                 close_reason=f"MA3、MA5 共同越過 MA25 → {cr_signal}",
+                                is_manual=True,
                             )
                             if closed:
                                 has_pos = False
