@@ -1196,7 +1196,11 @@ class TradingEngine:
                         trigger.get("ema_breach_confirmed")
                         and trigger.get("structure_broken")
                     )
-                    trigger["ma5_exit_ready"] = True
+                    ma5_exit_ready, ma5_exit_ready_gate = self._ma5_exit_ready(
+                        position, trigger, mark_p, time.time()
+                    )
+                    trigger["ma5_exit_ready"] = ma5_exit_ready
+                    trigger["ma5_exit_gate"] = ma5_exit_ready_gate
                     from core.indicators import detect_ma5_ma25_cross_and_turn
                     # 使用已收盤的資料進行平倉確認
                     df_closed = drop_unclosed_candle(df, exit_tf)
@@ -1207,11 +1211,15 @@ class TradingEngine:
                         exit_signal_info.get("reason", "")
                     ).startswith("假突破過濾")
                     trigger["false_breakout_hold"] = false_breakout_hold
-                    trigger["ma5_exit_gate"] = (
-                        "假突破：保持原持倉方向"
-                        if false_breakout_hold
-                        else "等待下一個相反峰谷"
-                    )
+                    if is_cr_position:
+                        # 這個訊息是「等下一個相反峰谷」的CR專屬語意，非CR
+                        # 部位維持上面 _ma5_exit_ready 算出來的持倉時間/幅度
+                        # 閘門說明，不要被這裡蓋掉。
+                        trigger["ma5_exit_gate"] = (
+                            "假突破：保持原持倉方向"
+                            if false_breakout_hold
+                            else "等待下一個相反峰谷"
+                        )
                     opposite_pivot = (
                         position.get("side") == "LONG"
                         and exit_signal_info.get("entry_type") == "PEAK_TURN"
@@ -1235,7 +1243,7 @@ class TradingEngine:
                             or pre_pivot_wait
                             if is_cr_position
                             else (
-                                trigger.get("ma5_reversed")
+                                (trigger.get("ma5_reversed") and ma5_exit_ready)
                                 or trigger.get("is_panic_reversal")
                             )
                         )
