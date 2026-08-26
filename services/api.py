@@ -15,7 +15,6 @@ from core.config import (
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
-from core.trade_history_analysis import TradeHistoryAnalyzer
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -192,10 +191,29 @@ async def get_quant_analysis():
     """唯讀量化報表：比較目前進場方式的實際淨績效。"""
     return TradeHistoryAnalyzer.build_quant_report(engine.account.trades)
 
-@app.get("/api/quant-analysis")
-async def get_quant_analysis():
-    """唯讀量化報表：比較目前進場方式的實際淨績效。"""
-    return TradeHistoryAnalyzer.build_quant_report(engine.account.trades)
+
+
+@app.post("/api/ai-trade-analysis")
+async def run_ai_trade_analysis():
+    """要求自建 AI 立即重新分析已平倉交易；僅產生建議，不影響交易設定。"""
+    analyzer = engine.symbol_rotation.trade_analysis
+    analyzer.analysis["history_digest"] = ""
+    analyzer.analysis["updated_at"] = 0.0
+
+    if engine.is_running:
+        engine.request_trade_analysis()
+        return {
+            "status": "queued",
+            "message": "已交由自建 AI 重新分析，完成後會自動更新面板。",
+            "analysis": analyzer.status(),
+        }
+
+    await analyzer.analyze_if_changed(engine.account.trades)
+    return {
+        "status": analyzer.status().get("status", "completed"),
+        "message": "自建 AI 分析已完成。",
+        "analysis": analyzer.status(),
+    }
 
 @app.post("/api/toggle")
 async def toggle_bot():

@@ -248,9 +248,11 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
 
     atr_raw = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float("nan")
     atr = atr_raw if pd.notna(atr_raw) and atr_raw > 0 else float(df['close'].iloc[-1]) * 0.015
-    min_pivot_slope = max(abs(atr) * 0.05, abs(ma3_prev) * 0.0001)
+    # 放寬趨勢延續的最小變動門檻：仍要求 MA3 確實轉折／分離，
+    # 但不因正常的小幅回踩就錯過已展開的趨勢。
+    min_pivot_slope = max(abs(atr) * 0.03, abs(ma3_prev) * 0.00006)
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
-    min_directional_range = max(abs(atr) * 0.20, abs(ma3_curr) * 0.0004)
+    min_directional_range = max(abs(atr) * 0.10, abs(ma3_curr) * 0.00025)
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
     # 回傳空訊號可讓既有持倉保持原方向。

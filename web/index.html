@@ -476,8 +476,13 @@
                 <div class="card ai-analysis-card">
                     <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
                         <span><span class="collapse-arrow" :class="{ open: aiAnalysisExpanded }">▶</span> 🧠 AI 歷史交易分析</span>
-                        <span style="font-size:10px; color:var(--muted); text-transform:none;">
-                            {{ bot.trade_ai_analysis.status === 'ok' ? '已記錄' : '等待分析' }}
+                        <span style="display:flex; align-items:center; gap:8px;">
+                            <button class="btn" style="padding:4px 7px; font-size:10px;" @click.stop="runAiTradeAnalysis" :disabled="isAnalyzing" :style="{ opacity: isAnalyzing ? 0.6 : 1, cursor: isAnalyzing ? 'not-allowed' : 'pointer' }">
+                                {{ isAnalyzing ? '分析中...' : '立即分析' }}
+                            </button>
+                            <span style="font-size:10px; color:var(--muted); text-transform:none;">
+                                {{ bot.trade_ai_analysis.status === 'ok' ? '自建 AI 已完成' : '等待分析' }}
+                            </span>
                         </span>
                     </div>
                     <div v-show="aiAnalysisExpanded" style="font-size:12px; line-height:1.7; color:var(--muted);">
@@ -531,6 +536,7 @@
                 isPlacingOrder: false,
                 isClosingPos: {},
                 isResetting: false,
+                isAnalyzing: false,
                 bot: {
                         is_running: false,
                         strategy: '',
@@ -836,6 +842,19 @@
                         await this.fetchStatus();
                     } finally {
                         this.isTogglingBot = false;
+                    }
+                },
+                async runAiTradeAnalysis() {
+                    if (this.isAnalyzing) return;
+                    this.isAnalyzing = true;
+                    try {
+                        const res = await this.authorizedFetch("/api/ai-trade-analysis", { method: "POST" });
+                        if (!res) return;
+                        const data = await res.json();
+                        if (data.analysis) this.bot.trade_ai_analysis = data.analysis;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isAnalyzing = false;
                     }
                 },
                 async placeOrder(side) {
