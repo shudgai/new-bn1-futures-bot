@@ -1510,6 +1510,9 @@ def test_consecutive_hard_stops_start_directional_cooldown(monkeypatch):
 
 
 def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
+    # ENTRY_DISABLED_SYMBOLS 這幾週實測調整了好幾輪，不依賴當下環境變數的
+    # 值，這裡固定成測試自己需要的停用集合，讓案例跟即時調參脫鉤。
+    monkeypatch.setattr("core.symbol_rotation.ENTRY_DISABLED_SYMBOLS", {"BNB/USDT"})
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 20_000_000.0)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 40)
     tickers = {
