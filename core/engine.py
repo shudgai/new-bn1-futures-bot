@@ -2,6 +2,7 @@ import asyncio
 import re
 import time
 import ccxt.async_support as ccxt
+import ccxt.pro as ccxtpro
 import pandas as pd
 import weakref
 from typing import Dict, List
@@ -70,6 +71,7 @@ class TradingEngine:
         # 連上 Binance Testnet 下單，還是完全本地模擬（不受測試網伺服器
         # 穩不穩定影響）。
         self.exchange = ccxt.binanceusdm({"enableRateLimit": True})
+        self.ws_exchange = ccxtpro.binanceusdm({"enableRateLimit": False})
         self.execution_exchange = ccxt.binanceusdm({
             "apiKey": BINANCE_API_KEY,
             "secret": BINANCE_SECRET,
@@ -78,7 +80,7 @@ class TradingEngine:
         })
         self.execution_exchange.set_sandbox_mode(USE_TESTNET)
         # Ensure exchanges are closed if TradingEngine is garbage-collected
-        def _close_exchanges(e1, e2):
+        def _close_exchanges(e1, e2, e3=None):
             import asyncio
             try:
                 loop = asyncio.get_running_loop()
@@ -91,6 +93,8 @@ class TradingEngine:
                     # the coroutine object here (avoids un-awaited coroutine)
                     loop.call_soon_threadsafe(lambda: asyncio.create_task(e1.close()))
                     loop.call_soon_threadsafe(lambda: asyncio.create_task(e2.close()))
+                    if e3:
+                        loop.call_soon_threadsafe(lambda: asyncio.create_task(e3.close()))
                 except Exception:
                     pass
             else:
@@ -102,8 +106,12 @@ class TradingEngine:
                     asyncio.run(e2.close())
                 except Exception:
                     pass
+                try:
+                    asyncio.run(e3.close())
+                except Exception:
+                    pass
 
-        weakref.finalize(self, _close_exchanges, self.exchange, self.execution_exchange)
+        weakref.finalize(self, _close_exchanges, self.exchange, self.execution_exchange, self.ws_exchange)
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
@@ -930,6 +938,7 @@ class TradingEngine:
         if hasattr(self, 'ticker_task') and self.ticker_task:
             self.ticker_task.cancel()
         await self.exchange.close()
+        await self.ws_exchange.close()
         await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
 
@@ -1768,16 +1777,46 @@ class TradingEngine:
                 )
 
     async def _ticker_loop(self):
-        """獨立的報價更新迴圈：每秒更新一次價格，不受主迴圈抓取 K 線的耗時影響。"""
+        """使用 WebSocket (ccxt.pro) 接收真正的毫秒級即時報價串流"""
         while self.is_running:
             try:
-                await self.update_market_prices()
-                await asyncio.sleep(1)
+                monitored_symbols = list(dict.fromkeys([
+                    *DEFAULT_SYMBOLS,
+                    *self.account.positions.keys(),
+                ]))
+                
+                # 若無監控幣種，短暫等待
+                if not monitored_symbols:
+                    await asyncio.sleep(1)
+                    continue
+
+                # watch_tickers 會一直等待直到有新的 WebSocket 封包抵達
+                tickers = await self.ws_exchange.watch_tickers(monitored_symbols)
+                
+                for sym, t in tickers.items():
+                    if 'last' in t and t['last'] is not None:
+                        price = float(t['last'])
+                        clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
+                        self.tickers[clean_sym] = price
+                        self.tickers[sym] = price
+                    if 'quoteVolume' in t and t['quoteVolume'] is not None:
+                        clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
+                        self.ticker_volumes[clean_sym] = float(t['quoteVolume'])
+                        self.ticker_volumes[sym] = float(t['quoteVolume'])
+                
+                self.last_ticker_success_ts = time.time()
+                
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.account.log(f"⚠️ [Ticker Loop] 錯誤: {e}", "WARNING")
-                await asyncio.sleep(1)
+                # 遇到錯誤時退回使用 REST polling (update_market_prices) 做為備援
+                # 並等待一下再重新嘗試連線 WS
+                self.account.log(f"⚠️ [WebSocket Ticker Loop] 錯誤: {e}，暫時退回 REST 抓取...", "WARNING")
+                try:
+                    await self.update_market_prices()
+                except Exception as rest_e:
+                    self.account.log(f"⚠️ [REST Fallback] 錯誤: {rest_e}", "WARNING")
+                await asyncio.sleep(2)
 
     async def update_1h_trend_cache(self):
         """10 分鐘才抓取一次 1h 大週期數據，避免頻繁調用 API Rate Limit"""
