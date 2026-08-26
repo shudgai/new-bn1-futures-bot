@@ -1290,6 +1290,275 @@ class TradingEngine:
                 self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(5)
 
+    async def _process_single_exit(self, symbol, position):
+        try:
+            managed_modes = {
+                'BREAKOUT', 'SUPPORT_PULLBACK', 'MOMENTUM_CROSS',
+                'MA5_REVERSAL', 'MA5_BOTTOM_LIMIT', 'CURRENT_MAKER', 'PULLBACK',
+            }
+            meta = self.account.position_meta.setdefault(symbol, {})
+            entry_mode = position.get("entry_mode") or meta.get("entry_mode")
+            if entry_mode not in managed_modes:
+                return
+            side = position["side"]
+            direction = 1 if side == "LONG" else -1
+            current_price = float(
+                self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"]
+            )
+
+            symbol_1h = self.st_direction_1h_cache.get(symbol)
+            btc_1h = int(self.btc_1h_st_direction or 0)
+
+            # 提前載入 5m K線與指標計算，供後續 DCA 評分與 exits 共同使用
+            df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
+            if df.empty or len(df) < 65:
+                return
+            computed = self.strategy.compute_indicators(df)
+            bar = computed.iloc[-1]
+            atr = float(bar["atr"]) if not pd.isna(bar["atr"]) else 0.0
+            if atr <= 0:
+                atr = float(meta.get("atr") or position.get("atr") or 0.0)
+            if atr <= 0:
+                return
+
+            # ====== 【DCA 分批加倉限價單掛載與均價 SL/TP 重算】 ======
+            from core.config import ENABLE_DCA_LIMIT, DCA_STAGE_DEPTHS, MIN_OPEN_SIGNAL_SCORE
+
+            # 取得目前持倉所處的 DCA 階段，若沒有則從 meta 讀取
+            dca_stage = position.get("dca_stage") or meta.get("dca_stage")
+
+            # 如果有新加倉單成交，qty 增加時更新 stage
+            last_qty = meta.get("dca_last_qty", 0.0)
+            if last_qty > 0.0 and abs(position["qty"] - last_qty) > 1e-8:
+                # 數量增加，代表上一階 DCA 限價單已成交！
+                old_stage = dca_stage or 1
+                dca_stage = old_stage + 1
+                meta["dca_stage"] = dca_stage
+                meta["dca_last_qty"] = position["qty"]
+
+                # 成交後，重新對齊均價（最新進場價）來重算 SL
+                dca_atr = float(position.get("atr") or meta.get("atr") or 0.0)
+                if dca_atr <= 0:
+                    dca_atr = atr
+                if dca_atr > 0:
+                    from core.config import BREAKOUT_HARD_STOP_ATR_MULT, MIN_SL_DISTANCE_PCT
+                    if side == "LONG":
+                        new_sl = position["entry_price"] - BREAKOUT_HARD_STOP_ATR_MULT * dca_atr
+                        new_sl = min(new_sl, position["entry_price"] * (1.0 - MIN_SL_DISTANCE_PCT))
+                    else:
+                        new_sl = position["entry_price"] + BREAKOUT_HARD_STOP_ATR_MULT * dca_atr
+                        new_sl = max(new_sl, position["entry_price"] * (1.0 + MIN_SL_DISTANCE_PCT))
+
+                    # 強制將新止損對齊到交易所與本地
+                    meta["sl"] = new_sl
+                    if DISABLE_STOP_LOSS:
+                        self.account.log(f"⏸️ [自動停損已停用] 跳過 DCA 重設止損 {symbol} -> {new_sl}", "INFO")
+                    else:
+                        await self.account.trail_stop_loss(symbol, new_sl, mark_profit_locked=False)
+                    self.account.log(f"🔄 [DCA 均價對齊] {symbol} 加倉成交 (階 {dca_stage})，新均價 {position['entry_price']:.8g}，止損重設為 {new_sl:.8g}", "SUCCESS")
+            else:
+                meta["dca_last_qty"] = position["qty"]
+
+            # 1h 級別趨勢防接飛刀 (防瀑布) 過濾：若大趨勢已翻向，停止加倉並撤回掛單
+            waterfall_crash = (side == "LONG" and symbol_1h == -1) or (side == "SHORT" and symbol_1h == 1)
+            if waterfall_crash:
+                if symbol in self.account.pending_limit_orders:
+                    po = self.account.pending_limit_orders[symbol]
+                    if "dca_stage" in po.get("entry_context", {}):
+                        await self.account.cancel_pending_limit(symbol, f"大週期 1h 趨勢反向({symbol_1h})，DCA撤單避險")
+            else:
+                # DCA 掛單超時管理：掛單時間過長自動撤回，釋放資金佔用
+                if symbol in self.account.pending_limit_orders:
+                    po = self.account.pending_limit_orders[symbol]
+                    if "dca_stage" in po.get("entry_context", {}):
+                        from core.config import DCA_LIMIT_TIMEOUT_SEC
+                        placed_at = po.get("placed_at") or time.time()
+                        if time.time() - placed_at >= DCA_LIMIT_TIMEOUT_SEC:
+                            await self.account.cancel_pending_limit(symbol, "DCA 加倉限價單超時撤單")
+
+            if ENABLE_DCA_LIMIT and dca_stage in (1, 2) and not waterfall_crash:
+                # 如果此幣種目前沒有在掛限價加倉單，則進行最新評分檢測
+                if symbol not in self.account.pending_limit_orders:
+                    score_res = self.strategy.evaluate_structured_entry(
+                        computed,
+                        ema_50_1h=self.ema_50_1h_cache.get(symbol),
+                        st_direction_1h=symbol_1h,
+                        btc_st_direction_1h=btc_1h,
+                        symbol=symbol,
+                        indicators_precomputed=True,
+                        is_dca_check=True,
+                    )
+                    current_score = score_res.get("score") or 0
+
+                    # 分數有維持（符合最低開倉門檻），才允許分批掛出下一階
+                    if current_score >= MIN_OPEN_SIGNAL_SCORE:
+                        dca_base_price = float(position.get("dca_base_price") or meta.get("dca_base_price") or position["entry_price"])
+                        dca_original_amount = float(position.get("dca_original_amount") or meta.get("dca_original_amount") or (position["entry_price"] * position["qty"]))
+
+                        next_stage = int(dca_stage) + 1
+                        if next_stage - 2 < len(DCA_STAGE_DEPTHS):
+                            depth_pct = DCA_STAGE_DEPTHS[next_stage - 2]
+                            next_price = dca_base_price * (1 - depth_pct) if side == "LONG" else dca_base_price * (1 + depth_pct)
+                            next_amount = dca_original_amount / 3.0
+
+                            dca_context = {
+                                "dca_stage": next_stage,
+                                "dca_base_price": dca_base_price,
+                                "dca_original_amount": dca_original_amount,
+                                "entry_mode": entry_mode,
+                                "initial_sl": float(position.get("sl") or meta.get("sl") or 0.0),
+                            }
+                            # 使用與目前持倉相同的槓桿與 SL
+                            success = await self.account.place_limit_entry(
+                                symbol=symbol,
+                                side=side,
+                                target_price=next_price,
+                                amount_usdt=next_amount,
+                                sl=float(position.get("sl") or meta.get("sl") or 0.0),
+                                tp=float(position.get("tp") or meta.get("tp") or 0.0),
+                                reason=f"DCA 加倉 (階 {next_stage})",
+                                atr=atr,
+                                leverage=int(position.get("leverage") or 1),
+                                post_only=True,
+                                entry_context=dca_context
+                            )
+                            if success:
+                                self.account.log(f"📥 [DCA 自動加倉掛單] {symbol} {side} 成功掛出第 {next_stage} 階加倉委託 @ {next_price:.8g}，當前評分維持 {current_score} 分", "INFO")
+                    else:
+                        if getattr(self, "_last_dca_skip_log_at", {}).get(symbol, 0) < time.time() - 300:
+                            self._last_dca_skip_log_at = getattr(self, "_last_dca_skip_log_at", {})
+                            self._last_dca_skip_log_at[symbol] = time.time()
+                            self.account.log(f"⚠️ [DCA 評分不足] {symbol} 最新分數 {current_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分，暫不掛載下一階加倉單", "WARNING")
+
+            # 根據使用者偏好：已停用 1h SuperTrend 翻向強制全平防線，給持倉死等利潤彈回或吃滿硬止損的空間。
+            pass
+
+
+
+            # --- K 線反轉逃頂機制 ---
+            # 獲利狀態下，若出現明顯的反轉 K 線 (多單遇到流星線，空單遇到錘頭線)，提早獲利了結。
+            from core.indicators import analyze_candle_pattern
+            candle_pattern = analyze_candle_pattern(bar)
+
+            unrealized_pnl_pct = (current_price - position["entry_price"]) / position["entry_price"] if side == "LONG" else (position["entry_price"] - current_price) / position["entry_price"]
+            # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
+            if unrealized_pnl_pct > 0.002:
+                early_exit_reason = ""
+                if side == "LONG" and candle_pattern.get("is_shooting_star"):
+                    early_exit_reason = "高檔出現流星線 (Shooting Star)"
+                elif side == "SHORT" and candle_pattern.get("is_hammer"):
+                    early_exit_reason = "低檔出現錘頭線 (Hammer)"
+
+                if early_exit_reason:
+                    self.account.log(f"🚨 [K線型態逃頂] {symbol} {side} 獲利 {unrealized_pnl_pct:.2%}，{early_exit_reason} 提早平倉！", "SUCCESS")
+                    if not DISABLE_STOP_LOSS:
+                        await self.account.close_position(symbol, current_price, f"型態逃頂 ({early_exit_reason})")
+                    return
+
+            if entry_mode == "BREAKOUT":
+                # 修正2：kc_failed 改為需要連續 BREAKOUT_KC_FAIL_CONFIRM_BARS 根
+                # 已收盤5m K棒實體（開盤+收盤）都在EMA20不利側才觸發關倉。
+                # 突破後第一根正常回踩K棒不會觸發，需要連續失守才認定趨勢翻轉。
+                # 第二道防線保留：影線觸及反向KC外軌仍立即觸發（極端反轉訊號）。
+                past_bars = computed.iloc[-BREAKOUT_KC_FAIL_CONFIRM_BARS - 1:-1]
+                if side == "LONG":
+                    # 每根K棒的開盤和收盤都在EMA20以下才算失守1根
+                    bar_failed_count = int(
+                        ((past_bars['open'] < past_bars['ema_20']) & (past_bars['close'] < past_bars['ema_20'])).sum()
+                    )
+                    shadow_breach = float(bar["low"]) <= float(bar["kc_lower"])
+                    kc_failed = bar_failed_count >= BREAKOUT_KC_FAIL_CONFIRM_BARS or shadow_breach
+                else:
+                    bar_failed_count = int(
+                        ((past_bars['open'] > past_bars['ema_20']) & (past_bars['close'] > past_bars['ema_20'])).sum()
+                    )
+                    shadow_breach = float(bar["high"]) >= float(bar["kc_upper"])
+                    kc_failed = bar_failed_count >= BREAKOUT_KC_FAIL_CONFIRM_BARS or shadow_breach
+
+                if kc_failed:
+                    fail_reason = (
+                        f"影線觸及反向KC外軌" if shadow_breach
+                        else f"連續{bar_failed_count}根5m實體收在EMA20不利側"
+                    )
+                    self.account.log(
+                        f"🟡 [KC失敗關倉] {symbol} {side} {fail_reason}",
+                        "WARNING"
+                    )
+                    if DISABLE_STOP_LOSS:
+                        self.account.log(f"⏸️ [自動停損已停用] 跳過 KC 失敗自動平倉 {symbol} ({fail_reason})", "INFO")
+                    else:
+                        await self.account.close_position(
+                            symbol, current_price, f"KC失敗({fail_reason})"
+                        )
+                    return
+
+
+            entry_price = float(position["entry_price"])
+            initial_risk = float(
+                position.get("initial_risk") or meta.get("initial_risk")
+                or abs(entry_price - float(position.get("sl") or meta.get("sl") or entry_price))
+            )
+            if initial_risk <= 0:
+                return
+            favorable_price = current_price
+            peak_key = "structured_peak_price"
+            previous_peak = float(meta.get(peak_key) or entry_price)
+            peak = max(previous_peak, favorable_price) if side == "LONG" else min(previous_peak, favorable_price)
+            meta[peak_key] = peak
+
+            current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
+            # 只有 BREAKOUT 突破策略使用 BREAKOUT_TRAILING_ATR_MULT 移動止損
+            if entry_mode == "BREAKOUT":
+                trail_sl = (
+                    peak - BREAKOUT_TRAILING_ATR_MULT * atr
+                    if side == "LONG" else peak + BREAKOUT_TRAILING_ATR_MULT * atr
+                )
+                cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
+                if side == "LONG" and trail_sl > entry_price:
+                    trail_sl = max(trail_sl, entry_price * (1.0 + cost_pct))
+                elif side == "SHORT" and trail_sl < entry_price:
+                    trail_sl = min(trail_sl, entry_price * (1.0 - cost_pct))
+                improves = False
+                if side == "LONG":
+                    if trail_sl >= entry_price:
+                        improves = (trail_sl > current_sl)
+                else:
+                    if trail_sl <= entry_price:
+                        improves = (current_sl <= 0 or trail_sl < current_sl)
+                if improves:
+                    locked = trail_sl >= entry_price if side == "LONG" else trail_sl <= entry_price
+                    if DISABLE_STOP_LOSS:
+                        self.account.log(f"⏸️ [自動停損已停用] 跳過移動止損 {symbol} -> {trail_sl}", "INFO")
+                    else:
+                        await self.account.trail_stop_loss(
+                            symbol, trail_sl, mark_profit_locked=locked
+                        )
+
+            favorable_move = (
+                current_price - entry_price if side == "LONG"
+                else entry_price - current_price
+            )
+            rr = favorable_move / initial_risk
+            if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
+                if await self.account.partial_close_position(
+                    symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
+                    fraction=BREAKOUT_RR_CLOSE_FRACTION,
+                ):
+                    meta = self.account.position_meta.setdefault(symbol, meta)
+                    meta["rr_1_5_done"] = True
+                    self.account.save_state()
+                    return
+            if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
+                if await self.account.partial_close_position(
+                    symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
+                    fraction=BREAKOUT_RR_CLOSE_FRACTION,
+                ):
+                    meta = self.account.position_meta.setdefault(symbol, meta)
+                    meta["rr_2_5_done"] = True
+                    self.account.save_state()
+        except Exception as e:
+            self.account.log(f'⚠️ [{symbol}] 出場監控例外: {e}', 'WARNING')
+
     async def _run_structured_exits(self):
         """Manage structured positions with KC failure, ATR trail, RR scales, and 1h flips."""
         managed_modes = {
@@ -1298,267 +1567,12 @@ class TradingEngine:
         }
         while self.is_running:
             try:
-                for symbol, position in list(self.account.positions.items()):
-                    meta = self.account.position_meta.setdefault(symbol, {})
-                    entry_mode = position.get("entry_mode") or meta.get("entry_mode")
-                    if entry_mode not in managed_modes:
-                        continue
-                    side = position["side"]
-                    direction = 1 if side == "LONG" else -1
-                    current_price = float(
-                        self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"]
-                    )
-
-                    symbol_1h = self.st_direction_1h_cache.get(symbol)
-                    btc_1h = int(self.btc_1h_st_direction or 0)
-                    
-                    # 提前載入 5m K線與指標計算，供後續 DCA 評分與 exits 共同使用
-                    df = await self.fetch_klines(symbol, timeframe="5m", limit=100)
-                    if df.empty or len(df) < 65:
-                        continue
-                    computed = self.strategy.compute_indicators(df)
-                    bar = computed.iloc[-1]
-                    atr = float(bar["atr"]) if not pd.isna(bar["atr"]) else 0.0
-                    if atr <= 0:
-                        atr = float(meta.get("atr") or position.get("atr") or 0.0)
-                    if atr <= 0:
-                        continue
-                    
-                    # ====== 【DCA 分批加倉限價單掛載與均價 SL/TP 重算】 ======
-                    from core.config import ENABLE_DCA_LIMIT, DCA_STAGE_DEPTHS, MIN_OPEN_SIGNAL_SCORE
-                    
-                    # 取得目前持倉所處的 DCA 階段，若沒有則從 meta 讀取
-                    dca_stage = position.get("dca_stage") or meta.get("dca_stage")
-                    
-                    # 如果有新加倉單成交，qty 增加時更新 stage
-                    last_qty = meta.get("dca_last_qty", 0.0)
-                    if last_qty > 0.0 and abs(position["qty"] - last_qty) > 1e-8:
-                        # 數量增加，代表上一階 DCA 限價單已成交！
-                        old_stage = dca_stage or 1
-                        dca_stage = old_stage + 1
-                        meta["dca_stage"] = dca_stage
-                        meta["dca_last_qty"] = position["qty"]
-                        
-                        # 成交後，重新對齊均價（最新進場價）來重算 SL
-                        dca_atr = float(position.get("atr") or meta.get("atr") or 0.0)
-                        if dca_atr <= 0:
-                            dca_atr = atr
-                        if dca_atr > 0:
-                            from core.config import BREAKOUT_HARD_STOP_ATR_MULT, MIN_SL_DISTANCE_PCT
-                            if side == "LONG":
-                                new_sl = position["entry_price"] - BREAKOUT_HARD_STOP_ATR_MULT * dca_atr
-                                new_sl = min(new_sl, position["entry_price"] * (1.0 - MIN_SL_DISTANCE_PCT))
-                            else:
-                                new_sl = position["entry_price"] + BREAKOUT_HARD_STOP_ATR_MULT * dca_atr
-                                new_sl = max(new_sl, position["entry_price"] * (1.0 + MIN_SL_DISTANCE_PCT))
-                            
-                            # 強制將新止損對齊到交易所與本地
-                            meta["sl"] = new_sl
-                            if DISABLE_STOP_LOSS:
-                                self.account.log(f"⏸️ [自動停損已停用] 跳過 DCA 重設止損 {symbol} -> {new_sl}", "INFO")
-                            else:
-                                await self.account.trail_stop_loss(symbol, new_sl, mark_profit_locked=False)
-                            self.account.log(f"🔄 [DCA 均價對齊] {symbol} 加倉成交 (階 {dca_stage})，新均價 {position['entry_price']:.8g}，止損重設為 {new_sl:.8g}", "SUCCESS")
-                    else:
-                        meta["dca_last_qty"] = position["qty"]
-
-                    # 1h 級別趨勢防接飛刀 (防瀑布) 過濾：若大趨勢已翻向，停止加倉並撤回掛單
-                    waterfall_crash = (side == "LONG" and symbol_1h == -1) or (side == "SHORT" and symbol_1h == 1)
-                    if waterfall_crash:
-                        if symbol in self.account.pending_limit_orders:
-                            po = self.account.pending_limit_orders[symbol]
-                            if "dca_stage" in po.get("entry_context", {}):
-                                await self.account.cancel_pending_limit(symbol, f"大週期 1h 趨勢反向({symbol_1h})，DCA撤單避險")
-                    else:
-                        # DCA 掛單超時管理：掛單時間過長自動撤回，釋放資金佔用
-                        if symbol in self.account.pending_limit_orders:
-                            po = self.account.pending_limit_orders[symbol]
-                            if "dca_stage" in po.get("entry_context", {}):
-                                from core.config import DCA_LIMIT_TIMEOUT_SEC
-                                placed_at = po.get("placed_at") or time.time()
-                                if time.time() - placed_at >= DCA_LIMIT_TIMEOUT_SEC:
-                                    await self.account.cancel_pending_limit(symbol, "DCA 加倉限價單超時撤單")
-
-                    if ENABLE_DCA_LIMIT and dca_stage in (1, 2) and not waterfall_crash:
-                        # 如果此幣種目前沒有在掛限價加倉單，則進行最新評分檢測
-                        if symbol not in self.account.pending_limit_orders:
-                            score_res = self.strategy.evaluate_structured_entry(
-                                computed,
-                                ema_50_1h=self.ema_50_1h_cache.get(symbol),
-                                st_direction_1h=symbol_1h,
-                                btc_st_direction_1h=btc_1h,
-                                symbol=symbol,
-                                indicators_precomputed=True,
-                                is_dca_check=True,
-                            )
-                            current_score = score_res.get("score") or 0
-                            
-                            # 分數有維持（符合最低開倉門檻），才允許分批掛出下一階
-                            if current_score >= MIN_OPEN_SIGNAL_SCORE:
-                                dca_base_price = float(position.get("dca_base_price") or meta.get("dca_base_price") or position["entry_price"])
-                                dca_original_amount = float(position.get("dca_original_amount") or meta.get("dca_original_amount") or (position["entry_price"] * position["qty"]))
-                                
-                                next_stage = int(dca_stage) + 1
-                                if next_stage - 2 < len(DCA_STAGE_DEPTHS):
-                                    depth_pct = DCA_STAGE_DEPTHS[next_stage - 2]
-                                    next_price = dca_base_price * (1 - depth_pct) if side == "LONG" else dca_base_price * (1 + depth_pct)
-                                    next_amount = dca_original_amount / 3.0
-                                    
-                                    dca_context = {
-                                        "dca_stage": next_stage,
-                                        "dca_base_price": dca_base_price,
-                                        "dca_original_amount": dca_original_amount,
-                                        "entry_mode": entry_mode,
-                                        "initial_sl": float(position.get("sl") or meta.get("sl") or 0.0),
-                                    }
-                                    # 使用與目前持倉相同的槓桿與 SL
-                                    success = await self.account.place_limit_entry(
-                                        symbol=symbol,
-                                        side=side,
-                                        target_price=next_price,
-                                        amount_usdt=next_amount,
-                                        sl=float(position.get("sl") or meta.get("sl") or 0.0),
-                                        tp=float(position.get("tp") or meta.get("tp") or 0.0),
-                                        reason=f"DCA 加倉 (階 {next_stage})",
-                                        atr=atr,
-                                        leverage=int(position.get("leverage") or 1),
-                                        post_only=True,
-                                        entry_context=dca_context
-                                    )
-                                    if success:
-                                        self.account.log(f"📥 [DCA 自動加倉掛單] {symbol} {side} 成功掛出第 {next_stage} 階加倉委託 @ {next_price:.8g}，當前評分維持 {current_score} 分", "INFO")
-                            else:
-                                if getattr(self, "_last_dca_skip_log_at", {}).get(symbol, 0) < time.time() - 300:
-                                    self._last_dca_skip_log_at = getattr(self, "_last_dca_skip_log_at", {})
-                                    self._last_dca_skip_log_at[symbol] = time.time()
-                                    self.account.log(f"⚠️ [DCA 評分不足] {symbol} 最新分數 {current_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分，暫不掛載下一階加倉單", "WARNING")
-
-                    # 根據使用者偏好：已停用 1h SuperTrend 翻向強制全平防線，給持倉死等利潤彈回或吃滿硬止損的空間。
-                    pass
-
-
-
-                    # --- K 線反轉逃頂機制 ---
-                    # 獲利狀態下，若出現明顯的反轉 K 線 (多單遇到流星線，空單遇到錘頭線)，提早獲利了結。
-                    from core.indicators import analyze_candle_pattern
-                    candle_pattern = analyze_candle_pattern(bar)
-                    
-                    unrealized_pnl_pct = (current_price - position["entry_price"]) / position["entry_price"] if side == "LONG" else (position["entry_price"] - current_price) / position["entry_price"]
-                    # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
-                    if unrealized_pnl_pct > 0.002:
-                        early_exit_reason = ""
-                        if side == "LONG" and candle_pattern.get("is_shooting_star"):
-                            early_exit_reason = "高檔出現流星線 (Shooting Star)"
-                        elif side == "SHORT" and candle_pattern.get("is_hammer"):
-                            early_exit_reason = "低檔出現錘頭線 (Hammer)"
-                        
-                        if early_exit_reason:
-                            self.account.log(f"🚨 [K線型態逃頂] {symbol} {side} 獲利 {unrealized_pnl_pct:.2%}，{early_exit_reason} 提早平倉！", "SUCCESS")
-                            if not DISABLE_STOP_LOSS:
-                                await self.account.close_position(symbol, current_price, f"型態逃頂 ({early_exit_reason})")
-                            continue
-
-                    if entry_mode == "BREAKOUT":
-                        # 修正2：kc_failed 改為需要連續 BREAKOUT_KC_FAIL_CONFIRM_BARS 根
-                        # 已收盤5m K棒實體（開盤+收盤）都在EMA20不利側才觸發關倉。
-                        # 突破後第一根正常回踩K棒不會觸發，需要連續失守才認定趨勢翻轉。
-                        # 第二道防線保留：影線觸及反向KC外軌仍立即觸發（極端反轉訊號）。
-                        past_bars = computed.iloc[-BREAKOUT_KC_FAIL_CONFIRM_BARS - 1:-1]
-                        if side == "LONG":
-                            # 每根K棒的開盤和收盤都在EMA20以下才算失守1根
-                            bar_failed_count = int(
-                                ((past_bars['open'] < past_bars['ema_20']) & (past_bars['close'] < past_bars['ema_20'])).sum()
-                            )
-                            shadow_breach = float(bar["low"]) <= float(bar["kc_lower"])
-                            kc_failed = bar_failed_count >= BREAKOUT_KC_FAIL_CONFIRM_BARS or shadow_breach
-                        else:
-                            bar_failed_count = int(
-                                ((past_bars['open'] > past_bars['ema_20']) & (past_bars['close'] > past_bars['ema_20'])).sum()
-                            )
-                            shadow_breach = float(bar["high"]) >= float(bar["kc_upper"])
-                            kc_failed = bar_failed_count >= BREAKOUT_KC_FAIL_CONFIRM_BARS or shadow_breach
-
-                        if kc_failed:
-                            fail_reason = (
-                                f"影線觸及反向KC外軌" if shadow_breach
-                                else f"連續{bar_failed_count}根5m實體收在EMA20不利側"
-                            )
-                            self.account.log(
-                                f"🟡 [KC失敗關倉] {symbol} {side} {fail_reason}",
-                                "WARNING"
-                            )
-                            if DISABLE_STOP_LOSS:
-                                self.account.log(f"⏸️ [自動停損已停用] 跳過 KC 失敗自動平倉 {symbol} ({fail_reason})", "INFO")
-                            else:
-                                await self.account.close_position(
-                                    symbol, current_price, f"KC失敗({fail_reason})"
-                                )
-                            continue
-
-
-                    entry_price = float(position["entry_price"])
-                    initial_risk = float(
-                        position.get("initial_risk") or meta.get("initial_risk")
-                        or abs(entry_price - float(position.get("sl") or meta.get("sl") or entry_price))
-                    )
-                    if initial_risk <= 0:
-                        continue
-                    favorable_price = current_price
-                    peak_key = "structured_peak_price"
-                    previous_peak = float(meta.get(peak_key) or entry_price)
-                    peak = max(previous_peak, favorable_price) if side == "LONG" else min(previous_peak, favorable_price)
-                    meta[peak_key] = peak
-
-                    current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
-                    # 只有 BREAKOUT 突破策略使用 BREAKOUT_TRAILING_ATR_MULT 移動止損
-                    if entry_mode == "BREAKOUT":
-                        trail_sl = (
-                            peak - BREAKOUT_TRAILING_ATR_MULT * atr
-                            if side == "LONG" else peak + BREAKOUT_TRAILING_ATR_MULT * atr
-                        )
-                        cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
-                        if side == "LONG" and trail_sl > entry_price:
-                            trail_sl = max(trail_sl, entry_price * (1.0 + cost_pct))
-                        elif side == "SHORT" and trail_sl < entry_price:
-                            trail_sl = min(trail_sl, entry_price * (1.0 - cost_pct))
-                        improves = False
-                        if side == "LONG":
-                            if trail_sl >= entry_price:
-                                improves = (trail_sl > current_sl)
-                        else:
-                            if trail_sl <= entry_price:
-                                improves = (current_sl <= 0 or trail_sl < current_sl)
-                        if improves:
-                            locked = trail_sl >= entry_price if side == "LONG" else trail_sl <= entry_price
-                            if DISABLE_STOP_LOSS:
-                                self.account.log(f"⏸️ [自動停損已停用] 跳過移動止損 {symbol} -> {trail_sl}", "INFO")
-                            else:
-                                await self.account.trail_stop_loss(
-                                    symbol, trail_sl, mark_profit_locked=locked
-                                )
-
-                    favorable_move = (
-                        current_price - entry_price if side == "LONG"
-                        else entry_price - current_price
-                    )
-                    rr = favorable_move / initial_risk
-                    if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
-                        if await self.account.partial_close_position(
-                            symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
-                            fraction=BREAKOUT_RR_CLOSE_FRACTION,
-                        ):
-                            meta = self.account.position_meta.setdefault(symbol, meta)
-                            meta["rr_1_5_done"] = True
-                            self.account.save_state()
-                            continue
-                    if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
-                        if await self.account.partial_close_position(
-                            symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
-                            fraction=BREAKOUT_RR_CLOSE_FRACTION,
-                        ):
-                            meta = self.account.position_meta.setdefault(symbol, meta)
-                            meta["rr_2_5_done"] = True
-                            self.account.save_state()
+                tasks = [
+                    self._process_single_exit(symbol, position)
+                    for symbol, position in list(self.account.positions.items())
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 await asyncio.sleep(STRUCTURED_EXIT_INTERVAL_SEC)
             except asyncio.CancelledError:
                 break
@@ -2828,6 +2842,484 @@ class TradingEngine:
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
             self.account.save_state()
 
+    async def _process_single_symbol(self, symbol, now_time, btc_1m_turn, daily_halt):
+        signal_progress = []
+        detected_candidates = []
+        try:
+            direction_text = "雙向"
+            coin = symbol.replace("/USDT", "")
+
+            from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
+            if ENABLE_CONTINUOUS_REVERSE_MODE:
+                from core.indicators import detect_ma5_ma25_cross_and_turn
+                from core.strategy import build_sl_tp_for_side
+                # 一般方向訊號只使用已收盤 K；活動 K 在 MA3 第一彎與 K 色同向時
+                # 立即反轉，僅保留長影線陷阱防護，避免平倉後反手過慢。
+                df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
+                if df_cr.empty or len(df_cr) < 4:
+                    return signal_progress, detected_candidates
+                if 'ma3' not in df_cr.columns:
+                    df_cr['ma3'] = df_cr['close'].rolling(window=3).mean()
+                if 'ma5' not in df_cr.columns:
+                    df_cr['ma5'] = df_cr['close'].rolling(window=5).mean()
+                df_cr_signal = drop_unclosed_candle(df_cr, CONTINUOUS_REVERSE_TIMEFRAME)
+                cr_info = detect_ma5_ma25_cross_and_turn(df_cr_signal)
+                uses_live_pivot = False
+                if len(df_cr) > len(df_cr_signal):
+                    live_pivot_info = detect_ma5_ma25_cross_and_turn(
+                        df_cr, allow_live_pivot=True
+                    )
+                    uses_live_pivot = bool(
+                        live_pivot_info.get("pivot_confirmed")
+                        and live_pivot_info.get("entry_type") in ("TROUGH_TURN", "PEAK_TURN")
+                    )
+                    if uses_live_pivot:
+                        cr_info = live_pivot_info
+                df_cr_entry = df_cr if uses_live_pivot else df_cr_signal
+                cr_signal = cr_info.get("signal")
+                cr_entry_type = cr_info.get("entry_type", "")
+                is_peak_early = cr_info.get("is_peak_early", False)
+                is_trough_early = cr_info.get("is_trough_early", False)
+
+                # Group A only executes confirmed MA3 V or inverted-V pivots.
+                if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                    cr_signal = None
+
+                has_pos = symbol in self.account.positions
+                curr_side = self.account.positions[symbol]["side"] if has_pos else None
+
+                consolidation = self._detect_ma3_consolidation(df_cr_signal)
+                consolidation_lock = self._continuous_consolidation_locks.get(symbol)
+                if consolidation.get("detected"):
+                    self._continuous_consolidation_locks[symbol] = {
+                        "range_high": consolidation["range_high"],
+                        "range_low": consolidation["range_low"],
+                        "atr": consolidation["atr"],
+                        "locked_at": time.time(),
+                    }
+                    cr_signal = None
+                    if has_pos:
+                        fallback_price = float(df_cr_signal["close"].iloc[-1])
+                        clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+                        exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
+                        closed = await self.account.close_position(
+                            symbol=symbol,
+                            current_price=exit_price,
+                            close_reason="MA3 盤整確認：平倉等待突破",
+                        )
+                        if closed:
+                            self.account.log(
+                                f"{symbol} MA3 盤整確認：已平倉並鎖定重新進場",
+                                "WARNING",
+                            )
+                    signal_progress.append(f"{coin} 盤整鎖定，等待區間突破")
+                    return signal_progress, detected_candidates
+
+                if consolidation_lock:
+                    if has_pos:
+                        fallback_price = float(df_cr_signal["close"].iloc[-1])
+                        clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+                        exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
+                        await self.account.close_position(
+                            symbol=symbol,
+                            current_price=exit_price,
+                            close_reason="MA3 盤整鎖定仍生效",
+                        )
+                        signal_progress.append(f"{coin} 盤整鎖定，正在平掉既有持倉")
+                        return signal_progress, detected_candidates
+
+                    closed_price = float(df_cr_signal["close"].iloc[-1])
+                    lock_atr = max(float(consolidation_lock.get("atr") or 0.0), 1e-12)
+                    recent_ma3 = df_cr_entry["ma3"].dropna().astype(float).iloc[-12:]
+                    pivot_amplitude_atr = 0.0
+                    if len(recent_ma3) >= 2 and cr_signal == "LONG":
+                        pivot_amplitude_atr = (float(recent_ma3.iloc[-1]) - float(recent_ma3.min())) / lock_atr
+                    elif len(recent_ma3) >= 2 and cr_signal == "SHORT":
+                        pivot_amplitude_atr = (float(recent_ma3.max()) - float(recent_ma3.iloc[-1])) / lock_atr
+                    breakout_ready = bool(
+                        cr_signal == "LONG"
+                        and closed_price > float(consolidation_lock["range_high"])
+                        or cr_signal == "SHORT"
+                        and closed_price < float(consolidation_lock["range_low"])
+                    )
+                    if cr_signal and breakout_ready and pivot_amplitude_atr >= 0.20:
+                        self._continuous_consolidation_locks.pop(symbol, None)
+                        self.account.log(
+                            f"{symbol} 盤整突破確認，解除鎖定並允許 {cr_signal} entry",
+                            "SUCCESS",
+                        )
+                    else:
+                        cr_signal = None
+                        signal_progress.append(f"{coin} 盤整鎖定，突破尚未確認")
+                        return signal_progress, detected_candidates
+
+                entry_bar_id = (
+                    int(float(df_cr_entry['timestamp'].iloc[-1]))
+                    if 'timestamp' in df_cr_entry.columns
+                    else int(df_cr_entry.index[-1])
+                )
+
+                if cr_signal and self._continuous_last_entry_bar.get(symbol) == (cr_signal, entry_bar_id):
+                    self.account.log(
+                        f"⏸️ {symbol} 同一根K已開過 {cr_signal}，等待下一根避免重複進場",
+                        "DEBUG",
+                    )
+                    cr_signal = None
+
+                if cr_signal:
+                    last_close = float(df_cr_entry['close'].iloc[-1])
+                    clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
+                    live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
+
+                    # 由於使用者要求「完全無視K線顏色，只要紫線轉折就立刻開倉」，
+                    # 這裡不再因為是綠K就暫緩做空，或是紅K就暫緩做多。
+                    # 完全相信 cr_info 傳來的訊號！
+
+                    # --- 假突破防禦機制 ---
+                    if not has_pos and cr_signal:
+                        is_true_peak = cr_entry_type == "PEAK_TURN"
+                        is_true_trough = cr_entry_type == "TROUGH_TURN"
+                        is_true_breakout = is_true_peak or is_true_trough
+
+                        require_true_breakout = False
+                        recent_trades = [t for t in self.account.trades if t.get("symbol") == symbol]
+                        if recent_trades:
+                            last_trade = recent_trades[-1]
+                            if last_trade.get("action", "").startswith("CLOSE_") and last_trade.get("side") == cr_signal:
+                                pnl = float(last_trade.get("pnl") or 0.0)
+                                reason = last_trade.get("reason", "")
+                                if pnl <= 0.5 or "停損" in reason or "SL" in reason.upper() or "止損" in reason:
+                                    require_true_breakout = True
+
+                        if require_true_breakout and not is_true_breakout:
+                            if getattr(self, "_last_false_break_log_at", {}).get(symbol, 0) < time.time() - 60:
+                                self._last_false_break_log_at = getattr(self, "_last_false_break_log_at", {})
+                                self._last_false_break_log_at[symbol] = time.time()
+                                self.account.log(f"🛡️ {symbol} 剛經歷 {cr_signal} 假突破平倉，拒絕弱訊號 ({cr_entry_type})，堅持等待真谷底/峰頂！", "INFO")
+                            cr_signal = None
+
+                    if not cr_signal:
+                        return signal_progress, detected_candidates
+
+                    # ── 反向開倉雙重守衛 ──────────────────────────────────────────
+                    # 守衛 1：短冷靜期（5 秒）
+                    # 平倉後的 5 秒內禁止反向開新倉，防止「閃電翻倉」被雜訊掃來掃去。
+                    # paper_account.close_position() 已在 last_closed_at[symbol] 寫入時間，
+                    # 直接讀取即可，不需額外記錄。
+                    _last_close_ts = self.account.last_closed_at.get(symbol, 0.0)
+                    _cooldown_sec = 5.0
+                    _elapsed = now_time - _last_close_ts
+                    if not has_pos and _elapsed < _cooldown_sec and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                        self.account.log(
+                            f"⏳ [{symbol}] 平倉後冷靜期：距上次平倉 {_elapsed:.1f}s < {_cooldown_sec:.0f}s，"
+                            f"暫緩 {cr_signal} 開倉",
+                            "DEBUG",
+                        )
+                        return signal_progress, detected_candidates
+
+                    # 守衛 2：ADX 強趨勢反向過濾
+                    # ADX > 25 代表目前處於強趨勢（多頭或空頭均適用）。
+                    # 若訊號方向與 SuperTrend（最近已收盤）方向相反，代表打算逆勢開倉，
+                    # 此時強趨勢中逆勢勝率極低，直接過濾。
+                    # 只對「反向開倉」（原本有持倉且即將翻方向）生效；空倉首次開倉不攔截。
+                    if not has_pos and cr_signal and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                        _adx_now = float(df_cr_entry["adx"].iloc[-1]) if "adx" in df_cr_entry.columns and not pd.isna(df_cr_entry["adx"].iloc[-1]) else 0.0
+                        _st_dir_now = int(df_cr_entry["st_direction"].iloc[-1]) if "st_direction" in df_cr_entry.columns else 0
+                        _signal_dir = 1 if cr_signal == "LONG" else -1
+                        _is_counter_trend = (_st_dir_now != 0 and _signal_dir != _st_dir_now)
+                        _adx_strong = _adx_now >= 25.0
+                        if _adx_strong and _is_counter_trend and _elapsed < 10.0:
+                            self.account.log(
+                                f"🚫 [{symbol}] ADX 強趨勢過濾：ADX={_adx_now:.1f} ≥ 25，"
+                                f"ST方向={'多' if _st_dir_now == 1 else '空'}，"
+                                f"訊號={cr_signal}（逆勢），距平倉 {_elapsed:.0f}s，暫緩開倉",
+                                "INFO",
+                            )
+                            return signal_progress, detected_candidates
+                    # ─────────────────────────────────────────────────────────────
+
+                    # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
+                    if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                        should_open = False
+                        if not has_pos:
+                            should_open = True
+                        elif curr_side != cr_signal:
+                            self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
+                            closed = await self.account.close_position(
+                                symbol=symbol,
+                                current_price=live_price,
+                                close_reason=f"反向訊號 ({cr_entry_type})"
+                            )
+                            should_open = bool(closed)
+
+                        if should_open:
+                            post_close_available = self.account.get_available_balance()
+                            if TEST_BUDGET_CAP_USDT > 0:
+                                post_close_available = min(post_close_available, TEST_BUDGET_CAP_USDT)
+                            if daily_halt or post_close_available < MIN_TRADE_USDT:
+                                self.account.log(
+                                    f"{symbol} 轉彎平倉完成；風控或可用餘額不允許重新開倉",
+                                    "WARNING",
+                                )
+                                return signal_progress, detected_candidates
+                            self.account.log(
+                                f"{symbol} [{cr_entry_type}] 谷底/頂部訊號：進場 {cr_signal}",
+                                "INFO"
+                            )
+                            atr = cr_info.get("atr", live_price * 0.015)
+                            sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                            sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                            opened = await self.account.open_position(
+                                symbol=symbol,
+                                side=cr_signal,
+                                price=live_price,
+                                amount_usdt=TRADE_AMOUNT_USDT,
+                                sl=sl,
+                                tp=tp,
+                                reason=cr_info.get("reason", cr_entry_type),
+                                atr=atr,
+                                leverage=get_leverage(symbol),
+                                signal_score=100
+                            )
+                            if opened:
+                                self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
+
+                    # --- MA5 穿越 MA25（金叉/死叉）：反轉/補開訊號 ---
+                    # 如果無持倉，直接開倉；如果有持倉且方向相反，強制平倉反轉！
+                    elif cr_entry_type in ("CROSS_UP", "CROSS_DOWN"):
+                        should_open = False
+                        if not has_pos:
+                            should_open = True
+                        elif curr_side != cr_signal:
+                            self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
+                            await self.account.close_position(
+                                symbol=symbol,
+                                current_price=live_price,
+                                close_reason=f"死叉/金叉反向訊號 ({cr_entry_type})"
+                            )
+                            should_open = True
+
+                        if should_open:
+                            self.account.log(
+                                f"{symbol} [{cr_entry_type}] MA5穿越MA25：進場 {cr_signal}",
+                                "INFO"
+                            )
+                            atr = cr_info.get("atr", live_price * 0.015)
+                            sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                            sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                            opened = await self.account.open_position(
+                                symbol=symbol,
+                                side=cr_signal,
+                                price=live_price,
+                                amount_usdt=TRADE_AMOUNT_USDT,
+                                sl=sl,
+                                tp=tp,
+                                reason=cr_info.get("reason", cr_entry_type),
+                                atr=atr,
+                                leverage=get_leverage(symbol),
+                                signal_score=85
+                            )
+                            if opened:
+                                self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
+                        else:
+                            self.account.log(
+                                f"{symbol} [{cr_entry_type}] MA5穿越訊號，已有 {curr_side} 持倉，不補開",
+                                "DEBUG"
+                            )
+
+                    # --- 順勢延續進場（TREND_LONG / TREND_SHORT）---
+                    # indicators.py 在 MA3、MA5 位於 MA25 同側時回傳這兩種 entry_type；
+                    # 不等待回踩，空倉時直接按即時成交價開倉。
+                    elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
+                        if has_pos and curr_side != cr_signal:
+                            self.account.log(
+                                f"🚨 {symbol} 均線排列翻面：平掉 {curr_side} 並改開 {cr_signal}",
+                                "WARNING",
+                            )
+                            closed = await self.account.close_position(
+                                symbol=symbol,
+                                current_price=live_price,
+                                close_reason=f"MA3、MA5 共同越過 MA25 → {cr_signal}",
+                            )
+                            if closed:
+                                has_pos = False
+                                curr_side = None
+
+                        if not has_pos:
+                            self.account.log(
+                                f"{symbol} [{cr_entry_type}] 順勢延續：進場 {cr_signal}",
+                                "INFO"
+                            )
+                            atr = cr_info.get("atr", live_price * 0.015)
+                            sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
+                            sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
+                            opened = await self.account.open_position(
+                                symbol=symbol,
+                                side=cr_signal,
+                                price=live_price,
+                                amount_usdt=TRADE_AMOUNT_USDT,
+                                sl=sl,
+                                tp=tp,
+                                reason=f"{cr_entry_type}: {cr_info.get('reason', cr_entry_type)}",
+                                atr=atr,
+                                leverage=get_leverage(symbol),
+                                signal_score=int(cr_info.get("pivot_score", 85))
+                            )
+                            if opened:
+                                self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
+                        else:
+                            self.account.log(
+                                f"{symbol} [{cr_entry_type}] 順勢延續，已有 {curr_side} 持倉，不補開",
+                                "DEBUG"
+                            )
+
+                if symbol in self.account.positions:
+                    position = self.account.positions[symbol]
+                    sc = position.get("signal_score") or position.get("raw_signal_score")
+                    position_direction = "多單" if position.get("side") == "LONG" else "空單"
+                    signal_progress.append(f"{coin} {position_direction} {int(sc) if sc else '--'}分,連續轉向持倉中")
+                return signal_progress, detected_candidates
+
+            if symbol in self.account.positions:
+                position = self.account.positions[symbol]
+                # signal_score 重啟後從交易所同步回來可能是 None
+                # 優先用 signal_score，其次 raw_signal_score，都沒有才顯示 --
+                raw_sc = position.get("raw_signal_score")
+                sc = position.get("signal_score") or raw_sc
+                position_score = f"{int(sc)}" if sc is not None else "--"
+                position_direction = "多單" if position.get("side") == "LONG" else "空單"
+                signal_progress.append(
+                    f"{coin} {position_direction} {position_score}分,持倉中"
+                )
+                return signal_progress, detected_candidates
+
+            if symbol in self.pending_pullback_candidates:
+                pending = self.pending_pullback_candidates[symbol]
+                stage = (
+                    f"等待現價Maker掛單 @ {pending.get('target_price'):.8g}"
+                    if pending.get("entry_mode") == "CURRENT_MAKER"
+                    else "已觸價，等待1m收盤反轉確認"
+                    if pending.get("touched_at")
+                    else f"等待{pending.get('pullback_depth', 0):.0%}回踩觸價 @ {pending.get('target_price'):.8g}"
+                )
+                signal_progress.append(
+                    f"{coin} {pending['side']} {pending['score']}分,{stage}"
+                )
+                return signal_progress, detected_candidates
+
+            # 如果已經掛著限價單，跳過訊號偵測（避免重複掛單）
+            if symbol in self.account.pending_limit_orders:
+                pending = self.account.pending_limit_orders[symbol]
+                entry_context = pending.get("entry_context") or {}
+                entry_mode = entry_context.get("entry_mode")
+                pullback_score = entry_context.get("pullback_confirmation_score")
+                confirmation_reason = (
+                    f"回撤中底點掛單等待成交 @ {pending.get('target_price')}"
+                    if entry_mode == "MA5_BOTTOM_LIMIT"
+                    else
+                    f"原始{pending.get('signal_score', 0)}分 → "
+                    f"回踩確認{pullback_score}分，掛單等待成交 @ "
+                    f"{pending.get('target_price')}"
+                    if pullback_score is not None
+                    else f"限價單等待成交 @ {pending.get('target_price')}"
+                )
+                signal_progress.append(self._format_signal_progress(
+                    symbol,
+                    {
+                        "action": "WAIT_PULLBACK",
+                        "score": pending.get("signal_score", 0),
+                        "confirmation_reason": confirmation_reason,
+                    },
+                    pending.get("side"),
+                ))
+                return signal_progress, detected_candidates
+
+            retry_after = self._pullback_retry_after.get(symbol, 0.0)
+            if retry_after > now_time:
+                signal_progress.append(
+                    f"{coin} {direction_text} 資格未通過,回踩失效冷卻{int(retry_after - now_time)}秒"
+                )
+                self._record_entry_filter(
+                    symbol, {"action": "HOLD", "reason": "回踩失效冷卻"},
+                    direction_text, "pullback_retry_cooldown",
+                )
+                return signal_progress, detected_candidates
+
+            if symbol in ENTRY_DISABLED_SYMBOLS:
+                signal_progress.append(
+                    f"{coin} {direction_text} 資格未通過,暫停新倉"
+                )
+                self._record_entry_filter(
+                    symbol, {"action": "HOLD", "reason": "暫停新倉"},
+                    direction_text, "symbol_disabled",
+                )
+                return signal_progress, detected_candidates
+
+            # 4.1 低流動性過濾
+            vol_24h = self.ticker_volumes.get(symbol, 0.0)
+            if vol_24h > 0 and vol_24h < 500000.0:
+                signal_progress.append(
+                    f"{coin} {direction_text} 資格未通過,24h流動性不足"
+                )
+                self._record_entry_filter(
+                    symbol, {"action": "HOLD", "reason": "24h流動性不足",
+                             "diagnostics": {"quote_volume_24h": float(vol_24h)}},
+                    direction_text, "liquidity_low",
+                )
+                return signal_progress, detected_candidates
+
+            live_price = float(self.tickers.get(symbol) or 0.0)
+            df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30, keep_live=True)
+            if df_1m.empty or len(df_1m) < 14:
+                return signal_progress, detected_candidates
+            df_1m = self.strategy.compute_indicators(df_1m)
+
+            df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
+            if df_1h.empty:
+                return signal_progress, detected_candidates
+            computed_1h = self.strategy.compute_indicators(df_1h)
+            from core.config import TREND_FILTER_EMA_PERIOD, MIN_OPEN_SIGNAL_SCORE
+            ema_50_1h = float(
+                df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False)
+                .mean().iloc[-1]
+            )
+            st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
+            # 判斷是否需要嚴格 V 型轉彎
+            require_strict_v = False
+            if self.account.trades:
+                last_trade = self.account.trades[0]
+                if last_trade.get("symbol") == symbol and last_trade.get("action", "").startswith("CLOSE_"):
+                    reason = last_trade.get("reason", "")
+                    if "移動" in reason or "Trailing" in reason or "鎖利" in reason:
+                        require_strict_v = True
+
+            from core.strategy import detect_ma5_reversal
+            for direction in ["LONG", "SHORT"]:
+                sig = detect_ma5_reversal(
+                    df_1m,
+                    side=direction,
+                    ema_50_1h=ema_50_1h,
+                    st_direction_1h=st_direction_1h,
+                    btc_st_direction_1h=self.btc_1h_st_direction,
+                    btc_st_flip_age=self.btc_1h_st_flip_age,
+                    btc_1m_turn=btc_1m_turn,
+                    symbol=symbol,
+                    live_price=live_price,
+                    require_strict_v=require_strict_v,
+                )
+                if sig["detected"]:
+                    if sig.get("score", 0) >= MIN_OPEN_SIGNAL_SCORE:
+                        sig["symbol"] = symbol
+                        sig["live_price"] = live_price
+                        detected_candidates.append(sig)
+                    else:
+                        signal_progress.append(f"{coin} {direction} 資格未通過,分數不足({sig.get('score')})")
+
+
+        except Exception as e:
+            self.account.log(f'⚠️ [{symbol}] 處理失敗: {e}', 'WARNING')
+        return signal_progress, detected_candidates
+
     async def _main_loop(self):
         while self.is_running:
             try:
@@ -2888,476 +3380,18 @@ class TradingEngine:
                     # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
                     # 用 list(...) 先拍一份快照，避免邊跑邊被換牌造成跳過或重複掃描。
                     symbols_snapshot = list(dict.fromkeys([*DEFAULT_SYMBOLS, *self.account.positions.keys()]))
-                    for symbol in symbols_snapshot:
-                        direction_text = "雙向"
-                        coin = symbol.replace("/USDT", "")
-
-                        from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
-                        if ENABLE_CONTINUOUS_REVERSE_MODE:
-                            from core.indicators import detect_ma5_ma25_cross_and_turn
-                            from core.strategy import build_sl_tp_for_side
-                            # 一般方向訊號只使用已收盤 K；活動 K 在 MA3 第一彎與 K 色同向時
-                            # 立即反轉，僅保留長影線陷阱防護，避免平倉後反手過慢。
-                            df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
-                            if df_cr.empty or len(df_cr) < 4:
-                                continue
-                            if 'ma3' not in df_cr.columns:
-                                df_cr['ma3'] = df_cr['close'].rolling(window=3).mean()
-                            if 'ma5' not in df_cr.columns:
-                                df_cr['ma5'] = df_cr['close'].rolling(window=5).mean()
-                            df_cr_signal = drop_unclosed_candle(df_cr, CONTINUOUS_REVERSE_TIMEFRAME)
-                            cr_info = detect_ma5_ma25_cross_and_turn(df_cr_signal)
-                            uses_live_pivot = False
-                            if len(df_cr) > len(df_cr_signal):
-                                live_pivot_info = detect_ma5_ma25_cross_and_turn(
-                                    df_cr, allow_live_pivot=True
-                                )
-                                uses_live_pivot = bool(
-                                    live_pivot_info.get("pivot_confirmed")
-                                    and live_pivot_info.get("entry_type") in ("TROUGH_TURN", "PEAK_TURN")
-                                )
-                                if uses_live_pivot:
-                                    cr_info = live_pivot_info
-                            df_cr_entry = df_cr if uses_live_pivot else df_cr_signal
-                            cr_signal = cr_info.get("signal")
-                            cr_entry_type = cr_info.get("entry_type", "")
-                            is_peak_early = cr_info.get("is_peak_early", False)
-                            is_trough_early = cr_info.get("is_trough_early", False)
-
-                            # Group A only executes confirmed MA3 V or inverted-V pivots.
-                            if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                                cr_signal = None
-
-                            has_pos = symbol in self.account.positions
-                            curr_side = self.account.positions[symbol]["side"] if has_pos else None
-
-                            consolidation = self._detect_ma3_consolidation(df_cr_signal)
-                            consolidation_lock = self._continuous_consolidation_locks.get(symbol)
-                            if consolidation.get("detected"):
-                                self._continuous_consolidation_locks[symbol] = {
-                                    "range_high": consolidation["range_high"],
-                                    "range_low": consolidation["range_low"],
-                                    "atr": consolidation["atr"],
-                                    "locked_at": time.time(),
-                                }
-                                cr_signal = None
-                                if has_pos:
-                                    fallback_price = float(df_cr_signal["close"].iloc[-1])
-                                    clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
-                                    exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
-                                    closed = await self.account.close_position(
-                                        symbol=symbol,
-                                        current_price=exit_price,
-                                        close_reason="MA3 盤整確認：平倉等待突破",
-                                    )
-                                    if closed:
-                                        self.account.log(
-                                            f"{symbol} MA3 盤整確認：已平倉並鎖定重新進場",
-                                            "WARNING",
-                                        )
-                                signal_progress.append(f"{coin} 盤整鎖定，等待區間突破")
-                                continue
-
-                            if consolidation_lock:
-                                if has_pos:
-                                    fallback_price = float(df_cr_signal["close"].iloc[-1])
-                                    clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
-                                    exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
-                                    await self.account.close_position(
-                                        symbol=symbol,
-                                        current_price=exit_price,
-                                        close_reason="MA3 盤整鎖定仍生效",
-                                    )
-                                    signal_progress.append(f"{coin} 盤整鎖定，正在平掉既有持倉")
-                                    continue
-
-                                closed_price = float(df_cr_signal["close"].iloc[-1])
-                                lock_atr = max(float(consolidation_lock.get("atr") or 0.0), 1e-12)
-                                recent_ma3 = df_cr_entry["ma3"].dropna().astype(float).iloc[-12:]
-                                pivot_amplitude_atr = 0.0
-                                if len(recent_ma3) >= 2 and cr_signal == "LONG":
-                                    pivot_amplitude_atr = (float(recent_ma3.iloc[-1]) - float(recent_ma3.min())) / lock_atr
-                                elif len(recent_ma3) >= 2 and cr_signal == "SHORT":
-                                    pivot_amplitude_atr = (float(recent_ma3.max()) - float(recent_ma3.iloc[-1])) / lock_atr
-                                breakout_ready = bool(
-                                    cr_signal == "LONG"
-                                    and closed_price > float(consolidation_lock["range_high"])
-                                    or cr_signal == "SHORT"
-                                    and closed_price < float(consolidation_lock["range_low"])
-                                )
-                                if cr_signal and breakout_ready and pivot_amplitude_atr >= 0.20:
-                                    self._continuous_consolidation_locks.pop(symbol, None)
-                                    self.account.log(
-                                        f"{symbol} 盤整突破確認，解除鎖定並允許 {cr_signal} entry",
-                                        "SUCCESS",
-                                    )
-                                else:
-                                    cr_signal = None
-                                    signal_progress.append(f"{coin} 盤整鎖定，突破尚未確認")
-                                    continue
-
-                            entry_bar_id = (
-                                int(float(df_cr_entry['timestamp'].iloc[-1]))
-                                if 'timestamp' in df_cr_entry.columns
-                                else int(df_cr_entry.index[-1])
-                            )
-
-                            if cr_signal and self._continuous_last_entry_bar.get(symbol) == (cr_signal, entry_bar_id):
-                                self.account.log(
-                                    f"⏸️ {symbol} 同一根K已開過 {cr_signal}，等待下一根避免重複進場",
-                                    "DEBUG",
-                                )
-                                cr_signal = None
-
-                            if cr_signal:
-                                last_close = float(df_cr_entry['close'].iloc[-1])
-                                clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
-                                live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
-
-                                # 由於使用者要求「完全無視K線顏色，只要紫線轉折就立刻開倉」，
-                                # 這裡不再因為是綠K就暫緩做空，或是紅K就暫緩做多。
-                                # 完全相信 cr_info 傳來的訊號！
-
-                                # --- 假突破防禦機制 ---
-                                if not has_pos and cr_signal:
-                                    is_true_peak = cr_entry_type == "PEAK_TURN"
-                                    is_true_trough = cr_entry_type == "TROUGH_TURN"
-                                    is_true_breakout = is_true_peak or is_true_trough
-                                    
-                                    require_true_breakout = False
-                                    recent_trades = [t for t in self.account.trades if t.get("symbol") == symbol]
-                                    if recent_trades:
-                                        last_trade = recent_trades[-1]
-                                        if last_trade.get("action", "").startswith("CLOSE_") and last_trade.get("side") == cr_signal:
-                                            pnl = float(last_trade.get("pnl") or 0.0)
-                                            reason = last_trade.get("reason", "")
-                                            if pnl <= 0.5 or "停損" in reason or "SL" in reason.upper() or "止損" in reason:
-                                                require_true_breakout = True
-
-                                    if require_true_breakout and not is_true_breakout:
-                                        if getattr(self, "_last_false_break_log_at", {}).get(symbol, 0) < time.time() - 60:
-                                            self._last_false_break_log_at = getattr(self, "_last_false_break_log_at", {})
-                                            self._last_false_break_log_at[symbol] = time.time()
-                                            self.account.log(f"🛡️ {symbol} 剛經歷 {cr_signal} 假突破平倉，拒絕弱訊號 ({cr_entry_type})，堅持等待真谷底/峰頂！", "INFO")
-                                        cr_signal = None
-
-                                if not cr_signal:
-                                    continue
-
-                                # ── 反向開倉雙重守衛 ──────────────────────────────────────────
-                                # 守衛 1：短冷靜期（5 秒）
-                                # 平倉後的 5 秒內禁止反向開新倉，防止「閃電翻倉」被雜訊掃來掃去。
-                                # paper_account.close_position() 已在 last_closed_at[symbol] 寫入時間，
-                                # 直接讀取即可，不需額外記錄。
-                                _last_close_ts = self.account.last_closed_at.get(symbol, 0.0)
-                                _cooldown_sec = 5.0
-                                _elapsed = now_time - _last_close_ts
-                                if not has_pos and _elapsed < _cooldown_sec and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                                    self.account.log(
-                                        f"⏳ [{symbol}] 平倉後冷靜期：距上次平倉 {_elapsed:.1f}s < {_cooldown_sec:.0f}s，"
-                                        f"暫緩 {cr_signal} 開倉",
-                                        "DEBUG",
-                                    )
-                                    continue
-
-                                # 守衛 2：ADX 強趨勢反向過濾
-                                # ADX > 25 代表目前處於強趨勢（多頭或空頭均適用）。
-                                # 若訊號方向與 SuperTrend（最近已收盤）方向相反，代表打算逆勢開倉，
-                                # 此時強趨勢中逆勢勝率極低，直接過濾。
-                                # 只對「反向開倉」（原本有持倉且即將翻方向）生效；空倉首次開倉不攔截。
-                                if not has_pos and cr_signal and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                                    _adx_now = float(df_cr_entry["adx"].iloc[-1]) if "adx" in df_cr_entry.columns and not pd.isna(df_cr_entry["adx"].iloc[-1]) else 0.0
-                                    _st_dir_now = int(df_cr_entry["st_direction"].iloc[-1]) if "st_direction" in df_cr_entry.columns else 0
-                                    _signal_dir = 1 if cr_signal == "LONG" else -1
-                                    _is_counter_trend = (_st_dir_now != 0 and _signal_dir != _st_dir_now)
-                                    _adx_strong = _adx_now >= 25.0
-                                    if _adx_strong and _is_counter_trend and _elapsed < 10.0:
-                                        self.account.log(
-                                            f"🚫 [{symbol}] ADX 強趨勢過濾：ADX={_adx_now:.1f} ≥ 25，"
-                                            f"ST方向={'多' if _st_dir_now == 1 else '空'}，"
-                                            f"訊號={cr_signal}（逆勢），距平倉 {_elapsed:.0f}s，暫緩開倉",
-                                            "INFO",
-                                        )
-                                        continue
-                                # ─────────────────────────────────────────────────────────────
-
-                                # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
-                                if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
-                                    should_open = False
-                                    if not has_pos:
-                                        should_open = True
-                                    elif curr_side != cr_signal:
-                                        self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
-                                        closed = await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason=f"反向訊號 ({cr_entry_type})"
-                                        )
-                                        should_open = bool(closed)
-
-                                    if should_open:
-                                        post_close_available = self.account.get_available_balance()
-                                        if TEST_BUDGET_CAP_USDT > 0:
-                                            post_close_available = min(post_close_available, TEST_BUDGET_CAP_USDT)
-                                        if daily_halt or post_close_available < MIN_TRADE_USDT:
-                                            self.account.log(
-                                                f"{symbol} 轉彎平倉完成；風控或可用餘額不允許重新開倉",
-                                                "WARNING",
-                                            )
-                                            continue
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] 谷底/頂部訊號：進場 {cr_signal}",
-                                            "INFO"
-                                        )
-                                        atr = cr_info.get("atr", live_price * 0.015)
-                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        opened = await self.account.open_position(
-                                            symbol=symbol,
-                                            side=cr_signal,
-                                            price=live_price,
-                                            amount_usdt=TRADE_AMOUNT_USDT,
-                                            sl=sl,
-                                            tp=tp,
-                                            reason=cr_info.get("reason", cr_entry_type),
-                                            atr=atr,
-                                            leverage=get_leverage(symbol),
-                                            signal_score=100
-                                        )
-                                        if opened:
-                                            self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
-
-                                # --- MA5 穿越 MA25（金叉/死叉）：反轉/補開訊號 ---
-                                # 如果無持倉，直接開倉；如果有持倉且方向相反，強制平倉反轉！
-                                elif cr_entry_type in ("CROSS_UP", "CROSS_DOWN"):
-                                    should_open = False
-                                    if not has_pos:
-                                        should_open = True
-                                    elif curr_side != cr_signal:
-                                        self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
-                                        await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason=f"死叉/金叉反向訊號 ({cr_entry_type})"
-                                        )
-                                        should_open = True
-                                        
-                                    if should_open:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] MA5穿越MA25：進場 {cr_signal}",
-                                            "INFO"
-                                        )
-                                        atr = cr_info.get("atr", live_price * 0.015)
-                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        opened = await self.account.open_position(
-                                            symbol=symbol,
-                                            side=cr_signal,
-                                            price=live_price,
-                                            amount_usdt=TRADE_AMOUNT_USDT,
-                                            sl=sl,
-                                            tp=tp,
-                                            reason=cr_info.get("reason", cr_entry_type),
-                                            atr=atr,
-                                            leverage=get_leverage(symbol),
-                                            signal_score=85
-                                        )
-                                        if opened:
-                                            self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
-                                    else:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] MA5穿越訊號，已有 {curr_side} 持倉，不補開",
-                                            "DEBUG"
-                                        )
-
-                                # --- 順勢延續進場（TREND_LONG / TREND_SHORT）---
-                                # indicators.py 在 MA3、MA5 位於 MA25 同側時回傳這兩種 entry_type；
-                                # 不等待回踩，空倉時直接按即時成交價開倉。
-                                elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
-                                    if has_pos and curr_side != cr_signal:
-                                        self.account.log(
-                                            f"🚨 {symbol} 均線排列翻面：平掉 {curr_side} 並改開 {cr_signal}",
-                                            "WARNING",
-                                        )
-                                        closed = await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason=f"MA3、MA5 共同越過 MA25 → {cr_signal}",
-                                        )
-                                        if closed:
-                                            has_pos = False
-                                            curr_side = None
-
-                                    if not has_pos:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] 順勢延續：進場 {cr_signal}",
-                                            "INFO"
-                                        )
-                                        atr = cr_info.get("atr", live_price * 0.015)
-                                        sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
-                                        sl, tp = build_sl_tp_for_side(live_price, cr_signal, sl_dist, tp_dist)
-                                        opened = await self.account.open_position(
-                                            symbol=symbol,
-                                            side=cr_signal,
-                                            price=live_price,
-                                            amount_usdt=TRADE_AMOUNT_USDT,
-                                            sl=sl,
-                                            tp=tp,
-                                            reason=f"{cr_entry_type}: {cr_info.get('reason', cr_entry_type)}",
-                                            atr=atr,
-                                            leverage=get_leverage(symbol),
-                                            signal_score=int(cr_info.get("pivot_score", 85))
-                                        )
-                                        if opened:
-                                            self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
-                                    else:
-                                        self.account.log(
-                                            f"{symbol} [{cr_entry_type}] 順勢延續，已有 {curr_side} 持倉，不補開",
-                                            "DEBUG"
-                                        )
-
-                            if symbol in self.account.positions:
-                                position = self.account.positions[symbol]
-                                sc = position.get("signal_score") or position.get("raw_signal_score")
-                                position_direction = "多單" if position.get("side") == "LONG" else "空單"
-                                signal_progress.append(f"{coin} {position_direction} {int(sc) if sc else '--'}分,連續轉向持倉中")
-                            continue
-
-                        if symbol in self.account.positions:
-                            position = self.account.positions[symbol]
-                            # signal_score 重啟後從交易所同步回來可能是 None
-                            # 優先用 signal_score，其次 raw_signal_score，都沒有才顯示 --
-                            raw_sc = position.get("raw_signal_score")
-                            sc = position.get("signal_score") or raw_sc
-                            position_score = f"{int(sc)}" if sc is not None else "--"
-                            position_direction = "多單" if position.get("side") == "LONG" else "空單"
-                            signal_progress.append(
-                                f"{coin} {position_direction} {position_score}分,持倉中"
-                            )
-                            continue
-
-                        if symbol in self.pending_pullback_candidates:
-                            pending = self.pending_pullback_candidates[symbol]
-                            stage = (
-                                f"等待現價Maker掛單 @ {pending.get('target_price'):.8g}"
-                                if pending.get("entry_mode") == "CURRENT_MAKER"
-                                else "已觸價，等待1m收盤反轉確認"
-                                if pending.get("touched_at")
-                                else f"等待{pending.get('pullback_depth', 0):.0%}回踩觸價 @ {pending.get('target_price'):.8g}"
-                            )
-                            signal_progress.append(
-                                f"{coin} {pending['side']} {pending['score']}分,{stage}"
-                            )
-                            continue
-
-                        # 如果已經掛著限價單，跳過訊號偵測（避免重複掛單）
-                        if symbol in self.account.pending_limit_orders:
-                            pending = self.account.pending_limit_orders[symbol]
-                            entry_context = pending.get("entry_context") or {}
-                            entry_mode = entry_context.get("entry_mode")
-                            pullback_score = entry_context.get("pullback_confirmation_score")
-                            confirmation_reason = (
-                                f"回撤中底點掛單等待成交 @ {pending.get('target_price')}"
-                                if entry_mode == "MA5_BOTTOM_LIMIT"
-                                else
-                                f"原始{pending.get('signal_score', 0)}分 → "
-                                f"回踩確認{pullback_score}分，掛單等待成交 @ "
-                                f"{pending.get('target_price')}"
-                                if pullback_score is not None
-                                else f"限價單等待成交 @ {pending.get('target_price')}"
-                            )
-                            signal_progress.append(self._format_signal_progress(
-                                symbol,
-                                {
-                                    "action": "WAIT_PULLBACK",
-                                    "score": pending.get("signal_score", 0),
-                                    "confirmation_reason": confirmation_reason,
-                                },
-                                pending.get("side"),
-                            ))
-                            continue
-
-                        retry_after = self._pullback_retry_after.get(symbol, 0.0)
-                        if retry_after > now_time:
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,回踩失效冷卻{int(retry_after - now_time)}秒"
-                            )
-                            self._record_entry_filter(
-                                symbol, {"action": "HOLD", "reason": "回踩失效冷卻"},
-                                direction_text, "pullback_retry_cooldown",
-                            )
-                            continue
-
-                        if symbol in ENTRY_DISABLED_SYMBOLS:
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,暫停新倉"
-                            )
-                            self._record_entry_filter(
-                                symbol, {"action": "HOLD", "reason": "暫停新倉"},
-                                direction_text, "symbol_disabled",
-                            )
-                            continue
-
-                        # 4.1 低流動性過濾
-                        vol_24h = self.ticker_volumes.get(symbol, 0.0)
-                        if vol_24h > 0 and vol_24h < 500000.0:
-                            signal_progress.append(
-                                f"{coin} {direction_text} 資格未通過,24h流動性不足"
-                            )
-                            self._record_entry_filter(
-                                symbol, {"action": "HOLD", "reason": "24h流動性不足",
-                                         "diagnostics": {"quote_volume_24h": float(vol_24h)}},
-                                direction_text, "liquidity_low",
-                            )
-                            continue
-
-                        live_price = float(self.tickers.get(symbol) or 0.0)
-                        df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30, keep_live=True)
-                        if df_1m.empty or len(df_1m) < 14:
-                            continue
-                        df_1m = self.strategy.compute_indicators(df_1m)
-                        
-                        df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
-                        if df_1h.empty:
-                            continue
-                        computed_1h = self.strategy.compute_indicators(df_1h)
-                        from core.config import TREND_FILTER_EMA_PERIOD, MIN_OPEN_SIGNAL_SCORE
-                        ema_50_1h = float(
-                            df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False)
-                            .mean().iloc[-1]
-                        )
-                        st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        # 判斷是否需要嚴格 V 型轉彎
-                        require_strict_v = False
-                        if self.account.trades:
-                            last_trade = self.account.trades[0]
-                            if last_trade.get("symbol") == symbol and last_trade.get("action", "").startswith("CLOSE_"):
-                                reason = last_trade.get("reason", "")
-                                if "移動" in reason or "Trailing" in reason or "鎖利" in reason:
-                                    require_strict_v = True
-                        
-                        from core.strategy import detect_ma5_reversal
-                        for direction in ["LONG", "SHORT"]:
-                            sig = detect_ma5_reversal(
-                                df_1m,
-                                side=direction,
-                                ema_50_1h=ema_50_1h,
-                                st_direction_1h=st_direction_1h,
-                                btc_st_direction_1h=self.btc_1h_st_direction,
-                                btc_st_flip_age=self.btc_1h_st_flip_age,
-                                btc_1m_turn=btc_1m_turn,
-                                symbol=symbol,
-                                live_price=live_price,
-                                require_strict_v=require_strict_v,
-                            )
-                            if sig["detected"]:
-                                if sig.get("score", 0) >= MIN_OPEN_SIGNAL_SCORE:
-                                    sig["symbol"] = symbol
-                                    sig["live_price"] = live_price
-                                    detected_candidates.append(sig)
-                                else:
-                                    signal_progress.append(f"{coin} {direction} 資格未通過,分數不足({sig.get('score')})")
-
+                    tasks = [
+                        self._process_single_symbol(symbol, now_time, btc_1m_turn, daily_halt)
+                        for symbol in symbols_snapshot
+                    ]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for res in results:
+                        if isinstance(res, Exception):
+                            self.account.log(f"⚠️ 幣種掃描例外: {res}", "WARNING")
+                        else:
+                            prog, cands = res
+                            signal_progress.extend(prog)
+                            detected_candidates.extend(cands)
                     if detected_candidates:
                         # Sort by score descending
                         detected_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
