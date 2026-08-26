@@ -241,28 +241,73 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     current_slope = ma3_curr - ma3_prev
 
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
+    min_pivot_slope = max(abs(atr) * 0.05, abs(ma3_prev) * 0.0001)
 
-    # 只有 MA3 形成 V/倒V 才換向；中間趨勢段維持原持倉，不賣出、不追單。
+    # 明顯 V/倒V 才換向；微小轉折先等待，避免一點點彎就平倉反手。
     # 仍只使用已收盤的 3m K，避免未完成 K 線反覆變形造成重複訊號。
     if previous_slope < 0 and current_slope > 0:
+        if abs(previous_slope) >= min_pivot_slope and current_slope >= min_pivot_slope:
+            return {
+                "signal": "LONG", "entry_type": "TROUGH_TURN",
+                "reason": "3m MA3 V字谷底 → 立即轉向開多",
+                "atr": atr, "pivot_confirmed": True,
+                "pivot_score": 100,
+                "fast_pivot": True,
+                "live_pivot": allow_live_pivot,
+                "ma_alignment": "ABOVE"
+            }
         return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "3m MA3 V字谷底 → 立即轉向開多",
-            "atr": atr, "pivot_confirmed": True,
-            "pivot_score": 100,
-            "fast_pivot": True,
-            "live_pivot": allow_live_pivot,
-            "ma_alignment": "ABOVE"
+            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
+            "reason": "3m MA3 谷底轉折幅度不足，等待局勢明朗",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 0, "ma3_slope": current_slope,
+            "ma_alignment": "WAIT"
         }
     elif previous_slope > 0 and current_slope < 0:
+        if previous_slope >= min_pivot_slope and abs(current_slope) >= min_pivot_slope:
+            return {
+                "signal": "SHORT", "entry_type": "PEAK_TURN",
+                "reason": "3m MA3 倒V字峰頂 → 立即轉向開空",
+                "atr": atr, "pivot_confirmed": True,
+                "pivot_score": 100,
+                "fast_pivot": True,
+                "live_pivot": allow_live_pivot,
+                "ma_alignment": "BELOW"
+            }
         return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "3m MA3 倒V字峰頂 → 立即轉向開空",
-            "atr": atr, "pivot_confirmed": True,
-            "pivot_score": 100,
-            "fast_pivot": True,
-            "live_pivot": allow_live_pivot,
-            "ma_alignment": "BELOW"
+            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
+            "reason": "3m MA3 峰頂轉折幅度不足，等待局勢明朗",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 0, "ma3_slope": current_slope,
+            "ma_alignment": "WAIT"
+        }
+
+    approaching_pivot = (
+        (previous_slope > 0 and 0 < current_slope < previous_slope)
+        or (previous_slope < 0 and previous_slope < current_slope < 0)
+    )
+    if approaching_pivot:
+        return {
+            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
+            "reason": "3m MA3 接近可能峰頂/谷底，等待轉向或恢復順勢",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 0, "ma3_slope": current_slope,
+            "ma_alignment": "WAIT"
+        }
+
+    if current_slope > 0:
+        return {
+            "signal": "LONG", "entry_type": "TREND_LONG",
+            "reason": "3m MA3 向上 → 無腦順勢開多",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 85, "ma_alignment": "UP"
+        }
+    if current_slope < 0:
+        return {
+            "signal": "SHORT", "entry_type": "TREND_SHORT",
+            "reason": "3m MA3 向下 → 無腦順勢開空",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 85, "ma_alignment": "DOWN"
         }
 
     return {
