@@ -148,8 +148,8 @@ class TradingEngine:
         # 盤中投影MA5必須連續多輪成立；任何一輪失效即清零。回撤底部
         # Maker預掛不是盤中投影，不需等待轉彎確認。
         self._ma5_early_confirmations: Dict[tuple, dict] = {}
-        # 連續轉向：提早平倉後鎖住舊方向，直到 MA3、MA5 共同越過 MA25 才允許反向重開。
-        self._continuous_alignment_wait: Dict[str, str] = {}
+        # 峰谷前提前平倉狀態；保存方向與離場 MA5，供假轉彎續開判斷。
+        self._continuous_alignment_wait: Dict[str, dict] = {}
         # 同一根 K、同一方向只允許成交一次，避免止盈後重複吃同一訊號。
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
         self.last_signal_progress_log_at: float = 0.0
@@ -176,15 +176,15 @@ class TradingEngine:
         # 需達到 BREAKOUT_KC_FAIL_CONFIRM_BARS 根才實際關倉，防止單根回踩誤觸
         self._kc_fail_count: Dict[str, int] = {}
 
-    def _detect_ma3_consolidation(self, df: pd.DataFrame) -> dict:
-        """Detect a confirmed low-volatility MA3 chop zone on closed candles."""
+    def _detect_ma5_consolidation(self, df: pd.DataFrame) -> dict:
+        """Detect a confirmed low-volatility MA5 chop zone on closed candles."""
         result = {"detected": False, "reason": "insufficient_data"}
         if df is None or len(df) < 20:
             return result
 
         work = df.copy()
-        if "ma3" not in work.columns:
-            work["ma3"] = work["close"].rolling(window=3).mean()
+        if "ma5" not in work.columns:
+            work["ma5"] = work["close"].rolling(window=5).mean()
 
         high = work["high"].astype(float)
         low = work["low"].astype(float)
@@ -213,10 +213,10 @@ class TradingEngine:
             dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
             adx = float(dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1])
 
-        recent_ma3 = work["ma3"].dropna().astype(float).iloc[-5:]
-        if len(recent_ma3) < 5:
+        recent_ma5 = work["ma5"].dropna().astype(float).iloc[-5:]
+        if len(recent_ma5) < 5:
             return result
-        steps = recent_ma3.diff().dropna()
+        steps = recent_ma5.diff().dropna()
         min_turn_step = atr * 0.005
         signs = [1 if step > min_turn_step else -1 if step < -min_turn_step else 0 for step in steps]
         meaningful_signs = [sign for sign in signs if sign]
@@ -224,20 +224,20 @@ class TradingEngine:
             current != previous
             for previous, current in zip(meaningful_signs, meaningful_signs[1:])
         )
-        ma3_range_atr = (float(recent_ma3.max()) - float(recent_ma3.min())) / atr
+        ma5_range_atr = (float(recent_ma5.max()) - float(recent_ma5.min())) / atr
         last_three_flat = bool((steps.abs().iloc[-3:] <= atr * 0.08).all())
         detected = bool(
-            ma3_range_atr <= 0.15
+            ma5_range_atr <= 0.15
             and direction_changes >= 2
             and last_three_flat
             and adx <= 18.0
         )
         return {
             "detected": detected,
-            "reason": "ma3_chop" if detected else "not_consolidating",
+            "reason": "ma5_chop" if detected else "not_consolidating",
             "atr": atr,
             "adx": adx,
-            "ma3_range_atr": ma3_range_atr,
+            "ma5_range_atr": ma5_range_atr,
             "direction_changes": direction_changes,
             "range_high": float(high.iloc[-5:].max()),
             "range_low": float(low.iloc[-5:].min()),
@@ -1058,8 +1058,8 @@ class TradingEngine:
                         )
                         st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
                         ma5 = float(df_1m['close'].rolling(5).mean().iloc[-1])
-                        ma25 = float(df_1m['close'].rolling(25).mean().iloc[-1])
-                        current_direction = "LONG" if ma5 > ma25 else "SHORT"
+                        ma15 = float(df_1m['close'].rolling(15).mean().iloc[-1])
+                        current_direction = "LONG" if ma5 > ma15 else "SHORT"
 
                         sig = detect_ma5_reversal(
                             df_1m,
@@ -1076,7 +1076,7 @@ class TradingEngine:
                                 DEFAULT_SYMBOLS.append(symbol)
                                 self.account.log(
                                     f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
-                                    f"{sig.get('score', 65)}分已符合MA3拐頭條件（原本不在監控名單內），"
+                                    f"{sig.get('score', 65)}分已符合MA5拐頭條件（原本不在監控名單內），"
                                     f"已加入監控，交由主迴圈接手進場｜{sig['reason']}",
                                     "SUCCESS",
                                 )
@@ -1116,7 +1116,7 @@ class TradingEngine:
                         import core.config as config
                         
                         # --- 大爆走 (Mega Trend) 模式檢查 ---
-                        # 若處於強烈單邊趨勢 (ADX >= 30)，關閉移動停利與固定止損，完全交給 MA3 轉向平倉
+                        # 若處於強烈單邊趨勢 (ADX >= 30)，關閉移動停利與固定止損，完全交給 MA5 轉向平倉
                         trigger = self.position_triggers.get(symbol, {})
                         adx_val = trigger.get("adx", 0.0)
                         is_mega_trend = (adx_val >= 30.0)
@@ -1161,11 +1161,11 @@ class TradingEngine:
                     # 使用正確的 K 棒週期做平倉判斷：
                     # CONTINUOUS_REVERSE 模式進場的部位用 5m（與進場相同），
                     # 其他路徑仍用 MA5_EXIT_TIMEFRAME（預設 1m）。
-                    from core.config import CONTINUOUS_REVERSE_TIMEFRAME
                     pos_reason = str(position.get("reason") or "")
                     is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT"))
+                    from core.config import CONTINUOUS_REVERSE_TIMEFRAME
                     exit_tf = CONTINUOUS_REVERSE_TIMEFRAME if is_cr_position else MA5_EXIT_TIMEFRAME
-                    # keep_live=True: 用最新未收盤的 tick 資料即時判斷，只要 MA3 反向彎了就立刻走，不需等該分 K 收盤
+                    # keep_live=True: 用最新未收盤的 tick 資料即時判斷，只要 MA5 反向彎了就立刻走，不需等該分 K 收盤
                     df = await self.fetch_klines(symbol, timeframe=exit_tf, limit=30, keep_live=True)
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
@@ -1198,8 +1198,10 @@ class TradingEngine:
                     )
                     trigger["ma5_exit_ready"] = True
                     from core.indicators import detect_ma5_ma25_cross_and_turn
+                    # 使用已收盤的資料進行平倉確認
+                    df_closed = drop_unclosed_candle(df, exit_tf)
                     exit_signal_info = detect_ma5_ma25_cross_and_turn(
-                        df, allow_live_pivot=True
+                        df_closed, allow_live_pivot=False
                     )
                     false_breakout_hold = str(
                         exit_signal_info.get("reason", "")
@@ -1208,29 +1210,49 @@ class TradingEngine:
                     trigger["ma5_exit_gate"] = (
                         "假突破：保持原持倉方向"
                         if false_breakout_hold
-                        else "MA3轉向即出場"
+                        else "等待下一個相反峰谷"
+                    )
+                    opposite_pivot = (
+                        position.get("side") == "LONG"
+                        and exit_signal_info.get("entry_type") == "PEAK_TURN"
+                    ) or (
+                        position.get("side") == "SHORT"
+                        and exit_signal_info.get("entry_type") == "TROUGH_TURN"
                     )
                     should_auto_close = bool(
                         not false_breakout_hold
                         and (
-                            trigger.get("ma5_reversed")
-                            or trigger.get("is_panic_reversal")
+                            opposite_pivot
+                            if is_cr_position
+                            else (
+                                trigger.get("ma5_reversed")
+                                or trigger.get("is_panic_reversal")
+                            )
                         )
                     )
+                    pivot_exit_ready = opposite_pivot if is_cr_position else bool(trigger.get("strong"))
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
                     )
                     trigger["bottom_entry_grace"] = bottom_grace
                     trigger["bottom_entry_age_sec"] = bottom_age
+                    pre_turn_exit = bool(
+                        trigger.get("pre_peak_exit")
+                        or trigger.get("pre_trough_exit")
+                    )
                     if bottom_grace:
                         self._soft_warning_since.pop(symbol, None)
                     if (
-                        (ENABLE_STRONG_TRIGGER_AUTO_CLOSE or trigger.get("strong"))
-                        and trigger.get("strong")
-                        and not bottom_grace
+                        (ENABLE_STRONG_TRIGGER_AUTO_CLOSE or pivot_exit_ready)
+                        and pivot_exit_ready
+                        and (not bottom_grace or pre_turn_exit)
                         and should_auto_close
                     ):
-                        if trigger.get("is_panic_reversal"):
+                        if trigger.get("pre_peak_exit"):
+                            close_reason = "MA5 峰頂前減速，提前平多"
+                        elif trigger.get("pre_trough_exit"):
+                            close_reason = "MA5 谷底前減速，提前平空"
+                        elif trigger.get("is_panic_reversal"):
                             close_reason = f"{MA5_EXIT_TIMEFRAME}爆量K線反轉，緊急平倉"
                         else:
                             close_reason = (
@@ -1243,10 +1265,28 @@ class TradingEngine:
                             "DANGER"
                         )
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
-                        if DISABLE_STOP_LOSS:
+                        if DISABLE_STOP_LOSS and not pre_turn_exit:
                             self.account.log(f"⏸️ [自動停損已停用] 跳過自動平倉 {symbol} ({close_reason})", "INFO")
                         else:
-                            await self.account.close_position(symbol, curr_p, close_reason)
+                            closed = await self.account.close_position(
+                                symbol, curr_p, close_reason, is_manual=pre_turn_exit
+                            )
+                            if closed and pre_turn_exit:
+                                exit_ma5 = (
+                                    float(df["ma5"].iloc[-1])
+                                    if "ma5" in df.columns
+                                    else float(df["close"].rolling(5).mean().iloc[-1])
+                                )
+                                self._continuous_alignment_wait[symbol] = {
+                                    "side": position.get("side"),
+                                    "exit_ma5": exit_ma5,
+                                    "atr": float(trigger.get("atr") or 0.0),
+                                    "exited_at": time.time(),
+                                }
+                                self.account.log(
+                                    f"⏳ {symbol} 已提前平倉，等待 MA5 改變方向再反手",
+                                    "INFO",
+                                )
                         self._soft_warning_since.pop(symbol, None)
                     else:
                         from core.config import ENABLE_SOFT_WARNING_TIGHTEN
@@ -2867,37 +2907,62 @@ class TradingEngine:
             if ENABLE_CONTINUOUS_REVERSE_MODE:
                 from core.indicators import detect_ma5_ma25_cross_and_turn
                 from core.strategy import build_sl_tp_for_side
-                # 一般方向訊號只使用已收盤 K；活動 K 在 MA3 第一彎與 K 色同向時
-                # 立即反轉，僅保留長影線陷阱防護，避免平倉後反手過慢。
+                # 連續峰谷模式使用設定的同一週期已收盤K，避免不同週期混用。
                 df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
                 if df_cr.empty or len(df_cr) < 4:
                     return signal_progress, detected_candidates
-                if 'ma3' not in df_cr.columns:
-                    df_cr['ma3'] = df_cr['close'].rolling(window=3).mean()
-                if 'ma5' not in df_cr.columns:
-                    df_cr['ma5'] = df_cr['close'].rolling(window=5).mean()
                 df_cr_signal = drop_unclosed_candle(df_cr, CONTINUOUS_REVERSE_TIMEFRAME)
                 cr_info = detect_ma5_ma25_cross_and_turn(df_cr_signal)
                 uses_live_pivot = False
-                if len(df_cr) > len(df_cr_signal):
-                    live_pivot_info = detect_ma5_ma25_cross_and_turn(
-                        df_cr, allow_live_pivot=True
-                    )
-                    uses_live_pivot = bool(
-                        live_pivot_info.get("pivot_confirmed")
-                        and live_pivot_info.get("entry_type") in ("TROUGH_TURN", "PEAK_TURN")
-                    )
-                    if uses_live_pivot:
-                        cr_info = live_pivot_info
-                    elif str(live_pivot_info.get("reason", "")).startswith("假突破過濾"):
-                        # 活動 K 已判定為假突破時，不得退回上一根收線訊號開倉。
-                        cr_info = live_pivot_info
-                        uses_live_pivot = True
-                df_cr_entry = df_cr if uses_live_pivot else df_cr_signal
+                df_cr_entry = df_cr_signal
                 cr_signal = cr_info.get("signal")
                 cr_entry_type = cr_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
+
+
+                wait_state = self._continuous_alignment_wait.get(symbol)
+                wait_side = wait_state.get("side") if isinstance(wait_state, dict) else wait_state
+                if cr_signal and wait_side:
+                    current_ma5 = float(df_cr_entry["ma5"].iloc[-1])
+                    previous_ma5 = float(df_cr_entry["ma5"].iloc[-2])
+                    wait_atr = (
+                        max(float(wait_state.get("atr") or cr_info.get("atr") or 0.0), 1e-12)
+                        if isinstance(wait_state, dict)
+                        else max(float(cr_info.get("atr") or 0.0), 1e-12)
+                    )
+                    exit_ma5 = (
+                        float(wait_state.get("exit_ma5") or current_ma5)
+                        if isinstance(wait_state, dict)
+                        else current_ma5
+                    )
+                    resumed = bool(
+                        (
+                            cr_signal == "LONG"
+                            and current_ma5 > exit_ma5 + wait_atr * 0.02
+                            and current_ma5 - previous_ma5 >= wait_atr * 0.01
+                        )
+                        or (
+                            cr_signal == "SHORT"
+                            and current_ma5 < exit_ma5 - wait_atr * 0.02
+                            and previous_ma5 - current_ma5 >= wait_atr * 0.01
+                        )
+                    )
+                    if cr_signal == wait_side and resumed:
+                        self._continuous_alignment_wait.pop(symbol, None)
+                        self.account.log(
+                            f"{symbol} 提前峰谷判斷為假，恢復 {cr_signal} 順勢開倉",
+                            "SUCCESS",
+                        )
+                    elif cr_signal == wait_side:
+                        signal_progress.append(f"{coin} 已提前平倉，確認是否為假峰谷")
+                        cr_signal = None
+                    else:
+                        self._continuous_alignment_wait.pop(symbol, None)
+                        self.account.log(
+                            f"{symbol} MA5 已由 {wait_side} 波段轉為 {cr_signal}，解除提前平倉鎖",
+                            "SUCCESS",
+                        )
 
                 has_pos = symbol in self.account.positions
                 curr_side = self.account.positions[symbol]["side"] if has_pos else None
@@ -2919,6 +2984,15 @@ class TradingEngine:
                     last_close = float(df_cr_entry['close'].iloc[-1])
                     clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                     live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
+
+                    # 只允許已確認的峰頂/谷底進場；均線排列與交叉只能作為觀察，
+                    # 不再在假突破或盤整時直接開倉、反手。
+                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                        self.account.log(
+                            f"⏸️ {symbol} {cr_entry_type} 非峰谷確認訊號，等待真峰頂/谷底後再開倉",
+                            "INFO",
+                        )
+                        return signal_progress, detected_candidates
 
                     # 由於使用者要求「完全無視K線顏色，只要紫線轉折就立刻開倉」，
                     # 這裡不再因為是綠K就暫緩做空，或是紅K就暫緩做多。
@@ -3026,7 +3100,7 @@ class TradingEngine:
                                 amount_usdt=TRADE_AMOUNT_USDT,
                                 sl=sl,
                                 tp=tp,
-                                reason=cr_info.get("reason", cr_entry_type),
+                                reason=f"{cr_entry_type}: {cr_info.get('reason', cr_entry_type)}",
                                 atr=atr,
                                 leverage=get_leverage(symbol),
                                 signal_score=100
@@ -3034,7 +3108,7 @@ class TradingEngine:
                             if opened:
                                 self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
 
-                    # --- MA5 穿越 MA25（金叉/死叉）：反轉/補開訊號 ---
+                    # --- MA5 穿越 MA15（金叉/死叉）：反轉/補開訊號 ---
                     # 如果無持倉，直接開倉；如果有持倉且方向相反，強制平倉反轉！
                     elif cr_entry_type in ("CROSS_UP", "CROSS_DOWN"):
                         should_open = False
@@ -3052,7 +3126,7 @@ class TradingEngine:
 
                         if should_open:
                             self.account.log(
-                                f"{symbol} [{cr_entry_type}] MA5穿越MA25：進場 {cr_signal}",
+                                f"{symbol} [{cr_entry_type}] MA5穿越MA15：進場 {cr_signal}",
                                 "INFO"
                             )
                             atr = cr_info.get("atr", live_price * 0.015)
@@ -3079,7 +3153,7 @@ class TradingEngine:
                             )
 
                     # --- 順勢延續進場（TREND_LONG / TREND_SHORT）---
-                    # indicators.py 在 MA3、MA5 位於 MA25 同側時回傳這兩種 entry_type；
+                    # indicators.py 在 MA5、MA5 位於 MA15 同側時回傳這兩種 entry_type；
                     # 不等待回踩，空倉時直接按即時成交價開倉。
                     elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
                         if has_pos and curr_side != cr_signal:
@@ -3090,7 +3164,7 @@ class TradingEngine:
                             closed = await self.account.close_position(
                                 symbol=symbol,
                                 current_price=live_price,
-                                close_reason=f"MA3、MA5 共同越過 MA25 → {cr_signal}",
+                                close_reason=f"MA5、MA5 共同越過 MA15 → {cr_signal}",
                                 is_manual=True,
                             )
                             if closed:

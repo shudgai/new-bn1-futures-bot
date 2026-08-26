@@ -462,33 +462,83 @@ def detect_ma5_reversal(
     is_peak = False
     trough_reason = ""
     peak_reason = ""
+    
+    price = float(live_price) if live_price else float(df['close'].iloc[-1])
+    atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
+    flat_threshold = atr * 0.15
+
+    last_close = float(df['close'].iloc[-1])
+    last_open = float(df['open'].iloc[-1])
+    is_green_candle = last_close > last_open
+    is_red_candle = last_close < last_open
 
     # 1. 尖端 (V 型谷底)
     if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
         is_trough = True
-        trough_reason = "MA3 尖端谷底"
+        trough_reason = "MA3 尖端(V型)谷底"
     # 2. 小梯形 (底平緩：左側下降，底部平/微升降，右側上升)
     elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
         is_trough = True
-        trough_reason = "MA3 小梯形谷底"
-    # 3. 大V括弧 + 2根以上綠K
-    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
+        trough_reason = "MA3 梯形谷底"
+    # 3. 大V括弧 / 圓弧底 (確認真正往上：當前K為綠K且收盤站上MA3)
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2 and is_green_candle and last_close > ma3_curr:
         is_trough = True
-        trough_reason = f"MA3 大V括弧谷底 (附{greens}根綠K)"
+        trough_reason = f"MA3 圓弧底(確認真正往上, 附{greens}根綠K)"
+    # 4. U形線 (左側下降，底部盤整3根以上，右側轉彎向上)
+    elif ma3_prev4 > ma3_prev3 and abs(ma3_prev3 - ma3_prev) <= flat_threshold and ma3_curr > ma3_prev:
+        is_trough = True
+        trough_reason = "MA3 U形底(轉彎向上)"
 
     # 1. 尖端 (倒 V 型峰頂)
     if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
         is_peak = True
-        peak_reason = "MA3 尖端峰頂"
+        peak_reason = "MA3 尖端(倒V型)峰頂"
     # 2. 小梯形 (頂平緩：左側上升，頂部平/微升降，右側下降)
     elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
         is_peak = True
-        peak_reason = "MA3 小梯形峰頂"
-    # 3. 大V括弧 + 2根以上紅K
-    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
+        peak_reason = "MA3 梯形峰頂"
+    # 3. 大V括弧 / 圓弧頂 (確認真正往下：當前K為紅K且收盤跌破MA3)
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2 and is_red_candle and last_close < ma3_curr:
         is_peak = True
-        peak_reason = f"MA3 大V括弧峰頂 (附{reds}根紅K)"
+        peak_reason = f"MA3 圓弧頂(確認真正往下, 附{reds}根紅K)"
+    # 4. 倒U形線 (左側上升，頂部盤整3根以上，右側轉彎向下)
+    elif ma3_prev4 < ma3_prev3 and abs(ma3_prev3 - ma3_prev) <= flat_threshold and ma3_curr < ma3_prev:
+        is_peak = True
+        peak_reason = "MA3 倒U形頂(轉彎向下)"
 
+    # --- 小波動過濾 (所有不規則波浪與小波動都不理，必須確認真實空間) ---
+    # 擴大回溯區間，尋找上一次的「反向轉折」
+    cooldown_period = 6
+    if (is_trough or is_peak) and len(ma3_series) >= cooldown_period + 5:
+        last_opposite_idx = -1
+        last_opposite_price = 0.0
+        for i in range(1, cooldown_period + 1):
+            idx = -1 - i
+            m_curr = ma3_series.iloc[idx]
+            m_prev = ma3_series.iloc[idx-1]
+            m_prev2 = ma3_series.iloc[idx-2]
+            m_prev3 = ma3_series.iloc[idx-3]
+            m_prev4 = ma3_series.iloc[idx-4]
+            
+            # 若當前尋找多單(谷底)，則回頭找空單(峰頂)
+            if want_dir == 1:
+                if (m_prev2 < m_prev and m_curr < m_prev) or \
+                   (m_prev3 < m_prev2 and m_curr < m_prev and m_prev <= m_prev2) or \
+                   (m_curr < m_prev and m_prev4 < m_prev3) or \
+                   (m_prev4 < m_prev3 and abs(m_prev3 - m_prev) <= flat_threshold and m_curr < m_prev):
+                    last_opposite_idx = i
+                    last_opposite_price = df['close'].iloc[idx]
+                    break
+            # 若當前尋找空單(峰頂)，則回頭找多單(谷底)
+            else:
+                if (m_prev2 > m_prev and m_curr > m_prev) or \
+                   (m_prev3 > m_prev2 and m_curr > m_prev and m_prev >= m_prev2) or \
+                   (m_curr > m_prev and m_prev4 > m_prev3) or \
+                   (m_prev4 > m_prev3 and abs(m_prev3 - m_prev) <= flat_threshold and m_curr > m_prev):
+                    last_opposite_idx = i
+                    last_opposite_price = df['close'].iloc[idx]
+                    break
+                    
     if want_dir == 1:
         if not is_trough:
             return _no("MA3 未形成尖端、小梯形或大V括弧谷底")
@@ -501,14 +551,14 @@ def detect_ma5_reversal(
     price = float(live_price) if live_price else float(df['close'].iloc[-1])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
 
-    # 如果有用到 MA5 和 MA25 (用作乖離等計算，保留計算以防其他地方報錯)
+    # 如果有用到 MA5 和 MA15 (用作乖離等計算，保留計算以防其他地方報錯)
     if 'ma5' not in df.columns:
         df['ma5'] = df['close'].rolling(window=5).mean()
-    if 'ma25' not in df.columns:
-        df['ma25'] = df['close'].rolling(window=25).mean()
+    if 'ma15' not in df.columns:
+        df['ma15'] = df['close'].rolling(window=15).mean()
     ma5_curr = float(df['ma5'].iloc[-1]) if len(df['ma5'].dropna()) > 0 else 0.0
-    ma25_curr = float(df['ma25'].iloc[-1]) if len(df['ma25'].dropna()) > 0 else 0.0
-    turn_sharpness = abs(ma5_curr - ma25_curr)
+    ma15_curr = float(df['ma15'].iloc[-1]) if len(df['ma15'].dropna()) > 0 else 0.0
+    turn_sharpness = abs(ma5_curr - ma15_curr)
 
     return {
         "detected": True,
@@ -519,7 +569,7 @@ def detect_ma5_reversal(
         "ma5_curr": ma5_curr,
         "ma5_prev": ma5_curr,
         "ma5_prev2": ma5_curr,
-        "ma25_curr": ma25_curr,
+        "ma15_curr": ma15_curr,
         "turn_sharpness": turn_sharpness,
         "early_projection": False,
         "fast_entry": False,
