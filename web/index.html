@@ -213,7 +213,7 @@
                 <div class="chart-modal-header">
                     <div class="chart-modal-title">
                         📈 {{ chartModal.symbol }} K線圖 
-                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">5m</span>
+                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m</span>
                     </div>
                     <button class="chart-modal-close" @click="closeChartModal">&times;</button>
                 </div>
@@ -439,10 +439,10 @@
             <div class="right-panel">
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
-                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot">
-                        {{ bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人' }}
+                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">
+                        {{ isProcessing ? '處理中...' : (bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人') }}
                     </button>
-                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount">
+                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">
                         🔄 重置帳戶（清空損益與記錄）
                     </button>
                 </div>
@@ -451,8 +451,8 @@
                 <div class="card">
                     <div class="card-title">⚡ 手動開倉 (依策略自動配置止損/止盈)</div>
                     <div style="display:flex; gap:8px; margin-top:8px;">
-                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')">做多 (LONG)</button>
-                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')">做空 (SHORT)</button>
+                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">{{ isProcessing ? '處理中...' : '做多 (LONG)' }}</button>
+                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">{{ isProcessing ? '處理中...' : '做空 (SHORT)' }}</button>
                     </div>
                 </div>
 
@@ -460,10 +460,10 @@
                 <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px;">
                     <button class="btn btn-success"
                         style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
-                        @click="placeOrder('LONG')">&#x1F4C8; 買進 LONG</button>
+                        @click="placeOrder('LONG')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1 }">&#x1F4C8; {{ isProcessing ? '處理中' : '買進 LONG' }}</button>
                     <button class="btn btn-danger"
                         style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
-                        @click="placeOrder('SHORT')">&#x1F4C9; 賣出 SHORT</button>
+                        @click="placeOrder('SHORT')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1 }">&#x1F4C9; {{ isProcessing ? '處理中' : '賣出 SHORT' }}</button>
                 </div>
 
                 <!-- AI TRADE HISTORY ANALYSIS -->
@@ -520,6 +520,7 @@
                     loading: false,
                     error: "",
                 },
+                isProcessing: false,
                 bot: {
                         is_running: false,
                         strategy: '',
@@ -664,7 +665,7 @@
             },
             async fetchChartData(symbol) {
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=5m`);
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m`);
                     if (!res.ok) throw new Error("Failed to fetch K-lines");
                     const json = await res.json();
                     
@@ -806,48 +807,72 @@
                     return res;
                 },
                 async toggleBot() {
-                    const res = await this.authorizedFetch('/api/toggle', { method: 'POST' });
-                    if (!res) return;
-                    await this.fetchStatus();
+                    if (this.isProcessing) return;
+                    this.isProcessing = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/toggle', { method: 'POST' });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isProcessing = false;
+                    }
                 },
                 async placeOrder(side) {
-                    const res = await this.authorizedFetch('/api/manual_order', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : 'BTC/USDT',
-                            side: side,
-                            amount: 0
-                        })
-                    });
-                    if (!res) return;
-                    await this.fetchStatus();
+                    if (this.isProcessing) return;
+                    this.isProcessing = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/manual_order', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : 'BTC/USDT',
+                                side: side,
+                                amount: 0
+                            })
+                        });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isProcessing = false;
+                    }
                 },
                 async closePos(symbol) {
-                    const res = await this.authorizedFetch('/api/manual_close', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbol })
-                    });
-                    if (!res) return;
-                    await this.fetchStatus();
+                    if (this.isProcessing) return;
+                    this.isProcessing = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/manual_close', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ symbol })
+                        });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isProcessing = false;
+                    }
                 },
                 async resetAccount() {
                     const confirmed = window.confirm(
                         '⚠️ 確定要重置帳戶嗎？\n\n這將清空所有：\n• 交易記錄\n• 損益數據\n• 當前持倉\n\n此操作無法復原！'
                     );
                     if (!confirmed) return;
-                    const res = await this.authorizedFetch('/api/reset_account', { method: 'POST' });
-                    if (!res) return;
-                    const data = await res.json();
-                    window.alert('✅ ' + (data.message || '帳戶已重置'));
-                    await this.fetchStatus();
+                    if (this.isProcessing) return;
+                    this.isProcessing = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/reset_account', { method: 'POST' });
+                        if (!res) return;
+                        const data = await res.json();
+                        window.alert('✅ ' + (data.message || '帳戶已重置'));
+                        await this.fetchStatus();
+                    } finally {
+                        this.isProcessing = false;
+                    }
                 }
             },
             mounted() {
                 this.fetchStatus();
                 setInterval(this.fetchStatus, 3000);  // 完整狀態（logs/trades）每 3 秒
-                setInterval(this.fetchPrices, 1000);  // 現價與持倉每 1 秒
+                setInterval(this.fetchPrices, 500);   // 現價與持倉每 0.5 秒，提升即時反應感
             }
         }).mount('#app');
     </script>
