@@ -904,6 +904,8 @@ class TradingEngine:
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
         # 無 MA5 模式不啟動全市場 MA5 掃描。
         self.market_scan_task = None
+        # 獨立的即時價格更新任務
+        self.ticker_task = asyncio.create_task(self._ticker_loop())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
@@ -925,6 +927,8 @@ class TradingEngine:
             self.trailing_sl_task.cancel()
         if self.market_scan_task:
             self.market_scan_task.cancel()
+        if hasattr(self, 'ticker_task') and self.ticker_task:
+            self.ticker_task.cancel()
         await self.exchange.close()
         await self.execution_exchange.close()
         self.account.log("⏹️ 量化交易機器人已停止")
@@ -1762,6 +1766,18 @@ class TradingEngine:
                     f"報價已 {stale_sec:.0f} 秒未更新",
                     "WARNING",
                 )
+
+    async def _ticker_loop(self):
+        """獨立的報價更新迴圈：每秒更新一次價格，不受主迴圈抓取 K 線的耗時影響。"""
+        while self.is_running:
+            try:
+                await self.update_market_prices()
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.account.log(f"⚠️ [Ticker Loop] 錯誤: {e}", "WARNING")
+                await asyncio.sleep(1)
 
     async def update_1h_trend_cache(self):
         """10 分鐘才抓取一次 1h 大週期數據，避免頻繁調用 API Rate Limit"""
@@ -2776,9 +2792,6 @@ class TradingEngine:
     async def _main_loop(self):
         while self.is_running:
             try:
-                # 1. 更新實時價格
-                await self.update_market_prices()
-
                 # 幣種輪替已移到獨立的 _rotation_loop() 背景任務執行，
                 # 不再佔用這個迴圈的 await 鏈，停損停利不會被 AI 呼叫延遲。
 
