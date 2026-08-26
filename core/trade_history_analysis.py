@@ -110,6 +110,7 @@ class TradeHistoryAnalyzer:
                         "btc_adjusted_score": opened.get("btc_adjusted_score"),
                         "history_adjusted_score": opened.get("history_adjusted_score"),
                         "pullback_confirmation_score": opened.get("pullback_confirmation_score"),
+                        "entry_mode": opened.get("entry_mode"),
                         "entry_reason": str(opened.get("reason", ""))[:300],
                         "exit_reason": str(trade.get("reason", ""))[:200],
                         "exit_type": TradeHistoryAnalyzer._infer_exit_type(trade, opened),
@@ -137,6 +138,7 @@ class TradeHistoryAnalyzer:
                     "btc_adjusted_score": opened.get("btc_adjusted_score"),
                     "history_adjusted_score": opened.get("history_adjusted_score"),
                     "pullback_confirmation_score": opened.get("pullback_confirmation_score"),
+                        "entry_mode": opened.get("entry_mode"),
                     "entry_reason": str(opened.get("reason", ""))[:300],
                     "exit_reason": str(trade.get("reason", ""))[:200],
                     "exit_type": TradeHistoryAnalyzer._infer_exit_type(trade, opened),
@@ -301,3 +303,34 @@ class TradeHistoryAnalyzer:
 
     def status(self) -> dict:
         return dict(self.analysis)
+
+
+    @staticmethod
+    def build_quant_report(trades: Iterable[dict]) -> dict:
+        """唯讀統計目前交易方式的實際績效，不預測、不調參、不下單。"""
+        records = TradeHistoryAnalyzer.pair_closed_trades(trades)
+        def entry_style(row):
+            mode = str(row.get("entry_mode") or "")
+            if "MARKET" in mode or "手動開倉" in str(row.get("entry_reason") or ""):
+                return "MARKET"
+            if "LIMIT" in mode or "MAKER" in mode:
+                return "MAKER"
+            return "UNKNOWN"
+        def stats(rows):
+            pnls = [float(row.get("net_pnl") or 0.0) for row in rows]
+            fees = [float(row.get("fee") or 0.0) for row in rows]
+            wins = [value for value in pnls if value > 0]
+            gross_loss = abs(sum(value for value in pnls if value < 0))
+            equity = peak = max_drawdown = 0.0
+            for pnl in pnls:
+                equity += pnl
+                peak = max(peak, equity)
+                max_drawdown = max(max_drawdown, peak - equity)
+            count = len(rows)
+            return {"trades": count, "net_pnl": round(sum(pnls), 4), "avg_pnl": round(sum(pnls) / count, 4) if count else 0.0, "win_rate": round(len(wins) / count, 4) if count else 0.0, "profit_factor": round(sum(wins) / gross_loss, 4) if gross_loss else None, "total_fees": round(sum(fees), 4), "fee_to_gross_profit": round(sum(fees) / sum(wins), 4) if wins else None, "max_drawdown": round(max_drawdown, 4), "confidence": "high" if count >= 50 else "medium" if count >= 20 else "low"}
+        grouped = defaultdict(list)
+        for row in records:
+            row["entry_style"] = entry_style(row)
+            grouped[row["entry_style"]].append(row)
+        overall = stats(records)
+        return {"method": "已平倉交易的淨損益統計；不預測未來，也不自動下單。", "sample_note": "樣本不足20筆，僅供觀察，不應據此自動調參。" if overall["confidence"] == "low" else "樣本可比較，仍應用新資料驗證。", "overall": overall, "by_entry_style": {label: stats(rows) for label, rows in sorted(grouped.items())}}

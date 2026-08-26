@@ -219,7 +219,7 @@
                 <div class="chart-modal-header">
                     <div class="chart-modal-title">
                         📈 {{ chartModal.symbol }} K線圖 
-                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">3m · MA3</span>
+                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m · MA3</span>
                     </div>
                     <button class="chart-modal-close" @click="closeChartModal">&times;</button>
                 </div>
@@ -674,7 +674,7 @@
             },
             async fetchChartData(symbol) {
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=3m`);
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m`);
                     if (!res.ok) throw new Error("Failed to fetch K-lines");
                     const json = await res.json();
                     

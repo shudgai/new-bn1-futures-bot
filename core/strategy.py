@@ -1505,7 +1505,7 @@ class SuperTrendKeltnerStrategy:
         
         return {
             "action": "HOLD",
-            "reason": "MA3 尚未出現尖端、小梯形或大V括弧的無腦進場訊號",
+            "reason": "MA3 尚未出現可確認的尖端、小梯形或大V括弧進場訊號",
             "eligible": False,
             "score_stage": "ELIGIBILITY",
         }

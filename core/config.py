@@ -257,6 +257,10 @@ BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
 
 ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "false").lower() == "true"
 CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
+# 1 分鐘策略平倉後只冷靜一根完整 K，避免秒進秒出但保留趨勢續段。
+CONTINUOUS_REENTRY_COOLDOWN_SEC = max(
+    0.0, float(os.getenv("CONTINUOUS_REENTRY_COOLDOWN_SEC", "60"))
+)
 
 def get_bounce_capture_ratio(score: int) -> float:
     progress = min(1.0, max(0.0, (float(score or 75) - 75.0) / 16.0))

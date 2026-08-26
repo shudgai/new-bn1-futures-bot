@@ -219,9 +219,9 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
 def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     """
-    1m MA3 峰谷轉折邏輯：
-    做多 (谷底往峰頂)：MA3 線形成谷底並向上確認
-    做空 (峰頂到谷底)：MA3 線形成峰頂並向下確認
+    1m MA3 / MA15 連續轉向邏輯：
+    MA3 在 MA15 上方時順勢做多，除非峰頂轉彎向下。
+    MA3 在 MA15 下方時順勢做空，除非谷底轉彎向上。
     """
     if df is None or len(df) < 15:
         return {"signal": None, "reason": "Not enough data", "pivot_confirmed": False, "pivot_score": 0}
@@ -229,6 +229,8 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     df = df.copy()
     if 'ma3' not in df.columns:
         df['ma3'] = df['close'].rolling(window=3).mean()
+    if 'ma15' not in df.columns:
+        df['ma15'] = df['close'].rolling(window=15).mean()
 
     ma3_series = df['ma3'].dropna()
     if len(ma3_series) < 5:
@@ -237,97 +239,140 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     ma3_curr  = float(ma3_series.iloc[-1])
     ma3_prev  = float(ma3_series.iloc[-2])
     ma3_prev2 = float(ma3_series.iloc[-3])
+    ma15_curr = float(df['ma15'].iloc[-1])
+    if pd.isna(ma15_curr):
+        return {"signal": None, "reason": "MA15 not ready", "pivot_confirmed": False, "pivot_score": 0}
     previous_slope = ma3_prev - ma3_prev2
     current_slope = ma3_curr - ma3_prev
+    ma_alignment = "ABOVE" if ma3_curr > ma15_curr else "BELOW" if ma3_curr < ma15_curr else "EQUAL"
 
-    atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
+    atr_raw = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float("nan")
+    atr = atr_raw if pd.notna(atr_raw) and atr_raw > 0 else float(df['close'].iloc[-1]) * 0.015
     min_pivot_slope = max(abs(atr) * 0.05, abs(ma3_prev) * 0.0001)
+    recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
+    min_directional_range = max(abs(atr) * 0.20, abs(ma3_curr) * 0.0004)
+
+    # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
+    # 回傳空訊號可讓既有持倉保持原方向。
+    if ma3_curr != ma15_curr and recent_ma3_range <= min_directional_range:
+        return {
+            "signal": None, "entry_type": "WAIT_MA_NOISE",
+            "reason": "1m MA3 最近3根振幅過小，不開新倉並維持原持倉方向",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 0, "ma3_slope": current_slope,
+            "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+            "ma3_range": recent_ma3_range,
+            "noise_threshold": min_directional_range,
+            "ma_alignment": "NEUTRAL"
+        }
 
     # 明顯 V/倒V 才換向；微小轉折先等待，避免一點點彎就平倉反手。
-    # 仍只使用已收盤的 3m K，避免未完成 K 線反覆變形造成重複訊號。
+    # 仍只使用已收盤的 1m K，避免未完成 K 線反覆變形造成重複訊號。
     if previous_slope < 0 and current_slope > 0:
         if abs(previous_slope) >= min_pivot_slope and current_slope >= min_pivot_slope:
             return {
                 "signal": "LONG", "entry_type": "TROUGH_TURN",
-                "reason": "3m MA3 V字谷底 → 立即轉向開多",
+                "reason": "1m MA3 V字谷底 → 立即轉向開多",
                 "atr": atr, "pivot_confirmed": True,
                 "pivot_score": 100,
                 "fast_pivot": True,
                 "live_pivot": allow_live_pivot,
-                "ma_alignment": "ABOVE"
+                "ma_alignment": ma_alignment
             }
         return {
             "signal": None, "entry_type": "WAIT_PRE_PIVOT",
-            "reason": "3m MA3 谷底轉折幅度不足，等待局勢明朗",
+            "reason": "1m MA3 谷底轉折幅度不足，維持原開倉方向",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 0, "ma3_slope": current_slope,
             "ma_alignment": "WAIT"
         }
-    elif previous_slope > 0 and current_slope < 0:
+    if previous_slope > 0 and current_slope < 0:
         if previous_slope >= min_pivot_slope and abs(current_slope) >= min_pivot_slope:
             return {
                 "signal": "SHORT", "entry_type": "PEAK_TURN",
-                "reason": "3m MA3 倒V字峰頂 → 立即轉向開空",
+                "reason": "1m MA3 倒V字峰頂 → 立即轉向開空",
                 "atr": atr, "pivot_confirmed": True,
                 "pivot_score": 100,
                 "fast_pivot": True,
                 "live_pivot": allow_live_pivot,
-                "ma_alignment": "BELOW"
+                "ma_alignment": ma_alignment
             }
         return {
             "signal": None, "entry_type": "WAIT_PRE_PIVOT",
-            "reason": "3m MA3 峰頂轉折幅度不足，等待局勢明朗",
+            "reason": "1m MA3 峰頂轉折幅度不足，維持原開倉方向",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 0, "ma3_slope": current_slope,
             "ma_alignment": "WAIT"
         }
 
-    approaching_pivot = (
-        (previous_slope > 0 and 0 < current_slope < previous_slope)
-        or (previous_slope < 0 and previous_slope < current_slope < 0)
-    )
-    if approaching_pivot:
+    # 峰谷沒有真正轉向時，以 MA3 相對 MA15 的位置決定方向。
+    # MA3 貼近 MA15（距離 <= 0.05 ATR）視為小波動，不產生反向開倉訊號。
+    ma15_distance = abs(ma3_curr - ma15_curr)
+    if 0 < ma15_distance <= min_pivot_slope:
         return {
-            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
-            "reason": "3m MA3 接近可能峰頂/谷底，等待轉向或恢復順勢",
+            "signal": None, "entry_type": "WAIT_MA_NOISE",
+            "reason": "1m MA3 貼近 MA15，小波動不改變開倉方向",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 0, "ma3_slope": current_slope,
-            "ma_alignment": "WAIT"
+            "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+            "ma15_distance": ma15_distance,
+            "noise_threshold": min_pivot_slope,
+            "ma_alignment": "NEUTRAL"
         }
-
-    if current_slope > 0:
-        return {
-            "signal": "LONG", "entry_type": "TREND_LONG",
-            "reason": "3m MA3 向上 → 無腦順勢開多",
-            "atr": atr, "pivot_confirmed": False,
-            "pivot_score": 85, "ma_alignment": "UP"
-        }
-    if current_slope < 0:
+    if ma3_curr < ma15_curr:
         return {
             "signal": "SHORT", "entry_type": "TREND_SHORT",
-            "reason": "3m MA3 向下 → 無腦順勢開空",
+            "reason": "1m MA3 位於 MA15 下方且未形成谷底向上 → 順勢延續開空",
             "atr": atr, "pivot_confirmed": False,
-            "pivot_score": 85, "ma_alignment": "DOWN"
+            "pivot_score": 85, "ma3_slope": current_slope,
+            "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+            "ma_alignment": "BELOW"
+        }
+
+    if ma3_curr > ma15_curr:
+        return {
+            "signal": "LONG", "entry_type": "TREND_LONG",
+            "reason": "1m MA3 位於 MA15 上方且未形成峰頂向下 → 順勢延續開多",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 85, "ma3_slope": current_slope,
+            "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+            "ma_alignment": "ABOVE"
         }
 
     return {
-        "signal": None,
-        "reason": "3m MA3 尚未形成 V/倒V，持續等待峰頂或谷底",
+        "signal": None, "entry_type": "WAIT_MA_EQUAL",
+        "reason": "1m MA3 與 MA15 重疊，等待方向明確",
         "pivot_confirmed": False,
         "pivot_score": 0,
-        "ma_alignment": "MIXED",
+        "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+        "ma_alignment": "EQUAL",
     }
 
+def get_ma3_ma15_limit_target(df: pd.DataFrame, side: str, lookback: int = 3) -> float:
+    """多單取近期最低價，空單取近期最高價作為 Maker 掛單目標。"""
+    if df is None or df.empty:
+        raise ValueError("K線資料不足，無法計算掛單價")
+    side = str(side).upper()
+    price_column = "low" if side == "LONG" else "high" if side == "SHORT" else None
+    if price_column is None:
+        raise ValueError(f"不支援的掛單方向: {side}")
+    source = df[price_column] if price_column in df.columns else df["close"]
+    recent = pd.to_numeric(source.tail(max(1, int(lookback))), errors="coerce").dropna()
+    if recent.empty:
+        raise ValueError(f"{price_column} 資料不足，無法計算掛單價")
+    return float(recent.min() if side == "LONG" else recent.max())
+
+
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
-    """持倉平倉訊號（MA5 反轉版：與進場邏輯完全對稱）
-    
-    多單持倉 → MA5 形成嚴格的峰頂向下滑落 (右側 >= 0.05 ATR) → 出場
-    空單持倉 → MA5 形成嚴格的谷底向上翹起 (右側 >= 0.05 ATR) → 出場
+    """持倉平倉訊號：MA5 正式反轉，或強反向 K 穿越 MA3 時保護性離場。
+
+    強反向 K 只負責先平倉，不代表可以立即反手；反向進場另等峰谷確認。
     """
     empty = {
         "active": False, "ma_ok": True, "reasons": [], "strong": False,
         "ma5_reversed": False, "ema_breach_confirmed": False,
         "structure_broken": False, "atr": None,
+        "pre_peak_exit": False, "pre_trough_exit": False,
     }
     if df is None or len(df) < 12:
         return empty
@@ -335,6 +380,8 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     df = df.copy()
     if 'ma5' not in df.columns:
         df['ma5'] = df['close'].rolling(window=5).mean()
+    if 'ma3' not in df.columns:
+        df['ma3'] = df['close'].rolling(window=3).mean()
 
     ma5_series = df['ma5'].dropna()
     if len(ma5_series) < 5:
@@ -365,14 +412,33 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     # 嚴格峰頂 (與進場相同)：右側向下滑落 >= 0.05 ATR，左側漲幅 >= 0.05 ATR
     is_peak_forming = (ma5_curr < ma5_prev) and (drop_from_peak >= atr_val * 0.05) and (climb_before_peak >= atr_val * 0.05)
 
+    curr = df.iloc[-1]
+    candle_open = float(curr.get('open', curr['close']))
+    candle_close = float(curr['close'])
+    candle_body = abs(candle_close - candle_open)
+    ma3_curr = float(df['ma3'].iloc[-1])
+    strong_opposite_body = candle_body >= atr_val * 0.50
+    pre_peak_exit = bool(
+        side == "LONG" and strong_opposite_body
+        and candle_close < candle_open and candle_close < ma3_curr
+    )
+    pre_trough_exit = bool(
+        side == "SHORT" and strong_opposite_body
+        and candle_close > candle_open and candle_close > ma3_curr
+    )
+
     reasons = []
     strong = False
 
     if side == "LONG":
+        if pre_peak_exit:
+            reasons.append("強紅K實體>=0.5ATR且收破MA3 -> 保護性平多")
         if is_peak_forming:
             strong = True
             reasons.append("MA5 嚴格峰頂(倒V型) -> 出場多單")
     else:
+        if pre_trough_exit:
+            reasons.append("強綠K實體>=0.5ATR且收上MA3 -> 保護性平空")
         if is_trough_forming:
             strong = True
             reasons.append("MA5 嚴格谷底(V型) -> 出場空單")
@@ -386,8 +452,10 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         "is_panic_reversal": False,
         "ema_breach_confirmed": strong,
         "structure_broken": strong,
-        "pre_peak_exit": False,
-        "pre_trough_exit": False,
+        "pre_peak_exit": pre_peak_exit,
+        "pre_trough_exit": pre_trough_exit,
+        "opposite_candle_body_atr": candle_body / max(atr_val, 1e-12),
+        "ma3_curr": ma3_curr,
         "adx": float(df['adx'].iloc[-1]) if 'adx' in df.columns else 0.0,
         "atr": atr_val,
     }

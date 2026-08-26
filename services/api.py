@@ -14,6 +14,8 @@ from core.config import (
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
+from core.trade_history_analysis import TradeHistoryAnalyzer
+from core.trade_history_analysis import TradeHistoryAnalyzer
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -184,6 +186,16 @@ async def get_prices(response: Response):
         "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
         "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
     }
+
+@app.get("/api/quant-analysis")
+async def get_quant_analysis():
+    """唯讀量化報表：比較目前進場方式的實際淨績效。"""
+    return TradeHistoryAnalyzer.build_quant_report(engine.account.trades)
+
+@app.get("/api/quant-analysis")
+async def get_quant_analysis():
+    """唯讀量化報表：比較目前進場方式的實際淨績效。"""
+    return TradeHistoryAnalyzer.build_quant_report(engine.account.trades)
 
 @app.post("/api/toggle")
 async def toggle_bot():
