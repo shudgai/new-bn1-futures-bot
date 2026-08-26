@@ -321,7 +321,10 @@ def validate_sl_tp_pair(
     if not math.isfinite(price) or price <= 0:
         raise ValueError(f"Invalid price for SL/TP validation: {price!r}")
 
-    if sl != 0.0:
+    # allow_profit_lock=True 代表追蹤停損可能已經越過成本價（例如鎖利），
+    # 此時 sl 在 LONG 高於現價、SHORT 低於現價都是正常狀態，不能套用
+    # 「初始下單」才成立的 sl 必須在價格不利側的檢查，否則這個參數形同虛設。
+    if sl != 0.0 and not allow_profit_lock:
         if side == "LONG" and not (sl < price):
             raise ValueError(f"LONG SL invalid: price={price}, sl={sl}")
         if side == "SHORT" and not (sl > price):
