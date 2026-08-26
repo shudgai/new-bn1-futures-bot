@@ -2093,6 +2093,7 @@ class TradingEngine:
                 pullback_distance_atr = computed_distance / max(float(sig.get("atr") or real_atr), 1e-12)
             dynamic_trade_amount = self.account.get_wallet_balance() / max(MAX_SLOTS, 1) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT
             amount = dynamic_trade_amount
+            btc_allocation_factor = float(sig.get("btc_allocation_factor", 1.0) or 1.0)
             pool[symbol] = {
                 "symbol": symbol,
                 "side": sig["side"],
@@ -2104,12 +2105,12 @@ class TradingEngine:
                 "pullback_distance_atr": pullback_distance_atr,
                 "atr": float(sig.get("atr") or real_atr),
                 "reason": sig.get("reason", ""),
-                "amount_usdt": amount,
+                "amount_usdt": amount * btc_allocation_factor,
                 "base_amount_usdt": amount,
                 "btc_regime_mode": sig.get("btc_regime_mode", "UNKNOWN"),
                 "btc_direction_1h": sig.get("btc_direction_1h", 0),
                 "btc_score_penalty": sig.get("btc_score_penalty", 0),
-                "btc_allocation_factor": 1.0,
+                "btc_allocation_factor": btc_allocation_factor,
                 "btc_pre_penalty_score": sig.get("btc_pre_penalty_score", score),
                 "raw_signal_score": sig.get("raw_score", sig.get("btc_pre_penalty_score", score)),
                 "btc_adjusted_score": sig.get("btc_adjusted_score", score),

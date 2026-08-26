@@ -2489,6 +2489,10 @@ def test_pullback_candidate_pool_keeps_highest_score_and_quality(monkeypatch):
         def log(self, text, level):
             self.logs.append((text, level))
 
+        @staticmethod
+        def get_wallet_balance():
+            return 100.0
+
     class DummyRotation:
         @staticmethod
         def get_dynamic_leverage(symbol, score):
@@ -2526,6 +2530,10 @@ def test_90_plus_candidate_uses_current_price_maker_mode(monkeypatch):
 
         def log(self, text, level):
             self.logs.append((text, level))
+
+        @staticmethod
+        def get_wallet_balance():
+            return 100.0
 
     class DummyRotation:
 
@@ -2613,6 +2621,10 @@ def test_btc_contrary_candidate_uses_half_position(monkeypatch):
 
         def log(self, text, level):
             self.logs.append((text, level))
+
+        @staticmethod
+        def get_wallet_balance():
+            return 100.0
 
     class DummyRotation:
         @staticmethod
