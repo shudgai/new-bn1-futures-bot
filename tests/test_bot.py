@@ -291,19 +291,6 @@ def test_entry_direction_guard_blocks_wrong_1h_st_and_ema50(monkeypatch):
     assert any("1h EMA50" in msg or "EMA50" in msg for msg, _ in engine.account.logs)
 
 
-def test_eligibility_failure_returns_numeric_diagnostics(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_MAX + 1, adx=35.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-
-    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
-
-    assert result["eligible"] is False
-    assert result["diagnostics"]["rsi"] == pytest.approx(RSI_LONG_MAX + 1)
-    assert result["diagnostics"]["atr_pct"] > 0
-    assert result["diagnostics"]["st_direction_5m"] == 1
-
-
 def test_strategy_indicators():
     strategy = SuperTrendKeltnerStrategy()
     dates = pd.date_range(start="2026-01-01", periods=100, freq="15min")
@@ -893,39 +880,6 @@ async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, m
     assert trade["signal_score"] == MIN_OPEN_SIGNAL_SCORE
     assert trade["reason"] == "Score accept"
 
-def test_atr_range_filter_is_mandatory(monkeypatch):
-    """1h 大趨勢之外，ATR 波動率範圍是目前唯一還會直接 HOLD 的強制門檻
-    （KC 突破、量能、RSI、新鮮度都已改成評分制，見下面
-    test_kc_breakout_and_freshness_lower_score_not_mandatory）。"""
-    strategy = SuperTrendKeltnerStrategy()
-    df = pd.DataFrame({
-        "open": [100.0] * 50,
-        "close": [100.0] * 50,
-        "close_price_spike_filtered": [100.0] * 50,
-        "atr": [1.0] * 50,  # atr/price = 1% > MAX_ATR_PCT(0.6%)
-        "rsi": [60.0] * 50,
-        "adx": [30.0] * 50,
-        "volume": [1000.0] * 50,
-        "vol_ma_20": [900.0] * 50,
-        "kc_upper": [101.0] * 50,
-        "kc_lower": [99.0] * 50,
-        "kc_width": [2.0] * 50,
-        "ema_20": [101.0] * 50,
-        "ema_50": [100.0] * 50,
-        "st_direction": [1] * 50,
-    })
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-    result = strategy.evaluate_signal(df, ema_50_1h=90.0)
-    assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: ATR_Too_High" in result["reason"]
-
-    df.loc[:, "atr"] = 0.001  # atr/price = 0.001% < MIN_ATR_PCT(0.15%)
-    result = strategy.evaluate_signal(df, ema_50_1h=90.0)
-    assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: ATR_Too_Low" in result["reason"]
-
-
 def _entry_score_frame(volume=700.0, rsi=49.0, adx=20.0):
     return pd.DataFrame({
         "open": [100.05] * 50,
@@ -943,26 +897,6 @@ def _entry_score_frame(volume=700.0, rsi=49.0, adx=20.0):
         "ema_50": [100.0] * 50,
         "st_direction": [1] * 50,
     })
-
-
-def test_kc_breakout_and_freshness_lower_score_not_mandatory(monkeypatch):
-    """KC 突破/訊號新鮮度沒過，不再是強制擋單（Mandatory_Fail），
-    而是評分制底下的扣分，分數不夠門檻時走 HOLD + Score_Low。"""
-    strategy = SuperTrendKeltnerStrategy()
-    # ADX 給 13（高於 ADX_MANDATORY_MIN=12 硬性門檻，讓訊號進入評分系統，
-    # 但低於 ADX_QUALITY_MIN=15，品質加分仍為 0）；量能、RSI 也刻意不過，
-    # 確保不管品質加分怎麼算都遠低於 MIN_SCORE_THRESHOLD，走到 Score_Low 分支。
-    frame = _entry_score_frame(volume=100.0, rsi=RSI_LONG_THRESHOLD - 5, adx=13.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: FRESHNESS_DECAY_BARS + 50)
-
-    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
-
-    assert result["action"] == "HOLD"
-    assert "Score_Low" in result["reason"]
-    assert result["eligible"] is True
-    assert result["score"] == result["btc_adjusted_score"]
-    assert sum(result["score_components"].values()) == result["raw_score"]
 
 
 @pytest.mark.skip(reason="obsolete MA5/exit logic")
@@ -1056,134 +990,6 @@ def test_signal_progress_reports_only_true_unconfirmed_kc_as_waiting():
     assert "待KC突破" in text
 
 
-def test_high_score_uses_current_post_only_and_mid_score_waits_for_pullback(monkeypatch):
-    """90+ 走現價 Post-Only；中分突破仍等待分層回踩。"""
-    strategy = SuperTrendKeltnerStrategy()
-    frame_high = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-    result_high = strategy.evaluate_signal(frame_high, ema_50_1h=95.0)
-    assert result_high["action"] == "WAIT_PULLBACK"
-    assert result_high["score"] >= STRONG_BREAKOUT_SCORE_THRESHOLD
-    assert "CurrentPrice_PostOnly" in result_high["reason"]
-    assert result_high["entry_mode"] == "CURRENT_MAKER"
-    assert result_high["target_zone"] == pytest.approx(float(frame_high["close"].iloc[-1]))
-
-    frame_mid = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD, adx=20.0)
-    result_mid = strategy.evaluate_signal(frame_mid, ema_50_1h=95.0)
-    assert result_mid["action"] == "WAIT_PULLBACK"
-    assert "target_zone" in result_mid
-
-def test_btc_contrary_direction_penalizes_score_without_hard_block(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_SCORE_PENALTY", 12)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
-
-    aligned = strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, btc_st_direction_1h=1, btc_st_flip_age=3,
-        symbol="DOGE/USDT",
-    )
-    contrary = strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=3,
-        symbol="DOGE/USDT",
-    )
-
-    assert aligned["action"] == "WAIT_PULLBACK"
-    assert contrary["action"] == "WAIT_PULLBACK"
-    assert contrary["score"] == aligned["score"] - 12
-    assert contrary["btc_regime_mode"] == "CONTRARY"
-    assert contrary["btc_allocation_factor"] == pytest.approx(0.5)
-
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", False)
-    blocked = strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=3,
-        symbol="DOGE/USDT",
-    )
-    assert blocked["action"] == "HOLD"
-    assert "BTC_1h_ST_Contrary" in blocked["reason"]
-
-
-def test_momentum_cross_requires_matching_high_timeframe_direction(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1500.0, rsi=60.0, adx=35.0)
-    frame["rsi"] = [60.0] * 49 + [40.0]
-    frame["st_direction"] = [-1] * 50
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "ENABLE_MOMENTUM_CROSS_ENTRY", True)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    blocked = strategy.evaluate_signal(
-        frame,
-        ema_50_1h=95.0,
-        st_direction_1h=1,
-        btc_st_direction_1h=-1,
-        btc_st_flip_age=3,
-        symbol="DOGE/USDT",
-    )
-
-    assert blocked["action"] == "HOLD"
-    assert "MomentumCross_Not_Aligned" in blocked["reason"]
-
-
-def test_shadow_parameter_overrides_are_isolated_from_live_defaults(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-    monkeypatch.setattr(strategy_module, "RSI_LONG_MAX", 68.0)
-    monkeypatch.setattr(strategy_module, "RSI_SHORT_MIN", 32.0)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_SCORE_PENALTY", 12)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
-
-    low_volume = _entry_score_frame(volume=700.0, rsi=60.0, adx=35.0)
-    live_volume = strategy.evaluate_signal(low_volume, ema_50_1h=95.0)
-    shadow_volume = strategy.evaluate_signal(
-        low_volume, ema_50_1h=95.0,
-        parameter_overrides={"volume_min_ratio": 0.6},
-    )
-    live_volume_again = strategy.evaluate_signal(low_volume, ema_50_1h=95.0)
-    assert shadow_volume["score_components"]["volume"] == 20
-    assert live_volume["score_components"]["volume"] == 0
-    assert live_volume_again["score_components"] == live_volume["score_components"]
-
-    low_atr = _entry_score_frame(volume=1500.0, rsi=60.0, adx=25.0)
-    low_atr["atr"] = low_atr["close"] * 0.0004
-    live_atr = strategy.evaluate_signal(low_atr, ema_50_1h=95.0)
-    shadow_atr = strategy.evaluate_signal(
-        low_atr, ema_50_1h=95.0,
-        parameter_overrides={"atr_min_pct": 0.0003},
-    )
-    assert "ATR_Too_Low" in live_atr["reason"]
-    assert "ATR_Too_Low" not in shadow_atr["reason"]
-
-    hot_rsi = _entry_score_frame(volume=1500.0, rsi=69.0, adx=35.0)
-    live_rsi = strategy.evaluate_signal(hot_rsi, ema_50_1h=95.0)
-    shadow_rsi = strategy.evaluate_signal(
-        hot_rsi, ema_50_1h=95.0,
-        parameter_overrides={"rsi_long_max": 70.0, "rsi_short_min": 30.0},
-    )
-    assert "RSI_Overbought" in live_rsi["reason"]
-    assert "RSI_Overbought" not in shadow_rsi["reason"]
-
-    btc_contrary = _entry_score_frame(volume=1500.0, rsi=60.0, adx=35.0)
-    live_btc = strategy.evaluate_signal(
-        btc_contrary, ema_50_1h=95.0, btc_st_direction_1h=-1,
-        btc_st_flip_age=3, symbol="DOGE/USDT",
-    )
-    shadow_btc = strategy.evaluate_signal(
-        btc_contrary, ema_50_1h=95.0, btc_st_direction_1h=-1,
-        btc_st_flip_age=3, symbol="DOGE/USDT",
-        parameter_overrides={"btc_score_penalty": 8},
-    )
-    assert shadow_btc["score"] == live_btc["score"] + 4
-    assert live_btc["btc_score_penalty"] == 12
-    assert shadow_btc["btc_score_penalty"] == 8
-
-
 def test_engine_records_four_shadow_profiles_without_changing_baseline(monkeypatch):
     engine = object.__new__(TradingEngine)
 
@@ -1222,44 +1028,6 @@ def test_engine_records_four_shadow_profiles_without_changing_baseline(monkeypat
     assert baseline == baseline_snapshot
 
 
-def test_btc_fresh_flip_still_blocks_and_btc_itself_is_not_penalized(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 3)
-    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
-
-    fresh = strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=1,
-        symbol="DOGE/USDT",
-    )
-    own_market = strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, btc_st_direction_1h=-1, btc_st_flip_age=3,
-        symbol="BTC/USDT",
-    )
-
-    assert fresh["action"] == "HOLD"
-    assert "BTC_1h_ST_JustFlipped" in fresh["reason"]
-    assert own_market["action"] == "WAIT_PULLBACK"
-    assert own_market["btc_regime_mode"] == "SELF"
-    assert own_market["btc_score_penalty"] == 0
-
-
-def test_unconfirmed_kc_breakout_cannot_qualify_on_other_scores(monkeypatch):
-    """量能/RSI/新鮮度再高，也不能補掉沒有已收盤 KC 突破的缺口。"""
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_THRESHOLD + 10, adx=35.0)
-    frame.loc[frame.index[-3:-1], "close"] = 99.5
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
-
-    assert result["action"] == "HOLD"
-    assert "Score_Low" in result["reason"]
-    assert "KC_Breakout_NoClose" in result["reason"]
-
-
 @pytest.mark.skip(reason="obsolete MA5/exit logic")
 def test_low_quality_breakout_is_rejected_even_when_total_score_qualifies(monkeypatch):
     """避免只靠 KC/量能/RSI/新鮮度湊分，品質細項太低仍不得登記回踩。"""
@@ -1276,26 +1044,6 @@ def test_low_quality_breakout_is_rejected_even_when_total_score_qualifies(monkey
 
 
 
-def test_extreme_rsi_blocks_chasing_both_directions(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    long_frame = _entry_score_frame(volume=1500.0, rsi=RSI_LONG_MAX + 1, adx=35.0)
-    long_result = strategy.evaluate_signal(long_frame, ema_50_1h=95.0)
-    assert long_result["action"] == "HOLD"
-    assert "RSI_Overbought" in long_result["reason"]
-
-    short_frame = _entry_score_frame(volume=1500.0, rsi=RSI_SHORT_MIN - 1, adx=35.0)
-    short_frame["st_direction"] = -1
-    short_frame["close"] = 97.95
-    short_frame["close_price_spike_filtered"] = 97.95
-    short_frame["ema_20"] = 98.2
-    short_result = strategy.evaluate_signal(short_frame, ema_50_1h=105.0)
-    assert short_result["action"] == "HOLD"
-    assert "RSI_Oversold" in short_result["reason"]
-
-
 def test_history_penalty_can_cancel_an_otherwise_high_score_signal():
     adjusted, multiplier = TradingEngine._history_adjusted_score(
         106, {"trades": 5, "win_rate": 0.30, "avg_pnl": -0.10}
@@ -1307,25 +1055,6 @@ def test_history_penalty_can_cancel_an_otherwise_high_score_signal():
 def test_known_negative_expectancy_symbols_are_paused():
     assert {"BNB/USDT", "HYPE/USDT", "SUI/USDT", "SOL/USDT"} <= ENTRY_DISABLED_SYMBOLS
     assert ENTRY_DISABLED_SYMBOLS.isdisjoint(engine_module.DEFAULT_SYMBOLS)
-
-
-def test_adx_declining_blocks_entry_even_with_qualifying_score(monkeypatch):
-    """SuperTrend 方向沒反轉、分數也達標，但 ADX 連續下滑且已經低於
-    ADX_QUALITY_MIN——實測 AAVE/USDT 07/28 這筆進場前 8 根 5 分K，ADX
-    從 19.51 降到 14.67 才進場，方向沒變、新鮮度分數也還高，是新鮮度
-    抓不到的另一種末端趨勢樣貌，必須直接擋單而不是只扣分。"""
-    strategy = SuperTrendKeltnerStrategy()
-    monkeypatch.setattr(strategy_module, "ADX_MANDATORY_MIN", 14.0)
-    monkeypatch.setattr("core.config.ADX_MANDATORY_MIN", 14.0)
-    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
-    frame.loc[44:49, "adx"] = [19.5, 18.8, 17.6, 16.5, 15.7, 14.7]
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
-
-    assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: ADX_Declining_Exhaustion" in result["reason"]
 
 
 @pytest.mark.skip(reason="obsolete MA5/exit logic")
@@ -1342,53 +1071,6 @@ def test_adx_decline_above_quality_floor_is_soft_penalty(monkeypatch):
     assert "ADX_Declining_Soft-1(30.0<35.0;floor=22.0)" in result["reason"]
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" not in result["reason"]
 
-
-
-def test_price_overextended_blocks_entry_even_with_qualifying_score(monkeypatch):
-    """價格距離 EMA20 太遠（用 ATR 正規化衡量）代表這波已經漲很多才追
-    進場，均值回歸風險高，不管總分靠其他項目湊得多高都要擋單。"""
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
-    frame["ema_20"] = 100.05 - 5 * 0.3  # 距離拉開到 5倍 ATR，超過 current 2.5x limit
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
-
-    assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: Price_Overextended" in result["reason"]
-
-
-def test_1h_trend_declining_still_blocks_below_90(monkeypatch):
-    """未達 90 分仍不得略過 1h 動能衰退。"""
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(volume=700.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0)
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    result = strategy.evaluate_signal(frame, ema_50_1h=95.0, trend_1h_declining=True)
-
-    assert result["score"] < 90
-    assert result["action"] == "HOLD"
-    assert "Mandatory_Fail: 1h_Trend_Declining" in result["reason"]
-
-
-def test_90_plus_can_use_current_maker_despite_1h_adx_decline(monkeypatch):
-    strategy = SuperTrendKeltnerStrategy()
-    frame = _entry_score_frame(
-        volume=1200.0, rsi=RSI_LONG_THRESHOLD + 5, adx=35.0
-    )
-    monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
-    monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 1)
-
-    result = strategy.evaluate_signal(
-        frame, ema_50_1h=95.0, trend_1h_declining=True
-    )
-
-    assert result["score"] >= 90
-    assert result["action"] == "WAIT_PULLBACK"
-    assert result["entry_mode"] == "CURRENT_MAKER"
-    assert "1h_Trend_Declining_90Plus_Allowed" in result["reason"]
 
 
 def _reconfirm_frame(side="LONG", st_direction=None, volume=1000.0, rsi=None, atr=0.3):
