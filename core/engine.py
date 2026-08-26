@@ -2934,8 +2934,17 @@ class TradingEngine:
                 wait_state = self._continuous_alignment_wait.get(symbol)
                 wait_side = wait_state.get("side") if isinstance(wait_state, dict) else wait_state
                 if cr_signal and wait_side:
-                    current_ma5 = float(df_cr_entry["ma5"].iloc[-1])
-                    previous_ma5 = float(df_cr_entry["ma5"].iloc[-2])
+                    # detect_ma5_ma25_cross_and_turn 只在自己的內部副本上算 ma3，
+                    # 從不會把 ma5 欄位寫回 df_cr_entry；比照上面設定
+                    # _continuous_alignment_wait 時（約1285行）的既有防呆寫法，
+                    # 欄位不存在就臨時算一條 5 期均線，避免 KeyError。
+                    ma5_series = (
+                        df_cr_entry["ma5"]
+                        if "ma5" in df_cr_entry.columns
+                        else df_cr_entry["close"].rolling(5).mean()
+                    )
+                    current_ma5 = float(ma5_series.iloc[-1])
+                    previous_ma5 = float(ma5_series.iloc[-2])
                     wait_atr = (
                         max(float(wait_state.get("atr") or cr_info.get("atr") or 0.0), 1e-12)
                         if isinstance(wait_state, dict)
