@@ -1035,21 +1035,32 @@ class TradingEngine:
                             
                         import core.config as config
                         
+                        # --- 大爆走 (Mega Trend) 模式檢查 ---
+                        # 若處於強烈單邊趨勢 (ADX >= 30)，關閉移動停利與固定止損，完全交給 MA3 轉向平倉
+                        trigger = self.position_triggers.get(symbol, {})
+                        adx_val = trigger.get("adx", 0.0)
+                        is_mega_trend = (adx_val >= 30.0)
+                        
                         # Trailing Stop Logic
                         highest_pnl = position.get("peak_pnl_pct", pnl_pct)
                         if pnl_pct > highest_pnl:
                             position["peak_pnl_pct"] = pnl_pct
                             highest_pnl = pnl_pct
                             
-                        if highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
-                            if pnl_pct <= highest_pnl * config.TRAILING_STOP_RETAIN_PCT:
-                                self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落至 +{pnl_pct*100:.2f}%，執行自動平倉", "SUCCESS")
-                                await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
-                                continue # Skip fixed stop loss check since it's closed
-                                
-                        # Fixed Stop Loss Logic
-                        if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
-                            await self.account.close_position(symbol, live_price, f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)")
+                        if not is_mega_trend:
+                            if highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
+                                if pnl_pct <= highest_pnl * config.TRAILING_STOP_RETAIN_PCT:
+                                    self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落至 +{pnl_pct*100:.2f}%，執行自動平倉", "SUCCESS")
+                                    await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
+                                    continue # Skip fixed stop loss check since it's closed
+                                    
+                            # Fixed Stop Loss Logic
+                            if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
+                                await self.account.close_position(symbol, live_price, f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)")
+                        else:
+                            # 即使在大爆走模式，如果帳面嚴重虧損仍需終極防線，避免ADX騙線
+                            if pnl_pct <= -config.FIXED_STOP_LOSS_PCT * 2.0:
+                                await self.account.close_position(symbol, live_price, f"終極防線止損 ({config.FIXED_STOP_LOSS_PCT*200:.1f}%)")
                 
                 import asyncio
                 await asyncio.sleep(10)
@@ -2789,118 +2800,36 @@ class TradingEngine:
                             df_cr_entry = df_cr if uses_live_pivot else df_cr_signal
                             cr_signal = cr_info.get("signal")
                             cr_entry_type = cr_info.get("entry_type", "")
+                            is_peak_early = cr_info.get("is_peak_early", False)
+                            is_trough_early = cr_info.get("is_trough_early", False)
 
                             has_pos = symbol in self.account.positions
                             curr_side = self.account.positions[symbol]["side"] if has_pos else None
 
-                            # --- 防禦性提早平倉 (Defensive Early Exit) ---
-                            # 用戶要求：不要等到死叉或真峰頂，只要看到均線彎頭 (MA3 往下) 且是紅K，就立刻把多單平掉保命，後續再重新判斷開倉！
-                            # 用戶最新要求：將防禦機制獨立切換至 1 分鐘級別 (1m)，以達到最極致敏銳的反應速度。
-                            df_defense = await self.fetch_klines(symbol, timeframe="1m", limit=10)
-                            if has_pos and df_defense is not None and not df_defense.empty:
-                                df_defense['ma3'] = df_defense['close'].rolling(window=3).mean()
-                                df_defense['ma5'] = df_defense['close'].rolling(window=5).mean()
-                                ma3_curr = float(df_defense['ma3'].iloc[-1])
-                                ma3_prev = float(df_defense['ma3'].iloc[-2])
-                                ma5_curr = float(df_defense['ma5'].iloc[-1])
-                                last_close = float(df_defense['close'].iloc[-1])
-                                last_open = float(df_defense['open'].iloc[-1])
-                                last_high = float(df_defense['high'].iloc[-1])
-                                last_low = float(df_defense['low'].iloc[-1])
+                            # --- 早期預警平倉 (不立刻反轉，只先平倉) ---
+                            if has_pos and not cr_signal:
+                                last_close_early = float(df_cr_entry['close'].iloc[-1])
+                                clean_sym_early = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
+                                live_price_early = self.tickers.get(clean_sym_early, self.tickers.get(symbol, last_close_early))
                                 
-                                candle_range_1 = last_high - last_low
-                                lower_wick_1 = min(last_open, last_close) - last_low
-                                upper_wick_1 = last_high - max(last_open, last_close)
-                                
-                                prev_close = float(df_defense['close'].iloc[-2])
-                                prev_open = float(df_defense['open'].iloc[-2])
-                                prev_high = float(df_defense['high'].iloc[-2])
-                                prev_low = float(df_defense['low'].iloc[-2])
-                                
-                                candle_range_2 = prev_high - prev_low
-                                lower_wick_2 = min(prev_open, prev_close) - prev_low
-                                upper_wick_2 = prev_high - max(prev_open, prev_close)
-                                
-                                is_long_lower_wick = (candle_range_1 > 0 and lower_wick_1 / candle_range_1 > 0.6) or (candle_range_2 > 0 and lower_wick_2 / candle_range_2 > 0.6)
-                                is_long_upper_wick = (candle_range_1 > 0 and upper_wick_1 / candle_range_1 > 0.6) or (candle_range_2 > 0 and upper_wick_2 / candle_range_2 > 0.6)
-
-                                clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
-                                live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
-                                
-                                # 爆量長影線防禦：遇到長影線（圖表陷阱/極端反轉）先平倉，且強制休息不開新倉
-                                long_wick_closed = False
-                                if curr_side == "LONG" and (is_long_upper_wick or is_long_lower_wick) and last_close >= ma3_curr:
-                                    self.account.log(f"🛡️ {symbol} 峰頂出現長影線 K 線 (上/下影線過長)，防禦性平多先出場！", "WARNING")
-                                    closed = await self.account.close_position(
+                                if curr_side == "LONG" and is_peak_early:
+                                    self.account.log(f"⚠️ {symbol} 偵測到【頂峰生成中(初彎)】，根據策略先行平倉多單，等待完全確認後再轉向！", "WARNING")
+                                    await self.account.close_position(
                                         symbol=symbol,
-                                        current_price=live_price,
-                                        close_reason="峰頂長影線防禦 (不反手)"
+                                        current_price=live_price_early,
+                                        close_reason="提早平倉 (頂峰生成預警)"
                                     )
-                                    if closed:
-                                        has_pos = False
-                                        curr_side = None
-                                        self._continuous_alignment_wait.pop(symbol, None)
-                                        long_wick_closed = True
-                                        cr_signal = None  # 不要交易先平倉，再看下面是什麼情況
-
-                                elif curr_side == "SHORT" and (is_long_upper_wick or is_long_lower_wick) and last_close <= ma3_curr:
-                                    self.account.log(f"🛡️ {symbol} 谷底出現長影線 K 線 (上/下影線過長)，防禦性平空先出場！", "WARNING")
-                                    closed = await self.account.close_position(
+                                    has_pos = False
+                                    curr_side = None
+                                elif curr_side == "SHORT" and is_trough_early:
+                                    self.account.log(f"⚠️ {symbol} 偵測到【谷底生成中(初彎)】，根據策略先行平倉空單，等待完全確認後再轉向！", "WARNING")
+                                    await self.account.close_position(
                                         symbol=symbol,
-                                        current_price=live_price,
-                                        close_reason="谷底長影線防禦 (不反手)"
+                                        current_price=live_price_early,
+                                        close_reason="提早平倉 (谷底生成預警)"
                                     )
-                                    if closed:
-                                        has_pos = False
-                                        curr_side = None
-                                        self._continuous_alignment_wait.pop(symbol, None)
-                                        long_wick_closed = True
-                                        cr_signal = None  # 不要交易先平倉，再看下面是什麼情況
-
-                                # 一般 MA3 彎頭防禦 (尖端反轉)
-                                if not long_wick_closed:
-                                    # 過濾假突破：除了 MA3 彎頭，收盤價必須強勢穿過 MA5，才算是真反轉，否則視為無效的小反彈
-                                    if curr_side == "LONG" and ma3_curr < ma3_prev and last_close < ma3_curr and last_close < ma5_curr:
-                                        self.account.log(f"🛡️ {symbol} 偵測到 1m MA3 頂部彎頭向下 (收盤 < MA5)，防禦性提早平倉多單！", "WARNING")
-                                        closed = await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason="1m MA3 頂部彎頭向下 (防禦平多)"
-                                        )
-                                        if closed:
-                                            has_pos = False
-                                            curr_side = None
-                                            self._continuous_alignment_wait.pop(symbol, None)
-                                            # 防禦平多後，強制覆蓋 cr_signal 為 SHORT，讓下方開倉流程立刻翻空 (馬上反向開倉)
-                                            cr_signal = "SHORT"
-                                            cr_entry_type = "PEAK_TURN"
-    
-                                    elif curr_side == "SHORT" and ma3_curr > ma3_prev and last_close > ma3_curr and last_close > ma5_curr:
-                                        self.account.log(f"🛡️ {symbol} 偵測到 1m MA3 谷底彎頭向上 (收盤 > MA5)，防禦性提早平倉空單！", "WARNING")
-                                        closed = await self.account.close_position(
-                                            symbol=symbol,
-                                            current_price=live_price,
-                                            close_reason="1m MA3 谷底彎頭向上 (防禦平空)"
-                                        )
-                                        if closed:
-                                            has_pos = False
-                                            curr_side = None
-                                            self._continuous_alignment_wait.pop(symbol, None)
-                                            # 防禦平空後，強制覆蓋 cr_signal 為 LONG，讓下方開倉流程立刻翻多 (馬上反向開倉)
-                                            cr_signal = "LONG"
-                                            cr_entry_type = "TROUGH_TURN"
-
-                            expected_side = self._continuous_alignment_wait.get(symbol)
-                            if expected_side:
-                                if cr_signal == expected_side:
-                                    self._continuous_alignment_wait.pop(symbol, None)
-                                    self.account.log(
-                                        f"✅ {symbol} 峰谷或均線方向已確認，解除等待並開 {expected_side}",
-                                        "SUCCESS",
-                                    )
-                                else:
-                                    # 提早平倉後不得沿舊方向補回，必須等真峰谷或兩條均線共同翻面。
-                                    cr_signal = None
+                                    has_pos = False
+                                    curr_side = None
 
                             entry_bar_id = (
                                 int(float(df_cr_entry['timestamp'].iloc[-1]))
@@ -2920,17 +2849,9 @@ class TradingEngine:
                                 clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                                 live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
-                                # 使用最後一根已收盤 K 棒再次核對方向，不用即時 ticker 或活動 K。
-                                if cr_entry_type in ("PEAK_TURN", "TROUGH_TURN"):
-                                    last_open_cr = float(df_cr_entry['open'].iloc[-1])
-                                    candle_is_green = last_close > last_open_cr
-                                    candle_is_red   = last_close < last_open_cr
-                                    is_confirmed_reversal = "提前轉向" in cr_info.get("reason", "") or cr_info.get("_defense_triggered", False)
-                                    if not is_confirmed_reversal:
-                                        if cr_signal == "SHORT" and candle_is_green:
-                                            cr_signal = None  # 綠K，暫緩做空
-                                        elif cr_signal == "LONG" and candle_is_red:
-                                            cr_signal = None  # 紅K，暫緩做多
+                                # 由於使用者要求「完全無視K線顏色，只要紫線轉折就立刻開倉」，
+                                # 這裡不再因為是綠K就暫緩做空，或是紅K就暫緩做多。
+                                # 完全相信 cr_info 傳來的訊號！
 
                                 # --- 假突破防禦機制 ---
                                 if not has_pos and cr_signal:
@@ -2979,7 +2900,7 @@ class TradingEngine:
                                 # 若訊號方向與 SuperTrend（最近已收盤）方向相反，代表打算逆勢開倉，
                                 # 此時強趨勢中逆勢勝率極低，直接過濾。
                                 # 只對「反向開倉」（原本有持倉且即將翻方向）生效；空倉首次開倉不攔截。
-                                if not has_pos and cr_signal:
+                                if not has_pos and cr_signal and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
                                     _adx_now = float(df_cr_entry["adx"].iloc[-1]) if "adx" in df_cr_entry.columns and not pd.isna(df_cr_entry["adx"].iloc[-1]) else 0.0
                                     _st_dir_now = int(df_cr_entry["st_direction"].iloc[-1]) if "st_direction" in df_cr_entry.columns else 0
                                     _signal_dir = 1 if cr_signal == "LONG" else -1
