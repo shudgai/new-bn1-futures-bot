@@ -370,7 +370,7 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
     is_trough_confirmed = (ma3_prev > ma3_prev2) and (ma3_prev2 <= ma3_prev3)
     is_peak_confirmed = (ma3_prev < ma3_prev2) and (ma3_prev2 >= ma3_prev3)
 
-    adx_curr = float(df['adx'].iloc[-1])
+    adx_curr = float(df['adx'].iloc[-1]) if 'adx' in df.columns and not pd.isna(df['adx'].iloc[-1]) else 0.0
     # 強勢單邊走勢使用 ADX 10；盤整或方向不明仍使用 ADX 15。
     trend_direction = 1 if ma5_curr > ma25_curr else -1 if ma5_curr < ma25_curr else 0
     _adx_min, strong_trend = get_dynamic_adx_floor(df, trend_direction)

@@ -777,18 +777,29 @@
                 },
                 async fetchStatus() {
                     try {
-                        const res = await fetch('/api/status');
+                        const res = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
+                        const currentTickerTime = Number(this.bot?.ticker_updated_at || 0);
+                        const incomingTickerTime = Number(data.ticker_updated_at || 0);
+                        if (currentTickerTime > incomingTickerTime) {
+                            data.tickers = this.bot.tickers;
+                            data.positions = this.bot.positions;
+                            data.ticker_updated_at = currentTickerTime;
+                        }
                         this.bot = data;
                     } catch (e) {
                         console.error('Failed to fetch status', e);
                     }
                 },
                 async fetchPrices() {
-                    // 輕量端點：只更新潁價與持倉（每秒刷新）
                     try {
-                        const res = await fetch('/api/prices');
+                        const res = await fetch('/api/prices?_=' + Date.now(), { cache: 'no-store' });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
+                        const currentTickerTime = Number(this.bot?.ticker_updated_at || 0);
+                        const incomingTickerTime = Number(data.ticker_updated_at || 0);
+                        if (incomingTickerTime < currentTickerTime) return;
                         if (data.symbols) this.bot.symbols = data.symbols;
                         if (data.symbol_directions) this.bot.symbol_directions = data.symbol_directions;
                         if (data.tickers) this.bot.tickers = data.tickers;
@@ -796,8 +807,9 @@
                         if (data.balance !== undefined) this.bot.balance = data.balance;
                         if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
                         if (data.estimated_net_unrealized_pnl !== undefined) this.bot.estimated_net_unrealized_pnl = data.estimated_net_unrealized_pnl;
+                        this.bot.ticker_updated_at = incomingTickerTime;
                     } catch (e) {
-                        // silent
+                        console.error('Failed to fetch live prices', e);
                     }
                 },
                 async authorizedFetch(url, options = {}) {

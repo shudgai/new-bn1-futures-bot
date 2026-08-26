@@ -150,6 +150,7 @@ class PaperAccount:
         self.logs: List[dict] = []
         self.closing_lock: set = set()
         self.last_closed_at: Dict[str, float] = {}
+        self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         self.on_trade_closed: Optional[Callable[[], None]] = None
 
         self.daily_date: Optional[str] = None
@@ -780,7 +781,11 @@ class PaperAccount:
             return False
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
         if DISABLE_STOP_LOSS and not is_manual:
-            self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
+            reject_key = (symbol, close_reason)
+            now_ts = time.time()
+            if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
+                self._auto_close_reject_logged_at[reject_key] = now_ts
+                self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
         if not is_manual and ONLY_CLOSE_ON_PROFIT:
             pos = self.positions[symbol]
@@ -1023,6 +1028,9 @@ class PaperAccount:
                 meta["profit_profile"] = profit_profile
 
             pnl_pct = (curr_p - entry_p) / entry_p if side == "LONG" else (entry_p - curr_p) / entry_p
+            unrealized = (curr_p - entry_p) * pos["qty"] if side == "LONG" else (entry_p - curr_p) * pos["qty"]
+            pos["mark_price"] = curr_p
+            pos["unrealized_pnl"] = unrealized
             if "highest_pnl_pct" not in meta:
                 meta["highest_pnl_pct"] = pnl_pct
             highest_pnl = meta["highest_pnl_pct"]
@@ -1477,6 +1485,10 @@ class PaperAccount:
             pos["tp"] = tp_price
             total_unrealized += unrealized
 
+        total_unrealized = sum(
+            float(position.get("unrealized_pnl") or 0.0)
+            for position in self.positions.values()
+        )
         self.unrealized_pnl = total_unrealized
         self.available_balance = self.get_available_balance()
         self.save_state()

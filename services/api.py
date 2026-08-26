@@ -111,7 +111,9 @@ def visible_system_logs():
     ][-50:]
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
@@ -159,6 +161,7 @@ async def get_status():
             "retry_after_sec": engine.symbol_rotation.trade_analysis.retry_after_sec,
         },
         "tickers": visible_tickers(),
+        "ticker_updated_at": engine.last_ticker_success_ts,
         "positions": positions_with_triggers(),
         "trades": engine.account.trades[:50],
         "total_trades": len(engine.account.trades),
@@ -167,12 +170,15 @@ async def get_status():
     }
 
 @app.get("/api/prices")
-async def get_prices():
+async def get_prices(response: Response):
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "tickers": visible_tickers(),
+        "ticker_updated_at": engine.last_ticker_success_ts,
         "positions": positions_with_triggers(),
         "unrealized_pnl": round(unrealized, 2),
         "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),

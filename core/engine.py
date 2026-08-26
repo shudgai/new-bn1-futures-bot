@@ -2906,6 +2906,7 @@ class TradingEngine:
                             symbol=symbol,
                             current_price=exit_price,
                             close_reason="MA3 盤整確認：平倉等待突破",
+                            is_manual=True
                         )
                         if closed:
                             self.account.log(
@@ -2924,6 +2925,7 @@ class TradingEngine:
                             symbol=symbol,
                             current_price=exit_price,
                             close_reason="MA3 盤整鎖定仍生效",
+                            is_manual=True
                         )
                         signal_progress.append(f"{coin} 盤整鎖定，正在平掉既有持倉")
                         return signal_progress, detected_candidates
@@ -3048,7 +3050,8 @@ class TradingEngine:
                             closed = await self.account.close_position(
                                 symbol=symbol,
                                 current_price=live_price,
-                                close_reason=f"反向訊號 ({cr_entry_type})"
+                                close_reason=f"反向訊號 ({cr_entry_type})",
+                                is_manual=True
                             )
                             should_open = bool(closed)
 

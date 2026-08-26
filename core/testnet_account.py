@@ -137,6 +137,7 @@ class BinanceTestnetAccount:
         # 被網頁輪詢（跟主迴圈完全不同步、各自獨立呼叫 update_positions）
         # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
         self.last_closed_at: Dict[str, float] = {}
+        self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         # 回踩漏斗事件與未成交原因；保存於既有 state，重啟後持續累積。
         self.pullback_outcome_stats: Dict[str, int] = {}
         # 初始開倉漏斗與各幣最新斷點；與交易狀態一起保存，重啟不歸零。
@@ -1968,7 +1969,11 @@ class BinanceTestnetAccount:
             return False
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
         if DISABLE_STOP_LOSS and not is_manual:
-            self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
+            reject_key = (symbol, close_reason)
+            now_ts = time.time()
+            if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
+                self._auto_close_reject_logged_at[reject_key] = now_ts
+                self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
         if not is_manual and ONLY_CLOSE_ON_PROFIT:
             position = self.positions[symbol]
