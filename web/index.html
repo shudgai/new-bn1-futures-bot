@@ -439,10 +439,10 @@
             <div class="right-panel">
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
-                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">
-                        {{ isProcessing ? '處理中...' : (bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人') }}
+                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
+                        {{ isTogglingBot ? '處理中...' : (bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人') }}
                     </button>
-                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">
+                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">
                         🔄 重置帳戶（清空損益與記錄）
                     </button>
                 </div>
@@ -451,8 +451,8 @@
                 <div class="card">
                     <div class="card-title">⚡ 手動開倉 (依策略自動配置止損/止盈)</div>
                     <div style="display:flex; gap:8px; margin-top:8px;">
-                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">{{ isProcessing ? '處理中...' : '做多 (LONG)' }}</button>
-                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1, cursor: isProcessing ? 'not-allowed' : 'pointer' }">{{ isProcessing ? '處理中...' : '做空 (SHORT)' }}</button>
+                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做多 (LONG)' }}</button>
+                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做空 (SHORT)' }}</button>
                     </div>
                 </div>
 
@@ -460,10 +460,10 @@
                 <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px;">
                     <button class="btn btn-success"
                         style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
-                        @click="placeOrder('LONG')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1 }">&#x1F4C8; {{ isProcessing ? '處理中' : '買進 LONG' }}</button>
+                        @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1 }">&#x1F4C8; {{ isPlacingOrder ? '處理中' : '買進 LONG' }}</button>
                     <button class="btn btn-danger"
                         style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
-                        @click="placeOrder('SHORT')" :disabled="isProcessing" :style="{ opacity: isProcessing ? 0.6 : 1 }">&#x1F4C9; {{ isProcessing ? '處理中' : '賣出 SHORT' }}</button>
+                        @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1 }">&#x1F4C9; {{ isPlacingOrder ? '處理中' : '賣出 SHORT' }}</button>
                 </div>
 
                 <!-- AI TRADE HISTORY ANALYSIS -->
@@ -521,6 +521,10 @@
                     error: "",
                 },
                 isProcessing: false,
+                isTogglingBot: false,
+                isPlacingOrder: false,
+                isClosingPos: {},
+                isResetting: false,
                 bot: {
                         is_running: false,
                         strategy: '',
@@ -658,7 +662,7 @@
                     upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
                     wickUpColor: '#10b981', wickDownColor: '#ef4444'
                 });
-                
+                this._ma3Series = this._chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
                 this._ma5Series = this._chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA5' });
                 this._ma25Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA25' });
                 this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
@@ -670,18 +674,21 @@
                     const json = await res.json();
                     
                     const candles = [];
+                    const ma3 = [];
                     const ma5 = [];
                     const ma25 = [];
                     const ma99 = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
+                        if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
                         if (d.ma5 !== null) ma5.push({ time: d.time, value: d.ma5 });
                         if (d.ma25 !== null) ma25.push({ time: d.time, value: d.ma25 });
                         if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
                     });
                     
                     this._candlestickSeries.setData(candles);
+                    this._ma3Series.setData(ma3);
                     this._ma5Series.setData(ma5);
                     this._ma25Series.setData(ma25);
                     this._ma99Series.setData(ma99);
@@ -807,19 +814,19 @@
                     return res;
                 },
                 async toggleBot() {
-                    if (this.isProcessing) return;
-                    this.isProcessing = true;
+                    if (this.isTogglingBot) return;
+                    this.isTogglingBot = true;
                     try {
                         const res = await this.authorizedFetch('/api/toggle', { method: 'POST' });
                         if (!res) return;
                         await this.fetchStatus();
                     } finally {
-                        this.isProcessing = false;
+                        this.isTogglingBot = false;
                     }
                 },
                 async placeOrder(side) {
-                    if (this.isProcessing) return;
-                    this.isProcessing = true;
+                    if (this.isPlacingOrder) return;
+                    this.isPlacingOrder = true;
                     try {
                         const res = await this.authorizedFetch('/api/manual_order', {
                             method: 'POST',
@@ -833,12 +840,12 @@
                         if (!res) return;
                         await this.fetchStatus();
                     } finally {
-                        this.isProcessing = false;
+                        this.isPlacingOrder = false;
                     }
                 },
                 async closePos(symbol) {
-                    if (this.isProcessing) return;
-                    this.isProcessing = true;
+                    if (this.isClosingPos[symbol]) return;
+                    this.$set ? this.$set(this.isClosingPos, symbol, true) : (this.isClosingPos[symbol] = true);
                     try {
                         const res = await this.authorizedFetch('/api/manual_close', {
                             method: 'POST',
@@ -848,7 +855,7 @@
                         if (!res) return;
                         await this.fetchStatus();
                     } finally {
-                        this.isProcessing = false;
+                        this.isClosingPos[symbol] = false;
                     }
                 },
                 async resetAccount() {
@@ -856,8 +863,8 @@
                         '⚠️ 確定要重置帳戶嗎？\n\n這將清空所有：\n• 交易記錄\n• 損益數據\n• 當前持倉\n\n此操作無法復原！'
                     );
                     if (!confirmed) return;
-                    if (this.isProcessing) return;
-                    this.isProcessing = true;
+                    if (this.isResetting) return;
+                    this.isResetting = true;
                     try {
                         const res = await this.authorizedFetch('/api/reset_account', { method: 'POST' });
                         if (!res) return;
@@ -865,7 +872,7 @@
                         window.alert('✅ ' + (data.message || '帳戶已重置'));
                         await this.fetchStatus();
                     } finally {
-                        this.isProcessing = false;
+                        this.isResetting = false;
                     }
                 }
             },

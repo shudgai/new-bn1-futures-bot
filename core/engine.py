@@ -144,6 +144,7 @@ class TradingEngine:
         self._continuous_alignment_wait: Dict[str, str] = {}
         # 同一根 K、同一方向只允許成交一次，避免止盈後重複吃同一訊號。
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
+        self._continuous_consolidation_locks: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -167,6 +168,73 @@ class TradingEngine:
         # KC失敗連續計數器：記錄每個持倉已連續將實體收在EMA20不利側的已收盤K棒數
         # 需達到 BREAKOUT_KC_FAIL_CONFIRM_BARS 根才實際關倉，防止單根回踩誤觸
         self._kc_fail_count: Dict[str, int] = {}
+
+    def _detect_ma3_consolidation(self, df: pd.DataFrame) -> dict:
+        """Detect a confirmed low-volatility MA3 chop zone on closed candles."""
+        result = {"detected": False, "reason": "insufficient_data"}
+        if df is None or len(df) < 20:
+            return result
+
+        work = df.copy()
+        if "ma3" not in work.columns:
+            work["ma3"] = work["close"].rolling(window=3).mean()
+
+        high = work["high"].astype(float)
+        low = work["low"].astype(float)
+        close = work["close"].astype(float)
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        atr_series = tr.rolling(window=14, min_periods=5).mean()
+        atr = float(atr_series.iloc[-1])
+        if pd.isna(atr) or atr <= 0:
+            atr = max(float(close.iloc[-1]) * 0.015, 1e-12)
+
+        if "adx" in work.columns and not pd.isna(work["adx"].iloc[-1]):
+            adx = float(work["adx"].iloc[-1])
+        else:
+            period = 14
+            up_move = high.diff()
+            down_move = -low.diff()
+            plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+            minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+            tr_smooth = tr.ewm(alpha=1 / period, adjust=False).mean()
+            plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / (tr_smooth + 1e-12)
+            minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / (tr_smooth + 1e-12)
+            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
+            adx = float(dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1])
+
+        recent_ma3 = work["ma3"].dropna().astype(float).iloc[-5:]
+        if len(recent_ma3) < 5:
+            return result
+        steps = recent_ma3.diff().dropna()
+        min_turn_step = atr * 0.005
+        signs = [1 if step > min_turn_step else -1 if step < -min_turn_step else 0 for step in steps]
+        meaningful_signs = [sign for sign in signs if sign]
+        direction_changes = sum(
+            current != previous
+            for previous, current in zip(meaningful_signs, meaningful_signs[1:])
+        )
+        ma3_range_atr = (float(recent_ma3.max()) - float(recent_ma3.min())) / atr
+        last_three_flat = bool((steps.abs().iloc[-3:] <= atr * 0.08).all())
+        detected = bool(
+            ma3_range_atr <= 0.15
+            and direction_changes >= 2
+            and last_three_flat
+            and adx <= 18.0
+        )
+        return {
+            "detected": detected,
+            "reason": "ma3_chop" if detected else "not_consolidating",
+            "atr": atr,
+            "adx": adx,
+            "ma3_range_atr": ma3_range_atr,
+            "direction_changes": direction_changes,
+            "range_high": float(high.iloc[-5:].max()),
+            "range_low": float(low.iloc[-5:].min()),
+        }
 
     def _ma5_timing_ready(self, symbol: str, signal: dict, now: float) -> tuple:
         """已收盤轉彎直接放行；盤中投影須連續多輪成立，失效即清零。"""
@@ -1115,15 +1183,12 @@ class TradingEngine:
                         trigger.get("ema_breach_confirmed")
                         and trigger.get("structure_broken")
                     )
-                    ma5_exit_ready, ma5_exit_gate = self._ma5_exit_ready(
-                        position, trigger, mark_p, time.time()
-                    )
-                    trigger["ma5_exit_ready"] = ma5_exit_ready
-                    trigger["ma5_exit_gate"] = ma5_exit_gate
-                    should_auto_close = bool(
-                        (trigger.get("ma5_reversed") and ma5_exit_ready)
-                        or trigger.get("is_panic_reversal")
-                    )
+                     trigger["ma5_exit_ready"] = True
+                     trigger["ma5_exit_gate"] = "MA3轉向即出場"
+                     should_auto_close = bool(
+                         trigger.get("ma5_reversed")
+                         or trigger.get("is_panic_reversal")
+                     )
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
                     )
@@ -2741,7 +2806,10 @@ class TradingEngine:
                 available_balance = self.account.get_available_balance()
                 if TEST_BUDGET_CAP_USDT > 0:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
-                if not daily_halt and available_balance >= MIN_TRADE_USDT:
+                from core.config import ENABLE_CONTINUOUS_REVERSE_MODE
+                entry_scan_allowed = not daily_halt and available_balance >= MIN_TRADE_USDT
+                manage_continuous_position = ENABLE_CONTINUOUS_REVERSE_MODE and bool(self.account.positions)
+                if entry_scan_allowed or manage_continuous_position:
                     signal_progress = []
                     detected_candidates = []
 
@@ -2766,7 +2834,7 @@ class TradingEngine:
 
                     # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
                     # 用 list(...) 先拍一份快照，避免邊跑邊被換牌造成跳過或重複掃描。
-                    symbols_snapshot = list(DEFAULT_SYMBOLS)
+                    symbols_snapshot = list(dict.fromkeys([*DEFAULT_SYMBOLS, *self.account.positions.keys()]))
                     for symbol in symbols_snapshot:
                         direction_text = "雙向"
                         coin = symbol.replace("/USDT", "")
@@ -2803,33 +2871,77 @@ class TradingEngine:
                             is_peak_early = cr_info.get("is_peak_early", False)
                             is_trough_early = cr_info.get("is_trough_early", False)
 
+                            # Group A only executes confirmed MA3 V or inverted-V pivots.
+                            if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                                cr_signal = None
+
                             has_pos = symbol in self.account.positions
                             curr_side = self.account.positions[symbol]["side"] if has_pos else None
 
-                            # --- 早期預警平倉 (不立刻反轉，只先平倉) ---
-                            if has_pos and not cr_signal:
-                                last_close_early = float(df_cr_entry['close'].iloc[-1])
-                                clean_sym_early = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
-                                live_price_early = self.tickers.get(clean_sym_early, self.tickers.get(symbol, last_close_early))
-                                
-                                if curr_side == "LONG" and is_peak_early:
-                                    self.account.log(f"⚠️ {symbol} 偵測到【頂峰生成中(初彎)】，根據策略先行平倉多單，等待完全確認後再轉向！", "WARNING")
+                            consolidation = self._detect_ma3_consolidation(df_cr_signal)
+                            consolidation_lock = self._continuous_consolidation_locks.get(symbol)
+                            if consolidation.get("detected"):
+                                self._continuous_consolidation_locks[symbol] = {
+                                    "range_high": consolidation["range_high"],
+                                    "range_low": consolidation["range_low"],
+                                    "atr": consolidation["atr"],
+                                    "locked_at": time.time(),
+                                }
+                                cr_signal = None
+                                if has_pos:
+                                    fallback_price = float(df_cr_signal["close"].iloc[-1])
+                                    clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+                                    exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
+                                    closed = await self.account.close_position(
+                                        symbol=symbol,
+                                        current_price=exit_price,
+                                        close_reason="MA3 盤整確認：平倉等待突破",
+                                    )
+                                    if closed:
+                                        self.account.log(
+                                            f"{symbol} MA3 盤整確認：已平倉並鎖定重新進場",
+                                            "WARNING",
+                                        )
+                                signal_progress.append(f"{coin} 盤整鎖定，等待區間突破")
+                                continue
+
+                            if consolidation_lock:
+                                if has_pos:
+                                    fallback_price = float(df_cr_signal["close"].iloc[-1])
+                                    clean_symbol = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+                                    exit_price = self.tickers.get(clean_symbol, self.tickers.get(symbol, fallback_price))
                                     await self.account.close_position(
                                         symbol=symbol,
-                                        current_price=live_price_early,
-                                        close_reason="提早平倉 (頂峰生成預警)"
+                                        current_price=exit_price,
+                                        close_reason="MA3 盤整鎖定仍生效",
                                     )
-                                    has_pos = False
-                                    curr_side = None
-                                elif curr_side == "SHORT" and is_trough_early:
-                                    self.account.log(f"⚠️ {symbol} 偵測到【谷底生成中(初彎)】，根據策略先行平倉空單，等待完全確認後再轉向！", "WARNING")
-                                    await self.account.close_position(
-                                        symbol=symbol,
-                                        current_price=live_price_early,
-                                        close_reason="提早平倉 (谷底生成預警)"
+                                    signal_progress.append(f"{coin} 盤整鎖定，正在平掉既有持倉")
+                                    continue
+
+                                closed_price = float(df_cr_signal["close"].iloc[-1])
+                                lock_atr = max(float(consolidation_lock.get("atr") or 0.0), 1e-12)
+                                recent_ma3 = df_cr_entry["ma3"].dropna().astype(float).iloc[-12:]
+                                pivot_amplitude_atr = 0.0
+                                if len(recent_ma3) >= 2 and cr_signal == "LONG":
+                                    pivot_amplitude_atr = (float(recent_ma3.iloc[-1]) - float(recent_ma3.min())) / lock_atr
+                                elif len(recent_ma3) >= 2 and cr_signal == "SHORT":
+                                    pivot_amplitude_atr = (float(recent_ma3.max()) - float(recent_ma3.iloc[-1])) / lock_atr
+                                breakout_ready = bool(
+                                    cr_signal == "LONG"
+                                    and closed_price > float(consolidation_lock["range_high"])
+                                    or cr_signal == "SHORT"
+                                    and closed_price < float(consolidation_lock["range_low"])
+                                )
+                                if cr_signal and breakout_ready and pivot_amplitude_atr >= 0.20:
+                                    self._continuous_consolidation_locks.pop(symbol, None)
+                                    self.account.log(
+                                        f"{symbol} 盤整突破確認，解除鎖定並允許 {cr_signal} entry",
+                                        "SUCCESS",
                                     )
-                                    has_pos = False
-                                    curr_side = None
+                                else:
+                                    cr_signal = None
+                                    signal_progress.append(f"{coin} 盤整鎖定，突破尚未確認")
+                                    continue
 
                             entry_bar_id = (
                                 int(float(df_cr_entry['timestamp'].iloc[-1]))
@@ -2923,14 +3035,23 @@ class TradingEngine:
                                         should_open = True
                                     elif curr_side != cr_signal:
                                         self.account.log(f"🚨 {symbol} 偵測到 {cr_entry_type}，強制平掉舊有 {curr_side} 單並反轉！", "WARNING")
-                                        await self.account.close_position(
+                                        closed = await self.account.close_position(
                                             symbol=symbol,
                                             current_price=live_price,
                                             close_reason=f"反向訊號 ({cr_entry_type})"
                                         )
-                                        should_open = True
+                                        should_open = bool(closed)
 
                                     if should_open:
+                                        post_close_available = self.account.get_available_balance()
+                                        if TEST_BUDGET_CAP_USDT > 0:
+                                            post_close_available = min(post_close_available, TEST_BUDGET_CAP_USDT)
+                                        if daily_halt or post_close_available < MIN_TRADE_USDT:
+                                            self.account.log(
+                                                f"{symbol} 轉彎平倉完成；風控或可用餘額不允許重新開倉",
+                                                "WARNING",
+                                            )
+                                            continue
                                         self.account.log(
                                             f"{symbol} [{cr_entry_type}] 谷底/頂部訊號：進場 {cr_signal}",
                                             "INFO"

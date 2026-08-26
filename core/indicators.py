@@ -508,124 +508,91 @@ def detect_ma5_ma25_cross_and_turn(df: pd.DataFrame, allow_live_pivot: bool = Fa
     both_below_ma25 = ma3_curr < ma25_curr and ma5_curr < ma25_curr
     both_above_ma25 = ma3_curr > ma25_curr and ma5_curr > ma25_curr
 
-    if both_below_ma25:
-        rejected = reject_false_breakout("SHORT")
-        if rejected:
-            rejected.update({"is_peak_early": is_peak_forming_early, "is_trough_early": is_trough_forming_early})
-            return rejected
-        return {
-            "signal": "SHORT",
-            "entry_type": "TREND_SHORT",
-            "reason": f"MA3、MA5 同在 MA25 下方 (ADX={adx_curr:.1f}) → 無腦順勢開空",
-            "atr": atr,
-            "pivot_confirmed": False,
-            "pivot_score": 85,
-            "ma_alignment": "BELOW",
-            "is_peak_early": is_peak_forming_early,
-            "is_trough_early": is_trough_forming_early,
-        }
-
-    if both_above_ma25:
-        rejected = reject_false_breakout("LONG")
-        if rejected:
-            rejected.update({"is_peak_early": is_peak_forming_early, "is_trough_early": is_trough_forming_early})
-            return rejected
-        return {
-            "signal": "LONG",
-            "entry_type": "TREND_LONG",
-            "reason": f"MA3、MA5 同在 MA25 上方 (ADX={adx_curr:.1f}) → 無腦順勢開多",
-            "atr": atr,
-            "pivot_confirmed": False,
-            "pivot_score": 85,
-            "ma_alignment": "ABOVE",
-            "is_peak_early": is_peak_forming_early,
-            "is_trough_early": is_trough_forming_early,
-        }
-
     return {
         "signal": None,
-        "reason": "MA3、MA5 分居 MA25 兩側，等待方向一致",
+        "reason": "A組等待 MA3 明確 V／倒V 轉彎，不在趨勢中途開倉",
         "pivot_confirmed": False,
         "pivot_score": 0,
-        "ma_alignment": "MIXED",
+        "ma_alignment": "BELOW" if both_below_ma25 else "ABOVE" if both_above_ma25 else "MIXED",
         "is_peak_early": is_peak_forming_early,
         "is_trough_early": is_trough_forming_early,
     }
 
 def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, lookback_bars: int = 20) -> dict:
-    """持倉平倉訊號（優化版：純 MA5 穿越 MA25 換向）
+    """持倉平倉訊號（MA3 反轉版：與進場邏輯完全對稱）
 
-    ✅ 與進場邏輯完全對稱：
-      進場：MA5 穿越 MA25（金叉→多，死叉→空）
-      出場：MA5 反向穿越 MA25
-        多單持倉中：MA5 死叉穿越 MA25（從上方跌到下方）→ 出場
-        空單持倉中：MA5 金叉穿越 MA25（從下方升到上方）→ 出場
-
-    ✅ 優化原因（舊邏輯問題）：
-      舊邏輯：空單出場條件 = MA5 < MA25 且連續 2 根 K 棒往上
-        → 下跌途中每次小反彈（MA5 短暫反彈 2 根）都觸發出場
-        → 出場後再找進場，造成不停換方向
-      新邏輯：只有 MA5 真正穿越 MA25 才出場
-        → 整個下跌趨勢空單持倉不動，直到金叉出現
+    出場條件與 detect_ma5_reversal 進場條件完全鏡射：
+      多單持倉 → MA3 出現倒V型峰頂 / 梯形頂 / 圓弧頂 / 倒U形頂 → 出場
+      空單持倉 → MA3 出現V型谷底 / 梯形底 / 圓弧底 / U形底 → 出場
     """
-    if df is None or len(df) < 26:
-        return {
-            "active": False, "ma_ok": True, "reasons": [], "strong": False,
-            "ma5_reversed": False, "ema_breach_confirmed": False,
-            "structure_broken": False, "atr": None,
-        }
+    empty = {
+        "active": False, "ma_ok": True, "reasons": [], "strong": False,
+        "ma5_reversed": False, "ema_breach_confirmed": False,
+        "structure_broken": False, "atr": None,
+    }
+    if df is None or len(df) < 5:
+        return empty
 
-    if 'ma5' not in df.columns:
-        df = df.copy()
-        df['ma5'] = df['close'].rolling(window=5).mean()
-    if 'ma25' not in df.columns:
-        df = df.copy()
-        df['ma25'] = df['close'].rolling(window=25).mean()
-        
-    if 'adx' not in df.columns:
-        df = df.copy()
-        adx_period = 14
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        tr1 = high - low
-        tr2 = (high - close.shift(1)).abs()
-        tr3 = (low - close.shift(1)).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        up_move = high - high.shift(1)
-        down_move = low.shift(1) - low
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        plus_dm = pd.Series(plus_dm, index=df.index)
-        minus_dm = pd.Series(minus_dm, index=df.index)
-        tr_smooth = tr.ewm(alpha=1 / adx_period, adjust=False).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
-        minus_di = 100 * (minus_dm.ewm(alpha=1 / adx_period, adjust=False).mean() / (tr_smooth + 1e-9))
-        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9))
-        df['adx'] = dx.ewm(alpha=1 / adx_period, adjust=False).mean()
+    df = df.copy()
+    if 'ma3' not in df.columns:
+        df['ma3'] = df['close'].rolling(window=3).mean()
 
-    ma5_curr  = float(df['ma5'].iloc[-1])
-    ma5_prev  = float(df['ma5'].iloc[-2])
-    ma25_curr = float(df['ma25'].iloc[-1])
-    ma25_prev = float(df['ma25'].iloc[-2])
+    ma3_series = df['ma3'].dropna()
+    if len(ma3_series) < 5:
+        return empty
+
+    ma3_curr  = float(ma3_series.iloc[-1])
+    ma3_prev  = float(ma3_series.iloc[-2])
+    ma3_prev2 = float(ma3_series.iloc[-3])
+    ma3_prev3 = float(ma3_series.iloc[-4])
+    ma3_prev4 = float(ma3_series.iloc[-5])
+
+    atr_val = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else float(df['close'].iloc[-1]) * 0.015
+    flat_threshold = atr_val * 0.15
+
+    c1, c2, c3, c4 = df.iloc[-1], df.iloc[-2], df.iloc[-3], df.iloc[-4]
+    greens = sum(1 for c in [c1, c2, c3, c4] if float(c['close']) > float(c['open']))
+    reds   = sum(1 for c in [c1, c2, c3, c4] if float(c['close']) < float(c['open']))
+    last_close = float(df['close'].iloc[-1])
+    last_open  = float(df['open'].iloc[-1])
+    is_green = last_close > last_open
+    is_red   = last_close < last_open
 
     reasons = []
-    strong = False
+    strong  = False
 
     if side == "LONG":
-        # 多單出場：MA5 從 MA25 上方穿越到下方（死叉）
-        cross_down = (ma5_prev >= ma25_prev) and (ma5_curr < ma25_curr)
-        if cross_down:
-            reasons.append("MA5 死叉穿越 MA25 → 出場多單")
+        is_peak = False
+        if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
+            is_peak = True
+            reasons.append("MA3 尖端(倒V型)峰頂 -> 出場多單")
+        elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
+            is_peak = True
+            reasons.append("MA3 梯形峰頂 -> 出場多單")
+        elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2 and is_red and last_close < ma3_curr:
+            is_peak = True
+            reasons.append(f"MA3 圓弧頂(附{reds}根紅K) -> 出場多單")
+        elif ma3_prev4 < ma3_prev3 and abs(ma3_prev3 - ma3_prev) <= flat_threshold and ma3_curr < ma3_prev:
+            is_peak = True
+            reasons.append("MA3 倒U形頂 -> 出場多單")
+        if is_peak:
             strong = True
-    else:  # SHORT
-        # 空單出場：MA5 從 MA25 下方穿越到上方（金叉）
-        cross_up = (ma5_prev <= ma25_prev) and (ma5_curr > ma25_curr)
-        if cross_up:
-            reasons.append("MA5 金叉穿越 MA25 → 出場空單")
+    else:
+        is_trough = False
+        if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
+            is_trough = True
+            reasons.append("MA3 尖端(V型)谷底 -> 出場空單")
+        elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
+            is_trough = True
+            reasons.append("MA3 梯形谷底 -> 出場空單")
+        elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2 and is_green and last_close > ma3_curr:
+            is_trough = True
+            reasons.append(f"MA3 圓弧底(附{greens}根綠K) -> 出場空單")
+        elif ma3_prev4 > ma3_prev3 and abs(ma3_prev3 - ma3_prev) <= flat_threshold and ma3_curr > ma3_prev:
+            is_trough = True
+            reasons.append("MA3 U形底 -> 出場空單")
+        if is_trough:
             strong = True
-
-    structural_confirmed = strong
 
     return {
         "active": bool(reasons),
@@ -634,10 +601,10 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         "strong": strong,
         "ma5_reversed": strong,
         "is_panic_reversal": False,
-        "ema_breach_confirmed": structural_confirmed,
-        "structure_broken": structural_confirmed,
+        "ema_breach_confirmed": strong,
+        "structure_broken": strong,
         "adx": float(df['adx'].iloc[-1]) if 'adx' in df.columns else 0.0,
-        "atr": float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015,
+        "atr": atr_val,
     }
 
 
