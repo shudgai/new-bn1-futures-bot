@@ -1219,10 +1219,20 @@ class TradingEngine:
                         position.get("side") == "SHORT"
                         and exit_signal_info.get("entry_type") == "TROUGH_TURN"
                     )
+                    pre_pivot_wait = (
+                        position.get("side") == "LONG"
+                        and exit_signal_info.get("entry_type") == "WAIT_PRE_PIVOT"
+                        and float(exit_signal_info.get("ma3_slope", 0.0)) > 0
+                    ) or (
+                        position.get("side") == "SHORT"
+                        and exit_signal_info.get("entry_type") == "WAIT_PRE_PIVOT"
+                        and float(exit_signal_info.get("ma3_slope", 0.0)) < 0
+                    )
                     should_auto_close = bool(
                         not false_breakout_hold
                         and (
                             opposite_pivot
+                            or pre_pivot_wait
                             if is_cr_position
                             else (
                                 trigger.get("ma5_reversed")
@@ -1230,7 +1240,7 @@ class TradingEngine:
                             )
                         )
                     )
-                    pivot_exit_ready = opposite_pivot if is_cr_position else bool(trigger.get("strong"))
+                    pivot_exit_ready = (opposite_pivot or pre_pivot_wait) if is_cr_position else bool(trigger.get("strong"))
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
                     )
@@ -2987,7 +2997,7 @@ class TradingEngine:
 
                     # 只允許已確認的峰頂/谷底進場；均線排列與交叉只能作為觀察，
                     # 不再在假突破或盤整時直接開倉、反手。
-                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
                         self.account.log(
                             f"⏸️ {symbol} {cr_entry_type} 非峰谷確認訊號，等待真峰頂/谷底後再開倉",
                             "INFO",

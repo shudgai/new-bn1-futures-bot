@@ -291,7 +291,7 @@ async def reset_account():
 
 @app.get("/api/klines")
 async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
-    """取得K線資料，並計算 MA5, MA25, MA99 提供給前端圖表"""
+    """取得K線資料，並計算 MA3, MA15, MA99 提供給前端圖表"""
     try:
         df = await engine.fetch_klines(symbol, timeframe=timeframe, limit=limit)
         if df.empty:
@@ -299,8 +299,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
             
         # 計算 MA
         df['MA3'] = df['close'].rolling(window=3).mean()
-        df['MA5'] = df['close'].rolling(window=5).mean()
-        df['MA25'] = df['close'].rolling(window=25).mean()
+        df['MA15'] = df['close'].rolling(window=15).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
         
         # 準備資料
@@ -315,8 +314,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
                 "low": row['low'],
                 "close": row['close'],
                 "ma3": None if pd.isna(row['MA3']) else row['MA3'],
-                "ma5": None if pd.isna(row['MA5']) else row['MA5'],
-                "ma25": None if pd.isna(row['MA25']) else row['MA25'],
+                "ma15": None if pd.isna(row['MA15']) else row['MA15'],
                 "ma99": None if pd.isna(row['MA99']) else row['MA99'],
             })
             

@@ -182,6 +182,12 @@
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; height: 500px; width: 100%; position: relative; }
         .chart-container { width: 100%; height: 100%; }
+        @media (max-width: 860px) {
+            .chart-modal { width: calc(100% - 20px); max-height: calc(100vh - 20px); }
+            .chart-modal-header { padding: 12px 14px; }
+            .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
+            .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
+        }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
         /* 桌面預設隱藏手機專屬快捷列 */
@@ -213,7 +219,7 @@
                 <div class="chart-modal-header">
                     <div class="chart-modal-title">
                         📈 {{ chartModal.symbol }} K線圖 
-                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m</span>
+                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">3m · MA3</span>
                     </div>
                     <button class="chart-modal-close" @click="closeChartModal">&times;</button>
                 </div>
@@ -663,34 +669,30 @@
                     wickUpColor: '#10b981', wickDownColor: '#ef4444'
                 });
                 this._ma3Series = this._chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
-                this._ma5Series = this._chart.addLineSeries({ color: '#2962FF', lineWidth: 2, title: 'MA5' });
-                this._ma25Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA25' });
+                this._ma15Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA15' });
                 this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
             },
             async fetchChartData(symbol) {
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m`);
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=3m`);
                     if (!res.ok) throw new Error("Failed to fetch K-lines");
                     const json = await res.json();
                     
                     const candles = [];
                     const ma3 = [];
-                    const ma5 = [];
-                    const ma25 = [];
+                    const ma15 = [];
                     const ma99 = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
                         if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
-                        if (d.ma5 !== null) ma5.push({ time: d.time, value: d.ma5 });
-                        if (d.ma25 !== null) ma25.push({ time: d.time, value: d.ma25 });
+                        if (d.ma15 !== null) ma15.push({ time: d.time, value: d.ma15 });
                         if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
                     });
                     
                     this._candlestickSeries.setData(candles);
                     this._ma3Series.setData(ma3);
-                    this._ma5Series.setData(ma5);
-                    this._ma25Series.setData(ma25);
+                    this._ma15Series.setData(ma15);
                     this._ma99Series.setData(ma99);
                     
                     this._chart.timeScale().fitContent();

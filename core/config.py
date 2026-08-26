@@ -747,7 +747,7 @@ PROFIT_BANK_LOCK_PCT = min(
 # ---------------------------------------------------------------------------
 ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "true").lower() == "true"
 PROFIT_LOCK_FEE_MULTIPLIER = max(0.0, float(os.getenv("PROFIT_LOCK_FEE_MULTIPLIER", "2.0")))
-PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "1.0")))
+PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "0.5")))
 PROFIT_LOCK_GIVEBACK_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_GIVEBACK_USDT", "0.8")))
 # 觸發門檻：未實現利潤達到此值（USDT）時開始鎖利
 PROFIT_LOCK_TRIGGER_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_TRIGGER_USDT", "4.0")))

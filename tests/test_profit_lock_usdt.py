@@ -9,7 +9,7 @@ def test_profit_lock_uses_fixed_point_eight_usdt_giveback():
 
 
 @pytest.mark.anyio
-async def test_fee_floor_then_one_usdt_ladder(tmp_path, monkeypatch):
+async def test_fee_floor_then_half_usdt_ladder(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "profit_lock_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     monkeypatch.setattr(pa_module, "DISABLE_STOP_LOSS", True)
@@ -35,14 +35,18 @@ async def test_fee_floor_then_one_usdt_ladder(tmp_path, monkeypatch):
     await account.update_positions({"BTC/USDT": 100.3066666667})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.20)
 
-    # Below the next full 1U step, the protection line stays fixed.
-    await account.update_positions({"BTC/USDT": 100.43})
+    # Before the next 0.5U threshold, the first 1.50U floor stays fixed.
+    await account.update_positions({"BTC/USDT": 100.372})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.20)
 
-    # At 3.30U peak, advance exactly one 1U step: 1.50U -> 2.50U locked.
+    # At 2.80U peak, advance one 0.5U step: 1.50U -> 2.00U locked.
+    await account.update_positions({"BTC/USDT": 100.3733333334})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.2666666667)
+
+    # At 3.30U peak, advance the next 0.5U step: 2.00U -> 2.50U locked.
     await account.update_positions({"BTC/USDT": 100.44})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.3333333333)
-    assert account.positions["BTC/USDT"]["profit_lock_mode"] == "1U_LADDER_0.8U_TRAIL"
+    assert account.positions["BTC/USDT"]["profit_lock_mode"] == "0.5U_LADDER_0.8U_TRAIL"
     assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
     assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
 

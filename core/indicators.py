@@ -237,35 +237,27 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     ma3_curr  = float(ma3_series.iloc[-1])
     ma3_prev  = float(ma3_series.iloc[-2])
     ma3_prev2 = float(ma3_series.iloc[-3])
+    previous_slope = ma3_prev - ma3_prev2
+    current_slope = ma3_curr - ma3_prev
 
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float(df['close'].iloc[-1]) * 0.015
 
-    # MA3 三點形成 V/倒V 即視為谷底/峰頂。
-    # 仍只使用已收盤的 1m K，避免未完成 K 線反覆變形造成重複訊號。
-    is_trough_forming = (
-        ma3_prev2 > ma3_prev
-        and ma3_curr > ma3_prev
-    )
-    is_peak_forming = (
-        ma3_prev2 < ma3_prev
-        and ma3_curr < ma3_prev
-    )
-
-    # 只使用 1m MA3 轉向，不再用 MA5/MA25 排列或交叉追價。
-    if is_trough_forming:
+    # 只有 MA3 形成 V/倒V 才換向；中間趨勢段維持原持倉，不賣出、不追單。
+    # 仍只使用已收盤的 3m K，避免未完成 K 線反覆變形造成重複訊號。
+    if previous_slope < 0 and current_slope > 0:
         return {
             "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m MA3 谷底往峰頂 (向上轉折) → 開多單",
+            "reason": "3m MA3 V字谷底 → 立即轉向開多",
             "atr": atr, "pivot_confirmed": True,
             "pivot_score": 100,
             "fast_pivot": True,
             "live_pivot": allow_live_pivot,
             "ma_alignment": "ABOVE"
         }
-    elif is_peak_forming:
+    elif previous_slope > 0 and current_slope < 0:
         return {
             "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m MA3 峰頂到谷底 (向下轉折) → 開空單",
+            "reason": "3m MA3 倒V字峰頂 → 立即轉向開空",
             "atr": atr, "pivot_confirmed": True,
             "pivot_score": 100,
             "fast_pivot": True,
@@ -275,7 +267,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
 
     return {
         "signal": None,
-        "reason": "1m MA3 尚未形成明顯峰頂或谷底轉折",
+        "reason": "3m MA3 尚未形成 V/倒V，持續等待峰頂或谷底",
         "pivot_confirmed": False,
         "pivot_score": 0,
         "ma_alignment": "MIXED",

@@ -87,7 +87,7 @@ ACCOUNTING_VERSION = 2
 
 
 def get_profit_lock_giveback_usdt(peak_usdt: float) -> float:
-    """Return the fixed 0.8 USDT giveback used by the 1U profit ladder."""
+    """Return the fixed 0.8 USDT giveback used by the 0.5U profit ladder."""
     return PROFIT_LOCK_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
@@ -1079,7 +1079,7 @@ class PaperAccount:
                     )
 
             # ----------------------------------------------------------------
-            # 動態階梯鎖利：雙邊手續費的倍數為第一條保護線，之後每 1U 推進。
+            # 動態階梯鎖利：雙邊手續費的倍數為第一條保護線，之後每 0.5U 推進。
             # ----------------------------------------------------------------
             if ENABLE_PROFIT_LOCK_USDT:
                 qty = float(pos.get("qty") or meta.get("qty") or 0.0)
@@ -1107,7 +1107,7 @@ class PaperAccount:
                 # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
                 # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
                 if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
-                    # 第一階鎖住雙邊手續費 x2；峰值每再增加 1U，保護線增加 1U。
+                    # 第一階鎖住雙邊手續費 x2；峰值每再增加 0.5U，保護線增加 0.5U。
                     ladder_step = PROFIT_LOCK_LADDER_STEP_USDT
                     completed_steps = math.floor(
                         max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
@@ -1133,13 +1133,13 @@ class PaperAccount:
                         meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = True
                         meta["profit_lock_usdt_armed"] = True
-                        pos["profit_lock_mode"] = "1U_LADDER_0.8U_TRAIL"
-                        meta["profit_lock_mode"] = "1U_LADDER_0.8U_TRAIL"
+                        pos["profit_lock_mode"] = "0.5U_LADDER_0.8U_TRAIL"
+                        meta["profit_lock_mode"] = "0.5U_LADDER_0.8U_TRAIL"
                         profit_lock_updated_this_cycle = True
                         
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"→ 1U階梯鎖 {step_floor_usdt:.2f}U（回吐0.8U），保護線 {floor_sl:.6g}",
+                            f"→ 0.5U階梯鎖 {step_floor_usdt:.2f}U（回吐0.8U），保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
 
