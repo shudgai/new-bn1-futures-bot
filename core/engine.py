@@ -1183,12 +1183,12 @@ class TradingEngine:
                         trigger.get("ema_breach_confirmed")
                         and trigger.get("structure_broken")
                     )
-                     trigger["ma5_exit_ready"] = True
-                     trigger["ma5_exit_gate"] = "MA3轉向即出場"
-                     should_auto_close = bool(
-                         trigger.get("ma5_reversed")
-                         or trigger.get("is_panic_reversal")
-                     )
+                    trigger["ma5_exit_ready"] = True
+                    trigger["ma5_exit_gate"] = "MA3轉向即出場"
+                    should_auto_close = bool(
+                        trigger.get("ma5_reversed")
+                        or trigger.get("is_panic_reversal")
+                    )
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
                     )
