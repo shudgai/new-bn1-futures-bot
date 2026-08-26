@@ -1153,7 +1153,8 @@ class TradingEngine:
                     pos_reason = str(position.get("reason") or "")
                     is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT"))
                     exit_tf = CONTINUOUS_REVERSE_TIMEFRAME if is_cr_position else MA5_EXIT_TIMEFRAME
-                    df = await self.fetch_klines(symbol, timeframe=exit_tf, limit=30)
+                    # keep_live=True: 用最新未收盤的 tick 資料即時判斷，只要 MA3 反向彎了就立刻走，不需等該分 K 收盤
+                    df = await self.fetch_klines(symbol, timeframe=exit_tf, limit=30, keep_live=True)
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
                     # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
@@ -3259,7 +3260,7 @@ class TradingEngine:
                             continue
 
                         live_price = float(self.tickers.get(symbol) or 0.0)
-                        df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30)
+                        df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30, keep_live=True)
                         if df_1m.empty or len(df_1m) < 14:
                             continue
                         df_1m = self.strategy.compute_indicators(df_1m)
