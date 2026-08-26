@@ -2451,11 +2451,13 @@ class TradingEngine:
         # 會導致MA5已轉向但因5m/15m還在舊方向而錯失即時反手進場機會，故停用。
         # trigger_df = await self.fetch_klines(symbol, timeframe=MA5_EXIT_TIMEFRAME, limit=30)
         # pre_entry_trigger = compute_position_trigger(trigger_df, side)
-        # is_bottom_order = bool(ma5_sig.get("pullback_bottom_order"))
         # if pre_entry_trigger.get("strong") or (
         #     not is_bottom_order and pre_entry_trigger.get("ma_ok") is False
         # ):
         #     return False
+        # 上面雖然關閉了，但下面判斷「是否用對手價成交」仍要用到這個旗標，
+        # 不能整段一起註解掉，否則會是 NameError。
+        is_bottom_order = bool(ma5_sig.get("pullback_bottom_order"))
 
         # [已關閉] 15分鐘EMA20趨勢過濾 — 同上，純1分鐘策略不依賴15m趨勢方向。
         # trend_df = await self.fetch_klines(symbol, timeframe="15m", limit=50)

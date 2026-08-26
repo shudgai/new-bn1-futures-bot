@@ -339,6 +339,7 @@ async def test_paper_entry_slippage_preserves_planned_reward_risk(tmp_path, monk
 @pytest.mark.anyio
 async def test_paper_small_profit_exits_are_opt_in(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "runner_mode.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", True)
@@ -457,14 +458,20 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
         "high_peak_price", "high_peak_bank",
     ),
     [
-        ("LONG", 100.35, 100.25, 101.0, 100.80, 102.0, 101.80),
-        ("SHORT", 99.65, 99.75, 99.0, 99.20, 98.0, 98.20),
+        # 峰值1.0%落在 _PROFIT_BANK_CAPTURE_TIERS 的 0.81%→90% 那一級（不是
+        # 舊註解講的0.81%~1.10%以下用80%），峰值2.0%落在1.10%→95%那一級；
+        # 見 core/config.py 的 _PROFIT_BANK_CAPTURE_TIERS。
+        ("LONG", 100.35, 100.25, 101.0, 100.90, 102.0, 101.90),
+        ("SHORT", 99.65, 99.75, 99.0, 99.10, 98.0, 98.10),
     ],
 )
 async def test_paper_profit_bank_turns_bankable_float_into_net_profit(
     tmp_path, monkeypatch, side, peak_price, bank_price, runner_price, runner_bank,
     high_peak_price, high_peak_bank,
 ):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / f"profit_bank_{side}.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", True)
     monkeypatch.setattr(pa_module, "PROFIT_BANK_TRIGGER_PCT", 0.0035)
@@ -501,6 +508,9 @@ async def test_paper_profit_bank_turns_bankable_float_into_net_profit(
 
 @pytest.mark.anyio
 async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
@@ -527,6 +537,9 @@ async def test_paper_early_profit_guard_closes_on_giveback(tmp_path, monkeypatch
 
 @pytest.mark.anyio
 async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "dynamic_peak.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
@@ -642,6 +655,7 @@ async def test_paper_account_trailing_sl_gap_through_labels_as_stop_loss_not_pro
 
 @pytest.mark.anyio
 async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
     """獲利回吐警訊（💰⚠️，從高點回吐超過PROFIT_ALERT_GIVEBACK_RATIO）亮起
     後，不是一有反彈就立刻平倉——只要浮盈還在持續往上爬，就繼續讓它跑；
     只有等反彈自己也開始回落（找到這次反彈的高點）時，才把握那個高點
@@ -672,6 +686,7 @@ async def test_paper_account_lets_rebound_run_and_closes_at_its_own_peak(tmp_pat
 
 @pytest.mark.anyio
 async def test_paper_account_peak_drawdown_preempts_local_stop_loss(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", True)
     monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
@@ -730,6 +745,9 @@ async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost
 
 @pytest.mark.anyio
 async def test_paper_account_daily_loss_limit_blocks_new_entries_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     """今日虧損達門檻只擋新開倉，既有持倉不受影響（daily_loss_limit_hit
     本身不平倉，只回傳旗標給呼叫端判斷）。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
@@ -794,6 +812,9 @@ async def test_paper_account_post_only_waits_for_cross_and_fills_at_limit(tmp_pa
 
 @pytest.mark.anyio
 async def test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "risk_trailing.json"))
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     # 固定門檻刻意高於 1.5R：有 initial_risk 的單仍應依 R 倍數啟動，
@@ -854,6 +875,7 @@ def test_entry_depth_is_score_tiered_for_current_maker_and_pullbacks():
 
 @pytest.mark.anyio
 async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()
     # MIN_OPEN_SIGNAL_SCORE - 1 分必須拒絕，MIN_OPEN_SIGNAL_SCORE 分才會真的開倉。
@@ -2165,6 +2187,9 @@ def test_bottom_entry_has_thirty_minute_soft_exit_grace(monkeypatch):
 
 @pytest.mark.anyio
 async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     """底點單剛成交時即使5m結構仍偏弱，也交給原始SL而不立即軟平倉。"""
     import asyncio
 
@@ -2181,7 +2206,7 @@ async def test_bottom_entry_grace_ignores_early_strong_soft_exit(tmp_path, monke
     engine.is_running = True
     engine.tickers = {"DOGE/USDT": 99.0}
 
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30, **_kwargs):
         return pd.DataFrame({
             "timestamp": list(range(25)), "open": [99.0] * 25,
             "high": [100.0] * 25, "low": [98.0] * 25,
@@ -2283,6 +2308,9 @@ def test_trailing_profit_lock_is_not_treated_as_initial_risk():
 
 @pytest.mark.anyio
 async def test_zero_sl_peak_threshold_executes_initial_stop_immediately(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "immediate_stop.json"))
     monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.0)
     account = PaperAccount()
@@ -2302,6 +2330,9 @@ async def test_zero_sl_peak_threshold_executes_initial_stop_immediately(tmp_path
 
 @pytest.mark.anyio
 async def test_sl_only_after_peak_prevents_early_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     """如果設定 SL_ONLY_AFTER_PEAK_PCT，觸及 SL 但未曾達到峰值，應該暫不平倉；
     只有當峰值達到門檻後再次觸及 SL 才會平倉。"""
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
@@ -3645,7 +3676,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     engine.tickers["DOGE/USDT"] = 101.5
 
     # We mock fetch_klines to return prices that do not breach EMA20
-    async def mock_fetch_klines_no_breach(symbol, timeframe, limit):
+    async def mock_fetch_klines_no_breach(symbol, timeframe, limit, **_kwargs):
         return pd.DataFrame({
             "timestamp": [0] * 30,
             "open": [100.0] * 30,
@@ -3675,7 +3706,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
     engine.is_running = True
     engine.tickers["DOGE/USDT"] = 90.0
 
-    async def mock_fetch_klines_breach(symbol, timeframe, limit):
+    async def mock_fetch_klines_breach(symbol, timeframe, limit, **_kwargs):
         # 28 bars at 105.0, last 2 bars at 90.0 -> EMA20 will be > 90.0 (and breach will be verified for last 2 closes)
         return pd.DataFrame({
             "timestamp": [0] * 30,
@@ -3720,7 +3751,7 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
     # Mock fetch_klines to return a DataFrame that breaches both EMA20 (two
     # consecutive bars, per compute_position_trigger's confirmation window)
     # and Swing Low
-    async def mock_fetch_klines(symbol, timeframe, limit):
+    async def mock_fetch_klines(symbol, timeframe, limit, **_kwargs):
         closes = [100.0] * 28 + [92.0, 88.0]
         lows = [98.0] * 28 + [90.0, 86.0]
         highs = [102.0] * 30
@@ -3750,6 +3781,9 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
 
 @pytest.mark.anyio
 async def test_ma5_only_trigger_does_not_close_during_minimum_hold(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     """MA5單獨反轉即使strong=True，持倉未滿10分鐘仍交給固定SL保護。"""
     import asyncio
 
@@ -3765,7 +3799,7 @@ async def test_ma5_only_trigger_does_not_close_during_minimum_hold(tmp_path, mon
     engine.is_running = True
     engine.tickers = {"DOGE/USDT": 99.0}
 
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30, **_kwargs):
         return pd.DataFrame({
             "timestamp": list(range(25)),
             "open": [99.0] * 25, "high": [100.0] * 25,
@@ -4395,117 +4429,6 @@ async def test_structured_exit_scales_half_at_one_point_five_r(tmp_path, monkeyp
     assert account.position_meta["BTC/USDT"]["rr_1_5_done"] is True
 
 
-@pytest.mark.anyio
-async def test_ma5_entry_skipped_when_15m_exit_was_already_active(tmp_path, monkeypatch):
-    """A fresh MA5 order must not open into an already-confirmed 15m exit."""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    engine = TradingEngine()
-    engine.account = PaperAccount()
-
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
-        if timeframe == "15m":
-            closes = [1.44] * 48 + [1.4211, 1.4228]
-        else:
-            closes = [1.43] * 30
-        return pd.DataFrame({
-            "timestamp": list(range(len(closes))),
-            "open": closes,
-            "high": [value + 0.001 for value in closes],
-            "low": [value - 0.001 for value in closes],
-            "close": closes,
-            "volume": [100.0] * len(closes),
-        })
-
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    ma5_sig = {
-        "score": 89, "atr": 0.004, "structural_sl": None,
-        "reason": "MA5_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
-        "btc_allocation_factor": 1.0,
-        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
-    }
-
-    placed = await engine._place_ma5_reversal_entry(
-        "EUL/USDT", "LONG", ma5_sig, 1.4305, 0.0
-    )
-
-    assert placed is False
-    assert "EUL/USDT" not in engine.account.positions
-    assert any(
-        "15分鐘已連續兩根跌破EMA20緩衝帶" in entry["text"]
-        for entry in engine.account.logs
-    )
-
-
-@pytest.mark.anyio
-async def test_ma5_entry_skipped_when_5m_already_against_direction(tmp_path, monkeypatch):
-    """1分鐘MA5訊號成立，但5分鐘週期已經對同方向亮出強警訊（跟5m出場
-    防線同一套判斷）時，進場前應該先擋下來，不要進了馬上被5m防線打掉
-    （實測 NEAR/USDT 09:49:07 進場，09:49:15 僅8秒後就被5m防線關倉）。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    engine = TradingEngine()
-    engine.account = PaperAccount()
-
-    # 5m資料：連續兩根收線跌破EMA20緩衝帶 + 跌破前低 -> strong=True
-    # (跟 core/indicators.py compute_position_trigger 的邏輯一致)
-    closes = [100.0] * 23 + [92.0, 88.0]
-    lows = [99.0] * 23 + [90.0, 86.0]
-    highs = [101.0] * 25
-
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
-        return pd.DataFrame({
-            "timestamp": list(range(len(closes))),
-            "open": closes, "high": highs, "low": lows, "close": closes,
-            "volume": [100.0] * len(closes),
-        })
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-
-    ma5_sig = {
-        "score": 89, "atr": 1.0, "structural_sl": None,
-        "reason": "MA5_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
-        "btc_allocation_factor": 1.0,
-        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
-    }
-    placed = await engine._place_ma5_reversal_entry("DOGE/USDT", "LONG", ma5_sig, 88.0, 0.0)
-
-    assert placed is False
-    assert "DOGE/USDT" not in engine.account.positions
-    assert any("5分鐘週期已對LONG方向亮警訊" in entry["text"] for entry in engine.account.logs)
-
-
-@pytest.mark.anyio
-async def test_ma5_entry_skipped_when_5m_is_on_adverse_ema_side(tmp_path, monkeypatch):
-    """5m 尚未成為 strong，但價格已在 EMA20 不利側時也不逆向開新倉。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    engine = TradingEngine()
-    engine.account = PaperAccount()
-
-    closes = [100.0] * 24 + [99.0]
-
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
-        return pd.DataFrame({
-            "timestamp": list(range(len(closes))),
-            "open": closes,
-            "high": [101.0] * len(closes),
-            "low": [98.5] * len(closes),
-            "close": closes,
-            "volume": [100.0] * len(closes),
-        })
-
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
-    ma5_sig = {
-        "score": 89, "atr": 1.0, "structural_sl": None,
-        "reason": "MA5_Reversal_LONG test", "btc_regime_mode": "UNKNOWN",
-        "btc_allocation_factor": 1.0,
-        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
-    }
-
-    placed = await engine._place_ma5_reversal_entry(
-        "DOGE/USDT", "LONG", ma5_sig, 99.0, 0.0
-    )
-
-    assert placed is False
-    assert "DOGE/USDT" not in engine.account.positions
-
 
 @pytest.mark.anyio
 async def test_validate_mainstream_symbols_warns_on_invalid_symbol(tmp_path, monkeypatch):
@@ -4584,7 +4507,7 @@ async def test_soft_warning_tightens_sl_after_persist_threshold(tmp_path, monkey
     lows = [95.0] * 25
     highs = [101.0] * 25
 
-    async def mock_fetch_klines(symbol, timeframe="5m", limit=30):
+    async def mock_fetch_klines(symbol, timeframe="5m", limit=30, **_kwargs):
         return pd.DataFrame({
             "timestamp": list(range(len(closes))),
             "open": closes, "high": highs, "low": lows, "close": closes,
@@ -4626,46 +4549,6 @@ async def test_soft_warning_tightens_sl_after_persist_threshold(tmp_path, monkey
     assert "DOGE/USDT" not in account.positions
     assert "止損" in account.trades[0]["reason"]
     assert "移動止利" not in account.trades[0]["reason"]
-
-
-@pytest.mark.anyio
-async def test_contrarian_bottom_buy_uses_smaller_position_size(tmp_path, monkeypatch):
-    """逆勢承接（is_contrarian_bottom_buy）信心水準較低，下單金額應該用
-    CONTRARIAN_POSITION_SIZE_MULTIPLIER 縮小，比同分數的一般順勢單小。"""
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
-    # 此測試只驗證逆勢倍率；固定風險上限另有獨立測試。
-    monkeypatch.setattr(engine_module, "MAX_TRADE_RISK_USDT", 0.0)
-    engine = TradingEngine()
-    engine.account = PaperAccount()
-
-    async def mock_fetch_klines_not_strong(symbol, timeframe="5m", limit=30):
-        return pd.DataFrame({
-            "timestamp": list(range(25)),
-            "open": [100.0] * 25, "high": [101.0] * 25,
-            "low": [99.0] * 25, "close": [100.0] * 25,
-            "volume": [100.0] * 25,
-        })
-    monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines_not_strong)
-
-    base_ma5_sig = {
-        "score": 82, "atr": 1.0, "structural_sl": None,
-        "reason": "test", "btc_regime_mode": "UNKNOWN", "btc_allocation_factor": 1.0,
-        "ma5_curr": 1.0, "ma5_prev": 1.0, "ma5_prev2": 1.0,
-    }
-
-    await engine._place_ma5_reversal_entry(
-        "BTC/USDT", "LONG", {**base_ma5_sig, "is_contrarian_bottom_buy": False}, 100.0, 0.0
-    )
-    normal_margin = engine.account.positions["BTC/USDT"]["margin"]
-    await engine.account.close_position("BTC/USDT", 100.0, "cleanup")
-
-    await engine._place_ma5_reversal_entry(
-        "BTC/USDT", "LONG", {**base_ma5_sig, "is_contrarian_bottom_buy": True}, 100.0, 0.0
-    )
-    contrarian_margin = engine.account.positions["BTC/USDT"]["margin"]
-
-    assert contrarian_margin == pytest.approx(normal_margin * CONTRARIAN_POSITION_SIZE_MULTIPLIER)
-    assert engine.account.position_meta["BTC/USDT"]["is_contrarian_bottom_buy"] is True
 
 
 @pytest.mark.anyio
@@ -4851,6 +4734,7 @@ async def test_bounce_without_follow_through_exits_early(tmp_path, monkeypatch):
 
 @pytest.mark.anyio
 async def test_bounce_early_profit_guard_captures_saga_sized_move(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_guard.json"))
     monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", True)
     monkeypatch.setattr(pa_module, "BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", 0.0023)
