@@ -85,13 +85,15 @@ ACCOUNTING_VERSION = 2
 
 def get_profit_lock_giveback_usdt(peak_usdt: float) -> float:
     """
-    雙軌制回吐邏輯（已拔除本金級距，純絕對值）：
-    1. 初期固定回吐：給予固定的 0.8U 呼吸空間。
-    2. 大波段比例回吐：當利潤放大時，至少給予峰值利潤 20% 的呼吸空間。
+    固定回吐 0.5U：
+    保護線 = 峰值利潤 - 0.5U（永遠只允許回吐 0.5U，不管利潤有多大）
+    配合 1U 階梯步距使用：
+      峰值  1U → 鎖住  0.5U
+      峰值  2U → 鎖住  1.5U
+      峰值  3U → 鎖住  2.5U
+      ...以此類推
     """
-    fixed_giveback = 0.8
-    proportional_giveback = max(0.0, float(peak_usdt)) * 0.20
-    return max(fixed_giveback, proportional_giveback)
+    return 0.5
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -1100,11 +1102,15 @@ class PaperAccount:
                 # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
                 # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
                 if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
+                    # 1U 階梯：峰值每超過 1U 整數就推進一格
+                    # 例：峰值 1.2U → 鎖 0.5U；峰值 2.7U → 鎖 1.5U；峰值 5.1U → 鎖 4.5U
+                    ladder_step = 1.0  # 每 1U 升一格
+                    peak_floor_ladder = (peak_usdt // ladder_step) * ladder_step  # 向下取整到 1U
                     step_floor_usdt = max(
                         minimum_profit_floor,
-                        peak_usdt - trailing_gap_usdt,
+                        peak_floor_ladder - trailing_gap_usdt,
                     )
-                    notional_units = qty  # qty 已為合約張數
+                    notional_units = qty
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if side == "LONG":
                         floor_sl = entry_p + floor_price_move
@@ -1124,14 +1130,13 @@ class PaperAccount:
                         meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = True
                         meta["profit_lock_usdt_armed"] = True
-                        pos["profit_lock_mode"] = "CAPITAL_TIER_OR_25PCT"
-                        meta["profit_lock_mode"] = "CAPITAL_TIER_OR_25PCT"
+                        pos["profit_lock_mode"] = "1U_LADDER_0.5U_TRAIL"
+                        meta["profit_lock_mode"] = "1U_LADDER_0.5U_TRAIL"
                         profit_lock_updated_this_cycle = True
                         
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"(本金 {margin_used:.0f}U，允許回吐 {trailing_gap_usdt:.2f}U)，"
-                            f"鎖定 {step_floor_usdt:.2f}U，保護線 {floor_sl:.6g}",
+                            f"→ 1U階梯鎖 {step_floor_usdt:.2f}U（回吐0.5U），保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
 
