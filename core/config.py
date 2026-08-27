@@ -293,7 +293,7 @@ MA5_STOP_LOSS_COOLDOWN_SEC = max(
 )
 # Require a confirmed MA2/MA3 breakout before opening a pivot entry.
 MA2_CONFIRMATION_ENTRY_ENABLED = os.getenv("MA2_CONFIRMATION_ENTRY_ENABLED", "false").lower() == "true"
-MA2_CONFIRMATION_LOOKBACK_BARS = max(2, int(os.getenv("MA2_CONFIRMATION_LOOKBACK_BARS", "3")))
+MA2_CONFIRMATION_LOOKBACK_BARS = max(2, int(os.getenv("MA2_CONFIRMATION_LOOKBACK_BARS", "2")))
 
 def get_bounce_capture_ratio(score: int) -> float:
     progress = min(1.0, max(0.0, (float(score or 75) - 75.0) / 16.0))
