@@ -581,7 +581,7 @@ def detect_ma5_reversal(
         "profit_profile": "TREND_EXTENSION",
         "action": "ENTER_MARKET",
         "target_price": None,
-        "structural_sl": price * 0.9 if want_dir == 1 else price * 1.1,
+        "structural_sl": float(df['low'].iloc[-4:].min()) if want_dir == 1 else float(df['high'].iloc[-4:].max()),
         "is_contrarian_bottom_buy": False,
         "reason": f"Pivot_{side}｜{direction_note}｜score=100"
     }

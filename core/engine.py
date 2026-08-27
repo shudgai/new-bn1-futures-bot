@@ -2671,7 +2671,7 @@ class TradingEngine:
             if side == "LONG":
                 # 限制止損距離：最小不能低於 MIN_SL_DISTANCE_PCT，最大不能超過 2.0 * ATR
                 min_sl = target_price - (target_price * MIN_SL_DISTANCE_PCT)
-                max_sl = target_price - (2.0 * atr)
+                max_sl = max(target_price - (2.0 * atr), target_price * (1.0 - config.FIXED_STOP_LOSS_PCT))
                 sl = min(min_sl, max(max_sl, structural_sl))
                 sl_dist = target_price - sl
                 # 確保 TP 滿足最少盈虧比 (MIN_NET_REWARD_RISK)
@@ -2681,7 +2681,7 @@ class TradingEngine:
                 tp = target_price + tp_dist_final
             else:
                 min_sl = target_price + (target_price * MIN_SL_DISTANCE_PCT)
-                max_sl = target_price + (2.0 * atr)
+                max_sl = min(target_price + (2.0 * atr), target_price * (1.0 + config.FIXED_STOP_LOSS_PCT))
                 sl = max(min_sl, min(max_sl, structural_sl))
                 sl_dist = sl - target_price
                 tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
