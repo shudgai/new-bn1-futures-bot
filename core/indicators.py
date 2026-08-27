@@ -239,6 +239,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     ma3_curr  = float(ma3_series.iloc[-1])
     ma3_prev  = float(ma3_series.iloc[-2])
     ma3_prev2 = float(ma3_series.iloc[-3])
+    ma3_prev3 = float(ma3_series.iloc[-4])
     ma15_curr = float(df['ma15'].iloc[-1])
     if pd.isna(ma15_curr):
         return {"signal": None, "reason": "MA15 not ready", "pivot_confirmed": False, "pivot_score": 0}
@@ -253,6 +254,35 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     min_pivot_slope = max(abs(atr) * 0.03, abs(ma3_prev) * 0.00006)
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
     min_directional_range = max(abs(atr) * 0.10, abs(ma3_curr) * 0.00025)
+    fast_pivot_slope = max(abs(atr) * 0.02, abs(ma3_prev) * 0.00004)
+
+    # Allow a stair-step plateau at a top or bottom to enter while flat.
+    step_trough = bool(
+        ma3_prev <= ma3_prev2 <= ma3_prev3
+        and ma3_prev3 - ma3_prev >= fast_pivot_slope
+        and current_slope >= fast_pivot_slope
+    )
+    step_peak = bool(
+        ma3_prev >= ma3_prev2 >= ma3_prev3
+        and ma3_prev - ma3_prev3 >= fast_pivot_slope
+        and current_slope <= -fast_pivot_slope
+    )
+    if step_trough:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m MA3 V/梯形谷底向上 → 立即轉向開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "ma_alignment": ma_alignment,
+        }
+    if step_peak:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m MA3 倒V/梯形峰頂向下 → 立即轉向開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "ma_alignment": ma_alignment,
+        }
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
     # 回傳空訊號可讓既有持倉保持原方向。

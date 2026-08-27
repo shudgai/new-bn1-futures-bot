@@ -154,6 +154,10 @@ class TradingEngine:
         self._continuous_alignment_wait: Dict[str, dict] = {}
         # 同一根 K、同一方向只允許成交一次，避免止盈後重複吃同一訊號。
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
+        # Live-pivot reversals may be evaluated every 3 seconds; allow at most
+        # one reversal in the same 1m candle and require two scans for MA3.
+        self._live_pivot_reversal_bar: Dict[str, int] = {}
+        self._fast_pivot_confirmations: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
@@ -1241,6 +1245,72 @@ class TradingEngine:
                         and float(exit_signal_info.get("ma3_slope", 0.0)) > 0
                     )
                     trigger["pre_pivot_wait"] = pre_pivot_wait
+                    # A strict MA5 peak/trough is calculated from the live candle.
+                    # In continuous-reversal positions it is sufficient to close and
+                    # immediately reverse; do not wait for a second MA3 confirmation.
+                    strict_live_pivot = bool(
+                        is_cr_position
+                        and trigger.get("strong")
+                        and trigger.get("ma5_reversed")
+                    )
+                    # Fast path: MA3 has less smoothing than MA5, so detect the
+                    # first meaningful live reversal at 0.02 ATR, including a flat step at the peak or trough.
+                    ma3_live = (
+                        df["ma3"] if "ma3" in df.columns
+                        else df["close"].rolling(3).mean()
+                    ).dropna()
+                    fast_ma3_pivot = False
+                    if is_cr_position and len(ma3_live) >= 4:
+                        ma3_prev3 = float(ma3_live.iloc[-4])
+                        ma3_prev2 = float(ma3_live.iloc[-3])
+                        ma3_prev = float(ma3_live.iloc[-2])
+                        ma3_curr = float(ma3_live.iloc[-1])
+                        ma3_previous_slope = ma3_prev - ma3_prev2
+                        ma3_current_slope = ma3_curr - ma3_prev
+                        fast_threshold = max(float(trigger.get("atr") or 0.0) * 0.02, 1e-12)
+                        fast_ma3_pivot = bool(
+                            (
+                                position.get("side") == "LONG"
+                                and ma3_prev >= ma3_prev2 >= ma3_prev3
+                                and ma3_current_slope <= -fast_threshold
+                            )
+                            or (
+                                position.get("side") == "SHORT"
+                                and ma3_prev <= ma3_prev2 <= ma3_prev3
+                                and ma3_current_slope >= fast_threshold
+                            )
+                        )
+                    live_bar_id = (
+                        int(float(df["timestamp"].iloc[-1]))
+                        if "timestamp" in df.columns else int(df.index[-1])
+                    )
+                    fast_ma3_confirmed = False
+                    if fast_ma3_pivot:
+                        confirmation = self._fast_pivot_confirmations.get(symbol, {})
+                        if (
+                            confirmation.get("bar_id") == live_bar_id
+                            and confirmation.get("side") == position.get("side")
+                        ):
+                            confirmation["hits"] = int(confirmation.get("hits", 0)) + 1
+                        else:
+                            confirmation = {"bar_id": live_bar_id, "side": position.get("side"), "hits": 1}
+                        self._fast_pivot_confirmations[symbol] = confirmation
+                        fast_ma3_confirmed = int(confirmation["hits"]) >= 2
+                    else:
+                        self._fast_pivot_confirmations.pop(symbol, None)
+                    trigger["fast_ma3_pivot"] = fast_ma3_pivot
+                    trigger["fast_ma3_confirmed"] = fast_ma3_confirmed
+                    same_bar_reversal = self._live_pivot_reversal_bar.get(symbol) == live_bar_id
+                    min_pivot_net_move_pct = 2 * TAKER_FEE_RATE + 2 * SLIPPAGE_PCT
+                    peak_profit_pct = max(0.0, float(position.get("peak_pnl_pct") or 0.0))
+                    economic_pivot_exit = peak_profit_pct >= min_pivot_net_move_pct
+                    trigger["peak_profit_pct"] = peak_profit_pct
+                    trigger["economic_pivot_exit"] = economic_pivot_exit
+                    live_pivot_reversal = (
+                        not same_bar_reversal
+                        and economic_pivot_exit
+                        and (strict_live_pivot or fast_ma3_confirmed)
+                    )
                     pre_turn_exit = bool(
                         trigger.get("pre_peak_exit")
                         or trigger.get("pre_trough_exit")
@@ -1248,7 +1318,7 @@ class TradingEngine:
                     should_auto_close = bool(
                         not false_breakout_hold
                         and (
-                            opposite_pivot or pre_turn_exit
+                            opposite_pivot or pre_turn_exit or live_pivot_reversal
                             if is_cr_position
                             else (
                                 (trigger.get("ma5_reversed") and ma5_exit_ready)
@@ -1258,7 +1328,7 @@ class TradingEngine:
                         )
                     )
                     pivot_exit_ready = (
-                        opposite_pivot or pre_turn_exit
+                        opposite_pivot or pre_turn_exit or live_pivot_reversal
                         if is_cr_position else bool(trigger.get("strong") or pre_turn_exit)
                     )
                     bottom_grace, bottom_age = self._bottom_entry_grace(
@@ -1271,7 +1341,7 @@ class TradingEngine:
                     if (
                         (ENABLE_STRONG_TRIGGER_AUTO_CLOSE or pivot_exit_ready)
                         and pivot_exit_ready
-                        and (not bottom_grace or pre_turn_exit)
+                        and (not bottom_grace or pre_turn_exit or live_pivot_reversal)
                         and should_auto_close
                     ):
                         if trigger.get("pre_peak_exit"):
@@ -1297,6 +1367,31 @@ class TradingEngine:
                             closed = await self.account.close_position(
                                 symbol, curr_p, close_reason, is_manual=pre_turn_exit
                             )
+                            if closed and live_pivot_reversal:
+                                self._live_pivot_reversal_bar[symbol] = live_bar_id
+                                reverse_side = "SHORT" if position.get("side") == "LONG" else "LONG"
+                                reverse_type = "PEAK_TURN" if reverse_side == "SHORT" else "TROUGH_TURN"
+                                available = self.account.get_available_balance()
+                                if TEST_BUDGET_CAP_USDT > 0:
+                                    available = min(available, TEST_BUDGET_CAP_USDT)
+                                entry_price = float(position.get("entry_price") or curr_p)
+                                move_since_entry = abs(curr_p - entry_price)
+                                min_cost_move = curr_p * (2 * TAKER_FEE_RATE + 2 * SLIPPAGE_PCT)
+                                if available >= MIN_TRADE_USDT and move_since_entry >= min_cost_move:
+                                    self.account.log(
+                                        f"{symbol} fast pivot: immediately market-reverse to {reverse_side}",
+                                        "WARNING",
+                                    )
+                                    await self._place_continuous_market_entry(
+                                        symbol=symbol, side=reverse_side, df=df,
+                                        live_price=curr_p, entry_type=reverse_type,
+                                        reason=("strict live MA5 pivot" if strict_live_pivot else "fast live MA3 pivot"), score=100, timeframe=exit_tf,
+                                    )
+                                else:
+                                    self.account.log(
+                                        f"{symbol} pivot closed; reverse withheld (move={move_since_entry:.4g}, cost={min_cost_move:.4g}, available={available:.2f})",
+                                        "WARNING",
+                                    )
                             if closed and pre_turn_exit:
                                 exit_ma5 = (
                                     float(df["ma5"].iloc[-1])
@@ -1363,12 +1458,12 @@ class TradingEngine:
                 for symbol in set(self.position_triggers) - set(self.account.positions):
                     self.position_triggers.pop(symbol, None)
                     self._soft_warning_since.pop(symbol, None)
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self.account.log(f"⚠️ [平倉參考指標] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
 
     async def _process_single_exit(self, symbol, position):
         try:
@@ -3294,29 +3389,28 @@ class TradingEngine:
                                 "DEBUG"
                             )
 
-                    # --- MA3/MA15 順勢延續進場（TREND_LONG / TREND_SHORT）---
-                    # indicators.py 在 MA3 位於 MA15 上方或下方時回傳這兩種 entry_type；
-                    # 順勢訊號確認後直接市價成交，避免等待回踩而錯過延續行情。
+                    # --- MA3/MA15 trend continuation; pivots are evaluated first ---
                     elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
-                        if has_pos and curr_side != cr_signal:
-                            self.account.log(
-                                f"🚨 {symbol} 均線排列翻面：平掉 {curr_side} 並改開 {cr_signal}",
-                                "WARNING",
+                        if has_pos:
+                            if curr_side != cr_signal:
+                                self.account.log(
+                                    f"{symbol} late MA3/MA15 flip ({curr_side} -> {cr_signal}); wait for pivot reversal",
+                                    "INFO",
+                                )
+                            else:
+                                self.account.log(
+                                    f"{symbol} [{cr_entry_type}] continuation; already {curr_side}",
+                                    "DEBUG",
+                                )
+                        else:
+                            entry_label = (
+                                "trailing-profit continuation"
+                                if _resume_after_profitable_trailing_exit
+                                else "MA3/MA15 trend continuation"
                             )
-                            closed = await self.account.close_position(
-                                symbol=symbol,
-                                current_price=live_price,
-                                close_reason=f"MA3 位於 MA15 對應方向 → {cr_signal}",
-                                is_manual=True,
-                            )
-                            if closed:
-                                has_pos = False
-                                curr_side = None
-
-                        if not has_pos:
                             self.account.log(
-                                f"{symbol} [{cr_entry_type}] 順勢延續：進場 {cr_signal}",
-                                "INFO"
+                                f"{symbol} [{cr_entry_type}] {entry_label}; enter {cr_signal}",
+                                "INFO",
                             )
                             opened = await self._place_continuous_market_entry(
                                 symbol=symbol, side=cr_signal, df=df_cr_entry,
@@ -3327,11 +3421,6 @@ class TradingEngine:
                             )
                             if opened:
                                 self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
-                        else:
-                            self.account.log(
-                                f"{symbol} [{cr_entry_type}] 順勢延續，已有 {curr_side} 持倉，不補開",
-                                "DEBUG"
-                            )
 
                 if symbol in self.account.positions:
                     position = self.account.positions[symbol]
