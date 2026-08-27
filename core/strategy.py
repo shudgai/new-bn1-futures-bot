@@ -281,15 +281,19 @@ def build_sl_tp_for_side(
     """依方向計算真正的 SL/TP 價格，並強制保證：
     - LONG: SL < price < TP
     - SHORT: TP < price < SL
-    - TP/SL 毛風報比不低於 MIN_REWARD_RISK_RATIO。
+    - 啟用固定 TP 時，TP 嚴格使用設定百分比；否則維持最低風報比。
     """
     side = str(side).upper()
     if side not in {"LONG", "SHORT"}:
         raise ValueError(f"Unsupported side: {side}")
 
     sl_distance = float(abs(sl_distance or 0.0))
-    tp_distance = float(abs(tp_distance if tp_distance is not None else sl_distance))
-    tp_distance = max(tp_distance, sl_distance * MIN_REWARD_RISK_RATIO)
+    fixed_tp_pct = float(getattr(_core_config, "FIXED_TAKE_PROFIT_PCT", 0.0))
+    tp_distance = (
+        price * fixed_tp_pct if fixed_tp_pct > 0
+        else max(float(abs(tp_distance if tp_distance is not None else sl_distance)),
+                 sl_distance * MIN_REWARD_RISK_RATIO)
+    )
 
     if side == "LONG":
         sl, tp = price - sl_distance, price + tp_distance
@@ -352,7 +356,8 @@ def validate_sl_tp_pair(
         if not (tp < price < sl):
             raise ValueError(f"SHORT SL/TP invalid: price={price}, sl={sl}, tp={tp}")
         gross_rr = abs(price - tp) / max(abs(sl - price), 1e-12)
-    if gross_rr + 1e-12 < MIN_REWARD_RISK_RATIO:
+    fixed_tp_pct = float(getattr(_core_config, "FIXED_TAKE_PROFIT_PCT", 0.0))
+    if fixed_tp_pct <= 0 and gross_rr + 1e-12 < MIN_REWARD_RISK_RATIO:
         raise ValueError(
             f"{side} reward/risk {gross_rr:.3f}:1 below minimum "
             f"{MIN_REWARD_RISK_RATIO:.3f}:1"
@@ -375,6 +380,9 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
         sl_distance = min(sl_distance, price * float(MAX_SL_DISTANCE_PCT))
     except Exception:
         pass
+    fixed_tp_pct = float(getattr(_core_config, "FIXED_TAKE_PROFIT_PCT", 0.0))
+    if fixed_tp_pct > 0:
+        return sl_distance, price * fixed_tp_pct
     configured_tp_distance = base_sl_distance * (
         TAKE_PROFIT_MULTIPLIER / max(STOP_LOSS_MULTIPLIER, 1e-9)
     )
@@ -469,6 +477,16 @@ def detect_ma5_reversal(
     price = float(live_price) if live_price else float(df['close'].iloc[-1])
     atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
     flat_threshold = atr * 0.15
+
+    # MA2 摸底與 KC 突破共用同一組硬性進場品質門檻。
+    adx = float(df["adx"].iloc[-1]) if "adx" in df.columns and not pd.isna(df["adx"].iloc[-1]) else 0.0
+    if adx < ADX_MANDATORY_MIN:
+        return _no(f"MA2 ADX不足({adx:.1f}<{ADX_MANDATORY_MIN:.1f})")
+    volume = float(df["volume"].iloc[-1]) if "volume" in df.columns else 0.0
+    volume_ma = float(df["vol_ma_20"].iloc[-1]) if "vol_ma_20" in df.columns and not pd.isna(df["vol_ma_20"].iloc[-1]) else 0.0
+    volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
+    if volume_ratio < KELTNER_MIN_VOLUME_RATIO:
+        return _no(f"MA2量能不足({volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)")
 
     last_close = float(df['close'].iloc[-1])
     last_open = float(df['open'].iloc[-1])
