@@ -1029,27 +1029,26 @@ class SuperTrendKeltnerStrategy:
 
             # 爆量只代表突破候選，不代表可直接追價。實績顯示「量能 >= 2x
             # 就給 95 分並市價進場」會在短線耗竭點取得最大倉位；所有突破
-            # 統一等待 EMA20 附近回踩，以 Maker 限價單成交。
-            ema20 = float(curr["ema_20"])
+            # 統一等待 EMA30 附近回踩，以 Maker 限價單成交。
+            ema30 = float(curr["ema_20"])
             from core.config import BREAKOUT_PULLBACK_ATR_MULT
             if side == "LONG":
-                pullback_target = ema20 + BREAKOUT_PULLBACK_ATR_MULT * atr
+                pullback_target = ema30 + BREAKOUT_PULLBACK_ATR_MULT * atr
                 pullback_target = min(pullback_target, price * 0.9995)
             else:
-                pullback_target = ema20 - BREAKOUT_PULLBACK_ATR_MULT * atr
+                pullback_target = ema30 - BREAKOUT_PULLBACK_ATR_MULT * atr
                 pullback_target = max(pullback_target, price * 1.0005)
             return {
-                "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT",
-                "score": BREAKOUT_ENTRY_SCORE - btc_score_penalty,
-                "target_price": pullback_target,
-                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜爆量不追價｜等回踩@{pullback_target:.6g}",
+                "action": "ENTER_MARKET", "entry_mode": "BREAKOUT",
+                "score": 100, # Max score for direct market entry
+                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜市價追車突破",
                 "prior_high": prior_high, "prior_low": prior_low, **common,
             }
 
-        ema20 = float(curr["ema_20"])
+        ema30 = float(curr["ema_20"])
         ema60_series = df["close"].ewm(span=60, adjust=False).mean()
         ema60 = float(ema60_series.iloc[-1])
-        supports = [("5m EMA20", ema20), ("5m EMA60", ema60)]
+        supports = [("5m EMA30", ema30), ("5m EMA60", ema60)]
         if ema_50_1h is not None:
             supports.append(("1h EMA50", float(ema_50_1h)))
         support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
@@ -1065,7 +1064,7 @@ class SuperTrendKeltnerStrategy:
             row_price = float(row["close"])
             row_atr = float(row["atr"]) if not pd.isna(row["atr"]) else atr
             row_supports = [
-                ("5m EMA20", float(row["ema_20"])),
+                ("5m EMA30", float(row["ema_20"])),
                 ("5m EMA60", float(ema60_series.iloc[row_pos])),
             ]
             if ema_50_1h is not None:
@@ -1838,12 +1837,12 @@ class SuperTrendKeltnerStrategy:
         )
         adx_declining_exhausted = False  # --- 使用者要求：解除 ADX 限制，不再因為衰退阻擋開倉 ---
 
-        # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
+        # D3. 價格乖離檢查：價格距離 EMA30 太遠（用 ATR 正規化衡量），代表
         # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。
         # 跟 KC 突破（E4/A）是兩件事——KC 突破只要求價格超出通道邊界一點，
         # 這裡抓的是「超出太多」的極端情況。
-        ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
-        price_overextended = ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT
+        ema30_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
+        price_overextended = ema30_distance_atr > EMA_EXTENSION_MAX_ATR_MULT
 
         # E. 品質細分加分（0~12分）：讓同樣達標 70/80 分的訊號能再分出優劣，
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
@@ -1949,11 +1948,11 @@ class SuperTrendKeltnerStrategy:
                 f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}"
             )
 
-        # 額外防線：價格已經乖離 EMA20 太遠（見上面 D3），代表這波已經漲/
+        # 額外防線：價格已經乖離 EMA30 太遠（見上面 D3），代表這波已經漲/
         # 跌很多才追進場，均值回歸風險高，不管總分靠其他項目湊得多高。
         if score >= MIN_SCORE_THRESHOLD and price_overextended:
             return scored_hold(
-                f"Mandatory_Fail: Price_Overextended({ema20_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}"
+                f"Mandatory_Fail: Price_Overextended({ema30_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}"
             )
 
         # 額外防線：大週期（1h）本身的動能也在衰退（見 engine.py
@@ -2083,30 +2082,30 @@ class SuperTrendKeltnerStrategy:
                 "reason": "大週期(1h)動能已在衰退 1h_Trend_Declining",
             }
 
-        # 價格乖離 EMA20 太遠：等回踩的這段時間裡價格可能又衝更遠，均值
+        # 價格乖離 EMA30 太遠：等回踩的這段時間裡價格可能又衝更遠，均值
         # 回歸風險比登記當下更高，一樣取消。
-        ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
-        if ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT:
+        ema30_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
+        if ema30_distance_atr > EMA_EXTENSION_MAX_ATR_MULT:
             return {
                 "status": "CANCEL",
-                "reason": f"價格乖離EMA20過大 Price_Overextended({ema20_distance_atr:.1f}x_ATR)",
+                "reason": f"價格乖離EMA30過大 Price_Overextended({ema30_distance_atr:.1f}x_ATR)",
             }
 
-        # 回踩跌破/突破 EMA20：健康的回調應該只是往 EMA20 靠近，不會真的
-        # 穿越到對面——多單回踩時價格已經跌破 EMA20（或空單回踩時已經站
-        # 上 EMA20），代表這已經不是「回調」，而是價格真的穿越均線在反轉。
-        # 跟上面「乖離過大」是兩個不同方向的風險：那個抓「離 EMA20 太遠」
-        # （不管在哪一側），這個抓「跑到 EMA20 錯的那一側」，兩種情況都
+        # 回踩跌破/突破 EMA30：健康的回調應該只是往 EMA30 靠近，不會真的
+        # 穿越到對面——多單回踩時價格已經跌破 EMA30（或空單回踩時已經站
+        # 上 EMA30），代表這已經不是「回調」，而是價格真的穿越均線在反轉。
+        # 跟上面「乖離過大」是兩個不同方向的風險：那個抓「離 EMA30 太遠」
+        # （不管在哪一側），這個抓「跑到 EMA30 錯的那一側」，兩種情況都
         # 可能發生、必須分開判斷，缺一不可。
         if side == "LONG" and price < ema_20:
             return {
                 "status": "CANCEL",
-                "reason": f"回踩跌破EMA20，疑似真反轉 EMA20_Breached(price={price:.6f}<ema20={ema_20:.6f})",
+                "reason": f"回踩跌破EMA30，疑似真反轉 EMA30_Breached(price={price:.6f}<ema30={ema_20:.6f})",
             }
         if side == "SHORT" and price > ema_20:
             return {
                 "status": "CANCEL",
-                "reason": f"回踩突破EMA20，疑似真反轉 EMA20_Breached(price={price:.6f}>ema20={ema_20:.6f})",
+                "reason": f"回踩突破EMA30，疑似真反轉 EMA30_Breached(price={price:.6f}>ema30={ema_20:.6f})",
             }
 
         # 距離原始突破過了多久：方向沒反轉不代表這個突破還「新鮮」——等回踩
