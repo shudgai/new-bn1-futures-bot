@@ -256,7 +256,11 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
     # 回傳空訊號可讓既有持倉保持原方向。
-    if ma3_curr != ma15_curr and recent_ma3_range <= min_directional_range:
+    if (
+        ma3_curr != ma15_curr
+        and not ((previous_slope < 0 < current_slope) or (previous_slope > 0 > current_slope))
+        and recent_ma3_range <= min_directional_range
+    ):
         return {
             "signal": None, "entry_type": "WAIT_MA_NOISE",
             "reason": "1m MA3 最近3根振幅過小，不開新倉並維持原持倉方向",
