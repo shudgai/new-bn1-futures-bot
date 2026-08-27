@@ -85,6 +85,7 @@ FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0")))
 # 唯一獲利出場：峰值每跨一個階梯，鎖利線維持落後一階。
 ENABLE_FIXED_PROFIT_LOCK_LADDER = os.getenv("ENABLE_FIXED_PROFIT_LOCK_LADDER", "false").lower() == "true"
 FIXED_PROFIT_LOCK_LADDER_STEP_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_STEP_PCT", "0.002")))
+FIXED_PROFIT_LOCK_LADDER_FIRST_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_FIRST_PCT", "0.003")))
 ENABLE_BOUNCE_TARGET_EXIT = os.getenv("ENABLE_BOUNCE_TARGET_EXIT", "true").lower() == "true"
 ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT = os.getenv("ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT", "true").lower() == "true"
 import sys

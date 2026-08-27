@@ -75,6 +75,7 @@ from core.config import (
     RAPID_DROP_COOLDOWN_SEC,
     ENABLE_FIXED_PROFIT_LOCK_LADDER,
     FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
+    FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
     ENABLE_BOUNCE_TARGET_EXIT,
 )
 from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
@@ -712,12 +713,19 @@ class BinanceTestnetAccount:
             if (
                 ENABLE_FIXED_PROFIT_LOCK_LADDER
                 and FIXED_PROFIT_LOCK_LADDER_STEP_PCT > 0
+                and FIXED_PROFIT_LOCK_LADDER_FIRST_PCT > 0
                 and entry_p > 0
             ):
                 completed_steps = math.floor(
-                    (highest_pnl + 1e-12) / FIXED_PROFIT_LOCK_LADDER_STEP_PCT
+                    max(0.0, highest_pnl - FIXED_PROFIT_LOCK_LADDER_FIRST_PCT)
+                    / FIXED_PROFIT_LOCK_LADDER_STEP_PCT + 1e-12
                 )
-                lock_pct = max(0.0, completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT)
+                lock_pct = (
+                    FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
+                    + completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT
+                    if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
+                    else 0.0
+                )
                 if lock_pct > 0:
                     ladder_sl = entry_p * (1.0 + lock_pct if side == "LONG" else 1.0 - lock_pct)
                     current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
