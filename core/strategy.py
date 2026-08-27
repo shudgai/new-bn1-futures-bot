@@ -439,11 +439,11 @@ def detect_ma5_reversal(
     def _no(reason: str) -> dict:
         return {"detected": False, "reason": reason, "side": side, "score": 0}
 
-    if 'ma3' not in df.columns:
-        df['ma3'] = df['close'].rolling(window=3).mean()
-    ma3_series = df['ma3'].dropna()
+    if 'ma2' not in df.columns:
+        df['ma2'] = df['close'].rolling(window=2).mean()
+    ma3_series = df['ma2'].dropna()
     if len(ma3_series) < 5:
-        return _no("MA3資料不足")
+        return _no("MA2資料不足")
 
     ma3_curr = float(ma3_series.iloc[-1])
     ma3_prev = float(ma3_series.iloc[-2])
