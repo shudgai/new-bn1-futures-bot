@@ -73,6 +73,9 @@ from core.config import (
     ENABLE_RAPID_ADVERSE_DROP,
     RAPID_ADVERSE_DROP_PCT,
     RAPID_DROP_COOLDOWN_SEC,
+    ENABLE_FIXED_PROFIT_LOCK_LADDER,
+    FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
+    ENABLE_BOUNCE_TARGET_EXIT,
 )
 from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
 from core.notifier import notify_email
@@ -705,6 +708,31 @@ class BinanceTestnetAccount:
                     meta["bounce_capture_ratio"] = bounce_capture_ratio
                     meta["bounce_target_pct"] = bounce_target_pct
 
+            # 唯一獲利出場：峰值每跨一個 0.2% 階梯，鎖利線同步上移。
+            if (
+                ENABLE_FIXED_PROFIT_LOCK_LADDER
+                and FIXED_PROFIT_LOCK_LADDER_STEP_PCT > 0
+                and entry_p > 0
+            ):
+                completed_steps = math.floor(
+                    (highest_pnl + 1e-12) / FIXED_PROFIT_LOCK_LADDER_STEP_PCT
+                )
+                lock_pct = max(0.0, completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT)
+                if lock_pct > 0:
+                    ladder_sl = entry_p * (1.0 + lock_pct if side == "LONG" else 1.0 - lock_pct)
+                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                    improves = (
+                        ladder_sl > current_sl + entry_p * 1e-12 if side == "LONG"
+                        else current_sl <= 0.0 or ladder_sl < current_sl - entry_p * 1e-12
+                    )
+                    if improves and await self.trail_stop_loss(symbol, ladder_sl, mark_profit_locked=True):
+                        meta["fixed_profit_lock_ladder"] = True
+                        meta["fixed_profit_lock_pct"] = lock_pct
+                        self.log(
+                            f"🔐 [固定階梯鎖利] {symbol} 峰值 {highest_pnl:.2%} → 鎖利 {lock_pct:.2%}",
+                            "SUCCESS",
+                        )
+
             profit_giveback_ratio = (
                 (highest_pnl - pnl_pct) / highest_pnl if highest_pnl > 0 else 0.0
             )
@@ -719,7 +747,8 @@ class BinanceTestnetAccount:
                 continue
 
             if (
-                meta.get("profit_profile") == "BOUNCE"
+                ENABLE_BOUNCE_TARGET_EXIT
+                and meta.get("profit_profile") == "BOUNCE"
                 and bounce_target_pct > 0
                 and pnl_pct + 1e-12 >= bounce_target_pct
             ):

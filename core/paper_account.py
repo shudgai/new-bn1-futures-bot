@@ -75,6 +75,9 @@ from core.config import (
     ENABLE_FIXED_PROFIT_LOCK_PCT,
     FIXED_PROFIT_LOCK_TRIGGER_PCT,
     FIXED_PROFIT_LOCK_FLOOR_PCT,
+    ENABLE_FIXED_PROFIT_LOCK_LADDER,
+    FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
+    ENABLE_BOUNCE_TARGET_EXIT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -1045,6 +1048,34 @@ class PaperAccount:
 
             profit_lock_updated_this_cycle = False
 
+            # 唯一獲利出場：峰值每達一個 0.2%% 階梯，鎖利線同步上移。
+            # 例：峰值 +0.2%% → 鎖 +0.2%%；+0.4%% → 鎖 +0.4%%。
+            if (
+                ENABLE_FIXED_PROFIT_LOCK_LADDER
+                and FIXED_PROFIT_LOCK_LADDER_STEP_PCT > 0
+                and entry_p > 0
+            ):
+                completed_steps = math.floor(
+                    (highest_pnl + 1e-12) / FIXED_PROFIT_LOCK_LADDER_STEP_PCT
+                )
+                lock_pct = max(0.0, completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT)
+                if lock_pct > 0:
+                    ladder_sl = entry_p * (1.0 + lock_pct if side == "LONG" else 1.0 - lock_pct)
+                    improves = (
+                        ladder_sl > current_sl + entry_p * 1e-12 if side == "LONG"
+                        else current_sl <= 0.0 or ladder_sl < current_sl - entry_p * 1e-12
+                    )
+                    if improves:
+                        await self.trail_stop_loss(symbol, ladder_sl, mark_profit_locked=True)
+                        current_sl = ladder_sl
+                        profit_lock_updated_this_cycle = True
+                        meta["fixed_profit_lock_ladder"] = True
+                        meta["fixed_profit_lock_pct"] = lock_pct
+                        self.log(
+                            f"🔐 [固定階梯鎖利] {symbol} 峰值 {highest_pnl:.2%} → 鎖利 {lock_pct:.2%}",
+                            "SUCCESS",
+                        )
+
             # 階梯式移動停利：首次至少鎖 0.25%，之後隨峰值持續上移，
             # 但保留部分回檔空間讓趨勢延伸。保護線永遠不會往回放寬。
             # 啟用 U 額回吐時，以它作為唯一移動鎖利，避免百分比保護線提前收緊。
@@ -1212,7 +1243,8 @@ class PaperAccount:
                     meta["bounce_capture_ratio"] = bounce_capture_ratio
                     meta["bounce_target_pct"] = bounce_target_pct
             if (
-                meta.get("profit_profile") == "BOUNCE"
+                ENABLE_BOUNCE_TARGET_EXIT
+                and meta.get("profit_profile") == "BOUNCE"
                 and bounce_target_pct > 0
                 and pnl_pct + 1e-12 >= bounce_target_pct
             ):
@@ -1430,7 +1462,7 @@ class PaperAccount:
             sl_price = pos.get("sl", 0.0)
             tp_price = pos.get("tp", 0.0)
             if side == "LONG":
-                if tp_price > 0 and curr_p >= tp_price and not ENABLE_PROFIT_LOCK_USDT:
+                if tp_price > 0 and curr_p >= tp_price and not DISABLE_TAKE_PROFIT and not ENABLE_PROFIT_LOCK_USDT:
                     await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
                     continue
                 peak_lock_armed = bool(meta.get("profit_lock_usdt_armed"))
@@ -1452,7 +1484,7 @@ class PaperAccount:
                         )
                         continue
             else:
-                if tp_price > 0 and curr_p <= tp_price and not ENABLE_PROFIT_LOCK_USDT:
+                if tp_price > 0 and curr_p <= tp_price and not DISABLE_TAKE_PROFIT and not ENABLE_PROFIT_LOCK_USDT:
                     await self.close_position(symbol, curr_p, "觸發止盈 (Take-Profit)")
                     continue
                 peak_lock_armed = bool(meta.get("profit_lock_usdt_armed"))

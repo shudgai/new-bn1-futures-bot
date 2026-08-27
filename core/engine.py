@@ -7,7 +7,7 @@ import pandas as pd
 import weakref
 from typing import Dict, List
 from core.config import (
-    DEFAULT_SYMBOLS, MAX_SLOTS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
+    DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
     PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
     PULLBACK_RETRY_COOLDOWN_SEC, get_pullback_target_depth,
@@ -32,10 +32,10 @@ from core.config import (
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
     BREAKOUT_HARD_STOP_ATR_MULT, BREAKOUT_CANDLE_STOP_BUFFER_ATR,
     BREAKOUT_TRAILING_ATR_MULT, BREAKOUT_RR1_TARGET, BREAKOUT_RR2_TARGET,
-    BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC,
+    BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC, ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT,
     BREAKOUT_KC_FAIL_CONFIRM_BARS, STOP_LOSS_MULTIPLIER,
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
-    CONTINUOUS_REENTRY_COOLDOWN_SEC,
+    CONTINUOUS_REENTRY_COOLDOWN_SEC, MA5_STOP_LOSS_COOLDOWN_SEC,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
@@ -1140,7 +1140,7 @@ class TradingEngine:
                             highest_pnl = pnl_pct
                             
                         if not is_mega_trend:
-                            if highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
+                            if config.ENABLE_TRAILING_STOP and highest_pnl >= config.TRAILING_STOP_ACTIVATION_PCT:
                                 if pnl_pct <= highest_pnl * config.TRAILING_STOP_RETAIN_PCT:
                                     self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落至 +{pnl_pct*100:.2f}%，執行自動平倉", "SUCCESS")
                                     await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
@@ -1751,7 +1751,7 @@ class TradingEngine:
                 else entry_price - current_price
             )
             rr = favorable_move / initial_risk
-            if rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
+            if ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT and rr >= BREAKOUT_RR1_TARGET and not meta.get("rr_1_5_done"):
                 if await self.account.partial_close_position(
                     symbol, current_price, f"達 {BREAKOUT_RR1_TARGET:.1f}R，分批止盈",
                     fraction=BREAKOUT_RR_CLOSE_FRACTION,
@@ -1760,7 +1760,7 @@ class TradingEngine:
                     meta["rr_1_5_done"] = True
                     self.account.save_state()
                     return
-            if rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
+            if ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT and rr >= BREAKOUT_RR2_TARGET and not meta.get("rr_2_5_done"):
                 if await self.account.partial_close_position(
                     symbol, current_price, f"達 {BREAKOUT_RR2_TARGET:.1f}R，分批止盈",
                     fraction=BREAKOUT_RR_CLOSE_FRACTION,
@@ -2435,6 +2435,41 @@ class TradingEngine:
 
         return True
 
+    def _same_side_entry_allowed(self, symbol: str, side: str) -> bool:
+        """Prevent correlated entries from filling every slot in one direction."""
+        if MAX_SAME_SIDE_POSITIONS <= 0:
+            return True
+        requested_side = str(side or "").upper()
+        committed = list(self.account.positions.items()) + list(self.account.pending_limit_orders.items())
+        same_side_count = sum(
+            1 for _symbol, order in committed
+            if str((order or {}).get("side") or "").upper() == requested_side
+        )
+        if same_side_count >= MAX_SAME_SIDE_POSITIONS:
+            self.account.log(
+                f"🛑 {symbol} 拒絕開倉：{requested_side} 已有 {same_side_count} 筆持倉／掛單，"
+                f"同向上限為 {MAX_SAME_SIDE_POSITIONS}",
+                "WARNING",
+            )
+            return False
+        return True
+
+    def _ma5_stop_cooldown_remaining(self, symbol: str, side: str, now: float) -> float:
+        """Return remaining cooldown after the latest MA2/MA5 same-side hard stop."""
+        if MA5_STOP_LOSS_COOLDOWN_SEC <= 0:
+            return 0.0
+        for trade in reversed(self.account.trades):
+            if trade.get("symbol") != symbol or str(trade.get("side") or "").upper() != str(side or "").upper():
+                continue
+            if not str(trade.get("action") or "").startswith("CLOSE"):
+                continue
+            reason = str(trade.get("reason") or "")
+            if "Stop-Loss" not in reason and not ("止損" in reason and "移動" not in reason):
+                return 0.0
+            closed_at = float(trade.get("timestamp") or 0.0)
+            return max(0.0, MA5_STOP_LOSS_COOLDOWN_SEC - max(0.0, now - closed_at))
+        return 0.0
+
     async def _place_structured_entry(
         self, symbol: str, signal: dict, live_price: float
     ) -> bool:
@@ -2444,6 +2479,8 @@ class TradingEngine:
             return False
         score = int(signal.get("score") or 0)
         side = signal["side"]
+        if not self._same_side_entry_allowed(symbol, side):
+            return False
         stop_cooldown_fn = getattr(
             self.symbol_rotation, "get_stop_cooldown_remaining", lambda *_args: 0.0
         )
@@ -2606,6 +2643,16 @@ class TradingEngine:
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
             return False
         score = int(ma5_sig.get("score") or 0)
+        if not self._same_side_entry_allowed(symbol, side):
+            return False
+        ma5_stop_cooldown = self._ma5_stop_cooldown_remaining(symbol, side, now)
+        if ma5_stop_cooldown > 0:
+            self.account.log(
+                f"🛑 {symbol} {side} MA2 硬停損後冷卻尚餘 "
+                f"{ma5_stop_cooldown / 60.0:.0f} 分鐘，拒絕重開",
+                "WARNING",
+            )
+            return False
         if score < MIN_SCORE_THRESHOLD:
             self.account.log(
                 f"🛑 {symbol} MA5訊號 {score}分低於 {MIN_SCORE_THRESHOLD} 分，拒絕開倉",
@@ -2659,14 +2706,18 @@ class TradingEngine:
             except Exception:
                 pass
 
+        if not self._entry_direction_allowed(symbol, side, target_price):
+            return False
+
         atr = max(float(ma5_sig.get("atr") or 0.0), target_price * 1e-6)
         sl_distance, tp_distance = compute_sl_tp_distance(target_price, atr)
 
         # 結構性止損與風險界限保護
         structural_sl = ma5_sig.get("structural_sl")
         if ma5_sig.get("entry_mode") == "MA5_CROSS_PIVOT":
-            sl = None
-            tp = None
+            # MA2 拐點沒有固定 TP，獲利交由 0.2% 階梯鎖利；仍必須建立有效 ATR 止損。
+            sl = target_price - sl_distance if side == "LONG" else target_price + sl_distance
+            tp = 0.0
         elif structural_sl is not None:
             if side == "LONG":
                 # 限制止損距離：最小不能低於 MIN_SL_DISTANCE_PCT，最大不能超過 2.0 * ATR
@@ -2677,7 +2728,11 @@ class TradingEngine:
                 # 確保 TP 滿足最少盈虧比 (MIN_NET_REWARD_RISK)
                 tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
                 # 不讓停損大於停利：TP 距離至少要 >= SL 距離
-                tp_dist_final = max(tp_distance, tp_dist_needed, sl_dist)
+                tp_dist_final = (
+                    target_price * config.FIXED_TAKE_PROFIT_PCT
+                    if config.FIXED_TAKE_PROFIT_PCT > 0
+                    else max(tp_distance, tp_dist_needed, sl_dist)
+                )
                 tp = target_price + tp_dist_final
             else:
                 min_sl = target_price + (target_price * MIN_SL_DISTANCE_PCT)
@@ -2686,7 +2741,11 @@ class TradingEngine:
                 sl_dist = sl - target_price
                 tp_dist_needed = sl_dist * MIN_NET_REWARD_RISK
                 # 不讓停損大於停利：TP 距離至少要 >= SL 距離
-                tp_dist_final = max(tp_distance, tp_dist_needed, sl_dist)
+                tp_dist_final = (
+                    target_price * config.FIXED_TAKE_PROFIT_PCT
+                    if config.FIXED_TAKE_PROFIT_PCT > 0
+                    else max(tp_distance, tp_dist_needed, sl_dist)
+                )
                 tp = target_price - tp_dist_final
         else:
             sl, tp = build_sl_tp_for_side(target_price, side, sl_distance, tp_distance)
@@ -2713,7 +2772,10 @@ class TradingEngine:
             signal_score=score,
             post_only=is_bottom_order,
             entry_context={
-                "entry_mode": "MA5_BOTTOM_LIMIT" if is_bottom_order else "MA5_REVERSAL",
+                "entry_mode": (
+                    "MA5_CROSS_PIVOT" if ma5_sig.get("entry_mode") == "MA5_CROSS_PIVOT"
+                    else "MA5_BOTTOM_LIMIT" if is_bottom_order else "MA5_REVERSAL"
+                ),
                 "btc_regime_at_entry": ma5_sig.get("btc_regime_mode", "UNKNOWN"),
                 "ma5_curr": ma5_sig.get("ma5_curr"),
                 "ma5_prev": ma5_sig.get("ma5_prev"),

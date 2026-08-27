@@ -2062,7 +2062,7 @@ def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
 
 
 def test_long_and_short_sl_tp_follow_side_specific_price_order():
-    """買多：SL 低於價格、TP 高於價格；賣空：SL 高於價格、TP 低於價格；且 TP 距離必須不小於 SL 距離。"""
+    """多空保護價方向正確；固定 TP 時，TP 距離嚴格等於設定百分比。"""
     price = 100.0
     atr = 2.0
     sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
@@ -2072,8 +2072,13 @@ def test_long_and_short_sl_tp_follow_side_specific_price_order():
 
     assert long_sl < price < long_tp
     assert short_tp < price < short_sl
-    assert abs(long_tp - price) >= abs(long_sl - price)
-    assert abs(short_tp - price) >= abs(short_sl - price)
+    fixed_tp_pct = strategy_module._core_config.FIXED_TAKE_PROFIT_PCT
+    if fixed_tp_pct > 0:
+        assert abs(long_tp - price) == pytest.approx(price * fixed_tp_pct)
+        assert abs(price - short_tp) == pytest.approx(price * fixed_tp_pct)
+    else:
+        assert abs(long_tp - price) >= abs(long_sl - price)
+        assert abs(short_tp - price) >= abs(short_sl - price)
 
 
 def test_validate_sl_tp_pair_rejects_invalid_side_specific_order():
@@ -2087,6 +2092,14 @@ def test_validate_sl_tp_pair_rejects_invalid_side_specific_order():
 
 
 def test_initial_sl_tp_enforces_configured_reward_risk_floor():
+    fixed_tp_pct = strategy_module._core_config.FIXED_TAKE_PROFIT_PCT
+    if fixed_tp_pct > 0:
+        long_sl, long_tp = build_sl_tp_for_side(100.0, "LONG", 10.0, 5.0)
+        short_sl, short_tp = build_sl_tp_for_side(100.0, "SHORT", 10.0, 5.0)
+        assert long_tp == pytest.approx(100.0 * (1.0 + fixed_tp_pct))
+        assert short_tp == pytest.approx(100.0 * (1.0 - fixed_tp_pct))
+        return
+
     with pytest.raises(ValueError, match="below minimum"):
         validate_sl_tp_pair(100.0, "LONG", 95.0, 106.0)
     with pytest.raises(ValueError, match="below minimum"):

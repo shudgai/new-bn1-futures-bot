@@ -59,6 +59,9 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
+# 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
+# 大盤行情中全部同向進場，反轉時同時承受損失。
+MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "0")))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
@@ -282,6 +285,11 @@ CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
 # 1 分鐘策略平倉後只冷靜一根完整 K，避免秒進秒出但保留趨勢續段。
 CONTINUOUS_REENTRY_COOLDOWN_SEC = max(
     0.0, float(os.getenv("CONTINUOUS_REENTRY_COOLDOWN_SEC", "60"))
+)
+# MA2/MA5 拐點策略於同幣、同方向硬停損後的冷卻時間；避免劇烈行情中
+# 立刻重新接刀／摸頂。設為 0 可關閉。
+MA5_STOP_LOSS_COOLDOWN_SEC = max(
+    0.0, float(os.getenv("MA5_STOP_LOSS_COOLDOWN_SEC", "0"))
 )
 
 def get_bounce_capture_ratio(score: int) -> float:
