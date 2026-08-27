@@ -165,6 +165,21 @@ MA5_FAST_ENTRY_ENABLED = os.getenv("MA5_FAST_ENTRY_ENABLED", "true").lower() == 
 MA5_FAST_MIN_ATR_MULT = float(os.getenv("MA5_FAST_MIN_ATR_MULT", "0.02"))
 MA5_FAST_MAX_ATR_MULT = float(os.getenv("MA5_FAST_MAX_ATR_MULT", "0.20"))
 MA5_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA5_FAST_MIN_VOLUME_RATIO", "1.5"))
+
+# 連續峰谷模式的即時反手：只適用於正在形成中的 1m 大實體 K 突破
+# MA3，避免一般小轉折在未收線時被過早反手。
+RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED = os.getenv(
+    "RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED", "true"
+).lower() == "true"
+RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
+    0.0, float(os.getenv("RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR", "0.50"))
+)
+
+# 連續峰谷模式的空倉市價進場，最大允許離 MA3 的順向距離；超過代表
+# 已在大 K 尾端，等待回踩而非追價。持倉中的急速反手不受此限制。
+MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(
+    0.0, float(os.getenv("MA3_MARKET_ENTRY_MAX_DISTANCE_ATR", "0.30"))
+)
 # 低波動時 MA5 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
 MA5_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA5_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
@@ -284,7 +299,7 @@ MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS = {
 }
 
 
-def get_maker_limit_offset_pct(price: float, atr: float, timeframe: str = "5m") -> float:
+def get_maker_limit_offset_pct(price: float, atr: float, timeframe: str = "3m") -> float:
     if price <= 0:
         return MAKER_LIMIT_ORDER_MIN_OFFSET_PCT
     factor = MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS.get(str(timeframe).lower(), MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS["5m"])
@@ -423,7 +438,7 @@ BTC_REGIME_ALLOCATION_FACTOR = min(
 # 曾經允許高分訊號繞過此過濾（SYMBOL_1H_ST_FILTER_BYPASS_SCORE），但實測
 # 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
 # 順著1H大方向。為了改善「一進場就吃虧損」的問題，已重新啟用此大週期過濾。
-SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "true").lower() == "true"
+SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "false").lower() == "true"
 # ENABLE_MACD_DIVERGENCE_FILTER：是否啟用 MACD 背離擋單
 ENABLE_MACD_DIVERGENCE_FILTER = os.getenv("ENABLE_MACD_DIVERGENCE_FILTER", "false").lower() == "true"
 # ENABLE_1H_EMA50_FILTER：是否啟用 1h EMA50 大週期趨勢過濾
@@ -952,7 +967,8 @@ USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
 
 # --- 每日虧損熔斷 ---
 # 當日已實現虧損達帳戶餘額（今日起始值）的此比例時，暫停開新倉；
-# 既有持倉的止損/止利仍正常運作，不受影響。隔天（台北時區）自動重置。
+# 既有持倉的止損/止利仍正常運作，不受影響。設為 0 或負數可停用，供測試使用。
+# 隔天（台北時區）自動重置。
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0"))
 
 # --- Email 警報 ---

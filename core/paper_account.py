@@ -363,7 +363,8 @@ class PaperAccount:
             return False, 0.0
         daily_pnl = self.realized_pnl - self.daily_start_realized_pnl
         loss_pct = max(0.0, -daily_pnl / self.daily_start_balance * 100.0)
-        hit = loss_pct >= MAX_DAILY_LOSS_PCT
+        # 0 或負數代表測試時明確停用每日熔斷。
+        hit = MAX_DAILY_LOSS_PCT > 0 and loss_pct >= MAX_DAILY_LOSS_PCT
         if hit and not self.daily_halt_logged:
             self.daily_halt_logged = True
             self.log(
@@ -557,7 +558,7 @@ class PaperAccount:
         signal_score: int = None,
         post_only: bool = True,
         entry_context: dict = None,
-        timeframe: str = "5m",
+        timeframe: str = "3m",
     ) -> bool:
         """非Post-Only對手價單立即成交；Post-Only保留至市價穿越掛單價。"""
         if not post_only:

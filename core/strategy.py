@@ -1476,15 +1476,55 @@ class SuperTrendKeltnerStrategy:
                 "action": "HOLD", "reason": "Not enough data",
                 "eligible": False, "score_stage": "ELIGIBILITY",
             }
+        if not indicators_precomputed:
+            df = self.compute_indicators(df)
 
-        live_price = float(df['close'].iloc[-1])
+        curr = df.iloc[-1]
+
+        live_price = float(curr['close'])
         sig = detect_simple_ma5_signal(df, live_price=live_price)
         
         if sig.get("detected"):
+            side = sig["side"]
+            rsi = float(curr.get("rsi", 50.0))
+            volume_ratio = float(curr.get("volume", 0) / curr.get("vol_ma_20", 1)) if curr.get("vol_ma_20") else 1.0
+
+            is_valid_kc = False
+            if side == "LONG":
+                is_valid_kc = bool((df['low'].iloc[-3:] <= df['kc_lower'].iloc[-3:]).any())
+                rsi_valid = rsi < 40.0
+            else:
+                is_valid_kc = bool((df['high'].iloc[-3:] >= df['kc_upper'].iloc[-3:]).any())
+                rsi_valid = rsi > 60.0
+                
+            vol_valid = volume_ratio > 1.5
+            
+            if not is_valid_kc:
+                return {
+                    "action": "HOLD",
+                    "reason": "MA3 出現轉折，但並未觸及 KC 通道極端值，避免盤整假突破",
+                    "eligible": False,
+                    "score_stage": "ELIGIBILITY",
+                }
+            if not rsi_valid:
+                return {
+                    "action": "HOLD",
+                    "reason": f"拒絕進場：雖然觸及KC，但 RSI ({rsi:.1f}) 未達極度恐慌/狂熱標準 (A濾網不通過)",
+                    "eligible": False,
+                    "score_stage": "ELIGIBILITY",
+                }
+            if not vol_valid:
+                return {
+                    "action": "HOLD",
+                    "reason": f"拒絕進場：雖然觸及KC且RSI達標，但成交量 ({volume_ratio:.1f}x) 未達 1.5 倍爆量標準 (B濾網不通過)",
+                    "eligible": False,
+                    "score_stage": "ELIGIBILITY",
+                }
+
             return {
                 "action": "ENTER_MARKET",
-                "side": sig["side"],
-                "reason": sig["reason"],
+                "side": side,
+                "reason": sig["reason"] + " (觸及KC邊界 + RSI過濾 + 爆量過濾)",
                 "price": sig["price"],
                 "score": 100,
                 "eligible": True,
@@ -1494,25 +1534,14 @@ class SuperTrendKeltnerStrategy:
                 "fast_entry": True,
                 "diagnostics": {
                     "price": sig["price"],
-                    "atr": sig.get("atr", 0.0),
-                    "atr_pct": 0.0,
-                    "rsi": 50.0,
-                    "adx": 0.0,
-                    "volume_ratio": 1.0,
+                    "atr": float(curr.get("atr", 0.0)),
+                    "atr_pct": float(curr.get("atr", 0.0) / curr['close']) if curr['close'] > 0 else 0.0,
+                    "rsi": rsi,
+                    "adx": float(curr.get("adx", 0.0)) if not pd.isna(curr.get("adx")) else 0.0,
+                    "volume_ratio": volume_ratio,
                     "candle_pattern": "None",
                 }
             }
-        
-        return {
-            "action": "HOLD",
-            "reason": "MA3 尚未出現可確認的尖端、小梯形或大V括弧進場訊號",
-            "eligible": False,
-            "score_stage": "ELIGIBILITY",
-        }
-
-        if not indicators_precomputed:
-            df = self.compute_indicators(df)
-        curr = df.iloc[-1]
         prev = df.iloc[-2] if len(df) >= 2 else None
 
         from core.indicators import analyze_candle_pattern

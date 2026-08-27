@@ -3,7 +3,7 @@ import time
 import pandas as pd
 import numpy as np
 
-TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
+TIMEFRAME_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
 def get_dynamic_adx_floor(df: pd.DataFrame, direction: int) -> tuple[float, bool]:
     """Return the ADX floor and whether price is in a strong directional trend."""
@@ -248,13 +248,64 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     ma_alignment = "ABOVE" if ma3_curr > ma15_curr else "BELOW" if ma3_curr < ma15_curr else "EQUAL"
 
     atr_raw = float(df['atr'].iloc[-1]) if 'atr' in df.columns else float("nan")
-    atr = atr_raw if pd.notna(atr_raw) and atr_raw > 0 else float(df['close'].iloc[-1]) * 0.015
+    if pd.notna(atr_raw) and atr_raw > 0:
+        atr = atr_raw
+    else:
+        # 連續模式直接取得交易所原始 1m K 線，尚未預先加上 atr 欄位。
+        # 以實際 True Range 算 ATR，不能用價格的固定百分比代替，否則
+        # MA3 斜率與「離 MA3 多遠」的門檻會和當前波動完全失真。
+        previous_close = df['close'].shift(1)
+        true_range = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - previous_close).abs(),
+            (df['low'] - previous_close).abs(),
+        ], axis=1).max(axis=1)
+        calculated_atr = float(true_range.rolling(14, min_periods=5).mean().iloc[-1])
+        atr = calculated_atr if pd.notna(calculated_atr) and calculated_atr > 0 else float(df['close'].iloc[-1]) * 0.015
     # 放寬趨勢延續的最小變動門檻：仍要求 MA3 確實轉折／分離，
     # 但不因正常的小幅回踩就錯過已展開的趨勢。
     min_pivot_slope = max(abs(atr) * 0.03, abs(ma3_prev) * 0.00006)
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
     min_directional_range = max(abs(atr) * 0.10, abs(ma3_curr) * 0.00025)
     fast_pivot_slope = max(abs(atr) * 0.02, abs(ma3_prev) * 0.00004)
+
+    # Two same-direction, above-average candles can confirm a fast peak/trough
+    # before MA15 has time to cross.  Both candles must carry volume, so a
+    # single thin wick cannot trigger a reversal entry.
+    previous_candle = df.iloc[-2]
+    current_candle = df.iloc[-1]
+    volume_baseline = float(df["volume"].iloc[-12:-2].mean()) if "volume" in df.columns else 0.0
+    previous_volume = float(previous_candle.get("volume", 0) or 0)
+    current_volume = float(current_candle.get("volume", 0) or 0)
+    two_candle_volume_confirmed = volume_baseline > 0 and min(previous_volume, current_volume) >= volume_baseline * 1.20
+    two_red_peak = bool(
+        ma3_prev >= ma3_prev2 and current_slope <= -fast_pivot_slope
+        and float(previous_candle["close"]) < float(previous_candle["open"])
+        and float(current_candle["close"]) < float(current_candle["open"])
+        and two_candle_volume_confirmed
+    )
+    two_green_trough = bool(
+        ma3_prev <= ma3_prev2 and current_slope >= fast_pivot_slope
+        and float(previous_candle["close"]) > float(previous_candle["open"])
+        and float(current_candle["close"]) > float(current_candle["open"])
+        and two_candle_volume_confirmed
+    )
+    if two_red_peak:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m 兩根放量紅K確認峰頂向下 → 立即開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
+            "ma_alignment": ma_alignment,
+        }
+    if two_green_trough:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m 兩根放量綠K確認谷底向上 → 立即開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
+            "ma_alignment": ma_alignment,
+        }
 
     # Allow a stair-step plateau at a top or bottom to enter while flat.
     step_trough = bool(
@@ -588,4 +639,3 @@ def analyze_candle_pattern(candle: pd.Series) -> dict:
         "pattern_name": pattern_name,
         "body_ratio": body_ratio,
     }
-

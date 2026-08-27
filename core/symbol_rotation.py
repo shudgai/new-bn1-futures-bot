@@ -337,10 +337,10 @@ class SymbolRotation:
             if symbol in ENTRY_DISABLED_SYMBOLS:
                 continue
             try:
-                raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="5m", limit=100)
+                raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="3m", limit=100)
                 raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=200)
                 columns = ["timestamp", "open", "high", "low", "close", "volume"]
-                df = drop_unclosed_candle(pd.DataFrame(raw_5m, columns=columns), "5m")
+                df = drop_unclosed_candle(pd.DataFrame(raw_5m, columns=columns), "3m")
                 df_1h = drop_unclosed_candle(pd.DataFrame(raw_1h, columns=columns), "1h")
                 if len(df) < 50 or len(df_1h) < 30:
                     continue

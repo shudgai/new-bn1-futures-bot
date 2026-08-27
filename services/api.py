@@ -15,6 +15,7 @@ from core.config import (
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
+from services.ma3_pivot_analysis import analyze_ma3_pivots
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -190,6 +191,32 @@ async def get_prices(response: Response):
 async def get_quant_analysis():
     """唯讀量化報表：比較目前進場方式的實際淨績效。"""
     return TradeHistoryAnalyzer.build_quant_report(engine.account.trades)
+
+
+@app.get("/api/ma3-pivot-analysis")
+async def get_ma3_pivot_analysis(
+    symbol: str, timeframe: str = "1m", limit: int = 1000,
+    horizon_bars: int = 5, target_atr: float = 0.30, stop_atr: float = 0.25,
+):
+    """分析 MA3 V/倒V 的尖銳度，不影響任何下單決策。"""
+    if timeframe not in {"1m", "5m", "15m", "1h"}:
+        raise HTTPException(status_code=400, detail="timeframe 僅支援 1m、5m、15m、1h")
+    if not 50 <= limit <= 1500:
+        raise HTTPException(status_code=400, detail="limit 必須介於 50 到 1500")
+    try:
+        frame = await engine.fetch_klines(symbol.strip(), timeframe=timeframe, limit=limit)
+        if frame.empty:
+            raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
+        return {
+            "symbol": symbol.strip(), "timeframe": timeframe,
+            **analyze_ma3_pivots(frame, horizon_bars, target_atr, stop_atr),
+        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 

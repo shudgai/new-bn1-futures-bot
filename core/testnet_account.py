@@ -285,7 +285,8 @@ class BinanceTestnetAccount:
             return False, 0.0
         daily_pnl = self.realized_pnl - self.daily_start_realized_pnl
         loss_pct = max(0.0, -daily_pnl / self.daily_start_balance * 100.0)
-        hit = loss_pct >= MAX_DAILY_LOSS_PCT
+        # 0 或負數代表測試時明確停用每日熔斷。
+        hit = MAX_DAILY_LOSS_PCT > 0 and loss_pct >= MAX_DAILY_LOSS_PCT
         if hit and not self.daily_halt_logged:
             self.daily_halt_logged = True
             self.log(
@@ -1676,7 +1677,7 @@ class BinanceTestnetAccount:
         signal_score: int = None,
         post_only: bool = True,
         entry_context: dict = None,
-        timeframe: str = "5m",
+        timeframe: str = "3m",
     ) -> bool:
         """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
         post_only=False 代表要求立即成交，改走 open_position() 市價單，不建立
