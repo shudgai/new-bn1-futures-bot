@@ -415,7 +415,7 @@ MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.0020"))
 MAX_SL_DISTANCE_PCT = float(os.getenv("MAX_SL_DISTANCE_PCT", "0.05"))
 # SL_ONLY_AFTER_PEAK_PCT：本地止損僅在部位曾達到此峰值比例後才允許平倉（小數，0.01=1%）。
 # 預設 0 表示不啟用此行為，維持相容性。
-SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.0"))
+SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.002"))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
