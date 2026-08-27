@@ -3127,7 +3127,8 @@ class TradingEngine:
                         require_true_breakout = False
                         recent_trades = [t for t in self.account.trades if t.get("symbol") == symbol]
                         if recent_trades:
-                            last_trade = recent_trades[-1]
+                            # Newest trades record is at index 0; use the just-closed trade.
+                            last_trade = recent_trades[0]
                             if last_trade.get("action", "").startswith("CLOSE_") and last_trade.get("side") == cr_signal:
                                 pnl = float(last_trade.get("pnl") or 0.0)
                                 reason = last_trade.get("reason", "")
@@ -3207,34 +3208,24 @@ class TradingEngine:
                     # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
                     if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
                         should_open = False
-                        pivot_confirms_trend = (
-                            (cr_signal == "LONG" and cr_info.get("ma_alignment") == "ABOVE")
-                            or (cr_signal == "SHORT" and cr_info.get("ma_alignment") == "BELOW")
-                        )
                         if not has_pos:
                             should_open = True
                             self.account.log(
-                                f"✅ {symbol} 已確認 {cr_entry_type}，空倉預掛 {cr_signal}",
+                                f"✅ {symbol} confirmed {cr_entry_type}; market-enter {cr_signal}",
                                 "INFO",
                             )
                         elif curr_side != cr_signal:
-                            if not pivot_confirms_trend:
-                                self.account.log(
-                                    f"🛡️ {symbol} {cr_entry_type} 與 MA3/MA15 主趨勢未對齊，視為假峰谷，維持 {curr_side}",
-                                    "INFO",
-                                )
-                            else:
-                                self.account.log(
-                                    f"🛡️ {symbol} 偵測到已對齊趨勢的 {cr_entry_type}，先平掉 {curr_side}；"
-                                    "不在同一輪反向開倉",
-                                    "WARNING",
-                                )
-                                await self.account.close_position(
-                                    symbol=symbol,
-                                    current_price=live_price,
-                                    close_reason=f"反向峰谷保護性離場 ({cr_entry_type})",
-                                    is_manual=True,
-                                )
+                            self.account.log(
+                                f"{symbol} confirmed {cr_entry_type}: close {curr_side}, immediately market-reverse {cr_signal}",
+                                "WARNING",
+                            )
+                            closed = await self.account.close_position(
+                                symbol=symbol,
+                                current_price=live_price,
+                                close_reason=f"confirmed pivot reversal ({cr_entry_type})",
+                                is_manual=True,
+                            )
+                            should_open = bool(closed)
 
                         if should_open:
                             post_close_available = self.account.get_available_balance()
