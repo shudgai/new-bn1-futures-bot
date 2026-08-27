@@ -377,6 +377,25 @@ async def test_paper_account_open_close(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_paper_account_repeated_close_creates_one_trade(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "repeat_close.json"))
+    account = PaperAccount()
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 50000.0, 50.0, 49000.0, 52000.0,
+        "Test Entry", leverage=2, apply_slippage=False,
+    )
+
+    first, second = await asyncio.gather(
+        account.close_position("BTC/USDT", 50000.0, "auto exit"),
+        account.close_position("BTC/USDT", 50000.0, "manual exit", is_manual=True),
+    )
+
+    assert sorted((first, second)) == [False, True]
+    assert "BTC/USDT" not in account.positions
+    assert len([trade for trade in account.trades if trade["symbol"] == "BTC/USDT" and trade["status"] == "CLOSED"]) == 1
+
+
+@pytest.mark.anyio
 async def test_paper_partial_close_refunds_margin_and_pnl(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "test_account.json"))
     account = PaperAccount()

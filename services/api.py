@@ -328,13 +328,26 @@ async def export_trades(date: str = None):
 @app.post("/api/manual_close")
 async def manual_close(req: ManualCloseRequest):
     symbol = req.symbol.strip()
-    if symbol not in engine.account.positions:
-        raise HTTPException(status_code=400, detail="查無此持倉")
-    price = engine.tickers.get(symbol, engine.account.positions[symbol]["entry_price"])
-    success = await engine.account.close_position(symbol, price, "手動平倉", is_manual=True)
-    if not success:
-        raise HTTPException(status_code=502, detail="Binance Testnet 平倉失敗")
-    return {"status": "success", "message": f"手動平倉 {symbol}"}
+    if not symbol:
+        raise HTTPException(status_code=422, detail="缺少幣種")
+
+    # Closing is idempotent: a repeated click or an auto-exit racing this
+    # request must never submit a second reduce-only order or look like a
+    # server failure to the UI.
+    account = engine.account
+    if symbol in account.closing_lock:
+        return {"status": "closing", "message": f"{symbol} 平倉處理中"}
+    position = account.positions.get(symbol)
+    if position is None:
+        return {"status": "already_closed", "message": f"{symbol} 已平倉"}
+
+    price = engine.tickers.get(symbol, position["entry_price"])
+    success = await account.close_position(symbol, price, "手動平倉", is_manual=True)
+    if success:
+        return {"status": "success", "message": f"手動平倉 {symbol}"}
+    if symbol in account.closing_lock or symbol not in account.positions:
+        return {"status": "closing", "message": f"{symbol} 平倉處理中"}
+    raise HTTPException(status_code=502, detail="平倉委託失敗，請稍後再試")
 
 
 @app.post("/api/reset_account")

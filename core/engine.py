@@ -20,6 +20,7 @@ from core.config import (
     ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
     STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
     MA5_EXIT_MIN_HOLD_SEC, MA5_EXIT_MIN_ADVERSE_PCT, MA5_EXIT_MIN_ADVERSE_ATR_MULT, MA5_EXIT_TIMEFRAME,
+    SL_ONLY_AFTER_PEAK_PCT,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP, DISABLE_STOP_LOSS,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA5_EARLY_CONFIRM_SCANS,
@@ -1216,6 +1217,52 @@ class TradingEngine:
                     from core.indicators import detect_ma5_ma25_cross_and_turn
                     # 使用已收盤的資料進行平倉確認
                     df_closed = drop_unclosed_candle(df, exit_tf)
+                    # A sharp adverse live candle is an emergency exit: it must have a
+                    # meaningful body and cross MA3, so ordinary pullbacks are ignored.
+                    rapid_adverse_exit = False
+                    if (
+                        RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED
+                        and not df.empty
+                        and len(df) >= 3
+                    ):
+                        adverse_live = df.iloc[-1]
+                        adverse_open = float(adverse_live.get("open", adverse_live["close"]))
+                        adverse_close = float(adverse_live["close"])
+                        adverse_ma3 = float(
+                            df["ma3"].iloc[-1]
+                            if "ma3" in df.columns
+                            else df["close"].rolling(3).mean().iloc[-1]
+                        )
+                        adverse_atr = max(
+                            float(trigger.get("atr") or 0.0), adverse_close * 1e-12
+                        )
+                        adverse_body = abs(adverse_close - adverse_open)
+                        rapid_adverse_exit = bool(
+                            adverse_body >= adverse_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+                            and (
+                                (position.get("side") == "LONG"
+                                 and adverse_close < adverse_open
+                                 and adverse_close < adverse_ma3)
+                                or (position.get("side") == "SHORT"
+                                    and adverse_close > adverse_open
+                                    and adverse_close > adverse_ma3)
+                            )
+                        )
+                    trigger["rapid_adverse_exit"] = rapid_adverse_exit
+                    if rapid_adverse_exit:
+                        curr_p = self.tickers.get(symbol) or adverse_close
+                        close_reason = (
+                            f"{exit_tf} adverse rapid reversal: body >= "
+                            f"{RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f} ATR and crossed MA3"
+                        )
+                        self.account.log(
+                            f"[Rapid adverse exit] {symbol} {close_reason}", "WARNING"
+                        )
+                        await self.account.close_position(
+                            symbol, curr_p, close_reason, is_manual=True
+                        )
+                        self._soft_warning_since.pop(symbol, None)
+                        continue
                     exit_signal_info = detect_ma5_ma25_cross_and_turn(
                         df_closed, allow_live_pivot=False
                     )
@@ -1386,12 +1433,23 @@ class TradingEngine:
                                 else f"{MA5_EXIT_TIMEFRAME} MA5轉彎反轉平倉"
                             )
                         self.account.log(
-                            f"🚨 [出場防線觸發] {symbol} {close_reason}，執行自動平倉",
+                            f"🚨 [出場防線偵測] {symbol} {close_reason}",
                             "DANGER"
                         )
                         curr_p = self.tickers.get(symbol) or (df['close'].iloc[-1] if not df.empty else position["entry_price"])
-                        if DISABLE_STOP_LOSS and not (pre_turn_exit or live_pivot_exit):
-                            self.account.log(f"⏸️ [自動停損已停用] 跳過自動平倉 {symbol} ({close_reason})", "INFO")
+                        from core.config import FIXED_STOP_LOSS_PCT
+                        adverse_pct = (
+                            max(0.0, (float(position.get("entry_price") or curr_p) - curr_p) / float(position.get("entry_price") or curr_p))
+                            if position.get("side") == "LONG"
+                            else max(0.0, (curr_p - float(position.get("entry_price") or curr_p)) / float(position.get("entry_price") or curr_p))
+                        )
+                        hard_loss_reached = adverse_pct >= FIXED_STOP_LOSS_PCT
+                        if not is_profit_locked and not hard_loss_reached:
+                            self.account.log(
+                                f"⏸️ [未鎖利技術出場略過] {symbol} {close_reason}；"
+                                f"目前逆向 {adverse_pct:.2%} < 硬停損 {FIXED_STOP_LOSS_PCT:.2%}",
+                                "INFO",
+                            )
                         else:
                             closed = await self.account.close_position(
                                 symbol, curr_p, close_reason, is_manual=(pre_turn_exit or live_pivot_exit)
@@ -1925,6 +1983,17 @@ class TradingEngine:
                                 continue
                             current_sl = meta.get("sl", 0.0)
                             if not current_sl:
+                                continue
+                            # The fixed profit-lock ladder is the only mechanism allowed
+                            # to tighten a stop before a position has earned its first
+                            # protection step.  A fallback ATR trail must never turn a
+                            # normal early pullback into a premature stop-out.
+                            peak_pnl = float(
+                                meta.get("highest_pnl_pct")
+                                or position.get("peak_pnl_pct")
+                                or 0.0
+                            )
+                            if peak_pnl + 1e-12 < SL_ONLY_AFTER_PEAK_PCT:
                                 continue
                             atr_value = meta.get("atr", curr_p * 0.015)
                             trail_dist = TRAILING_SL_ATR_MULT * atr_value
