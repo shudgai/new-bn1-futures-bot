@@ -2470,6 +2470,26 @@ class TradingEngine:
             return max(0.0, MA5_STOP_LOSS_COOLDOWN_SEC - max(0.0, now - closed_at))
         return 0.0
 
+    def _ma2_confirmation_allowed(self, symbol: str, side: str, signal: dict) -> bool:
+        """Require the red-circle style short-term breakout before MA2 entry."""
+        import core.config as runtime_config
+        if not runtime_config.MA2_CONFIRMATION_ENTRY_ENABLED:
+            return True
+        close = float(signal.get("confirmation_close") or 0.0)
+        open_price = float(signal.get("confirmation_open") or 0.0)
+        ma2 = float(signal.get("confirmation_ma2") or 0.0)
+        ma5 = float(signal.get("confirmation_ma5") or 0.0)
+        recent_high = float(signal.get("confirmation_recent_high") or 0.0)
+        recent_low = float(signal.get("confirmation_recent_low") or 0.0)
+        if str(side).upper() == "LONG":
+            confirmed = close > open_price and close > ma2 and close > ma5 and close > recent_high
+        else:
+            confirmed = close < open_price and close < ma2 and close < ma5 and close < recent_low
+        if not confirmed:
+            self.account.log(f"[MA2 confirmation] {symbol} {side} waiting for confirmed breakout", "INFO")
+            return False
+        return True
+
     async def _place_structured_entry(
         self, symbol: str, signal: dict, live_price: float
     ) -> bool:
@@ -2493,6 +2513,8 @@ class TradingEngine:
             )
             return False
         entry_mode = signal["entry_mode"]
+        if entry_mode == "MA3_PIVOT" and not self._ma2_confirmation_allowed(symbol, side, signal):
+            return False
         is_limit = signal.get("action") == "ENTER_LIMIT"
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
@@ -2646,6 +2668,8 @@ class TradingEngine:
         if not self._same_side_entry_allowed(symbol, side):
             return False
         ma5_stop_cooldown = self._ma5_stop_cooldown_remaining(symbol, side, now)
+        if not self._ma2_confirmation_allowed(symbol, side, ma5_sig):
+            return False
         if ma5_stop_cooldown > 0:
             self.account.log(
                 f"🛑 {symbol} {side} MA2 硬停損後冷卻尚餘 "
