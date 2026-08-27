@@ -36,6 +36,9 @@ from core.config import (
     PROFIT_BANK_CAPTURE_RATIO,
     get_profit_bank_capture_ratio,
     PROFIT_BANK_MIN_STEP_PCT,
+    ENABLE_FIXED_PROFIT_LOCK_PCT, FIXED_PROFIT_LOCK_TRIGGER_PCT,
+    FIXED_PROFIT_LOCK_FLOOR_PCT, FIXED_PROFIT_TRAIL_RETAIN_RATIO,
+    get_fixed_profit_trail_retain_ratio,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
     PROFIT_ALERT_MIN_PEAK_PCT,
@@ -77,6 +80,7 @@ from core.config import (
     FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
     ENABLE_BOUNCE_TARGET_EXIT,
+    EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
 from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
 from core.notifier import notify_email
@@ -687,6 +691,15 @@ class BinanceTestnetAccount:
             if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
                 meta["highest_pnl_pct"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
+            exhaustion_grace = (
+                entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+                and now_ts - float(pos.get("open_timestamp") or meta.get("open_timestamp") or now_ts)
+                < EXHAUSTION_SNIPER_GRACE_SEC
+            )
+            if exhaustion_grace:
+                # 交易所的 1.2% STOP_MARKET 繼續有效；前三分鐘不移動保護線，
+                # 也不執行任何獲利／技術型出場。
+                continue
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
                 or meta.get("bounce_capture_ratio")
@@ -776,19 +789,37 @@ class BinanceTestnetAccount:
                 await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                 continue
 
-            # 所有策略共用的階梯移動停利：至少鎖 0.25%，之後按
-            # 峰值保留比例持續上移；每次達最小步距才撤換交易所保護單。
-            if ENABLE_PROFIT_BANK and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT:
-                bank_lock_pct = min(
-                    max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
-                    max(0.0, highest_pnl - SLIPPAGE_PCT),
-                )
+            # 第一階段在 +0.5% 鎖住；之後依峰值級距保留70%／80%／85%。沿用既有
+            # STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
+            fixed_pct_active = (
+                ENABLE_FIXED_PROFIT_LOCK_PCT
+                and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
+                and highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT
+            )
+            profit_bank_active = (
+                ENABLE_PROFIT_BANK
+                and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT
+            )
+            if fixed_pct_active or profit_bank_active:
+                if fixed_pct_active:
+                    retain_ratio = get_fixed_profit_trail_retain_ratio(highest_pnl)
+                    bank_lock_pct = max(
+                        FIXED_PROFIT_LOCK_FLOOR_PCT,
+                        highest_pnl * retain_ratio,
+                    )
+                else:
+                    bank_lock_pct = min(
+                        max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
+                        max(0.0, highest_pnl - SLIPPAGE_PCT),
+                    )
                 raw_bank_sl = entry_p * (
                     1.0 + bank_lock_pct
                     if side == "LONG" else 1.0 - bank_lock_pct
                 )
                 bank_sl = float(self.exchange.price_to_precision(symbol, raw_bank_sl))
-                min_step = entry_p * PROFIT_BANK_MIN_STEP_PCT
+                min_step = entry_p * (
+                    0.00001 if fixed_pct_active else PROFIT_BANK_MIN_STEP_PCT
+                )
                 improves = (
                     bank_sl > old_sl + min_step if side == "LONG"
                     else old_sl <= 0.0 or bank_sl < old_sl - min_step
@@ -842,11 +873,19 @@ class BinanceTestnetAccount:
                         pos["sl"] = bank_sl
                         meta["is_breakeven_moved"] = True
                         pos["is_breakeven_moved"] = True
-                        meta["profit_bank_armed"] = True
-                        pos["profit_bank_armed"] = True
+                        if fixed_pct_active:
+                            meta["fixed_profit_lock_pct_armed"] = True
+                            pos["fixed_profit_lock_pct_armed"] = True
+                        else:
+                            meta["profit_bank_armed"] = True
+                            pos["profit_bank_armed"] = True
                         old_sl = bank_sl
+                        label = (
+                            f"0.5%＋峰值保留{retain_ratio:.0%}"
+                            if fixed_pct_active else "階梯移動停利"
+                        )
                         self.log(
-                            f"📈 [階梯移動停利] {symbol} 峰值 {highest_pnl:.4%}，"
+                            f"📈 [{label}] {symbol} 峰值 {highest_pnl:.4%}，"
                             f"已鎖 {bank_lock_pct:.4%}，保護線上移至 {bank_sl:.6g}",
                             "SUCCESS",
                         )
@@ -1579,6 +1618,7 @@ class BinanceTestnetAccount:
             except ValueError as exc:
                 self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
                 return False
+            is_exhaustion_sniper = entry_context.get("entry_mode") in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
             sl_distance = abs(price_ref - sl)
             tp_distance = abs(tp - price_ref)
             adjusted_sl = (
@@ -1589,8 +1629,14 @@ class BinanceTestnetAccount:
                 execution_price + tp_distance if side == "LONG"
                 else execution_price - tp_distance
             )
+            if is_exhaustion_sniper:
+                adjusted_sl = execution_price * (
+                    1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT
+                    if side == "LONG"
+                    else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
+                )
             # Ensure SL sits on correct side and respect a minimum distance
-            if not DISABLE_STOP_LOSS:
+            if not DISABLE_STOP_LOSS or is_exhaustion_sniper:
                 atr_value = atr if atr > 0 else execution_price * 0.015
                 min_dist = max(price_ref * MIN_SL_DISTANCE_PCT, atr_value * STOP_LOSS_MULTIPLIER)
                 if side == "LONG":
@@ -1602,7 +1648,7 @@ class BinanceTestnetAccount:
                 sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             else:
                 sl_price = 0.0
-            if not DISABLE_STOP_LOSS:
+            if not DISABLE_STOP_LOSS and not is_exhaustion_sniper:
                 sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
                 sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
             tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0

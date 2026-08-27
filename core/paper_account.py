@@ -75,10 +75,12 @@ from core.config import (
     ENABLE_FIXED_PROFIT_LOCK_PCT,
     FIXED_PROFIT_LOCK_TRIGGER_PCT,
     FIXED_PROFIT_LOCK_FLOOR_PCT,
+    FIXED_PROFIT_TRAIL_RETAIN_RATIO, get_fixed_profit_trail_retain_ratio,
     ENABLE_FIXED_PROFIT_LOCK_LADDER,
     FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
     ENABLE_BOUNCE_TARGET_EXIT,
+    EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -437,7 +439,15 @@ class PaperAccount:
                 sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
             if tp_distance > 0:
                 tp = execution_price + tp_distance if side == "LONG" else execution_price - tp_distance
-        if DISABLE_STOP_LOSS:
+        entry_mode = dict(entry_context or {}).get("entry_mode")
+        if entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+            # 市價滑價後，以實際成交價重算精確 1.2% 硬停損。
+            sl = execution_price * (
+                1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT
+                if side == "LONG"
+                else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
+            )
+        if DISABLE_STOP_LOSS and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
             sl = 0.0
         else:
             # Ensure SL is on correct side and at least a conservative minimum distance
@@ -1047,6 +1057,23 @@ class PaperAccount:
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
 
+            exhaustion_grace = (
+                entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+                and now_ts - float(pos.get("open_timestamp") or now_ts) < EXHAUSTION_SNIPER_GRACE_SEC
+            )
+            if exhaustion_grace:
+                hard_stop_hit = (
+                    current_sl > 0
+                    and ((side == "LONG" and curr_p <= current_sl)
+                         or (side == "SHORT" and curr_p >= current_sl))
+                )
+                if hard_stop_hit:
+                    await self.close_position(symbol, current_sl, "觸發止損 (Stop-Loss)")
+                    continue
+                pos["peak_pnl_pct"] = highest_pnl
+                total_unrealized += unrealized
+                continue
+
             profit_lock_updated_this_cycle = False
 
             # 唯一獲利出場：峰值每達一個 0.2%% 階梯，鎖利線同步上移。
@@ -1185,9 +1212,8 @@ class PaperAccount:
 
             # ----------------------------------------------------------------
             # 固定百分比鎖利（Fixed Profit Lock by Unlevered %）
-            # 無槓桿利潤達到 FIXED_PROFIT_LOCK_TRIGGER_PCT（預設 0.6%），
-            # 立即把止損推移到「至少鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT 無槓桿利潤」
-            # 的價位，持倉不平倉，讓移動停利繼續往上追蹤。
+            # 無槓桿利潤達到 0.5% 先鎖住 0.5%；之後止損持續上移，
+            # 保留最高浮盈的 70%（允許由峰值回吐 30%）。
             # 僅往有利方向移動（只升不降/只降不升），不截斷後續空間。
             # ----------------------------------------------------------------
             if (
@@ -1197,8 +1223,12 @@ class PaperAccount:
             ):
                 # 使用 highest_pnl（無槓桿利潤峰值）比對觸發門檻
                 if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT and entry_p > 0:
-                    # 計算「至少保留 FLOOR_PCT 利潤」需要的止損價
-                    floor_pct = FIXED_PROFIT_LOCK_FLOOR_PCT
+                    # 第一階段至少鎖 0.5%；之後依峰值級距保留 70%／80%／85%。
+                    retain_ratio = get_fixed_profit_trail_retain_ratio(highest_pnl)
+                    floor_pct = max(
+                        FIXED_PROFIT_LOCK_FLOOR_PCT,
+                        highest_pnl * retain_ratio,
+                    )
                     if side == "LONG":
                         floor_sl_pct = entry_p * (1.0 + floor_pct)
                     else:
@@ -1223,8 +1253,8 @@ class PaperAccount:
                         self.log(
                             f"🔐 [固定鎖利] {symbol} 無槓桿峰值 {highest_pnl:.3%}，"
                             f"保護線移至 {floor_sl_pct:.6g}"
-                            f"（鎖定 {locked_pct:.3%} / 門檻 {floor_pct:.3%}）"
-                            f"⟶ 移動停利繼續追蹤",
+                            f"（鎖定 {locked_pct:.3%} / 峰值保留 "
+                            f"{retain_ratio:.0%}）",
                             "SUCCESS",
                         )
 
@@ -1479,7 +1509,8 @@ class PaperAccount:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     # 僅在已啟用移動保本或部位曾達到設定峰值比例時，才把本地 SL 視為真正平倉
                     highest_peak = float(meta.get("highest_pnl_pct", -999.0))
-                    if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
+                    hard_initial_stop = (pos.get("entry_mode") or meta.get("entry_mode")) in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+                    if hard_initial_stop or pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
                         # Simulate an already-resting protective stop at its trigger;
                         # close_position adds the configured market slippage.
                         await self.close_position(symbol, sl_price, reason)
@@ -1500,7 +1531,8 @@ class PaperAccount:
                 if sl_price > 0 and short_sl_hit and not profit_lock_updated_this_cycle:
                     reason = "觸發移動止利 (Trailing Take-Profit)" if pos.get("is_breakeven_moved") else "觸發止損 (Stop-Loss)"
                     highest_peak = float(meta.get("highest_pnl_pct", -999.0))
-                    if pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
+                    hard_initial_stop = (pos.get("entry_mode") or meta.get("entry_mode")) in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+                    if hard_initial_stop or pos.get("is_breakeven_moved") or highest_peak >= float(SL_ONLY_AFTER_PEAK_PCT):
                         # Simulate an already-resting protective stop at its trigger;
                         # close_position adds the configured market slippage.
                         await self.close_position(symbol, sl_price, reason)

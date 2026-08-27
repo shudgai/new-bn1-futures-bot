@@ -37,11 +37,12 @@ from core.config import (
     BREAKOUT_KC_FAIL_CONFIRM_BARS, STOP_LOSS_MULTIPLIER,
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
     CONTINUOUS_REENTRY_COOLDOWN_SEC, MA5_STOP_LOSS_COOLDOWN_SEC,
+    EXHAUSTION_SNIPER_STOP_LOSS_PCT, EXHAUSTION_SNIPER_GRACE_SEC,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
     compute_pullback_target, compute_net_reward_risk, detect_ma5_reversal,
-    has_volume_divergence,
+    has_volume_divergence, check_exhaustion_entry_filters,
 )
 
 
@@ -491,10 +492,12 @@ class TradingEngine:
     @staticmethod
     def _bottom_entry_grace(position: dict, now: float) -> tuple[bool, float]:
         entry_mode = position.get("entry_mode")
-        if entry_mode not in ("MA5_BOTTOM_LIMIT", "MA3_PIVOT"):
+        if entry_mode not in ("MA5_BOTTOM_LIMIT", "MA3_PIVOT", "EXHAUSTION_SNIPER", "PIVOT_TURN"):
             return False, 0.0
         opened_at = float(position.get("open_timestamp") or now)
         age_sec = max(0.0, now - opened_at)
+        if entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+            return age_sec < EXHAUSTION_SNIPER_GRACE_SEC, age_sec
         if entry_mode == "MA3_PIVOT":
             return age_sec < 180, age_sec
         return age_sec < MA5_BOTTOM_MIN_HOLD_SEC, age_sec
@@ -1217,6 +1220,11 @@ class TradingEngine:
                     from core.indicators import detect_ma5_ma25_cross_and_turn
                     # 使用已收盤的資料進行平倉確認
                     df_closed = drop_unclosed_candle(df, exit_tf)
+                    # Exhaustion Sniper 的前三分鐘只保留帳戶層硬停損；所有
+                    # 技術型出場（包含急速反向 K）都延後到保護期結束。
+                    entry_grace, entry_grace_age = self._bottom_entry_grace(position, time.time())
+                    trigger["bottom_entry_grace"] = entry_grace
+                    trigger["bottom_entry_age_sec"] = entry_grace_age
                     # A sharp adverse live candle is an emergency exit: it must have a
                     # meaningful body and cross MA3, so ordinary pullbacks are ignored.
                     rapid_adverse_exit = False
@@ -1249,7 +1257,7 @@ class TradingEngine:
                             )
                         )
                     trigger["rapid_adverse_exit"] = rapid_adverse_exit
-                    if rapid_adverse_exit:
+                    if rapid_adverse_exit and not entry_grace:
                         curr_p = self.tickers.get(symbol) or adverse_close
                         close_reason = (
                             f"{exit_tf} adverse rapid reversal: body >= "
@@ -1415,7 +1423,7 @@ class TradingEngine:
                     if (
                         (ENABLE_STRONG_TRIGGER_AUTO_CLOSE or pivot_exit_ready)
                         and pivot_exit_ready
-                        and (not bottom_grace or pre_turn_exit)
+                        and not bottom_grace
                         and should_auto_close
                     ):
                         if trigger.get("pre_peak_exit"):
@@ -2568,27 +2576,27 @@ class TradingEngine:
             return False
         score = int(signal.get("score") or 0)
         side = signal["side"]
+        entry_mode = signal["entry_mode"]
         if not self._same_side_entry_allowed(symbol, side):
             return False
         stop_cooldown_fn = getattr(
             self.symbol_rotation, "get_stop_cooldown_remaining", lambda *_args: 0.0
         )
         stop_cooldown_remaining = float(stop_cooldown_fn(symbol, side) or 0.0)
-        if stop_cooldown_remaining > 0:
+        if stop_cooldown_remaining > 0 and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
             self.account.log(
                 f"🛑 {symbol} {side} 近期同方向連續停損，冷卻尚餘 "
                 f"{stop_cooldown_remaining / 3600.0:.1f} 小時，拒絕結構化進場",
                 "WARNING",
             )
             return False
-        entry_mode = signal["entry_mode"]
         if entry_mode == "MA3_PIVOT" and not self._ma2_confirmation_allowed(symbol, side, signal):
             return False
         is_limit = signal.get("action") == "ENTER_LIMIT"
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         # 最後一道方向守門：避免在高週期趨勢不符時開錯方向 (MA5_CROSS_PIVOT 策略除外)
-        if entry_mode != "MA5_CROSS_PIVOT":
+        if entry_mode not in ("MA5_CROSS_PIVOT", "EXHAUSTION_SNIPER", "PIVOT_TURN"):
             if not self._entry_direction_allowed(symbol, side, planned_price):
                 return False
         candle_low = float(signal.get("signal_candle_low") or planned_price)
@@ -2599,7 +2607,13 @@ class TradingEngine:
         # 止損在突破K棒低點以下，兩者距離 = 突破K棒振幅的一大半，
         # 遠比舊版「進場@突破高點 - 1ATR」給更寬的止損空間，賠率大幅改善。
         # 非 BREAKOUT 的 SUPPORT_PULLBACK 等仍用原本邏輯。
-        if entry_mode == "BREAKOUT" and is_limit:
+        if entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+            sl = planned_price * (
+                1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT
+                if side == "LONG"
+                else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
+            )
+        elif entry_mode == "BREAKOUT" and is_limit:
             if side == "LONG":
                 sl = candle_low - BREAKOUT_CANDLE_STOP_BUFFER_ATR * atr
                 sl = min(sl, planned_price * (1.0 - MIN_SL_DISTANCE_PCT))
@@ -2623,7 +2637,11 @@ class TradingEngine:
             sl = max(sl, planned_price * (1.0 + MIN_SL_DISTANCE_PCT))
         initial_risk = abs(planned_price - sl)
         # Ensure stop-loss is on the correct side and respects minimum distance.
-        min_dist = max(planned_price * MIN_SL_DISTANCE_PCT, atr * STOP_LOSS_MULTIPLIER)
+        min_dist = (
+            planned_price * EXHAUSTION_SNIPER_STOP_LOSS_PCT
+            if entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+            else max(planned_price * MIN_SL_DISTANCE_PCT, atr * STOP_LOSS_MULTIPLIER)
+        )
         if side == "LONG":
             if sl >= planned_price - 1e-12:
                 sl = planned_price - min_dist
@@ -3740,50 +3758,52 @@ class TradingEngine:
 
             live_price = float(self.tickers.get(symbol) or 0.0)
             df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30, keep_live=True)
-            if df_1m.empty or len(df_1m) < 14:
+            if df_1m.empty:
+                return signal_progress, detected_candidates
+            # 只讀已收盤 1m K，避免未收線 RSI、量能與 MA3 重繪。
+            df_1m = drop_unclosed_candle(df_1m, "1m")
+            if len(df_1m) < 20:
                 return signal_progress, detected_candidates
             df_1m = self.strategy.compute_indicators(df_1m)
 
-            df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=100)
-            if df_1h.empty:
-                return signal_progress, detected_candidates
-            computed_1h = self.strategy.compute_indicators(df_1h)
-            from core.config import TREND_FILTER_EMA_PERIOD, MIN_OPEN_SIGNAL_SCORE
-            ema_50_1h = float(
-                df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False)
-                .mean().iloc[-1]
-            )
-            st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-            # 判斷是否需要嚴格 V 型轉彎
-            require_strict_v = False
-            if self.account.trades:
-                last_trade = self.account.trades[0]
-                if last_trade.get("symbol") == symbol and last_trade.get("action", "").startswith("CLOSE_"):
-                    reason = last_trade.get("reason", "")
-                    if "移動" in reason or "Trailing" in reason or "鎖利" in reason:
-                        require_strict_v = True
-
-            from core.strategy import detect_ma5_reversal
-            for direction in ["LONG", "SHORT"]:
-                sig = detect_ma5_reversal(
-                    df_1m,
-                    side=direction,
-                    ema_50_1h=ema_50_1h,
-                    st_direction_1h=st_direction_1h,
-                    btc_st_direction_1h=self.btc_1h_st_direction,
-                    btc_st_flip_age=self.btc_1h_st_flip_age,
-                    btc_1m_turn=btc_1m_turn,
-                    symbol=symbol,
-                    live_price=live_price,
-                    require_strict_v=require_strict_v,
+            from core.indicators import detect_ma5_ma25_cross_and_turn
+            pivot = detect_ma5_ma25_cross_and_turn(df_1m, allow_live_pivot=False)
+            entry_type = pivot.get("entry_type")
+            if entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                direction = "LONG" if entry_type == "TROUGH_TURN" else "SHORT"
+                exhaustion = check_exhaustion_entry_filters(df_1m, direction)
+                if exhaustion.get("passed"):
+                    sig = {
+                        "detected": True,
+                        "side": direction,
+                        "score": 100,
+                        "price": live_price,
+                        "atr": float(pivot.get("atr") or live_price * 0.015),
+                        "entry_mode": "PIVOT_TURN",
+                        "profit_profile": "TREND_EXTENSION",
+                        "action": "ENTER_MARKET",
+                        "target_price": None,
+                        "signal_candle_low": float(df_1m["low"].iloc[-1]),
+                        "signal_candle_high": float(df_1m["high"].iloc[-1]),
+                        "symbol": symbol,
+                        "live_price": live_price,
+                        "extreme_age_bars": exhaustion.get("extreme_age_bars"),
+                        "extreme_rsi": exhaustion.get("extreme_rsi"),
+                        "extreme_volume_ratio": exhaustion.get("extreme_volume_ratio"),
+                        "reason": (
+                            f"{entry_type}: {pivot.get("reason", "谷底／峰頂轉彎")}｜"
+                            f"{exhaustion.get("reason")}"
+                        ),
+                    }
+                    detected_candidates.append(sig)
+                else:
+                    signal_progress.append(
+                        f"{coin} {direction} 轉彎成立，但{exhaustion.get("reason")}"
+                    )
+            else:
+                signal_progress.append(
+                    f"{coin} 雙向等待谷底／峰頂轉彎({entry_type or "WAIT"})"
                 )
-                if sig["detected"]:
-                    if sig.get("score", 0) >= MIN_OPEN_SIGNAL_SCORE:
-                        sig["symbol"] = symbol
-                        sig["live_price"] = live_price
-                        detected_candidates.append(sig)
-                    else:
-                        signal_progress.append(f"{coin} {direction} 資格未通過,分數不足({sig.get('score')})")
 
 
         except Exception as e:

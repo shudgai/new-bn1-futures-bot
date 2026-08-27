@@ -417,6 +417,14 @@ MAX_SL_DISTANCE_PCT = float(os.getenv("MAX_SL_DISTANCE_PCT", "0.05"))
 # SL_ONLY_AFTER_PEAK_PCT：本地止損僅在部位曾達到此峰值比例後才允許平倉（小數，0.01=1%）。
 # 預設 0 表示不啟用此行為，維持相容性。
 SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.002"))
+
+# Exhaustion Sniper 專用規格；不影響其他 entry_mode。
+EXHAUSTION_SNIPER_LOOKBACK_BARS = max(1, int(os.getenv("EXHAUSTION_SNIPER_LOOKBACK_BARS", "3")))
+EXHAUSTION_SNIPER_VOLUME_RATIO = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_VOLUME_RATIO", "1.5")))
+EXHAUSTION_SNIPER_RSI_LONG_MAX = float(os.getenv("EXHAUSTION_SNIPER_RSI_LONG_MAX", "40"))
+EXHAUSTION_SNIPER_RSI_SHORT_MIN = float(os.getenv("EXHAUSTION_SNIPER_RSI_SHORT_MIN", "60"))
+EXHAUSTION_SNIPER_STOP_LOSS_PCT = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_STOP_LOSS_PCT", "0.012")))
+EXHAUSTION_SNIPER_GRACE_SEC = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_GRACE_SEC", "180")))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
@@ -800,19 +808,33 @@ PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT"
 
 # ---------------------------------------------------------------------------
 # 固定百分比鎖利（Fixed Profit Lock by Unlevered %)
-# 理念：無槓桿利潤達到 FIXED_PROFIT_LOCK_TRIGGER_PCT（如 0.6%），
-#       立即把止損移到「至少鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT」的位置，
-#       持倉不平倉，繼續讓移動停利往上追蹤。
+# 理念：無槓桿利潤達到 FIXED_PROFIT_LOCK_TRIGGER_PCT（目前 0.5%），
+#       立即先鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT，之後按峰值級距保留 70%／80%／85%。
+#       保護線只往有利方向移動。
 #       地板止損只往有利方向移動，不會被收緊後放寬。
 # 與 ENABLE_TRAILING_STOP（移動停利）並行：兩套都啟用時同時運作，
 # 止損取「對持倉更有利（更高/更低）」的那個值。
 # ---------------------------------------------------------------------------
 ENABLE_FIXED_PROFIT_LOCK_PCT = os.getenv("ENABLE_FIXED_PROFIT_LOCK_PCT", "true").lower() == "true"
-# 觸發門檻：無槓桿利潤達到此值（小數，0.006=0.6%）時啟動鎖利
+# 觸發門檻：無槓桿利潤達到此值（小數，0.005=0.5%）時啟動鎖利
 FIXED_PROFIT_LOCK_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_TRIGGER_PCT", "0.006")))
 # 鎖利地板：止損移動後保證至少鎖住此比例（無槓桿）的利潤
-# 預設與觸發門檻相同：達到 0.6% 就把止損設在至少還有 0.6% 利潤的位置
+# 第一階段與觸發門檻相同；正式環境由 .env 設為 0.5%
 FIXED_PROFIT_LOCK_FLOOR_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_FLOOR_PCT", "0.006")))
+# 峰值分級：0.51%～<1.1%保留70%，1.1%～<2.1%保留80%，2.1%以上保留85%。
+FIXED_PROFIT_TRAIL_RETAIN_RATIO = min(1.0, max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_RETAIN_RATIO", "0.70"))))
+FIXED_PROFIT_TRAIL_TIER2_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER2_TRIGGER_PCT", "0.011")))
+FIXED_PROFIT_TRAIL_TIER2_RETAIN_RATIO = min(1.0, max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER2_RETAIN_RATIO", "0.80"))))
+FIXED_PROFIT_TRAIL_TIER3_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER3_TRIGGER_PCT", "0.021")))
+FIXED_PROFIT_TRAIL_TIER3_RETAIN_RATIO = min(1.0, max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER3_RETAIN_RATIO", "0.85"))))
+
+def get_fixed_profit_trail_retain_ratio(highest_pnl: float) -> float:
+    peak = max(0.0, float(highest_pnl or 0.0))
+    if peak + 1e-12 >= FIXED_PROFIT_TRAIL_TIER3_TRIGGER_PCT:
+        return FIXED_PROFIT_TRAIL_TIER3_RETAIN_RATIO
+    if peak + 1e-12 >= FIXED_PROFIT_TRAIL_TIER2_TRIGGER_PCT:
+        return FIXED_PROFIT_TRAIL_TIER2_RETAIN_RATIO
+    return FIXED_PROFIT_TRAIL_RETAIN_RATIO
 
 # --- 急升急降過濾：排除短期劇烈波動的幣種 ---
 # RAPID_MOVE_WINDOW: 回看幾根5分K（3根=15分鐘）

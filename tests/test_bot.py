@@ -751,6 +751,53 @@ async def test_paper_account_rebound_close_requires_profit_above_round_trip_cost
 
 
 @pytest.mark.anyio
+async def test_single_half_percent_fixed_profit_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "half_percent_lock.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_LADDER", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", True)
+    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_TRIGGER_PCT", 0.005)
+    monkeypatch.setattr(pa_module, "FIXED_PROFIT_LOCK_FLOOR_PCT", 0.005)
+    monkeypatch.setattr(pa_module, "FIXED_PROFIT_TRAIL_RETAIN_RATIO", 0.70)
+    monkeypatch.setattr(pa_module, "ENABLE_EARLY_PROFIT_GUARD", False)
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    account = PaperAccount()
+    await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, sl=99.0, tp=0.0,
+        reason="single fixed lock", leverage=5, signal_score=100,
+        apply_slippage=False,
+    )
+
+    await account.update_positions({"BTC/USDT": 100.49})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(99.0)
+    assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
+
+    await account.update_positions({"BTC/USDT": 100.50})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.50)
+    assert account.position_meta["BTC/USDT"]["fixed_profit_lock_pct_armed"] is True
+
+    await account.update_positions({"BTC/USDT": 101.0})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.70)
+
+    # 峰值 1.1% 起保留80%，2.1%起保留85%。
+    await account.update_positions({"BTC/USDT": 101.1})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.88)
+    await account.update_positions({"BTC/USDT": 102.0})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(101.60)
+    await account.update_positions({"BTC/USDT": 102.1})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(101.785)
+
+    await account.update_positions({"BTC/USDT": 101.79})
+    assert "BTC/USDT" in account.positions
+    await account.update_positions({"BTC/USDT": 101.78})
+    assert "BTC/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "觸發移動止利 (Trailing Take-Profit)"
+    assert account.trades[0]["pnl"] > 0
+
+
+@pytest.mark.anyio
 async def test_paper_account_daily_loss_limit_blocks_new_entries_only(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
@@ -2187,6 +2234,29 @@ async def test_sl_only_after_peak_prevents_early_stop(tmp_path, monkeypatch):
     assert "TEST/USDT" not in account.positions
 
 
+@pytest.mark.anyio
+async def test_exhaustion_sniper_hard_stop_ignores_peak_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "exhaustion_stop.json"))
+    monkeypatch.setattr(pa_module, "SL_ONLY_AFTER_PEAK_PCT", 0.50)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
+    account = PaperAccount()
+    await account.open_position(
+        "TEST/USDT", "LONG", 100.0, 50.0, sl=90.0, tp=0.0,
+        reason="Exhaustion_Sniper_LONG", signal_score=100, apply_slippage=False,
+        entry_context={"entry_mode": "EXHAUSTION_SNIPER"},
+    )
+
+    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(98.8)
+    # 即使前三分鐘先達到 0.5%，固定鎖利也不可移動硬停損或提早出場。
+    await account.update_positions({"TEST/USDT": 100.5})
+    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(98.8)
+    assert not account.position_meta["TEST/USDT"].get("fixed_profit_lock_pct_armed")
+    await account.update_positions({"TEST/USDT": 98.8})
+
+    assert "TEST/USDT" not in account.positions
+    assert "Stop-Loss" in account.trades[0]["reason"]
+
+
 def test_trade_history_counts_only_classified_stop_losses():
     trades = [
         {
@@ -2910,6 +2980,60 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
         assert 0.5 <= rr < 1.0
 
 
+@pytest.mark.anyio
+async def test_exhaustion_sniper_structured_entry_is_market_with_exact_stop(monkeypatch):
+    market_orders = []
+
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+
+        def get_available_balance(self):
+            return 1000.0
+
+        def get_wallet_balance(self):
+            return 1000.0
+
+        def log(self, *args, **kwargs):
+            return None
+
+        async def open_position(self, **kwargs):
+            market_orders.append(kwargs)
+            return True
+
+        async def place_limit_entry(self, **kwargs):
+            pytest.fail("Exhaustion Sniper 不可走限價")
+
+    class DummyRotation:
+        def get_stop_cooldown_remaining(self, *args):
+            return 9999.0
+
+        def get_dynamic_leverage(self, *args):
+            return 5
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.symbol_rotation = DummyRotation()
+    engine.btc_1h_st_direction = -1
+
+    async def price_is_safe(*args):
+        return True
+
+    engine._execution_price_is_safe = price_is_safe
+    signal = {
+        "action": "ENTER_MARKET", "entry_mode": "EXHAUSTION_SNIPER",
+        "side": "LONG", "score": 100, "atr": 1.0,
+        "profit_profile": "TREND_EXTENSION", "reason": "four conditions",
+    }
+
+    assert await engine._place_structured_entry("TEST/USDT", signal, 100.0) is True
+    assert len(market_orders) == 1
+    assert market_orders[0]["price"] == pytest.approx(100.0)
+    assert market_orders[0]["sl"] == pytest.approx(98.8)
+    assert market_orders[0]["tp"] == 0.0
+    assert market_orders[0]["entry_context"]["entry_mode"] == "EXHAUSTION_SNIPER"
+
+
 def _continuous_cross_frame(side="LONG", volume=100.0, wick_trap=False):
     size = 30
     if side == "LONG":
@@ -3184,40 +3308,77 @@ def test_compute_indicators_includes_ma3():
     assert computed["ma3"].iloc[-1] == pytest.approx(29.0)
 
 
-def test_detect_ma5_reversal_uses_ma3_pivot_and_labels_reason():
+def _exhaustion_frame(side="LONG"):
+    is_long = side == "LONG"
     frame = pd.DataFrame({
         "open": [100.0] * 25,
         "close": [100.0] * 25,
-        "high": [101.0] * 25,
-        "low": [99.0] * 25,
-        "ma3": [100.0] * 22 + [100.2, 99.8, 100.1],
-        "ma5": [101.0] * 25,
-        "ma25": [100.0] * 25,
+        "high": [100.5] * 25,
+        "low": [99.5] * 25,
+        "volume": [100.0] * 25,
+        "vol_ma_20": [100.0] * 25,
+        "kc_upper": [101.0] * 25,
+        "kc_lower": [99.0] * 25,
+        "rsi": [50.0] * 25,
         "atr": [1.0] * 25,
+        "ma3": [100.0] * 22 + ([100.2, 99.8, 100.1] if is_long else [99.8, 100.2, 99.9]),
     })
+    event_idx = frame.index[-2]
+    if is_long:
+        frame.loc[event_idx, ["low", "rsi", "volume"]] = [98.9, 39.0, 151.0]
+    else:
+        frame.loc[event_idx, ["high", "rsi", "volume"]] = [101.1, 61.0, 151.0]
+    return frame
 
-    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
+
+def test_pivot_turn_entry_filters_restore_kc_rsi_and_volume():
+    for side in ("LONG", "SHORT"):
+        result = strategy_module.check_exhaustion_entry_filters(_exhaustion_frame(side), side)
+        assert result["passed"] is True
+        assert result["extreme_volume_ratio"] == pytest.approx(1.51)
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_exhaustion_sniper_requires_all_four_conditions_and_enters_market(side):
+    result = detect_ma5_reversal(_exhaustion_frame(side), side=side, live_price=100.0)
 
     assert result["detected"] is True
-    assert "MA3" in result["reason"] and "谷底" in result["reason"]
+    assert result["entry_mode"] == "EXHAUSTION_SNIPER"
+    assert result["action"] == "ENTER_MARKET"
+    assert result["extreme_age_bars"] == 1
+    assert result["extreme_volume_ratio"] == pytest.approx(1.51)
+    assert result["structural_sl"] == pytest.approx(98.8 if side == "LONG" else 101.2)
 
 
-def test_detect_ma5_reversal_uses_recent_ma3_trough_memory():
-    frame = pd.DataFrame({
-        "open": [100.0] * 25,
-        "close": [100.0] * 25,
-        "high": [101.0] * 25,
-        "low": [99.0] * 25,
-        "ma3": [100.0] * 17 + [100.2, 99.7, 100.0, 100.1, 100.15, 100.2, 100.25, 100.3],
-        "ma5": [101.0] * 25,
-        "ma25": [100.0] * 25,
-        "atr": [1.0] * 25,
-    })
+def test_exhaustion_sniper_does_not_stitch_conditions_from_different_bars():
+    frame = _exhaustion_frame("LONG")
+    frame.loc[frame.index[-2], "volume"] = 100.0
+    frame.loc[frame.index[-1], "volume"] = 200.0
 
-    result = detect_ma5_reversal(frame, side="LONG", indicators_precomputed=True)
+    result = detect_ma5_reversal(frame, side="LONG")
 
-    assert result["detected"] is True
-    assert "記憶延伸谷底" in result["reason"]
+    assert result["detected"] is False
+    assert "同一根" in result["reason"]
+
+
+def test_exhaustion_sniper_volume_must_be_strictly_above_one_point_five():
+    frame = _exhaustion_frame("LONG")
+    frame.loc[frame.index[-2], "volume"] = 150.0
+
+    result = detect_ma5_reversal(frame, side="LONG")
+
+    assert result["detected"] is False
+    assert "量能" in result["reason"]
+
+
+def test_exhaustion_sniper_rejects_non_strict_ma3_turn():
+    frame = _exhaustion_frame("LONG")
+    frame.loc[frame.index[-3]:, "ma3"] = [100.2, 99.8, 99.8]
+
+    result = detect_ma5_reversal(frame, side="LONG")
+
+    assert result["detected"] is False
+    assert "嚴格V型" in result["reason"]
 
 
 def _ma5_frame(side: str, adx: float = 25.0, rsi: float = None, volume: float = 1000.0):

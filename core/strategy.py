@@ -45,6 +45,9 @@ from core.config import (
     HIGH_SCORE_ATR_LIMIT_PCT, HIGH_SCORE_THRESHOLD,
     KELTNER_MIN_WIDTH_ATR_MULT_LONG, SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG,
     SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED,
+    EXHAUSTION_SNIPER_LOOKBACK_BARS, EXHAUSTION_SNIPER_VOLUME_RATIO,
+    EXHAUSTION_SNIPER_RSI_LONG_MAX, EXHAUSTION_SNIPER_RSI_SHORT_MIN,
+    EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
 import core.config as _core_config
 
@@ -423,6 +426,51 @@ def compute_net_reward_risk(
     return ratio, net_reward, net_risk
 
 
+def check_exhaustion_entry_filters(df: pd.DataFrame, side: str) -> dict:
+    """最近三根已收盤K中，同一根須同時通過KC、RSI與1.5倍量能。"""
+    wanted_side = str(side).upper()
+    required = {"high", "low", "volume", "vol_ma_20", "kc_upper", "kc_lower", "rsi"}
+    if df is None or len(df) < EXHAUSTION_SNIPER_LOOKBACK_BARS or not required.issubset(df.columns):
+        return {"passed": False, "reason": "KC／RSI／量能資料不足"}
+    recent = df.iloc[-EXHAUSTION_SNIPER_LOOKBACK_BARS:]
+    edge_seen = False
+    rsi_seen = False
+    for age, (_, candle) in enumerate(recent.iloc[::-1].iterrows()):
+        edge = (
+            float(candle["low"]) <= float(candle["kc_lower"])
+            if wanted_side == "LONG"
+            else float(candle["high"]) >= float(candle["kc_upper"])
+        )
+        if not edge:
+            continue
+        edge_seen = True
+        rsi = float(candle["rsi"])
+        rsi_ok = (
+            rsi < EXHAUSTION_SNIPER_RSI_LONG_MAX
+            if wanted_side == "LONG"
+            else rsi > EXHAUSTION_SNIPER_RSI_SHORT_MIN
+        )
+        if not rsi_ok:
+            continue
+        rsi_seen = True
+        volume_ma = float(candle["vol_ma_20"]) if not pd.isna(candle["vol_ma_20"]) else 0.0
+        volume_ratio = float(candle["volume"]) / volume_ma if volume_ma > 0 else 0.0
+        if volume_ratio <= EXHAUSTION_SNIPER_VOLUME_RATIO:
+            continue
+        return {
+            "passed": True, "reason": "KC＋RSI＋1.5倍量能通過",
+            "extreme_age_bars": age, "extreme_rsi": rsi,
+            "extreme_volume_ratio": volume_ratio,
+        }
+    if not edge_seen:
+        reason = f"最近{EXHAUSTION_SNIPER_LOOKBACK_BARS}根未觸及KC極端"
+    elif not rsi_seen:
+        reason = "KC極端K的RSI未達門檻"
+    else:
+        reason = f"同一根極端K量能未大於{EXHAUSTION_SNIPER_VOLUME_RATIO:g}x"
+    return {"passed": False, "reason": reason}
+
+
 def detect_ma5_reversal(
     df: pd.DataFrame,
     side: str,
@@ -437,178 +485,98 @@ def detect_ma5_reversal(
     live_price: float = None,
     require_strict_v: bool = False,
 ) -> dict:
-    """
-    不看任何K線圖，只看MA3的線。
-    只要 MA3 呈尖端 (V/倒V) 或 小梯形，就轉向。
-    若 MA3 呈大V括弧 (較寬的轉折)，且近4根內有2根以上同色K線，也轉向。
-    """
-    if len(df) < 5:
-        return {"detected": False, "reason": "K線資料不足5根"}
+    """偵測 1m Exhaustion Sniper；傳入資料必須只包含已收盤 K。"""
+    wanted_side = str(side).upper()
 
     def _no(reason: str) -> dict:
-        return {"detected": False, "reason": reason, "side": side, "score": 0}
+        return {"detected": False, "reason": reason, "side": wanted_side, "score": 0}
 
-    if 'ma2' not in df.columns:
-        df['ma2'] = df['close'].rolling(window=2).mean()
-    ma3_series = df['ma2'].dropna()
-    if len(ma3_series) < 5:
-        return _no("MA2資料不足")
+    required = {"open", "high", "low", "close", "volume", "kc_upper", "kc_lower", "rsi"}
+    if len(df) < 20 or not required.issubset(df.columns):
+        return _no("Exhaustion Sniper 指標資料不足")
 
-    ma3_curr = float(ma3_series.iloc[-1])
-    ma3_prev = float(ma3_series.iloc[-2])
-    ma3_prev2 = float(ma3_series.iloc[-3])
-    ma3_prev3 = float(ma3_series.iloc[-4])
-    ma3_prev4 = float(ma3_series.iloc[-5])
+    work = df.copy()
+    if "ma3" not in work.columns:
+        work["ma3"] = work["close"].rolling(window=3).mean()
+    if "vol_ma_20" not in work.columns:
+        work["vol_ma_20"] = work["volume"].rolling(window=20).mean()
+    if len(work["ma3"].dropna()) < 3:
+        return _no("MA3資料不足")
 
-    # K線顏色判定 (用於大V括弧)
-    c1 = df.iloc[-1]
-    c2 = df.iloc[-2]
-    c3 = df.iloc[-3]
-    c4 = df.iloc[-4]
-    greens = sum([1 for c in [c1, c2, c3, c4] if float(c['close']) > float(c['open'])])
-    reds = sum([1 for c in [c1, c2, c3, c4] if float(c['close']) < float(c['open'])])
+    ma3_curr = float(work["ma3"].iloc[-1])
+    ma3_prev = float(work["ma3"].iloc[-2])
+    ma3_prev2 = float(work["ma3"].iloc[-3])
+    is_long = wanted_side == "LONG"
+    strict_turn = (
+        ma3_prev2 > ma3_prev and ma3_curr > ma3_prev
+        if is_long
+        else ma3_prev2 < ma3_prev and ma3_curr < ma3_prev
+    )
+    if not strict_turn:
+        return _no("MA3 尚未形成嚴格V型反轉" if is_long else "MA3 尚未形成嚴格倒V型反轉")
 
-    want_dir = 1 if str(side).upper() == "LONG" else -1
+    recent = work.iloc[-EXHAUSTION_SNIPER_LOOKBACK_BARS:]
+    edge_seen = False
+    rsi_seen = False
+    event = None
+    event_age = None
+    for age, (_, candle) in enumerate(recent.iloc[::-1].iterrows()):
+        edge = (
+            float(candle["low"]) <= float(candle["kc_lower"])
+            if is_long
+            else float(candle["high"]) >= float(candle["kc_upper"])
+        )
+        if not edge:
+            continue
+        edge_seen = True
+        rsi = float(candle["rsi"])
+        rsi_ok = rsi < EXHAUSTION_SNIPER_RSI_LONG_MAX if is_long else rsi > EXHAUSTION_SNIPER_RSI_SHORT_MIN
+        if not rsi_ok:
+            continue
+        rsi_seen = True
+        volume_ma = float(candle["vol_ma_20"]) if not pd.isna(candle["vol_ma_20"]) else 0.0
+        volume_ratio = float(candle["volume"]) / volume_ma if volume_ma > 0 else 0.0
+        if volume_ratio <= EXHAUSTION_SNIPER_VOLUME_RATIO:
+            continue
+        event = candle
+        event_age = age
+        break
 
-    is_trough = False
-    is_peak = False
-    trough_reason = ""
-    peak_reason = ""
-    
-    price = float(live_price) if live_price else float(df['close'].iloc[-1])
-    atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
-    flat_threshold = atr * 0.15
+    if event is None:
+        if not edge_seen:
+            return _no(f"最近{EXHAUSTION_SNIPER_LOOKBACK_BARS}根未觸及Keltner極端邊界")
+        if not rsi_seen:
+            threshold = EXHAUSTION_SNIPER_RSI_LONG_MAX if is_long else EXHAUSTION_SNIPER_RSI_SHORT_MIN
+            operator = "<" if is_long else ">"
+            return _no(f"Keltner極端K的RSI未達{operator}{threshold:g}")
+        return _no(f"同一根極端K的量能未大於{EXHAUSTION_SNIPER_VOLUME_RATIO:g}x")
 
-    # MA2 摸底與 KC 突破共用同一組硬性進場品質門檻。
-    adx = float(df["adx"].iloc[-1]) if "adx" in df.columns and not pd.isna(df["adx"].iloc[-1]) else 0.0
-    if adx < ADX_MANDATORY_MIN:
-        return _no(f"MA2 ADX不足({adx:.1f}<{ADX_MANDATORY_MIN:.1f})")
-    volume = float(df["volume"].iloc[-1]) if "volume" in df.columns else 0.0
-    volume_ma = float(df["vol_ma_20"].iloc[-1]) if "vol_ma_20" in df.columns and not pd.isna(df["vol_ma_20"].iloc[-1]) else 0.0
-    volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
-    if volume_ratio < KELTNER_MIN_VOLUME_RATIO:
-        return _no(f"MA2量能不足({volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)")
-
-    last_close = float(df['close'].iloc[-1])
-    last_open = float(df['open'].iloc[-1])
-    is_green_candle = last_close > last_open
-    is_red_candle = last_close < last_open
-
-    # 1. 尖端 (V 型谷底)
-    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
-        is_trough = True
-        trough_reason = "MA3 尖端(V型)谷底"
-    # 2. 小梯形 (底平緩：左側下降，底部平/微升降，右側上升)
-    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
-        is_trough = True
-        trough_reason = "MA3 梯形谷底"
-    # 3. 大V括弧 / 圓弧底 (確認真正往上：當前K為綠K且收盤站上MA3)
-    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2 and is_green_candle and last_close > ma3_curr:
-        is_trough = True
-        trough_reason = f"MA3 圓弧底(確認真正往上, 附{greens}根綠K)"
-    # 4. U形線 (左側下降，底部盤整3根以上，右側轉彎向上)
-    elif ma3_prev4 > ma3_prev3 and abs(ma3_prev3 - ma3_prev) <= flat_threshold and ma3_curr > ma3_prev:
-        is_trough = True
-        trough_reason = "MA3 U形底(轉彎向上)"
-
-    # 1. 尖端 (倒 V 型峰頂)
-    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
-        is_peak = True
-        peak_reason = "MA3 尖端(倒V型)峰頂"
-    # 2. 小梯形 (頂平緩：左側上升，頂部平/微升降，右側下降)
-    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
-        is_peak = True
-        peak_reason = "MA3 梯形峰頂"
-    # 3. 大V括弧 / 圓弧頂 (確認真正往下：當前K為紅K且收盤跌破MA3)
-    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2 and is_red_candle and last_close < ma3_curr:
-        is_peak = True
-        peak_reason = f"MA3 圓弧頂(確認真正往下, 附{reds}根紅K)"
-    # 4. 倒U形線 (左側上升，頂部盤整3根以上，右側轉彎向下)
-    elif ma3_prev4 < ma3_prev3 and abs(ma3_prev3 - ma3_prev) <= flat_threshold and ma3_curr < ma3_prev:
-        is_peak = True
-        peak_reason = "MA3 倒U形頂(轉彎向下)"
-
-    # --- 小波動過濾 (所有不規則波浪與小波動都不理，必須確認真實空間) ---
-    # 擴大回溯區間，尋找上一次的「反向轉折」
-    cooldown_period = 6
-    if (is_trough or is_peak) and len(ma3_series) >= cooldown_period + 5:
-        last_opposite_idx = -1
-        last_opposite_price = 0.0
-        for i in range(1, cooldown_period + 1):
-            idx = -1 - i
-            m_curr = ma3_series.iloc[idx]
-            m_prev = ma3_series.iloc[idx-1]
-            m_prev2 = ma3_series.iloc[idx-2]
-            m_prev3 = ma3_series.iloc[idx-3]
-            m_prev4 = ma3_series.iloc[idx-4]
-            
-            # 若當前尋找多單(谷底)，則回頭找空單(峰頂)
-            if want_dir == 1:
-                if (m_prev2 < m_prev and m_curr < m_prev) or \
-                   (m_prev3 < m_prev2 and m_curr < m_prev and m_prev <= m_prev2) or \
-                   (m_curr < m_prev and m_prev4 < m_prev3) or \
-                   (m_prev4 < m_prev3 and abs(m_prev3 - m_prev) <= flat_threshold and m_curr < m_prev):
-                    last_opposite_idx = i
-                    last_opposite_price = df['close'].iloc[idx]
-                    break
-            # 若當前尋找空單(峰頂)，則回頭找多單(谷底)
-            else:
-                if (m_prev2 > m_prev and m_curr > m_prev) or \
-                   (m_prev3 > m_prev2 and m_curr > m_prev and m_prev >= m_prev2) or \
-                   (m_curr > m_prev and m_prev4 > m_prev3) or \
-                   (m_prev4 > m_prev3 and abs(m_prev3 - m_prev) <= flat_threshold and m_curr > m_prev):
-                    last_opposite_idx = i
-                    last_opposite_price = df['close'].iloc[idx]
-                    break
-                    
-    if want_dir == 1:
-        if not is_trough:
-            return _no("MA3 未形成尖端、小梯形或大V括弧谷底")
-        direction_note = trough_reason + " (LONG)"
-    else:
-        if not is_peak:
-            return _no("MA3 未形成尖端、小梯形或大V括弧峰頂")
-        direction_note = peak_reason + " (SHORT)"
-
-    price = float(live_price) if live_price else float(df['close'].iloc[-1])
-    atr = float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else price * 0.015
-
-    # 如果有用到 MA5 和 MA15 (用作乖離等計算，保留計算以防其他地方報錯)
-    if 'ma5' not in df.columns:
-        df['ma5'] = df['close'].rolling(window=5).mean()
-    if 'ma15' not in df.columns:
-        df['ma15'] = df['close'].rolling(window=15).mean()
-    ma5_curr = float(df['ma5'].iloc[-1]) if len(df['ma5'].dropna()) > 0 else 0.0
-    ma15_curr = float(df['ma15'].iloc[-1]) if len(df['ma15'].dropna()) > 0 else 0.0
-    turn_sharpness = abs(ma5_curr - ma15_curr)
-
+    price = float(live_price) if live_price and live_price > 0 else float(work["close"].iloc[-1])
+    atr = float(work["atr"].iloc[-1]) if "atr" in work.columns and not pd.isna(work["atr"].iloc[-1]) else price * 0.015
+    event_vol_ma = float(event["vol_ma_20"])
+    event_volume_ratio = float(event["volume"]) / event_vol_ma
+    stop = price * (1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT if is_long else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT)
     return {
         "detected": True,
-        "side": side,
+        "side": wanted_side,
         "score": 100,
         "price": price,
         "atr": atr,
-        "ma5_curr": ma5_curr,
-        "ma5_prev": ma5_curr,
-        "ma5_prev2": ma5_curr,
-        "ma15_curr": ma15_curr,
-        "confirmation_close": last_close,
-        "confirmation_open": last_open,
-        "confirmation_ma2": ma3_curr,
-        "confirmation_ma5": ma5_curr,
-        "confirmation_recent_high": float(df["high"].iloc[-(MA2_CONFIRMATION_LOOKBACK_BARS + 1):-1].max()),
-        "confirmation_recent_low": float(df["low"].iloc[-(MA2_CONFIRMATION_LOOKBACK_BARS + 1):-1].min()),
-        "turn_sharpness": turn_sharpness,
-        "early_projection": False,
-        "fast_entry": False,
-        "pullback_bottom_order": False,
-        "entry_mode": "MA3_PIVOT",
+        "entry_mode": "EXHAUSTION_SNIPER",
         "profit_profile": "TREND_EXTENSION",
         "action": "ENTER_MARKET",
         "target_price": None,
-        "structural_sl": float(df['low'].iloc[-4:].min()) if want_dir == 1 else float(df['high'].iloc[-4:].max()),
-        "is_contrarian_bottom_buy": False,
-        "reason": f"Pivot_{side}｜{direction_note}｜score=100"
+        "structural_sl": stop,
+        "signal_candle_low": float(work["low"].iloc[-1]),
+        "signal_candle_high": float(work["high"].iloc[-1]),
+        "extreme_age_bars": event_age,
+        "extreme_rsi": float(event["rsi"]),
+        "extreme_volume_ratio": event_volume_ratio,
+        "is_contrarian_bottom_buy": is_long,
+        "reason": (
+            f"Exhaustion_Sniper_{wanted_side}｜KC極端+RSI={float(event["rsi"]):.1f}"
+            f"+量能={event_volume_ratio:.2f}x｜MA3嚴格V轉"
+        ),
     }
 
 
