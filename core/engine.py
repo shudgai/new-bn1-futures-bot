@@ -120,6 +120,7 @@ class TradingEngine:
         self.task: asyncio.Task = None
         self.rotation_task: asyncio.Task = None
         self.analysis_task: asyncio.Task = None
+        self.trend_cache_task: asyncio.Task = None
         self.analysis_event = asyncio.Event()
         self.account.on_trade_closed = self.request_trade_analysis
         self.tickers: Dict[str, float] = {}
@@ -927,6 +928,8 @@ class TradingEngine:
             self.rotation_task.cancel()
         if self.analysis_task:
             self.analysis_task.cancel()
+        if self.trend_cache_task:
+            self.trend_cache_task.cancel()
         if self.trigger_task:
             self.trigger_task.cancel()
         if self.trend_follow_task:
@@ -1820,7 +1823,10 @@ class TradingEngine:
 
     async def fetch_klines(self, symbol: str, timeframe: str = "5m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
         try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            ohlcv = await asyncio.wait_for(
+                self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit),
+                timeout=12.0,
+            )
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
             # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
@@ -3125,7 +3131,7 @@ class TradingEngine:
                             if last_trade.get("action", "").startswith("CLOSE_") and last_trade.get("side") == cr_signal:
                                 pnl = float(last_trade.get("pnl") or 0.0)
                                 reason = last_trade.get("reason", "")
-                                if pnl <= 0.5 or "停損" in reason or "SL" in reason.upper() or "止損" in reason:
+                                if pnl <= 0.0 or "停損" in reason or "SL" in reason.upper() or "止損" in reason:
                                     require_true_breakout = True
 
                         if require_true_breakout and not is_true_breakout:
@@ -3143,7 +3149,34 @@ class TradingEngine:
                     _last_close_ts = self.account.last_closed_at.get(symbol, 0.0)
                     _cooldown_sec = CONTINUOUS_REENTRY_COOLDOWN_SEC
                     _elapsed = now_time - _last_close_ts
-                    if not has_pos and _last_close_ts > 0 and _elapsed < _cooldown_sec:
+                    _latest_symbol_trade = next(
+                        (trade for trade in self.account.trades if trade.get("symbol") == symbol),
+                        {},
+                    )
+                    _resume_after_profitable_trailing_exit = (
+                        _latest_symbol_trade.get("action", "").startswith("CLOSE_")
+                        and _latest_symbol_trade.get("side") == cr_signal
+                        and float(_latest_symbol_trade.get("pnl") or 0.0) > 0.0
+                        and "Trailing" in str(_latest_symbol_trade.get("reason") or "")
+                    )
+                    _atr = max(float(cr_info.get("atr") or 0.0), live_price * 0.001)
+                    _ma3 = float(cr_info.get("ma3_curr") or 0.0)
+                    _ma15 = float(cr_info.get("ma15_curr") or 0.0)
+                    _ma3_slope = float(cr_info.get("ma3_slope") or 0.0)
+                    _strong_trend_continuation = (
+                        cr_entry_type in ("TREND_LONG", "TREND_SHORT")
+                        and abs(_ma3 - _ma15) >= _atr * 0.35
+                        and (
+                            (cr_signal == "LONG" and _ma3_slope >= _atr * 0.08)
+                            or (cr_signal == "SHORT" and _ma3_slope <= -_atr * 0.08)
+                        )
+                    )
+                    if (
+                        not has_pos and _last_close_ts > 0 and _elapsed < _cooldown_sec
+                        and not _strong_trend_continuation
+                        and not _resume_after_profitable_trailing_exit
+                        and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN")
+                    ):
                         self.account.log(
                             f"⏳ [{symbol}] 平倉後冷靜中：{_elapsed:.0f}s / {_cooldown_sec:.0f}s，暫不重開 {cr_signal}",
                             "DEBUG",
@@ -3470,8 +3503,9 @@ class TradingEngine:
                 # 呼叫觸發，都會準確記錄，不會像原本這裡自己拿前後快照
                 # 判斷那樣，漏掉別的呼叫者觸發的平倉。
 
-                # 3. 10分鐘定時刷新 1h EMA200 快取 (防止 API Rate Limit 封鎖)
-                await self.update_1h_trend_cache()
+                # 3. 1h 快取獨立執行；外部 K 線請求變慢時不可阻塞 1m 進場掃描。
+                if self.trend_cache_task is None or self.trend_cache_task.done():
+                    self.trend_cache_task = asyncio.create_task(self.update_1h_trend_cache())
 
                 # 4. 先等觸價與 1m 反轉確認，再驗證短效掛單，最後才查成交。
                 now_time = time.time()
