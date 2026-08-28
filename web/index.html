@@ -55,7 +55,7 @@
         .badge-status.stopped { background: var(--down-bg); color: var(--down); border: 1px solid var(--down); }
 
         /* Main Container */
-        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 7fr 5fr; gap: 20px; }
         /* grid item 預設 min-width:auto，內容（例如coin-grid）撐開多寬，
            格子就不會縮小到比那個寬——手機版單欄時會把整個容器往外撐開
            造成橫向捲動，加 min-width:0 讓格子可以縮小到容器寬度內。 */
@@ -163,7 +163,7 @@
         .input-group label { display: block; font-size: 11px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
         .input-group input, .input-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 13px; }
     
-        /* Chart Modal */
+        /* Chart panel */
         .chart-modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.6); z-index: 100;
@@ -213,24 +213,6 @@
         </div>
 
         
-        <!-- CHART MODAL -->
-        <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
-            <div class="chart-modal">
-                <div class="chart-modal-header">
-                    <div class="chart-modal-title">
-                        📈 {{ chartModal.symbol }} K線圖 
-                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m · MA3</span>
-                    </div>
-                    <button class="chart-modal-close" @click="closeChartModal">&times;</button>
-                </div>
-                <div class="chart-modal-body">
-                    <div v-if="chartModal.loading" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--muted)">載入中...</div>
-                    <div v-else-if="chartModal.error" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--down)">{{ chartModal.error }}</div>
-                    <div id="tv-chart" class="chart-container" :style="{ opacity: chartModal.loading || chartModal.error ? 0 : 1 }"></div>
-                </div>
-            </div>
-        </div>
-
         <!-- MAIN LAYOUT -->
         <div class="container">
             <!-- LEFT CONTENT -->
@@ -443,6 +425,17 @@
 
             <!-- RIGHT PANEL CONTROLS -->
             <div class="right-panel">
+                <div class="card chart-card">
+                    <div class="card-title">
+                        <span>📈 {{ chartModal.symbol || '等待幣種' }} K線圖</span>
+                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m · KC · 買賣</span>
+                    </div>
+                    <div class="chart-modal-body" style="height:420px; padding:0;">
+                        <div v-if="chartModal.loading" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--muted)">載入中...</div>
+                        <div v-else-if="chartModal.error" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--down)">{{ chartModal.error }}</div>
+                        <div id="tv-chart" class="chart-container" :style="{ opacity: chartModal.loading || chartModal.error ? 0 : 1 }"></div>
+                    </div>
+                </div>
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
                     <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
@@ -661,6 +654,7 @@
                 if (this._chart) {
                     this._chart.remove();
                 }
+                this._chartRequestHasFit = false;
                 
                 this._chart = LightweightCharts.createChart(container, {
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
@@ -677,10 +671,13 @@
                 this._ma3Series = this._chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
                 this._ma15Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA15' });
                 this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
+                this._kcUpperSeries = this._chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
+                this._kcMiddleSeries = this._chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
+                this._kcLowerSeries = this._chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
             },
             async fetchChartData(symbol) {
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m`);
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, { cache: 'no-store' });
                     if (!res.ok) throw new Error("Failed to fetch K-lines");
                     const json = await res.json();
                     
@@ -688,20 +685,49 @@
                     const ma3 = [];
                     const ma15 = [];
                     const ma99 = [];
+                    const kcUpper = [];
+                    const kcMiddle = [];
+                    const kcLower = [];
+                    const tradeMarkers = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
                         if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
                         if (d.ma15 !== null) ma15.push({ time: d.time, value: d.ma15 });
                         if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
+                        if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
+                        if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
+                        if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
+                        (d.trade_markers || []).forEach(trade => {
+                            const isBuy = trade.action === 'OPEN_LONG' || trade.action === 'CLOSE_SHORT';
+                            const isOpen = trade.action === 'OPEN_LONG' || trade.action === 'OPEN_SHORT';
+                            tradeMarkers.push({
+                                time: d.time,
+                                position: isBuy ? 'belowBar' : 'aboveBar',
+                                color: isOpen ? (isBuy ? '#2563eb' : '#7c3aed') : (isBuy ? '#10b981' : '#ef4444'),
+                                shape: isBuy ? 'arrowUp' : 'arrowDown',
+                                text: (trade.action === 'OPEN_LONG' ? '買入' :
+                                    trade.action === 'OPEN_SHORT' ? '賣出' :
+                                    trade.action === 'CLOSE_LONG' ? '平多' : '平空')
+                                    + (trade.price ? ` @ ${this.formatPrice(trade.price)}` : ''),
+                                size: 2,
+                            });
+                        });
                     });
                     
                     this._candlestickSeries.setData(candles);
                     this._ma3Series.setData(ma3);
                     this._ma15Series.setData(ma15);
                     this._ma99Series.setData(ma99);
+                    this._kcUpperSeries.setData(kcUpper);
+                    this._kcMiddleSeries.setData(kcMiddle);
+                    this._kcLowerSeries.setData(kcLower);
+                    this._candlestickSeries.setMarkers(tradeMarkers);
                     
-                    this._chart.timeScale().fitContent();
+                    if (!this._chartRequestHasFit) {
+                        this._chart.timeScale().fitContent();
+                        this._chartRequestHasFit = true;
+                    }
                     this.chartModal.loading = false;
                 } catch (e) {
                     this.chartModal.error = e.message;
@@ -910,9 +936,17 @@
                 }
             },
             mounted() {
-                this.fetchStatus();
+                this.fetchStatus().then(() => {
+                    const firstSymbol = this.bot.symbols && this.bot.symbols[0];
+                    if (firstSymbol) this.openChartModal(firstSymbol);
+                });
                 setInterval(this.fetchStatus, 3000);  // 完整狀態（logs/trades）每 3 秒
                 setInterval(this.fetchPrices, 500);   // 現價與持倉每 0.5 秒，提升即時反應感
+                setInterval(() => {
+                    if (this.chartModal.symbol && this._chart) {
+                        this.fetchChartData(this.chartModal.symbol);
+                    }
+                }, 1000);
             }
         }).mount('#app');
     </script>

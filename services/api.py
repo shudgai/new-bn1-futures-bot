@@ -360,10 +360,12 @@ async def reset_account():
 
 
 @app.get("/api/klines")
-async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
-    """取得K線資料，並計算 MA3, MA15, MA99 提供給前端圖表"""
+async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, include_live: bool = False):
+    """取得K線、均線與策略使用的 Keltner Channel 提供給前端圖表"""
     try:
-        df = await engine.fetch_klines(symbol, timeframe=timeframe, limit=limit)
+        df = await engine.fetch_klines(
+            symbol, timeframe=timeframe, limit=limit, keep_live=include_live
+        )
         if df.empty:
             raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
             
@@ -371,6 +373,24 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
         df['MA3'] = df['close'].rolling(window=3).mean()
         df['MA15'] = df['close'].rolling(window=15).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
+        indicators = engine.strategy.compute_indicators(df)
+        trade_markers = {}
+        for trade in engine.account.trades:
+            if trade.get("symbol") != symbol:
+                continue
+            action = str(trade.get("action") or "")
+            if action not in ("OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"):
+                continue
+            trade_timestamp = int(trade.get("id") or 0)
+            matching_bars = df.index[df["timestamp"] <= trade_timestamp]
+            if len(matching_bars) == 0:
+                continue
+            marker_index = matching_bars[-1]
+            trade_markers.setdefault(marker_index, []).append({
+                "action": action,
+                "reason": trade.get("reason") or "",
+                "price": trade.get("price"),
+            })
         
         # 準備資料
         result = []
@@ -386,6 +406,11 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
                 "ma3": None if pd.isna(row['MA3']) else row['MA3'],
                 "ma15": None if pd.isna(row['MA15']) else row['MA15'],
                 "ma99": None if pd.isna(row['MA99']) else row['MA99'],
+                "kc_upper": None if pd.isna(indicators.loc[index, 'kc_upper']) else indicators.loc[index, 'kc_upper'],
+                "kc_middle": None if pd.isna(indicators.loc[index, 'ema_20']) else indicators.loc[index, 'ema_20'],
+                "kc_lower": None if pd.isna(indicators.loc[index, 'kc_lower']) else indicators.loc[index, 'kc_lower'],
+                "trade_markers": trade_markers.get(index, []),
+                "is_live": bool(include_live and index == df.index[-1]),
             })
             
         return {"symbol": symbol, "timeframe": timeframe, "data": result}

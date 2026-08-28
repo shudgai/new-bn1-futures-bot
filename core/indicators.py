@@ -229,6 +229,8 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     df = df.copy()
     if 'ma3' not in df.columns:
         df['ma3'] = df['close'].rolling(window=3).mean()
+    if 'ema_20' not in df.columns:
+        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
     if 'ma15' not in df.columns:
         df['ma15'] = df['close'].rolling(window=15).mean()
 
@@ -470,6 +472,8 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         df['ma5'] = df['close'].rolling(window=5).mean()
     if 'ma3' not in df.columns:
         df['ma3'] = df['close'].rolling(window=3).mean()
+    if 'ema_20' not in df.columns:
+        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
 
     ma5_series = df['ma5'].dropna()
     if len(ma5_series) < 5:
@@ -505,14 +509,17 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     candle_close = float(curr['close'])
     candle_body = abs(candle_close - candle_open)
     ma3_curr = float(df['ma3'].iloc[-1])
+    kc_middle = float(df['ema_20'].iloc[-1])
     strong_opposite_body = candle_body >= atr_val * 0.50
     pre_peak_exit = bool(
         side == "LONG" and strong_opposite_body
         and candle_close < candle_open and candle_close < ma3_curr
+        and float(curr['low']) <= kc_middle
     )
     pre_trough_exit = bool(
         side == "SHORT" and strong_opposite_body
         and candle_close > candle_open and candle_close > ma3_curr
+        and float(curr['high']) >= kc_middle
     )
 
     reasons = []
@@ -521,15 +528,15 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     if side == "LONG":
         if pre_peak_exit:
             reasons.append("強紅K實體>=0.5ATR且收破MA3 -> 保護性平多")
-        if is_peak_forming:
+        if is_peak_forming and float(curr['low']) <= kc_middle:
             strong = True
-            reasons.append("MA5 嚴格峰頂(倒V型) -> 出場多單")
+            reasons.append("MA5 嚴格峰頂且紅K到KC中軌(倒V型) -> 出場多單")
     else:
         if pre_trough_exit:
             reasons.append("強綠K實體>=0.5ATR且收上MA3 -> 保護性平空")
-        if is_trough_forming:
+        if is_trough_forming and float(curr['high']) >= kc_middle:
             strong = True
-            reasons.append("MA5 嚴格谷底(V型) -> 出場空單")
+            reasons.append("MA5 嚴格谷底且綠K到KC中軌(V型) -> 出場空單")
 
     return {
         "active": bool(reasons),
@@ -544,6 +551,7 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         "pre_trough_exit": pre_trough_exit,
         "opposite_candle_body_atr": candle_body / max(atr_val, 1e-12),
         "ma3_curr": ma3_curr,
+        "kc_middle": kc_middle,
         "adx": float(df['adx'].iloc[-1]) if 'adx' in df.columns else 0.0,
         "atr": atr_val,
     }
