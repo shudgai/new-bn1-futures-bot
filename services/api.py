@@ -416,7 +416,11 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
             matching_bars = df.index[df["timestamp"] <= trade_timestamp]
             if len(matching_bars) == 0:
                 continue
-            executed_entries[matching_bars[-1]] = "LONG" if trade["action"] == "OPEN_LONG" else "SHORT"
+            executed_entries[matching_bars[-1]] = {
+                "side": "LONG" if trade["action"] == "OPEN_LONG" else "SHORT",
+                "reason": trade.get("reason") or "",
+                "entry_mode": trade.get("entry_mode") or "",
+            }
 
         # 準備資料
         result = []
@@ -444,7 +448,9 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
                 "entry_reason": entry_signals.get(index, {}).get("reason"),
                 "entry_rsi": entry_signals.get(index, {}).get("rsi"),
                 "entry_volume_ratio": entry_signals.get(index, {}).get("volume_ratio"),
-                "executed_entry": executed_entries.get(index),
+                "executed_entry": executed_entries.get(index, {}).get("side"),
+                "executed_entry_reason": executed_entries.get(index, {}).get("reason"),
+                "executed_entry_mode": executed_entries.get(index, {}).get("entry_mode"),
             })
             
         return {"symbol": symbol, "timeframe": timeframe, "data": result}

@@ -790,15 +790,23 @@
                         if (d.volume_threshold !== null) volumeThreshold.push({ time: d.time, value: d.volume_threshold });
                         const markerSide = d.executed_entry || d.entry_signal;
                         const markerIsExecuted = Boolean(d.executed_entry);
+                        const executedReason = String(d.executed_entry_reason || '');
+                        const executedMode = String(d.executed_entry_mode || '');
+                        const isPivotEntry = executedMode === 'TROUGH_TURN' || executedMode === 'PEAK_TURN'
+                            || executedReason.includes('TROUGH_TURN') || executedReason.includes('PEAK_TURN');
                         if (markerSide === 'LONG') {
                             entryMarkers.push({
                                 time: d.time, position: 'belowBar', color: '#2563eb',
-                                shape: 'arrowUp', text: markerIsExecuted ? '實際開多：谷底反轉' : '谷底：平空→買多', size: 2,
+                                shape: 'arrowUp', text: markerIsExecuted
+                                    ? (isPivotEntry ? '實際開多：谷底反轉' : '實際開多：順勢')
+                                    : '谷底：平空→買多', size: 2,
                             });
                         } else if (markerSide === 'SHORT') {
                             entryMarkers.push({
                                 time: d.time, position: 'aboveBar', color: '#7c3aed',
-                                shape: 'arrowDown', text: markerIsExecuted ? '實際買空：頂峰反轉' : '頂峰：平多→買空', size: 2,
+                                shape: 'arrowDown', text: markerIsExecuted
+                                    ? (isPivotEntry ? '實際開空：頂峰反轉' : '實際開空：順勢')
+                                    : '頂峰：平多→買空', size: 2,
                             });
                         }
                     });

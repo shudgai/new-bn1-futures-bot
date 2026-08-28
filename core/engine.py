@@ -28,6 +28,7 @@ from core.config import (
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
+    TREND_ENTRY_EXTREME_LOOKBACK_BARS, TREND_ENTRY_EXTREME_BUFFER_ATR,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -3629,6 +3630,28 @@ class TradingEngine:
                                 "INFO",
                             )
                             return signal_progress, detected_candidates
+                        prior_bars = df_cr_entry.iloc[-TREND_ENTRY_EXTREME_LOOKBACK_BARS - 1:-1]
+                        if len(prior_bars) >= 3:
+                            prior_high = float(prior_bars["high"].max())
+                            prior_low = float(prior_bars["low"].min())
+                            near_trend_extreme = (
+                                cr_signal == "LONG"
+                                and live_price >= prior_high - entry_atr * TREND_ENTRY_EXTREME_BUFFER_ATR
+                            ) or (
+                                cr_signal == "SHORT"
+                                and live_price <= prior_low + entry_atr * TREND_ENTRY_EXTREME_BUFFER_ATR
+                            )
+                            if near_trend_extreme:
+                                extreme_name = "前高" if cr_signal == "LONG" else "前低"
+                                signal_progress.append(
+                                    f"{coin} {cr_signal} 接近{extreme_name}，等待回踩/反彈"
+                                )
+                                self.account.log(
+                                    f"⏸️ {symbol} {cr_entry_type} 接近{extreme_name}："
+                                    f"距極值不足 {TREND_ENTRY_EXTREME_BUFFER_ATR:.2f}ATR，暫不追價",
+                                    "INFO",
+                                )
+                                return signal_progress, detected_candidates
 
                     # 止盈後只做時間冷靜：趨勢仍在時可重新承接後半段，
                     # 但不得在同一根 K／數秒內重開；進場仍一律 Maker 預掛。

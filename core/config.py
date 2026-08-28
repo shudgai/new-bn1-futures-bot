@@ -193,6 +193,13 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
 MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(
     0.0, float(os.getenv("MA3_MARKET_ENTRY_MAX_DISTANCE_ATR", "0.30"))
 )
+# 順勢市價單避開最近波段極值：多單接近前高、空單接近前低時等待回踩/反彈。
+TREND_ENTRY_EXTREME_LOOKBACK_BARS = max(
+    3, int(os.getenv("TREND_ENTRY_EXTREME_LOOKBACK_BARS", "8"))
+)
+TREND_ENTRY_EXTREME_BUFFER_ATR = max(
+    0.0, float(os.getenv("TREND_ENTRY_EXTREME_BUFFER_ATR", "0.25"))
+)
 # 低波動時 MA5 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
 MA5_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA5_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
