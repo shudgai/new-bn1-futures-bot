@@ -310,10 +310,10 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     )
     current_open = float(current_candle["open"])
     current_body = current_close - current_open
-    # 收盤必須回到對應半通道：下軌~中軌是谷底多頭確認；
-    # 中軌~上軌是峰頂空頭確認。未收回者視為假突破，維持原方向。
-    trough_reentry_band = kc_lower_curr <= current_close <= ema20_curr
-    peak_reentry_band = ema20_curr <= current_close <= kc_upper_curr
+    # 收盤必須回到通道內：谷底轉折至少要收在下軌之上；
+    # 峰頂轉折至少要收在上軌之下。若反轉力道極強穿透中軌，也是有效的反轉。
+    trough_reentry_band = current_close >= kc_lower_curr
+    peak_reentry_band = current_close <= kc_upper_curr
 
     two_red_peak = bool(
         ma3_prev >= ma3_prev2 and current_slope <= -fast_pivot_slope
