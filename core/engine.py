@@ -1859,6 +1859,35 @@ class TradingEngine:
             candle_pattern = analyze_candle_pattern(bar)
 
             unrealized_pnl_pct = (current_price - position["entry_price"]) / position["entry_price"] if side == "LONG" else (position["entry_price"] - current_price) / position["entry_price"]
+
+            # === 大反向 K 線緊急平倉（不限盈虧，立即出場）===
+            # 持空單時出現大長綠K，持多單時出現大長紅K，不管有沒有獲利，立刻平倉。
+            # 觸發條件：K 線實體（|收盤-開盤|）> 1.5 倍 ATR，且方向與持倉相反。
+            bar_body = abs(float(bar.get("close", 0)) - float(bar.get("open", 0)))
+            atr_val = float(trigger.get("atr") or position.get("atr") or current_price * 0.01)
+            is_big_counter_candle = bar_body >= atr_val * 1.5
+            if is_big_counter_candle:
+                bar_is_bullish = float(bar.get("close", 0)) > float(bar.get("open", 0))
+                bar_is_bearish = float(bar.get("close", 0)) < float(bar.get("open", 0))
+                big_candle_exit = (
+                    (side == "SHORT" and bar_is_bullish)  # 空單遇到大長綠K
+                    or (side == "LONG" and bar_is_bearish)  # 多單遇到大長紅K
+                )
+                if big_candle_exit:
+                    self.account.log(
+                        f"🚨 [大反向K線緊急平倉] {symbol} {side} 出現大{'綠' if bar_is_bullish else '紅'}K "
+                        f"(實體={bar_body:.6g}, ATR={atr_val:.6g}, 倍數={bar_body/atr_val:.1f}x)，"
+                        f"立即平倉！",
+                        "WARNING"
+                    )
+                    if not DISABLE_STOP_LOSS:
+                        await self.account.close_position(
+                            symbol, current_price,
+                            f"大反向K線緊急平倉 (實體={bar_body/atr_val:.1f}x ATR)"
+                        )
+                    return
+            # ============================================
+
             # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
             if unrealized_pnl_pct > 0.002:
                 early_exit_reason = ""
