@@ -73,6 +73,7 @@ def active_leverage_by_score():
     }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 class ManualOrderRequest(BaseModel):
     symbol: str

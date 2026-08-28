@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="/assets/vendor/vue-3.global.prod.js"></script>
+    <script src="/assets/vendor/lightweight-charts-4.1.1.js"></script>
     <style>
         :root {
             --bg: #f4f6f9;
@@ -639,7 +639,7 @@
                     if (existing) existing.remove();
                     const script = document.createElement("script");
                     script.id = "lightweight-charts-fallback";
-                    script.src = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js";
+                    script.src = "/assets/vendor/lightweight-charts-4.1.1.js";
                     script.onload = () => { script.dataset.loaded = "true"; resolve(); };
                     script.onerror = () => { script.remove(); reject(new Error("圖表元件載入失敗，請稍後再試")); };
                     document.head.appendChild(script);
