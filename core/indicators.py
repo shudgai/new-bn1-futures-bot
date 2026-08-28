@@ -297,6 +297,47 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and current_close > ma3_curr
         and current_close - prior_low >= atr * 0.35
     )
+    # 使用者指定的快速 KC 峰谷反手：僅對已收盤 K 生效。
+    # 谷底：空方延伸後，綠 K 下影觸下軌而收回通道內，代表拒絕低價。
+    # 峰頂：此前曾觸上軌，紅 K 再收至中軌或其下，代表高位失守。
+    ema20_curr = float(df["ema_20"].iloc[-1]) if "ema_20" in df.columns else ma3_curr
+    kc_lower_curr = float(df["kc_lower"].iloc[-1]) if "kc_lower" in df.columns else float("-inf")
+    recent_kc = df.iloc[-6:-1]
+    prior_upper_touch = bool(
+        "kc_upper" in recent_kc.columns
+        and (recent_kc["high"] >= recent_kc["kc_upper"]).any()
+    )
+    current_open = float(current_candle["open"])
+    current_body = current_close - current_open
+    immediate_trough = bool(
+        current_body >= atr * 0.20
+        and float(current_candle["low"]) <= kc_lower_curr
+        and current_close >= kc_lower_curr
+        and ma3_prev <= ma3_prev2
+    )
+    immediate_peak = bool(
+        current_body <= -atr * 0.20
+        and current_close <= ema20_curr
+        and prior_upper_touch
+        and ma3_prev >= ma3_prev2
+    )
+    if immediate_trough:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m 綠K觸KC下軌後收回通道內 → 谷底快速反手開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": None, "live_pivot": False,
+            "ma_alignment": ma_alignment,
+        }
+    if immediate_peak:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m 紅K跌回KC中軌且此前觸上軌 → 峰頂快速反手開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": None, "live_pivot": False,
+            "ma_alignment": ma_alignment,
+        }
+
     two_red_peak = bool(
         ma3_prev >= ma3_prev2 and current_slope <= -fast_pivot_slope
         and float(previous_candle["close"]) < float(previous_candle["open"])
