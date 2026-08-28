@@ -1218,7 +1218,7 @@ class TradingEngine:
                     # CONTINUOUS_REVERSE 模式進場的部位用 5m（與進場相同），
                     # 其他路徑仍用 MA5_EXIT_TIMEFRAME（預設 1m）。
                     pos_reason = str(position.get("reason") or "")
-                    is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT"))
+                    is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT", "手動開倉"))
                     is_exhaustion_position = str(position.get("entry_mode") or "") == "EXHAUSTION_SNIPER"
                     from core.config import CONTINUOUS_REVERSE_TIMEFRAME
                     exit_tf = CONTINUOUS_REVERSE_TIMEFRAME if is_cr_position else MA5_EXIT_TIMEFRAME
