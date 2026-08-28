@@ -217,6 +217,39 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
+def classify_keltner_trend(df: pd.DataFrame) -> dict:
+    """用 KC 的方向、寬度與價格接受度判定趨勢；不以 MA3 決定方向。"""
+    required = {"close", "ema_20", "kc_upper", "kc_lower", "atr"}
+    if df is None or len(df) < 6 or not required.issubset(df.columns):
+        return {"detected": False, "reason": "KC資料不足"}
+    recent = df.iloc[-4:]
+    atr = max(float(recent["atr"].iloc[-1] or 0.0), 1e-12)
+    middle = recent["ema_20"].astype(float)
+    upper = recent["kc_upper"].astype(float)
+    lower = recent["kc_lower"].astype(float)
+    closes = recent["close"].astype(float)
+    middle_rise = float(middle.iloc[-1] - middle.iloc[0])
+    upper_rise = float(upper.iloc[-1] - upper.iloc[0])
+    lower_rise = float(lower.iloc[-1] - lower.iloc[0])
+    width_start = max(float(upper.iloc[0] - lower.iloc[0]), 1e-12)
+    width_end = float(upper.iloc[-1] - lower.iloc[-1])
+    width_ok = width_end >= width_start * 0.90
+    long_acceptance = int((closes > middle).sum()) >= 3
+    short_acceptance = int((closes < middle).sum()) >= 3
+    not_chasing_long = float(closes.iloc[-1] - upper.iloc[-1]) <= atr * 0.25
+    not_chasing_short = float(lower.iloc[-1] - closes.iloc[-1]) <= atr * 0.25
+    min_slope = atr * 0.20
+    if (middle_rise >= min_slope and upper_rise >= min_slope and lower_rise >= min_slope
+            and width_ok and long_acceptance and not_chasing_long):
+        return {"detected": True, "side": "LONG", "entry_type": "KC_TREND_LONG",
+                "reason": "KC三軌同步上行、通道未收縮且價格守住中軌", "atr": atr}
+    if (middle_rise <= -min_slope and upper_rise <= -min_slope and lower_rise <= -min_slope
+            and width_ok and short_acceptance and not_chasing_short):
+        return {"detected": True, "side": "SHORT", "entry_type": "KC_TREND_SHORT",
+                "reason": "KC三軌同步下行、通道未收縮且價格壓在中軌下", "atr": atr}
+    return {"detected": False, "reason": "KC尚未形成方向一致且可承接的趨勢"}
+
+
 def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     """
     1m MA3 / MA15 連續轉向邏輯：

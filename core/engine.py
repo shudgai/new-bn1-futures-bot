@@ -69,7 +69,7 @@ def cap_margin_to_trade_risk(
 from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
-from core.indicators import drop_unclosed_candle, compute_position_trigger
+from core.indicators import drop_unclosed_candle, compute_position_trigger, classify_keltner_trend
 
 class TradingEngine:
     def __init__(self):
@@ -122,6 +122,10 @@ class TradingEngine:
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
+        self._startup_pivot_pending = {
+            symbol for symbol in DEFAULT_SYMBOLS
+            if symbol not in self.account.positions
+        }
         self.is_running = False
         self.task: asyncio.Task = None
         self.rotation_task: asyncio.Task = None
@@ -3462,6 +3466,7 @@ class TradingEngine:
                 df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
                 if df_cr.empty or len(df_cr) < 4:
                     return signal_progress, detected_candidates
+                df_cr = self.strategy.compute_indicators(df_cr)
                 df_cr_signal = drop_unclosed_candle(df_cr, CONTINUOUS_REVERSE_TIMEFRAME)
                 cr_info = detect_ma5_ma25_cross_and_turn(df_cr_signal)
                 df_cr_entry = df_cr_signal
@@ -3478,6 +3483,11 @@ class TradingEngine:
                         cr_entry_type = live_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
+                kc_trend = classify_keltner_trend(df_cr_signal)
+                if kc_trend.get("detected") and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                    cr_signal = kc_trend["side"]
+                    cr_entry_type = kc_trend["entry_type"]
+                    cr_info = {**cr_info, **kc_trend, "pivot_score": 85}
 
 
                 wait_state = self._continuous_alignment_wait.get(symbol)
@@ -3558,13 +3568,30 @@ class TradingEngine:
                     cr_signal = None
 
                 if cr_signal:
+                    startup_pivot_pending = symbol in getattr(
+                        self, "_startup_pivot_pending", set()
+                    )
+                    if (
+                        startup_pivot_pending
+                        and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "KC_TREND_LONG", "KC_TREND_SHORT")
+                    ):
+                        signal_progress.append(
+                            f"{coin} 首次開倉等待谷底/頂峰確認"
+                        )
+                        self.account.log(
+                            f"⏸️ {symbol} 上線後首筆開倉只接受谷底/頂峰，"
+                            f"略過 {cr_entry_type} 順勢訊號",
+                            "INFO",
+                        )
+                        return signal_progress, detected_candidates
+
                     last_close = float(df_cr_entry['close'].iloc[-1])
                     clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                     live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
                     # 只允許已確認的峰頂/谷底進場；均線排列與交叉只能作為觀察，
                     # 不再在假突破或盤整時直接開倉、反手。
-                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
+                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT", "KC_TREND_LONG", "KC_TREND_SHORT"):
                         self.account.log(
                             f"⏸️ {symbol} {cr_entry_type} 非峰谷確認訊號，等待真峰頂/谷底後再開倉",
                             "INFO",
@@ -3673,7 +3700,7 @@ class TradingEngine:
                     _ma15 = float(cr_info.get("ma15_curr") or 0.0)
                     _ma3_slope = float(cr_info.get("ma3_slope") or 0.0)
                     _strong_trend_continuation = (
-                        cr_entry_type in ("TREND_LONG", "TREND_SHORT")
+                        cr_entry_type in ("TREND_LONG", "TREND_SHORT", "KC_TREND_LONG", "KC_TREND_SHORT")
                         and abs(_ma3 - _ma15) >= _atr * 0.35
                         and (
                             (cr_signal == "LONG" and _ma3_slope >= _atr * 0.08)
@@ -3756,6 +3783,7 @@ class TradingEngine:
                                 score=100, timeframe=CONTINUOUS_REVERSE_TIMEFRAME,
                             )
                             if opened:
+                                getattr(self, "_startup_pivot_pending", set()).discard(symbol)
                                 self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
 
                     # --- MA5 穿越 MA15（金叉/死叉）：反轉/補開訊號 ---
@@ -3803,7 +3831,7 @@ class TradingEngine:
                             )
 
                     # --- MA3/MA15 trend continuation; pivots are evaluated first ---
-                    elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
+                    elif cr_entry_type in ("TREND_LONG", "TREND_SHORT", "KC_TREND_LONG", "KC_TREND_SHORT"):
                         if has_pos:
                             if curr_side != cr_signal:
                                 self.account.log(
@@ -3834,7 +3862,7 @@ class TradingEngine:
                             )
                             if opened:
                                 self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
-
+                                getattr(self, "_startup_pivot_pending", set()).discard(symbol)
                 if symbol in self.account.positions:
                     position = self.account.positions[symbol]
                     sc = position.get("signal_score") or position.get("raw_signal_score")
