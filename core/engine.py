@@ -1482,11 +1482,20 @@ class TradingEngine:
                         live_close = float(live_candle["close"])
                         prior_high = float(df["high"].iloc[-6:-1].max())
                         prior_low = float(df["low"].iloc[-6:-1].min())
-                        age_sec = max(0.0, time.time() - float(position.get("open_timestamp") or time.time()))
+                        # === V 形角度量化 ===
+                        # slope_change 代表 MA3 斜率的反轉幅度，角度越陡越確定是真轉向
+                        prev_slope_val = ma3_prev - ma3_prev2
+                        slope_change_val = ma3_current_slope - prev_slope_val
+                        live_atr_v = max(float(trigger.get("atr") or 0.0), float(df["close"].iloc[-1]) * 1e-12)
+                        # 陡 V: 斜率反轉幅度 >= 1.5x ATR → 立刻確認，不等第二輪掃描
+                        steep_v_long  = (position.get("side") == "SHORT" and slope_change_val >=  live_atr_v * 1.5)
+                        steep_v_short = (position.get("side") == "LONG"  and slope_change_val <= -live_atr_v * 1.5)
+                        steep_v_pivot = steep_v_long or steep_v_short
+                        # ===========================
+                        # 移除 age_sec > 180 限制：開錯倉要即時更正，不需等 3 分鐘
                         first_reversal_pivot = bool(
-                            age_sec > 180 and
-                            ((position.get("side") == "LONG" and live_close < live_open and prior_high - live_close >= fast_threshold)
-                            or (position.get("side") == "SHORT" and live_close > live_open and live_close - prior_low >= fast_threshold))
+                            (position.get("side") == "LONG" and live_close < live_open and prior_high - live_close >= fast_threshold)
+                            or (position.get("side") == "SHORT" and live_close > live_open and live_close - prior_low >= fast_threshold)
                         )
                         # 大實體反向 K 已跨過 MA3 時，視為急漲／急跌突破：
                         # 不等第二次掃描，平舊倉後同輪立即反手。一般小轉折仍需
@@ -1503,9 +1512,15 @@ class TradingEngine:
                             and body >= live_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
                             and breaks_ma3
                         )
-                        if rapid_impulse_pivot:
+                        if rapid_impulse_pivot or steep_v_pivot:
                             rapid_reverse_side = "SHORT" if position.get("side") == "LONG" else "LONG"
-                        fast_ma3_pivot = ma3_turn or first_reversal_pivot
+                            if steep_v_pivot and not rapid_impulse_pivot:
+                                self.account.log(
+                                    f"📐 [陡V轉向] {symbol} {position.get('side')} "
+                                    f"MA3斜率反轉={slope_change_val/live_atr_v:.1f}x ATR，立刻反手！",
+                                    "WARNING"
+                                )
+                        fast_ma3_pivot = ma3_turn or first_reversal_pivot or steep_v_pivot
                     live_bar_id = (
                         int(float(df["timestamp"].iloc[-1]))
                         if "timestamp" in df.columns else int(df.index[-1])
