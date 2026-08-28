@@ -474,24 +474,56 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
             "noise_threshold": min_pivot_slope,
             "ma_alignment": "NEUTRAL"
         }
-    if ma3_curr < ma15_curr:
+    # 順勢延續不只看 MA3/MA15 排列。必須以已收盤 K 證明動能仍在：
+    # 有足夠實體、收破前一根結構、MA3 同向斜率，且站在 KC 中軌有利側。
+    # 這會排除 MA3 尚未掉頭、價格卻已回落到中軌的小綠/小紅假延續。
+    ema20_curr = float(df["ema_20"].iloc[-1]) if "ema_20" in df.columns else ma3_curr
+    current_body = current_close - float(current_candle["open"])
+    trend_body_min = atr * 0.15
+    trend_volume_ok = volume_baseline <= 0 or current_volume >= volume_baseline * 0.90
+    trend_long_ready = bool(
+        ma3_curr > ma15_curr
+        and current_slope >= fast_pivot_slope
+        and current_body >= trend_body_min
+        and current_close > float(previous_candle["high"])
+        and current_close >= ema20_curr + atr * 0.05
+        and trend_volume_ok
+    )
+    trend_short_ready = bool(
+        ma3_curr < ma15_curr
+        and current_slope <= -fast_pivot_slope
+        and current_body <= -trend_body_min
+        and current_close < float(previous_candle["low"])
+        and current_close <= ema20_curr - atr * 0.05
+        and trend_volume_ok
+    )
+    if trend_short_ready:
         return {
             "signal": "SHORT", "entry_type": "TREND_SHORT",
-            "reason": "1m MA3 位於 MA15 下方且未形成谷底向上 → 順勢延續開空",
+            "reason": "1m MA3下彎、收破前低且守在KC中軌下 → 順勢延續開空",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 85, "ma3_slope": current_slope,
             "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
             "ma_alignment": "BELOW"
         }
 
-    if ma3_curr > ma15_curr:
+    if trend_long_ready:
         return {
             "signal": "LONG", "entry_type": "TREND_LONG",
-            "reason": "1m MA3 位於 MA15 上方且未形成峰頂向下 → 順勢延續開多",
+            "reason": "1m MA3上彎、收破前高且守在KC中軌上 → 順勢延續開多",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 85, "ma3_slope": current_slope,
             "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
             "ma_alignment": "ABOVE"
+        }
+
+    if ma3_curr != ma15_curr:
+        return {
+            "signal": None, "entry_type": "WAIT_TREND_RECLAIM",
+            "reason": "MA3排列存在但K線未收破結構或未守住KC中軌，等待確認",
+            "atr": atr, "pivot_confirmed": False, "pivot_score": 0,
+            "ma3_slope": current_slope, "ma3_curr": ma3_curr,
+            "ma15_curr": ma15_curr, "ma_alignment": ma_alignment,
         }
 
     return {

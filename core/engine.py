@@ -3516,15 +3516,8 @@ class TradingEngine:
                 df_cr_entry = df_cr_signal
                 cr_signal = cr_info.get("signal")
                 cr_entry_type = cr_info.get("entry_type", "")
-                if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                    live_info = detect_ma5_ma25_cross_and_turn(
-                        df_cr, allow_live_pivot=True
-                    )
-                    if live_info.get("entry_type") in ("TREND_LONG", "TREND_SHORT"):
-                        cr_info = live_info
-                        df_cr_entry = df_cr
-                        cr_signal = live_info.get("signal")
-                        cr_entry_type = live_info.get("entry_type", "")
+                # 順勢單也只使用已收盤 K：形成中的小綠/小紅 K 可能收盤反向，
+                # 不得搶先當成 MA3 延續進場。
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
 
