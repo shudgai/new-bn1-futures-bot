@@ -314,34 +314,6 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     # 中軌~上軌是峰頂空頭確認。未收回者視為假突破，維持原方向。
     trough_reentry_band = kc_lower_curr <= current_close <= ema20_curr
     peak_reentry_band = ema20_curr <= current_close <= kc_upper_curr
-    immediate_trough = bool(
-        current_body >= atr * 0.20
-        and float(current_candle["low"]) <= kc_lower_curr
-        and trough_reentry_band
-        and ma3_prev <= ma3_prev2
-    )
-    immediate_peak = bool(
-        current_body <= -atr * 0.20
-        and peak_reentry_band
-        and prior_upper_touch
-        and ma3_prev >= ma3_prev2
-    )
-    if immediate_trough:
-        return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m 綠K觸KC下軌且收回下軌~中軌 → 谷底快速反手開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "volume_confirmed": None, "live_pivot": False,
-            "ma_alignment": ma_alignment,
-        }
-    if immediate_peak:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m 紅K自KC上軌收回中軌~上軌 → 峰頂快速反手開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "volume_confirmed": None, "live_pivot": False,
-            "ma_alignment": ma_alignment,
-        }
 
     two_red_peak = bool(
         ma3_prev >= ma3_prev2 and current_slope <= -fast_pivot_slope
@@ -437,12 +409,21 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and ma3_prev - ma3_prev3 >= fast_pivot_slope
         and current_slope <= -fast_pivot_slope
     )
-    if step_trough or step_peak:
+    if step_trough:
         return {
-            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
-            "reason": "1m MA3 初步峰谷，等待兩根反向K、放量與收破結構確認",
-            "atr": atr, "pivot_confirmed": False, "pivot_score": 0,
-            "ma3_slope": current_slope, "ma_alignment": ma_alignment,
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m MA3 梯形線谷底確認 → 立即開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
+            "ma_alignment": ma_alignment,
+        }
+    if step_peak:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m MA3 梯形線峰頂確認 → 立即開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
+            "ma_alignment": ma_alignment,
         }
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
