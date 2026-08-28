@@ -2246,12 +2246,12 @@ async def test_exhaustion_sniper_hard_stop_ignores_peak_gate(tmp_path, monkeypat
         entry_context={"entry_mode": "EXHAUSTION_SNIPER"},
     )
 
-    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(97.0)
+    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(98.8)
     # 即使前三分鐘先達到 0.5%，固定鎖利也不可移動硬停損或提早出場。
     await account.update_positions({"TEST/USDT": 100.5})
-    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(97.0)
+    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(98.8)
     assert not account.position_meta["TEST/USDT"].get("fixed_profit_lock_pct_armed")
-    await account.update_positions({"TEST/USDT": 97.0})
+    await account.update_positions({"TEST/USDT": 98.8})
 
     assert "TEST/USDT" not in account.positions
     assert "Stop-Loss" in account.trades[0]["reason"]
@@ -3029,7 +3029,7 @@ async def test_exhaustion_sniper_structured_entry_is_market_with_exact_stop(monk
     assert await engine._place_structured_entry("TEST/USDT", signal, 100.0) is True
     assert len(market_orders) == 1
     assert market_orders[0]["price"] == pytest.approx(100.0)
-    assert market_orders[0]["sl"] == pytest.approx(97.0)
+    assert market_orders[0]["sl"] == pytest.approx(98.8)
     assert market_orders[0]["tp"] == 0.0
     assert market_orders[0]["entry_context"]["entry_mode"] == "EXHAUSTION_SNIPER"
 
@@ -3073,8 +3073,8 @@ def _continuous_cross_frame(side="LONG", volume=100.0, wick_trap=False):
 def test_aligned_ma3_ma5_above_ma25_opens_long():
     result = detect_ma5_ma25_cross_and_turn(_continuous_cross_frame())
 
-    assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["signal"] == "LONG"
+    assert result["entry_type"] == "TROUGH_TURN"
     assert result["ma_alignment"] == "ABOVE"
 
 
@@ -3159,8 +3159,8 @@ def test_ma3_below_ma15_trough_turns_up_instead_of_opening_short():
         _ma3_ma15_frame([99.4, 99.0, 99.2])
     )
 
-    assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["signal"] == "LONG"
+    assert result["entry_type"] == "TROUGH_TURN"
     assert result["ma_alignment"] == "BELOW"
 
 
@@ -3188,8 +3188,8 @@ def test_ma3_above_ma15_peak_turns_down_instead_of_opening_long():
         _ma3_ma15_frame([100.8, 101.2, 101.0])
     )
 
-    assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "PEAK_TURN"
     assert result["ma_alignment"] == "ABOVE"
 
 
@@ -3244,7 +3244,7 @@ def test_small_peak_crossing_below_ma15_keeps_direction():
     )
 
     assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["entry_type"] == "WAIT_MA_NOISE"
 
 
 def test_small_trough_crossing_above_ma15_keeps_direction():
@@ -3253,7 +3253,7 @@ def test_small_trough_crossing_above_ma15_keeps_direction():
     )
 
     assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["entry_type"] == "WAIT_MA_NOISE"
 
 
 @pytest.mark.parametrize(
@@ -3338,169 +3338,6 @@ def test_pivot_turn_entry_filters_restore_kc_rsi_and_volume():
         assert result["extreme_volume_ratio"] == pytest.approx(1.51)
 
 
-@pytest.mark.anyio
-async def test_exhaustion_cycle_has_no_midway_take_profit_or_stop_loss(tmp_path, monkeypatch):
-    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "peak_valley_cycle.json"))
-    monkeypatch.setattr(pa_module, "DISABLE_STOP_LOSS", True)
-    monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", True)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_LADDER", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
-    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
-    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
-    monkeypatch.setattr(pa_module, "MAX_POSITION_MARGIN_LOSS_RATIO", 0.0)
-    monkeypatch.setattr(pa_module, "MAX_ACCEPTABLE_LOSS_PCT", -1.0)
-    account = PaperAccount()
-    opened = await account.open_position(
-        "TEST/USDT", "LONG", 100.0, 50.0, 97.0, 110.0,
-        "谷底買多", leverage=5, signal_score=100, apply_slippage=False,
-        entry_context={"entry_mode": "EXHAUSTION_SNIPER"},
-    )
-    assert opened is True
-    assert account.positions["TEST/USDT"]["sl"] == 0.0
-    assert account.positions["TEST/USDT"]["tp"] == 0.0
-
-    # 舊版持倉即使已留下鎖利 SL，重啟也必須遷移成純峰谷出場。
-    account.positions["TEST/USDT"]["sl"] = 101.0
-    account.positions["TEST/USDT"]["fixed_profit_lock_pct_armed"] = True
-    await account.initialize()
-    assert account.positions["TEST/USDT"]["sl"] == 0.0
-    assert account.positions["TEST/USDT"]["fixed_profit_lock_pct_armed"] is False
-
-    await account.update_positions({"TEST/USDT": 70.0})
-    assert "TEST/USDT" in account.positions
-    await account.update_positions({"TEST/USDT": 120.0})
-    assert "TEST/USDT" in account.positions
-
-
-@pytest.mark.anyio
-async def test_exhaustion_position_holds_until_opposite_signal_then_closes_and_reverses(monkeypatch):
-    symbol = "TEST/USDT"
-
-    class DummyAccount:
-        def __init__(self):
-            self.positions = {symbol: {
-                "side": "LONG", "entry_mode": "EXHAUSTION_SNIPER",
-                "entry_price": 100.0, "open_timestamp": 0.0,
-                "unrealized_pnl": 1.0,
-            }}
-            self.position_meta = {}
-            self.closed = []
-            self.logs = []
-
-        async def close_position(self, sym, price, reason, is_manual=False):
-            self.closed.append((sym, price, reason, is_manual))
-            self.positions.pop(sym, None)
-            return True
-
-        def log(self, text, level):
-            self.logs.append((text, level))
-
-    frame = pd.DataFrame({
-        "timestamp": list(range(30)),
-        "open": [100.0] * 30, "close": [100.1] * 30,
-        "high": [100.2] * 30, "low": [99.8] * 30,
-        "volume": [100.0] * 30, "atr": [1.0] * 30,
-    })
-    prepared = frame.copy()
-    prepared["ma3"] = 100.0
-    prepared["vol_ma_20"] = 100.0
-    prepared["kc_upper"] = 101.0
-    prepared["kc_lower"] = 99.0
-    prepared["rsi"] = 65.0
-    prepared_next = prepared.copy()
-    prepared_next.loc[prepared_next.index[-1], "timestamp"] = 30
-    prepared_final = prepared.copy()
-    prepared_final.loc[prepared_final.index[-1], "timestamp"] = 31
-    prepared_frames = [prepared, prepared_next, prepared_final]
-
-    engine = object.__new__(TradingEngine)
-    engine.account = DummyAccount()
-    engine.is_running = True
-    engine.tickers = {symbol: 100.1}
-    engine.position_triggers = {}
-    engine._soft_warning_since = {}
-    engine._exhaustion_reverse_confirmations = {}
-    engine.strategy = SuperTrendKeltnerStrategy()
-    engine.strategy.compute_indicators = lambda input_df: input_df
-    engine._ma5_exit_ready = lambda *_args: (True, "ready")
-    fetch_count = 0
-
-    async def fetch_klines(*_args, **_kwargs):
-        nonlocal fetch_count
-        current_frame = prepared_frames[min(fetch_count, len(prepared_frames) - 1)]
-        fetch_count += 1
-        return current_frame
-
-    opened = []
-
-    async def place_entry(sym, signal, price):
-        opened.append((sym, signal["side"], price, signal["reason"]))
-        return True
-
-    engine.fetch_klines = fetch_klines
-    engine._place_structured_entry = place_entry
-    monkeypatch.setattr(engine_module, "compute_position_trigger", lambda *_args: {"atr": 1.0})
-    monkeypatch.setattr(engine_module, "has_volume_divergence", lambda *_args: False)
-    monkeypatch.setattr(engine_module, "check_exhaustion_entry_filters", lambda *_args: {
-        "passed": True, "reason": "KC＋RSI＋1.5倍量能通過",
-        "extreme_age_bars": 1, "extreme_rsi": 65.0, "extreme_volume_ratio": 1.6,
-    })
-    monkeypatch.setattr(engine_module, "check_ma3_exhaustion_bend", lambda *_args: {
-        "passed": False, "reason": "尚未到峰頂彎曲",
-    })
-
-    original_sleep = asyncio.sleep
-
-    async def stop_after_one_loop(_seconds):
-        engine.is_running = False
-        await original_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", stop_after_one_loop)
-    await engine._position_trigger_loop()
-    assert symbol in engine.account.positions
-    assert engine.account.closed == []
-    assert opened == []
-
-    engine.is_running = True
-    monkeypatch.setattr(engine_module, "check_ma3_exhaustion_bend", lambda *_args: {
-        "passed": True, "reason": "MA3峰頂彎曲確認",
-    })
-    await engine._position_trigger_loop()
-    assert symbol in engine.account.positions
-    assert engine.account.closed == []
-
-    engine.is_running = True
-    await engine._position_trigger_loop()
-    assert symbol not in engine.account.positions
-    assert len(engine.account.closed) == 1
-    assert opened[0][1] == "SHORT"
-    assert "反手確認" in opened[0][3]
-
-
-def test_ma3_short_waits_until_upward_slope_clearly_decelerates():
-    early = _exhaustion_frame("SHORT")
-    early.loc[early.index[-1], ["open", "close"]] = [100.0, 100.2]
-    early.loc[early.index[-3]:, "ma3"] = [99.6, 100.0, 100.5]
-    assert strategy_module.check_ma3_exhaustion_bend(early, "SHORT")["passed"] is False
-
-    bent = early.copy()
-    bent.loc[bent.index[-3]:, "ma3"] = [99.6, 100.0, 100.15]
-    result = strategy_module.check_ma3_exhaustion_bend(bent, "SHORT")
-    assert result["passed"] is True
-    assert "峰頂彎曲" in result["reason"]
-
-
-def test_ma3_long_waits_for_symmetric_valley_bend_on_red_candle():
-    frame = _exhaustion_frame("LONG")
-    frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 100.0]
-    frame.loc[frame.index[-3]:, "ma3"] = [100.4, 100.0, 99.85]
-    result = strategy_module.check_ma3_exhaustion_bend(frame, "LONG")
-    assert result["passed"] is True
-    assert "谷底彎曲" in result["reason"]
-
-
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_exhaustion_sniper_requires_all_four_conditions_and_enters_market(side):
     result = detect_ma5_reversal(_exhaustion_frame(side), side=side, live_price=100.0)
@@ -3510,7 +3347,7 @@ def test_exhaustion_sniper_requires_all_four_conditions_and_enters_market(side):
     assert result["action"] == "ENTER_MARKET"
     assert result["extreme_age_bars"] == 1
     assert result["extreme_volume_ratio"] == pytest.approx(1.51)
-    assert result["structural_sl"] == pytest.approx(97.0 if side == "LONG" else 103.0)
+    assert result["structural_sl"] == pytest.approx(98.8 if side == "LONG" else 101.2)
 
 
 def test_exhaustion_sniper_does_not_stitch_conditions_from_different_bars():

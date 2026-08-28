@@ -4,7 +4,6 @@ import io
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import core.config as config
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +13,6 @@ from core.config import (
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS
 )
 from core.engine import engine
-from core.strategy import check_exhaustion_entry_filters, check_ma3_exhaustion_bend, check_dead_fish_market
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
@@ -74,7 +72,6 @@ def active_leverage_by_score():
     }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
-app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 class ManualOrderRequest(BaseModel):
     symbol: str
@@ -358,16 +355,15 @@ async def reset_account():
     """清空帳戶所有狀態（損益、交易記錄、持倉），重新從初始餘額開始。"""
     if hasattr(engine.account, "reset_state"):
         engine.account.reset_state()
-        engine._startup_pivot_pending = set(config.DEFAULT_SYMBOLS)
         return {"status": "success", "message": "帳戶已重置，損益與交易記錄已清空"}
     raise HTTPException(status_code=501, detail="此帳戶類型不支援重置")
 
 
 @app.get("/api/klines")
-async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, include_live: bool = False):
-    """取得K線與策略指標；include_live 僅供圖表即時顯示，交易訊號仍排除未收盤K。"""
+async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200):
+    """取得K線資料，並計算 MA3, MA15, MA99 提供給前端圖表"""
     try:
-        df = await engine.fetch_klines(symbol, timeframe=timeframe, limit=limit, keep_live=include_live)
+        df = await engine.fetch_klines(symbol, timeframe=timeframe, limit=limit)
         if df.empty:
             raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
             
@@ -375,60 +371,10 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
         df['MA3'] = df['close'].rolling(window=3).mean()
         df['MA15'] = df['close'].rolling(window=15).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
-
-        # 以自動下單的同一套條件標示候選買賣點；只標示一段連續
-        # 訊號的第一根，避免同一個極端事件沿途重複畫滿標記。
-        signal_df = engine.strategy.compute_indicators(df)
-        entry_signals = {}
-        marked_signal_events = set()
-        signal_bar_count = len(signal_df) - 1 if include_live else len(signal_df)
-        for position in range(signal_bar_count):
-            prefix = signal_df.iloc[:position + 1]
-            if position < 19 or pd.isna(prefix['ma3'].iloc[-3]):
-                continue
-            dead_fish = check_dead_fish_market(prefix)
-            if dead_fish.get('blocked'):
-                continue
-            side = None
-            long_bend = check_ma3_exhaustion_bend(prefix, 'LONG')
-            short_bend = check_ma3_exhaustion_bend(prefix, 'SHORT')
-            if long_bend.get('passed'):
-                side = 'LONG'
-            elif short_bend.get('passed'):
-                side = 'SHORT'
-
-            exhaustion = check_exhaustion_entry_filters(prefix, side) if side else {'passed': False}
-            if exhaustion.get('passed'):
-                event_position = position - int(exhaustion.get('extreme_age_bars') or 0)
-                event_key = (side, event_position)
-                if event_key not in marked_signal_events:
-                    entry_signals[signal_df.index[position]] = {
-                        'side': side,
-                        'reason': f"{(long_bend if side == 'LONG' else short_bend).get('reason')}｜{exhaustion.get('reason')}",
-                        'rsi': exhaustion.get('extreme_rsi'),
-                        'volume_ratio': exhaustion.get('extreme_volume_ratio'),
-                    }
-                    marked_signal_events.add(event_key)
-
-        # 實際開倉箭頭以帳戶交易紀錄為準，避免歷史候選訊號回算漏標。
-        executed_entries = {}
-        for trade in engine.account.trades:
-            if trade.get("symbol") != symbol or trade.get("action") not in ("OPEN_LONG", "OPEN_SHORT"):
-                continue
-            trade_timestamp = int(trade.get("id") or 0)
-            matching_bars = df.index[df["timestamp"] <= trade_timestamp]
-            if len(matching_bars) == 0:
-                continue
-            executed_entries[matching_bars[-1]] = {
-                "side": "LONG" if trade["action"] == "OPEN_LONG" else "SHORT",
-                "reason": trade.get("reason") or "",
-                "entry_mode": trade.get("entry_mode") or "",
-            }
-
+        
         # 準備資料
         result = []
         for index, row in df.iterrows():
-            indicator_row = signal_df.loc[index]
             # TradingView 需要的 time 是 unix timestamp (seconds)
             time_sec = int(row['timestamp'] / 1000)
             result.append({
@@ -440,20 +386,6 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
                 "ma3": None if pd.isna(row['MA3']) else row['MA3'],
                 "ma15": None if pd.isna(row['MA15']) else row['MA15'],
                 "ma99": None if pd.isna(row['MA99']) else row['MA99'],
-                "kc_upper": None if pd.isna(indicator_row['kc_upper']) else indicator_row['kc_upper'],
-                "kc_middle": None if pd.isna(indicator_row['ema_20']) else indicator_row['ema_20'],
-                "kc_lower": None if pd.isna(indicator_row['kc_lower']) else indicator_row['kc_lower'],
-                "rsi": None if pd.isna(indicator_row['rsi']) else indicator_row['rsi'],
-                "volume": indicator_row['volume'],
-                "volume_threshold": None if pd.isna(indicator_row['vol_ma_20']) else indicator_row['vol_ma_20'] * 1.5,
-                "is_live": bool(include_live and index == df.index[-1]),
-                "entry_signal": entry_signals.get(index, {}).get("side"),
-                "entry_reason": entry_signals.get(index, {}).get("reason"),
-                "entry_rsi": entry_signals.get(index, {}).get("rsi"),
-                "entry_volume_ratio": entry_signals.get(index, {}).get("volume_ratio"),
-                "executed_entry": executed_entries.get(index, {}).get("side"),
-                "executed_entry_reason": executed_entries.get(index, {}).get("reason"),
-                "executed_entry_mode": executed_entries.get(index, {}).get("entry_mode"),
             })
             
         return {"symbol": symbol, "timeframe": timeframe, "data": result}

@@ -48,8 +48,6 @@ from core.config import (
     EXHAUSTION_SNIPER_LOOKBACK_BARS, EXHAUSTION_SNIPER_VOLUME_RATIO,
     EXHAUSTION_SNIPER_RSI_LONG_MAX, EXHAUSTION_SNIPER_RSI_SHORT_MIN,
     EXHAUSTION_SNIPER_STOP_LOSS_PCT,
-    DEAD_FISH_FILTER_ENABLED, DEAD_FISH_ADX_MAX, DEAD_FISH_ATR_PCT_MAX,
-    DEAD_FISH_KC_WIDTH_PCT_MAX, DEAD_FISH_RANGE_PCT_MAX,
 )
 import core.config as _core_config
 
@@ -426,88 +424,6 @@ def compute_net_reward_risk(
     net_risk = stop_distance + execution_cost
     ratio = net_reward / net_risk if net_risk > 0 else 0.0
     return ratio, net_reward, net_risk
-
-
-def check_dead_fish_market(df: pd.DataFrame) -> dict:
-    """低趨勢、低波動、窄通道與窄區間同時成立才視為死魚盤。"""
-    required = {"high", "low", "close", "atr", "adx", "kc_upper", "kc_lower"}
-    if not DEAD_FISH_FILTER_ENABLED:
-        return {"blocked": False, "reason": "死魚盤過濾已停用"}
-    if df is None or len(df) < 10 or not required.issubset(df.columns):
-        return {"blocked": False, "reason": "死魚盤資料不足"}
-
-    row = df.iloc[-1]
-    close = abs(float(row["close"]))
-    if close <= 0:
-        return {"blocked": False, "reason": "價格資料無效"}
-    adx = float(row["adx"]) if not pd.isna(row["adx"]) else 0.0
-    atr_pct = abs(float(row["atr"])) / close
-    kc_width_pct = abs(float(row["kc_upper"]) - float(row["kc_lower"])) / close
-    recent = df.iloc[-10:]
-    range_pct = (float(recent["high"].max()) - float(recent["low"].min())) / close
-    blocked = bool(
-        adx < DEAD_FISH_ADX_MAX
-        and atr_pct < DEAD_FISH_ATR_PCT_MAX
-        and kc_width_pct < DEAD_FISH_KC_WIDTH_PCT_MAX
-        and range_pct < DEAD_FISH_RANGE_PCT_MAX
-    )
-    reason = (
-        f"死魚盤：ADX={adx:.1f}、ATR={atr_pct:.3%}、KC寬={kc_width_pct:.3%}、10分區間={range_pct:.3%}"
-        if blocked else "波動或趨勢足夠"
-    )
-    return {
-        "blocked": blocked, "reason": reason, "adx": adx,
-        "atr_pct": atr_pct, "kc_width_pct": kc_width_pct,
-        "range_pct": range_pct,
-    }
-
-
-def check_ma3_exhaustion_bend(df: pd.DataFrame, side: str) -> dict:
-    """確認 MA3 在極端行情末端明顯減速彎曲，但仍於有利價格方向進場。"""
-    wanted_side = str(side).upper()
-    required = {"open", "close", "ma3", "atr"}
-    if df is None or len(df) < 3 or not required.issubset(df.columns):
-        return {"passed": False, "reason": "MA3彎曲資料不足"}
-
-    recent_ma3 = df["ma3"].dropna()
-    if len(recent_ma3) < 3:
-        return {"passed": False, "reason": "MA3彎曲資料不足"}
-
-    previous_slope = float(recent_ma3.iloc[-2] - recent_ma3.iloc[-3])
-    current_slope = float(recent_ma3.iloc[-1] - recent_ma3.iloc[-2])
-    candle_open = float(df["open"].iloc[-1])
-    candle_close = float(df["close"].iloc[-1])
-    atr = abs(float(df["atr"].iloc[-1])) if not pd.isna(df["atr"].iloc[-1]) else 0.0
-    min_bend = max(atr * 0.03, abs(candle_close) * 0.00005)
-
-    if wanted_side == "LONG":
-        candle_ok = candle_close < candle_open
-        bend_amount = current_slope - previous_slope
-        slope_ok = previous_slope < 0.0 and current_slope >= previous_slope * 0.75
-        passed = candle_ok and slope_ok and bend_amount >= min_bend
-        reason = (
-            "MA3下跌斜率明顯衰減，谷底彎曲確認"
-            if passed else "等待紅K中的MA3谷底彎曲（下跌斜率至少衰減25%）"
-        )
-    elif wanted_side == "SHORT":
-        candle_ok = candle_close > candle_open
-        bend_amount = previous_slope - current_slope
-        slope_ok = previous_slope > 0.0 and current_slope <= previous_slope * 0.75
-        passed = candle_ok and slope_ok and bend_amount >= min_bend
-        reason = (
-            "MA3上升斜率明顯衰減，峰頂彎曲確認"
-            if passed else "等待綠K中的MA3峰頂彎曲（上升斜率至少衰減25%）"
-        )
-    else:
-        return {"passed": False, "reason": "方向必須是LONG或SHORT"}
-
-    return {
-        "passed": passed,
-        "reason": reason,
-        "previous_slope": previous_slope,
-        "current_slope": current_slope,
-        "bend_amount": bend_amount,
-    }
 
 
 def check_exhaustion_entry_filters(df: pd.DataFrame, side: str) -> dict:
@@ -2373,9 +2289,6 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     ma3_prev3 = float(ma3_series.iloc[-4])
     ma3_prev4 = float(ma3_series.iloc[-5])
 
-    atr = float(df["atr"].iloc[-1]) if "atr" in df.columns else 0.0
-    min_turn_leg = max(atr * 0.05, float(df["close"].iloc[-1]) * 0.00005)
-
     price = float(live_price) if live_price is not None and float(live_price) > 0 else float(df['close'].iloc[-1])
     if price <= 0:
         return {"detected": False, "reason": "Invalid price"}
@@ -2393,38 +2306,28 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     peak_reason = ""
 
     # 1. 尖端 (V 型谷底)
-    if ma3_prev2 - ma3_prev >= min_turn_leg and ma3_curr - ma3_prev >= min_turn_leg:
+    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
         is_valley = True
         valley_reason = "MA3 尖端谷底"
     # 2. 小梯形 (底平緩：左側下降，底部平/微升降，右側上升)
-    elif ma3_prev3 - ma3_prev2 >= min_turn_leg and abs(ma3_prev - ma3_prev2) <= min_turn_leg * 0.75 and ma3_curr - min(ma3_prev, ma3_prev2) >= min_turn_leg:
+    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
         is_valley = True
         valley_reason = "MA3 小梯形谷底"
     # 3. 大V括弧 + 2根以上綠K
-    elif (
-        ma3_prev4 > ma3_prev3 > ma3_prev2 < ma3_prev < ma3_curr
-        and ma3_prev4 - ma3_prev2 >= min_turn_leg * 2
-        and ma3_curr - ma3_prev2 >= min_turn_leg * 2
-        and greens >= 2
-    ):
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
         is_valley = True
         valley_reason = f"MA3 大V括弧谷底 (附{greens}根綠K)"
 
     # 1. 尖端 (倒 V 型峰頂)
-    if ma3_prev - ma3_prev2 >= min_turn_leg and ma3_prev - ma3_curr >= min_turn_leg:
+    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
         is_peak = True
         peak_reason = "MA3 尖端峰頂"
     # 2. 小梯形 (頂平緩：左側上升，頂部平/微升降，右側下降)
-    elif ma3_prev2 - ma3_prev3 >= min_turn_leg and abs(ma3_prev - ma3_prev2) <= min_turn_leg * 0.75 and max(ma3_prev, ma3_prev2) - ma3_curr >= min_turn_leg:
+    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
         is_peak = True
         peak_reason = "MA3 小梯形峰頂"
     # 3. 大V括弧 + 2根以上紅K
-    elif (
-        ma3_prev4 < ma3_prev3 < ma3_prev2 > ma3_prev > ma3_curr
-        and ma3_prev2 - ma3_prev4 >= min_turn_leg * 2
-        and ma3_prev2 - ma3_curr >= min_turn_leg * 2
-        and reds >= 2
-    ):
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
         is_peak = True
         peak_reason = f"MA3 大V括弧峰頂 (附{reds}根紅K)"
 
@@ -2476,9 +2379,6 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     ma3_prev3 = float(ma3_series.iloc[-4])
     ma3_prev4 = float(ma3_series.iloc[-5])
 
-    atr = float(df["atr"].iloc[-1]) if "atr" in df.columns else 0.0
-    min_turn_leg = max(atr * 0.05, float(df["close"].iloc[-1]) * 0.00005)
-
     c1 = df.iloc[-1]
     c2 = df.iloc[-2]
     c3 = df.iloc[-3]
@@ -2492,38 +2392,28 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     reason_text = ""
 
     # 1. 尖端 (V 型谷底)
-    if ma3_prev2 - ma3_prev >= min_turn_leg and ma3_curr - ma3_prev >= min_turn_leg:
+    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
         is_valley = True
         reason_text = "MA3 尖端谷底向上轉折，空單平倉"
     # 2. 小梯形 (底平緩)
-    elif ma3_prev3 - ma3_prev2 >= min_turn_leg and abs(ma3_prev - ma3_prev2) <= min_turn_leg * 0.75 and ma3_curr - min(ma3_prev, ma3_prev2) >= min_turn_leg:
+    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
         is_valley = True
         reason_text = "MA3 小梯形谷底向上轉折，空單平倉"
     # 3. 大V括弧 + 2根以上綠K
-    elif (
-        ma3_prev4 > ma3_prev3 > ma3_prev2 < ma3_prev < ma3_curr
-        and ma3_prev4 - ma3_prev2 >= min_turn_leg * 2
-        and ma3_curr - ma3_prev2 >= min_turn_leg * 2
-        and greens >= 2
-    ):
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
         is_valley = True
         reason_text = f"MA3 大V括弧谷底(附{greens}根綠K)向上轉折，空單平倉"
 
     # 1. 尖端 (倒 V 型峰頂)
-    if ma3_prev - ma3_prev2 >= min_turn_leg and ma3_prev - ma3_curr >= min_turn_leg:
+    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
         is_peak = True
         reason_text = "MA3 尖端峰頂向下轉折，多單平倉"
     # 2. 小梯形 (頂平緩)
-    elif ma3_prev2 - ma3_prev3 >= min_turn_leg and abs(ma3_prev - ma3_prev2) <= min_turn_leg * 0.75 and max(ma3_prev, ma3_prev2) - ma3_curr >= min_turn_leg:
+    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
         is_peak = True
         reason_text = "MA3 小梯形峰頂向下轉折，多單平倉"
     # 3. 大V括弧 + 2根以上紅K
-    elif (
-        ma3_prev4 < ma3_prev3 < ma3_prev2 > ma3_prev > ma3_curr
-        and ma3_prev2 - ma3_prev4 >= min_turn_leg * 2
-        and ma3_prev2 - ma3_curr >= min_turn_leg * 2
-        and reds >= 2
-    ):
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
         is_peak = True
         reason_text = f"MA3 大V括弧峰頂(附{reds}根紅K)向下轉折，多單平倉"
 

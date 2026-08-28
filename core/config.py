@@ -44,8 +44,6 @@ def get_atr_based_leverage(atr_pct: float) -> int:
     return LEVERAGE
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
-# 每筆市價或限價進場使用的保證金上限；<=0 表示不設上限。
-MAX_ORDER_AMOUNT_USDT = max(0.0, float(os.getenv("MAX_ORDER_AMOUNT_USDT", "5000.0")))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
 MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "0.50"))
 
@@ -88,9 +86,6 @@ FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0")))
 ENABLE_FIXED_PROFIT_LOCK_LADDER = os.getenv("ENABLE_FIXED_PROFIT_LOCK_LADDER", "false").lower() == "true"
 FIXED_PROFIT_LOCK_LADDER_STEP_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_STEP_PCT", "0.002")))
 FIXED_PROFIT_LOCK_LADDER_FIRST_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_FIRST_PCT", "0.003")))
-FIXED_PROFIT_LOCK_LADDER_LATE_STEP_PCT = max(
-    0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_LATE_STEP_PCT", "0.002"))
-)
 ENABLE_BOUNCE_TARGET_EXIT = os.getenv("ENABLE_BOUNCE_TARGET_EXIT", "true").lower() == "true"
 ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT = os.getenv("ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT", "true").lower() == "true"
 import sys
@@ -132,7 +127,7 @@ MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE
 # 單筆動態金額防線：最大毛虧損不得超過該筆實際投入保證金的比例。
 # 使用比例而非固定 USDT，未來本金變動時不必重新修改程式。
 MAX_POSITION_MARGIN_LOSS_RATIO = max(
-    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.15"))
+    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.10"))
 )
 
 
@@ -195,13 +190,6 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
 # 已在大 K 尾端，等待回踩而非追價。持倉中的急速反手不受此限制。
 MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(
     0.0, float(os.getenv("MA3_MARKET_ENTRY_MAX_DISTANCE_ATR", "0.30"))
-)
-# 順勢市價單避開最近波段極值：多單接近前高、空單接近前低時等待回踩/反彈。
-TREND_ENTRY_EXTREME_LOOKBACK_BARS = max(
-    3, int(os.getenv("TREND_ENTRY_EXTREME_LOOKBACK_BARS", "8"))
-)
-TREND_ENTRY_EXTREME_BUFFER_ATR = max(
-    0.0, float(os.getenv("TREND_ENTRY_EXTREME_BUFFER_ATR", "0.25"))
 )
 # 低波動時 MA5 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
@@ -431,17 +419,12 @@ MAX_SL_DISTANCE_PCT = float(os.getenv("MAX_SL_DISTANCE_PCT", "0.05"))
 SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.002"))
 
 # Exhaustion Sniper 專用規格；不影響其他 entry_mode。
-EXHAUSTION_SNIPER_LOOKBACK_BARS = max(1, int(os.getenv("EXHAUSTION_SNIPER_LOOKBACK_BARS", "4")))
+EXHAUSTION_SNIPER_LOOKBACK_BARS = max(1, int(os.getenv("EXHAUSTION_SNIPER_LOOKBACK_BARS", "3")))
 EXHAUSTION_SNIPER_VOLUME_RATIO = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_VOLUME_RATIO", "1.5")))
 EXHAUSTION_SNIPER_RSI_LONG_MAX = float(os.getenv("EXHAUSTION_SNIPER_RSI_LONG_MAX", "40"))
 EXHAUSTION_SNIPER_RSI_SHORT_MIN = float(os.getenv("EXHAUSTION_SNIPER_RSI_SHORT_MIN", "60"))
-EXHAUSTION_SNIPER_STOP_LOSS_PCT = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_STOP_LOSS_PCT", "0.03")))
+EXHAUSTION_SNIPER_STOP_LOSS_PCT = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_STOP_LOSS_PCT", "0.012")))
 EXHAUSTION_SNIPER_GRACE_SEC = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_GRACE_SEC", "180")))
-DEAD_FISH_FILTER_ENABLED = os.getenv("DEAD_FISH_FILTER_ENABLED", "true").lower() == "true"
-DEAD_FISH_ADX_MAX = max(0.0, float(os.getenv("DEAD_FISH_ADX_MAX", "18")))
-DEAD_FISH_ATR_PCT_MAX = max(0.0, float(os.getenv("DEAD_FISH_ATR_PCT_MAX", "0.001")))
-DEAD_FISH_KC_WIDTH_PCT_MAX = max(0.0, float(os.getenv("DEAD_FISH_KC_WIDTH_PCT_MAX", "0.0035")))
-DEAD_FISH_RANGE_PCT_MAX = max(0.0, float(os.getenv("DEAD_FISH_RANGE_PCT_MAX", "0.006")))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
