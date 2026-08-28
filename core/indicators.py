@@ -279,17 +279,36 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     previous_volume = float(previous_candle.get("volume", 0) or 0)
     current_volume = float(current_candle.get("volume", 0) or 0)
     two_candle_volume_confirmed = volume_baseline > 0 and min(previous_volume, current_volume) >= volume_baseline * 1.20
+    prior_high = float(df["high"].iloc[-6:-1].max())
+    prior_low = float(df["low"].iloc[-6:-1].min())
+    previous_close = float(previous_candle["close"])
+    current_close = float(current_candle["close"])
+    # 真正反轉需收破前一根的低/高點，且自局部極值回撤至少 0.35 ATR。
+    peak_structure_confirmed = bool(
+        current_close < previous_close
+        and current_close < float(previous_candle["low"])
+        and current_close < ma3_curr
+        and prior_high - current_close >= atr * 0.35
+    )
+    trough_structure_confirmed = bool(
+        current_close > previous_close
+        and current_close > float(previous_candle["high"])
+        and current_close > ma3_curr
+        and current_close - prior_low >= atr * 0.35
+    )
     two_red_peak = bool(
         ma3_prev >= ma3_prev2 and current_slope <= -fast_pivot_slope
         and float(previous_candle["close"]) < float(previous_candle["open"])
         and float(current_candle["close"]) < float(current_candle["open"])
         and two_candle_volume_confirmed
+        and peak_structure_confirmed
     )
     two_green_trough = bool(
         ma3_prev <= ma3_prev2 and current_slope >= fast_pivot_slope
         and float(previous_candle["close"]) > float(previous_candle["open"])
         and float(current_candle["close"]) > float(current_candle["open"])
         and two_candle_volume_confirmed
+        and trough_structure_confirmed
     )
     if two_red_peak:
         return {
@@ -319,21 +338,12 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and ma3_prev - ma3_prev3 >= fast_pivot_slope
         and current_slope <= -fast_pivot_slope
     )
-    if step_trough:
+    if step_trough or step_peak:
         return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m MA3 V/梯形谷底向上 → 立即轉向開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "ma_alignment": ma_alignment,
-        }
-    if step_peak:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m MA3 倒V/梯形峰頂向下 → 立即轉向開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "ma_alignment": ma_alignment,
+            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
+            "reason": "1m MA3 初步峰谷，等待兩根反向K、放量與收破結構確認",
+            "atr": atr, "pivot_confirmed": False, "pivot_score": 0,
+            "ma3_slope": current_slope, "ma_alignment": ma_alignment,
         }
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
@@ -357,7 +367,11 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     # 明顯 V/倒V 才換向；微小轉折先等待，避免一點點彎就平倉反手。
     # 仍只使用已收盤的 1m K，避免未完成 K 線反覆變形造成重複訊號。
     if previous_slope < 0 and current_slope > 0:
-        if abs(previous_slope) >= min_pivot_slope and current_slope >= min_pivot_slope:
+        if (
+            abs(previous_slope) >= min_pivot_slope
+            and current_slope >= min_pivot_slope
+            and two_green_trough
+        ):
             return {
                 "signal": "LONG", "entry_type": "TROUGH_TURN",
                 "reason": "1m MA3 V字谷底 → 立即轉向開多",
@@ -372,10 +386,14 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
             "reason": "1m MA3 谷底轉折幅度不足，維持原開倉方向",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 0, "ma3_slope": current_slope,
-            "ma_alignment": "WAIT"
+            "ma_alignment": ma_alignment
         }
     if previous_slope > 0 and current_slope < 0:
-        if previous_slope >= min_pivot_slope and abs(current_slope) >= min_pivot_slope:
+        if (
+            previous_slope >= min_pivot_slope
+            and abs(current_slope) >= min_pivot_slope
+            and two_red_peak
+        ):
             return {
                 "signal": "SHORT", "entry_type": "PEAK_TURN",
                 "reason": "1m MA3 倒V字峰頂 → 立即轉向開空",
@@ -390,7 +408,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
             "reason": "1m MA3 峰頂轉折幅度不足，維持原開倉方向",
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 0, "ma3_slope": current_slope,
-            "ma_alignment": "WAIT"
+            "ma_alignment": ma_alignment
         }
 
     # 峰谷沒有真正轉向時，以 MA3 相對 MA15 的位置決定方向。

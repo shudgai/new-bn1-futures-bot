@@ -3073,8 +3073,8 @@ def _continuous_cross_frame(side="LONG", volume=100.0, wick_trap=False):
 def test_aligned_ma3_ma5_above_ma25_opens_long():
     result = detect_ma5_ma25_cross_and_turn(_continuous_cross_frame())
 
-    assert result["signal"] == "LONG"
-    assert result["entry_type"] == "TROUGH_TURN"
+    assert result["signal"] is None
+    assert result["entry_type"] == "WAIT_PRE_PIVOT"
     assert result["ma_alignment"] == "ABOVE"
 
 
@@ -3159,8 +3159,8 @@ def test_ma3_below_ma15_trough_turns_up_instead_of_opening_short():
         _ma3_ma15_frame([99.4, 99.0, 99.2])
     )
 
-    assert result["signal"] == "LONG"
-    assert result["entry_type"] == "TROUGH_TURN"
+    assert result["signal"] is None
+    assert result["entry_type"] == "WAIT_PRE_PIVOT"
     assert result["ma_alignment"] == "BELOW"
 
 
@@ -3188,8 +3188,8 @@ def test_ma3_above_ma15_peak_turns_down_instead_of_opening_long():
         _ma3_ma15_frame([100.8, 101.2, 101.0])
     )
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "PEAK_TURN"
+    assert result["signal"] is None
+    assert result["entry_type"] == "WAIT_PRE_PIVOT"
     assert result["ma_alignment"] == "ABOVE"
 
 
@@ -3244,7 +3244,7 @@ def test_small_peak_crossing_below_ma15_keeps_direction():
     )
 
     assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_MA_NOISE"
+    assert result["entry_type"] == "WAIT_PRE_PIVOT"
 
 
 def test_small_trough_crossing_above_ma15_keeps_direction():
@@ -3253,7 +3253,7 @@ def test_small_trough_crossing_above_ma15_keeps_direction():
     )
 
     assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_MA_NOISE"
+    assert result["entry_type"] == "WAIT_PRE_PIVOT"
 
 
 @pytest.mark.parametrize(
