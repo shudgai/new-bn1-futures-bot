@@ -1607,7 +1607,11 @@ class TradingEngine:
                             else max(0.0, (curr_p - float(position.get("entry_price") or curr_p)) / float(position.get("entry_price") or curr_p))
                         )
                         hard_loss_reached = adverse_pct >= FIXED_STOP_LOSS_PCT
-                        if not is_profit_locked and not hard_loss_reached:
+                        if (
+                            not is_profit_locked
+                            and not hard_loss_reached
+                            and not (opposite_pivot or live_pivot_exit)
+                        ):
                             self.account.log(
                                 f"⏸️ [未鎖利技術出場略過] {symbol} {close_reason}；"
                                 f"目前逆向 {adverse_pct:.2%} < 硬停損 {FIXED_STOP_LOSS_PCT:.2%}",

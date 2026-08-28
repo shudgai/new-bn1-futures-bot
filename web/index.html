@@ -788,8 +788,8 @@
                             color: d.close >= d.open ? 'rgba(16,185,129,0.55)' : 'rgba(239,68,68,0.55)',
                         });
                         if (d.volume_threshold !== null) volumeThreshold.push({ time: d.time, value: d.volume_threshold });
-                        const markerSide = d.executed_entry || d.entry_signal;
-                        const markerIsExecuted = Boolean(d.executed_entry);
+                        const markerSide = d.executed_entry;
+                        const markerIsExecuted = true;
                         const executedReason = String(d.executed_entry_reason || '');
                         const executedMode = String(d.executed_entry_mode || '');
                         const isPivotEntry = executedMode === 'TROUGH_TURN' || executedMode === 'PEAK_TURN'
