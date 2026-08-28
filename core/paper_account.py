@@ -80,6 +80,7 @@ from core.config import (
     ENABLE_FIXED_PROFIT_LOCK_LADDER,
     FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
+        FIXED_PROFIT_LOCK_LADDER_LATE_STEP_PCT,
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
@@ -1118,16 +1119,23 @@ class PaperAccount:
                 and FIXED_PROFIT_LOCK_LADDER_FIRST_PCT > 0
                 and entry_p > 0
             ):
-                completed_steps = math.floor(
-                    max(0.0, highest_pnl - FIXED_PROFIT_LOCK_LADDER_FIRST_PCT)
-                    / FIXED_PROFIT_LOCK_LADDER_STEP_PCT + 1e-12
-                )
-                lock_pct = (
-                    FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
-                    + completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT
-                    if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
-                    else 0.0
-                )
+                first_step = FIXED_PROFIT_LOCK_LADDER_STEP_PCT
+                late_step = FIXED_PROFIT_LOCK_LADDER_LATE_STEP_PCT or first_step
+                if highest_pnl + 1e-12 < FIXED_PROFIT_LOCK_LADDER_FIRST_PCT:
+                    lock_pct = 0.0
+                else:
+                    first_stage = FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
+                    second_stage = first_stage + first_step
+                    third_stage = second_stage + first_step
+                    if highest_pnl + 1e-12 < second_stage:
+                        lock_pct = first_stage
+                    elif highest_pnl + 1e-12 < third_stage:
+                        lock_pct = second_stage
+                    else:
+                        late_steps = math.floor(
+                            max(0.0, highest_pnl - third_stage) / late_step + 1e-12
+                        )
+                        lock_pct = third_stage + late_steps * late_step
                 if lock_pct > 0:
                     ladder_sl = entry_p * (1.0 + lock_pct if side == "LONG" else 1.0 - lock_pct)
                     improves = (

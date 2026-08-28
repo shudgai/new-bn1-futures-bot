@@ -4,6 +4,7 @@ import io
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import core.config as config
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -357,6 +358,7 @@ async def reset_account():
     """清空帳戶所有狀態（損益、交易記錄、持倉），重新從初始餘額開始。"""
     if hasattr(engine.account, "reset_state"):
         engine.account.reset_state()
+        engine._startup_pivot_pending = set(config.DEFAULT_SYMBOLS)
         return {"status": "success", "message": "帳戶已重置，損益與交易記錄已清空"}
     raise HTTPException(status_code=501, detail="此帳戶類型不支援重置")
 
