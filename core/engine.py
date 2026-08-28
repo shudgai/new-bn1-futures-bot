@@ -3576,11 +3576,11 @@ class TradingEngine:
                         and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "KC_TREND_LONG", "KC_TREND_SHORT")
                     ):
                         signal_progress.append(
-                            f"{coin} 首次開倉等待谷底/頂峰確認"
+                            f"{coin} 啟動選點：{kc_trend.get('reason', '等待KC確認')}"
                         )
                         self.account.log(
-                            f"⏸️ {symbol} 上線後首筆開倉只接受谷底/頂峰，"
-                            f"略過 {cr_entry_type} 順勢訊號",
+                            f"⏳ {symbol} 啟動選點：{cr_entry_type} 尚未通過 KC 可承接條件，"
+                            f"{kc_trend.get('reason', '等待KC確認')}；等待回踩或結構突破",
                             "INFO",
                         )
                         return signal_progress, detected_candidates
