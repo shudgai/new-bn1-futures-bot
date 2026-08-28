@@ -163,6 +163,8 @@ class TradingEngine:
         self._live_pivot_reversal_bar: Dict[str, int] = {}
         self._fast_pivot_confirmations: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
+        # KC 通道撕裂停損後的冷卻記錄（symbol -> 停損 timestamp）
+        self._kc_rip_after: Dict[str, float] = {}
         # 持倉手動平倉參考指標（跌破/站上關鍵均線、跌破前低/站上前高）：
         # 純粹給使用者按「平倉」前參考用，不是自動出場條件，不影響
         # 止損/止利/24h時間過濾等既有的自動平倉邏輯。
@@ -1122,6 +1124,7 @@ class TradingEngine:
                     live_price = float(self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"])
                     entry_price = float(position["entry_price"])
                     side = position["side"]
+                    entry_mode = str(position.get("entry_mode") or position.get("reason") or "")
                     
                     if entry_price > 0 and live_price > 0:
                         if side == "LONG":
@@ -1130,6 +1133,33 @@ class TradingEngine:
                             pnl_pct = (entry_price - live_price) / entry_price
                             
                         import core.config as config
+
+                        # === KC 通道撕裂緊急停損 (Channel Swing 專屬) ===
+                        # 只要持倉是 Channel Swing，若價格向逆方向貫穿超過 1.5 倍 KC 寬度，強制停損。
+                        # 這是防止帳戶在單邊暴走行情中無限虧損的最後防線。
+                        if "CHANNEL_SWING" in entry_mode:
+                            trigger = self.position_triggers.get(symbol, {})
+                            kc_upper = float(trigger.get("kc_upper") or 0)
+                            kc_lower = float(trigger.get("kc_lower") or 0)
+                            if kc_upper > 0 and kc_lower > 0:
+                                kc_width = kc_upper - kc_lower
+                                rip_threshold = kc_width * 1.5  # 通道撕裂門檻：KC 寬度的 1.5 倍
+                                is_kc_ripped = (
+                                    (side == "LONG" and live_price < kc_lower - rip_threshold)
+                                    or (side == "SHORT" and live_price > kc_upper + rip_threshold)
+                                )
+                                if is_kc_ripped:
+                                    self.account.log(
+                                        f"🆘 [KC 通道撕裂] {symbol} {side} 單邊暴走！"
+                                        f"現價={live_price:.6g} 已超出 KC 範圍 {rip_threshold:.6g}，緊急停損！",
+                                        "WARNING"
+                                    )
+                                    self._kc_rip_after[symbol] = time.time()  # 記錄撕裂時間，啟動穩定等待
+                                    await self.account.close_position(
+                                        symbol, live_price, f"KC 通道撕裂緊急停損 (KC {kc_lower:.6g}~{kc_upper:.6g})"
+                                    )
+                                    continue
+                        # ================================================
                         
                         # --- 大爆走 (Mega Trend) 模式檢查 ---
                         # 若處於強烈單邊趨勢 (ADX >= 30)，關閉移動停利與固定止損，完全交給 MA5 轉向平倉
@@ -1150,8 +1180,8 @@ class TradingEngine:
                                     await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
                                     continue # Skip fixed stop loss check since it's closed
                                     
-                            # Fixed Stop Loss Logic
-                            if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
+                            # Fixed Stop Loss Logic (只對非 Channel Swing 開倉有效，Channel Swing 已有上面的KC撕裂防線)
+                            if "CHANNEL_SWING" not in entry_mode and pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
                                 await self.account.close_position(symbol, live_price, f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)")
                         else:
                             # 即使在大爆走模式，如果帳面嚴重虧損仍需終極防線，避免ADX騙線
@@ -1393,10 +1423,8 @@ class TradingEngine:
                         not same_bar_reversal
                         and (strict_live_pivot or fast_ma3_confirmed)
                     )
-                    pre_turn_exit = bool(
-                        trigger.get("pre_peak_exit")
-                        or trigger.get("pre_trough_exit")
-                    )
+                    # 使用者要求：取消「保護性平倉」，假突破不提早下車，只在真正的峰谷才平倉
+                    pre_turn_exit = False
                     should_auto_close = bool(
                         (not false_breakout_hold or live_pivot_exit)
                         and (
@@ -3760,6 +3788,147 @@ class TradingEngine:
             df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30, keep_live=True)
             if df_1m.empty:
                 return signal_progress, detected_candidates
+                
+            # --- 通道振盪策略 (Channel Swing) ---
+            df_1m_live = self.strategy.compute_indicators(df_1m.copy())
+            if len(df_1m_live) >= 20:
+                live_candle = df_1m_live.iloc[-1]
+                kc_upper = float(live_candle.get("kc_upper") or 0)
+                kc_lower = float(live_candle.get("kc_lower") or 0)
+                
+                # === 持倉中：對面軌道到達 → 平倉 + 反手 ===
+                existing_pos = self.account.positions.get(symbol)
+                if existing_pos and kc_upper > 0 and kc_lower > 0:
+                    curr_side = existing_pos.get("side")
+                    if curr_side == "LONG" and live_price >= kc_upper:
+                        # 多單到頂，立刻平多+開空
+                        self.account.log(
+                            f"🔄 [Channel Swing] {symbol} 多單到達 KC 上軌 ({kc_upper:.6g}), 平多→開空",
+                            "SUCCESS"
+                        )
+                        await self.account.close_position(symbol, live_price, "Channel Swing 到頂反手")
+                        sig = {
+                            "detected": True, "side": "SHORT", "score": 100,
+                            "price": live_price,
+                            "atr": float(live_candle.get("atr") or live_price * 0.015),
+                            "entry_mode": "CHANNEL_SWING",
+                            "profit_profile": "TREND_EXTENSION",
+                            "action": "ENTER_MARKET", "target_price": None,
+                            "signal_candle_low": float(live_candle["low"]),
+                            "signal_candle_high": float(live_candle["high"]),
+                            "symbol": symbol, "live_price": live_price,
+                            "reason": f"Channel Swing → KC 上軌到頂，反手開空｜kc_upper={kc_upper:.6g}",
+                        }
+                        signal_progress["signals"].append(sig)
+                        return signal_progress, detected_candidates
+                    elif curr_side == "SHORT" and live_price <= kc_lower:
+                        # 空單到底，立刻平空+開多
+                        self.account.log(
+                            f"🔄 [Channel Swing] {symbol} 空單到達 KC 下軌 ({kc_lower:.6g}), 平空→開多",
+                            "SUCCESS"
+                        )
+                        await self.account.close_position(symbol, live_price, "Channel Swing 到底反手")
+                        sig = {
+                            "detected": True, "side": "LONG", "score": 100,
+                            "price": live_price,
+                            "atr": float(live_candle.get("atr") or live_price * 0.015),
+                            "entry_mode": "CHANNEL_SWING",
+                            "profit_profile": "TREND_EXTENSION",
+                            "action": "ENTER_MARKET", "target_price": None,
+                            "signal_candle_low": float(live_candle["low"]),
+                            "signal_candle_high": float(live_candle["high"]),
+                            "symbol": symbol, "live_price": live_price,
+                            "reason": f"Channel Swing → KC 下軌到底，反手開多｜kc_lower={kc_lower:.6g}",
+                        }
+                        signal_progress["signals"].append(sig)
+                        return signal_progress, detected_candidates
+                    else:
+                        # 持倉中，等待到達對面軌道
+                        signal_progress.append(
+                            f"{symbol.replace('/USDT', '')} {curr_side} 持倉中 | 目標: {'上軌' if curr_side == 'LONG' else '下軌'} {kc_upper:.6g if curr_side == 'LONG' else kc_lower:.6g}"
+                        )
+                        return signal_progress, detected_candidates
+
+                # === 空倉：碰到 KC 邊界 → 直接開倉 ===
+                if not existing_pos:
+                    rip_ts = self._kc_rip_after.get(symbol, 0)
+                    in_rip_recovery = rip_ts > 0
+                    
+                    if in_rip_recovery:
+                        # --- KC 撕裂後：等待穩定再順勢入場 ---
+                        # 穩定條件：價格回到 KC 通道內，且 MA3 均線轉向與趨勢一致
+                        price_inside_kc = kc_lower < live_price < kc_upper
+                        ma3_live = (df_1m_live["ma3"] if "ma3" in df_1m_live.columns else df_1m_live["close"].rolling(3).mean()).dropna()
+                        
+                        stable_direction = None
+                        if price_inside_kc and len(ma3_live) >= 3:
+                            ma3_prev2 = float(ma3_live.iloc[-3])
+                            ma3_prev1 = float(ma3_live.iloc[-2])
+                            ma3_curr_v = float(ma3_live.iloc[-1])
+                            # 向上穩定：MA3 明顯向上走，開多
+                            if ma3_curr_v > ma3_prev1 > ma3_prev2:
+                                stable_direction = "LONG"
+                            # 向下穩定：MA3 明顯向下走，開空
+                            elif ma3_curr_v < ma3_prev1 < ma3_prev2:
+                                stable_direction = "SHORT"
+                        
+                        if stable_direction:
+                            # 行情穩定，清除冷卻記錄，順勢開倉
+                            self._kc_rip_after.pop(symbol, None)
+                            self.account.log(
+                                f"✅ [KC 撕裂復原] {symbol} 行情穩定，MA3 轉{stable_direction}，重新入場",
+                                "SUCCESS"
+                            )
+                            sig = {
+                                "detected": True, "side": stable_direction, "score": 100,
+                                "price": live_price,
+                                "atr": float(live_candle.get("atr") or live_price * 0.015),
+                                "entry_mode": "CHANNEL_SWING",
+                                "profit_profile": "TREND_EXTENSION",
+                                "action": "ENTER_MARKET", "target_price": None,
+                                "signal_candle_low": float(live_candle["low"]),
+                                "signal_candle_high": float(live_candle["high"]),
+                                "symbol": symbol, "live_price": live_price,
+                                "reason": f"Channel Swing 撕裂復原 → 行情穩定後順勢開{stable_direction}｜MA3 確認",
+                            }
+                            signal_progress["signals"].append(sig)
+                            return signal_progress, detected_candidates
+                        else:
+                            elapsed = int(time.time() - rip_ts)
+                            signal_progress.append(
+                                f"{symbol.replace('/USDT', '')} KC撕裂後等待穩定 | 已等{elapsed}秒 | 價格{'在通道內' if price_inside_kc else '在通道外'}"
+                            )
+                            return signal_progress, detected_candidates
+                    
+                    # --- 正常 Channel Swing 空倉邏輯 ---
+                    swing_direction = None
+                    if live_price <= kc_lower:
+                        swing_direction = "LONG"
+                    elif live_price >= kc_upper:
+                        swing_direction = "SHORT"
+                    
+                    if swing_direction:
+                        sig = {
+                            "detected": True, "side": swing_direction, "score": 100,
+                            "price": live_price,
+                            "atr": float(live_candle.get("atr") or live_price * 0.015),
+                            "entry_mode": "CHANNEL_SWING",
+                            "profit_profile": "TREND_EXTENSION",
+                            "action": "ENTER_MARKET", "target_price": None,
+                            "signal_candle_low": float(live_candle["low"]),
+                            "signal_candle_high": float(live_candle["high"]),
+                            "symbol": symbol, "live_price": live_price,
+                            "reason": f"Channel Swing → {'KC 下軌開多' if swing_direction == 'LONG' else 'KC 上軌開空'}｜kc={kc_lower:.6g}~{kc_upper:.6g}",
+                        }
+                        signal_progress["signals"].append(sig)
+                        return signal_progress, detected_candidates
+                    else:
+                        signal_progress.append(
+                            f"{symbol.replace('/USDT', '')} 通道中央等待 | KC {kc_lower:.6g}~{kc_upper:.6g}, 現價={live_price:.6g}"
+                        )
+                        return signal_progress, detected_candidates
+            # -----------------------------------
+
             # 只讀已收盤 1m K，避免未收線 RSI、量能與 MA3 重繪。
             df_1m = drop_unclosed_candle(df_1m, "1m")
             if len(df_1m) < 20:
@@ -3771,38 +3940,55 @@ class TradingEngine:
             entry_type = pivot.get("entry_type")
             if entry_type in ("TROUGH_TURN", "PEAK_TURN"):
                 direction = "LONG" if entry_type == "TROUGH_TURN" else "SHORT"
-                exhaustion = check_exhaustion_entry_filters(df_1m, direction)
-                if exhaustion.get("passed"):
-                    sig = {
-                        "detected": True,
-                        "side": direction,
-                        "score": 100,
-                        "price": live_price,
-                        "atr": float(pivot.get("atr") or live_price * 0.015),
-                        "entry_mode": "PIVOT_TURN",
-                        "profit_profile": "TREND_EXTENSION",
-                        "action": "ENTER_MARKET",
-                        "target_price": None,
-                        "signal_candle_low": float(df_1m["low"].iloc[-1]),
-                        "signal_candle_high": float(df_1m["high"].iloc[-1]),
-                        "symbol": symbol,
-                        "live_price": live_price,
-                        "extreme_age_bars": exhaustion.get("extreme_age_bars"),
-                        "extreme_rsi": exhaustion.get("extreme_rsi"),
-                        "extreme_volume_ratio": exhaustion.get("extreme_volume_ratio"),
-                        "reason": (
-                            f"{entry_type}: {pivot.get("reason", "谷底／峰頂轉彎")}｜"
-                            f"{exhaustion.get("reason")}"
+                
+                passed_ema_filter = True
+                from core.config import ENABLE_1H_EMA50_FILTER, STRUCTURED_1H_EMA50_TOLERANCE_PCT
+                ema_50_1h = self.ema_50_1h_cache.get(symbol)
+                if ENABLE_1H_EMA50_FILTER and ema_50_1h is not None and ema_50_1h > 0:
+                    ema_lower_bound = ema_50_1h * (1.0 - STRUCTURED_1H_EMA50_TOLERANCE_PCT)
+                    ema_upper_bound = ema_50_1h * (1.0 + STRUCTURED_1H_EMA50_TOLERANCE_PCT)
+                    if direction == "LONG" and live_price < ema_lower_bound:
+                        passed_ema_filter = False
+                    elif direction == "SHORT" and live_price > ema_upper_bound:
+                        passed_ema_filter = False
+
+                if passed_ema_filter:
+                    exhaustion = check_exhaustion_entry_filters(df_1m, direction)
+                    if exhaustion.get("passed"):
+                        sig = {
+                            "detected": True,
+                            "side": direction,
+                            "score": 100,
+                            "price": live_price,
+                            "atr": float(pivot.get("atr") or live_price * 0.015),
+                            "entry_mode": "PIVOT_TURN",
+                            "profit_profile": "TREND_EXTENSION",
+                            "action": "ENTER_MARKET",
+                            "target_price": None,
+                            "signal_candle_low": float(df_1m["low"].iloc[-1]),
+                            "signal_candle_high": float(df_1m["high"].iloc[-1]),
+                            "symbol": symbol,
+                            "live_price": live_price,
+                            "extreme_age_bars": exhaustion.get("extreme_age_bars"),
+                            "extreme_rsi": exhaustion.get("extreme_rsi"),
+                            "extreme_volume_ratio": exhaustion.get("extreme_volume_ratio"),
+                            "reason": (
+                            f"{entry_type}: {pivot.get('reason', '谷底／峰頂轉彎')}｜"
+                            f"{exhaustion.get('reason')}"
                         ),
-                    }
-                    detected_candidates.append(sig)
+                        }
+                        detected_candidates.append(sig)
+                    else:
+                        signal_progress.append(
+                            f"{coin} {direction} 轉彎成立，但{exhaustion.get('reason')}"
+                        )
                 else:
                     signal_progress.append(
-                        f"{coin} {direction} 轉彎成立，但{exhaustion.get("reason")}"
+                        f"{coin} {direction} 未通過 1H EMA50 趨勢過濾"
                     )
             else:
                 signal_progress.append(
-                    f"{coin} 雙向等待谷底／峰頂轉彎({entry_type or "WAIT"})"
+                    f"{coin} 雙向等待谷底／峰頂轉彎({entry_type or 'WAIT'})"
                 )
 
 

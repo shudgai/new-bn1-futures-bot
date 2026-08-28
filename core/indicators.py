@@ -264,10 +264,11 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         atr = calculated_atr if pd.notna(calculated_atr) and calculated_atr > 0 else float(df['close'].iloc[-1]) * 0.015
     # 放寬趨勢延續的最小變動門檻：仍要求 MA3 確實轉折／分離，
     # 但不因正常的小幅回踩就錯過已展開的趨勢。
-    min_pivot_slope = max(abs(atr) * 0.03, abs(ma3_prev) * 0.00006)
+    # [FIX] 增加斜率要求，避免「微小綠 K」造成假 V 轉（把原本的 0.03/0.02 提高到 0.15/0.10）
+    min_pivot_slope = max(abs(atr) * 0.15, abs(ma3_prev) * 0.0002)
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
-    min_directional_range = max(abs(atr) * 0.10, abs(ma3_curr) * 0.00025)
-    fast_pivot_slope = max(abs(atr) * 0.02, abs(ma3_prev) * 0.00004)
+    min_directional_range = max(abs(atr) * 0.20, abs(ma3_curr) * 0.0005)
+    fast_pivot_slope = max(abs(atr) * 0.10, abs(ma3_prev) * 0.00015)
 
     # Two same-direction, above-average candles can confirm a fast peak/trough
     # before MA15 has time to cross.  Both candles must carry volume, so a
