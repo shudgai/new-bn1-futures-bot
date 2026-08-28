@@ -446,16 +446,16 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
 
     # 明顯 V/倒V 才換向；微小轉折先等待，避免一點點彎就平倉反手。
     # 仍只使用已收盤的 1m K，避免未完成 K 線反覆變形造成重複訊號。
+    # 放寬前一根斜率的要求：只要有轉向 (符號改變)，且現在這根的反轉斜率夠大，就算是 V 型！
     if previous_slope < 0 and current_slope > 0:
         if (
-            abs(previous_slope) >= min_pivot_slope
-            and current_slope >= min_pivot_slope
+            current_slope >= min_pivot_slope
             and current_body >= atr * 0.20
             and trough_reentry_band
         ):
             return {
                 "signal": "LONG", "entry_type": "TROUGH_TURN",
-                "reason": "1m MA3 V字谷底＋綠K收進下軌~中軌 → 立即轉向開多",
+                "reason": "1m MA3 V字谷底＋綠K收進通道 → 立即轉向開多",
                 "atr": atr, "pivot_confirmed": True,
                 "pivot_score": 100,
                 "fast_pivot": True,
@@ -471,14 +471,13 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         }
     if previous_slope > 0 and current_slope < 0:
         if (
-            previous_slope >= min_pivot_slope
-            and abs(current_slope) >= min_pivot_slope
+            abs(current_slope) >= min_pivot_slope
             and current_body <= -atr * 0.20
             and peak_reentry_band
         ):
             return {
                 "signal": "SHORT", "entry_type": "PEAK_TURN",
-                "reason": "1m MA3 倒V字峰頂＋紅K收進中軌~上軌 → 立即轉向開空",
+                "reason": "1m MA3 倒V字峰頂＋紅K收進通道 → 立即轉向開空",
                 "atr": atr, "pivot_confirmed": True,
                 "pivot_score": 100,
                 "fast_pivot": True,
