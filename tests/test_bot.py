@@ -30,7 +30,7 @@ from core.strategy import (
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import (
-    compute_position_trigger, detect_ma5_ma25_cross_and_turn, drop_unclosed_candle,
+    classify_wave_regime, detect_strong_trend_exhaustion, evaluate_kc_outer_run_lock, compute_position_trigger, detect_ma3_ma15_cross_and_turn, drop_unclosed_candle,
     get_ma3_ma15_limit_target,
     get_dynamic_adx_floor,
 )
@@ -1904,7 +1904,7 @@ def test_position_trigger_small_opposite_candle_keeps_position():
 
 
 @pytest.mark.anyio
-async def test_strong_opposite_candle_closes_cr_position_even_when_stop_loss_disabled(
+async def test_unconfirmed_opposite_candle_keeps_cr_position_until_closed_pivot(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "protective_exit.json"))
@@ -1940,7 +1940,7 @@ async def test_strong_opposite_candle_closes_cr_position_even_when_stop_loss_dis
         "pre_trough_exit": False, "atr": 1.0,
     })
     monkeypatch.setattr(
-        "core.indicators.detect_ma5_ma25_cross_and_turn",
+        "core.indicators.detect_ma3_ma15_cross_and_turn",
         lambda *args, **kwargs: {"signal": None, "entry_type": "WAIT_MA_NOISE", "reason": "等待"},
     )
     original_sleep = asyncio.sleep
@@ -1952,9 +1952,9 @@ async def test_strong_opposite_candle_closes_cr_position_even_when_stop_loss_dis
     monkeypatch.setattr(asyncio, "sleep", stop_after_one_loop)
     await engine._position_trigger_loop()
 
-    assert "BTC/USDT" not in account.positions
-    assert engine._continuous_alignment_wait["BTC/USDT"]["side"] == "LONG"
-    assert "強紅K跌破MA3" in account.trades[0]["reason"]
+    assert "BTC/USDT" in account.positions
+    assert "BTC/USDT" not in engine._continuous_alignment_wait
+    assert not any(trade["action"] == "CLOSE_LONG" for trade in account.trades)
 
 
 def test_position_trigger_long_inactive_when_price_healthy():
@@ -3064,18 +3064,32 @@ def _continuous_cross_frame(side="LONG", volume=100.0, wick_trap=False):
             else [99.0] * (size - 3) + [99.0, 99.5, 99.2]
         ),
         "ma5": ma5,
-        "ma25": [100.0] * size,
+        "ma15": [100.0] * size,
         "adx": [20.0] * size,
         "atr": [1.0] * size,
     })
 
 
-def test_aligned_ma3_ma5_above_ma25_opens_long():
-    result = detect_ma5_ma25_cross_and_turn(_continuous_cross_frame())
+def test_flat_left_side_is_not_mislabeled_as_fast_peak():
+    frame = _ma3_ma15_frame([101.2, 101.0, 101.01, 100.8])
+    frame.loc[frame.index[-2:], "open"] = 101.2
+    frame.loc[frame.index[-2:], "close"] = [101.0, 100.8]
+    frame.loc[frame.index[-2:], "volume"] = 200.0
+
+    result = detect_ma3_ma15_cross_and_turn(frame)
+
+    assert result["signal"] is None
+    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["pivot_confirmed"] is False
+
+
+def test_aligned_ma3_above_ma15_opens_long():
+    result = detect_ma3_ma15_cross_and_turn(_continuous_cross_frame())
 
     assert result["signal"] == "LONG"
     assert result["entry_type"] == "TROUGH_TURN"
     assert result["ma_alignment"] == "ABOVE"
+    assert result["pivot_offset"] == -2
 
 
 
@@ -3090,6 +3104,232 @@ def _ma3_ma15_frame(ma3_tail, ma15=100.0):
         "ma15": [ma15] * size,
         "atr": [1.0] * size,
     })
+
+
+def _kc_lock_frame(side, reaches_middle=False):
+    if side == "LONG":
+        candle = {
+            "open": 111.0, "close": 99.0 if reaches_middle else 109.0,
+            "high": 112.0, "low": 98.0 if reaches_middle else 108.0,
+        }
+    else:
+        candle = {
+            "open": 89.0, "close": 101.0 if reaches_middle else 91.0,
+            "high": 102.0 if reaches_middle else 92.0, "low": 88.0,
+        }
+    return pd.DataFrame([{
+        **candle, "kc_upper": 110.0, "kc_middle": 100.0, "kc_lower": 90.0,
+    }])
+
+
+def test_long_outside_upper_rail_blocks_red_candle_until_kc_middle():
+    locked = evaluate_kc_outer_run_lock(_kc_lock_frame("LONG"), "LONG")
+    assert locked["armed"] is True
+    assert locked["blocked"] is True
+    released = evaluate_kc_outer_run_lock(
+        _kc_lock_frame("LONG", reaches_middle=True), "LONG", armed=locked["armed"],
+    )
+    assert released["released"] is True
+    assert released["blocked"] is False
+
+
+def test_short_outside_lower_rail_blocks_green_candle_until_kc_middle():
+    locked = evaluate_kc_outer_run_lock(_kc_lock_frame("SHORT"), "SHORT")
+    assert locked["armed"] is True
+    assert locked["blocked"] is True
+    released = evaluate_kc_outer_run_lock(
+        _kc_lock_frame("SHORT", reaches_middle=True), "SHORT", armed=locked["armed"],
+    )
+    assert released["released"] is True
+    assert released["blocked"] is False
+
+
+
+@pytest.mark.anyio
+async def test_outer_peak_wait_blocks_reentry_until_red_candle_reaches_middle(monkeypatch):
+    from core.engine import TradingEngine
+
+    engine = TradingEngine()
+
+    class FakeAccount:
+        def __init__(self):
+            self.positions = {}
+            self.position_meta = {}
+            self.trades = []
+            self.last_closed_at = {}
+            self.logs = []
+
+        def get_available_balance(self):
+            return 1000.0
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    engine.account = FakeAccount()
+    engine.tickers = {"DOGE/USDT": 109.0}
+    engine._kc_reversal_wait["DOGE/USDT"] = {
+        "from_side": "LONG",
+        "target_side": "SHORT",
+        "pivot_type": "PEAK_TURN",
+        "middle_reached": False,
+    }
+    reaches_middle = {"value": False}
+
+    async def fetch_bars(*_args, **_kwargs):
+        rows = 30
+        frame = pd.DataFrame({
+            "timestamp": list(range(rows)),
+            "open": [109.0] * rows,
+            "high": [112.0] * rows,
+            "low": [108.0] * rows,
+            "close": [109.0] * rows,
+            "volume": [100.0] * rows,
+            "kc_upper": [110.0] * rows,
+            "kc_middle": [100.0] * rows,
+            "kc_lower": [90.0] * rows,
+            "atr": [2.0] * rows,
+        })
+        if reaches_middle["value"]:
+            frame.loc[frame.index[-1], ["open", "close", "low"]] = [111.0, 99.0, 98.0]
+        return frame
+
+    opened = []
+
+    async def place_entry(**kwargs):
+        opened.append(kwargs)
+        return True
+
+    monkeypatch.setattr(engine, "fetch_klines", fetch_bars)
+    monkeypatch.setattr(engine, "_place_continuous_market_entry", place_entry)
+    monkeypatch.setattr(
+        "core.indicators.classify_wave_regime",
+        lambda *_args, **_kwargs: {
+            "regime": "RANGE", "candidate": "RANGE", "confirmed": True,
+            "adx": 10.0, "spread_atr": 0.1, "confirmation_bars": 3,
+        },
+    )
+    monkeypatch.setattr(
+        "core.indicators.detect_ma3_ma15_cross_and_turn",
+        lambda *_args, **_kwargs: {"signal": None, "entry_type": ""},
+    )
+
+    await engine._process_single_symbol("DOGE/USDT", 0.0, None, False)
+    assert opened == []
+    assert "DOGE/USDT" in engine._kc_reversal_wait
+
+    reaches_middle["value"] = True
+    await engine._process_single_symbol("DOGE/USDT", 1.0, None, False)
+    assert opened[0]["side"] == "SHORT"
+    assert opened[0]["entry_type"] == "KC_MIDDLE_PEAK_REVERSE"
+    assert "DOGE/USDT" not in engine._kc_reversal_wait
+
+
+def test_strong_trend_waits_through_new_high_and_exits_after_two_bar_fade():
+    continuing = pd.DataFrame({
+        "close": [100.1, 101.1, 102.1, 103.1, 104.1],
+        "high": [100.2, 101.2, 102.2, 103.2, 104.2],
+        "low": [99.8, 100.8, 101.8, 102.8, 103.8],
+        "ma3": [100.0, 101.0, 102.0, 103.0, 104.0],
+        "ma15": [99.0] * 5, "atr": [1.0] * 5,
+        "adx": [25.0, 27.0, 29.0, 31.0, 33.0],
+    })
+    running = detect_strong_trend_exhaustion(continuing, "LONG")
+    assert running["exit"] is False
+    assert running["extreme_price"] == pytest.approx(104.2)
+
+    fading = pd.DataFrame({
+        "close": [100.1, 101.1, 102.2, 101.6, 101.4],
+        "high": [100.2, 101.2, 102.4, 101.9, 101.7],
+        "low": [99.8, 100.8, 101.8, 101.3, 101.1],
+        "ma3": [100.0, 101.0, 102.0, 101.7, 101.5],
+        "ma15": [99.0] * 5, "atr": [1.0] * 5,
+        "adx": [25.0, 28.0, 31.0, 29.0, 27.0],
+    })
+    ended = detect_strong_trend_exhaustion(
+        fading, "LONG", previous_extreme=running["extreme_price"],
+        previous_ma3_extreme=running["ma3_extreme"],
+    )
+    assert ended["exit"] is True
+    assert ended["two_bar_confirmed"] is True
+    assert ended["strength_fading"] is True
+    assert ended["retrace_atr"] >= 0.15
+
+
+def _wave_regime_frame(adx_values, spread_values):
+    size = len(adx_values)
+    return pd.DataFrame({
+        "adx": adx_values,
+        "atr": [1.0] * size,
+        "ma15": [100.0] * size,
+        "ma3": [100.0 + value for value in spread_values],
+    })
+
+
+def test_wave_regime_requires_three_closed_bars_and_uses_hysteresis():
+    range_frame = _wave_regime_frame([19.0, 18.0, 17.0], [0.30, 0.25, 0.20])
+    trend_frame = _wave_regime_frame([25.0, 27.0, 30.0], [0.50, 0.60, 0.70])
+    middle_frame = _wave_regime_frame([22.0, 23.0, 24.0], [0.40, 0.45, 0.48])
+
+    assert classify_wave_regime(range_frame, previous_regime="TREND")["regime"] == "RANGE"
+    assert classify_wave_regime(trend_frame, previous_regime="RANGE")["regime"] == "TREND"
+    assert classify_wave_regime(middle_frame, previous_regime="RANGE")["regime"] == "RANGE"
+    assert classify_wave_regime(middle_frame, previous_regime="TREND")["regime"] == "TREND"
+
+
+@pytest.mark.anyio
+async def test_range_position_ignores_middle_profit_exit_but_keeps_hard_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "range_account.json"))
+    account = PaperAccount()
+    opened = await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 101.0, "range pivot",
+        leverage=1, signal_score=100,
+        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "RANGE"},
+    )
+    assert opened is True
+    original_sl = account.positions["BTC/USDT"]["sl"]
+
+    await account.update_positions({"BTC/USDT": 110.0})
+    assert "BTC/USDT" in account.positions
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
+
+    await account.update_positions({"BTC/USDT": original_sl * 0.99})
+    assert "BTC/USDT" not in account.positions
+    assert account.trades[0]["reason"] == "觸發止損 (Stop-Loss)"
+
+
+@pytest.mark.anyio
+async def test_trend_position_ignores_middle_take_profit(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "trend_account.json"))
+    account = PaperAccount()
+    assert await account.open_position(
+        "ETH/USDT", "LONG", 100.0, 50.0, 95.0, 101.0, "strong trend",
+        leverage=1, signal_score=100,
+        entry_context={"entry_mode": "MA3_MA15_MARKET", "wave_regime": "TREND"},
+    )
+    original_sl = account.positions["ETH/USDT"]["sl"]
+    await account.update_positions({"ETH/USDT": 110.0})
+    assert "ETH/USDT" in account.positions
+    assert account.positions["ETH/USDT"]["sl"] == pytest.approx(original_sl)
+
+
+def test_confirmed_pivot_can_reverse_before_ma15_cross():
+    engine = object.__new__(TradingEngine)
+    frame = _ma3_ma15_frame([99.4, 99.0, 99.2], ma15=100.0)
+
+    assert engine._ma3_ma15_entry_allowed(
+        "TEST/USDT", "LONG", frame, log_on_fail=False, entry_type="TROUGH_TURN",
+    ) is True
+    assert engine._ma3_ma15_entry_allowed(
+        "TEST/USDT", "LONG", frame, log_on_fail=False, entry_type="TREND_LONG",
+    ) is False
+
+    frame = _ma3_ma15_frame([100.8, 101.2, 101.0], ma15=100.0)
+    assert engine._ma3_ma15_entry_allowed(
+        "TEST/USDT", "SHORT", frame, log_on_fail=False, entry_type="PEAK_TURN",
+    ) is True
+    assert engine._ma3_ma15_entry_allowed(
+        "TEST/USDT", "SHORT", frame, log_on_fail=False, entry_type="TREND_SHORT",
+    ) is False
 
 
 def test_ma3_ma15_limit_target_uses_recent_low_for_long_and_high_for_short():
@@ -3136,7 +3376,7 @@ def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
 
 
 def test_ma3_below_ma15_opens_short_even_when_still_rising():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([98.8, 99.0, 99.2])
     )
 
@@ -3146,7 +3386,7 @@ def test_ma3_below_ma15_opens_short_even_when_still_rising():
 
 
 def test_ma3_below_ma15_opens_short_while_decline_only_slows():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([99.5, 99.1, 98.9])
     )
 
@@ -3154,18 +3394,56 @@ def test_ma3_below_ma15_opens_short_while_decline_only_slows():
     assert result["entry_type"] == "TREND_SHORT"
 
 
-def test_ma3_below_ma15_trough_turns_up_instead_of_opening_short():
-    result = detect_ma5_ma25_cross_and_turn(
-        _ma3_ma15_frame([99.4, 99.0, 99.2])
-    )
+def test_weak_trough_near_kc_middle_does_not_reverse():
+    frame = _ma3_ma15_frame([99.3, 99.25, 99.27])
+    frame["ma15"] = 99.0
+    frame["ema_20"] = 99.0
+    result = detect_ma3_ma15_cross_and_turn(frame)
+
+    assert result["signal"] is None
+    assert result["entry_type"] == "WAIT_MA_NOISE"
+
+
+def test_ma3_trough_far_from_kc_middle_and_ma15_can_reverse():
+    frame = _ma3_ma15_frame([99.4, 99.0, 99.2])
+    frame["ema_20"] = 97.0
+    result = detect_ma3_ma15_cross_and_turn(frame)
 
     assert result["signal"] == "LONG"
     assert result["entry_type"] == "TROUGH_TURN"
     assert result["ma_alignment"] == "BELOW"
 
 
+def test_strong_trough_near_kc_middle_still_reverses():
+    frame = _ma3_ma15_frame([99.4, 99.0, 99.2])
+    frame["ma15"] = 99.0
+    frame["ema_20"] = 99.0
+    result = detect_ma3_ma15_cross_and_turn(frame)
+
+    assert result["signal"] == "LONG"
+    assert result["entry_type"] == "TROUGH_TURN"
+
+
+def test_strong_peak_near_kc_middle_still_reverses():
+    frame = _ma3_ma15_frame([100.8, 101.2, 101.0], ma15=100.0)
+    frame["ema_20"] = 101.2
+    result = detect_ma3_ma15_cross_and_turn(frame)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "PEAK_TURN"
+
+
+def test_true_trough_near_ma15_still_reverses():
+    frame = _ma3_ma15_frame([99.8, 99.6, 99.8], ma15=99.65)
+    frame["ema_20"] = 97.0
+    result = detect_ma3_ma15_cross_and_turn(frame)
+
+    assert result["signal"] == "LONG"
+    assert result["entry_type"] == "TROUGH_TURN"
+
+
 def test_ma3_above_ma15_opens_long_even_when_still_falling():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([101.4, 101.2, 101.1])
     )
 
@@ -3175,7 +3453,7 @@ def test_ma3_above_ma15_opens_long_even_when_still_falling():
 
 
 def test_ma3_above_ma15_opens_long_while_rise_only_slows():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([100.5, 100.9, 101.1])
     )
 
@@ -3184,7 +3462,7 @@ def test_ma3_above_ma15_opens_long_while_rise_only_slows():
 
 
 def test_ma3_above_ma15_peak_turns_down_instead_of_opening_long():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([100.8, 101.2, 101.0])
     )
 
@@ -3194,7 +3472,7 @@ def test_ma3_above_ma15_peak_turns_down_instead_of_opening_long():
 
 
 def test_ma3_equal_ma15_waits_for_direction():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([99.8, 99.9, 100.0])
     )
 
@@ -3203,7 +3481,7 @@ def test_ma3_equal_ma15_waits_for_direction():
 
 
 def test_ma3_small_move_above_ma15_does_not_open_or_reverse():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([100.0, 100.01, 100.02])
     )
 
@@ -3212,7 +3490,7 @@ def test_ma3_small_move_above_ma15_does_not_open_or_reverse():
 
 
 def test_ma3_small_move_below_ma15_does_not_open_or_reverse():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([100.0, 99.99, 99.98])
     )
 
@@ -3221,7 +3499,7 @@ def test_ma3_small_move_below_ma15_does_not_open_or_reverse():
 
 
 def test_ma3_small_range_far_above_ma15_does_not_open_long():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([101.0, 101.01, 101.02], ma15=100.0)
     )
 
@@ -3230,7 +3508,7 @@ def test_ma3_small_range_far_above_ma15_does_not_open_long():
 
 
 def test_ma3_small_range_far_below_ma15_does_not_open_short():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([98.98, 98.99, 99.0], ma15=100.0)
     )
 
@@ -3239,7 +3517,7 @@ def test_ma3_small_range_far_below_ma15_does_not_open_short():
 
 
 def test_small_peak_crossing_below_ma15_keeps_direction():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([99.97, 100.01, 99.98])
     )
 
@@ -3248,7 +3526,7 @@ def test_small_peak_crossing_below_ma15_keeps_direction():
 
 
 def test_small_trough_crossing_above_ma15_keeps_direction():
-    result = detect_ma5_ma25_cross_and_turn(
+    result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([100.03, 99.99, 100.02])
     )
 
@@ -3267,7 +3545,7 @@ def test_small_trough_crossing_above_ma15_keeps_direction():
 def test_dynamic_adx_floor(direction, closes, expected_floor):
     frame = pd.DataFrame({"close": closes, "atr": [1.0] * 5})
     frame["ma5"] = [99.0, 99.1, 99.2, 99.4, 99.7] if direction == 1 else [102.0, 101.9, 101.7, 101.5, 101.3]
-    # get_dynamic_adx_floor 現在讀的是 ma15（不是 ma25），沒有這欄就會退回
+    # get_dynamic_adx_floor 現在讀的是 ma15（不再使用舊的長週期均線），沒有這欄就會退回
     # rolling(15) 現算，數值不受控、容易讓「均線同向排列」條件失敗。
     frame["ma15"] = [98.5] * 5 if direction == 1 else [102.5] * 5
 

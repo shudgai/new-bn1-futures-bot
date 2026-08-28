@@ -5,6 +5,198 @@ import numpy as np
 
 TIMEFRAME_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
+
+def classify_wave_regime(
+    df: pd.DataFrame,
+    previous_regime: str = "RANGE",
+    confirmation_bars: int = 3,
+    range_adx_max: float = 20.0,
+    range_spread_atr_max: float = 0.35,
+    trend_adx_min: float = 25.0,
+    trend_spread_atr_min: float = 0.50,
+) -> dict:
+    """用已收盤 K 的 ADX 與 MA3/MA15 距離判斷短波動或長趨勢。
+
+    RANGE/TREND 都必須連續成立 confirmation_bars 根才切換；落在兩組
+    門檻中間時維持前一狀態，避免模式在臨界值附近來回跳動。
+    """
+    prior = "TREND" if str(previous_regime).upper() == "TREND" else "RANGE"
+    required = max(1, int(confirmation_bars))
+    needed_columns = {"adx", "atr", "ma3", "ma15"}
+    if df is None or len(df) < required or not needed_columns.issubset(df.columns):
+        return {
+            "regime": prior, "candidate": "HOLD", "confirmed": False,
+            "adx": None, "spread_atr": None, "confirmation_bars": required,
+        }
+
+    recent = df.iloc[-required:]
+    states = []
+    last_adx = None
+    last_spread = None
+    for _, row in recent.iterrows():
+        adx = float(row["adx"])
+        atr = float(row["atr"])
+        ma3 = float(row["ma3"])
+        ma15 = float(row["ma15"])
+        if any(pd.isna(value) for value in (adx, atr, ma3, ma15)) or atr <= 0:
+            states.append("HOLD")
+            continue
+        spread_atr = abs(ma3 - ma15) / atr
+        last_adx, last_spread = adx, spread_atr
+        if adx < range_adx_max and spread_atr < range_spread_atr_max:
+            states.append("RANGE")
+        elif adx >= trend_adx_min and spread_atr >= trend_spread_atr_min:
+            states.append("TREND")
+        else:
+            states.append("HOLD")
+
+    candidate = states[-1] if states else "HOLD"
+    confirmed = bool(states and len(set(states)) == 1 and states[0] in ("RANGE", "TREND"))
+    regime = states[0] if confirmed else prior
+    return {
+        "regime": regime, "candidate": candidate, "confirmed": confirmed,
+        "adx": last_adx, "spread_atr": last_spread,
+        "confirmation_bars": required,
+    }
+
+def evaluate_kc_outer_run_lock(df: pd.DataFrame, side: str, armed: bool = False) -> dict:
+    """外軌延伸後鎖住技術反轉，直到反向 K 至少回到 KC 中軌。"""
+    result = {
+        "armed": bool(armed), "blocked": bool(armed), "released": False,
+        "touched_outer": False, "reached_middle": False,
+        "kc_upper": None, "kc_middle": None, "kc_lower": None,
+    }
+    if df is None or df.empty or str(side or "").upper() not in ("LONG", "SHORT"):
+        return result
+
+    work = df.copy()
+    close = pd.to_numeric(work["close"], errors="coerce")
+    high = pd.to_numeric(work["high"], errors="coerce")
+    low = pd.to_numeric(work["low"], errors="coerce")
+    if "kc_middle" in work.columns:
+        middle = pd.to_numeric(work["kc_middle"], errors="coerce")
+    elif "ema_20" in work.columns:
+        middle = pd.to_numeric(work["ema_20"], errors="coerce")
+    else:
+        middle = close.ewm(span=20, adjust=False).mean()
+    if "atr" in work.columns:
+        atr = pd.to_numeric(work["atr"], errors="coerce")
+    else:
+        previous_close = close.shift(1)
+        tr = pd.concat([
+            high - low, (high - previous_close).abs(), (low - previous_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(10, min_periods=3).mean()
+    from core.config import KELTNER_ATR_MULTIPLIER
+    upper = (
+        pd.to_numeric(work["kc_upper"], errors="coerce")
+        if "kc_upper" in work.columns else middle + atr * KELTNER_ATR_MULTIPLIER
+    )
+    lower = (
+        pd.to_numeric(work["kc_lower"], errors="coerce")
+        if "kc_lower" in work.columns else middle - atr * KELTNER_ATR_MULTIPLIER
+    )
+    values = [work["open"].iloc[-1], close.iloc[-1], high.iloc[-1], low.iloc[-1],
+              upper.iloc[-1], middle.iloc[-1], lower.iloc[-1]]
+    if any(pd.isna(value) for value in values):
+        return result
+
+    candle_open, candle_close, candle_high, candle_low, kc_upper, kc_middle, kc_lower = map(float, values)
+    side = str(side).upper()
+    touched_outer = bool(
+        candle_high >= kc_upper if side == "LONG" else candle_low <= kc_lower
+    )
+    now_armed = bool(armed or touched_outer)
+    reached_middle = bool(
+        now_armed
+        and (
+            (side == "LONG" and candle_close < candle_open and candle_low <= kc_middle)
+            or (side == "SHORT" and candle_close > candle_open and candle_high >= kc_middle)
+        )
+    )
+    result.update({
+        "armed": bool(now_armed and not reached_middle),
+        "blocked": bool(now_armed and not reached_middle),
+        "released": reached_middle, "touched_outer": touched_outer,
+        "reached_middle": reached_middle, "kc_upper": kc_upper,
+        "kc_middle": kc_middle, "kc_lower": kc_lower,
+    })
+    return result
+
+
+def detect_strong_trend_exhaustion(
+    df: pd.DataFrame, side: str, previous_extreme: float = None,
+    previous_ma3_extreme: float = None, retrace_atr: float = 0.15,
+) -> dict:
+    """強趨勢只在結構真正衰退後退出，不因第一個局部峰谷提早止盈。"""
+    result = {
+        "exit": False, "extreme_price": previous_extreme,
+        "ma3_extreme": previous_ma3_extreme, "retrace_atr": 0.0,
+        "two_bar_confirmed": False, "strength_fading": False,
+    }
+    required = {"close", "high", "low", "ma3", "ma15", "atr", "adx"}
+    if df is None or len(df) < 3 or not required.issubset(df.columns):
+        return result
+
+    work = df.dropna(subset=list(required)).copy()
+    if len(work) < 3:
+        return result
+    side = str(side or "").upper()
+    if side not in ("LONG", "SHORT"):
+        return result
+
+    ma3 = pd.to_numeric(work["ma3"], errors="coerce")
+    ma15 = pd.to_numeric(work["ma15"], errors="coerce")
+    adx = pd.to_numeric(work["adx"], errors="coerce")
+    atr = max(float(work["atr"].iloc[-1]), 1e-12)
+    close = pd.to_numeric(work["close"], errors="coerce")
+    spread = (ma3 - ma15).abs()
+
+    if side == "LONG":
+        extreme_price = max(
+            float(previous_extreme) if previous_extreme is not None else float("-inf"),
+            float(work["high"].max()),
+        )
+        ma3_extreme = max(
+            float(previous_ma3_extreme) if previous_ma3_extreme is not None else float("-inf"),
+            float(ma3.max()),
+        )
+        retrace = max(0.0, ma3_extreme - float(ma3.iloc[-1])) / atr
+        two_bar_confirmed = bool(
+            close.iloc[-1] < ma3.iloc[-1]
+            and close.iloc[-2] < ma3.iloc[-2]
+            and ma3.iloc[-1] < ma3.iloc[-2] <= ma3.iloc[-3]
+        )
+    else:
+        extreme_price = min(
+            float(previous_extreme) if previous_extreme is not None else float("inf"),
+            float(work["low"].min()),
+        )
+        ma3_extreme = min(
+            float(previous_ma3_extreme) if previous_ma3_extreme is not None else float("inf"),
+            float(ma3.min()),
+        )
+        retrace = max(0.0, float(ma3.iloc[-1]) - ma3_extreme) / atr
+        two_bar_confirmed = bool(
+            close.iloc[-1] > ma3.iloc[-1]
+            and close.iloc[-2] > ma3.iloc[-2]
+            and ma3.iloc[-1] > ma3.iloc[-2] >= ma3.iloc[-3]
+        )
+
+    strength_fading = bool(
+        float(adx.iloc[-1]) < float(adx.iloc[-2])
+        or float(spread.iloc[-1]) < float(spread.iloc[-2])
+    )
+    result.update({
+        "exit": bool(retrace >= retrace_atr and two_bar_confirmed and strength_fading),
+        "extreme_price": extreme_price, "ma3_extreme": ma3_extreme,
+        "retrace_atr": retrace, "two_bar_confirmed": two_bar_confirmed,
+        "strength_fading": strength_fading,
+        "adx": float(adx.iloc[-1]), "spread_atr": float(spread.iloc[-1]) / atr,
+    })
+    return result
+
+
 def get_dynamic_adx_floor(df: pd.DataFrame, direction: int) -> tuple[float, bool]:
     """Return the ADX floor and whether price is in a strong directional trend."""
     from core.config import ADX_MANDATORY_MIN, ADX_STRONG_TREND_MIN
@@ -217,7 +409,7 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
-def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
+def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     """
     1m MA3 / MA15 連續轉向邏輯：
     MA3 在 MA15 上方時順勢做多，除非峰頂轉彎向下。
@@ -281,36 +473,23 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     previous_volume = float(previous_candle.get("volume", 0) or 0)
     current_volume = float(current_candle.get("volume", 0) or 0)
     two_candle_volume_confirmed = volume_baseline > 0 and min(previous_volume, current_volume) >= volume_baseline * 1.20
+    # 峰／谷固定在倒數第二根 MA3（iloc[-2]），倒數第一根只負責確認右側
+    # 已經反向。左右兩側都必須有足夠斜率，不能把幾乎水平的位置誤標成
+    # 目前峰頂／谷底。
     two_red_peak = bool(
-        ma3_prev >= ma3_prev2 and current_slope <= -fast_pivot_slope
+        previous_slope >= fast_pivot_slope and current_slope <= -fast_pivot_slope
         and float(previous_candle["close"]) < float(previous_candle["open"])
         and float(current_candle["close"]) < float(current_candle["open"])
         and two_candle_volume_confirmed
     )
     two_green_trough = bool(
-        ma3_prev <= ma3_prev2 and current_slope >= fast_pivot_slope
+        previous_slope <= -fast_pivot_slope and current_slope >= fast_pivot_slope
         and float(previous_candle["close"]) > float(previous_candle["open"])
         and float(current_candle["close"]) > float(current_candle["open"])
         and two_candle_volume_confirmed
     )
-    if two_red_peak:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m 兩根放量紅K確認峰頂向下 → 立即開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
-            "ma_alignment": ma_alignment,
-        }
-    if two_green_trough:
-        return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m 兩根放量綠K確認谷底向上 → 立即開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
-            "ma_alignment": ma_alignment,
-        }
-
-    # Allow a stair-step plateau at a top or bottom to enter while flat.
+    # 峰谷點固定在倒數第二根；若它仍貼著 KC 中軌或 MA15，代表只是
+    # 中間雜訊，不允許平倉反手。這個守衛必須先於所有峰谷 return。
     step_trough = bool(
         ma3_prev <= ma3_prev2 <= ma3_prev3
         and ma3_prev3 - ma3_prev >= fast_pivot_slope
@@ -321,12 +500,70 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and ma3_prev - ma3_prev3 >= fast_pivot_slope
         and current_slope <= -fast_pivot_slope
     )
+    v_trough = previous_slope < 0 and current_slope > 0
+    v_peak = previous_slope > 0 and current_slope < 0
+    pivot_shape_detected = bool(
+        two_red_peak or two_green_trough or step_trough or step_peak
+        or v_trough or v_peak
+    )
+
+    # 真正的峰頂/谷底不能因為剛好貼近中軌或 MA15 就被噪音過濾。
+    # 只有在「轉折很弱、斜率不足」時，才維持 WAIT_MA_NOISE，避免錯過真轉向。
+    if pivot_shape_detected and not (
+        two_red_peak or two_green_trough or step_trough or step_peak
+        or (
+            v_trough and abs(previous_slope) >= min_pivot_slope
+            and current_slope >= min_pivot_slope
+        )
+        or (
+            v_peak and previous_slope >= min_pivot_slope
+            and abs(current_slope) >= min_pivot_slope
+        )
+    ):
+        ma15_at_pivot = float(df["ma15"].iloc[-2])
+        kc_middle_at_pivot = float(df["ema_20"].iloc[-2])
+        middle_noise_threshold = min_pivot_slope
+        ma15_distance_at_pivot = abs(ma3_prev - ma15_at_pivot)
+        kc_middle_distance_at_pivot = abs(ma3_prev - kc_middle_at_pivot)
+        return {
+            "signal": None, "entry_type": "WAIT_MA_NOISE",
+            "reason": "1m MA3 轉折過弱，未達真峰谷確認門檻",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 0, "ma3_slope": current_slope,
+            "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+            "ma15_distance": ma15_distance_at_pivot,
+            "kc_middle_distance": kc_middle_distance_at_pivot,
+            "noise_threshold": middle_noise_threshold,
+            "pivot_offset": -2, "ma_alignment": "NEUTRAL",
+        }
+
+    if two_red_peak:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m 兩根放量紅K確認峰頂向下 → 立即開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2,
+            "ma_alignment": ma_alignment,
+        }
+    if two_green_trough:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m 兩根放量綠K確認谷底向上 → 立即開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2,
+            "ma_alignment": ma_alignment,
+        }
+
+    # Allow a stair-step plateau at a top or bottom to enter while flat.
     if step_trough:
         return {
             "signal": "LONG", "entry_type": "TROUGH_TURN",
             "reason": "1m MA3 V/梯形谷底向上 → 立即轉向開多",
             "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
             "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2,
             "ma_alignment": ma_alignment,
         }
     if step_peak:
@@ -335,6 +572,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
             "reason": "1m MA3 倒V/梯形峰頂向下 → 立即轉向開空",
             "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
             "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2,
             "ma_alignment": ma_alignment,
         }
 
@@ -342,7 +580,6 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     # 回傳空訊號可讓既有持倉保持原方向。
     if (
         ma3_curr != ma15_curr
-        and not ((previous_slope < 0 < current_slope) or (previous_slope > 0 > current_slope))
         and recent_ma3_range <= min_directional_range
     ):
         return {
@@ -367,6 +604,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
                 "pivot_score": 100,
                 "fast_pivot": True,
                 "live_pivot": allow_live_pivot,
+                "pivot_offset": -2,
                 "ma_alignment": ma_alignment
             }
         return {
@@ -385,6 +623,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
                 "pivot_score": 100,
                 "fast_pivot": True,
                 "live_pivot": allow_live_pivot,
+                "pivot_offset": -2,
                 "ma_alignment": ma_alignment
             }
         return {
@@ -437,6 +676,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
         "ma_alignment": "EQUAL",
     }
+
 
 def get_ma3_ma15_limit_target(df: pd.DataFrame, side: str, lookback: int = 3) -> float:
     """多單取近期最低價，空單取近期最高價作為 Maker 掛單目標。"""
