@@ -69,7 +69,7 @@ def cap_margin_to_trade_risk(
 from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
-from core.indicators import drop_unclosed_candle, compute_position_trigger, classify_keltner_trend
+from core.indicators import drop_unclosed_candle, compute_position_trigger
 
 class TradingEngine:
     def __init__(self):
@@ -3483,12 +3483,6 @@ class TradingEngine:
                         cr_entry_type = live_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
-                kc_trend = classify_keltner_trend(df_cr_signal)
-                if kc_trend.get("detected") and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                    cr_signal = kc_trend["side"]
-                    cr_entry_type = kc_trend["entry_type"]
-                    cr_info = {**cr_info, **kc_trend, "pivot_score": 85}
-
 
                 wait_state = self._continuous_alignment_wait.get(symbol)
                 wait_side = wait_state.get("side") if isinstance(wait_state, dict) else wait_state
@@ -3573,14 +3567,13 @@ class TradingEngine:
                     )
                     if (
                         startup_pivot_pending
-                        and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "KC_TREND_LONG", "KC_TREND_SHORT")
+                        and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT")
                     ):
                         signal_progress.append(
-                            f"{coin} 啟動選點：{kc_trend.get('reason', '等待KC確認')}"
+                            f"{coin} 上線後首筆開倉只接受谷底/頂峰，略過 {cr_entry_type} 順勢訊號"
                         )
                         self.account.log(
-                            f"⏳ {symbol} 啟動選點：{cr_entry_type} 尚未通過 KC 可承接條件，"
-                            f"{kc_trend.get('reason', '等待KC確認')}；等待回踩或結構突破",
+                            f"⏳ {symbol} 上線後首筆開倉只接受谷底/頂峰，略過 {cr_entry_type} 順勢訊號",
                             "INFO",
                         )
                         return signal_progress, detected_candidates
@@ -3591,7 +3584,7 @@ class TradingEngine:
 
                     # 只允許已確認的峰頂/谷底進場；均線排列與交叉只能作為觀察，
                     # 不再在假突破或盤整時直接開倉、反手。
-                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT", "KC_TREND_LONG", "KC_TREND_SHORT"):
+                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
                         self.account.log(
                             f"⏸️ {symbol} {cr_entry_type} 非峰谷確認訊號，等待真峰頂/谷底後再開倉",
                             "INFO",
@@ -3700,7 +3693,7 @@ class TradingEngine:
                     _ma15 = float(cr_info.get("ma15_curr") or 0.0)
                     _ma3_slope = float(cr_info.get("ma3_slope") or 0.0)
                     _strong_trend_continuation = (
-                        cr_entry_type in ("TREND_LONG", "TREND_SHORT", "KC_TREND_LONG", "KC_TREND_SHORT")
+                        cr_entry_type in ("TREND_LONG", "TREND_SHORT")
                         and abs(_ma3 - _ma15) >= _atr * 0.35
                         and (
                             (cr_signal == "LONG" and _ma3_slope >= _atr * 0.08)
@@ -3831,7 +3824,7 @@ class TradingEngine:
                             )
 
                     # --- MA3/MA15 trend continuation; pivots are evaluated first ---
-                    elif cr_entry_type in ("TREND_LONG", "TREND_SHORT", "KC_TREND_LONG", "KC_TREND_SHORT"):
+                    elif cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
                         if has_pos:
                             if curr_side != cr_signal:
                                 self.account.log(
