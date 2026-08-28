@@ -1218,7 +1218,7 @@ class TradingEngine:
                     # CONTINUOUS_REVERSE 模式進場的部位用 5m（與進場相同），
                     # 其他路徑仍用 MA5_EXIT_TIMEFRAME（預設 1m）。
                     pos_reason = str(position.get("reason") or "")
-                    is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT", "手動開倉"))
+                    is_cr_position = any(k in pos_reason for k in ("TROUGH_TURN", "PEAK_TURN", "PIVOT_TURN", "RAPID_PIVOT_REVERSE", "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT", "手動開倉"))
                     is_exhaustion_position = str(position.get("entry_mode") or "") == "EXHAUSTION_SNIPER"
                     from core.config import CONTINUOUS_REVERSE_TIMEFRAME
                     exit_tf = CONTINUOUS_REVERSE_TIMEFRAME if is_cr_position else MA5_EXIT_TIMEFRAME
@@ -1650,10 +1650,30 @@ class TradingEngine:
                                             "WARNING",
                                         )
                                 else:
-                                    self.account.log(
-                                        f"{symbol} pivot closed; wait for confirmed reversal or trend resumption",
-                                        "WARNING",
-                                    )
+                                    pivot_reverse_side = "SHORT" if position.get("side") == "LONG" else "LONG"
+                                    available = self.account.get_available_balance()
+                                    if TEST_BUDGET_CAP_USDT > 0:
+                                        available = min(available, TEST_BUDGET_CAP_USDT)
+                                    if available >= MIN_TRADE_USDT:
+                                        self.account.log(
+                                            f"⚡ {symbol} 已確認局部峰谷，平{position.get('side')}後立即反手{pivot_reverse_side}",
+                                            "WARNING",
+                                        )
+                                        opened = await self._place_continuous_market_entry(
+                                            symbol=symbol, side=pivot_reverse_side, df=df,
+                                            live_price=curr_p, entry_type="PIVOT_TURN",
+                                            reason="1m 已確認局部峰谷，立即反手",
+                                            score=100, timeframe=exit_tf,
+                                        )
+                                        if opened:
+                                            self._continuous_last_entry_bar[symbol] = (
+                                                pivot_reverse_side, live_bar_id
+                                            )
+                                    else:
+                                        self.account.log(
+                                            f"{symbol} 峰谷已平倉，但可用餘額不足，未反手",
+                                            "WARNING",
+                                        )
                             if closed and pre_turn_exit:
                                 exit_ma5 = (
                                     float(df["ma5"].iloc[-1])
@@ -3671,7 +3691,8 @@ class TradingEngine:
                     # 空倉的新市價單不可追在 MA3 順向延伸的尾端：這正是
                     # 12:37 追空、12:40 大綠K追多後立刻被反向掃掉的情形。
                     # 已持倉的急速反手在持倉管理迴圈處理，故不會被這裡擋住。
-                    if not has_pos:
+                    # 已確認峰谷優先反手；KC位置與MA3距離防護僅攔截順勢追價。
+                    if not has_pos and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
                         entry_ma3 = float(df_cr_entry['close'].rolling(3).mean().iloc[-1])
                         entry_atr = max(float(cr_info.get('atr') or 0.0), live_price * 1e-12)
                         on_correct_ma3_side = (
@@ -3810,16 +3831,16 @@ class TradingEngine:
                         _sig_dir = 1 if cr_signal == "LONG" else -1
                         _is_counter = (_st_dir_val != 0 and _sig_dir != _st_dir_val)
                         
-                        # 【趨勢保護】如果在強趨勢中（ADX >= 25），出現逆勢的轉向訊號（例如多頭趨勢中的 PEAK_TURN），
-                        # 這通常只是幾根小紅K的回調（假突破），絕對不能平倉反轉！
+                        # 已確認的峰谷優先於 ADX 趨勢延續：KC 與 MA3 只用於確認，
+                        # 不再於峰谷成立後取消反手。
                         if _adx_val >= 25.0 and _is_counter:
-                            # 如果手上有順勢單，繼續死抱；如果空手，也不要逆勢開倉
+                            # 僅記錄強趨勢背景；確認峰谷仍照常反手
                             self.account.log(
-                                f"🛡️ [{symbol}] 強趨勢防護：ADX={_adx_val:.1f}，拒絕逆勢 {cr_entry_type} ({cr_signal})，"
-                                f"{'死抱原持倉' if has_pos else '放棄開倉'}！",
+                                f"🛡️ [{symbol}] 強趨勢背景：ADX={_adx_val:.1f}，確認 {cr_entry_type} ({cr_signal}) 仍優先反手，"
+                                f"{'平倉反手' if has_pos else '直接進場'}！",
                                 "INFO",
                             )
-                            return signal_progress, detected_candidates
+
 
                         should_open = False
                         if not has_pos:
