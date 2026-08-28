@@ -1287,7 +1287,7 @@ class TradingEngine:
                             )
                         )
                     trigger["rapid_adverse_exit"] = rapid_adverse_exit
-                    if rapid_adverse_exit and not entry_grace:
+                    if rapid_adverse_exit and not entry_grace and not is_cr_position:
                         curr_p = self.tickers.get(symbol) or adverse_close
                         close_reason = (
                             f"{exit_tf} adverse rapid reversal: body >= "
@@ -1423,8 +1423,9 @@ class TradingEngine:
                         not same_bar_reversal
                         and (strict_live_pivot or fast_ma3_confirmed)
                     )
-                    # 使用者要求：取消「保護性平倉」，假突破不提早下車，只在真正的峰谷才平倉
-                    pre_turn_exit = False
+                    # 峰谷尚未確認時，先平掉原方向並進入等待狀態；後續若原方向
+                    # 恢復，視為假突破順勢開回，若相反峰谷確認則才反手。
+                    pre_turn_exit = bool(is_cr_position and pre_pivot_wait)
                     should_auto_close = bool(
                         (not false_breakout_hold or live_pivot_exit)
                         and (
@@ -2540,6 +2541,37 @@ class TradingEngine:
 
         return True
 
+    def _ma3_ma15_entry_allowed(
+        self, symbol: str, side: str, df: pd.DataFrame, log_on_fail: bool = True,
+    ) -> bool:
+        """Only open in the confirmed 1m MA3/MA15 direction.
+
+        A local V/inverted-V can form before the broader 1m direction changes.
+        Apply this at execution time so pivot and Channel Swing cannot bypass it.
+        """
+        if df is None or df.empty:
+            if log_on_fail:
+                self.account.log(f"🛑 {symbol} 拒絕開倉：MA3/MA15 資料不足", "WARNING")
+            return False
+        close = pd.to_numeric(df["close"], errors="coerce")
+        ma3 = pd.to_numeric(df["ma3"], errors="coerce") if "ma3" in df.columns else close.rolling(3).mean()
+        ma15 = pd.to_numeric(df["ma15"], errors="coerce") if "ma15" in df.columns else close.rolling(15).mean()
+        ma3_now = float(ma3.iloc[-1])
+        ma15_now = float(ma15.iloc[-1])
+        requested = str(side or "").upper()
+        allowed = (
+            (requested == "LONG" and ma3_now > ma15_now)
+            or (requested == "SHORT" and ma3_now < ma15_now)
+        )
+        if not allowed and log_on_fail:
+            trend = "MA3>MA15 偏多" if ma3_now > ma15_now else "MA3<MA15 偏空" if ma3_now < ma15_now else "MA3=MA15 無方向"
+            self.account.log(
+                f"🛑 {symbol} 拒絕開{("多" if requested == "LONG" else "空")}：{trend}"
+                f"（MA3={ma3_now:.8g}, MA15={ma15_now:.8g}）",
+                "WARNING",
+            )
+        return allowed
+
     def _same_side_entry_allowed(self, symbol: str, side: str) -> bool:
         """Prevent correlated entries from filling every slot in one direction."""
         if MAX_SAME_SIDE_POSITIONS <= 0:
@@ -3438,12 +3470,43 @@ class TradingEngine:
                     clean_sym = symbol.replace(':USDT', '') if symbol.endswith(':USDT') else symbol
                     live_price = self.tickers.get(clean_sym, self.tickers.get(symbol, last_close))
 
-                    # 只允許已確認的峰頂/谷底進場；均線排列與交叉只能作為觀察，
-                    # 不再在假突破或盤整時直接開倉、反手。
-                    if cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"):
+                    # 空倉依趨勢方向開倉；已有持倉時，反向只接受已確認的
+                    # 谷底向上（空轉多）或峰頂向下（多轉空）。交叉訊號不交易。
+                    if cr_entry_type not in (
+                        "TROUGH_TURN", "PEAK_TURN", "TREND_LONG", "TREND_SHORT"
+                    ):
                         self.account.log(
-                            f"⏸️ {symbol} {cr_entry_type} 非峰谷確認訊號，等待真峰頂/谷底後再開倉",
+                            f"⏸️ {symbol} {cr_entry_type} 非有效方向訊號，等待趨勢或峰谷確認",
                             "INFO",
+                        )
+                        return signal_progress, detected_candidates
+
+                    signal_direction_matches = (
+                        (cr_entry_type in ("TROUGH_TURN", "TREND_LONG") and cr_signal == "LONG")
+                        or (cr_entry_type in ("PEAK_TURN", "TREND_SHORT") and cr_signal == "SHORT")
+                    )
+                    if not signal_direction_matches:
+                        self.account.log(
+                            f"⏸️ {symbol} 訊號方向不一致：{cr_entry_type} -> {cr_signal}，略過",
+                            "WARNING",
+                        )
+                        return signal_progress, detected_candidates
+
+                    # === 最後一道方向一致性防線：MA3 vs MA15 宏觀趨勢 ===
+                    # 避免在下降趨勢中做多（即使是谷底反轉），或在上升趨勢中做空。
+                    # 同時封住 Channel Swing 的反向入口。
+                    ma3_macro = float(df_cr_entry['close'].rolling(3).mean().iloc[-1])
+                    ma15_macro = float(df_cr_entry['close'].rolling(15).mean().iloc[-1])
+                    if cr_signal == "LONG" and ma3_macro < ma15_macro:
+                        self.account.log(
+                            f"⏸️ {symbol} MA3 < MA15 宏觀下降趨勢中，拒絕逆勢開多單 ({cr_entry_type})",
+                            "WARNING",
+                        )
+                        return signal_progress, detected_candidates
+                    if cr_signal == "SHORT" and ma3_macro > ma15_macro:
+                        self.account.log(
+                            f"⏸️ {symbol} MA3 > MA15 宏觀上升趨勢中，拒絕逆勢開空單 ({cr_entry_type})",
+                            "WARNING",
                         )
                         return signal_progress, detected_candidates
 
@@ -3484,6 +3547,31 @@ class TradingEngine:
                     if not has_pos:
                         entry_ma3 = float(df_cr_entry['close'].rolling(3).mean().iloc[-1])
                         entry_atr = max(float(cr_info.get('atr') or 0.0), live_price * 1e-12)
+                        entry_ema20 = (
+                            float(df_cr_entry['ema_20'].iloc[-1])
+                            if 'ema_20' in df_cr_entry.columns
+                            else float(df_cr_entry['close'].ewm(span=20, adjust=False).mean().iloc[-1])
+                        )
+                        entry_candle = df_cr_entry.iloc[-1]
+                        trend_reached_middle = bool(
+                            cr_entry_type == "TREND_LONG"
+                            and float(entry_candle['close']) < float(entry_candle['open'])
+                            and float(entry_candle['low']) <= entry_ema20
+                        ) or bool(
+                            cr_entry_type == "TREND_SHORT"
+                            and float(entry_candle['close']) > float(entry_candle['open'])
+                            and float(entry_candle['high']) >= entry_ema20
+                        )
+                        if trend_reached_middle:
+                            middle_direction = "紅K跌到中軌" if cr_entry_type == "TREND_LONG" else "綠K漲到中軌"
+                            signal_progress.append(
+                                f"{coin} {cr_signal} {middle_direction}，等待趨勢重新確認"
+                            )
+                            self.account.log(
+                                f"⏸️ {symbol} {cr_entry_type}：{middle_direction}，暫不順勢開倉",
+                                "INFO",
+                            )
+                            return signal_progress, detected_candidates
                         on_correct_ma3_side = (
                             (cr_signal == "LONG" and live_price >= entry_ma3)
                             or (cr_signal == "SHORT" and live_price <= entry_ma3)
