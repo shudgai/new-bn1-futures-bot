@@ -327,6 +327,54 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
             "ma_alignment": ma_alignment,
         }
 
+    # 結構型峰谷：用最近 7 根的局部極值、影線拒絕、MA3 回頭與收盤突破判定。
+    # 長影線只代表測試價位；必須反覆出現且最後以實體收破小結構，才是可交易反轉。
+    structure = df.iloc[-7:]
+    candle_ranges = (structure["high"] - structure["low"]).replace(0, np.nan)
+    lower_wick_ratio = (structure[["open", "close"]].min(axis=1) - structure["low"]) / candle_ranges
+    upper_wick_ratio = (structure["high"] - structure[["open", "close"]].max(axis=1)) / candle_ranges
+    lower_rejections = int((lower_wick_ratio >= 0.35).sum())
+    upper_rejections = int((upper_wick_ratio >= 0.35).sum())
+    swing_low_at = int(np.argmin(structure["low"].to_numpy()))
+    swing_high_at = int(np.argmax(structure["high"].to_numpy()))
+    swing_low = float(structure["low"].iloc[swing_low_at])
+    swing_high = float(structure["high"].iloc[swing_high_at])
+    after_low = structure.iloc[swing_low_at + 1:-1]
+    after_high = structure.iloc[swing_high_at + 1:-1]
+    structure_volume_ok = volume_baseline <= 0 or current_volume >= volume_baseline * 0.90
+    structural_trough = bool(
+        0 <= swing_low_at <= 4 and not after_low.empty
+        and current_close > float(after_low["high"].max())
+        and current_close - swing_low >= atr * 0.50
+        and ma3_curr - ma3_prev >= fast_pivot_slope
+        and current_close > float(current_candle["open"])
+        and lower_rejections >= 2 and structure_volume_ok
+    )
+    structural_peak = bool(
+        0 <= swing_high_at <= 4 and not after_high.empty
+        and current_close < float(after_high["low"].min())
+        and swing_high - current_close >= atr * 0.50
+        and ma3_prev - ma3_curr >= fast_pivot_slope
+        and current_close < float(current_candle["open"])
+        and upper_rejections >= 2 and structure_volume_ok
+    )
+    if structural_trough:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": f"1m 結構谷底：{lower_rejections}根下影拒絕＋收破小結構 → 開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": False, "volume_confirmed": structure_volume_ok,
+            "live_pivot": allow_live_pivot, "ma_alignment": ma_alignment,
+        }
+    if structural_peak:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": f"1m 結構峰頂：{upper_rejections}根上影拒絕＋收破小結構 → 開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": False, "volume_confirmed": structure_volume_ok,
+            "live_pivot": allow_live_pivot, "ma_alignment": ma_alignment,
+        }
+
     # Allow a stair-step plateau at a top or bottom to enter while flat.
     step_trough = bool(
         ma3_prev <= ma3_prev2 <= ma3_prev3
