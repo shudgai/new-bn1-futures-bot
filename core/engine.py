@@ -3789,14 +3789,26 @@ class TradingEngine:
             if df_1m.empty:
                 return signal_progress, detected_candidates
                 
-            # --- 通道振盪策略 (Channel Swing) ---
+            # --- 智慧雙模式切換：ADX >= 25 -> 順勢追單；ADX < 25 -> 通道振盪 ---
             df_1m_live = self.strategy.compute_indicators(df_1m.copy())
-            if len(df_1m_live) >= 20:
+            
+            # 取得即時 ADX 數值
+            _adx_val = 0.0
+            if len(df_1m_live) >= 20 and "adx" in df_1m_live.columns:
+                _adx_val = float(df_1m_live["adx"].iloc[-1] or 0.0)
+            
+            ADX_TREND_THRESHOLD = 25.0  # ADX >= 25 = 趨勢強，啟用順勢追單
+            is_trending_market = _adx_val >= ADX_TREND_THRESHOLD
+            
+            # --- 通道振盪策略 (Channel Swing) — 只在 ADX < 25 時啟用 ---
+            if not is_trending_market:
+                signal_progress.append(f"{coin} [ADX={_adx_val:.1f}<{ADX_TREND_THRESHOLD}] 震盪模式->通道振盪")
+            if len(df_1m_live) >= 20 and not is_trending_market:
                 live_candle = df_1m_live.iloc[-1]
                 kc_upper = float(live_candle.get("kc_upper") or 0)
                 kc_lower = float(live_candle.get("kc_lower") or 0)
                 
-                # === 持倉中：對面軌道到達 → 平倉 + 反手 ===
+                # === 持倉中：對面軌道到達 -> 平倉 + 反手 ===
                 existing_pos = self.account.positions.get(symbol)
                 if existing_pos and kc_upper > 0 and kc_lower > 0:
                     curr_side = existing_pos.get("side")
@@ -3928,6 +3940,10 @@ class TradingEngine:
                         )
                         return signal_progress, detected_candidates
             # -----------------------------------
+
+            # ADX >= 25 趨勢模式：跳過通道振盪，繼續往下執行 PIVOT_TURN 順勢追單
+            if is_trending_market:
+                signal_progress.append(f"{coin} [ADX={_adx_val:.1f}>={ADX_TREND_THRESHOLD}] 趨勢模式->順勢追單+止盈停損")
 
             # 只讀已收盤 1m K，避免未收線 RSI、量能與 MA3 重繪。
             df_1m = drop_unclosed_candle(df_1m, "1m")
