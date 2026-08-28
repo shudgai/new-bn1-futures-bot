@@ -3701,6 +3701,7 @@ class TradingEngine:
                                 self._last_kc_guard_log_at[symbol] = time.time()
                                 self.account.log(f"🛡️ {symbol} 拒絕高位追多/低位追空 ({cr_signal})，現價距 KC 邊界太近！", "WARNING")
                             cr_signal = None
+                            return signal_progress, detected_candidates
                         elif (
                             not on_correct_ma3_side
                             or extension_atr > MA3_MARKET_ENTRY_MAX_DISTANCE_ATR
