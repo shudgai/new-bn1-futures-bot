@@ -3657,11 +3657,16 @@ class TradingEngine:
                                     require_true_breakout = True
 
                         if require_true_breakout and not is_true_breakout:
-                            if getattr(self, "_last_false_break_log_at", {}).get(symbol, 0) < time.time() - 60:
-                                self._last_false_break_log_at = getattr(self, "_last_false_break_log_at", {})
-                                self._last_false_break_log_at[symbol] = time.time()
-                                self.account.log(f"🛡️ {symbol} 剛經歷 {cr_signal} 假突破平倉，拒絕弱訊號 ({cr_entry_type})，堅持等待真谷底/峰頂！", "INFO")
-                            cr_signal = None
+                            _adx_val = float(df_cr_entry["adx"].iloc[-1]) if "adx" in df_cr_entry.columns and not pd.isna(df_cr_entry["adx"].iloc[-1]) else 0.0
+                            if _adx_val >= 25.0 and cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
+                                self.account.log(f"⚡ {symbol} 強趨勢 (ADX={_adx_val:.1f})，特赦解鎖 {cr_entry_type} 順勢進場限制！", "INFO")
+                                require_true_breakout = False
+                            else:
+                                if getattr(self, "_last_false_break_log_at", {}).get(symbol, 0) < time.time() - 60:
+                                    self._last_false_break_log_at = getattr(self, "_last_false_break_log_at", {})
+                                    self._last_false_break_log_at[symbol] = time.time()
+                                    self.account.log(f"🛡️ {symbol} 剛經歷 {cr_signal} 假突破平倉，拒絕弱訊號 ({cr_entry_type})，堅持等待真谷底/峰頂！", "INFO")
+                                cr_signal = None
 
                     if not cr_signal:
                         return signal_progress, detected_candidates
@@ -3680,7 +3685,23 @@ class TradingEngine:
                             (live_price - entry_ma3) / entry_atr
                             if cr_signal == "LONG" else (entry_ma3 - live_price) / entry_atr
                         )
-                        if (
+                        # === KC 位置防護：避免追在極端高低點 ===
+                        kc_upper_val = float(df_cr_entry["kc_upper"].iloc[-1]) if "kc_upper" in df_cr_entry.columns else 0
+                        kc_lower_val = float(df_cr_entry["kc_lower"].iloc[-1]) if "kc_lower" in df_cr_entry.columns else 0
+                        is_near_top = False
+                        is_near_bottom = False
+                        if kc_upper_val > 0 and kc_lower_val > 0:
+                            kc_safe_margin = (kc_upper_val - kc_lower_val) * 0.20 # 20%
+                            is_near_top = (cr_signal == "LONG" and live_price >= kc_upper_val - kc_safe_margin)
+                            is_near_bottom = (cr_signal == "SHORT" and live_price <= kc_lower_val + kc_safe_margin)
+                        
+                        if is_near_top or is_near_bottom:
+                            if getattr(self, "_last_kc_guard_log_at", {}).get(symbol, 0) < time.time() - 60:
+                                self._last_kc_guard_log_at = getattr(self, "_last_kc_guard_log_at", {})
+                                self._last_kc_guard_log_at[symbol] = time.time()
+                                self.account.log(f"🛡️ {symbol} 拒絕高位追多/低位追空 ({cr_signal})，現價距 KC 邊界太近！", "WARNING")
+                            cr_signal = None
+                        elif (
                             not on_correct_ma3_side
                             or extension_atr > MA3_MARKET_ENTRY_MAX_DISTANCE_ATR
                         ):
