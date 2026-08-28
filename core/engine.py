@@ -3686,15 +3686,15 @@ class TradingEngine:
                             if cr_signal == "LONG" else (entry_ma3 - live_price) / entry_atr
                         )
                         # === KC 位置防護：避免追在極端高低點 ===
-                        # 但如果是「一小段一小段」的緩漲/緩跌（ADX極強），就應該允許沿著軌道開單！
+                        # 但如果是「一小段一小段」的緩漲/緩跌（ADX強勢），就應該允許沿著軌道開單！
                         kc_upper_val = float(df_cr_entry["kc_upper"].iloc[-1]) if "kc_upper" in df_cr_entry.columns else 0
                         kc_lower_val = float(df_cr_entry["kc_lower"].iloc[-1]) if "kc_lower" in df_cr_entry.columns else 0
                         is_near_top = False
                         is_near_bottom = False
                         if kc_upper_val > 0 and kc_lower_val > 0:
                             _adx_now = float(df_cr_entry["adx"].iloc[-1]) if "adx" in df_cr_entry.columns and not pd.isna(df_cr_entry["adx"].iloc[-1]) else 0.0
-                            # 若 ADX 極強 (>= 35) 且沒有暴衝 (extension_atr 小於 1.0)，允許貼軌道開單
-                            if _adx_now >= 35.0 and extension_atr < 1.0:
+                            # 若 ADX 強勢 (>= 25) 且沒有暴衝 (extension_atr 小於 1.0)，允許貼軌道開單
+                            if _adx_now >= 25.0 and extension_atr < 1.0:
                                 kc_safe_margin = 0.0 # 完全放行緩跌/緩漲
                             else:
                                 kc_safe_margin = (kc_upper_val - kc_lower_val) * 0.20 # 20% 防暴衝追高
