@@ -1417,6 +1417,23 @@ class TradingEngine:
                     exit_signal_info = detect_ma5_ma25_cross_and_turn(
                         df_closed, allow_live_pivot=False
                     )
+                    # 出場也再次驗證 KC 半通道；沒有收回帶內不能平倉反手。
+                    if exit_signal_info.get("entry_type") in ("TROUGH_TURN", "PEAK_TURN"):
+                        exit_close = float(df_closed["close"].iloc[-1])
+                        exit_middle = float(df_closed["ema_20"].iloc[-1]) if "ema_20" in df_closed.columns else exit_close
+                        exit_lower = float(df_closed["kc_lower"].iloc[-1]) if "kc_lower" in df_closed.columns else float("-inf")
+                        exit_upper = float(df_closed["kc_upper"].iloc[-1]) if "kc_upper" in df_closed.columns else float("inf")
+                        exit_side = exit_signal_info.get("signal")
+                        exit_in_band = (
+                            exit_lower <= exit_close <= exit_middle
+                            if exit_side == "LONG" else exit_middle <= exit_close <= exit_upper
+                        )
+                        if not exit_in_band:
+                            self.account.log(
+                                f"⏸️ {symbol} 峰谷收盤未進KC對應半通道，視為假突破，維持原方向",
+                                "INFO",
+                            )
+                            exit_signal_info = {"entry_type": "WAIT_KC_REENTRY", "reason": "KC半通道未確認"}
                     false_breakout_hold = str(
                         exit_signal_info.get("reason", "")
                     ).startswith("假突破過濾")
@@ -3496,6 +3513,24 @@ class TradingEngine:
         """MA3/MA15 順勢訊號確認後，以即時市價直接開倉。"""
         from core.config import TRADE_AMOUNT_USDT, get_leverage
         from core.strategy import build_sl_tp_for_side
+
+        # 峰谷反手的最後一道防線：下單前再次核對已收盤 K 的 KC 半通道。
+        # 保護資料輪詢在K線剛切換時的短暫不同步，不讓假突破進場。
+        if entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+            closed_price = float(df["close"].iloc[-1])
+            kc_middle = float(df["ema_20"].iloc[-1]) if "ema_20" in df.columns else closed_price
+            kc_lower = float(df["kc_lower"].iloc[-1]) if "kc_lower" in df.columns else float("-inf")
+            kc_upper = float(df["kc_upper"].iloc[-1]) if "kc_upper" in df.columns else float("inf")
+            in_reentry_band = (
+                kc_lower <= closed_price <= kc_middle
+                if side == "LONG" else kc_middle <= closed_price <= kc_upper
+            )
+            if not in_reentry_band:
+                self.account.log(
+                    f"⏸️ {symbol} {entry_type} 收盤未進入KC對應半通道，判定假突破，不下單",
+                    "INFO",
+                )
+                return False
 
         atr_raw = float(df["atr"].iloc[-1]) if "atr" in df.columns else 0.0
         atr = atr_raw if pd.notna(atr_raw) and atr_raw > 0 else live_price * 0.015
