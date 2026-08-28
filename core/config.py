@@ -44,6 +44,8 @@ def get_atr_based_leverage(atr_pct: float) -> int:
     return LEVERAGE
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
+# 每筆市價或限價進場使用的保證金上限；<=0 表示不設上限。
+MAX_ORDER_AMOUNT_USDT = max(0.0, float(os.getenv("MAX_ORDER_AMOUNT_USDT", "5000.0")))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
 MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "0.50"))
 
@@ -127,7 +129,7 @@ MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE
 # 單筆動態金額防線：最大毛虧損不得超過該筆實際投入保證金的比例。
 # 使用比例而非固定 USDT，未來本金變動時不必重新修改程式。
 MAX_POSITION_MARGIN_LOSS_RATIO = max(
-    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.10"))
+    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.15"))
 )
 
 
@@ -419,12 +421,17 @@ MAX_SL_DISTANCE_PCT = float(os.getenv("MAX_SL_DISTANCE_PCT", "0.05"))
 SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.002"))
 
 # Exhaustion Sniper 專用規格；不影響其他 entry_mode。
-EXHAUSTION_SNIPER_LOOKBACK_BARS = max(1, int(os.getenv("EXHAUSTION_SNIPER_LOOKBACK_BARS", "3")))
+EXHAUSTION_SNIPER_LOOKBACK_BARS = max(1, int(os.getenv("EXHAUSTION_SNIPER_LOOKBACK_BARS", "4")))
 EXHAUSTION_SNIPER_VOLUME_RATIO = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_VOLUME_RATIO", "1.5")))
 EXHAUSTION_SNIPER_RSI_LONG_MAX = float(os.getenv("EXHAUSTION_SNIPER_RSI_LONG_MAX", "40"))
 EXHAUSTION_SNIPER_RSI_SHORT_MIN = float(os.getenv("EXHAUSTION_SNIPER_RSI_SHORT_MIN", "60"))
-EXHAUSTION_SNIPER_STOP_LOSS_PCT = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_STOP_LOSS_PCT", "0.012")))
+EXHAUSTION_SNIPER_STOP_LOSS_PCT = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_STOP_LOSS_PCT", "0.03")))
 EXHAUSTION_SNIPER_GRACE_SEC = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_GRACE_SEC", "180")))
+DEAD_FISH_FILTER_ENABLED = os.getenv("DEAD_FISH_FILTER_ENABLED", "true").lower() == "true"
+DEAD_FISH_ADX_MAX = max(0.0, float(os.getenv("DEAD_FISH_ADX_MAX", "18")))
+DEAD_FISH_ATR_PCT_MAX = max(0.0, float(os.getenv("DEAD_FISH_ATR_PCT_MAX", "0.001")))
+DEAD_FISH_KC_WIDTH_PCT_MAX = max(0.0, float(os.getenv("DEAD_FISH_KC_WIDTH_PCT_MAX", "0.0035")))
+DEAD_FISH_RANGE_PCT_MAX = max(0.0, float(os.getenv("DEAD_FISH_RANGE_PCT_MAX", "0.006")))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）

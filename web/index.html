@@ -44,18 +44,18 @@
             z-index: 50;
             box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
-        .logo { font-size: 20px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+        .logo { font-size: 24px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
         .logo span { color: var(--primary); }
         .badge {
-            font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
+            font-size: 13.2px; font-weight: 700; padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
         }
         .badge-port { background: #e0e7ff; color: #4338ca; }
-        .badge-status { cursor: pointer; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; transition: all 0.2s; }
+        .badge-status { cursor: pointer; padding: 6px 14px; border-radius: 20px; font-size: 15.6px; font-weight: 700; transition: all 0.2s; }
         .badge-status.running { background: var(--up-bg); color: var(--up); border: 1px solid var(--up); }
         .badge-status.stopped { background: var(--down-bg); color: var(--down); border: 1px solid var(--down); }
 
         /* Main Container */
-        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 20px; }
         /* grid item 預設 min-width:auto，內容（例如coin-grid）撐開多寬，
            格子就不會縮小到比那個寬——手機版單欄時會把整個容器往外撐開
            造成橫向捲動，加 min-width:0 讓格子可以縮小到容器寬度內。 */
@@ -67,15 +67,15 @@
 
         /* Cards */
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
-        .card-title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+        .card-title { font-size: 15.6px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
 
         /* Coins strip */
         .coin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
         .coin-card { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: all 0.2s; }
         .coin-card:hover { border-color: var(--primary); transform: translateY(-1px); }
-        .coin-name { font-size: 12px; font-weight: 700; color: var(--muted); }
-        .coin-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; margin-top: 4px; }
-        .coin-direction { float: right; font-size: 10px; font-weight: 800; }
+        .coin-name { font-size: 14.4px; font-weight: 700; color: var(--muted); }
+        .coin-price { font-family: 'JetBrains Mono', monospace; font-size: 16.8px; font-weight: 700; margin-top: 4px; }
+        .coin-direction { float: right; font-size: 12px; font-weight: 800; }
         .coin-direction.long { color: var(--up); }
         .coin-direction.short { color: var(--down); }
         .coin-direction.both { color: var(--primary); }
@@ -84,12 +84,12 @@
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
         .stats-grid-6 { grid-template-columns: repeat(6, 1fr); }
         .stat-box { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
-        .stat-label { font-size: 11px; color: var(--muted); font-weight: 600; }
-        .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; margin-top: 4px; }
+        .stat-label { font-size: 13.2px; color: var(--muted); font-weight: 600; }
+        .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 19.2px; font-weight: 700; margin-top: 4px; }
 
         /* Tables */
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        table { width: 100%; border-collapse: collapse; font-size: 15.6px; }
+        th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 13.2px; border-bottom: 1px solid var(--border); white-space: nowrap; }
         td { padding: 12px; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; }
         /* 表格欄位在窄螢幕容易被壓縮到重疊，改成只在自己的容器內橫向捲動 */
         .table-scroll {
@@ -126,7 +126,7 @@
             .stats-grid, .stats-grid-6 { grid-template-columns: repeat(2, 1fr); }
             .coin-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
             .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
-            table { font-size: 12px; }
+            table { font-size: 14.4px; }
             th, td { padding: 8px; }
             /* 手機版隱藏 AI 分析卡 */
             .ai-analysis-card { display: none !important; }
@@ -138,11 +138,11 @@
         .down { color: var(--down); font-weight: 700; }
 
         /* Console Log */
-        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-radius: 10px; padding: 14px; max-height: 600px; overflow: auto; }
+        .console { background: #f8fafc; color: #0f172a; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 14.4px; border-radius: 10px; padding: 14px; max-height: 600px; overflow: auto; }
 
         /* Collapsible card title */
         .card-title.collapsible { cursor: pointer; user-select: none; }
-        .collapse-arrow { display: inline-block; transition: transform 0.2s; font-size: 10px; margin-left: 6px; }
+        .collapse-arrow { display: inline-block; transition: transform 0.2s; font-size: 12px; margin-left: 6px; }
         .collapse-arrow.open { transform: rotate(90deg); }
         .log-item { margin-bottom: 6px; opacity: 0.9; }
         .log-item-latest { background: rgba(245, 158, 11, 0.18); border-radius: 4px; padding: 2px 4px; margin-left: -4px; }
@@ -151,7 +151,7 @@
         .log-time { color: var(--muted); margin-right: 8px; }
 
         /* Buttons */
-        .btn { padding: 8px 16px; border-radius: 8px; border: none; font-weight: 700; cursor: pointer; transition: all 0.2s; font-size: 13px; width: 100%; }
+        .btn { padding: 8px 16px; border-radius: 8px; border: none; font-weight: 700; cursor: pointer; transition: all 0.2s; font-size: 15.6px; width: 100%; }
         .btn-primary { background: var(--primary); color: #fff; }
         .btn-primary:hover { background: #1d4ed8; }
         .btn-danger { background: var(--down); color: #fff; }
@@ -160,33 +160,34 @@
         .btn-pnl-success { background: var(--up-bg); color: var(--up); border: 1px solid rgba(16, 185, 129, 0.4); }
 
         .input-group { margin-bottom: 12px; }
-        .input-group label { display: block; font-size: 11px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
-        .input-group input, .input-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 13px; }
+        .input-group label { display: block; font-size: 13.2px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+        .input-group input, .input-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 15.6px; }
     
-        /* Chart Modal */
-        .chart-modal-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.6); z-index: 100;
-            display: flex; justify-content: center; align-items: center;
+        /* Chart stays in the right-side column by default; it can expand without rebuilding. */
+        .chart-sidebar-card { padding: 0; overflow: hidden; min-height: 100vh; min-height: 100dvh; }
+        .chart-host { background: #fff; width: 100%; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
+        .chart-host.is-fullscreen {
+            position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100vh; height: 100dvh;
+            background: #fff;
         }
-        .chart-modal {
-            background: #fff; width: 90%; max-width: 1000px; border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2); overflow: hidden;
-            display: flex; flex-direction: column;
+        .chart-header {
+            flex: 0 0 auto; min-height: 44px; padding: 8px 10px; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center; gap: 8px;
         }
-        .chart-modal-header {
-            padding: 16px 24px; border-bottom: 1px solid var(--border);
-            display: flex; justify-content: space-between; align-items: center;
+        .chart-title { font-size: 14.4px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chart-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+        .chart-action {
+            cursor: pointer; min-width: 32px; height: 28px; padding: 0 7px; border: 1px solid var(--border);
+            border-radius: 6px; background: #f8fafc; color: var(--text); font-weight: 700;
         }
-        .chart-modal-title { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 12px; }
-        .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
-        .chart-modal-body { padding: 16px; height: 500px; width: 100%; position: relative; }
+        .chart-body { flex: 1 1 auto; min-height: 0; position: relative; }
         .chart-container { width: 100%; height: 100%; }
+        .chart-host.is-fullscreen .chart-header { min-height: 54px; padding: 10px 18px; }
+        .chart-host.is-fullscreen .chart-title { font-size: 19.2px; }
         @media (max-width: 860px) {
-            .chart-modal { width: calc(100% - 20px); max-height: calc(100vh - 20px); }
-            .chart-modal-header { padding: 12px 14px; }
-            .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
-            .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
+            .chart-sidebar-card { min-height: 100vh; min-height: 100dvh; }
+            .chart-host { height: 100vh; height: 100dvh; }
+            .chart-host.is-fullscreen .chart-header { min-height: 50px; padding: 7px 10px; }
         }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
@@ -205,7 +206,7 @@
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
             </div>
             <div style="display:flex; align-items:center; gap:16px;">
-                <span style="font-size:12px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
+                <span style="font-size:14.4px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
                 <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
                     {{ bot.is_running ? '🟢 策略運行中' : '🔴 已停止' }}
                 </div>
@@ -213,24 +214,6 @@
         </div>
 
         
-        <!-- CHART MODAL -->
-        <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
-            <div class="chart-modal">
-                <div class="chart-modal-header">
-                    <div class="chart-modal-title">
-                        📈 {{ chartModal.symbol }} K線圖 
-                        <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m · MA3</span>
-                    </div>
-                    <button class="chart-modal-close" @click="closeChartModal">&times;</button>
-                </div>
-                <div class="chart-modal-body">
-                    <div v-if="chartModal.loading" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--muted)">載入中...</div>
-                    <div v-else-if="chartModal.error" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--down)">{{ chartModal.error }}</div>
-                    <div id="tv-chart" class="chart-container" :style="{ opacity: chartModal.loading || chartModal.error ? 0 : 1 }"></div>
-                </div>
-            </div>
-        </div>
-
         <!-- MAIN LAYOUT -->
         <div class="container">
             <!-- LEFT CONTENT -->
@@ -284,7 +267,7 @@
                 <div class="card">
                     <div class="card-title">
                         <span>📊 當前持倉 (Active Positions)</span>
-                        <span style="font-size:11px; color:var(--muted)">{{ bot.positions.length }} 個部位</span>
+                        <span style="font-size:13.2px; color:var(--muted)">{{ bot.positions.length }} 個部位</span>
                     </div>
                     <div class="table-scroll">
                     <table>
@@ -306,27 +289,27 @@
                             <tr v-for="pos in bot.positions" :key="pos.symbol">
                                 <td :class="pos.side === 'LONG' ? 'up' : 'down'">{{ pos.side }}</td>
                                 <td>{{ pos.leverage || getLeverage(pos.symbol) }}x</td>
-                                <td style="color:var(--muted); font-size:12px; white-space:nowrap;">{{ formatTime(pos.open_time) }}</td>
+                                <td style="color:var(--muted); font-size:14.4px; white-space:nowrap;">{{ formatTime(pos.open_time) }}</td>
                                 <td><b>{{ pos.symbol }}</b></td>
                                 <td>{{ formatPrice(pos.entry_price) }}</td>
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td style="padding: 6px;">
                                     <div
                                         :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']"
-                                        style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: pointer; white-space: nowrap;"
+                                        style="padding: 6px 10px; font-size: 15.6px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: pointer; white-space: nowrap;"
                                         title="點擊即可手動平倉此持倉"
                                         @click="closePos(pos.symbol)"
                                     >
                                         <span>{{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT</span>
-                                        <span style="font-size: 10px; opacity: 0.95; font-weight: 600;">
+                                        <span style="font-size: 12px; opacity: 0.95; font-weight: 600;">
                                             ({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}% / {{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)
                                         </span>
-                                        <span v-if="pos.profit_alert" style="font-size: 11px;">💰⚠️</span>
-                                        <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
-                                        <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
+                                        <span v-if="pos.profit_alert" style="font-size: 13.2px;">💰⚠️</span>
+                                        <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 13.2px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
+                                        <span style="font-size: 12px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
                                 </td>
-                                <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
+                                <td><span style="font-size:14.4px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
                                     <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
                                         {{ pos.trigger && pos.trigger.ma_ok === false ? '✗' : '✓' }}
@@ -350,11 +333,11 @@
                     <div class="card-title">
                         <span>📜 近期交易明細 (Trade History)</span>
                         <div style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal;">
-                            <select v-model="exportDate" style="font-size:12px; padding:4px 6px; border-radius:6px;">
+                            <select v-model="exportDate" style="font-size:14.4px; padding:4px 6px; border-radius:6px;">
                                 <option value="">全部日期 ({{ bot.total_trades || 0 }} 筆)</option>
                                 <option v-for="d in bot.trade_dates" :key="d" :value="d">{{ d }}</option>
                             </select>
-                            <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:12px;" @click="downloadTrades">📥 下載 CSV</button>
+                            <button class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:14.4px;" @click="downloadTrades">📥 下載 CSV</button>
                         </div>
                     </div>
                     <div style="max-height:220px; overflow-y:auto;" class="table-scroll">
@@ -402,7 +385,7 @@
                 <div class="card">
                     <div class="card-title collapsible" @click="volatilityExpanded = !volatilityExpanded">
                         <span><span class="collapse-arrow" :class="{ open: volatilityExpanded }">▶</span> 📈 幣種波動率統計 (每小時輪替時更新)</span>
-                        <span style="font-size:11px; color:var(--muted)">幣種本身市場價格，跟持倉損益無關</span>
+                        <span style="font-size:13.2px; color:var(--muted)">幣種本身市場價格，跟持倉損益無關</span>
                     </div>
                     <div class="table-scroll" v-show="volatilityExpanded">
                     <table>
@@ -421,7 +404,7 @@
                             <tr v-for="row in sortedVolatility" :key="row.symbol">
                                 <td>
                                     <b>{{ row.name }}</b>
-                                    <span v-if="row.volatility_excluded" style="font-size:10px; color:var(--down); border:1px solid var(--down); border-radius:4px; padding:1px 4px; margin-left:4px;" title="波動率持續偏離可交易區間太多，已自動排除在幣種輪替候選之外">已排除</span>
+                                    <span v-if="row.volatility_excluded" style="font-size:12px; color:var(--down); border:1px solid var(--down); border-radius:4px; padding:1px 4px; margin-left:4px;" title="波動率持續偏離可交易區間太多，已自動排除在幣種輪替候選之外">已排除</span>
                                 </td>
                                 <td>{{ row.atr_pct.toFixed(3) }}%</td>
                                 <td class="up">+{{ row.avg_daily_up_pct.toFixed(2) }}%</td>
@@ -443,12 +426,30 @@
 
             <!-- RIGHT PANEL CONTROLS -->
             <div class="right-panel">
+                <!-- CHART: normal view uses this right column; fullscreen is optional. -->
+                <div v-if="chartModal.show" class="card chart-sidebar-card">
+                    <div class="chart-host" :class="{ 'is-fullscreen': chartModal.fullscreen }">
+                        <div class="chart-header">
+                            <div class="chart-title">📈 {{ chartModal.symbol }} · 1m 即時</div>
+                            <div class="chart-actions">
+                                <button class="chart-action" @click="toggleChartFullscreen" :title="chartModal.fullscreen ? '離開全螢幕' : '全螢幕'">{{ chartModal.fullscreen ? '↙' : '⛶' }}</button>
+                                <button class="chart-action" @click="closeChartModal" title="關閉圖表">×</button>
+                            </div>
+                        </div>
+                        <div class="chart-body">
+                            <div v-if="chartModal.loading" style="display:flex; justify-content:center; align-items:center; height:100%; color:var(--muted)">載入中...</div>
+                            <div v-else-if="chartModal.error" style="display:flex; justify-content:center; align-items:center; height:100%; padding:12px; text-align:center; color:var(--down)">{{ chartModal.error }}</div>
+                            <div id="tv-chart" class="chart-container" :style="{ opacity: chartModal.loading || chartModal.error ? 0 : 1 }"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
-                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
+                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:16.8px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
                         {{ isTogglingBot ? '處理中...' : (bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人') }}
                     </button>
-                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">
+                    <button class="btn" style="margin-top:8px; padding:8px; font-size:14.4px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">
                         🔄 重置帳戶（清空損益與記錄）
                     </button>
                 </div>
@@ -457,18 +458,18 @@
                 <div class="card">
                     <div class="card-title">⚡ 手動開倉 (依策略自動配置止損/止盈)</div>
                     <div style="display:flex; gap:8px; margin-top:8px;">
-                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做多 (LONG)' }}</button>
-                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做空 (SHORT)' }}</button>
+                        <button class="btn btn-success" style="padding:12px; font-size:16.8px;" @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做多 (LONG)' }}</button>
+                        <button class="btn btn-danger" style="padding:12px; font-size:16.8px;" @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做空 (SHORT)' }}</button>
                     </div>
                 </div>
 
                 <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
                 <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px;">
                     <button class="btn btn-success"
-                        style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
+                        style="padding:18px 0; font-size:20.4px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
                         @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1 }">&#x1F4C8; {{ isPlacingOrder ? '處理中' : '買進 LONG' }}</button>
                     <button class="btn btn-danger"
-                        style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
+                        style="padding:18px 0; font-size:20.4px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
                         @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1 }">&#x1F4C9; {{ isPlacingOrder ? '處理中' : '賣出 SHORT' }}</button>
                 </div>
 
@@ -477,15 +478,15 @@
                     <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
                         <span><span class="collapse-arrow" :class="{ open: aiAnalysisExpanded }">▶</span> 🧠 AI 歷史交易分析</span>
                         <span style="display:flex; align-items:center; gap:8px;">
-                            <button class="btn" style="padding:4px 7px; font-size:10px;" @click.stop="runAiTradeAnalysis" :disabled="isAnalyzing" :style="{ opacity: isAnalyzing ? 0.6 : 1, cursor: isAnalyzing ? 'not-allowed' : 'pointer' }">
+                            <button class="btn" style="padding:4px 7px; font-size:12px;" @click.stop="runAiTradeAnalysis" :disabled="isAnalyzing" :style="{ opacity: isAnalyzing ? 0.6 : 1, cursor: isAnalyzing ? 'not-allowed' : 'pointer' }">
                                 {{ isAnalyzing ? '分析中...' : '立即分析' }}
                             </button>
-                            <span style="font-size:10px; color:var(--muted); text-transform:none;">
+                            <span style="font-size:12px; color:var(--muted); text-transform:none;">
                                 {{ bot.trade_ai_analysis.status === 'ok' ? '自建 AI 已完成' : '等待分析' }}
                             </span>
                         </span>
                     </div>
-                    <div v-show="aiAnalysisExpanded" style="font-size:12px; line-height:1.7; color:var(--muted);">
+                    <div v-show="aiAnalysisExpanded" style="font-size:14.4px; line-height:1.7; color:var(--muted);">
                         <p style="color:var(--text); margin-bottom:8px;">
                             {{ bot.trade_ai_analysis.summary || '尚未產生分析' }}
                         </p>
@@ -530,6 +531,7 @@
                     symbol: "",
                     loading: false,
                     error: "",
+                    fullscreen: false,
                 },
                 isProcessing: false,
                 isTogglingBot: false,
@@ -630,82 +632,196 @@
             },
             methods: {
 
+            ensureChartLibrary() {
+                if (window.LightweightCharts) return Promise.resolve();
+                return new Promise((resolve, reject) => {
+                    const existing = document.getElementById("lightweight-charts-fallback");
+                    if (existing) existing.remove();
+                    const script = document.createElement("script");
+                    script.id = "lightweight-charts-fallback";
+                    script.src = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js";
+                    script.onload = () => { script.dataset.loaded = "true"; resolve(); };
+                    script.onerror = () => { script.remove(); reject(new Error("圖表元件載入失敗，請稍後再試")); };
+                    document.head.appendChild(script);
+                });
+            },
+            waitForChartContainer() {
+                return new Promise((resolve, reject) => {
+                    let attempts = 0;
+                    const wait = () => {
+                        const container = document.getElementById("tv-chart");
+                        if (container && container.clientWidth > 0 && container.clientHeight > 0) return resolve(container);
+                        attempts += 1;
+                        if (attempts >= 30) return reject(new Error("圖表容器尺寸尚未就緒"));
+                        requestAnimationFrame(wait);
+                    };
+                    requestAnimationFrame(wait);
+                });
+            },
+            resizeChart() {
+                const container = document.getElementById("tv-chart");
+                if (!this._chart || !container) return;
+                requestAnimationFrame(() => {
+                    if (this._chart && container.clientWidth > 0 && container.clientHeight > 0) {
+                        this._chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+                    }
+                });
+            },
             openChartModal(symbol) {
                 this.chartModal.symbol = symbol;
                 this.chartModal.show = true;
+                this.chartModal.fullscreen = false;
                 this.chartModal.loading = true;
                 this.chartModal.error = "";
-                
-                // Wait for DOM to render the modal container
-                this.$nextTick(() => {
+                this._chartFetching = false;
+                this._chartRequestId = (this._chartRequestId || 0) + 1;
+                const requestId = this._chartRequestId;
+
+                this.$nextTick(async () => {
                     try {
-                        this.initChart();
-                        this.fetchChartData(symbol);
+                        await this.ensureChartLibrary();
+                        if (!this.chartModal.show || requestId !== this._chartRequestId) return;
+                        await this.initChart();
+                        await this.fetchChartData(symbol, true, requestId);
+                        clearInterval(this._chartRefreshTimer);
+                        this._chartRefreshTimer = setInterval(() => {
+                            if (this.chartModal.show) this.fetchChartData(symbol, false, requestId);
+                        }, 2000);
                     } catch (e) {
                         this.chartModal.error = "圖表初始化失敗: " + e.message;
                         this.chartModal.loading = false;
                     }
                 });
             },
+            toggleChartFullscreen() {
+                this.chartModal.fullscreen = !this.chartModal.fullscreen;
+                this.$nextTick(() => this.resizeChart());
+            },
             closeChartModal() {
                 this.chartModal.show = false;
+                this.chartModal.fullscreen = false;
+                this._chartRequestId = (this._chartRequestId || 0) + 1;
+                this._chartFetching = false;
+                clearInterval(this._chartRefreshTimer);
+                this._chartRefreshTimer = null;
+                if (this._chartResizeObserver) {
+                    this._chartResizeObserver.disconnect();
+                    this._chartResizeObserver = null;
+                }
                 if (this._chart) {
                     this._chart.remove();
                     this._chart = null;
                 }
             },
-            initChart() {
-                const container = document.getElementById('tv-chart');
-                if (!container) return;
-                
-                if (this._chart) {
-                    this._chart.remove();
-                }
-                
+            async initChart() {
+                if (!window.LightweightCharts) throw new Error("圖表元件尚未載入");
+                const container = await this.waitForChartContainer();
+                if (this._chart) this._chart.remove();
+
                 this._chart = LightweightCharts.createChart(container, {
-                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
-                    grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+                    width: container.clientWidth, height: container.clientHeight,
+                    layout: { background: { type: "solid", color: "#ffffff" }, textColor: "#333" },
+                    grid: { vertLines: { color: "#f0f3fa" }, horzLines: { color: "#f0f3fa" } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: '#cccccc' },
-                    timeScale: { borderColor: '#cccccc', timeVisible: true },
+                    rightPriceScale: { borderColor: "#cccccc", scaleMargins: { top: 0.05, bottom: 0.34 } },
+                    timeScale: { borderColor: "#cccccc", timeVisible: true },
                 });
-                
+
                 this._candlestickSeries = this._chart.addCandlestickSeries({
-                    upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
-                    wickUpColor: '#10b981', wickDownColor: '#ef4444'
+                    upColor: "#10b981", downColor: "#ef4444", borderVisible: false,
+                    wickUpColor: "#10b981", wickDownColor: "#ef4444"
                 });
-                this._ma3Series = this._chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
-                this._ma15Series = this._chart.addLineSeries({ color: '#FF6D00', lineWidth: 2, title: 'MA15' });
-                this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
+                this._ma3Series = this._chart.addLineSeries({ color: "#E91E63", lineWidth: 2, title: "MA3", crosshairMarkerVisible: false });
+                this._kcUpperSeries = this._chart.addLineSeries({ color: "#06b6d4", lineWidth: 2, title: "KC上軌", crosshairMarkerVisible: false });
+                this._kcMiddleSeries = this._chart.addLineSeries({ color: "#64748b", lineWidth: 1, lineStyle: 2, title: "KC中軌", crosshairMarkerVisible: false });
+                this._kcLowerSeries = this._chart.addLineSeries({ color: "#06b6d4", lineWidth: 2, title: "KC下軌", crosshairMarkerVisible: false });
+                this._rsiSeries = this._chart.addLineSeries({ color: "#f59e0b", lineWidth: 2, title: "RSI", priceScaleId: "rsi", crosshairMarkerVisible: false });
+                this._rsiSeries.createPriceLine({ price: 60, color: "#7c3aed", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "空60" });
+                this._rsiSeries.createPriceLine({ price: 40, color: "#2563eb", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "多40" });
+                this._chart.priceScale("rsi").applyOptions({ visible: false, scaleMargins: { top: 0.70, bottom: 0.12 } });
+                this._volumeSeries = this._chart.addHistogramSeries({ priceScaleId: "volume", priceFormat: { type: "volume" }, title: "成交量" });
+                this._volumeThresholdSeries = this._chart.addLineSeries({ color: "#ef4444", lineWidth: 1, lineStyle: 2, title: "1.5倍量", priceScaleId: "volume", crosshairMarkerVisible: false });
+                this._chart.priceScale("volume").applyOptions({ visible: false, scaleMargins: { top: 0.89, bottom: 0 } });
+
+                if (this._chartResizeObserver) this._chartResizeObserver.disconnect();
+                this._chartResizeObserver = new ResizeObserver(() => this.resizeChart());
+                this._chartResizeObserver.observe(container);
             },
-            async fetchChartData(symbol) {
+            async fetchChartData(symbol, fitContent = false, requestId = this._chartRequestId) {
+                if (this._chartFetching) return;
+                this._chartFetching = true;
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m`);
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, { cache: 'no-store' });
                     if (!res.ok) throw new Error("Failed to fetch K-lines");
                     const json = await res.json();
+                    if (!this._chart || requestId !== this._chartRequestId || symbol !== this.chartModal.symbol) return;
+                    if (!json.data || json.data.length === 0) throw new Error("沒有可顯示的K線資料");
+
+                    const referencePrice = Number(json.data[json.data.length - 1].close || 0);
+                    const pricePrecision = referencePrice < 0.01 ? 8 : (referencePrice < 1 ? 6 : (referencePrice < 100 ? 4 : 2));
+                    const priceFormat = { type: "price", precision: pricePrecision, minMove: Math.pow(10, -pricePrecision) };
+                    this._candlestickSeries.applyOptions({ priceFormat });
+                    this._ma3Series.applyOptions({ priceFormat });
+                    this._kcUpperSeries.applyOptions({ priceFormat });
+                    this._kcMiddleSeries.applyOptions({ priceFormat });
+                    this._kcLowerSeries.applyOptions({ priceFormat });
                     
                     const candles = [];
                     const ma3 = [];
-                    const ma15 = [];
-                    const ma99 = [];
+                    const kcUpper = [];
+                    const kcMiddle = [];
+                    const kcLower = [];
+                    const rsi = [];
+                    const volume = [];
+                    const volumeThreshold = [];
+                    const entryMarkers = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
                         if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
-                        if (d.ma15 !== null) ma15.push({ time: d.time, value: d.ma15 });
-                        if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
+                        if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
+                        if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
+                        if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
+                        if (d.rsi !== null) rsi.push({ time: d.time, value: d.rsi });
+                        volume.push({
+                            time: d.time, value: d.volume,
+                            color: d.close >= d.open ? 'rgba(16,185,129,0.55)' : 'rgba(239,68,68,0.55)',
+                        });
+                        if (d.volume_threshold !== null) volumeThreshold.push({ time: d.time, value: d.volume_threshold });
+                        const markerSide = d.executed_entry || d.entry_signal;
+                        const markerIsExecuted = Boolean(d.executed_entry);
+                        if (markerSide === 'LONG') {
+                            entryMarkers.push({
+                                time: d.time, position: 'belowBar', color: '#2563eb',
+                                shape: 'arrowUp', text: markerIsExecuted ? '實際開多：谷底反轉' : '谷底：平空→買多', size: 2,
+                            });
+                        } else if (markerSide === 'SHORT') {
+                            entryMarkers.push({
+                                time: d.time, position: 'aboveBar', color: '#7c3aed',
+                                shape: 'arrowDown', text: markerIsExecuted ? '實際買空：頂峰反轉' : '頂峰：平多→買空', size: 2,
+                            });
+                        }
                     });
                     
                     this._candlestickSeries.setData(candles);
                     this._ma3Series.setData(ma3);
-                    this._ma15Series.setData(ma15);
-                    this._ma99Series.setData(ma99);
+                    this._kcUpperSeries.setData(kcUpper);
+                    this._kcMiddleSeries.setData(kcMiddle);
+                    this._kcLowerSeries.setData(kcLower);
+                    this._rsiSeries.setData(rsi);
+                    this._volumeSeries.setData(volume);
+                    this._volumeThresholdSeries.setData(volumeThreshold);
+                    this._candlestickSeries.setMarkers(entryMarkers);
                     
-                    this._chart.timeScale().fitContent();
-                    this.chartModal.loading = false;
+                    if (fitContent) this._chart.timeScale().fitContent();
+                    if (requestId === this._chartRequestId) this.chartModal.loading = false;
                 } catch (e) {
-                    this.chartModal.error = e.message;
-                    this.chartModal.loading = false;
+                    if (requestId === this._chartRequestId) {
+                        this.chartModal.error = e.message;
+                        this.chartModal.loading = false;
+                    }
+                } finally {
+                    if (requestId === this._chartRequestId) this._chartFetching = false;
                 }
             },
 

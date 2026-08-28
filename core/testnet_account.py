@@ -12,6 +12,7 @@ from core.config import (
     BINANCE_API_KEY,
     BINANCE_SECRET,
     TAKER_FEE_RATE,
+    MAX_ORDER_AMOUNT_USDT,
     SLIPPAGE_PCT,
     MAX_DAILY_LOSS_PCT,
     MIN_OPEN_SIGNAL_SCORE,
@@ -1525,6 +1526,9 @@ class BinanceTestnetAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
+        if MAX_ORDER_AMOUNT_USDT > 0 and amount_usdt > MAX_ORDER_AMOUNT_USDT:
+            self.log(f"🛡️ {symbol} 下單金額 {amount_usdt:.2f}U 超過單筆上限 {MAX_ORDER_AMOUNT_USDT:.2f}U，已調整", "WARNING")
+            amount_usdt = MAX_ORDER_AMOUNT_USDT
         try:
             validate_sl_tp_pair(price, side, sl, tp)
         except ValueError as exc:
@@ -1629,14 +1633,14 @@ class BinanceTestnetAccount:
                 execution_price + tp_distance if side == "LONG"
                 else execution_price - tp_distance
             )
-            if is_exhaustion_sniper:
+            if is_exhaustion_sniper and not DISABLE_STOP_LOSS:
                 adjusted_sl = execution_price * (
                     1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT
                     if side == "LONG"
                     else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
                 )
             # Ensure SL sits on correct side and respect a minimum distance
-            if not DISABLE_STOP_LOSS or is_exhaustion_sniper:
+            if not DISABLE_STOP_LOSS:
                 atr_value = atr if atr > 0 else execution_price * 0.015
                 min_dist = max(price_ref * MIN_SL_DISTANCE_PCT, atr_value * STOP_LOSS_MULTIPLIER)
                 if side == "LONG":
@@ -1779,6 +1783,10 @@ class BinanceTestnetAccount:
             entry_ctx["dca_base_price"] = float(target_price)
             entry_ctx["dca_original_amount"] = float(amount_usdt)
             amount_usdt = amount_usdt / 3.0
+
+        if MAX_ORDER_AMOUNT_USDT > 0 and amount_usdt > MAX_ORDER_AMOUNT_USDT:
+            self.log(f"🛡️ {symbol} 掛單金額 {amount_usdt:.2f}U 超過單筆上限 {MAX_ORDER_AMOUNT_USDT:.2f}U，已調整", "WARNING")
+            amount_usdt = MAX_ORDER_AMOUNT_USDT
 
         if symbol in self.positions:
             # 只有在非 DCA 首次進場（也就是 DCA 2、3 階加倉）時，才允許在已有持倉時繼續掛單

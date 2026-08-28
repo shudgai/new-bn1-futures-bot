@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from core.config import (
     INITIAL_BALANCE,
+    MAX_ORDER_AMOUNT_USDT,
     TAKER_FEE_RATE,
     SLIPPAGE_PCT,
     MAX_DAILY_LOSS_PCT,
@@ -175,7 +176,33 @@ class PaperAccount:
         """純本地模擬，不用連線、不用載入交易所市場資料。"""
         self._check_daily_reset()
         restored = False
-        if not DISABLE_STOP_LOSS:
+        if DISABLE_STOP_LOSS:
+            for symbol, pos in self.positions.items():
+                if str(pos.get("entry_mode") or "") != "EXHAUSTION_SNIPER":
+                    continue
+                meta = self.position_meta.setdefault(symbol, {})
+                pos["sl"] = 0.0
+                pos["tp"] = 0.0
+                pos["initial_sl"] = 0.0
+                pos["initial_risk"] = 0.0
+                meta["sl"] = 0.0
+                meta["tp"] = 0.0
+                meta["initial_sl"] = 0.0
+                meta["initial_risk"] = 0.0
+                for flag in (
+                    "is_breakeven_moved", "profit_bank_armed",
+                    "fixed_profit_lock_pct_armed", "profit_lock_usdt_armed",
+                    "profit_alert",
+                ):
+                    pos[flag] = False
+                    meta[flag] = False
+                meta["native_trailing_tier"] = 0
+                self.log(
+                    f"🔄 [峰谷循環遷移] {symbol} 已清除既有止盈止損與鎖利線，只等相反峰谷反手",
+                    "WARNING",
+                )
+                restored = True
+        else:
             for symbol, pos in self.positions.items():
                 if float(pos.get("sl") or 0.0) > 0:
                     continue
@@ -418,6 +445,9 @@ class PaperAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
+        if MAX_ORDER_AMOUNT_USDT > 0 and amount_usdt > MAX_ORDER_AMOUNT_USDT:
+            self.log(f"🛡️ {symbol} 下單金額 {amount_usdt:.2f}U 超過單筆上限 {MAX_ORDER_AMOUNT_USDT:.2f}U，已調整", "WARNING")
+            amount_usdt = MAX_ORDER_AMOUNT_USDT
         try:
             validate_sl_tp_pair(price, side, sl, tp)
         except ValueError as exc:
@@ -440,14 +470,14 @@ class PaperAccount:
             if tp_distance > 0:
                 tp = execution_price + tp_distance if side == "LONG" else execution_price - tp_distance
         entry_mode = dict(entry_context or {}).get("entry_mode")
-        if entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
-            # 市價滑價後，以實際成交價重算精確 1.2% 硬停損。
+        if not DISABLE_STOP_LOSS and entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+            # 市價滑價後，以實際成交價重算精確 3% 硬停損。
             sl = execution_price * (
                 1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT
                 if side == "LONG"
                 else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
             )
-        if DISABLE_STOP_LOSS and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+        if DISABLE_STOP_LOSS:
             sl = 0.0
         else:
             # Ensure SL is on correct side and at least a conservative minimum distance
@@ -590,6 +620,10 @@ class PaperAccount:
             entry_ctx["dca_base_price"] = float(target_price)
             entry_ctx["dca_original_amount"] = float(amount_usdt)
             amount_usdt = amount_usdt / 3.0
+
+        if MAX_ORDER_AMOUNT_USDT > 0 and amount_usdt > MAX_ORDER_AMOUNT_USDT:
+            self.log(f"🛡️ {symbol} 掛單金額 {amount_usdt:.2f}U 超過單筆上限 {MAX_ORDER_AMOUNT_USDT:.2f}U，已調整", "WARNING")
+            amount_usdt = MAX_ORDER_AMOUNT_USDT
 
         if symbol in self.positions:
             # 只有在非 DCA 首次進場（也就是 DCA 2、3 階加倉）時，才允許在已有持倉時繼續掛單
