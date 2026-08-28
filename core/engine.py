@@ -3779,6 +3779,22 @@ class TradingEngine:
 
                     # 峰頂/谷底提早轉向訊號：如果無持倉則開倉；如果方向相反，強制平倉反轉！
                     if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                        _adx_val = float(df_cr_entry["adx"].iloc[-1]) if "adx" in df_cr_entry.columns and not pd.isna(df_cr_entry["adx"].iloc[-1]) else 0.0
+                        _st_dir_val = int(df_cr_entry["st_direction"].iloc[-1]) if "st_direction" in df_cr_entry.columns else 0
+                        _sig_dir = 1 if cr_signal == "LONG" else -1
+                        _is_counter = (_st_dir_val != 0 and _sig_dir != _st_dir_val)
+                        
+                        # 【趨勢保護】如果在強趨勢中（ADX >= 25），出現逆勢的轉向訊號（例如多頭趨勢中的 PEAK_TURN），
+                        # 這通常只是幾根小紅K的回調（假突破），絕對不能平倉反轉！
+                        if _adx_val >= 25.0 and _is_counter:
+                            # 如果手上有順勢單，繼續死抱；如果空手，也不要逆勢開倉
+                            self.account.log(
+                                f"🛡️ [{symbol}] 強趨勢防護：ADX={_adx_val:.1f}，拒絕逆勢 {cr_entry_type} ({cr_signal})，"
+                                f"{'死抱原持倉' if has_pos else '放棄開倉'}！",
+                                "INFO",
+                            )
+                            return signal_progress, detected_candidates
+
                         should_open = False
                         if not has_pos:
                             should_open = True
