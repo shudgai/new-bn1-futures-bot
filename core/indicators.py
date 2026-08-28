@@ -298,10 +298,11 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and current_close - prior_low >= atr * 0.35
     )
     # 使用者指定的快速 KC 峰谷反手：僅對已收盤 K 生效。
-    # 谷底：空方延伸後，綠 K 下影觸下軌而收回通道內，代表拒絕低價。
-    # 峰頂：此前曾觸上軌，紅 K 再收至中軌或其下，代表高位失守。
+    # 谷底：綠 K 必須收在 KC 下軌到中軌；峰頂：紅 K 必須收在中軌到上軌。
+    # 未收進對應半通道一律是假突破，不改變原持倉方向。
     ema20_curr = float(df["ema_20"].iloc[-1]) if "ema_20" in df.columns else ma3_curr
     kc_lower_curr = float(df["kc_lower"].iloc[-1]) if "kc_lower" in df.columns else float("-inf")
+    kc_upper_curr = float(df["kc_upper"].iloc[-1]) if "kc_upper" in df.columns else float("inf")
     recent_kc = df.iloc[-6:-1]
     prior_upper_touch = bool(
         "kc_upper" in recent_kc.columns
@@ -309,22 +310,26 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     )
     current_open = float(current_candle["open"])
     current_body = current_close - current_open
+    # 收盤必須回到對應半通道：下軌~中軌是谷底多頭確認；
+    # 中軌~上軌是峰頂空頭確認。未收回者視為假突破，維持原方向。
+    trough_reentry_band = kc_lower_curr <= current_close <= ema20_curr
+    peak_reentry_band = ema20_curr <= current_close <= kc_upper_curr
     immediate_trough = bool(
         current_body >= atr * 0.20
         and float(current_candle["low"]) <= kc_lower_curr
-        and current_close >= kc_lower_curr
+        and trough_reentry_band
         and ma3_prev <= ma3_prev2
     )
     immediate_peak = bool(
         current_body <= -atr * 0.20
-        and current_close <= ema20_curr
+        and peak_reentry_band
         and prior_upper_touch
         and ma3_prev >= ma3_prev2
     )
     if immediate_trough:
         return {
             "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m 綠K觸KC下軌後收回通道內 → 谷底快速反手開多",
+            "reason": "1m 綠K觸KC下軌且收回下軌~中軌 → 谷底快速反手開多",
             "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
             "fast_pivot": True, "volume_confirmed": None, "live_pivot": False,
             "ma_alignment": ma_alignment,
@@ -332,7 +337,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
     if immediate_peak:
         return {
             "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m 紅K跌回KC中軌且此前觸上軌 → 峰頂快速反手開空",
+            "reason": "1m 紅K自KC上軌收回中軌~上軌 → 峰頂快速反手開空",
             "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
             "fast_pivot": True, "volume_confirmed": None, "live_pivot": False,
             "ma_alignment": ma_alignment,
@@ -344,6 +349,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and float(current_candle["close"]) < float(current_candle["open"])
         and two_candle_volume_confirmed
         and peak_structure_confirmed
+        and peak_reentry_band
     )
     two_green_trough = bool(
         ma3_prev <= ma3_prev2 and current_slope >= fast_pivot_slope
@@ -351,6 +357,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and float(current_candle["close"]) > float(current_candle["open"])
         and two_candle_volume_confirmed
         and trough_structure_confirmed
+        and trough_reentry_band
     )
     if two_red_peak:
         return {
@@ -391,6 +398,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and ma3_curr - ma3_prev >= fast_pivot_slope
         and current_close > float(current_candle["open"])
         and lower_rejections >= 2 and structure_volume_ok
+        and trough_reentry_band
     )
     structural_peak = bool(
         0 <= swing_high_at <= 4 and not after_high.empty
@@ -399,6 +407,7 @@ def detect_ma5_ma25_cross_and_turn(df, allow_live_pivot=False):
         and ma3_prev - ma3_curr >= fast_pivot_slope
         and current_close < float(current_candle["open"])
         and upper_rejections >= 2 and structure_volume_ok
+        and peak_reentry_band
     )
     if structural_trough:
         return {

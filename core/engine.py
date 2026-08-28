@@ -1372,6 +1372,7 @@ class TradingEngine:
                     rapid_adverse_exit = False
                     if (
                         RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED
+                        and not is_cr_position
                         and not df.empty
                         and len(df) >= 3
                     ):
@@ -1543,13 +1544,9 @@ class TradingEngine:
                     trigger["fast_ma3_confirmed"] = fast_ma3_confirmed
                     trigger["rapid_impulse_pivot"] = rapid_impulse_pivot
                     same_bar_reversal = self._live_pivot_reversal_bar.get(symbol) == live_bar_id
-                    # The first confirmed live pivot only flattens the old side.
-                    # The main signal loop decides the next entry: reverse on a
-                    # confirmed turn, or resume the original trend after a false break.
-                    live_pivot_exit = (
-                        not same_bar_reversal
-                        and (strict_live_pivot or fast_ma3_confirmed)
-                    )
+                    # 峰谷必須等 1m K 收盤且確認回到 KC 對應半通道；
+                    # 未收盤的影線可能是假突破，不能先平倉或反手。
+                    live_pivot_exit = False
                     # 使用者要求：取消「保護性平倉」，假突破不提早下車，只在真正的峰谷才平倉
                     pre_turn_exit = False
                     should_auto_close = bool(
