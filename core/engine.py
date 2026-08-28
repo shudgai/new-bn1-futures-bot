@@ -4166,6 +4166,30 @@ class TradingEngine:
                 return signal_progress, detected_candidates
 
             exhaustion = check_exhaustion_entry_filters(df_1m, direction)
+
+            # === KC 位置防護：靠近頂峰不開多，靠近谷底不開空 ===
+            # 若現價距 KC 上軌不足 30% 通道寬度 → 快到頂了，拒絕開多（避免高點追多）
+            # 若現價距 KC 下軌不足 30% 通道寬度 → 快到底了，拒絕開空（避免低點追空）
+            kc_upper_check = float(df_1m_live["kc_upper"].iloc[-1]) if "kc_upper" in df_1m_live.columns else 0
+            kc_lower_check = float(df_1m_live["kc_lower"].iloc[-1]) if "kc_lower" in df_1m_live.columns else 0
+            if kc_upper_check > 0 and kc_lower_check > 0:
+                kc_width_check = kc_upper_check - kc_lower_check
+                kc_safe_zone = kc_width_check * 0.30  # 30% 通道寬度作為安全緩衝
+                too_close_to_top = (direction == "LONG" and live_price >= kc_upper_check - kc_safe_zone)
+                too_close_to_bottom = (direction == "SHORT" and live_price <= kc_lower_check + kc_safe_zone)
+                if too_close_to_top:
+                    signal_progress.append(
+                        f"{coin} {direction} 訊號成立但現價({live_price:.6g})距KC上軌({kc_upper_check:.6g})太近，"
+                        f"拒絕開多，等待回踩"
+                    )
+                    return signal_progress, detected_candidates
+                if too_close_to_bottom:
+                    signal_progress.append(
+                        f"{coin} {direction} 訊號成立但現價({live_price:.6g})距KC下軌({kc_lower_check:.6g})太近，"
+                        f"拒絕開空，等待反彈"
+                    )
+                    return signal_progress, detected_candidates
+            # ============================================
             if exhaustion.get("passed"):
                 atr_value = float(df_1m["atr"].iloc[-1])
                 sig = {
