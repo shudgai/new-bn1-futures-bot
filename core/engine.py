@@ -4190,12 +4190,22 @@ class TradingEngine:
                     if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
                         should_open = False
                         if not has_pos:
-                            should_open = True
-                            self.account.log(
-                                f"✅ {symbol} confirmed {cr_entry_type}; market-enter {cr_signal}",
-                                "INFO",
-                            )
+                            should_open = (not CONTINUOUS_PIVOT_ONLY or cr_signal == "LONG")
+                            if should_open:
+                                self.account.log(
+                                    f"✅ {symbol} confirmed {cr_entry_type}; market-enter {cr_signal}",
+                                    "INFO",
+                                )
+                            else:
+                                signal_progress.append(f"{coin} 上軌峰頂：只平多，不開空")
                         elif curr_side != cr_signal:
+                            if CONTINUOUS_PIVOT_ONLY:
+                                await self.account.close_position(
+                                    symbol=symbol, current_price=live_price,
+                                    close_reason=f"外軌峰谷轉向只平倉 ({cr_entry_type})",
+                                    is_manual=True,
+                                )
+                                return signal_progress, detected_candidates
                             if kc_outer_reversal_blocked:
                                 self.account.log(
                                     f"{symbol} 已確認外軌 {cr_entry_type}：先平 {curr_side}，"
