@@ -4142,8 +4142,14 @@ class TradingEngine:
                         if has_pos:
                             if curr_side != cr_signal:
                                 self.account.log(
-                                    f"{symbol} late MA3/MA15 flip ({curr_side} -> {cr_signal}); wait for pivot reversal",
-                                    "INFO",
+                                    f"🚨 {symbol} 偵測到 MA3/MA15 趨勢反轉 ({curr_side} -> {cr_signal})，強制平掉舊有 {curr_side} 單！",
+                                    "WARNING",
+                                )
+                                closed = await self.account.close_position(
+                                    symbol=symbol,
+                                    current_price=live_price,
+                                    close_reason=f"趨勢反轉平倉 ({cr_entry_type})",
+                                    is_manual=True,
                                 )
                             else:
                                 self.account.log(
