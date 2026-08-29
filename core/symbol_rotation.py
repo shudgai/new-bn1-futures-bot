@@ -224,15 +224,25 @@ class SymbolRotation:
         normalized = SymbolRotation._normalize_tickers(tickers)
         allowed_crypto = None
         if markets:
-            allowed_crypto = {
-                market["symbol"].replace(":USDT", "")
-                for market in markets.values()
-                if market.get("active")
-                and market.get("swap")
-                and market.get("quote") == "USDT"
-                and market.get("info", {}).get("contractType") == "PERPETUAL"
-                and market.get("info", {}).get("underlyingType") == "COIN"
-            }
+            import time
+            now_ms = time.time() * 1000
+            min_listing_ms = SYMBOL_MIN_LISTING_DAYS * 24 * 60 * 60 * 1000
+            allowed_crypto = set()
+            for market in markets.values():
+                if (
+                    market.get("active")
+                    and market.get("swap")
+                    and market.get("quote") == "USDT"
+                    and market.get("info", {}).get("contractType") == "PERPETUAL"
+                    and market.get("info", {}).get("underlyingType") == "COIN"
+                ):
+                    info = market.get("info", {})
+                    if "monitoring" in info.get("tags", []):
+                        continue
+                    onboard = info.get("onboardDate") or info.get("deliveryDate")
+                    if onboard and now_ms - int(onboard) < min_listing_ms:
+                        continue
+                    allowed_crypto.add(market["symbol"].replace(":USDT", ""))
         excluded_bases = {
             "1000PEPE", "APT", "FET", "TAO", "WIF",
             "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
@@ -372,6 +382,9 @@ class SymbolRotation:
                 )
                 st_direction = int(curr["st_direction"])
                 rsi = float(curr["rsi"])
+                adx = float(curr["adx"]) if "adx" in curr else 0.0
+                kc_middle = float(curr["kc_middle"]) if "kc_middle" in curr else price
+                kc_width_pct = (float(curr["kc_upper"]) - float(curr["kc_lower"])) / kc_middle if kc_middle > 0 else 0.0
                 vol_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
                 volume_ratio = float(curr["volume"]) / vol_ma if vol_ma > 0 else 0.0
                 liquidity = (log_volumes[symbol] - low) / spread
@@ -492,7 +505,7 @@ class SymbolRotation:
                         "eligible": self._direction_is_eligible(
                             trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
                             volatility_excluded, history_quarantined,
-                        ),
+                        ) and (adx <= SYMBOL_MAX_ADX_RANGE) and (kc_width_pct >= SYMBOL_MIN_KC_WIDTH_PCT),
                         "atr_eligible": atr_eligible,
                         "atr_pct": atr_pct,
                         "history_quarantined": history_quarantined,
@@ -709,6 +722,20 @@ class SymbolRotation:
             and market.get("info", {}).get("underlyingType") == "COIN"
         )
         candidates = self.market_candidates(tickers, exchange.markets, execution_symbols)
+        try:
+            funding_rates = await exchange.fetch_funding_rates()
+            valid_candidates = []
+            for symbol in candidates:
+                fr_info = funding_rates.get(symbol, {})
+                fr = abs(float(fr_info.get("fundingRate") or 0.0))
+                if fr <= SYMBOL_MAX_FUNDING_RATE:
+                    valid_candidates.append(symbol)
+                else:
+                    self.account.log(f"剔除 {symbol}: 資金費率偏離 ({fr*100:.3f}%)", "DEBUG")
+            candidates = valid_candidates
+        except Exception as e:
+            self.account.log(f"獲取資金費率失敗，略過資金費率過濾: {e}", "WARNING")
+
         market_metrics = self.build_metrics(tickers, candidates)
         quant_ranked = sorted(market_metrics, key=lambda item: item["quant_score"], reverse=True)
         ai_ranking = await self.ai.rank_symbols(quant_ranked)

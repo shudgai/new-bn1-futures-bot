@@ -1141,31 +1141,28 @@ class TradingEngine:
                             
                         import core.config as config
 
-                        # === KC 通道撕裂緊急停損 (Channel Swing 專屬) ===
-                        # 只要持倉是 Channel Swing，若價格向逆方向貫穿超過 1.5 倍 KC 寬度，強制停損。
-                        # 這是防止帳戶在單邊暴走行情中無限虧損的最後防線。
-                        if "CHANNEL_SWING" in entry_mode:
-                            trigger = self.position_triggers.get(symbol, {})
-                            kc_upper = float(trigger.get("kc_upper") or 0)
-                            kc_lower = float(trigger.get("kc_lower") or 0)
-                            if kc_upper > 0 and kc_lower > 0:
-                                kc_width = kc_upper - kc_lower
-                                rip_threshold = kc_width * 1.5  # 通道撕裂門檻：KC 寬度的 1.5 倍
-                                is_kc_ripped = (
-                                    (side == "LONG" and live_price < kc_lower - rip_threshold)
-                                    or (side == "SHORT" and live_price > kc_upper + rip_threshold)
+                        # === KC 破軌緊急停損 (全模式適用) ===
+                        # 只要價格向逆方向貫穿 KC 軌道，強制停損。
+                        # 這是防止帳戶在單邊暴走行情中死扛的最後防線。
+                        trigger = self.position_triggers.get(symbol, {})
+                        kc_upper = float(trigger.get("kc_upper") or 0)
+                        kc_lower = float(trigger.get("kc_lower") or 0)
+                        if kc_upper > 0 and kc_lower > 0:
+                            is_kc_ripped = (
+                                (side == "LONG" and live_price < kc_lower)
+                                or (side == "SHORT" and live_price > kc_upper)
+                            )
+                            if is_kc_ripped:
+                                self.account.log(
+                                    f"🆘 [KC 破軌停損] {symbol} {side} 跌破/漲破軌道！"
+                                    f"現價={live_price:.6g} 已超出 KC 範圍，緊急停損！",
+                                    "WARNING"
                                 )
-                                if is_kc_ripped:
-                                    self.account.log(
-                                        f"🆘 [KC 通道撕裂] {symbol} {side} 單邊暴走！"
-                                        f"現價={live_price:.6g} 已超出 KC 範圍 {rip_threshold:.6g}，緊急停損！",
-                                        "WARNING"
-                                    )
-                                    self._kc_rip_after[symbol] = time.time()  # 記錄撕裂時間，啟動穩定等待
-                                    await self.account.close_position(
-                                        symbol, live_price, f"KC 通道撕裂緊急停損 (KC {kc_lower:.6g}~{kc_upper:.6g})"
-                                    )
-                                    continue
+                                self._kc_rip_after[symbol] = time.time()
+                                await self.account.close_position(
+                                    symbol, live_price, f"KC 破軌緊急停損 (KC {kc_lower:.6g}~{kc_upper:.6g})"
+                                )
+                                continue
                         # ================================================
                         
                         # --- 大爆走 (Mega Trend) 模式檢查 ---
@@ -1879,6 +1876,32 @@ class TradingEngine:
             candle_pattern = analyze_candle_pattern(bar)
 
             unrealized_pnl_pct = (current_price - position["entry_price"]) / position["entry_price"] if side == "LONG" else (position["entry_price"] - current_price) / position["entry_price"]
+
+            # --- 觸軌極速鎖利 (Band-Touch Trailing) ---
+            # 只要有獲利，且摸到對側 KC 軌道，就啟動極速追蹤止盈
+            if unrealized_pnl_pct > 0.0:
+                kc_upper = float(bar["kc_upper"])
+                kc_lower = float(bar["kc_lower"])
+                is_touching = (side == "LONG" and current_price >= kc_upper) or (side == "SHORT" and current_price <= kc_lower)
+                
+                if is_touching or meta.get("band_touched"):
+                    meta["band_touched"] = True
+                    # 記錄觸軌後的極值
+                    if side == "LONG":
+                        peak = max(meta.get("band_touch_peak_price", 0.0), current_price)
+                        meta["band_touch_peak_price"] = peak
+                        if current_price < peak * (1.0 - 0.002): # 回檔 0.2%
+                            self.account.log(f"🎯 [極速鎖利] {symbol} 多單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}！", "SUCCESS")
+                            await self.account.close_position(symbol, current_price, "觸軌極速鎖利 (Band-Touch Trailing)")
+                            return
+                    else:
+                        peak = min(meta.get("band_touch_peak_price", float('inf')), current_price)
+                        meta["band_touch_peak_price"] = peak
+                        if current_price > peak * (1.0 + 0.002): # 回檔 0.2%
+                            self.account.log(f"🎯 [極速鎖利] {symbol} 空單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}！", "SUCCESS")
+                            await self.account.close_position(symbol, current_price, "觸軌極速鎖利 (Band-Touch Trailing)")
+                            return
+            # ----------------------------------------
             # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
             if unrealized_pnl_pct > 0.002:
                 early_exit_reason = ""
@@ -4441,6 +4464,17 @@ class TradingEngine:
                     elif live_price >= kc_upper:
                         swing_direction = "SHORT"
                     
+                    if swing_direction:
+                        # 猴市「挑利潤大的做」過濾：根據 1h SuperTrend 大方向
+                        st_dir_1h = int(getattr(self, "st_direction_1h_cache", {}).get(symbol, 0))
+                        if st_dir_1h != 0:
+                            is_aligned = (swing_direction == "LONG" and st_dir_1h == 1) or (swing_direction == "SHORT" and st_dir_1h == -1)
+                            if not is_aligned:
+                                signal_progress.append(
+                                    f"{symbol.replace('/USDT', '')} 猴市過濾：大級別偏{'多' if st_dir_1h == 1 else '空'}，放棄逆向 {swing_direction}"
+                                )
+                                swing_direction = None
+
                     if swing_direction:
                         sig = {
                             "detected": True, "side": swing_direction, "score": 100,
