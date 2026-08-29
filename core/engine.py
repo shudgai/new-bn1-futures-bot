@@ -11,7 +11,7 @@ from core.config import (
     PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
     PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
     PULLBACK_RETRY_COOLDOWN_SEC, get_pullback_target_depth,
-    SYMBOL_ROTATION_INTERVAL_SEC,
+    SYMBOL_ROTATION_INTERVAL_SEC, SYMBOL_ROTATION_ENABLED,
     UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC,
     BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
     MIN_SCORE_THRESHOLD, USE_TESTNET,
@@ -27,7 +27,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
+    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -1017,6 +1017,9 @@ class TradingEngine:
         last_unhealthy_check_at = 0.0
         while self.is_running:
             try:
+                if not SYMBOL_ROTATION_ENABLED:
+                    await asyncio.sleep(60)
+                    continue
                 now_time = time.time()
                 if now_time - self.symbol_rotation.last_rotation_at >= SYMBOL_ROTATION_INTERVAL_SEC:
                     changes = await self.symbol_rotation.rotate(self.exchange, self.execution_symbols)
@@ -1417,7 +1420,7 @@ class TradingEngine:
                     outer_rail_flatten = bool(
                         immediate_reversal or (kc_outer_lock.get("blocked") and opposite_pivot)
                     )
-                    if CONTINUOUS_PIVOT_ONLY:
+                    if CONTINUOUS_PIVOT_ONLY and PIVOT_LONG_ONLY:
                         pivot_only_upper_exit = False
                         if position.get("side") == "LONG" and len(df_closed) >= 2:
                             pivot_exit_bar = df_closed.iloc[-1]
@@ -1429,6 +1432,10 @@ class TradingEngine:
                             )
                         opposite_pivot = pivot_only_upper_exit
                         outer_rail_flatten = pivot_only_upper_exit
+                        trend_exhaustion_exit = False
+                    if CONTINUOUS_PIVOT_ONLY and not PIVOT_LONG_ONLY:
+                        opposite_pivot = False
+                        outer_rail_flatten = False
                         trend_exhaustion_exit = False
                     trigger["outer_rail_flatten"] = outer_rail_flatten
                     trigger["immediate_reversal"] = immediate_reversal
@@ -3768,22 +3775,32 @@ class TradingEngine:
                         self.pivot_prealerts.pop(symbol, None)
 
                     lower_outer_touch = float(live_latest["low"]) < float(live_latest["kc_lower"])
-                    if lower_outer_touch and symbol not in self.account.positions:
+                    upper_outer_touch = float(live_latest["high"]) > float(live_latest["kc_upper"])
+                    if (lower_outer_touch or upper_outer_touch) and symbol not in self.account.positions:
                         df_early_1m = await self.fetch_klines(symbol, timeframe="1m", limit=5, keep_live=True)
                         if not df_early_1m.empty and len(df_early_1m) >= 2:
                             df_early_1m = self.strategy.compute_indicators(df_early_1m)
                             early_bar = df_early_1m.iloc[-1]
                             early_green = float(early_bar["close"]) > float(early_bar["open"])
+                            early_red = float(early_bar["close"]) < float(early_bar["open"])
                             live_atr = max(float(live_latest.get("atr") or 0.0), float(live_latest["close"]) * 1e-12)
-                            rebound_atr = (float(early_bar["close"]) - float(live_latest["low"])) / live_atr
-                            if early_green and rebound_atr <= PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR:
+                            lower_rebound_atr = (float(early_bar["close"]) - float(live_latest["low"])) / live_atr
+                            upper_rebound_atr = (float(live_latest["high"]) - float(early_bar["close"])) / live_atr
+                            if lower_outer_touch and early_green and lower_rebound_atr <= PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR:
                                 cr_info = {
                                     "signal": "LONG", "entry_type": "TROUGH_TURN",
-                                    "reason": "1m first green after 3m lower-rail touch",
+                                    "reason": "1m first green after lower-rail touch",
                                     "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
                                     "early_1m_entry": True,
                                 }
-                            elif early_green:
+                            elif upper_outer_touch and early_red and upper_rebound_atr <= PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR:
+                                cr_info = {
+                                    "signal": "SHORT", "entry_type": "PEAK_TURN",
+                                    "reason": "1m first red after upper-rail touch",
+                                    "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
+                                    "early_1m_entry": True,
+                                }
+                            elif (lower_outer_touch and early_green) or (upper_outer_touch and early_red):
                                 signal_progress.append(f"{coin} 1m rebound too far; skip chase")
                 uses_live_pivot = False
                 df_cr_entry = live_df if cr_info.get("early_1m_entry") else df_cr_signal
@@ -4229,7 +4246,7 @@ class TradingEngine:
                     if cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
                         should_open = False
                         if not has_pos:
-                            should_open = (not CONTINUOUS_PIVOT_ONLY or cr_signal == "LONG")
+                            should_open = (not (CONTINUOUS_PIVOT_ONLY and PIVOT_LONG_ONLY) or cr_signal == "LONG")
                             if should_open:
                                 self.account.log(
                                     f"✅ {symbol} confirmed {cr_entry_type}; market-enter {cr_signal}",
@@ -4238,14 +4255,21 @@ class TradingEngine:
                             else:
                                 signal_progress.append(f"{coin} 上軌峰頂：只平多，不開空")
                         elif curr_side != cr_signal:
-                            if CONTINUOUS_PIVOT_ONLY:
+                            if CONTINUOUS_PIVOT_ONLY and PIVOT_LONG_ONLY:
                                 await self.account.close_position(
                                     symbol=symbol, current_price=live_price,
                                     close_reason=f"外軌峰谷轉向只平倉 ({cr_entry_type})",
                                     is_manual=True,
                                 )
                                 return signal_progress, detected_candidates
-                            if kc_outer_reversal_blocked:
+                            if CONTINUOUS_PIVOT_ONLY:
+                                closed = await self.account.close_position(
+                                    symbol=symbol, current_price=live_price,
+                                    close_reason=f"外軌峰谷直接反手 ({cr_entry_type})",
+                                    is_manual=True,
+                                )
+                                should_open = bool(closed)
+                            elif kc_outer_reversal_blocked:
                                 self.account.log(
                                     f"{symbol} 已確認外軌 {cr_entry_type}：先平 {curr_side}，"
                                     f"不立即反手，等待反向K回到KC中軌",
@@ -4266,17 +4290,18 @@ class TradingEngine:
                                         "middle_reached": False,
                                     }
                                 return signal_progress, detected_candidates
-                            self.account.log(
-                                f"{symbol} confirmed {cr_entry_type}: close {curr_side}, immediately market-reverse {cr_signal}",
-                                "WARNING",
-                            )
-                            closed = await self.account.close_position(
-                                symbol=symbol,
-                                current_price=live_price,
-                                close_reason=f"confirmed pivot reversal ({cr_entry_type})",
-                                is_manual=True,
-                            )
-                            should_open = bool(closed)
+                            if not CONTINUOUS_PIVOT_ONLY:
+                                self.account.log(
+                                    f"{symbol} confirmed {cr_entry_type}: close {curr_side}, immediately market-reverse {cr_signal}",
+                                    "WARNING",
+                                )
+                                closed = await self.account.close_position(
+                                    symbol=symbol,
+                                    current_price=live_price,
+                                    close_reason=f"confirmed pivot reversal ({cr_entry_type})",
+                                    is_manual=True,
+                                )
+                                should_open = bool(closed)
 
                         if should_open:
                             post_close_available = self.account.get_available_balance()

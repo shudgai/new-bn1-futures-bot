@@ -1033,15 +1033,15 @@ class PaperAccount:
             if (
                 CONTINUOUS_PIVOT_ONLY
                 and ENABLE_RAPID_ADVERSE_DROP
-                and side == "LONG"
+                and side in ("LONG", "SHORT")
                 and previous_price and previous_price > 0
                 and now_ts - self._rapid_drop_cooldown.get(symbol, 0.0) >= RAPID_DROP_COOLDOWN_SEC
             ):
-                rapid_drop_pct = (previous_price - curr_p) / previous_price
+                rapid_drop_pct = (previous_price - curr_p) / previous_price if side == "LONG" else (curr_p - previous_price) / previous_price
                 if rapid_drop_pct >= RAPID_ADVERSE_DROP_PCT:
                     self._rapid_drop_cooldown[symbol] = now_ts
                     self.log(
-                        f"[Pivot rapid-drop stop] {symbol} {rapid_drop_pct:.2%} in one quote update; market-close long",
+                        f"[Pivot rapid-drop stop] {symbol} {rapid_drop_pct:.2%} in one quote update; market-close {side.lower()}",
                         "DANGER",
                     )
                     await self.close_position(

@@ -288,6 +288,7 @@ ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "fa
 CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
 CONTINUOUS_PIVOT_ONLY = os.getenv("CONTINUOUS_PIVOT_ONLY", "false").lower() == "true"
 PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR = max(0.0, float(os.getenv("PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR", "0.35")))
+PIVOT_LONG_ONLY = os.getenv("PIVOT_LONG_ONLY", "true").lower() == "true"
 PIVOT_MIN_KC_WIDTH_PCT = max(0.0, float(os.getenv("PIVOT_MIN_KC_WIDTH_PCT", "0.01")))
 # 1 分鐘策略平倉後只冷靜一根完整 K，避免秒進秒出但保留趨勢續段。
 CONTINUOUS_REENTRY_COOLDOWN_SEC = max(
@@ -925,6 +926,7 @@ def get_position_multiplier(score: int) -> float:
 # 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
 # Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
 SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "42"))
+SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() == "true"
 ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "900"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
