@@ -518,6 +518,45 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     from core.config import KELTNER_ATR_MULTIPLIER
     kc_upper_now = kc_middle_now + atr * KELTNER_ATR_MULTIPLIER
     kc_lower_now = kc_middle_now - atr * KELTNER_ATR_MULTIPLIER
+
+    # ==============================================================================
+    # 盤旋過濾 (Hovering Filter) - 最高優先級
+    # 用戶要求：「無論是ma15 上中下軌只要是盤旋在上面的(就是離他們太近的)就是不轉向」
+    # 若 V 轉剛好貼在某條線上，且變動幅度（斜率）不夠大，則判定為盤旋，忽略此轉向。
+    # ==============================================================================
+    is_hovering = False
+    if pivot_shape_detected:
+        ma15_at_pivot = float(df["ma15"].iloc[-2])
+        kc_mid_at_pivot = float(df["ema_20"].iloc[-2])
+        kc_up_at_pivot = kc_mid_at_pivot + atr * KELTNER_ATR_MULTIPLIER
+        kc_low_at_pivot = kc_mid_at_pivot - atr * KELTNER_ATR_MULTIPLIER
+        
+        min_dist_to_lines = min(
+            abs(ma3_prev - ma15_at_pivot),
+            abs(ma3_prev - kc_mid_at_pivot),
+            abs(ma3_prev - kc_up_at_pivot),
+            abs(ma3_prev - kc_low_at_pivot)
+        )
+        
+        # 如果離線太近 (< 0.15 ATR) 且 斜率偏小 (< 0.20 ATR)
+        if min_dist_to_lines < atr * 0.15:
+            if abs(previous_slope) < atr * 0.20 and abs(current_slope) < atr * 0.20:
+                is_hovering = True
+
+    if pivot_shape_detected and is_hovering:
+        ma15_at_pivot = float(df["ma15"].iloc[-2])
+        kc_middle_at_pivot = float(df["ema_20"].iloc[-2])
+        return {
+            "signal": None, "entry_type": "WAIT_MA_NOISE",
+            "reason": "1m MA3 在軌道或MA15上微幅盤旋，忽略此微弱轉向",
+            "atr": atr, "pivot_confirmed": False,
+            "pivot_score": 0, "ma3_slope": current_slope,
+            "live_pivot": False, "pivot_offset": 0,
+            "ma_alignment": ma_alignment,
+            "ma15_distance_at_pivot": abs(ma3_prev - ma15_at_pivot),
+            "kc_middle_distance_at_pivot": abs(ma3_prev - kc_middle_at_pivot),
+            "middle_noise_threshold": min_pivot_slope
+        }
     
     previous_candle = df.iloc[-2]
     prev_candle_high = float(previous_candle["high"])
@@ -557,9 +596,6 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         }
     # 「見好就收」極速平倉：三個軌都要做一樣的處理！
     # 只要出現 V 型反轉，且價格已經穿過（或摸到）上、中、下任何一軌，立刻認定為轉向！
-    kc_upper_now = kc_middle_now + atr * KELTNER_ATR_MULTIPLIER
-    kc_lower_now = kc_middle_now - atr * KELTNER_ATR_MULTIPLIER
-    
     immediate_peak_hit_band = False
     if v_peak:
         prev_high = float(df["high"].iloc[-2])
@@ -599,34 +635,9 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
             "pivot_offset": -2, "ma_alignment": ma_alignment,
         }
 
-    # 盤旋過濾 (Hovering Filter)：
-    # 用戶要求：「無論是ma15 上中下軌只要是盤旋在上面的(就是離他們太近的)就是不轉向」
-    # 若 V 轉剛好貼在某條線上，且變動幅度（斜率）不夠大（例如不是中軌跌到下軌這種大動作），
-    # 則判定為盤旋，忽略此轉向。
-    is_hovering = False
-    if pivot_shape_detected:
-        ma15_at_pivot = float(df["ma15"].iloc[-2])
-        kc_mid_at_pivot = float(df["ema_20"].iloc[-2])
-        kc_up_at_pivot = kc_mid_at_pivot + atr * KELTNER_ATR_MULTIPLIER
-        kc_low_at_pivot = kc_mid_at_pivot - atr * KELTNER_ATR_MULTIPLIER
-        
-        min_dist_to_lines = min(
-            abs(ma3_prev - ma15_at_pivot),
-            abs(ma3_prev - kc_mid_at_pivot),
-            abs(ma3_prev - kc_up_at_pivot),
-            abs(ma3_prev - kc_low_at_pivot)
-        )
-        
-        # 如果離線太近 (< 0.15 ATR) 且 斜率偏小 (沒有產生明顯脫離動作)
-        if min_dist_to_lines < atr * 0.15:
-            if abs(previous_slope) < atr * 0.15 and abs(current_slope) < atr * 0.15:
-                # 排除 immediate hit band 這種強烈反轉
-                if not (immediate_peak_hit_band or immediate_trough_hit_band):
-                    is_hovering = True
-
+    # 一般的轉折噪音過濾
     # 真正的峰頂/谷底不能因為剛好貼近中軌或 MA15 就被噪音過濾。
-    # 只有在「轉折很弱、斜率不足」或「正在線上盤旋」時，才維持 WAIT_MA_NOISE，避免錯過真轉向。
-    if (pivot_shape_detected and is_hovering) or (pivot_shape_detected and not (
+    if pivot_shape_detected and not (
         two_red_peak or two_green_trough or step_trough or step_peak
         or immediate_peak_hit_band or immediate_trough_hit_band
         or (
