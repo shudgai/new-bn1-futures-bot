@@ -3572,6 +3572,8 @@ class TradingEngine:
                 "entry_mode": "MA3_MA15_MARKET", "timeframe": timeframe,
                 "wave_regime": str(wave_regime).upper(),
                 "market_mode": str(market_mode).upper(),
+                "signal_candle_low": float(df["low"].iloc[-1]),
+                "signal_candle_high": float(df["high"].iloc[-1]),
             },
         )
         if opened:

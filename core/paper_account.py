@@ -83,6 +83,8 @@ from core.config import (
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
     ENABLE_RAPID_ADVERSE_DROP, RAPID_ADVERSE_DROP_PCT, RAPID_DROP_COOLDOWN_SEC,
+    RAPID_ADVERSE_SPEED_PCT, RAPID_ADVERSE_SPEED_WINDOW_SEC,
+    PIVOT_FAILURE_BUFFER_ATR,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -155,6 +157,7 @@ class PaperAccount:
         self.last_closed_at: Dict[str, float] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         self._rapid_drop_last_price: Dict[str, float] = {}
+        self._rapid_drop_window: Dict[str, List[tuple]] = {}
         self._rapid_drop_cooldown: Dict[str, float] = {}
         self.on_trade_closed: Optional[Callable[[], None]] = None
 
@@ -1030,30 +1033,51 @@ class PaperAccount:
             side = pos["side"]
             previous_price = self._rapid_drop_last_price.get(symbol)
             self._rapid_drop_last_price[symbol] = curr_p
+            entry_p = float(pos["entry_price"])
+            meta = self.position_meta.setdefault(symbol, {})
+            signal_low = float(pos.get("signal_candle_low") or meta.get("signal_candle_low") or entry_p)
+            signal_high = float(pos.get("signal_candle_high") or meta.get("signal_candle_high") or entry_p)
+            position_atr = max(float(pos.get("atr") or meta.get("atr") or 0.0), entry_p * 1e-12)
+            failure_level = signal_low - position_atr * PIVOT_FAILURE_BUFFER_ATR if side == "LONG" else signal_high + position_atr * PIVOT_FAILURE_BUFFER_ATR
+            structure_failed = curr_p <= failure_level if side == "LONG" else curr_p >= failure_level
+            price_window = self._rapid_drop_window.setdefault(symbol, [])
+            price_window.append((now_ts, curr_p))
+            window_cutoff = now_ts - RAPID_ADVERSE_SPEED_WINDOW_SEC
+            while len(price_window) > 1 and price_window[0][0] < window_cutoff:
+                price_window.pop(0)
+            window_price = float(price_window[0][1])
+            speed_adverse_pct = (
+                (window_price - curr_p) / window_price
+                if side == "LONG" else (curr_p - window_price) / window_price
+            )
+            entry_adverse_pct = (
+                (entry_p - curr_p) / entry_p
+                if side == "LONG" else (curr_p - entry_p) / entry_p
+            )
             if (
                 CONTINUOUS_PIVOT_ONLY
                 and ENABLE_RAPID_ADVERSE_DROP
                 and side in ("LONG", "SHORT")
-                and previous_price and previous_price > 0
-                and now_ts - self._rapid_drop_cooldown.get(symbol, 0.0) >= RAPID_DROP_COOLDOWN_SEC
+                and (structure_failed or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT)
             ):
-                rapid_drop_pct = (previous_price - curr_p) / previous_price if side == "LONG" else (curr_p - previous_price) / previous_price
-                if rapid_drop_pct >= RAPID_ADVERSE_DROP_PCT:
-                    self._rapid_drop_cooldown[symbol] = now_ts
-                    self.log(
-                        f"[Pivot rapid-drop stop] {symbol} {rapid_drop_pct:.2%} in one quote update; market-close {side.lower()}",
-                        "DANGER",
-                    )
-                    await self.close_position(
-                        symbol, curr_p,
-                        f"Pivot rapid-drop emergency stop ({rapid_drop_pct:.2%})",
-                        is_manual=True,
-                    )
-                    continue
-
-            entry_p = pos["entry_price"]
-            meta = self.position_meta.setdefault(symbol, {})
-
+                self._rapid_drop_cooldown[symbol] = now_ts
+                stop_kind = (
+                    "pivot structure failed"
+                    if structure_failed
+                    else f"speed {speed_adverse_pct:.2%} in {RAPID_ADVERSE_SPEED_WINDOW_SEC:.0f}s"
+                    if speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
+                    else f"entry loss {entry_adverse_pct:.2%}"
+                )
+                self.log(
+                    f"[Pivot emergency stop] {symbol} {stop_kind}; market-close {side.lower()}",
+                    "DANGER",
+                )
+                await self.close_position(
+                    symbol, curr_p,
+                    f"Pivot emergency stop ({stop_kind})",
+                    is_manual=True,
+                )
+                continue
             # Migrate positions opened before MomentumCross received an
             # explicit trend profile. Those records were stored as BOUNCE
             # with no room/target and hit the very tight bounce guard.
