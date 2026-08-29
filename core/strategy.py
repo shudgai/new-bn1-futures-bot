@@ -878,11 +878,9 @@ class SuperTrendKeltnerStrategy:
         volume_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
         volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
         aligned = st_direction_1h in (None, direction)
-        btc_contrary = bool(
-            btc_st_direction_1h and int(btc_st_direction_1h) != direction
-        )
-        btc_score_penalty = BTC_REGIME_SCORE_PENALTY if btc_contrary else 0
-        btc_allocation_factor = BTC_REGIME_ALLOCATION_FACTOR if btc_contrary else 1.0
+        btc_contrary = False
+        btc_score_penalty = 0
+        btc_allocation_factor = 1.0
         common = {
             "side": side, "price": price, "atr": atr,
             "signal_candle_low": float(curr["low"]),
