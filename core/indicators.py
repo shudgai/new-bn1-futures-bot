@@ -458,10 +458,11 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         atr = calculated_atr if pd.notna(calculated_atr) and calculated_atr > 0 else float(df['close'].iloc[-1]) * 0.015
     # 放寬趨勢延續的最小變動門檻：仍要求 MA3 確實轉折／分離，
     # 為了達到極致靈敏度 (用戶要求)，大幅降低斜率門檻，只要有明確 V 型就算。
-    min_pivot_slope = max(abs(atr) * 0.05, abs(ma3_prev) * 0.0001)
+    min_pivot_slope = max(abs(atr) * 0.02, abs(ma3_prev) * 0.00005)
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
     min_directional_range = max(abs(atr) * 0.08, abs(ma3_curr) * 0.0002)
-    fast_pivot_slope = max(abs(atr) * 0.03, abs(ma3_prev) * 0.00005)
+    # fast_pivot_slope 更小，只要 MA3 彎折方向改變，就應該視為 V 轉（應對暴漲暴跌後的MA3平滑效應）
+    fast_pivot_slope = max(abs(atr) * 0.01, abs(ma3_prev) * 0.00002)
     ma15_distance = abs(ma3_curr - ma15_curr)
     ma15_distance_weight = ma15_distance / max(abs(atr), 1e-12)
     ma15_far_enough = ma15_distance_weight >= 0.75
