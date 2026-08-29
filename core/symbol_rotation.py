@@ -85,6 +85,7 @@ class SymbolRotation:
         self.last_changes: List[dict] = []
         self.last_metrics: List[dict] = []
         self.direction_map: Dict[str, str] = {}
+        self.fallback_symbols = list(DEFAULT_SYMBOLS)
         self.last_reason = "尚未執行"
         self.volatility_stats: Dict[str, dict] = {}
         self.atr_history: Dict[str, List[float]] = {}
@@ -786,6 +787,13 @@ class SymbolRotation:
             self.account.positions,
             directional,
         )
+        if candidates and unavailable_count >= len(candidates) and not qualified_symbols:
+            selected = [
+                symbol for symbol in self.fallback_symbols
+                if symbol not in ENTRY_DISABLED_SYMBOLS
+            ][:SYMBOL_ROTATION_COUNT]
+            directions = {symbol: "BOTH" for symbol in selected}
+            changes = []
         # 持倉中的幣強制保留，即使已被輪替出去也不可移除
         for held_symbol in self.account.positions:
             if held_symbol not in selected:
