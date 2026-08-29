@@ -1577,22 +1577,8 @@ class SuperTrendKeltnerStrategy:
         if not indicators_precomputed:
             df = self.compute_indicators(df)
 
-        # 先檢測強勢多單訊號（綠K衝外軌）
-        strong_long_signal = detect_strong_green_candle_burst(df)
-        if strong_long_signal.get("detected"):
-            return {
-                "action": "ENTER_MARKET",
-                "side": "LONG",
-                "entry_mode": "STRONG_LONG_BURST",
-                "price": strong_long_signal["price"],
-                "score": 95,
-                "reason": strong_long_signal["reason"] + " | 強勢多單信號，建議優先平空單或快速開多單",
-                "eligible": True,
-                "score_stage": "STRONG_SIGNAL",
-                "strong_signal": True,
-                "kc_upper": strong_long_signal["kc_upper"],
-                "kc_middle": strong_long_signal["kc_middle"],
-            }
+        # (已停用) 原本的「強勢多單訊號（綠K衝外軌）」會導致在上軌追多，
+        # 違背了使用者「多單要在下軌買，空單要在上軌買」的核心邏輯，因此全面移除。
 
         curr = df.iloc[-1]
 
