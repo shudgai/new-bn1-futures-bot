@@ -555,27 +555,45 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
             "fast_pivot": True, "live_pivot": allow_live_pivot,
             "pivot_offset": -2, "ma_alignment": ma_alignment,
         }
-    # 「見好就收」極速平倉：只要出現 V 型反轉，且價格已經穿回中軌，
-    # 就不再管斜率大小，立刻認定為轉向（這能抓到最高點的劇烈插針回落）。
-    immediate_peak_hit_middle = bool(
-        v_peak and last_candle_low <= kc_middle_now
-    )
-    immediate_trough_hit_middle = bool(
-        v_trough and last_candle_high >= kc_middle_now
-    )
+    # 「見好就收」極速平倉：三個軌都要做一樣的處理！
+    # 只要出現 V 型反轉，且價格已經穿過（或摸到）上、中、下任何一軌，立刻認定為轉向！
+    kc_upper_now = kc_middle_now + atr * KELTNER_ATR_MULTIPLIER
+    kc_lower_now = kc_middle_now - atr * KELTNER_ATR_MULTIPLIER
+    
+    immediate_peak_hit_band = False
+    if v_peak:
+        prev_high = float(df["high"].iloc[-2])
+        curr_low = last_candle_low
+        if prev_high > kc_upper_now and curr_low <= kc_upper_now:
+            immediate_peak_hit_band = True
+        elif prev_high > kc_middle_now and curr_low <= kc_middle_now:
+            immediate_peak_hit_band = True
+        elif prev_high > kc_lower_now and curr_low <= kc_lower_now:
+            immediate_peak_hit_band = True
 
-    if immediate_peak_hit_middle:
+    immediate_trough_hit_band = False
+    if v_trough:
+        prev_low = float(df["low"].iloc[-2])
+        curr_high = last_candle_high
+        if prev_low < kc_lower_now and curr_high >= kc_lower_now:
+            immediate_trough_hit_band = True
+        elif prev_low < kc_middle_now and curr_high >= kc_middle_now:
+            immediate_trough_hit_band = True
+        elif prev_low < kc_upper_now and curr_high >= kc_upper_now:
+            immediate_trough_hit_band = True
+
+    if immediate_peak_hit_band:
         return {
             "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m MA3 倒V已形成且紅K已回到KC中軌 → 立即反手開空",
+            "reason": "1m MA3 倒V已形成且紅K已跌破任一軌道(上/中/下) → 立即反手開空",
             "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
             "fast_pivot": True, "live_pivot": allow_live_pivot,
             "pivot_offset": -2, "ma_alignment": ma_alignment,
         }
-    if immediate_trough_hit_middle:
+    if immediate_trough_hit_band:
         return {
             "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m MA3 V已形成且綠K已回到KC中軌 → 立即反手開多",
+            "reason": "1m MA3 V已形成且綠K已突破任一軌道(上/中/下) → 立即反手開多",
             "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
             "fast_pivot": True, "live_pivot": allow_live_pivot,
             "pivot_offset": -2, "ma_alignment": ma_alignment,
@@ -602,15 +620,15 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         # 如果離線太近 (< 0.15 ATR) 且 斜率偏小 (沒有產生明顯脫離動作)
         if min_dist_to_lines < atr * 0.15:
             if abs(previous_slope) < atr * 0.15 and abs(current_slope) < atr * 0.15:
-                # 排除 immediate hit middle 這種強烈反轉
-                if not (immediate_peak_hit_middle or immediate_trough_hit_middle):
+                # 排除 immediate hit band 這種強烈反轉
+                if not (immediate_peak_hit_band or immediate_trough_hit_band):
                     is_hovering = True
 
     # 真正的峰頂/谷底不能因為剛好貼近中軌或 MA15 就被噪音過濾。
     # 只有在「轉折很弱、斜率不足」或「正在線上盤旋」時，才維持 WAIT_MA_NOISE，避免錯過真轉向。
     if (pivot_shape_detected and is_hovering) or (pivot_shape_detected and not (
         two_red_peak or two_green_trough or step_trough or step_peak
-        or immediate_peak_hit_middle or immediate_trough_hit_middle
+        or immediate_peak_hit_band or immediate_trough_hit_band
         or (
             v_trough and abs(previous_slope) >= min_pivot_slope
             and current_slope >= min_pivot_slope
