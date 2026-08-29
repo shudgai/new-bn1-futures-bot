@@ -558,16 +558,14 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         }
     
     immediate_peak_hit_middle = bool(
-        v_peak and previous_slope >= min_pivot_slope
-        and abs(current_slope) >= min_pivot_slope
+        v_peak and previous_slope >= fast_pivot_slope * 0.5
+        and current_slope <= -fast_pivot_slope
         and last_candle_low <= kc_middle_now
-        and (ma15_far_enough or abs(previous_slope) >= min_pivot_slope * 1.5)
     )
     immediate_trough_hit_middle = bool(
-        v_trough and abs(previous_slope) >= min_pivot_slope
-        and current_slope >= min_pivot_slope
+        v_trough and previous_slope <= -fast_pivot_slope * 0.5
+        and current_slope >= fast_pivot_slope
         and last_candle_high >= kc_middle_now
-        and (ma15_far_enough or abs(current_slope) >= min_pivot_slope * 1.5)
     )
 
     if immediate_peak_hit_middle:
