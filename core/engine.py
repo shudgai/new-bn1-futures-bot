@@ -1228,6 +1228,10 @@ class TradingEngine:
                     exit_tf = CONTINUOUS_REVERSE_TIMEFRAME if is_cr_position else MA5_EXIT_TIMEFRAME
                     # keep_live=True: 用最新未收盤的 tick 資料即時判斷，只要 MA5 反向彎了就立刻走，不需等該分 K 收盤
                     df = await self.fetch_klines(symbol, timeframe=exit_tf, limit=30, keep_live=True)
+                    if CONTINUOUS_PIVOT_ONLY and is_cr_position:
+                        df = drop_unclosed_candle(df, exit_tf)
+                        if df.empty:
+                            continue
                     trigger = compute_position_trigger(df, position.get("side"))
                     trigger["updated_at"] = time.time()
                     # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
@@ -3646,6 +3650,10 @@ class TradingEngine:
                 df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
                 if df_cr.empty or len(df_cr) < 4:
                     return signal_progress, detected_candidates
+                if CONTINUOUS_PIVOT_ONLY:
+                    df_cr = drop_unclosed_candle(df_cr, CONTINUOUS_REVERSE_TIMEFRAME)
+                    if len(df_cr) < 15:
+                        return signal_progress, detected_candidates
                 # 改為直接使用包含當前未收盤 K 線的 df_cr，以達成「碰到中軌/V轉成型瞬間即刻開倉」
                 # 的極速要求，不再延遲一根 K 線等待收盤。
                 df_cr_signal = df_cr.copy()
@@ -3683,6 +3691,10 @@ class TradingEngine:
                     self.account.positions[symbol]["market_mode"] = market_mode
                     self.account.position_meta.setdefault(symbol, {})["market_mode"] = market_mode
                 cr_info = detect_ma3_ma15_cross_and_turn(df_cr_signal)
+                if CONTINUOUS_PIVOT_ONLY:
+                    cr_info["reason"] = str(cr_info.get("reason") or "").replace(
+                        "1m MA3", f"{CONTINUOUS_REVERSE_TIMEFRAME} MA3"
+                    )
                 uses_live_pivot = False
                 df_cr_entry = df_cr_signal
                 cr_signal = cr_info.get("signal")
