@@ -27,7 +27,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CONTINUOUS_TREND_ONLY, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
+    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -191,6 +191,7 @@ class TradingEngine:
         self._history_coeff_logged: Dict[str, tuple] = {}
         # 診斷與影子比較每分鐘落盤一次，避免每 5 秒主迴圈造成過度寫檔。
         self._last_diagnostic_stats_save_at: float = 0.0
+        self._last_empty_pivot_rescan_at: float = 0.0
         # KC失敗連續計數器：記錄每個持倉已連續將實體收在EMA20不利側的已收盤K棒數
         # 需達到 BREAKOUT_KC_FAIL_CONFIRM_BARS 根才實際關倉，防止單根回踩誤觸
         self._kc_fail_count: Dict[str, int] = {}
@@ -3564,7 +3565,7 @@ class TradingEngine:
                     df_1m_signal = self.strategy.compute_indicators(df_1m_signal)
                     strong_burst = detect_strong_green_candle_burst(df_1m_signal)
                     
-                    if strong_burst.get("detected"):
+                    if strong_burst.get("detected") and not CONTINUOUS_PIVOT_ONLY:
                         # 檢查是否有空單
                         if symbol in self.account.positions:
                             pos = self.account.positions[symbol]
@@ -3684,20 +3685,24 @@ class TradingEngine:
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
 
+                # 峰谷專用模式：所有幣一律只接受外軌谷底轉多／峰頂轉空。
+                if CONTINUOUS_PIVOT_ONLY and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
+                    signal_progress.append(f"{coin} 等待下軌谷底轉多／上軌峰頂轉空")
+                    cr_signal = None
                 # 順勢模式只接受 MA3/MA15 延續訊號；峰谷與交叉訊號可作出場參考，但不可開新倉或反手。
-                if CONTINUOUS_TREND_ONLY and cr_entry_type not in ("TREND_LONG", "TREND_SHORT"):
+                elif CONTINUOUS_TREND_ONLY and cr_entry_type not in ("TREND_LONG", "TREND_SHORT"):
                     signal_progress.append(f"{coin} 只做順勢：等待 MA3/MA15 同向延續")
                     cr_signal = None
                 elif wave_regime == "RANGE" and cr_entry_type in ("TREND_LONG", "TREND_SHORT") and not CONTINUOUS_TREND_ONLY:
                     signal_progress.append(f"{coin} 短波動：等待谷底買多／峰頂開空")
                     cr_signal = None
-                elif wave_regime == "TREND" and cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                elif wave_regime == "TREND" and cr_entry_type in ("TROUGH_TURN", "PEAK_TURN") and not CONTINUOUS_PIVOT_ONLY:
                     signal_progress.append(f"{coin} 長波動：忽略逆勢峰谷，等待順勢開倉")
                     cr_signal = None
-                elif market_mode == "BULL" and cr_signal != "LONG":
+                elif market_mode == "BULL" and cr_signal != "LONG" and not CONTINUOUS_PIVOT_ONLY:
                     signal_progress.append(f"{coin} 牛市：只等順勢多單")
                     cr_signal = None
-                elif market_mode == "BEAR" and cr_signal != "SHORT":
+                elif market_mode == "BEAR" and cr_signal != "SHORT" and not CONTINUOUS_PIVOT_ONLY:
                     signal_progress.append(f"{coin} 熊市：只等順勢空單")
                     cr_signal = None
 
@@ -4613,6 +4618,19 @@ class TradingEngine:
                                 sig,
                                 sig["live_price"]
                             )
+
+                    if (
+                        CONTINUOUS_PIVOT_ONLY
+                        and not self.account.positions
+                        and not detected_candidates
+                        and now_time - self._last_empty_pivot_rescan_at >= 60.0
+                    ):
+                        self._last_empty_pivot_rescan_at = now_time
+                        self.symbol_rotation.last_rotation_at = 0.0
+                        self.account.log(
+                            "🔄 [峰谷無訊號] 目前牌面無可開倉谷底／峰頂轉向，要求重新掃描市場",
+                            "INFO",
+                        )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:

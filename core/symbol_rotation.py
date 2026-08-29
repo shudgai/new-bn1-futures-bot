@@ -28,6 +28,9 @@ from core.config import (
     SYMBOL_ROTATION_MAX_CHANGES,
     SYMBOL_MIN_LISTING_DAYS,
     SYMBOL_MAX_24H_CHANGE_PCT,
+    SYMBOL_MAX_FUNDING_RATE,
+    SYMBOL_MAX_ADX_RANGE,
+    SYMBOL_MIN_KC_WIDTH_PCT,
     SYMBOL_HISTORY_QUARANTINE_MIN_TRADES,
     SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL,
     SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE,
@@ -155,10 +158,8 @@ class SymbolRotation:
         trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
         volatility_excluded: bool, history_quarantined: bool,
     ) -> bool:
-        # 輪替名單是未來一段時間的「監控池」，不能要求輪替當下的 5m ST
-        # 也已經同向；否則 5m 尚未翻轉的幣會被整輪移除，等真正出現入場
-        # 訊號時反而不在掃描名單。輪替只保留 1h ST 與 ATR 健康門檻；
-        # 1h EMA、5m ST 和歷史績效留給實際進場與探索倉位重新判斷。
+        # 輪替名單保留 1h ST 與 ATR 健康門檻；5m ST、實際峰谷與其他進場條件
+        # 留給交易掃描階段判斷，避免尚未轉向的可交易幣過早移出牌面。
         return (
             st_1h_aligned
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
