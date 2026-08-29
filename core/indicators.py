@@ -527,14 +527,14 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     # 外軌突破反轉：V/倒V已形成 + 反向 K 穿過相反外軌 = 確定轉向
     # 例如：綠K衝到上軌外 -> 下一根紅K已在下軌 = 轉向開空
     outer_rail_reversal_to_short = bool(
-        v_peak and previous_slope >= min_pivot_slope
-        and abs(current_slope) >= min_pivot_slope
+        v_peak and previous_slope >= fast_pivot_slope * 0.5
+        and current_slope <= -fast_pivot_slope
         and prev_candle_high > kc_upper_now  # 前根K衝到上軌外（多強）
         and last_candle_low <= kc_lower_now  # 當前紅K已在下軌（反轉確認）
     )
     outer_rail_reversal_to_long = bool(
-        v_trough and abs(previous_slope) >= min_pivot_slope
-        and current_slope >= min_pivot_slope
+        v_trough and previous_slope <= -fast_pivot_slope * 0.5
+        and current_slope >= fast_pivot_slope
         and prev_candle_low < kc_lower_now  # 前根K衝到下軌外（空強）
         and last_candle_high >= kc_upper_now  # 當前綠K已在上軌（反轉確認）
     )
