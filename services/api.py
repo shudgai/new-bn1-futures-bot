@@ -399,7 +399,7 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
             if len(matching_bars) > 0:
                 trade_markers.setdefault(matching_bars[-1], []).append({
                     "action": prealert.get("action"),
-                    "reason": "Awaiting 3m candle close; no order sent",
+                    "reason": "1m pivot pre-alert; no order sent",
                     "price": None,
                 })
 
