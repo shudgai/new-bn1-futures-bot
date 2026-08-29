@@ -456,16 +456,23 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         ], axis=1).max(axis=1)
         calculated_atr = float(true_range.rolling(14, min_periods=5).mean().iloc[-1])
         atr = calculated_atr if pd.notna(calculated_atr) and calculated_atr > 0 else float(df['close'].iloc[-1]) * 0.015
-    # 放寬趨勢延續的最小變動門檻：仍要求 MA3 確實轉折／分離，
-    # 為了達到極致靈敏度 (用戶要求)，大幅降低斜率門檻，只要有明確 V 型就算。
-    min_pivot_slope = max(abs(atr) * 0.02, abs(ma3_prev) * 0.00005)
-    recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
-    min_directional_range = max(abs(atr) * 0.08, abs(ma3_curr) * 0.0002)
-    # fast_pivot_slope 更小，只要 MA3 彎折方向改變，就應該視為 V 轉（應對暴漲暴跌後的MA3平滑效應）
-    fast_pivot_slope = max(abs(atr) * 0.01, abs(ma3_prev) * 0.00002)
     ma15_distance = abs(ma3_curr - ma15_curr)
     ma15_distance_weight = ma15_distance / max(abs(atr), 1e-12)
     ma15_far_enough = ma15_distance_weight >= 0.75
+
+    # 用戶要求：離 MA15 越遠，越可能是真峰谷，判定速度應該要更快！
+    # 引入「動態斜率門檻」：距離 MA15 越遠，所需要的 MA3 彎折斜率越低（越敏感）。
+    # 距離 0.0 ATR -> 需要較高斜率 (防盤旋雜訊)
+    # 距離 >=3.0 ATR -> 只需要極低斜率 (極度敏感，一點點彎折就當作 V 轉)
+    distance_factor = min(max(ma15_distance_weight, 0.0), 3.0)
+    dynamic_min_slope_multiplier = max(0.01, 0.06 - (distance_factor * 0.016))
+    dynamic_fast_slope_multiplier = max(0.005, 0.04 - (distance_factor * 0.012))
+
+    min_pivot_slope = max(abs(atr) * dynamic_min_slope_multiplier, abs(ma3_prev) * 0.00005)
+    fast_pivot_slope = max(abs(atr) * dynamic_fast_slope_multiplier, abs(ma3_prev) * 0.00002)
+    
+    recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
+    min_directional_range = max(abs(atr) * 0.08, abs(ma3_curr) * 0.0002)
 
     # Two same-direction, above-average candles can confirm a fast peak/trough
     # before MA15 has time to cross.  Both candles must carry volume, so a
