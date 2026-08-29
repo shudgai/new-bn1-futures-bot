@@ -1916,19 +1916,8 @@ class TradingEngine:
                             }
                             return
             # ----------------------------------------
-            # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
-            if unrealized_pnl_pct > 0.002:
-                early_exit_reason = ""
-                if side == "LONG" and candle_pattern.get("is_shooting_star"):
-                    early_exit_reason = "高檔出現流星線 (Shooting Star)"
-                elif side == "SHORT" and candle_pattern.get("is_hammer"):
-                    early_exit_reason = "低檔出現錘頭線 (Hammer)"
-
-                if early_exit_reason:
-                    self.account.log(f"🚨 [K線型態逃頂] {symbol} {side} 獲利 {unrealized_pnl_pct:.2%}，{early_exit_reason} 提早平倉！", "SUCCESS")
-                    if not DISABLE_STOP_LOSS:
-                        await self.account.close_position(symbol, current_price, f"型態逃頂 ({early_exit_reason})")
-                    return
+            # (已停用) 提早逃頂邏輯：既然我們已經有了「觸軌極速反手」，就直接抱到上/下軌，
+            # 不再因為中途出現流星線或錘頭線而提早下車，直接拿最大的利潤！
 
             if entry_mode == "BREAKOUT":
                 # 修正2：kc_failed 改為需要連續 BREAKOUT_KC_FAIL_CONFIRM_BARS 根
