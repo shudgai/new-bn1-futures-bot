@@ -82,6 +82,7 @@ from core.config import (
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
+    ENABLE_RAPID_ADVERSE_DROP, RAPID_ADVERSE_DROP_PCT, RAPID_DROP_COOLDOWN_SEC,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -153,6 +154,8 @@ class PaperAccount:
         self.closing_lock: set = set()
         self.last_closed_at: Dict[str, float] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
+        self._rapid_drop_last_price: Dict[str, float] = {}
+        self._rapid_drop_cooldown: Dict[str, float] = {}
         self.on_trade_closed: Optional[Callable[[], None]] = None
 
         self.daily_date: Optional[str] = None
@@ -1025,6 +1028,29 @@ class PaperAccount:
                 continue
             curr_p = float(curr_p)
             side = pos["side"]
+            previous_price = self._rapid_drop_last_price.get(symbol)
+            self._rapid_drop_last_price[symbol] = curr_p
+            if (
+                CONTINUOUS_PIVOT_ONLY
+                and ENABLE_RAPID_ADVERSE_DROP
+                and side == "LONG"
+                and previous_price and previous_price > 0
+                and now_ts - self._rapid_drop_cooldown.get(symbol, 0.0) >= RAPID_DROP_COOLDOWN_SEC
+            ):
+                rapid_drop_pct = (previous_price - curr_p) / previous_price
+                if rapid_drop_pct >= RAPID_ADVERSE_DROP_PCT:
+                    self._rapid_drop_cooldown[symbol] = now_ts
+                    self.log(
+                        f"[Pivot rapid-drop stop] {symbol} {rapid_drop_pct:.2%} in one quote update; market-close long",
+                        "DANGER",
+                    )
+                    await self.close_position(
+                        symbol, curr_p,
+                        f"Pivot rapid-drop emergency stop ({rapid_drop_pct:.2%})",
+                        is_manual=True,
+                    )
+                    continue
+
             entry_p = pos["entry_price"]
             meta = self.position_meta.setdefault(symbol, {})
 
