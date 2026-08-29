@@ -3864,6 +3864,15 @@ class TradingEngine:
                         )
                         return signal_progress, detected_candidates
 
+                    # 猴市不順勢開倉，只抓峰谷反轉
+                    if not has_pos and market_mode == "RANGE" and cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
+                        signal_progress.append(f"{coin} 猴市模式，等待谷峰反轉")
+                        self.account.log(
+                            f"⏸️ {symbol} 猴市(RANGE)模式：不順勢開倉，只等待峰谷反轉 ({cr_entry_type})",
+                            "INFO",
+                        )
+                        return signal_progress, detected_candidates
+
                     # MA15 只過濾一般趨勢追單；已確認峰谷必然先出現在 MA15
                     # 交叉之前，若也套用此過濾會永遠錯過真正的峰頂／谷底。
                     if not self._ma3_ma15_entry_allowed(
