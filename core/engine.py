@@ -3618,7 +3618,9 @@ class TradingEngine:
                 df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
                 if df_cr.empty or len(df_cr) < 4:
                     return signal_progress, detected_candidates
-                df_cr_signal = drop_unclosed_candle(df_cr, CONTINUOUS_REVERSE_TIMEFRAME)
+                # 改為直接使用包含當前未收盤 K 線的 df_cr，以達成「碰到中軌/V轉成型瞬間即刻開倉」
+                # 的極速要求，不再延遲一根 K 線等待收盤。
+                df_cr_signal = df_cr.copy()
                 df_cr_signal = self.strategy.compute_indicators(df_cr_signal)
                 df_cr_signal["ma15"] = df_cr_signal["close"].rolling(15).mean()
                 previous_wave_regime = self._continuous_wave_regime.get(symbol, "RANGE")
