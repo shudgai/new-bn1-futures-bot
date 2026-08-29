@@ -1891,15 +1891,29 @@ class TradingEngine:
                         peak = max(meta.get("band_touch_peak_price", 0.0), current_price)
                         meta["band_touch_peak_price"] = peak
                         if current_price < peak * (1.0 - 0.002): # 回檔 0.2%
-                            self.account.log(f"🎯 [極速鎖利] {symbol} 多單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}！", "SUCCESS")
+                            self.account.log(f"🎯 [極速鎖利+反手] {symbol} 多單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}，立刻反手做空！", "SUCCESS")
                             await self.account.close_position(symbol, current_price, "觸軌極速鎖利 (Band-Touch Trailing)")
+                            self._kc_reversal_wait[symbol] = {
+                                "from_side": "LONG",
+                                "target_side": "SHORT",
+                                "pivot_type": "BAND_TOUCH",
+                                "created_at": time.time(),
+                                "middle_reached": True,
+                            }
                             return
                     else:
                         peak = min(meta.get("band_touch_peak_price", float('inf')), current_price)
                         meta["band_touch_peak_price"] = peak
                         if current_price > peak * (1.0 + 0.002): # 回檔 0.2%
-                            self.account.log(f"🎯 [極速鎖利] {symbol} 空單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}！", "SUCCESS")
+                            self.account.log(f"🎯 [極速鎖利+反手] {symbol} 空單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}，立刻反手做多！", "SUCCESS")
                             await self.account.close_position(symbol, current_price, "觸軌極速鎖利 (Band-Touch Trailing)")
+                            self._kc_reversal_wait[symbol] = {
+                                "from_side": "SHORT",
+                                "target_side": "LONG",
+                                "pivot_type": "BAND_TOUCH",
+                                "created_at": time.time(),
+                                "middle_reached": True,
+                            }
                             return
             # ----------------------------------------
             # 至少要求有 0.2% 的獲利才觸發提早逃頂，避免在微小波動或虧損時頻繁被洗出
