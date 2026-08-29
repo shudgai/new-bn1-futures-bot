@@ -457,12 +457,11 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         calculated_atr = float(true_range.rolling(14, min_periods=5).mean().iloc[-1])
         atr = calculated_atr if pd.notna(calculated_atr) and calculated_atr > 0 else float(df['close'].iloc[-1]) * 0.015
     # 放寬趨勢延續的最小變動門檻：仍要求 MA3 確實轉折／分離，
-    # 但不因正常的小幅回踩就錯過已展開的趨勢。
-    # [FIX] 增加斜率要求，避免「微小綠 K」造成假 V 轉（把原本的 0.03/0.02 提高到 0.15/0.10）
-    min_pivot_slope = max(abs(atr) * 0.15, abs(ma3_prev) * 0.0002)
+    # 為了達到極致靈敏度 (用戶要求)，大幅降低斜率門檻，只要有明確 V 型就算。
+    min_pivot_slope = max(abs(atr) * 0.05, abs(ma3_prev) * 0.0001)
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
-    min_directional_range = max(abs(atr) * 0.20, abs(ma3_curr) * 0.0005)
-    fast_pivot_slope = max(abs(atr) * 0.10, abs(ma3_prev) * 0.00015)
+    min_directional_range = max(abs(atr) * 0.08, abs(ma3_curr) * 0.0002)
+    fast_pivot_slope = max(abs(atr) * 0.03, abs(ma3_prev) * 0.00005)
     ma15_distance = abs(ma3_curr - ma15_curr)
     ma15_distance_weight = ma15_distance / max(abs(atr), 1e-12)
     ma15_far_enough = ma15_distance_weight >= 0.75
@@ -556,16 +555,13 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
             "fast_pivot": True, "live_pivot": allow_live_pivot,
             "pivot_offset": -2, "ma_alignment": ma_alignment,
         }
-    
+    # 「見好就收」極速平倉：只要出現 V 型反轉，且價格已經穿回中軌，
+    # 就不再管斜率大小，立刻認定為轉向（這能抓到最高點的劇烈插針回落）。
     immediate_peak_hit_middle = bool(
-        v_peak and previous_slope >= fast_pivot_slope * 0.5
-        and current_slope <= -fast_pivot_slope
-        and last_candle_low <= kc_middle_now
+        v_peak and last_candle_low <= kc_middle_now
     )
     immediate_trough_hit_middle = bool(
-        v_trough and previous_slope <= -fast_pivot_slope * 0.5
-        and current_slope >= fast_pivot_slope
-        and last_candle_high >= kc_middle_now
+        v_trough and last_candle_high >= kc_middle_now
     )
 
     if immediate_peak_hit_middle:
