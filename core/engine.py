@@ -2707,10 +2707,12 @@ class TradingEngine:
         if not allowed and log_on_fail:
             trend = "MA3>MA15 偏多" if ma3_now > ma15_now else "MA3<MA15 偏空" if ma3_now < ma15_now else "MA3=MA15 無方向"
             self.account.log(
-                f"🛑 {symbol} 拒絕開{("多" if requested == "LONG" else "空")}：{trend}"
+                f"🛑 {symbol} 拒絕開{('多' if requested == 'LONG' else '空')}：{trend}"
                 f"（MA3={ma3_now:.8g}, MA15={ma15_now:.8g}）",
                 "WARNING",
             )
+        return allowed
+
     def _continuous_market_mode_for(
         self, symbol: str, wave_regime: str, price: float,
     ) -> str:
@@ -2726,8 +2728,6 @@ class TradingEngine:
         if symbol_st == -1 and btc_st == -1 and ema50 > 0 and price <= ema50:
             return "BEAR"
         return "TREND"
-
-        return allowed
 
     def _same_side_entry_allowed(self, symbol: str, side: str) -> bool:
         """Prevent correlated entries from filling every slot in one direction."""
