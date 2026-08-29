@@ -1129,6 +1129,8 @@ class TradingEngine:
         while self.is_running:
             try:
                 for symbol, position in list(self.account.positions.items()):
+                    if CONTINUOUS_PIVOT_ONLY:
+                        continue
                     live_price = float(self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"])
                     entry_price = float(position["entry_price"])
                     side = position["side"]
@@ -2047,6 +2049,9 @@ class TradingEngine:
         """背景任務：大週期 (15m) EMA20 收線確認趨勢移動止損與分批止盈。"""
         while self.is_running:
             try:
+                if CONTINUOUS_PIVOT_ONLY:
+                    await asyncio.sleep(30)
+                    continue
                 if ENABLE_TREND_FOLLOW_EXIT or any(
                     str(pos.get("market_mode") or self.account.position_meta.get(sym, {}).get("market_mode") or "").upper()
                     in ("BULL", "BEAR")

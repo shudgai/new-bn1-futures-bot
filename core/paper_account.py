@@ -37,6 +37,7 @@ from core.config import (
     get_signal_leverage,
     DISABLE_TAKE_PROFIT,
     DISABLE_STOP_LOSS,
+    CONTINUOUS_PIVOT_ONLY,
     ONLY_CLOSE_ON_PROFIT,
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT,
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO,
@@ -447,7 +448,10 @@ class PaperAccount:
                 if side == "LONG"
                 else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
             )
-        if DISABLE_STOP_LOSS and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+        if CONTINUOUS_PIVOT_ONLY:
+            sl = 0.0
+            tp = 0.0
+        elif DISABLE_STOP_LOSS and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
             sl = 0.0
         else:
             # Ensure SL is on correct side and at least a conservative minimum distance
@@ -1054,6 +1058,13 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = now_ts
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
+
+            if CONTINUOUS_PIVOT_ONLY:
+                pos["sl"] = meta["sl"] = 0.0
+                pos["tp"] = meta["tp"] = 0.0
+                pos["peak_pnl_pct"] = highest_pnl
+                total_unrealized += unrealized
+                continue
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
 
