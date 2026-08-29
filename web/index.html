@@ -793,6 +793,7 @@
                         .forEach(series => series.applyOptions({ priceFormat }));
 
                     this._candlestickSeries.setData(candles);
+                    if (candles.length > 0) this._lastCandle = candles[candles.length - 1];
                     this._ma3Series.setData(ma3);
                     this._ma15Series.setData(ma15);
                     this._ma99Series.setData(ma99);
@@ -927,7 +928,19 @@
                         if (incomingTickerTime < currentTickerTime) return;
                         if (data.symbols) this.bot.symbols = data.symbols;
                         if (data.symbol_directions) this.bot.symbol_directions = data.symbol_directions;
-                        if (data.tickers) this.bot.tickers = data.tickers;
+                        if (data.tickers) {
+                            this.bot.tickers = data.tickers;
+                            // 讓圖表最後一根 K 線實時隨 ticker 跳動（每 500ms），消除視覺延遲
+                            if (this.chartModal.show && this.chartModal.symbol && this._candlestickSeries && this._lastCandle) {
+                                const currentPrice = this.getCurrPrice(this.chartModal.symbol);
+                                if (currentPrice !== null && currentPrice !== undefined) {
+                                    this._lastCandle.close = currentPrice;
+                                    if (currentPrice > this._lastCandle.high) this._lastCandle.high = currentPrice;
+                                    if (currentPrice < this._lastCandle.low) this._lastCandle.low = currentPrice;
+                                    this._candlestickSeries.update(this._lastCandle);
+                                }
+                            }
+                        }
                         if (data.positions) this.bot.positions = data.positions;
                         if (data.balance !== undefined) this.bot.balance = data.balance;
                         if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
