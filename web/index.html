@@ -779,6 +779,8 @@
                                     OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣出開空' },
                                     CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '賣出平多' },
                                     CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
+                                    PREALERT_LONG: { position: 'belowBar', color: '#f59e0b', shape: 'arrowUp', text: '預警買多（待3m收盤）' },
+                                    PREALERT_SHORT: { position: 'aboveBar', color: '#f59e0b', shape: 'arrowDown', text: '預警賣出（待3m收盤）' },
                                 }[trade.action];
                                 if (!markerStyle) return;
                                 tradeMarkers.push({ time: d.time, ...markerStyle, size: 1 });

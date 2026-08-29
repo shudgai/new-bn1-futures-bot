@@ -1,6 +1,7 @@
 import os
 import csv
 import io
+import time
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -392,6 +393,16 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
                 "price": trade.get("price"),
             })
         
+        prealert = engine.pivot_prealerts.get(symbol, {})
+        if prealert and time.time() - float(prealert.get("updated_at") or 0.0) < 180.0:
+            matching_bars = df.index[df["timestamp"] <= int(prealert.get("timestamp") or 0)]
+            if len(matching_bars) > 0:
+                trade_markers.setdefault(matching_bars[-1], []).append({
+                    "action": prealert.get("action"),
+                    "reason": "Awaiting 3m candle close; no order sent",
+                    "price": None,
+                })
+
         # 準備資料
         result = []
         for index, row in df.iterrows():

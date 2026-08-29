@@ -169,6 +169,7 @@ class TradingEngine:
         # one reversal in the same 1m candle and require two scans for MA3.
         self._live_pivot_reversal_bar: Dict[str, int] = {}
         self._fast_pivot_confirmations: Dict[str, dict] = {}
+        self.pivot_prealerts: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # KC 通道撕裂停損後的冷卻記錄（symbol -> 停損 timestamp）
         self._kc_rip_after: Dict[str, float] = {}
@@ -3648,6 +3649,7 @@ class TradingEngine:
                 from core.strategy import build_sl_tp_for_side
                 # 連續峰谷模式使用設定的同一週期已收盤K，避免不同週期混用。
                 df_cr = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=100, keep_live=True)
+                df_cr_live = df_cr.copy()
                 if df_cr.empty or len(df_cr) < 4:
                     return signal_progress, detected_candidates
                 if CONTINUOUS_PIVOT_ONLY:
@@ -3695,6 +3697,18 @@ class TradingEngine:
                     cr_info["reason"] = str(cr_info.get("reason") or "").replace(
                         "1m MA3", f"{CONTINUOUS_REVERSE_TIMEFRAME} MA3"
                     )
+                    live_df = self.strategy.compute_indicators(df_cr_live.copy())
+                    live_df["ma15"] = live_df["close"].rolling(15).mean()
+                    live_info = detect_ma3_ma15_cross_and_turn(live_df)
+                    live_type = live_info.get("entry_type", "")
+                    if live_type in ("TROUGH_TURN", "PEAK_TURN"):
+                        self.pivot_prealerts[symbol] = {
+                            "action": "PREALERT_LONG" if live_type == "TROUGH_TURN" else "PREALERT_SHORT",
+                            "timestamp": int(float(df_cr_live["timestamp"].iloc[-1])),
+                            "updated_at": time.time(),
+                        }
+                    else:
+                        self.pivot_prealerts.pop(symbol, None)
                 uses_live_pivot = False
                 df_cr_entry = df_cr_signal
                 cr_signal = cr_info.get("signal")
