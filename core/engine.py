@@ -27,7 +27,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
+    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -1417,6 +1417,19 @@ class TradingEngine:
                     outer_rail_flatten = bool(
                         immediate_reversal or (kc_outer_lock.get("blocked") and opposite_pivot)
                     )
+                    if CONTINUOUS_PIVOT_ONLY:
+                        pivot_only_upper_exit = False
+                        if position.get("side") == "LONG" and len(df_closed) >= 2:
+                            pivot_exit_bar = df_closed.iloc[-1]
+                            pivot_exit_previous = df_closed.iloc[-2]
+                            pivot_only_upper_exit = bool(
+                                float(pivot_exit_bar["high"]) >= float(pivot_exit_bar["kc_upper"])
+                                and float(pivot_exit_bar["close"]) < float(pivot_exit_bar["open"])
+                                and float(pivot_exit_bar["close"]) < float(pivot_exit_previous["close"])
+                            )
+                        opposite_pivot = pivot_only_upper_exit
+                        outer_rail_flatten = pivot_only_upper_exit
+                        trend_exhaustion_exit = False
                     trigger["outer_rail_flatten"] = outer_rail_flatten
                     trigger["immediate_reversal"] = immediate_reversal
                     pre_pivot_wait = (
@@ -1526,7 +1539,8 @@ class TradingEngine:
                     # 「平空後沒有買多」的空窗。只有大實體突破 MA3 的急速反轉
                     # 才即時平倉並沿用下方既有邏輯同輪反手。
                     live_pivot_exit = bool(
-                        wave_regime != "TREND"
+                        not CONTINUOUS_PIVOT_ONLY
+                        and wave_regime != "TREND"
                         and not kc_outer_lock.get("blocked")
                         and not same_bar_reversal
                         and rapid_impulse_pivot
@@ -1614,7 +1628,7 @@ class TradingEngine:
                             closed = await self.account.close_position(
                                 symbol, curr_p, close_reason, is_manual=(pre_turn_exit or live_pivot_exit or outer_rail_flatten)
                             )
-                            if closed and outer_rail_flatten:
+                            if closed and outer_rail_flatten and not CONTINUOUS_PIVOT_ONLY:
                                 target_side = "SHORT" if position.get("side") == "LONG" else "LONG"
                                 self._kc_reversal_wait[symbol] = {
                                     "from_side": position.get("side"),
@@ -1630,7 +1644,7 @@ class TradingEngine:
                                 )
                             if closed and live_pivot_exit:
                                 self._live_pivot_reversal_bar[symbol] = live_bar_id
-                                if rapid_impulse_pivot and rapid_reverse_side and not CONTINUOUS_TREND_ONLY:
+                                if rapid_impulse_pivot and rapid_reverse_side and not CONTINUOUS_TREND_ONLY and not CONTINUOUS_PIVOT_ONLY:
                                     available = self.account.get_available_balance()
                                     if TEST_BUDGET_CAP_USDT > 0:
                                         available = min(available, TEST_BUDGET_CAP_USDT)
@@ -3752,8 +3766,27 @@ class TradingEngine:
                         }
                     else:
                         self.pivot_prealerts.pop(symbol, None)
+
+                    lower_outer_touch = float(live_latest["low"]) < float(live_latest["kc_lower"])
+                    if lower_outer_touch and symbol not in self.account.positions:
+                        df_early_1m = await self.fetch_klines(symbol, timeframe="1m", limit=5, keep_live=True)
+                        if not df_early_1m.empty and len(df_early_1m) >= 2:
+                            df_early_1m = self.strategy.compute_indicators(df_early_1m)
+                            early_bar = df_early_1m.iloc[-1]
+                            early_green = float(early_bar["close"]) > float(early_bar["open"])
+                            live_atr = max(float(live_latest.get("atr") or 0.0), float(live_latest["close"]) * 1e-12)
+                            rebound_atr = (float(early_bar["close"]) - float(live_latest["low"])) / live_atr
+                            if early_green and rebound_atr <= PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR:
+                                cr_info = {
+                                    "signal": "LONG", "entry_type": "TROUGH_TURN",
+                                    "reason": "1m first green after 3m lower-rail touch",
+                                    "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
+                                    "early_1m_entry": True,
+                                }
+                            elif early_green:
+                                signal_progress.append(f"{coin} 1m rebound too far; skip chase")
                 uses_live_pivot = False
-                df_cr_entry = df_cr_signal
+                df_cr_entry = live_df if cr_info.get("early_1m_entry") else df_cr_signal
                 cr_signal = cr_info.get("signal")
                 cr_entry_type = cr_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
@@ -3881,7 +3914,7 @@ class TradingEngine:
                 # 禁止所有一般進場（包含在上軌附近重新買多），直到反向 K 線
                 # 碰到 KC 中軌。pending 內的 pivot_type 代表前面的倒 V／V 已確認。
                 pending_kc_reverse = self._kc_reversal_wait.get(symbol)
-                if CONTINUOUS_TREND_ONLY and pending_kc_reverse:
+                if (CONTINUOUS_TREND_ONLY or CONTINUOUS_PIVOT_ONLY) and pending_kc_reverse:
                     self._kc_reversal_wait.pop(symbol, None)
                     pending_kc_reverse = None
                 if not has_pos and pending_kc_reverse:
@@ -4036,7 +4069,7 @@ class TradingEngine:
 
                     # MA15 只過濾一般趨勢追單；已確認峰谷必然先出現在 MA15
                     # 交叉之前，若也套用此過濾會永遠錯過真正的峰頂／谷底。
-                    if not self._ma3_ma15_entry_allowed(
+                    if not (CONTINUOUS_PIVOT_ONLY and cr_entry_type == "TROUGH_TURN") and not self._ma3_ma15_entry_allowed(
                         symbol, cr_signal, df_cr_entry, entry_type=cr_entry_type,
                     ):
                         return signal_progress, detected_candidates
