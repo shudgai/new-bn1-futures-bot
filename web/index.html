@@ -524,7 +524,7 @@
             <div class="chart-modal-header">
                 <div class="chart-modal-title">📈 {{ chartModal.symbol }} K線圖</div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m · KC · 多空成交</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">3m &middot; KC &middot; MA3 Pivot Signals</span>
                     <button class="btn chart-fullscreen-btn" @click.stop="toggleChartFullscreen">
                         {{ chartFullscreen ? '退出全螢幕' : '全螢幕' }}
                     </button>
@@ -748,7 +748,7 @@
                 if (this._chartFetchInFlight) return;
                 this._chartFetchInFlight = true;
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, { cache: 'no-store' });
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=3m&limit=80&include_live=true&_=${Date.now()}`, { cache: 'no-store' });
                     if (!res.ok) throw new Error("Failed to fetch K-lines");
                     const json = await res.json();
                     // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
