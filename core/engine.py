@@ -2867,13 +2867,13 @@ class TradingEngine:
         if initial_risk <= 0:
             return False
         structured_net_rr = None
-        profit_profile = signal.get("profit_profile") or (
-            "TREND_EXTENSION" if entry_mode == "MOMENTUM_CROSS" else "BOUNCE"
-        )
+        profit_profile = signal.get("profit_profile")
+        if not profit_profile:
+            profit_profile = "TREND_EXTENSION" if entry_mode != "SUPPORT_PULLBACK" else "BOUNCE"
+
         if profit_profile == "BOUNCE":
             reward_pct = float(signal.get("bounce_target_pct") or 0.0)
-            # 若反彈配置但未計算出任何目標/空間，代表沒有獲利房間，拒絕開倉
-            if reward_pct <= 0:
+            if reward_pct <= 0 and entry_mode == "SUPPORT_PULLBACK":
                 self.account.log(
                     f"🛑 {symbol} 反彈單未計算到獲利空間 (bounce_target_pct=0)，拒絕掛單",
                     "WARNING",
