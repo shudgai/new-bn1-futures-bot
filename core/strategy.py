@@ -1593,13 +1593,9 @@ class SuperTrendKeltnerStrategy:
             is_valid_kc = False
             if side == "LONG":
                 is_valid_kc = bool((df['low'].iloc[-3:] <= df['kc_lower'].iloc[-3:]).any())
-                rsi_valid = rsi < 40.0
             else:
                 is_valid_kc = bool((df['high'].iloc[-3:] >= df['kc_upper'].iloc[-3:]).any())
-                rsi_valid = rsi > 60.0
                 
-            vol_valid = volume_ratio > 1.5
-            
             if not is_valid_kc:
                 return {
                     "action": "HOLD",
@@ -1607,25 +1603,11 @@ class SuperTrendKeltnerStrategy:
                     "eligible": False,
                     "score_stage": "ELIGIBILITY",
                 }
-            if not rsi_valid:
-                return {
-                    "action": "HOLD",
-                    "reason": f"拒絕進場：雖然觸及KC，但 RSI ({rsi:.1f}) 未達極度恐慌/狂熱標準 (A濾網不通過)",
-                    "eligible": False,
-                    "score_stage": "ELIGIBILITY",
-                }
-            if not vol_valid:
-                return {
-                    "action": "HOLD",
-                    "reason": f"拒絕進場：雖然觸及KC且RSI達標，但成交量 ({volume_ratio:.1f}x) 未達 1.5 倍爆量標準 (B濾網不通過)",
-                    "eligible": False,
-                    "score_stage": "ELIGIBILITY",
-                }
 
             return {
                 "action": "ENTER_MARKET",
                 "side": side,
-                "reason": sig["reason"] + " (觸及KC邊界 + RSI過濾 + 爆量過濾)",
+                "reason": sig["reason"] + " (確認觸及KC邊界)",
                 "price": sig["price"],
                 "score": 100,
                 "eligible": True,
