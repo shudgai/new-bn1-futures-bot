@@ -1117,9 +1117,15 @@ class BinanceTestnetAccount:
 
                     # 2. 後段：升級至交易所原生毫秒級 Trailing Stop (達 Tier 2 或 Tier 3)
                     target_tier = 0
-                    if profit_in_atr >= TRAILING_TIER3_TRIGGER_ATR_MULT and current_tier < 3:
+                    
+                    # 猴市時，提早啟動鎖利與極致追蹤
+                    is_range_mode = (meta.get("market_mode") == "RANGE" or pos.get("market_mode") == "RANGE")
+                    tier3_trigger = TRAILING_TIER3_TRIGGER_ATR_MULT * (0.6 if is_range_mode else 1.0)
+                    tier2_trigger = TRAILING_TIER2_TRIGGER_ATR_MULT * (0.6 if is_range_mode else 1.0)
+                    
+                    if profit_in_atr >= tier3_trigger and current_tier < 3:
                         target_tier = 3
-                    elif profit_in_atr >= TRAILING_TIER2_TRIGGER_ATR_MULT and current_tier < 2:
+                    elif profit_in_atr >= tier2_trigger and current_tier < 2:
                         target_tier = 2
 
                     retry_after = float(meta.get("native_trailing_retry_after", 0.0) or 0.0)
@@ -1160,6 +1166,7 @@ class BinanceTestnetAccount:
                                 tier=target_tier,
                                 highest_pnl=highest_pnl,
                                 activation_price=mark_p,  # 從當前標記價開始即時追蹤
+                                is_range_mode=is_range_mode,
                             )
                             actual_callback = result.get("callbackRate", callback_rate)
                             meta["native_trailing_tier"] = target_tier
@@ -1408,7 +1415,7 @@ class BinanceTestnetAccount:
         return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
 
     @staticmethod
-    def _compute_callback_rate(atr_pct: float, tier: int, highest_pnl: float = None) -> float:
+    def _compute_callback_rate(atr_pct: float, tier: int, highest_pnl: float = None, is_range_mode: bool = False) -> float:
         """根據進場時的 ATR% 與最高浮盈動態計算 Binance TRAILING_STOP_MARKET 的 callbackRate (%)。
 
         公式：base = atr_pct * 100 * NATIVE_TRAILING_ATR_RATE_FACTOR
@@ -1418,6 +1425,9 @@ class BinanceTestnetAccount:
         確保即使在小浮盈觸發時，扣除雙邊手續費與滑價後依然維持保本或微利，絕不轉虧。
         """
         base = atr_pct * 100.0 * NATIVE_TRAILING_ATR_RATE_FACTOR
+        if is_range_mode:
+            base *= 0.5  # 猴市時回調比例直接減半，把利潤鎖得更緊
+            
         if tier == 1:
             rate = max(NATIVE_TRAILING_TIER1_CALLBACK_MIN,
                        min(NATIVE_TRAILING_TIER1_CALLBACK_MAX, base))
@@ -1428,9 +1438,9 @@ class BinanceTestnetAccount:
             rate = max(NATIVE_TRAILING_TIER3_CALLBACK_MIN,
                        min(NATIVE_TRAILING_TIER3_CALLBACK_MAX, base))
 
-        # ── 安全閥：回調幅度限制在最高浮盈的 40% 以內 ──
+        # ── 安全閥：回調幅度限制在最高浮盈的 40% 以內 (猴市限制在 30%) ──
         if highest_pnl is not None and highest_pnl > 0:
-            max_allowed_callback = highest_pnl * 100.0 * 0.4
+            max_allowed_callback = highest_pnl * 100.0 * (0.3 if is_range_mode else 0.4)
             rate = min(rate, max_allowed_callback)
 
         # Binance 限制：0.1 ~ 5.0，最多 1 位小數
@@ -1445,6 +1455,7 @@ class BinanceTestnetAccount:
         tier: int,
         highest_pnl: float = None,
         activation_price: float = None,
+        is_range_mode: bool = False,
     ) -> dict:
         """下 Binance 原生 TRAILING_STOP_MARKET 訂單。
 
@@ -1453,7 +1464,7 @@ class BinanceTestnetAccount:
 
         activation_price（可選）：當標記價格達到此價位後才開始追蹤。
         """
-        callback_rate = self._compute_callback_rate(atr_pct, tier, highest_pnl=highest_pnl)
+        callback_rate = self._compute_callback_rate(atr_pct, tier, highest_pnl=highest_pnl, is_range_mode=is_range_mode)
         params = {
             "algoType": "CONDITIONAL",
             "symbol": self._raw_symbol(symbol),

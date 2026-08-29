@@ -2173,7 +2173,9 @@ class TradingEngine:
                             if peak_pnl + 1e-12 < SL_ONLY_AFTER_PEAK_PCT:
                                 continue
                             atr_value = meta.get("atr", curr_p * 0.015)
-                            trail_dist = TRAILING_SL_ATR_MULT * atr_value
+                            is_range_mode = (meta.get("market_mode") == "RANGE" or position.get("market_mode") == "RANGE")
+                            multiplier = TRAILING_SL_ATR_MULT * (0.5 if is_range_mode else 1.0)
+                            trail_dist = multiplier * atr_value
                             side = position["side"]
                             if side == "LONG":
                                 new_sl = curr_p - trail_dist
@@ -3864,14 +3866,28 @@ class TradingEngine:
                         )
                         return signal_progress, detected_candidates
 
-                    # 猴市不順勢開倉，只抓峰谷反轉
+                    # 猴市不順勢開倉，除非是剛經歷過移動停利平倉後的順勢重新承接
+                    _latest_symbol_trade = next(
+                        (trade for trade in self.account.trades if trade.get("symbol") == symbol),
+                        {},
+                    )
+                    _resume_after_profitable_trailing_exit = (
+                        _latest_symbol_trade.get("action", "").startswith("CLOSE_")
+                        and _latest_symbol_trade.get("side") == cr_signal
+                        and float(_latest_symbol_trade.get("pnl") or 0.0) > 0.0
+                        and "Trailing" in str(_latest_symbol_trade.get("reason") or "")
+                    )
+
                     if not has_pos and market_mode == "RANGE" and cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
-                        signal_progress.append(f"{coin} 猴市模式，等待谷峰反轉")
-                        self.account.log(
-                            f"⏸️ {symbol} 猴市(RANGE)模式：不順勢開倉，只等待峰谷反轉 ({cr_entry_type})",
-                            "INFO",
-                        )
-                        return signal_progress, detected_candidates
+                        if not _resume_after_profitable_trailing_exit:
+                            signal_progress.append(f"{coin} 猴市模式，等待谷峰反轉")
+                            self.account.log(
+                                f"⏸️ {symbol} 猴市(RANGE)模式：不順勢開倉，只等待峰谷反轉 ({cr_entry_type})",
+                                "INFO",
+                            )
+                            return signal_progress, detected_candidates
+                        else:
+                            self.account.log(f"✅ {symbol} 猴市模式，但剛經歷移動停利，允許順勢再開倉", "INFO")
 
                     # MA15 只過濾一般趨勢追單；已確認峰谷必然先出現在 MA15
                     # 交叉之前，若也套用此過濾會永遠錯過真正的峰頂／谷底。
