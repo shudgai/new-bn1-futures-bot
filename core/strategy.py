@@ -62,6 +62,114 @@ from core.config import (
 )
 
 
+def check_ma3_trend(df: pd.DataFrame, lookback: int = 3) -> int:
+    """檢查MA3的趨勢方向。
+    返回值：
+    - 1: MA3上升趨勢（適合LONG）
+    - -1: MA3下降趨勢（適合SHORT）
+    - 0: MA3平盤或資料不足
+    """
+    if df is None or len(df) < lookback + 1:
+        return 0
+    
+    if "ma3" not in df.columns:
+        return 0
+    
+    ma3_values = df["ma3"].tail(lookback + 1).values
+    # 過濾NaN值
+    ma3_values = ma3_values[~np.isnan(ma3_values)]
+    
+    if len(ma3_values) < 2:
+        return 0
+    
+    # 檢查最近幾根是否持續上升或下降
+    ma3_diffs = np.diff(ma3_values)
+    
+    # 計算上升和下降的根數
+    uptrend_count = np.sum(ma3_diffs > 0)
+    downtrend_count = np.sum(ma3_diffs < 0)
+    
+    # 如果上升根數明顯多於下降，認為是上升趨勢
+    if uptrend_count > downtrend_count:
+        return 1
+    # 如果下降根數明顯多於上升，認為是下降趨勢
+    elif downtrend_count > uptrend_count:
+        return -1
+    else:
+        return 0
+
+
+def detect_strong_green_candle_burst(df: pd.DataFrame) -> dict:
+    """檢測強勢多單訊號：綠K（多K）從中軌衝到外軌外。
+    
+    返回值：
+    {
+        "detected": bool,  # 是否偵測到強勢多單
+        "side": "LONG",    # 訊號方向（恆為LONG）
+        "price": float,    # 當前價格
+        "kc_upper": float, # 上軌價格
+        "kc_middle": float,# 中軌價格
+        "reason": str,     # 詳細原因
+    }
+    """
+    result = {
+        "detected": False,
+        "side": None,
+        "price": None,
+        "kc_upper": None,
+        "kc_middle": None,
+        "in_outer_rail": False,
+        "reason": "未偵測到強勢多單",
+    }
+    
+    if df is None or len(df) < 2:
+        return result
+    
+    # 檢查必要欄位
+    required = {"open", "close", "high", "kc_upper", "ema_20"}
+    if not required.issubset(df.columns):
+        return result
+    
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    candle_open = float(curr.get("open", 0))
+    candle_close = float(curr.get("close", 0))
+    candle_high = float(curr.get("high", 0))
+    kc_upper = float(curr.get("kc_upper", 0))
+    kc_middle = float(curr.get("ema_20", 0))  # 中軌 = EMA20
+    
+    # 檢查是否是綠K（收盤 > 開盤）
+    is_green_candle = candle_close > candle_open
+    if not is_green_candle:
+        return result
+    
+    # 檢查前一根K是否在中軌附近或下方
+    prev_close = float(prev.get("close", 0))
+    prev_below_middle = prev_close <= kc_middle * 1.01  # 允許1%誤差範圍
+    
+    # 檢查當前K的高點是否衝到外軌上方
+    broke_upper = candle_high > kc_upper
+    
+    # 檢查是否在外軌以上（用於多單持有決策）
+    is_in_outer_rail = candle_close > kc_upper
+    
+    if is_green_candle and broke_upper:
+        # 確認是從中軌附近衝出來的
+        if prev_below_middle or candle_open <= kc_middle * 1.01:
+            result.update({
+                "detected": True,
+                "side": "LONG",
+                "price": candle_close,
+                "kc_upper": kc_upper,
+                "kc_middle": kc_middle,
+                "in_outer_rail": is_in_outer_rail,
+                "reason": f"強勢多單信號：綠K從中軌衝到外軌外 (high={candle_high:.4f}>${kc_upper:.4f})",
+            })
+    
+    return result
+
+
 def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
     """價格仍創新高/新低，但成交量較前段明顯萎縮 -> 量縮背離（主力收手）。
 
@@ -1471,6 +1579,23 @@ class SuperTrendKeltnerStrategy:
         if not indicators_precomputed:
             df = self.compute_indicators(df)
 
+        # 先檢測強勢多單訊號（綠K衝外軌）
+        strong_long_signal = detect_strong_green_candle_burst(df)
+        if strong_long_signal.get("detected"):
+            return {
+                "action": "ENTER_MARKET",
+                "side": "LONG",
+                "entry_mode": "STRONG_LONG_BURST",
+                "price": strong_long_signal["price"],
+                "score": 95,
+                "reason": strong_long_signal["reason"] + " | 強勢多單信號，建議優先平空單或快速開多單",
+                "eligible": True,
+                "score_stage": "STRONG_SIGNAL",
+                "strong_signal": True,
+                "kc_upper": strong_long_signal["kc_upper"],
+                "kc_middle": strong_long_signal["kc_middle"],
+            }
+
         curr = df.iloc[-1]
 
         live_price = float(curr['close'])
@@ -1773,6 +1898,12 @@ class SuperTrendKeltnerStrategy:
 
         kc_breakout_passed = False
         if st_dir == 1 and price >= (kc_upper + kc_breakout_buffer) and closed_confirmed:
+            # LONG 進場前檢查 MA3 趨勢：MA3 必須上升才允許開多單
+            ma3_trend = check_ma3_trend(df, lookback=3)
+            if ma3_trend != 1:  # MA3 不是上升趨勢
+                return eligibility_hold(
+                    f"LONG_Rejected_By_MA3_Trend: MA3趨勢向下或平盤，不開多單 (ma3_trend={ma3_trend})"
+                )
             score += 30
             kc_breakout_passed = True
             score_details.append("KC_Breakout_Pass")
@@ -2003,19 +2134,33 @@ class SuperTrendKeltnerStrategy:
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
             else:  # SHORT
+                # 改進：空單確認後直接進場，不必等紅K回到中軌
+                # 若分數足夠高（>=80），允許直接市價進場；否則仍等待回調
                 dist = (kc_lower - price) / kc_lower
-                return {
-                    "action": "WAIT_PULLBACK", "side": "SHORT",
-                    "price": price, "atr": atr,
-                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                    "target_zone": pullback_target, "ema_20": ema_20,
-                    "pullback_depth": pullback_depth,
-                    "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
-                    "entry_mode": entry_mode,
-                    "confirmation_reason": confirmation_reason,
-                    **btc_context,
-                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
-                }
+                if score >= 80:  # SHORT 直接進場條件：分數足夠高
+                    return {
+                        "action": "ENTER_MARKET", "side": "SHORT",
+                        "entry_mode": "SHORT_FAST_ENTRY",
+                        "price": price, "atr": atr,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                        "ema_20": ema_20,
+                        "reason": f"SHORT_FastEntry({score}) | dist={dist:.2%} | 確認空單無需等待回調 | {', '.join(score_details)}{downgrade_note}",
+                        **btc_context,
+                    }
+                else:
+                    # 分數低於 80 時，仍需等待回調
+                    return {
+                        "action": "WAIT_PULLBACK", "side": "SHORT",
+                        "price": price, "atr": atr,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                        "target_zone": pullback_target, "ema_20": ema_20,
+                        "pullback_depth": pullback_depth,
+                        "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
+                        "entry_mode": entry_mode,
+                        "confirmation_reason": confirmation_reason,
+                        **btc_context,
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
+                    }
 
         return scored_hold(f"Score_Low({score}) | {', '.join(score_details)}")
 

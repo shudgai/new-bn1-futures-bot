@@ -186,6 +186,9 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
     0.0, float(os.getenv("RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR", "0.50"))
 )
 
+# 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
+CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"
+
 # 連續峰谷模式的空倉市價進場，最大允許離 MA3 的順向距離；超過代表
 # 已在大 K 尾端，等待回踩而非追價。持倉中的急速反手不受此限制。
 MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(

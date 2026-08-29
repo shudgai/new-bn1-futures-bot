@@ -3442,6 +3442,28 @@ def test_true_trough_near_ma15_still_reverses():
     assert result["entry_type"] == "TROUGH_TURN"
 
 
+def test_v_reversal_hitting_middle_band_opens_immediately():
+    frame = pd.DataFrame({
+        "open": [100.0] * 20,
+        "high": [101.0] * 20,
+        "low": [99.0] * 20,
+        "close": [100.0] * 20,
+        "volume": [100.0] * 20,
+        "atr": [0.8] * 20,
+        "ma15": [100.0] * 20,
+        "ema_20": [100.0] * 20,
+    })
+    frame["ma3"] = [100.0] * 17 + [100.0, 101.0, 100.0]
+    frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [101.2, 101.6, 99.2, 99.8]
+    frame.loc[frame.index[-2], ["open", "high", "low", "close"]] = [101.2, 101.5, 99.8, 99.9]
+    frame.loc[frame.index[-3], ["open", "high", "low", "close"]] = [100.8, 101.3, 99.7, 101.0]
+    frame.loc[frame.index[-4], ["open", "high", "low", "close"]] = [100.5, 101.0, 99.5, 100.1]
+    result = detect_ma3_ma15_cross_and_turn(frame)
+
+    assert result["signal"] == "SHORT"
+    assert result["entry_type"] == "PEAK_TURN"
+
+
 def test_ma3_above_ma15_opens_long_even_when_still_falling():
     result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([101.4, 101.2, 101.1])

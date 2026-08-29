@@ -108,7 +108,7 @@ ENTRY_CONTEXT_KEYS = (
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
-    "eligibility_note",
+    "eligibility_note", "wave_regime",
 )
 
 
@@ -1062,6 +1062,21 @@ class PaperAccount:
                 and now_ts - float(pos.get("open_timestamp") or now_ts) < EXHAUSTION_SNIPER_GRACE_SEC
             )
             if exhaustion_grace:
+                hard_stop_hit = (
+                    current_sl > 0
+                    and ((side == "LONG" and curr_p <= current_sl)
+                         or (side == "SHORT" and curr_p >= current_sl))
+                )
+                if hard_stop_hit:
+                    await self.close_position(symbol, current_sl, "觸發止損 (Stop-Loss)")
+                    continue
+                pos["peak_pnl_pct"] = highest_pnl
+                total_unrealized += unrealized
+                continue
+
+            # 連續模式只由 RANGE 峰谷或 TREND 結構衰退出場；帳戶層仍保留原始硬停損。
+            wave_regime = str(pos.get("wave_regime") or meta.get("wave_regime") or "").upper()
+            if wave_regime in ("RANGE", "TREND"):
                 hard_stop_hit = (
                     current_sl > 0
                     and ((side == "LONG" and curr_p <= current_sl)

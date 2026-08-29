@@ -93,7 +93,7 @@ async def shutdown_event():
 async def get_index():
     index_file = os.path.join(WEB_DIR, "index.html")
     if os.path.exists(index_file):
-        return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+        return FileResponse(index_file, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return HTMLResponse("<h1>Binance Bot Web Dashboard Not Found</h1>")
 
 

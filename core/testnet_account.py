@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import time
 import ccxt.async_support as ccxt
@@ -100,7 +101,7 @@ ENTRY_CONTEXT_KEYS = (
     "bounce_capture_ratio", "bounce_target_pct",
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",
-    "dca_stage", "dca_base_price", "dca_original_amount",
+    "dca_stage", "dca_base_price", "dca_original_amount", "wave_regime",
 )
 
 
@@ -699,6 +700,9 @@ class BinanceTestnetAccount:
             if exhaustion_grace:
                 # 交易所的 1.2% STOP_MARKET 繼續有效；前三分鐘不移動保護線，
                 # 也不執行任何獲利／技術型出場。
+                continue
+            # RANGE 峰谷與 TREND 結構衰退出場交由主引擎處理；交易所硬停損單照常保留。
+            if str(pos.get("wave_regime") or meta.get("wave_regime") or "").upper() in ("RANGE", "TREND"):
                 continue
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
@@ -1651,7 +1655,11 @@ class BinanceTestnetAccount:
             if not DISABLE_STOP_LOSS and not is_exhaustion_sniper:
                 sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
                 sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
-            tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
+            structure_exit_only = str(entry_context.get("wave_regime") or "").upper() in ("RANGE", "TREND")
+            tp_price = (
+                float(self.exchange.price_to_precision(symbol, adjusted_tp))
+                if not DISABLE_TAKE_PROFIT and not structure_exit_only else 0.0
+            )
             if entry_context.get("initial_sl") is not None:
                 entry_context["initial_sl"] = sl_price
                 entry_context["initial_risk"] = abs(execution_price - sl_price)
@@ -1666,7 +1674,7 @@ class BinanceTestnetAccount:
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )
-                if not DISABLE_TAKE_PROFIT:
+                if not DISABLE_TAKE_PROFIT and not structure_exit_only:
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
                     )

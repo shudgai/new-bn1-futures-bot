@@ -463,6 +463,9 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
     min_directional_range = max(abs(atr) * 0.20, abs(ma3_curr) * 0.0005)
     fast_pivot_slope = max(abs(atr) * 0.10, abs(ma3_prev) * 0.00015)
+    ma15_distance = abs(ma3_curr - ma15_curr)
+    ma15_distance_weight = ma15_distance / max(abs(atr), 1e-12)
+    ma15_far_enough = ma15_distance_weight >= 0.75
 
     # Two same-direction, above-average candles can confirm a fast peak/trough
     # before MA15 has time to cross.  Both candles must carry volume, so a
@@ -507,10 +510,88 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         or v_trough or v_peak
     )
 
+    current_candle = df.iloc[-1]
+    last_candle_low = float(current_candle["low"])
+    last_candle_high = float(current_candle["high"])
+    kc_middle_now = float(df["ema_20"].iloc[-1])
+    
+    # 計算 Keltner Channel 外軌
+    from core.config import KELTNER_ATR_MULTIPLIER
+    kc_upper_now = kc_middle_now + atr * KELTNER_ATR_MULTIPLIER
+    kc_lower_now = kc_middle_now - atr * KELTNER_ATR_MULTIPLIER
+    
+    previous_candle = df.iloc[-2]
+    prev_candle_high = float(previous_candle["high"])
+    prev_candle_low = float(previous_candle["low"])
+    
+    # 外軌突破反轉：V/倒V已形成 + 反向 K 穿過相反外軌 = 確定轉向
+    # 例如：綠K衝到上軌外 -> 下一根紅K已在下軌 = 轉向開空
+    outer_rail_reversal_to_short = bool(
+        v_peak and previous_slope >= min_pivot_slope
+        and abs(current_slope) >= min_pivot_slope
+        and prev_candle_high > kc_upper_now  # 前根K衝到上軌外（多強）
+        and last_candle_low <= kc_lower_now  # 當前紅K已在下軌（反轉確認）
+    )
+    outer_rail_reversal_to_long = bool(
+        v_trough and abs(previous_slope) >= min_pivot_slope
+        and current_slope >= min_pivot_slope
+        and prev_candle_low < kc_lower_now  # 前根K衝到下軌外（空強）
+        and last_candle_high >= kc_upper_now  # 當前綠K已在上軌（反轉確認）
+    )
+    
+    # 外軌突破反轉優先於中軌回撤判定：這是最清楚的轉向信號
+    if outer_rail_reversal_to_short:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m 倒V已形成，紅K已穿過下軌 → 立即平多開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2, "ma_alignment": ma_alignment,
+        }
+    if outer_rail_reversal_to_long:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m V已形成，綠K已穿過上軌 → 立即平空開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2, "ma_alignment": ma_alignment,
+        }
+    
+    immediate_peak_hit_middle = bool(
+        v_peak and previous_slope >= min_pivot_slope
+        and abs(current_slope) >= min_pivot_slope
+        and last_candle_low <= kc_middle_now
+        and (ma15_far_enough or abs(previous_slope) >= min_pivot_slope * 1.5)
+    )
+    immediate_trough_hit_middle = bool(
+        v_trough and abs(previous_slope) >= min_pivot_slope
+        and current_slope >= min_pivot_slope
+        and last_candle_high >= kc_middle_now
+        and (ma15_far_enough or abs(current_slope) >= min_pivot_slope * 1.5)
+    )
+
+    if immediate_peak_hit_middle:
+        return {
+            "signal": "SHORT", "entry_type": "PEAK_TURN",
+            "reason": "1m MA3 倒V已形成且紅K已回到KC中軌 → 立即反手開空",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2, "ma_alignment": ma_alignment,
+        }
+    if immediate_trough_hit_middle:
+        return {
+            "signal": "LONG", "entry_type": "TROUGH_TURN",
+            "reason": "1m MA3 V已形成且綠K已回到KC中軌 → 立即反手開多",
+            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+            "fast_pivot": True, "live_pivot": allow_live_pivot,
+            "pivot_offset": -2, "ma_alignment": ma_alignment,
+        }
+
     # 真正的峰頂/谷底不能因為剛好貼近中軌或 MA15 就被噪音過濾。
     # 只有在「轉折很弱、斜率不足」時，才維持 WAIT_MA_NOISE，避免錯過真轉向。
     if pivot_shape_detected and not (
         two_red_peak or two_green_trough or step_trough or step_peak
+        or immediate_peak_hit_middle or immediate_trough_hit_middle
         or (
             v_trough and abs(previous_slope) >= min_pivot_slope
             and current_slope >= min_pivot_slope
@@ -636,7 +717,7 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
 
     # 峰谷沒有真正轉向時，以 MA3 相對 MA15 的位置決定方向。
     # MA3 貼近 MA15（距離 <= 0.05 ATR）視為小波動，不產生反向開倉訊號。
-    ma15_distance = abs(ma3_curr - ma15_curr)
+    # 若 MA3 距離 MA15 較大，代表市場已偏離均線，這時更容易出現真峰谷。
     if 0 < ma15_distance <= min_pivot_slope:
         return {
             "signal": None, "entry_type": "WAIT_MA_NOISE",
@@ -750,16 +831,20 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     candle_body = abs(candle_close - candle_open)
     ma3_curr = float(df['ma3'].iloc[-1])
     kc_middle = float(df['ema_20'].iloc[-1])
+    
+    # 快速止損邏輯：一旦發現方向錯誤就立即平倉
+    # 多單被強紅K擊中：實體>=0.5ATR 且穿破MA3 就平仓
+    # 不需等到红K回到中軌，早發現早止損
     strong_opposite_body = candle_body >= atr_val * 0.50
     pre_peak_exit = bool(
         side == "LONG" and strong_opposite_body
         and candle_close < candle_open and candle_close < ma3_curr
-        and float(curr['low']) <= kc_middle
     )
+    
+    # 空單被強綠K擊中：實體>=0.5ATR 且穿破MA3 就平仓
     pre_trough_exit = bool(
         side == "SHORT" and strong_opposite_body
         and candle_close > candle_open and candle_close > ma3_curr
-        and float(curr['high']) >= kc_middle
     )
 
     reasons = []
