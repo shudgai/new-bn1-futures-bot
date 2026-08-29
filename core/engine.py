@@ -1397,7 +1397,8 @@ class TradingEngine:
                     # 立即轉向（fast_pivot）：紅K/綠K已回到 KC 中軌，無須等待外軌 blocked 狀態
                     # 直接視為「中軌反轉」平仓，不論外軌是否已解鎖。
                     immediate_reversal = bool(
-                        exit_signal_info.get("fast_pivot")
+                        not CONTINUOUS_PIVOT_ONLY
+                        and exit_signal_info.get("fast_pivot")
                         and (
                             (position.get("side") == "LONG"
                              and exit_signal_info.get("entry_type") == "PEAK_TURN")
@@ -3715,6 +3716,21 @@ class TradingEngine:
                 cr_entry_type = cr_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
                 is_trough_early = cr_info.get("is_trough_early", False)
+
+                if CONTINUOUS_PIVOT_ONLY and cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+                    pivot_offset = int(cr_info.get("pivot_offset", -2) or -2)
+                    pivot_high = float(df_cr_entry["high"].iloc[pivot_offset])
+                    pivot_low = float(df_cr_entry["low"].iloc[pivot_offset])
+                    pivot_upper = float(df_cr_entry["kc_upper"].iloc[pivot_offset])
+                    pivot_lower = float(df_cr_entry["kc_lower"].iloc[pivot_offset])
+                    pivot_on_outer_rail = (
+                        (cr_entry_type == "PEAK_TURN" and pivot_high >= pivot_upper)
+                        or (cr_entry_type == "TROUGH_TURN" and pivot_low <= pivot_lower)
+                    )
+                    if not pivot_on_outer_rail:
+                        signal_progress.append(f"{coin} 中軌峰谷預警，等待KC外軌確認")
+                        cr_signal = None
+                        cr_entry_type = "WAIT_KC_OUTER_RAIL"
 
                 # 峰谷專用模式：所有幣一律只接受外軌谷底轉多／峰頂轉空。
                 if CONTINUOUS_PIVOT_ONLY and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
