@@ -27,7 +27,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
+    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -3806,6 +3806,12 @@ class TradingEngine:
                         signal_progress.append(f"{coin} 中軌峰谷預警，等待KC外軌確認")
                         cr_signal = None
                         cr_entry_type = "WAIT_KC_OUTER_RAIL"
+                    elif cr_entry_type == "TROUGH_TURN":
+                        kc_width_pct = (pivot_upper - pivot_lower) / max((pivot_upper + pivot_lower) / 2.0, 1e-12)
+                        if kc_width_pct < PIVOT_MIN_KC_WIDTH_PCT:
+                            signal_progress.append(f"{coin} KC range {kc_width_pct:.2%} too narrow; skip entry")
+                            cr_signal = None
+                            cr_entry_type = "WAIT_KC_WIDTH"
 
                 # 峰谷專用模式：所有幣一律只接受外軌谷底轉多／峰頂轉空。
                 if CONTINUOUS_PIVOT_ONLY and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
