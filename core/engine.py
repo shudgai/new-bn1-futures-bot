@@ -1877,40 +1877,36 @@ class TradingEngine:
 
             unrealized_pnl_pct = (current_price - position["entry_price"]) / position["entry_price"] if side == "LONG" else (position["entry_price"] - current_price) / position["entry_price"]
 
-            # --- 觸軌極速鎖利 (Band-Touch Trailing) ---
-            # 只要有獲利，且摸到對側 KC 軌道，就啟動極速追蹤止盈
+            # --- 外軌峰谷平倉 (Max Profit Peak/Valley Exit) ---
+            # 只要有利潤，且摸到對側 KC 軌道，等待 MA3 形成反向極值 (峰頂/谷底) 才平倉，拿滿最大利潤！
             if unrealized_pnl_pct > 0.0:
-                kc_upper = float(bar["kc_upper"])
-                kc_lower = float(bar["kc_lower"])
-                is_touching = (side == "LONG" and current_price >= kc_upper) or (side == "SHORT" and current_price <= kc_lower)
-                
-                if is_touching or meta.get("band_touched"):
-                    meta["band_touched"] = True
-                    # 記錄觸軌後的極值
-                    if side == "LONG":
-                        peak = max(meta.get("band_touch_peak_price", 0.0), current_price)
-                        meta["band_touch_peak_price"] = peak
-                        if current_price < peak * (1.0 - 0.002): # 回檔 0.2%
-                            self.account.log(f"🎯 [極速鎖利+反手] {symbol} 多單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}，立刻反手做空！", "SUCCESS")
-                            await self.account.close_position(symbol, current_price, "觸軌極速鎖利 (Band-Touch Trailing)")
+                # 使用 1m 級別來判斷精準的軌道與 MA3 彎頭
+                df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=20, keep_live=True)
+                if not df_1m.empty and len(df_1m) >= 5:
+                    df_1m = self.strategy.compute_indicators(df_1m)
+                    curr_close = float(df_1m['close'].iloc[-1])
+                    kc_upper = float(df_1m['kc_upper'].iloc[-1]) if 'kc_upper' in df_1m.columns else curr_close
+                    kc_lower = float(df_1m['kc_lower'].iloc[-1]) if 'kc_lower' in df_1m.columns else curr_close
+                    
+                    is_touching = (side == "LONG" and current_price >= kc_upper) or (side == "SHORT" and current_price <= kc_lower)
+                    
+                    if is_touching or meta.get("band_touched"):
+                        meta["band_touched"] = True
+                        
+                        # 已經摸到對面軌道！現在只等 MA3 彎頭 (check_simple_ma5_exit)
+                        from core.strategy import check_simple_ma5_exit
+                        exit_signal = check_simple_ma5_exit(df_1m, position)
+                        
+                        if exit_signal.get("close"):
+                            self.account.log(f"🎯 [外軌峰谷平倉] {symbol} {side} 單於軌道外出現 {exit_signal.get('reason')}，鎖定最大利潤 {unrealized_pnl_pct:.2%}，平倉！", "SUCCESS")
+                            await self.account.close_position(symbol, current_price, f"外軌峰谷 ({exit_signal.get('reason')})")
+                            
+                            # 觸發極速反手
+                            target_side = "SHORT" if side == "LONG" else "LONG"
                             self._kc_reversal_wait[symbol] = {
-                                "from_side": "LONG",
-                                "target_side": "SHORT",
-                                "pivot_type": "BAND_TOUCH",
-                                "created_at": time.time(),
-                                "middle_reached": True,
-                            }
-                            return
-                    else:
-                        peak = min(meta.get("band_touch_peak_price", float('inf')), current_price)
-                        meta["band_touch_peak_price"] = peak
-                        if current_price > peak * (1.0 + 0.002): # 回檔 0.2%
-                            self.account.log(f"🎯 [極速鎖利+反手] {symbol} 空單觸軌後回檔 0.2%，鎖定利潤 {unrealized_pnl_pct:.2%}，立刻反手做多！", "SUCCESS")
-                            await self.account.close_position(symbol, current_price, "觸軌極速鎖利 (Band-Touch Trailing)")
-                            self._kc_reversal_wait[symbol] = {
-                                "from_side": "SHORT",
-                                "target_side": "LONG",
-                                "pivot_type": "BAND_TOUCH",
+                                "from_side": side,
+                                "target_side": target_side,
+                                "pivot_type": "BAND_PEAK_VALLEY",
                                 "created_at": time.time(),
                                 "middle_reached": True,
                             }
@@ -4356,58 +4352,17 @@ class TradingEngine:
                 kc_upper = float(live_candle.get("kc_upper") or 0)
                 kc_lower = float(live_candle.get("kc_lower") or 0)
                 
-                # === 持倉中：對面軌道到達 → 平倉 + 反手 ===
-                existing_pos = self.account.positions.get(symbol)
-                if existing_pos and kc_upper > 0 and kc_lower > 0:
-                    curr_side = existing_pos.get("side")
-                    if curr_side == "LONG" and live_price >= kc_upper:
-                        # 多單到頂，立刻平多+開空
-                        self.account.log(
-                            f"🔄 [Channel Swing] {symbol} 多單到達 KC 上軌 ({kc_upper:.6g}), 平多→開空",
-                            "SUCCESS"
-                        )
-                        await self.account.close_position(symbol, live_price, "Channel Swing 到頂反手")
-                        sig = {
-                            "detected": True, "side": "SHORT", "score": 100,
-                            "price": live_price,
-                            "atr": float(live_candle.get("atr") or live_price * 0.015),
-                            "entry_mode": "CHANNEL_SWING",
-                            "profit_profile": "TREND_EXTENSION",
-                            "action": "ENTER_MARKET", "target_price": None,
-                            "signal_candle_low": float(live_candle["low"]),
-                            "signal_candle_high": float(live_candle["high"]),
-                            "symbol": symbol, "live_price": live_price,
-                            "reason": f"Channel Swing → KC 上軌到頂，反手開空｜kc_upper={kc_upper:.6g}",
-                        }
-                        signal_progress["signals"].append(sig)
-                        return signal_progress, detected_candidates
-                    elif curr_side == "SHORT" and live_price <= kc_lower:
-                        # 空單到底，立刻平空+開多
-                        self.account.log(
-                            f"🔄 [Channel Swing] {symbol} 空單到達 KC 下軌 ({kc_lower:.6g}), 平空→開多",
-                            "SUCCESS"
-                        )
-                        await self.account.close_position(symbol, live_price, "Channel Swing 到底反手")
-                        sig = {
-                            "detected": True, "side": "LONG", "score": 100,
-                            "price": live_price,
-                            "atr": float(live_candle.get("atr") or live_price * 0.015),
-                            "entry_mode": "CHANNEL_SWING",
-                            "profit_profile": "TREND_EXTENSION",
-                            "action": "ENTER_MARKET", "target_price": None,
-                            "signal_candle_low": float(live_candle["low"]),
-                            "signal_candle_high": float(live_candle["high"]),
-                            "symbol": symbol, "live_price": live_price,
-                            "reason": f"Channel Swing → KC 下軌到底，反手開多｜kc_lower={kc_lower:.6g}",
-                        }
-                        signal_progress["signals"].append(sig)
-                        return signal_progress, detected_candidates
-                    else:
-                        # 持倉中，等待到達對面軌道
-                        signal_progress.append(
-                            f"{symbol.replace('/USDT', '')} {curr_side} 持倉中 | 目標: {'上軌' if curr_side == 'LONG' else '下軌'} {kc_upper:.6g if curr_side == 'LONG' else kc_lower:.6g}"
-                        )
-                        return signal_progress, detected_candidates
+                # === 持倉中：對面軌道到達 → 平倉 + 反手 (已停用，改由 _process_single_exit 峰谷判定) ===
+                # 這裡的邏輯原本是一碰到軌道就立刻平倉，導致錯失了衝出軌道外的「巨大峰頂/谷底」利潤。
+                # 現在全部統一交給 _process_single_exit 裡面的「外軌峰谷平倉」邏輯去處理，
+                # 它會等到 MA3 在軌道外形成峰頂/谷底才真正平倉！
+                # 持倉中，不再由這裡執行平倉反手
+                if self.account.positions.get(symbol):
+                    curr_side = self.account.positions[symbol].get("side")
+                    signal_progress.append(
+                        f"{symbol.replace('/USDT', '')} {curr_side} 持倉中 | 等待外軌 MA3 峰谷平倉"
+                    )
+                    return signal_progress, detected_candidates
 
                 # === 空倉：碰到 KC 邊界 → 直接開倉 ===
                 if not existing_pos:
