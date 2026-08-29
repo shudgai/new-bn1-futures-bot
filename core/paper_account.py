@@ -84,7 +84,7 @@ from core.config import (
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
     ENABLE_RAPID_ADVERSE_DROP, RAPID_ADVERSE_DROP_PCT, RAPID_DROP_COOLDOWN_SEC,
     RAPID_ADVERSE_SPEED_PCT, RAPID_ADVERSE_SPEED_WINDOW_SEC,
-    PIVOT_FAILURE_BUFFER_ATR,
+    PIVOT_FAILURE_BUFFER_ATR, PIVOT_FAILURE_MIN_PCT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -1038,7 +1038,8 @@ class PaperAccount:
             signal_low = float(pos.get("signal_candle_low") or meta.get("signal_candle_low") or entry_p)
             signal_high = float(pos.get("signal_candle_high") or meta.get("signal_candle_high") or entry_p)
             position_atr = max(float(pos.get("atr") or meta.get("atr") or 0.0), entry_p * 1e-12)
-            failure_level = signal_low - position_atr * PIVOT_FAILURE_BUFFER_ATR if side == "LONG" else signal_high + position_atr * PIVOT_FAILURE_BUFFER_ATR
+            failure_buffer = max(position_atr * PIVOT_FAILURE_BUFFER_ATR, entry_p * PIVOT_FAILURE_MIN_PCT)
+            failure_level = signal_low - failure_buffer if side == "LONG" else signal_high + failure_buffer
             structure_failed = curr_p <= failure_level if side == "LONG" else curr_p >= failure_level
             price_window = self._rapid_drop_window.setdefault(symbol, [])
             price_window.append((now_ts, curr_p))
