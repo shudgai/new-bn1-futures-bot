@@ -3718,37 +3718,35 @@ class TradingEngine:
                     self.account.position_meta.setdefault(symbol, {})["market_mode"] = market_mode
                 cr_info = detect_ma3_ma15_cross_and_turn(df_cr_signal)
                 if CONTINUOUS_PIVOT_ONLY:
-                    latest_bar = df_cr_signal.iloc[-1]
-                    previous_bar = df_cr_signal.iloc[-2]
-                    latest_open = float(latest_bar["open"])
-                    latest_close = float(latest_bar["close"])
-                    previous_close = float(previous_bar["close"])
-                    lower_outer_turn = (
-                        float(latest_bar["low"]) < float(latest_bar["kc_lower"])
-                        and latest_close > latest_open
-                        and latest_close > previous_close
-                    )
-                    upper_outer_turn = (
-                        float(latest_bar["high"]) > float(latest_bar["kc_upper"])
-                        and latest_close < latest_open
-                        and latest_close < previous_close
-                    )
-                    if lower_outer_turn:
-                        cr_info = {
-                            "signal": "LONG", "entry_type": "TROUGH_TURN",
-                            "reason": f"{CONTINUOUS_REVERSE_TIMEFRAME} 下軌外第一根綠K谷底確認",
-                            "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
-                        }
-                    elif upper_outer_turn:
-                        cr_info = {
-                            "signal": "SHORT", "entry_type": "PEAK_TURN",
-                            "reason": f"{CONTINUOUS_REVERSE_TIMEFRAME} 上軌外第一根紅K峰頂確認",
-                            "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
-                        }
+                    from core.strategy import detect_simple_ma5_signal
+                    live_p = float(df_cr_live["close"].iloc[-1])
+                    sig = detect_simple_ma5_signal(df_cr_signal, live_price=live_p)
+                    if sig.get("detected"):
+                        t_side = sig["side"]
+                        # 同步檢查最尖端K線是否精準觸軌
+                        is_valid_kc = False
+                        if t_side == "LONG":
+                            is_valid_kc = float(df_cr_signal.iloc[-2]['low']) <= float(df_cr_signal.iloc[-2]['kc_lower']) or float(df_cr_signal.iloc[-3]['low']) <= float(df_cr_signal.iloc[-3]['kc_lower'])
+                        else:
+                            is_valid_kc = float(df_cr_signal.iloc[-2]['high']) >= float(df_cr_signal.iloc[-2]['kc_upper']) or float(df_cr_signal.iloc[-3]['high']) >= float(df_cr_signal.iloc[-3]['kc_upper'])
+                        
+                        if is_valid_kc:
+                            cr_info = {
+                                "signal": t_side, 
+                                "entry_type": "TROUGH_TURN" if t_side == "LONG" else "PEAK_TURN",
+                                "reason": f"{CONTINUOUS_REVERSE_TIMEFRAME} {sig['reason']} (確認觸及KC邊界)",
+                                "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
+                            }
+                        else:
+                            cr_info = {
+                                "signal": None, "entry_type": "WAIT_KC_OUTER_RAIL",
+                                "reason": f"等待{CONTINUOUS_REVERSE_TIMEFRAME} 觸碰 KC 外軌極端",
+                                "pivot_confirmed": False, "pivot_score": 0,
+                            }
                     else:
                         cr_info = {
                             "signal": None, "entry_type": "WAIT_KC_OUTER_RAIL",
-                            "reason": f"等待{CONTINUOUS_REVERSE_TIMEFRAME} KC外軌第一根反轉K",
+                            "reason": f"等待{CONTINUOUS_REVERSE_TIMEFRAME} MA3 出現明確峰頂/谷底轉向",
                             "pivot_confirmed": False, "pivot_score": 0,
                         }
                     cr_info["reason"] = str(cr_info.get("reason") or "").replace(
