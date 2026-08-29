@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS
+    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -120,7 +120,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)",
+        "strategy": (f"KC 3m下軌 + 1m谷底提早買入・3m上軌平多 ({len(DEFAULT_SYMBOLS)}幣只做多)" if CONTINUOUS_PIVOT_ONLY else f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)"),
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
