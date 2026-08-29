@@ -3767,9 +3767,11 @@ class TradingEngine:
                         and float(live_latest["close"]) < float(live_latest["open"])
                         and float(live_latest["close"]) < float(live_previous["close"])
                     )
-                    if live_lower_turn or live_upper_turn:
+                    prealert_side = "LONG" if live_lower_turn else "SHORT" if live_upper_turn else None
+                    held_side = self.account.positions.get(symbol, {}).get("side")
+                    if prealert_side and held_side != prealert_side:
                         self.pivot_prealerts[symbol] = {
-                            "action": "PREALERT_LONG" if live_lower_turn else "PREALERT_SHORT",
+                            "action": "PREALERT_LONG" if prealert_side == "LONG" else "PREALERT_SHORT",
                             "timestamp": int(float(df_cr_live["timestamp"].iloc[-1])),
                             "updated_at": time.time(),
                         }
