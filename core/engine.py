@@ -3695,16 +3695,58 @@ class TradingEngine:
                     self.account.position_meta.setdefault(symbol, {})["market_mode"] = market_mode
                 cr_info = detect_ma3_ma15_cross_and_turn(df_cr_signal)
                 if CONTINUOUS_PIVOT_ONLY:
+                    latest_bar = df_cr_signal.iloc[-1]
+                    previous_bar = df_cr_signal.iloc[-2]
+                    latest_open = float(latest_bar["open"])
+                    latest_close = float(latest_bar["close"])
+                    previous_close = float(previous_bar["close"])
+                    lower_outer_turn = (
+                        float(latest_bar["low"]) < float(latest_bar["kc_lower"])
+                        and latest_close > latest_open
+                        and latest_close > previous_close
+                    )
+                    upper_outer_turn = (
+                        float(latest_bar["high"]) > float(latest_bar["kc_upper"])
+                        and latest_close < latest_open
+                        and latest_close < previous_close
+                    )
+                    if lower_outer_turn:
+                        cr_info = {
+                            "signal": "LONG", "entry_type": "TROUGH_TURN",
+                            "reason": f"{CONTINUOUS_REVERSE_TIMEFRAME} 下軌外第一根綠K谷底確認",
+                            "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
+                        }
+                    elif upper_outer_turn:
+                        cr_info = {
+                            "signal": "SHORT", "entry_type": "PEAK_TURN",
+                            "reason": f"{CONTINUOUS_REVERSE_TIMEFRAME} 上軌外第一根紅K峰頂確認",
+                            "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
+                        }
+                    else:
+                        cr_info = {
+                            "signal": None, "entry_type": "WAIT_KC_OUTER_RAIL",
+                            "reason": f"等待{CONTINUOUS_REVERSE_TIMEFRAME} KC外軌第一根反轉K",
+                            "pivot_confirmed": False, "pivot_score": 0,
+                        }
                     cr_info["reason"] = str(cr_info.get("reason") or "").replace(
                         "1m MA3", f"{CONTINUOUS_REVERSE_TIMEFRAME} MA3"
                     )
                     live_df = self.strategy.compute_indicators(df_cr_live.copy())
-                    live_df["ma15"] = live_df["close"].rolling(15).mean()
-                    live_info = detect_ma3_ma15_cross_and_turn(live_df)
-                    live_type = live_info.get("entry_type", "")
-                    if live_type in ("TROUGH_TURN", "PEAK_TURN"):
+                    live_latest = live_df.iloc[-1]
+                    live_previous = live_df.iloc[-2]
+                    live_lower_turn = (
+                        float(live_latest["low"]) < float(live_latest["kc_lower"])
+                        and float(live_latest["close"]) > float(live_latest["open"])
+                        and float(live_latest["close"]) > float(live_previous["close"])
+                    )
+                    live_upper_turn = (
+                        float(live_latest["high"]) > float(live_latest["kc_upper"])
+                        and float(live_latest["close"]) < float(live_latest["open"])
+                        and float(live_latest["close"]) < float(live_previous["close"])
+                    )
+                    if live_lower_turn or live_upper_turn:
                         self.pivot_prealerts[symbol] = {
-                            "action": "PREALERT_LONG" if live_type == "TROUGH_TURN" else "PREALERT_SHORT",
+                            "action": "PREALERT_LONG" if live_lower_turn else "PREALERT_SHORT",
                             "timestamp": int(float(df_cr_live["timestamp"].iloc[-1])),
                             "updated_at": time.time(),
                         }
