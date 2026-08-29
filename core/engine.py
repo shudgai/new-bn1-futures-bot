@@ -3881,7 +3881,31 @@ class TradingEngine:
                     )
 
                     if not has_pos and market_mode == "RANGE" and cr_entry_type in ("TREND_LONG", "TREND_SHORT"):
-                        if not _resume_after_profitable_trailing_exit:
+                        # 計算主導波段 (Dominant Wave)：看前一次碰到外軌是上軌還是下軌
+                        # 藉此幫助在沒有持倉時，判斷順勢方向（用戶要求「如果1號沒開，看到2號時要看1號走向」）
+                        atr = max(float(cr_info.get('atr') or 0.0), live_price * 1e-12)
+                        from core.config import KELTNER_ATR_MULTIPLIER
+                        kc_upper_series = df_cr_entry['ema_20'] + atr * KELTNER_ATR_MULTIPLIER
+                        kc_lower_series = df_cr_entry['ema_20'] - atr * KELTNER_ATR_MULTIPLIER
+                        recent_upper_hits = df_cr_entry['high'] >= kc_upper_series
+                        recent_lower_hits = df_cr_entry['low'] <= kc_lower_series
+                        last_upper_idx = df_cr_entry[recent_upper_hits].index[-1] if recent_upper_hits.any() else -1
+                        last_lower_idx = df_cr_entry[recent_lower_hits].index[-1] if recent_lower_hits.any() else -1
+                        
+                        if last_upper_idx > last_lower_idx:
+                            dominant_wave = "SHORT" # 前一次摸到上軌，目前在下跌波段
+                        elif last_lower_idx > last_upper_idx:
+                            dominant_wave = "LONG"  # 前一次摸到下軌，目前在上漲波段
+                        else:
+                            dominant_wave = "NEUTRAL"
+                            
+                        # 如果是猴市，但目前處於主導波段（前一個外軌觸發為同向），則允許順勢開倉
+                        is_aligned_with_dominant_wave = (
+                            (cr_entry_type == "TREND_LONG" and dominant_wave == "LONG") or
+                            (cr_entry_type == "TREND_SHORT" and dominant_wave == "SHORT")
+                        )
+                        
+                        if not _resume_after_profitable_trailing_exit and not is_aligned_with_dominant_wave:
                             signal_progress.append(f"{coin} 猴市模式，等待谷峰反轉")
                             self.account.log(
                                 f"⏸️ {symbol} 猴市(RANGE)模式：不順勢開倉，只等待峰谷反轉 ({cr_entry_type})",
@@ -3889,7 +3913,10 @@ class TradingEngine:
                             )
                             return signal_progress, detected_candidates
                         else:
-                            self.account.log(f"✅ {symbol} 猴市模式，但剛經歷移動停利，允許順勢再開倉", "INFO")
+                            if _resume_after_profitable_trailing_exit:
+                                self.account.log(f"✅ {symbol} 猴市模式，但剛經歷移動停利，允許順勢再開倉", "INFO")
+                            elif is_aligned_with_dominant_wave:
+                                self.account.log(f"✅ {symbol} 猴市模式，但符合前波主導趨勢 ({dominant_wave})，允許順勢開倉", "INFO")
 
                     # MA15 只過濾一般趨勢追單；已確認峰谷必然先出現在 MA15
                     # 交叉之前，若也套用此過濾會永遠錯過真正的峰頂／谷底。
