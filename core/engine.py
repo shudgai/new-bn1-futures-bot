@@ -170,6 +170,7 @@ class TradingEngine:
         self._live_pivot_reversal_bar: Dict[str, int] = {}
         self._fast_pivot_confirmations: Dict[str, dict] = {}
         self.pivot_prealerts: Dict[str, dict] = {}
+        self._pivot_pullback_wait: Dict[str, dict] = {}
         self.last_signal_progress_log_at: float = 0.0
         # KC 通道撕裂停損後的冷卻記錄（symbol -> 停損 timestamp）
         self._kc_rip_after: Dict[str, float] = {}
@@ -3570,7 +3571,7 @@ class TradingEngine:
         # 峰谷必須是 MA3 本身越過 KC 外軌，不接受只有價格影線碰軌。
         # 最後兩根保留給第一、第二確認 K，因此只檢查它們之前的峰谷。
         pivot_offset = None
-        for offset in (-3, -4):
+        for offset in (-3, -4, -5):
             if len(frame) < abs(offset):
                 continue
             row = frame.iloc[offset]
@@ -3619,8 +3620,29 @@ class TradingEngine:
 
         # 倒數第二與最後一根均須同方向，最後一根是第二根確認 K；
         # 第二根的顏色、延續方向及所在半通道皆為硬條件。
-        confirm_1 = frame.iloc[-2]
-        confirm_2 = frame.iloc[-1]
+        pivot_position = len(frame) + pivot_offset
+        confirmations = []
+        for position in range(pivot_position + 1, len(frame)):
+            row = frame.iloc[position]
+            row_atr = max(float(row["atr"]), abs(float(row["close"])) * 1e-12)
+            body = abs(float(row["close"]) - float(row["open"]))
+            candle_range = max(float(row["high"]) - float(row["low"]), 0.0)
+            is_doji = body <= max(0.05 * row_atr, 0.10 * candle_range)
+            if is_doji:
+                continue
+            correct_color = (
+                float(row["close"]) > float(row["open"])
+                if side == "LONG"
+                else float(row["close"]) < float(row["open"])
+            )
+            if not correct_color:
+                return False, "opposite non-doji candle invalidated pivot confirmation", pivot_offset
+            confirmations.append(row)
+
+        if len(confirmations) < 2:
+            return False, "need two non-doji direction candles; volume is not required", pivot_offset
+
+        confirm_1, confirm_2 = confirmations[-2], confirmations[-1]
         confirm_middle = float(
             confirm_2["kc_middle"]
             if "kc_middle" in frame.columns
@@ -3628,34 +3650,77 @@ class TradingEngine:
         )
         first_close = float(confirm_1["close"])
         confirm_close = float(confirm_2["close"])
+        ma3_has_turned = (
+            float(confirm_2["ma3"]) > ma3_at_pivot
+            if side == "LONG"
+            else float(confirm_2["ma3"]) < ma3_at_pivot
+        )
+        if not ma3_has_turned:
+            return False, "MA3 has not turned away from the KC extreme", pivot_offset
+
         if side == "LONG":
             normal_half_channel = (
                 float(confirm_2["kc_lower"]) < confirm_close <= confirm_middle
             )
             strong_full_channel_turn = confirm_close >= float(confirm_2["kc_upper"])
             valid_second = (
-                first_close > float(confirm_1["open"])
-                and confirm_close > float(confirm_2["open"])
-                and confirm_close > first_close
+                confirm_close > first_close
                 and (normal_half_channel or strong_full_channel_turn)
             )
-            if not valid_second:
-                return False, "須連續兩根綠K，且第二根收在KC下軌與中軌之間", pivot_offset
         else:
             normal_half_channel = (
                 confirm_middle <= confirm_close < float(confirm_2["kc_upper"])
             )
             strong_full_channel_turn = confirm_close <= float(confirm_2["kc_lower"])
             valid_second = (
-                first_close < float(confirm_1["open"])
-                and confirm_close < float(confirm_2["open"])
-                and confirm_close < first_close
+                confirm_close < first_close
                 and (normal_half_channel or strong_full_channel_turn)
             )
-            if not valid_second:
-                return False, "須連續兩根紅K，且第二根收在KC中軌與上軌之間", pivot_offset
+        if not valid_second:
+            return False, "confirmation candle has not reached the required KC zone", pivot_offset
 
-        return True, "峰谷、線距與第二根K位置確認通過", pivot_offset
+        return True, "strict pivot and non-doji candle confirmation passed", pivot_offset
+
+    @staticmethod
+    def _resolve_entry_atr(cr_info: dict, frame: pd.DataFrame, live_price: float) -> float:
+        """Use the real candle ATR; never turn a missing value into a near-zero ATR."""
+        candidates = [cr_info.get("atr") if cr_info else None]
+        if frame is not None and not frame.empty:
+            if "atr" in frame.columns:
+                candidates.append(frame["atr"].iloc[-1])
+            if {"kc_upper", "kc_lower"}.issubset(frame.columns):
+                candidates.append(
+                    abs(float(frame["kc_upper"].iloc[-1]) - float(frame["kc_lower"].iloc[-1])) / 2.0
+                )
+        for candidate in candidates:
+            try:
+                value = float(candidate)
+            except (TypeError, ValueError):
+                continue
+            if pd.notna(value) and value > 0.0:
+                return value
+        return max(abs(float(live_price)) * 0.001, 1e-12)
+
+    @staticmethod
+    def _pivot_confirmation_body_atr(frame: pd.DataFrame, atr: float) -> float:
+        if frame is None or frame.empty or not {"open", "close"}.issubset(frame.columns):
+            return 0.0
+        body = abs(float(frame["close"].iloc[-1]) - float(frame["open"].iloc[-1]))
+        return body / max(float(atr), 1e-12)
+
+    @staticmethod
+    def _pivot_pullback_ready(
+        side: str, live_price: float, ma3: float, atr: float, extreme_price: float,
+    ) -> bool:
+        atr = max(float(atr), 1e-12)
+        side = str(side or "").upper()
+        rebound_atr = (
+            (float(live_price) - float(extreme_price)) / atr
+            if side == "SHORT"
+            else (float(extreme_price) - float(live_price)) / atr
+        )
+        distance_atr = abs(float(live_price) - float(ma3)) / atr
+        return rebound_atr >= 0.10 and distance_atr <= MA3_MARKET_ENTRY_MAX_DISTANCE_ATR
 
     @staticmethod
     def _detect_strict_pivot_prealert(live_frame: pd.DataFrame) -> str | None:
@@ -3885,6 +3950,23 @@ class TradingEngine:
                     sig = detect_simple_ma5_signal(
                         first_confirm_frame, live_price=first_confirm_price,
                     )
+                    direct_candidates = []
+                    for direct_side in ("LONG", "SHORT"):
+                        direct_ok, direct_reason, direct_offset = (
+                            self._validate_strict_pivot_entry(df_cr_signal, direct_side)
+                        )
+                        if direct_ok:
+                            direct_candidates.append(
+                                (direct_side, direct_reason, direct_offset)
+                            )
+                    if direct_candidates:
+                        direct_side, direct_reason, direct_offset = max(
+                            direct_candidates, key=lambda item: item[2]
+                        )
+                        sig = {
+                            "detected": True, "side": direct_side,
+                            "reason": direct_reason, "direct_strict": True,
+                        }
                     if sig.get("detected"):
                         t_side = sig["side"]
                         strict_ok, strict_reason, pivot_offset = (
@@ -3903,6 +3985,7 @@ class TradingEngine:
                                 "pivot_offset": pivot_offset,
                                 "pivot_confirmed": True,
                                 "pivot_score": 100,
+                                "atr": float(df_cr_signal["atr"].iloc[-1]),
                             }
                         else:
                             cr_info = {
@@ -4046,6 +4129,52 @@ class TradingEngine:
 
                 has_pos = symbol in self.account.positions
                 curr_side = self.account.positions[symbol]["side"] if has_pos else None
+
+                pending_pivot_pullback = self._pivot_pullback_wait.get(symbol)
+                if has_pos and pending_pivot_pullback:
+                    self._pivot_pullback_wait.pop(symbol, None)
+                    pending_pivot_pullback = None
+                elif pending_pivot_pullback:
+                    pending_side = str(pending_pivot_pullback.get("side") or "").upper()
+                    pending_age = now_time - float(pending_pivot_pullback.get("created_at") or now_time)
+                    if pending_age > 180.0 or pending_side not in ("LONG", "SHORT"):
+                        self._pivot_pullback_wait.pop(symbol, None)
+                        pending_pivot_pullback = None
+                    elif cr_signal and cr_signal != pending_side:
+                        self._pivot_pullback_wait.pop(symbol, None)
+                        pending_pivot_pullback = None
+                    else:
+                        clean_sym = symbol.replace(":USDT", "") if symbol.endswith(":USDT") else symbol
+                        wait_live_price = float(
+                            self.tickers.get(clean_sym, self.tickers.get(symbol, df_cr_entry["close"].iloc[-1]))
+                        )
+                        wait_atr = self._resolve_entry_atr({}, df_cr_entry, wait_live_price)
+                        wait_ma3 = float(df_cr_entry["ma3"].iloc[-1])
+                        old_extreme = float(pending_pivot_pullback.get("extreme_price") or wait_live_price)
+                        pending_pivot_pullback["extreme_price"] = (
+                            min(old_extreme, wait_live_price)
+                            if pending_side == "SHORT" else max(old_extreme, wait_live_price)
+                        )
+                        if self._pivot_pullback_ready(
+                            pending_side, wait_live_price, wait_ma3, wait_atr,
+                            pending_pivot_pullback["extreme_price"],
+                        ):
+                            cr_signal = pending_side
+                            cr_entry_type = str(pending_pivot_pullback.get("entry_type") or (
+                                "PEAK_TURN" if pending_side == "SHORT" else "TROUGH_TURN"
+                            ))
+                            cr_info = {
+                                "signal": cr_signal, "entry_type": cr_entry_type,
+                                "reason": "long confirmation candle pulled back to MA3",
+                                "atr": wait_atr, "deferred_pivot_entry": True,
+                                "pivot_confirmed": True, "pivot_score": 100,
+                            }
+                        else:
+                            cr_signal = None
+                            cr_entry_type = "WAIT_LONG_CANDLE_PULLBACK"
+                            signal_progress.append(
+                                f"{coin} long confirmation candle; wait for MA3 pullback"
+                            )
                 kc_outer_reversal_blocked = False
                 if has_pos:
                     from core.indicators import evaluate_kc_outer_run_lock
@@ -4265,7 +4394,7 @@ class TradingEngine:
                     # 已持倉的急速反手在持倉管理迴圈處理，故不會被這裡擋住。
                     if not has_pos:
                         entry_ma3 = float(df_cr_entry['close'].rolling(3).mean().iloc[-1])
-                        entry_atr = max(float(cr_info.get('atr') or 0.0), live_price * 1e-12)
+                        entry_atr = self._resolve_entry_atr(cr_info, df_cr_entry, live_price)
                         entry_ema20 = (
                             float(df_cr_entry['ema_20'].iloc[-1])
                             if 'ema_20' in df_cr_entry.columns
@@ -4299,6 +4428,34 @@ class TradingEngine:
                             (live_price - entry_ma3) / entry_atr
                             if cr_signal == "LONG" else (entry_ma3 - live_price) / entry_atr
                         )
+                        pivot_turn = cr_entry_type in ("TROUGH_TURN", "PEAK_TURN")
+                        confirmation_body_atr = self._pivot_confirmation_body_atr(
+                            df_cr_entry, entry_atr
+                        )
+                        if (
+                            pivot_turn
+                            and confirmation_body_atr >= 1.0
+                            and not cr_info.get("deferred_pivot_entry")
+                        ):
+                            self._pivot_pullback_wait[symbol] = {
+                                "side": cr_signal, "entry_type": cr_entry_type,
+                                "created_at": now_time, "extreme_price": float(live_price),
+                                "signal_bar_id": entry_bar_id, "body_atr": confirmation_body_atr,
+                            }
+                            signal_progress.append(
+                                f"{coin} {cr_signal} long candle {confirmation_body_atr:.2f}ATR; wait pullback"
+                            )
+                            self.account.log(
+                                f"WAIT {symbol} {cr_signal}: confirmation body "
+                                f"{confirmation_body_atr:.2f}ATR; wait for MA3 pullback",
+                                "INFO",
+                            )
+                            return signal_progress, detected_candidates
+                        if pivot_turn:
+                            on_correct_ma3_side = True
+                            extension_atr = min(
+                                extension_atr, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR
+                            )
                         if (
                             not on_correct_ma3_side
                             or extension_atr > MA3_MARKET_ENTRY_MAX_DISTANCE_ATR
@@ -4470,6 +4627,7 @@ class TradingEngine:
                                 wave_regime=wave_regime,
                             )
                             if opened:
+                                self._pivot_pullback_wait.pop(symbol, None)
                                 self._continuous_last_entry_bar[symbol] = (cr_signal, entry_bar_id)
 
                     # --- MA5 穿越 MA15（金叉/死叉）：反轉/補開訊號 ---

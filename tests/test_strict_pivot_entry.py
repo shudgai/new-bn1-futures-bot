@@ -37,7 +37,7 @@ def test_long_requires_green_second_k_in_lower_half_channel():
         _frame("LONG"), "LONG",
     )
     assert ok is True
-    assert "確認通過" in reason
+    assert "confirmation passed" in reason
     assert offset == -3
 
 
@@ -46,7 +46,7 @@ def test_short_requires_red_second_k_in_upper_half_channel():
         _frame("SHORT"), "SHORT",
     )
     assert ok is True
-    assert "確認通過" in reason
+    assert "confirmation passed" in reason
     assert offset == -3
 
 
@@ -55,7 +55,7 @@ def test_second_k_outside_required_half_channel_is_rejected():
     frame.loc[frame.index[-1], "close"] = 99.5
     ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
     assert ok is False
-    assert "中軌與上軌之間" in reason
+    assert "required KC zone" in reason
 
 
 def test_peak_red_k_crossing_below_lower_rail_confirms_strong_short():
@@ -72,6 +72,24 @@ def test_trough_green_k_crossing_above_upper_rail_confirms_strong_long():
     ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "LONG")
     assert ok is True
     assert offset == -3
+
+
+def test_entry_atr_uses_candle_atr_when_signal_payload_is_missing_it():
+    frame = _frame("SHORT")
+    atr = TradingEngine._resolve_entry_atr({}, frame, live_price=100.0)
+    assert atr == 1.0
+
+
+def test_entry_atr_falls_back_to_kc_width_before_price_epsilon():
+    frame = _frame("SHORT").drop(columns=["atr"])
+    atr = TradingEngine._resolve_entry_atr({}, frame, live_price=100.0)
+    assert atr == 2.0
+
+
+def test_entry_atr_has_sane_price_fallback_without_indicators():
+    frame = pd.DataFrame({"close": [100.0]})
+    atr = TradingEngine._resolve_entry_atr({}, frame, live_price=100.0)
+    assert atr == 0.1
 
 
 def test_short_prealert_is_suppressed_near_lower_rail():
@@ -111,6 +129,64 @@ def test_prealert_appears_after_confirmed_ma3_turn_in_correct_half():
         "atr": [1.0] * 3,
     })
     assert TradingEngine._detect_strict_pivot_prealert(frame) == "SHORT"
+
+
+def test_low_volume_third_red_candle_still_confirms_short():
+    frame = pd.DataFrame({
+        "open": [100.0, 101.0, 102.0, 101.7, 101.2],
+        "close": [100.5, 101.5, 101.8, 101.6, 100.6],
+        "high": [100.7, 101.8, 102.2, 101.8, 101.3],
+        "low": [99.8, 100.8, 101.3, 101.5, 100.4],
+        "ma3": [100.0, 103.0, 102.0, 101.5, 101.0],
+        "ma15": [99.0] * 5,
+        "ema_20": [100.0] * 5,
+        "kc_upper": [102.0] * 5,
+        "kc_lower": [98.0] * 5,
+        "atr": [1.0] * 5,
+        "volume": [1000.0, 1000.0, 0.001, 0.001, 0.001],
+    })
+    ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+    assert ok is True
+    assert offset == -4
+
+
+def test_doji_is_skipped_and_next_red_can_confirm_short():
+    frame = pd.DataFrame({
+        "open": [100.0, 101.0, 102.0, 101.70, 101.2],
+        "close": [100.5, 101.5, 101.8, 101.69, 100.6],
+        "high": [100.7, 101.8, 102.2, 101.9, 101.3],
+        "low": [99.8, 100.8, 101.3, 101.5, 100.4],
+        "ma3": [100.0, 103.0, 102.0, 101.5, 101.0],
+        "ma15": [99.0] * 5,
+        "ema_20": [100.0] * 5,
+        "kc_upper": [102.0] * 5,
+        "kc_lower": [98.0] * 5,
+        "atr": [1.0] * 5,
+    })
+    ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+    assert ok is True
+    assert offset == -4
+
+
+def test_doji_alone_does_not_confirm_short():
+    frame = _frame("SHORT")
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [100.60, 100.59, 100.8, 100.4]
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+    assert ok is False
+    assert "two non-doji" in reason
+
+
+def test_long_confirmation_candle_requires_pullback_only_at_one_atr():
+    frame = _frame("LONG")
+    frame.loc[frame.index[-1], ["open", "close"]] = [98.0, 99.2]
+    assert abs(TradingEngine._pivot_confirmation_body_atr(frame, 1.0) - 1.2) < 1e-9
+    assert TradingEngine._pivot_pullback_ready("LONG", 99.0, 99.1, 1.0, 99.3) is True
+    assert TradingEngine._pivot_pullback_ready("LONG", 99.2, 99.1, 1.0, 99.3) is False
+
+
+def test_short_long_candle_waits_for_rebound_near_ma3():
+    assert TradingEngine._pivot_pullback_ready("SHORT", 99.2, 99.3, 1.0, 99.0) is True
+    assert TradingEngine._pivot_pullback_ready("SHORT", 99.05, 99.3, 1.0, 99.0) is False
 
 
 def test_price_wick_outside_without_ma3_outside_is_rejected():
@@ -168,7 +244,7 @@ def test_original_5887ffa_first_confirmation_then_strict_second_k():
     )
     assert ok is True
     assert offset == -3
-    assert "確認通過" in reason
+    assert "confirmation passed" in reason
 
     # 第二根若衝到中軌上方，即使原版 MA3 V 型仍成立也不得開倉。
     frame.loc[frame.index[-1], "close"] = 100.5
@@ -177,4 +253,4 @@ def test_original_5887ffa_first_confirmation_then_strict_second_k():
         frame, first["side"],
     )
     assert blocked is False
-    assert "下軌與中軌之間" in blocked_reason
+    assert "required KC zone" in blocked_reason
