@@ -120,7 +120,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": (f"KC {os.getenv('CONTINUOUS_REVERSE_TIMEFRAME', '1m')} 峰谷反手 ({len(DEFAULT_SYMBOLS)}幣雙向)" if CONTINUOUS_PIVOT_ONLY and not PIVOT_LONG_ONLY else f"KC 3m下軌 + 1m谷底提早買入・3m上軌平多 ({len(DEFAULT_SYMBOLS)}幣只做多)" if CONTINUOUS_PIVOT_ONLY else f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)"),
+        "strategy": (f"KC {os.getenv('CONTINUOUS_REVERSE_TIMEFRAME', '1m')} MA3須越外軌 + 兩根K半通道 + 0.15ATR線距 ({len(DEFAULT_SYMBOLS)}幣雙向)" if CONTINUOUS_PIVOT_ONLY and not PIVOT_LONG_ONLY else f"KC 3m下軌 + 1m谷底提早買入・3m上軌平多 ({len(DEFAULT_SYMBOLS)}幣只做多)" if CONTINUOUS_PIVOT_ONLY else f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)"),
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

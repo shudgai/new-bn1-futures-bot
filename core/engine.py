@@ -3549,6 +3549,163 @@ class TradingEngine:
                 self._pullback_retry_after[symbol] = now + PULLBACK_RETRY_COOLDOWN_SEC
             self.account.save_state()
 
+    @staticmethod
+    def _validate_strict_pivot_entry(
+        frame: pd.DataFrame, side: str,
+    ) -> tuple[bool, str, int]:
+        """Validate the 5887ffa pivot with strict line-distance and second-K rules."""
+        if frame is None or len(frame) < 3:
+            return False, "峰谷資料不足", -2
+        required = {
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_upper", "kc_lower", "atr",
+        }
+        if not required.issubset(frame.columns):
+            return False, "峰谷確認欄位不足", -2
+
+        side = str(side or "").upper()
+        if side not in ("LONG", "SHORT"):
+            return False, "峰谷方向無效", -2
+
+        # 峰谷必須是 MA3 本身越過 KC 外軌，不接受只有價格影線碰軌。
+        # 最後兩根保留給第一、第二確認 K，因此只檢查它們之前的峰谷。
+        pivot_offset = None
+        for offset in (-3, -4):
+            if len(frame) < abs(offset):
+                continue
+            row = frame.iloc[offset]
+            ma3_value = float(row["ma3"])
+            crossed_outer = (
+                ma3_value < float(row["kc_lower"])
+                if side == "LONG"
+                else ma3_value > float(row["kc_upper"])
+            )
+            if crossed_outer:
+                pivot_offset = offset
+                break
+        if pivot_offset is None:
+            target = "下軌外" if side == "LONG" else "上軌外"
+            return (
+                False,
+                f"MA3尚未越過KC{target}，即使價格有峰谷也不轉向、不開倉",
+                -3,
+            )
+
+        # 真正峰谷若仍貼近 MA15 或任一 KC 軌道，視為線邊盤旋。
+        pivot = frame.iloc[pivot_offset]
+        atr = max(float(pivot["atr"]), abs(float(pivot["close"])) * 1e-12)
+        middle = float(
+            pivot["kc_middle"]
+            if "kc_middle" in frame.columns
+            else pivot["ema_20"]
+        )
+        ma3_at_pivot = float(pivot["ma3"])
+        line_distances = {
+            "MA15": abs(ma3_at_pivot - float(pivot["ma15"])),
+            "KC上軌": abs(ma3_at_pivot - float(pivot["kc_upper"])),
+            "KC中軌": abs(ma3_at_pivot - middle),
+            "KC下軌": abs(ma3_at_pivot - float(pivot["kc_lower"])),
+        }
+        nearest_line, nearest_distance = min(
+            line_distances.items(), key=lambda item: item[1],
+        )
+        distance_atr = nearest_distance / atr
+        if distance_atr < 0.15:
+            return (
+                False,
+                f"峰谷MA3距{nearest_line}僅{distance_atr:.2f}ATR，視為盤旋，不轉向、不開倉",
+                pivot_offset,
+            )
+
+        # 倒數第二與最後一根均須同方向，最後一根是第二根確認 K；
+        # 第二根的顏色、延續方向及所在半通道皆為硬條件。
+        confirm_1 = frame.iloc[-2]
+        confirm_2 = frame.iloc[-1]
+        confirm_middle = float(
+            confirm_2["kc_middle"]
+            if "kc_middle" in frame.columns
+            else confirm_2["ema_20"]
+        )
+        first_close = float(confirm_1["close"])
+        confirm_close = float(confirm_2["close"])
+        if side == "LONG":
+            normal_half_channel = (
+                float(confirm_2["kc_lower"]) < confirm_close <= confirm_middle
+            )
+            strong_full_channel_turn = confirm_close >= float(confirm_2["kc_upper"])
+            valid_second = (
+                first_close > float(confirm_1["open"])
+                and confirm_close > float(confirm_2["open"])
+                and confirm_close > first_close
+                and (normal_half_channel or strong_full_channel_turn)
+            )
+            if not valid_second:
+                return False, "須連續兩根綠K，且第二根收在KC下軌與中軌之間", pivot_offset
+        else:
+            normal_half_channel = (
+                confirm_middle <= confirm_close < float(confirm_2["kc_upper"])
+            )
+            strong_full_channel_turn = confirm_close <= float(confirm_2["kc_lower"])
+            valid_second = (
+                first_close < float(confirm_1["open"])
+                and confirm_close < float(confirm_2["open"])
+                and confirm_close < first_close
+                and (normal_half_channel or strong_full_channel_turn)
+            )
+            if not valid_second:
+                return False, "須連續兩根紅K，且第二根收在KC中軌與上軌之間", pivot_offset
+
+        return True, "峰谷、線距與第二根K位置確認通過", pivot_offset
+
+    @staticmethod
+    def _detect_strict_pivot_prealert(live_frame: pd.DataFrame) -> str | None:
+        """Delay prealert until MA3 really turns, and suppress it near the opposite rail."""
+        required = {"open", "close", "ma3", "kc_upper", "kc_lower", "atr"}
+        if live_frame is None or len(live_frame) < 3 or not required.issubset(live_frame.columns):
+            return None
+
+        latest = live_frame.iloc[-1]
+        previous = live_frame.iloc[-2]
+        atr = max(float(latest["atr"]), abs(float(latest["close"])) * 1e-12)
+        middle = float(
+            latest["kc_middle"]
+            if "kc_middle" in live_frame.columns
+            else latest["ema_20"]
+        )
+        ma3_now = float(latest["ma3"])
+        ma3_prev = float(previous["ma3"])
+        turn_distance = abs(ma3_now - ma3_prev)
+        origin = live_frame.iloc[-3:-1]
+        long_origin_confirmed = any(
+            float(row["kc_lower"]) - float(row["ma3"]) >= 0.15 * max(
+                float(row["atr"]), abs(float(row["close"])) * 1e-12,
+            )
+            for _, row in origin.iterrows()
+        )
+        short_origin_confirmed = any(
+            float(row["ma3"]) - float(row["kc_upper"]) >= 0.15 * max(
+                float(row["atr"]), abs(float(row["close"])) * 1e-12,
+            )
+            for _, row in origin.iterrows()
+        )
+        long_turn = (
+            long_origin_confirmed
+            and ma3_now > ma3_prev
+            and turn_distance >= 0.05 * atr
+            and ma3_now < middle
+            and float(latest["close"]) > float(latest["open"])
+            and float(latest["close"]) > float(previous["close"])
+        )
+        short_turn = (
+            short_origin_confirmed
+            and ma3_now < ma3_prev
+            and turn_distance >= 0.05 * atr
+            and ma3_now > middle
+            and float(latest["close"]) < float(latest["open"])
+            and float(latest["close"]) < float(previous["close"])
+        )
+        return "LONG" if long_turn else "SHORT" if short_turn else None
+
     async def _place_continuous_market_entry(
         self, symbol: str, side: str, df: pd.DataFrame, live_price: float,
         entry_type: str, reason: str, score: int, timeframe: str,
@@ -3565,7 +3722,7 @@ class TradingEngine:
         sl, tp = build_sl_tp_for_side(live_price, side, sl_dist, tp_dist)
         opened = await self.account.open_position(
             symbol=symbol, side=side, price=live_price,
-            amount_usdt=TRADE_AMOUNT_USDT, sl=sl, tp=tp,
+            amount_usdt=self.account.get_available_balance(), sl=sl, tp=tp,
             reason=f"{entry_type}: {reason}", atr=atr,
             leverage=get_leverage(symbol), signal_score=score,
             entry_context={
@@ -3719,28 +3876,39 @@ class TradingEngine:
                 cr_info = detect_ma3_ma15_cross_and_turn(df_cr_signal)
                 if CONTINUOUS_PIVOT_ONLY:
                     from core.strategy import detect_simple_ma5_signal
-                    live_p = float(df_cr_live["close"].iloc[-1])
-                    sig = detect_simple_ma5_signal(df_cr_signal, live_price=live_p)
+                    # 先用 5887ffa 原始 MA3 峰谷函式確認第一根反向 K，
+                    # 再由完整資料的最後一根作第二根 K 嚴格確認。
+                    first_confirm_frame = df_cr_signal.iloc[:-1]
+                    first_confirm_price = float(
+                        first_confirm_frame["close"].iloc[-1]
+                    )
+                    sig = detect_simple_ma5_signal(
+                        first_confirm_frame, live_price=first_confirm_price,
+                    )
                     if sig.get("detected"):
                         t_side = sig["side"]
-                        # 同步檢查最尖端K線是否精準觸軌
-                        is_valid_kc = False
-                        if t_side == "LONG":
-                            is_valid_kc = float(df_cr_signal.iloc[-2]['low']) <= float(df_cr_signal.iloc[-2]['kc_lower']) or float(df_cr_signal.iloc[-3]['low']) <= float(df_cr_signal.iloc[-3]['kc_lower'])
-                        else:
-                            is_valid_kc = float(df_cr_signal.iloc[-2]['high']) >= float(df_cr_signal.iloc[-2]['kc_upper']) or float(df_cr_signal.iloc[-3]['high']) >= float(df_cr_signal.iloc[-3]['kc_upper'])
-                        
-                        if is_valid_kc:
+                        strict_ok, strict_reason, pivot_offset = (
+                            self._validate_strict_pivot_entry(
+                                df_cr_signal, t_side,
+                            )
+                        )
+                        if strict_ok:
                             cr_info = {
-                                "signal": t_side, 
+                                "signal": t_side,
                                 "entry_type": "TROUGH_TURN" if t_side == "LONG" else "PEAK_TURN",
-                                "reason": f"{CONTINUOUS_REVERSE_TIMEFRAME} {sig['reason']} (確認觸及KC邊界)",
-                                "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
+                                "reason": (
+                                    f"{CONTINUOUS_REVERSE_TIMEFRAME} {sig['reason']}；"
+                                    f"{strict_reason}"
+                                ),
+                                "pivot_offset": pivot_offset,
+                                "pivot_confirmed": True,
+                                "pivot_score": 100,
                             }
                         else:
                             cr_info = {
-                                "signal": None, "entry_type": "WAIT_KC_OUTER_RAIL",
-                                "reason": f"等待{CONTINUOUS_REVERSE_TIMEFRAME} 觸碰 KC 外軌極端",
+                                "signal": None,
+                                "entry_type": "WAIT_STRICT_PIVOT_CONFIRM",
+                                "reason": strict_reason,
                                 "pivot_confirmed": False, "pivot_score": 0,
                             }
                     else:
@@ -3753,19 +3921,7 @@ class TradingEngine:
                         "1m MA3", f"{CONTINUOUS_REVERSE_TIMEFRAME} MA3"
                     )
                     live_df = self.strategy.compute_indicators(df_cr_live.copy())
-                    live_latest = live_df.iloc[-1]
-                    live_previous = live_df.iloc[-2]
-                    live_lower_turn = (
-                        float(live_latest["low"]) < float(live_latest["kc_lower"])
-                        and float(live_latest["close"]) > float(live_latest["open"])
-                        and float(live_latest["close"]) > float(live_previous["close"])
-                    )
-                    live_upper_turn = (
-                        float(live_latest["high"]) > float(live_latest["kc_upper"])
-                        and float(live_latest["close"]) < float(live_latest["open"])
-                        and float(live_latest["close"]) < float(live_previous["close"])
-                    )
-                    prealert_side = "LONG" if live_lower_turn else "SHORT" if live_upper_turn else None
+                    prealert_side = self._detect_strict_pivot_prealert(live_df)
                     held_side = self.account.positions.get(symbol, {}).get("side")
                     if prealert_side and held_side != prealert_side:
                         self.pivot_prealerts[symbol] = {
@@ -3776,36 +3932,9 @@ class TradingEngine:
                     else:
                         self.pivot_prealerts.pop(symbol, None)
 
-                    lower_outer_touch = float(live_latest["low"]) < float(live_latest["kc_lower"])
-                    upper_outer_touch = float(live_latest["high"]) > float(live_latest["kc_upper"])
-                    if (lower_outer_touch or upper_outer_touch) and symbol not in self.account.positions:
-                        df_early_1m = await self.fetch_klines(symbol, timeframe="1m", limit=5, keep_live=True)
-                        if not df_early_1m.empty and len(df_early_1m) >= 2:
-                            df_early_1m = self.strategy.compute_indicators(df_early_1m)
-                            early_bar = df_early_1m.iloc[-1]
-                            early_green = float(early_bar["close"]) > float(early_bar["open"])
-                            early_red = float(early_bar["close"]) < float(early_bar["open"])
-                            live_atr = max(float(live_latest.get("atr") or 0.0), float(live_latest["close"]) * 1e-12)
-                            lower_rebound_atr = (float(early_bar["close"]) - float(live_latest["low"])) / live_atr
-                            upper_rebound_atr = (float(live_latest["high"]) - float(early_bar["close"])) / live_atr
-                            if lower_outer_touch and early_green and lower_rebound_atr <= PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR:
-                                cr_info = {
-                                    "signal": "LONG", "entry_type": "TROUGH_TURN",
-                                    "reason": "1m first green after lower-rail touch",
-                                    "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
-                                    "early_1m_entry": True,
-                                }
-                            elif upper_outer_touch and early_red and upper_rebound_atr <= PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR:
-                                cr_info = {
-                                    "signal": "SHORT", "entry_type": "PEAK_TURN",
-                                    "reason": "1m first red after upper-rail touch",
-                                    "pivot_offset": -1, "pivot_confirmed": True, "pivot_score": 100,
-                                    "early_1m_entry": True,
-                                }
-                            elif (lower_outer_touch and early_green) or (upper_outer_touch and early_red):
-                                signal_progress.append(f"{coin} 1m rebound too far; skip chase")
+                    # 第一根未收盤反向 K 只作預警，不可繞過第二根已收盤 K 的嚴格位置檢查。
                 uses_live_pivot = False
-                df_cr_entry = live_df if cr_info.get("early_1m_entry") else df_cr_signal
+                df_cr_entry = df_cr_signal
                 cr_signal = cr_info.get("signal")
                 cr_entry_type = cr_info.get("entry_type", "")
                 is_peak_early = cr_info.get("is_peak_early", False)
@@ -3813,16 +3942,15 @@ class TradingEngine:
 
                 if CONTINUOUS_PIVOT_ONLY and cr_entry_type in ("TROUGH_TURN", "PEAK_TURN"):
                     pivot_offset = int(cr_info.get("pivot_offset", -2) or -2)
-                    pivot_high = float(df_cr_entry["high"].iloc[pivot_offset])
-                    pivot_low = float(df_cr_entry["low"].iloc[pivot_offset])
+                    pivot_ma3 = float(df_cr_entry["ma3"].iloc[pivot_offset])
                     pivot_upper = float(df_cr_entry["kc_upper"].iloc[pivot_offset])
                     pivot_lower = float(df_cr_entry["kc_lower"].iloc[pivot_offset])
                     pivot_on_outer_rail = (
-                        (cr_entry_type == "PEAK_TURN" and pivot_high >= pivot_upper)
-                        or (cr_entry_type == "TROUGH_TURN" and pivot_low <= pivot_lower)
+                        (cr_entry_type == "PEAK_TURN" and pivot_ma3 > pivot_upper)
+                        or (cr_entry_type == "TROUGH_TURN" and pivot_ma3 < pivot_lower)
                     )
                     if not pivot_on_outer_rail:
-                        signal_progress.append(f"{coin} 中軌峰谷預警，等待KC外軌確認")
+                        signal_progress.append(f"{coin} MA3未越過KC外軌，不預警、不轉向、不開倉")
                         cr_signal = None
                         cr_entry_type = "WAIT_KC_OUTER_RAIL"
                     elif cr_entry_type == "TROUGH_TURN":
@@ -3834,7 +3962,9 @@ class TradingEngine:
 
                 # 峰谷專用模式：所有幣一律只接受外軌谷底轉多／峰頂轉空。
                 if CONTINUOUS_PIVOT_ONLY and cr_entry_type not in ("TROUGH_TURN", "PEAK_TURN"):
-                    signal_progress.append(f"{coin} 等待下軌谷底轉多／上軌峰頂轉空")
+                    signal_progress.append(
+                        f"{coin} {cr_info.get('reason') or '等待下軌谷底轉多／上軌峰頂轉空'}"
+                    )
                     cr_signal = None
                 # 順勢模式只接受 MA3/MA15 延續訊號；峰谷與交叉訊號可作出場參考，但不可開新倉或反手。
                 elif CONTINUOUS_TREND_ONLY and cr_entry_type not in ("TREND_LONG", "TREND_SHORT"):
@@ -4265,6 +4395,18 @@ class TradingEngine:
                                 )
                                 return signal_progress, detected_candidates
                             if CONTINUOUS_PIVOT_ONLY:
+                                position_pnl = float(
+                                    self.account.positions.get(symbol, {}).get("unrealized_pnl") or 0.0
+                                )
+                                pnl_action = (
+                                    "accept loss and reverse; do not hold"
+                                    if position_pnl <= 0.0 else "reverse with profit"
+                                )
+                                self.account.log(
+                                    f"REVERSAL {symbol}: {curr_side} -> {cr_signal}; "
+                                    f"unrealized PnL {position_pnl:+.4f} USDT; {pnl_action}",
+                                    "WARNING" if position_pnl <= 0.0 else "SUCCESS",
+                                )
                                 closed = await self.account.close_position(
                                     symbol=symbol, current_price=live_price,
                                     close_reason=f"外軌峰谷直接反手 ({cr_entry_type})",
@@ -4358,7 +4500,7 @@ class TradingEngine:
                                 symbol=symbol,
                                 side=cr_signal,
                                 price=live_price,
-                                amount_usdt=TRADE_AMOUNT_USDT,
+                                amount_usdt=self.account.get_available_balance(),
                                 sl=sl,
                                 tp=tp,
                                 reason=cr_info.get("reason", cr_entry_type),
