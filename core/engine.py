@@ -1765,6 +1765,35 @@ class TradingEngine:
             meta = self.account.position_meta.setdefault(symbol, {})
             entry_mode = position.get("entry_mode") or meta.get("entry_mode")
             if entry_mode not in managed_modes:
+                
+                # ====== 階段性固定鎖利 (Stage-based Fixed Profit Lock) ======
+                current_price_esc = float(
+                    self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"]
+                )
+                entry_price_esc = float(position["entry_price"])
+                qty_esc = float(position["qty"])
+                direction_esc = 1 if position["side"] == "LONG" else -1
+                pnl_usdt = (current_price_esc - entry_price_esc) * qty_esc * direction_esc
+                
+                dca_stage = position.get("dca_stage") or meta.get("dca_stage") or 1
+                try:
+                    dca_stage_int = int(dca_stage)
+                except Exception:
+                    dca_stage_int = 1
+                
+                target_profit = 0.3 if dca_stage_int <= 3 else 0.2
+                
+                if pnl_usdt >= target_profit:
+                    self.account.log(f"💰 {symbol} 達到第 {dca_stage_int} 階固定鎖利目標 ({pnl_usdt:.4f} >= {target_profit}U)，強制市價平倉", "SUCCESS")
+                    await self.account.close_position(
+                        symbol=symbol,
+                        current_price=current_price_esc,
+                        close_reason=f"第{dca_stage_int}階固定鎖利({target_profit}U)",
+                        is_manual=True
+                    )
+                    return
+                # =========================================================
+
                 # 針對順勢/峰谷模式，加入無條件逃命機制：若MA3在外軌外發生轉折，立即平倉保住利潤
                 from core.config import CONTINUOUS_REVERSE_TIMEFRAME
                 df_escape = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=10)
@@ -3681,17 +3710,34 @@ class TradingEngine:
         if not ma3_has_turned:
             return False, "MA3 has not turned away from the KC extreme", pivot_offset
 
+        ma15_now = float(confirm_2["ma15"])
+        ma15_old = float(frame.iloc[-6]["ma15"]) if len(frame) >= 6 else float(frame.iloc[0]["ma15"])
+        ma15_slope_atr = (ma15_now - ma15_old) / max(atr, 1e-8)
+        
+        # 過濾過激趨勢：做多時禁止均線急跌，做空時禁止均線急漲 (設定 0.25 ATR 為判定門檻)
+        if side == "LONG" and ma15_slope_atr < -0.25:
+            return False, f"MA15 slope ({ma15_slope_atr:.2f} ATR) too steep downwards", pivot_offset
+        if side == "SHORT" and ma15_slope_atr > 0.25:
+            return False, f"MA15 slope ({ma15_slope_atr:.2f} ATR) too steep upwards", pivot_offset
+
         if side == "LONG":
             kc_lower = float(confirm_2["kc_lower"])
+            half_channel = max(confirm_middle - kc_lower, 1e-8)
+            # 必須保留至少 30% 的半通道空間，避免離中軌/對側太近而沒有獲利空間
+            too_close_to_middle = confirm_close > (confirm_middle - 0.3 * half_channel)
             valid_second = (
                 confirm_close > first_close
                 and confirm_close > kc_lower
+                and not too_close_to_middle
             )
         else:
             kc_upper = float(confirm_2["kc_upper"])
+            half_channel = max(kc_upper - confirm_middle, 1e-8)
+            too_close_to_middle = confirm_close < (confirm_middle + 0.3 * half_channel)
             valid_second = (
                 confirm_close < first_close
                 and confirm_close < kc_upper
+                and not too_close_to_middle
             )
         if not valid_second:
             return False, "confirmation candle has not reached the required KC zone", pivot_offset
