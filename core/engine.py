@@ -2358,6 +2358,7 @@ class TradingEngine:
                 return df
             return drop_unclosed_candle(df, timeframe)
         except Exception as e:
+            print(f"fetch_klines ERROR: {e}")
             return pd.DataFrame()
 
     async def update_market_prices(self):

@@ -1591,16 +1591,16 @@ class SuperTrendKeltnerStrategy:
             volume_ratio = float(curr.get("volume", 0) / curr.get("vol_ma_20", 1)) if curr.get("vol_ma_20") else 1.0
 
             is_valid_kc = False
-            # 必須是最尖端的轉折K線(iloc[-2]或iloc[-3])真正碰到極端軌道，才算有效轉向
+            # 必須是這波轉折的K線(近7根內)真正碰到極端軌道，才算有效轉向
             if side == "LONG":
-                is_valid_kc = float(df.iloc[-2]['low']) <= float(df.iloc[-2]['kc_lower']) or float(df.iloc[-3]['low']) <= float(df.iloc[-3]['kc_lower'])
+                is_valid_kc = any(float(df.iloc[-i]['low']) <= float(df.iloc[-i]['kc_lower']) for i in range(1, 8) if i <= len(df))
             else:
-                is_valid_kc = float(df.iloc[-2]['high']) >= float(df.iloc[-2]['kc_upper']) or float(df.iloc[-3]['high']) >= float(df.iloc[-3]['kc_upper'])
+                is_valid_kc = any(float(df.iloc[-i]['high']) >= float(df.iloc[-i]['kc_upper']) for i in range(1, 8) if i <= len(df))
                 
             if not is_valid_kc:
                 return {
                     "action": "HOLD",
-                    "reason": "MA3 出現轉折，但轉折點並未觸及 KC 通道極端值，避免盤整假突破",
+                    "reason": "MA3 出現轉折，但近7根轉折點並未觸及 KC 通道極端值，避免盤整假突破",
                     "eligible": False,
                     "score_stage": "ELIGIBILITY",
                 }
@@ -2395,6 +2395,7 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     if len(ma3_series) < 5:
         return {"detected": False, "reason": "MA3 not ready"}
 
+    # 為了滿足「一有轉折立刻開倉」的需求，改回使用正在跳動的即時 K 線 (iloc[-1])
     ma3_curr = float(ma3_series.iloc[-1])
     ma3_prev = float(ma3_series.iloc[-2])
     ma3_prev2 = float(ma3_series.iloc[-3])
@@ -2488,6 +2489,7 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     if len(ma3_series) < 5:
         return {"close": False, "reason": "MA3 not ready"}
 
+    # 為了滿足「一有轉折立刻平倉」的需求，改回使用正在跳動的即時 K 線 (iloc[-1])
     ma3_curr = float(ma3_series.iloc[-1])
     ma3_prev = float(ma3_series.iloc[-2])
     ma3_prev2 = float(ma3_series.iloc[-3])
