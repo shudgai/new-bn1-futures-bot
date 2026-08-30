@@ -1765,6 +1765,29 @@ class TradingEngine:
             meta = self.account.position_meta.setdefault(symbol, {})
             entry_mode = position.get("entry_mode") or meta.get("entry_mode")
             if entry_mode not in managed_modes:
+                # 針對順勢/峰谷模式，加入無條件逃命機制：若MA3在外軌外發生轉折，立即平倉保住利潤
+                from core.config import CONTINUOUS_REVERSE_TIMEFRAME
+                df_escape = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=10)
+                if df_escape is not None and len(df_escape) >= 3:
+                    df_escape = self.strategy.compute_indicators(df_escape)
+                    side_esc = position["side"]
+                    ma3_now = float(df_escape["ma3"].iloc[-1])
+                    ma3_prev = float(df_escape["ma3"].iloc[-2])
+                    kc_upper = float(df_escape["kc_upper"].iloc[-2])
+                    kc_lower = float(df_escape["kc_lower"].iloc[-2])
+                    
+                    if side_esc == "LONG" and ma3_now < ma3_prev and (ma3_prev > kc_upper or ma3_now > kc_upper):
+                        self.account.log(f"⚠️ {symbol} 上軌外峰頂無條件逃命平多！", "WARNING")
+                        await self.account.close_position(
+                            symbol=symbol, current_price=float(df_escape["close"].iloc[-1]),
+                            close_reason="上軌外峰頂逃命平倉", is_manual=True
+                        )
+                    elif side_esc == "SHORT" and ma3_now > ma3_prev and (ma3_prev < kc_lower or ma3_now < kc_lower):
+                        self.account.log(f"⚠️ {symbol} 下軌外谷底無條件逃命平空！", "WARNING")
+                        await self.account.close_position(
+                            symbol=symbol, current_price=float(df_escape["close"].iloc[-1]),
+                            close_reason="下軌外谷底逃命平倉", is_manual=True
+                        )
                 return
             side = position["side"]
             direction = 1 if side == "LONG" else -1
