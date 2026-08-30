@@ -3723,8 +3723,8 @@ class TradingEngine:
         if side == "LONG":
             kc_lower = float(confirm_2["kc_lower"])
             half_channel = max(confirm_middle - kc_lower, 1e-8)
-            # 必須保留至少 30% 的半通道空間，避免離中軌/對側太近而沒有獲利空間
-            too_close_to_middle = confirm_close > (confirm_middle - 0.3 * half_channel)
+            # 必須保留至少 10% 的半通道空間，避免離中軌/對側太近而沒有獲利空間
+            too_close_to_middle = confirm_close > (confirm_middle - 0.1 * half_channel)
             valid_second = (
                 confirm_close > first_close
                 and confirm_close > kc_lower
@@ -3733,7 +3733,7 @@ class TradingEngine:
         else:
             kc_upper = float(confirm_2["kc_upper"])
             half_channel = max(kc_upper - confirm_middle, 1e-8)
-            too_close_to_middle = confirm_close < (confirm_middle + 0.3 * half_channel)
+            too_close_to_middle = confirm_close < (confirm_middle + 0.1 * half_channel)
             valid_second = (
                 confirm_close < first_close
                 and confirm_close < kc_upper
