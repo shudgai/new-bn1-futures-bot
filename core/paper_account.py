@@ -76,7 +76,6 @@ from core.config import (
     ENABLE_FIXED_PROFIT_LOCK_PCT,
     FIXED_PROFIT_LOCK_TRIGGER_PCT,
     FIXED_PROFIT_LOCK_FLOOR_PCT,
-    FIXED_PROFIT_TRAIL_RETAIN_RATIO, get_fixed_profit_trail_retain_ratio,
     ENABLE_FIXED_PROFIT_LOCK_LADDER,
     FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
@@ -1118,6 +1117,7 @@ class PaperAccount:
                 continue
 
             current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+            profit_lock_updated_this_cycle = False
 
             exhaustion_grace = (
                 entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
@@ -1136,7 +1136,41 @@ class PaperAccount:
                 total_unrealized += unrealized
                 continue
 
-            # 連續模式只由 RANGE 峰谷或 TREND 結構衰退出場；帳戶層仍保留原始硬停損。
+            # 固定百分比鎖利是所有波段模式的最低獲利保護線。
+            # 必須在 RANGE/TREND 提前返回之前執行，否則連續模式永遠不會鎖利。
+            # 這裡只設定固定底線；原 ATR 移動停利可再把 SL 往有利方向推進。
+            if (
+                ENABLE_FIXED_PROFIT_LOCK_PCT
+                and not ENABLE_PROFIT_LOCK_USDT
+                and bool(pos.get("outer_run_active") or meta.get("outer_run_active"))
+                and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
+                and highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT
+                and entry_p > 0
+            ):
+                floor_sl_pct = entry_p * (
+                    1.0 + FIXED_PROFIT_LOCK_FLOOR_PCT
+                    if side == "LONG" else 1.0 - FIXED_PROFIT_LOCK_FLOOR_PCT
+                )
+                improves_pct = (
+                    floor_sl_pct > current_sl + entry_p * 1e-12
+                    if side == "LONG"
+                    else current_sl <= 0.0 or floor_sl_pct < current_sl - entry_p * 1e-12
+                )
+                if improves_pct and await self.trail_stop_loss(
+                    symbol, floor_sl_pct, mark_profit_locked=True
+                ):
+                    current_sl = floor_sl_pct
+                    profit_lock_updated_this_cycle = True
+                    pos["fixed_profit_lock_pct_armed"] = True
+                    meta["fixed_profit_lock_pct_armed"] = True
+                    self.log(
+                        f"🔐 [固定鎖利] {symbol} 無槓桿峰值 {highest_pnl:.3%}，"
+                        f"已鎖定 {FIXED_PROFIT_LOCK_FLOOR_PCT:.3%}，"
+                        f"保護線 {floor_sl_pct:.6g}",
+                        "SUCCESS",
+                    )
+
+            # 連續模式只由 RANGE 峰谷或 TREND 結構衰退出場；帳戶層保留硬停損與固定鎖利底線。
             wave_regime = str(pos.get("wave_regime") or meta.get("wave_regime") or "").upper()
             if wave_regime in ("RANGE", "TREND"):
                 hard_stop_hit = (
@@ -1150,8 +1184,6 @@ class PaperAccount:
                 pos["peak_pnl_pct"] = highest_pnl
                 total_unrealized += unrealized
                 continue
-
-            profit_lock_updated_this_cycle = False
 
             # 唯一獲利出場：峰值每達一個 0.2%% 階梯，鎖利線同步上移。
             # 例：峰值 +0.2%% → 鎖 +0.2%%；+0.4%% → 鎖 +0.4%%。
@@ -1284,54 +1316,6 @@ class PaperAccount:
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
                             f"→ 0.5U階梯鎖 {step_floor_usdt:.2f}U（回吐0.8U），保護線 {floor_sl:.6g}",
-                            "SUCCESS",
-                        )
-
-            # ----------------------------------------------------------------
-            # 固定百分比鎖利（Fixed Profit Lock by Unlevered %）
-            # 無槓桿利潤達到 0.5% 先鎖住 0.5%；之後止損持續上移，
-            # 保留最高浮盈的 70%（允許由峰值回吐 30%）。
-            # 僅往有利方向移動（只升不降/只降不升），不截斷後續空間。
-            # ----------------------------------------------------------------
-            if (
-                ENABLE_FIXED_PROFIT_LOCK_PCT
-                and not ENABLE_PROFIT_LOCK_USDT
-                and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
-            ):
-                # 使用 highest_pnl（無槓桿利潤峰值）比對觸發門檻
-                if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT and entry_p > 0:
-                    # 第一階段至少鎖 0.5%；之後依峰值級距保留 70%／80%／85%。
-                    retain_ratio = get_fixed_profit_trail_retain_ratio(highest_pnl)
-                    floor_pct = max(
-                        FIXED_PROFIT_LOCK_FLOOR_PCT,
-                        highest_pnl * retain_ratio,
-                    )
-                    if side == "LONG":
-                        floor_sl_pct = entry_p * (1.0 + floor_pct)
-                    else:
-                        floor_sl_pct = entry_p * (1.0 - floor_pct)
-
-                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                    improves_pct = (
-                        floor_sl_pct > current_sl + entry_p * 0.00001 if side == "LONG"
-                        else (current_sl <= 0.0 or floor_sl_pct < current_sl - entry_p * 0.00001)
-                    )
-                    if improves_pct:
-                        pos["sl"] = floor_sl_pct
-                        meta["sl"] = floor_sl_pct
-                        pos["is_breakeven_moved"] = True
-                        meta["is_breakeven_moved"] = True
-                        pos["fixed_profit_lock_pct_armed"] = True
-                        meta["fixed_profit_lock_pct_armed"] = True
-                        locked_pct = (
-                            (floor_sl_pct - entry_p) / entry_p if side == "LONG"
-                            else (entry_p - floor_sl_pct) / entry_p
-                        )
-                        self.log(
-                            f"🔐 [固定鎖利] {symbol} 無槓桿峰值 {highest_pnl:.3%}，"
-                            f"保護線移至 {floor_sl_pct:.6g}"
-                            f"（鎖定 {locked_pct:.3%} / 峰值保留 "
-                            f"{retain_ratio:.0%}）",
                             "SUCCESS",
                         )
 

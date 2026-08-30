@@ -59,11 +59,23 @@ def classify_wave_regime(
         "confirmation_bars": required,
     }
 
-def evaluate_kc_outer_run_lock(df: pd.DataFrame, side: str, armed: bool = False) -> dict:
-    """外軌延伸後鎖住技術反轉，直到反向 K 至少回到 KC 中軌。"""
+def evaluate_kc_outer_run_lock(
+    df: pd.DataFrame, side: str, armed: bool = False,
+    outer_run_active: bool = False,
+) -> dict:
+    """辨識 KC 外軌延伸。
+
+    單根影線觸軌只會 armed；連續兩根收在同側外軌、MA3 也在軌外且
+    MA15 同向才進入 OUTER_RUN。外軌外的反向 K 不解除；第一根反向 K
+    收回該側外軌內才解除，讓持倉在 MA3/MA15 完整轉彎前先退出。
+    """
     result = {
         "armed": bool(armed), "blocked": bool(armed), "released": False,
         "touched_outer": False, "reached_middle": False,
+        "outer_run_active": bool(outer_run_active),
+        "returned_inside_outer": False,
+        "outside_close_count": 0, "ma3_outside": False,
+        "ma15_aligned": False,
         "kc_upper": None, "kc_middle": None, "kc_lower": None,
     }
     if df is None or df.empty or str(side or "").upper() not in ("LONG", "SHORT"):
@@ -107,6 +119,41 @@ def evaluate_kc_outer_run_lock(df: pd.DataFrame, side: str, armed: bool = False)
         candle_high >= kc_upper if side == "LONG" else candle_low <= kc_lower
     )
     now_armed = bool(armed or touched_outer)
+    ma3 = (
+        pd.to_numeric(work["ma3"], errors="coerce")
+        if "ma3" in work.columns else close.rolling(3).mean()
+    )
+    ma15 = (
+        pd.to_numeric(work["ma15"], errors="coerce")
+        if "ma15" in work.columns else close.rolling(15).mean()
+    )
+    outside_close_count = 0
+    for offset in range(1, min(len(work), 2) + 1):
+        close_value = float(close.iloc[-offset])
+        rail_value = float(upper.iloc[-offset] if side == "LONG" else lower.iloc[-offset])
+        if (side == "LONG" and close_value >= rail_value) or (
+            side == "SHORT" and close_value <= rail_value
+        ):
+            outside_close_count += 1
+        else:
+            break
+    ma3_outside = bool(
+        pd.notna(ma3.iloc[-1])
+        and (
+            (side == "LONG" and float(ma3.iloc[-1]) >= kc_upper)
+            or (side == "SHORT" and float(ma3.iloc[-1]) <= kc_lower)
+        )
+    )
+    ma15_aligned = bool(
+        len(ma15.dropna()) >= 2
+        and (
+            (side == "LONG" and float(ma15.dropna().iloc[-1]) > float(ma15.dropna().iloc[-2]))
+            or (side == "SHORT" and float(ma15.dropna().iloc[-1]) < float(ma15.dropna().iloc[-2]))
+        )
+    )
+    confirmed_outer_run = bool(
+        outside_close_count >= 2 and ma3_outside and ma15_aligned
+    )
     reached_middle = bool(
         now_armed
         and (
@@ -114,10 +161,26 @@ def evaluate_kc_outer_run_lock(df: pd.DataFrame, side: str, armed: bool = False)
             or (side == "SHORT" and candle_close > candle_open and candle_high >= kc_middle)
         )
     )
+    outer_run_was_active = bool(outer_run_active or confirmed_outer_run)
+    returned_inside_outer = bool(
+        outer_run_was_active
+        and (
+            (side == "LONG" and candle_close < candle_open and candle_close < kc_upper)
+            or (side == "SHORT" and candle_close > candle_open and candle_close > kc_lower)
+        )
+    )
+    active_outer_run = bool(
+        outer_run_was_active and not returned_inside_outer
+    )
+    released = bool(returned_inside_outer or (not outer_run_was_active and reached_middle))
     result.update({
-        "armed": bool(now_armed and not reached_middle),
-        "blocked": bool(now_armed and not reached_middle),
-        "released": reached_middle, "touched_outer": touched_outer,
+        "armed": bool(now_armed and not released),
+        "blocked": bool((now_armed and not released) or active_outer_run),
+        "released": released, "touched_outer": touched_outer,
+        "outer_run_active": active_outer_run,
+        "returned_inside_outer": returned_inside_outer,
+        "outside_close_count": outside_close_count,
+        "ma3_outside": ma3_outside, "ma15_aligned": ma15_aligned,
         "reached_middle": reached_middle, "kc_upper": kc_upper,
         "kc_middle": kc_middle, "kc_lower": kc_lower,
     })
@@ -474,52 +537,7 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     recent_ma3_range = max(ma3_prev2, ma3_prev, ma3_curr) - min(ma3_prev2, ma3_prev, ma3_curr)
     min_directional_range = max(abs(atr) * 0.08, abs(ma3_curr) * 0.0002)
 
-    # Two same-direction, above-average candles can confirm a fast peak/trough
-    # before MA15 has time to cross.  Both candles must carry volume, so a
-    # single thin wick cannot trigger a reversal entry.
-    previous_candle = df.iloc[-2]
     current_candle = df.iloc[-1]
-    volume_baseline = float(df["volume"].iloc[-12:-2].mean()) if "volume" in df.columns else 0.0
-    previous_volume = float(previous_candle.get("volume", 0) or 0)
-    current_volume = float(current_candle.get("volume", 0) or 0)
-    two_candle_volume_confirmed = volume_baseline > 0 and min(previous_volume, current_volume) >= volume_baseline * 1.20
-    # 峰／谷固定在倒數第二根 MA3（iloc[-2]），倒數第一根只負責確認右側
-    # 已經反向。左右兩側都必須有足夠斜率，不能把幾乎水平的位置誤標成
-    # 目前峰頂／谷底。
-    two_red_peak = bool(
-        previous_slope >= fast_pivot_slope and current_slope <= -fast_pivot_slope
-        and float(previous_candle["close"]) < float(previous_candle["open"])
-        and float(current_candle["close"]) < float(current_candle["open"])
-        and two_candle_volume_confirmed
-    )
-    two_green_trough = bool(
-        previous_slope <= -fast_pivot_slope and current_slope >= fast_pivot_slope
-        and float(previous_candle["close"]) > float(previous_candle["open"])
-        and float(current_candle["close"]) > float(current_candle["open"])
-        and two_candle_volume_confirmed
-    )
-    # 峰谷點固定在倒數第二根；若它仍貼著 KC 中軌或 MA15，代表只是
-    # 中間雜訊，不允許平倉反手。這個守衛必須先於所有峰谷 return。
-    step_trough = bool(
-        ma3_prev <= ma3_prev2 <= ma3_prev3
-        and ma3_prev3 - ma3_prev >= fast_pivot_slope
-        and current_slope >= fast_pivot_slope
-    )
-    step_peak = bool(
-        ma3_prev >= ma3_prev2 >= ma3_prev3
-        and ma3_prev - ma3_prev3 >= fast_pivot_slope
-        and current_slope <= -fast_pivot_slope
-    )
-    v_trough = previous_slope < 0 and current_slope > 0
-    v_peak = previous_slope > 0 and current_slope < 0
-    pivot_shape_detected = bool(
-        two_red_peak or two_green_trough or step_trough or step_peak
-        or v_trough or v_peak
-    )
-
-    current_candle = df.iloc[-1]
-    last_candle_low = float(current_candle["low"])
-    last_candle_high = float(current_candle["high"])
     kc_middle_now = float(df["ema_20"].iloc[-1])
     
     # 計算 Keltner Channel 外軌
@@ -527,198 +545,167 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     kc_upper_now = kc_middle_now + atr * KELTNER_ATR_MULTIPLIER
     kc_lower_now = kc_middle_now - atr * KELTNER_ATR_MULTIPLIER
 
+    current_close = float(current_candle["close"])
+    current_is_red = current_close < float(current_candle["open"])
+    current_is_green = current_close > float(current_candle["open"])
+    kc_width = max(kc_upper_now - kc_lower_now, abs(atr) * 1e-12)
+    from core.config import (
+        PIVOT_MIN_ARC_KC_WIDTH_PCT,
+        PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT,
+    )
+
+    # 真峰谷形成後保留最多 5 根已收盤 K，直到反向 K 真正收盤跨過下一軌。
+    # 避免轉彎當下尚未跨軌，後面真的跨軌時峰谷訊號卻已經消失。
+    # 必須保證左右兩側皆為已收盤 K 線 (最晚的峰谷在 len(df)-3)
+    ma3_values = pd.to_numeric(df["ma3"], errors="coerce")
+    recent_pivot = None
+    search_start = max(1, len(df) - 6)
+    for pivot_index in range(len(df) - 3, search_start - 1, -1):
+        left = float(ma3_values.iloc[pivot_index] - ma3_values.iloc[pivot_index - 1])
+        right = float(ma3_values.iloc[pivot_index + 1] - ma3_values.iloc[pivot_index])
+        if left >= min_pivot_slope and right <= -min_pivot_slope:
+            recent_pivot = ("PEAK_TURN", pivot_index - len(df))
+            break
+        if left <= -min_pivot_slope and right >= min_pivot_slope:
+            recent_pivot = ("TROUGH_TURN", pivot_index - len(df))
+            break
+
+    peak_shape = bool(recent_pivot and recent_pivot[0] == "PEAK_TURN")
+    trough_shape = bool(recent_pivot and recent_pivot[0] == "TROUGH_TURN")
+    pivot_shape_detected = bool(peak_shape or trough_shape)
+    pivot_offset = int(recent_pivot[1]) if recent_pivot else -2
+    
+    kc_middle_at_pivot = float(df["ema_20"].iloc[pivot_offset])
+    kc_upper_at_pivot = kc_middle_at_pivot + atr * KELTNER_ATR_MULTIPLIER
+    kc_lower_at_pivot = kc_middle_at_pivot - atr * KELTNER_ATR_MULTIPLIER
+    ma3_at_pivot = float(df["ma3"].iloc[pivot_offset])
+    zone_buffer = kc_width * PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT
+
+    # 峰谷落在哪一帶，就要求確認 K 至少跨過下一條 KC 軌道。
+    # 必須是「已收盤」的反向K跌破/突破，且實體收盤價過線才算！
+    confirmation_rail_name = None
+    confirmation_rail = None
+    crossed_any_rail = False
+    
+    if peak_shape:
+        if ma3_at_pivot >= kc_upper_at_pivot: # 在上軌外或剛好碰上軌
+            confirmation_rail_name, confirmation_rail = "KC上軌", kc_upper_now
+        elif ma3_at_pivot >= kc_middle_at_pivot: # 在中軌～上軌
+            confirmation_rail_name, confirmation_rail = "KC中軌", kc_middle_now
+        else: # 在下軌～中軌 或 更低
+            confirmation_rail_name, confirmation_rail = "KC下軌", kc_lower_now
+            
+        for i in range(pivot_offset + 1, -1):
+            c_close = float(df["close"].iloc[i])
+            c_open = float(df["open"].iloc[i])
+            if c_close < c_open:
+                mid_i = float(df["ema_20"].iloc[i])
+                rail_i = mid_i + atr * KELTNER_ATR_MULTIPLIER if confirmation_rail_name == "KC上軌" else mid_i if confirmation_rail_name == "KC中軌" else mid_i - atr * KELTNER_ATR_MULTIPLIER
+                if c_close < rail_i:
+                    crossed_any_rail = True
+                    break
+
+    elif trough_shape:
+        if ma3_at_pivot <= kc_lower_at_pivot: # 在下軌外或剛好碰下軌
+            confirmation_rail_name, confirmation_rail = "KC下軌", kc_lower_now
+        elif ma3_at_pivot <= kc_middle_at_pivot: # 在下軌～中軌
+            confirmation_rail_name, confirmation_rail = "KC中軌", kc_middle_now
+        else: # 在中軌～上軌 或 更高
+            confirmation_rail_name, confirmation_rail = "KC上軌", kc_upper_now
+            
+        for i in range(pivot_offset + 1, -1):
+            c_close = float(df["close"].iloc[i])
+            c_open = float(df["open"].iloc[i])
+            if c_close > c_open:
+                mid_i = float(df["ema_20"].iloc[i])
+                rail_i = mid_i - atr * KELTNER_ATR_MULTIPLIER if confirmation_rail_name == "KC下軌" else mid_i if confirmation_rail_name == "KC中軌" else mid_i + atr * KELTNER_ATR_MULTIPLIER
+                if c_close > rail_i:
+                    crossed_any_rail = True
+                    break
+
     # ==============================================================================
-    # 盤旋過濾 (Hovering Filter) - 最高優先級
-    # 用戶要求：「無論是ma15 上中下軌只要是盤旋在上面的(就是離他們太近的)就是不轉向」
-    # 若 V 轉剛好貼在某條線上，且變動幅度（斜率）不夠大，則判定為盤旋，忽略此轉向。
+    # 盤旋過濾 (Hovering Filter)
     # ==============================================================================
     is_hovering = False
+    shallow_arc = False
     if pivot_shape_detected:
-        ma15_at_pivot = float(df["ma15"].iloc[-2])
-        kc_mid_at_pivot = float(df["ema_20"].iloc[-2])
+        ma15_at_pivot = float(df["ma15"].iloc[pivot_offset])
+        kc_mid_at_pivot = float(df["ema_20"].iloc[pivot_offset])
         kc_up_at_pivot = kc_mid_at_pivot + atr * KELTNER_ATR_MULTIPLIER
         kc_low_at_pivot = kc_mid_at_pivot - atr * KELTNER_ATR_MULTIPLIER
         
         min_dist_to_lines = min(
-            abs(ma3_prev - ma15_at_pivot),
-            abs(ma3_prev - kc_mid_at_pivot),
-            abs(ma3_prev - kc_up_at_pivot),
-            abs(ma3_prev - kc_low_at_pivot)
+            abs(ma3_at_pivot - ma15_at_pivot),
+            abs(ma3_at_pivot - kc_mid_at_pivot),
+            abs(ma3_at_pivot - kc_up_at_pivot),
+            abs(ma3_at_pivot - kc_low_at_pivot)
         )
         
-        # 如果離線太近 (< 0.15 ATR) 且 斜率偏小 (< 0.20 ATR)
-        if min_dist_to_lines < atr * 0.15:
-            if abs(previous_slope) < atr * 0.20 and abs(current_slope) < atr * 0.20:
-                is_hovering = True
+        minimum_line_distance = kc_width * PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT
+        minimum_arc = kc_width * PIVOT_MIN_ARC_KC_WIDTH_PCT
+        shallow_arc = recent_ma3_range + kc_width * 1e-12 < minimum_arc
 
-    if pivot_shape_detected and is_hovering:
-        ma15_at_pivot = float(df["ma15"].iloc[-2])
-        kc_middle_at_pivot = float(df["ema_20"].iloc[-2])
+        if min_dist_to_lines + kc_width * 1e-12 < minimum_line_distance:
+            is_hovering = True
+
+    if pivot_shape_detected and (is_hovering or shallow_arc) and not crossed_any_rail:
+        ma15_at_pivot = float(df["ma15"].iloc[pivot_offset])
+        kc_middle_at_pivot = float(df["ema_20"].iloc[pivot_offset])
         return {
             "signal": None, "entry_type": "WAIT_MA_NOISE",
-            "reason": "1m MA3 在軌道或MA15上微幅盤旋，忽略此微弱轉向",
+            "reason": (
+                "1m MA3 峰谷弧度不足，不轉向開倉"
+                if shallow_arc
+                else "1m MA3 V/倒V 距KC或MA15不足，不轉向開倉"
+            ),
             "atr": atr, "pivot_confirmed": False,
             "pivot_score": 0, "ma3_slope": current_slope,
-            "live_pivot": False, "pivot_offset": 0,
+            "live_pivot": False, "pivot_offset": pivot_offset,
             "ma_alignment": ma_alignment,
-            "ma15_distance_at_pivot": abs(ma3_prev - ma15_at_pivot),
-            "kc_middle_distance_at_pivot": abs(ma3_prev - kc_middle_at_pivot),
-            "middle_noise_threshold": min_pivot_slope
-        }
-    
-    previous_candle = df.iloc[-2]
-    prev_candle_high = float(previous_candle["high"])
-    prev_candle_low = float(previous_candle["low"])
-    
-    # 外軌突破反轉：V/倒V已形成 + 反向 K 穿過相反外軌 = 確定轉向
-    # 例如：綠K衝到上軌外 -> 下一根紅K已在下軌 = 轉向開空
-    outer_rail_reversal_to_short = bool(
-        v_peak and previous_slope >= fast_pivot_slope * 0.5
-        and current_slope <= -fast_pivot_slope
-        and prev_candle_high > kc_upper_now  # 前根K衝到上軌外（多強）
-        and last_candle_low <= kc_lower_now  # 當前紅K已在下軌（反轉確認）
-    )
-    outer_rail_reversal_to_long = bool(
-        v_trough and previous_slope <= -fast_pivot_slope * 0.5
-        and current_slope >= fast_pivot_slope
-        and prev_candle_low < kc_lower_now  # 前根K衝到下軌外（空強）
-        and last_candle_high >= kc_upper_now  # 當前綠K已在上軌（反轉確認）
-    )
-    
-    # 外軌突破反轉優先於中軌回撤判定：這是最清楚的轉向信號
-    if outer_rail_reversal_to_short:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m 倒V已形成，紅K已穿過下軌 → 立即平多開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2, "ma_alignment": ma_alignment,
-        }
-    if outer_rail_reversal_to_long:
-        return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m V已形成，綠K已穿過上軌 → 立即平空開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2, "ma_alignment": ma_alignment,
-        }
-    # 「見好就收」極速平倉：三個軌都要做一樣的處理！
-    # 只要出現 V 型反轉，且價格已經穿過（或摸到）上、中、下任何一軌，立刻認定為轉向！
-    immediate_peak_hit_band = False
-    if v_peak:
-        prev_high = float(df["high"].iloc[-2])
-        curr_low = last_candle_low
-        if prev_high > kc_upper_now and curr_low <= kc_upper_now:
-            immediate_peak_hit_band = True
-        elif prev_high > kc_middle_now and curr_low <= kc_middle_now:
-            immediate_peak_hit_band = True
-        elif prev_high > kc_lower_now and curr_low <= kc_lower_now:
-            immediate_peak_hit_band = True
-
-    immediate_trough_hit_band = False
-    if v_trough:
-        prev_low = float(df["low"].iloc[-2])
-        curr_high = last_candle_high
-        if prev_low < kc_lower_now and curr_high >= kc_lower_now:
-            immediate_trough_hit_band = True
-        elif prev_low < kc_middle_now and curr_high >= kc_middle_now:
-            immediate_trough_hit_band = True
-        elif prev_low < kc_upper_now and curr_high >= kc_upper_now:
-            immediate_trough_hit_band = True
-
-    if immediate_peak_hit_band:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m MA3 倒V已形成且紅K已跌破任一軌道(上/中/下) → 立即反手開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2, "ma_alignment": ma_alignment,
-        }
-    if immediate_trough_hit_band:
-        return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m MA3 V已形成且綠K已突破任一軌道(上/中/下) → 立即反手開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2, "ma_alignment": ma_alignment,
+            "ma15_distance_at_pivot": abs(ma3_at_pivot - ma15_at_pivot),
+            "kc_middle_distance_at_pivot": abs(ma3_at_pivot - kc_middle_at_pivot),
+            "middle_noise_threshold": min_pivot_slope,
+            "ma3_arc_kc_width_pct": recent_ma3_range / kc_width,
+            "nearest_line_kc_width_pct": min_dist_to_lines / kc_width,
+            "minimum_arc_kc_width_pct": PIVOT_MIN_ARC_KC_WIDTH_PCT,
+            "minimum_line_distance_kc_width_pct": PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT,
         }
 
-    # 一般的轉折噪音過濾
-    # 真正的峰頂/谷底不能因為剛好貼近中軌或 MA15 就被噪音過濾。
-    if pivot_shape_detected and not (
-        two_red_peak or two_green_trough or step_trough or step_peak
-        or immediate_peak_hit_band or immediate_trough_hit_band
-        or (
-            v_trough and abs(previous_slope) >= min_pivot_slope
-            and current_slope >= min_pivot_slope
-        )
-        or (
-            v_peak and previous_slope >= min_pivot_slope
-            and abs(current_slope) >= min_pivot_slope
-        )
-    ):
-        ma15_at_pivot = float(df["ma15"].iloc[-2])
-        kc_middle_at_pivot = float(df["ema_20"].iloc[-2])
-        middle_noise_threshold = min_pivot_slope
-        ma15_distance_at_pivot = abs(ma3_prev - ma15_at_pivot)
-        kc_middle_distance_at_pivot = abs(ma3_prev - kc_middle_at_pivot)
-        return {
-            "signal": None, "entry_type": "WAIT_MA_NOISE",
-            "reason": "1m MA3 轉折過弱，未達真峰谷確認門檻",
-            "atr": atr, "pivot_confirmed": False,
-            "pivot_score": 0, "ma3_slope": current_slope,
-            "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
-            "ma15_distance": ma15_distance_at_pivot,
-            "kc_middle_distance": kc_middle_distance_at_pivot,
-            "noise_threshold": middle_noise_threshold,
-            "pivot_offset": -2, "ma_alignment": "NEUTRAL",
-        }
-
-    if two_red_peak:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m 兩根放量紅K確認峰頂向下 → 立即開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2,
-            "ma_alignment": ma_alignment,
-        }
-    if two_green_trough:
-        return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m 兩根放量綠K確認谷底向上 → 立即開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "volume_confirmed": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2,
-            "ma_alignment": ma_alignment,
-        }
-
-    # Allow a stair-step plateau at a top or bottom to enter while flat.
-    if step_trough:
-        return {
-            "signal": "LONG", "entry_type": "TROUGH_TURN",
-            "reason": "1m MA3 V/梯形谷底向上 → 立即轉向開多",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2,
-            "ma_alignment": ma_alignment,
-        }
-    if step_peak:
-        return {
-            "signal": "SHORT", "entry_type": "PEAK_TURN",
-            "reason": "1m MA3 倒V/梯形峰頂向下 → 立即轉向開空",
-            "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
-            "fast_pivot": True, "live_pivot": allow_live_pivot,
-            "pivot_offset": -2,
-            "ma_alignment": ma_alignment,
-        }
+    # 峰谷即使形狀與距離合格，也必須由確認 K 的收盤價跨過其所在區間的下一軌
+    if pivot_shape_detected:
+        if not crossed_any_rail:
+            return {
+                "signal": None,
+                "entry_type": "WAIT_NEXT_KC_BAND",
+                "reason": (
+                    f"1m 峰頂紅K尚未收破當根{confirmation_rail_name}，不平多、不開空"
+                    if peak_shape
+                    else f"1m 谷底綠K尚未收過當根{confirmation_rail_name}，不平空、不開多"
+                ),
+                "atr": atr, "pivot_confirmed": False, "pivot_score": 0,
+                "ma3_slope": current_slope, "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
+                "kc_middle": kc_middle_now, "kc_upper": kc_upper_now, "kc_lower": kc_lower_now,
+                "confirmation_rail": confirmation_rail, "confirmation_rail_name": confirmation_rail_name,
+                "confirmation_close": current_close, "pivot_offset": pivot_offset, "ma_alignment": "WAIT",
+            }
+        else:
+            return {
+                "signal": "SHORT" if peak_shape else "LONG",
+                "entry_type": "PEAK_TURN" if peak_shape else "TROUGH_TURN",
+                "reason": (
+                    f"1m 真峰頂後紅K已收破當根{confirmation_rail_name} → 平多開空"
+                    if peak_shape
+                    else f"1m 真谷底後綠K已收過當根{confirmation_rail_name} → 平空開多"
+                ),
+                "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+                "fast_pivot": False, "live_pivot": allow_live_pivot,
+                "pivot_offset": pivot_offset, "ma_alignment": ma_alignment,
+                "confirmation_rail": confirmation_rail,
+                "confirmation_rail_name": confirmation_rail_name,
+            }
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
-    # 回傳空訊號可讓既有持倉保持原方向。
-    if (
-        ma3_curr != ma15_curr
-        and recent_ma3_range <= min_directional_range
-    ):
+    if (ma3_curr != ma15_curr and recent_ma3_range <= min_directional_range):
         return {
             "signal": None, "entry_type": "WAIT_MA_NOISE",
             "reason": "1m MA3 最近3根振幅過小，不開新倉並維持原持倉方向",
@@ -730,50 +717,7 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
             "ma_alignment": "NEUTRAL"
         }
 
-    # 明顯 V/倒V 才換向；微小轉折先等待，避免一點點彎就平倉反手。
-    # 仍只使用已收盤的 1m K，避免未完成 K 線反覆變形造成重複訊號。
-    if previous_slope < 0 and current_slope > 0:
-        if abs(previous_slope) >= min_pivot_slope and current_slope >= min_pivot_slope:
-            return {
-                "signal": "LONG", "entry_type": "TROUGH_TURN",
-                "reason": "1m MA3 V字谷底 → 立即轉向開多",
-                "atr": atr, "pivot_confirmed": True,
-                "pivot_score": 100,
-                "fast_pivot": True,
-                "live_pivot": allow_live_pivot,
-                "pivot_offset": -2,
-                "ma_alignment": ma_alignment
-            }
-        return {
-            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
-            "reason": "1m MA3 谷底轉折幅度不足，維持原開倉方向",
-            "atr": atr, "pivot_confirmed": False,
-            "pivot_score": 0, "ma3_slope": current_slope,
-            "ma_alignment": "WAIT"
-        }
-    if previous_slope > 0 and current_slope < 0:
-        if previous_slope >= min_pivot_slope and abs(current_slope) >= min_pivot_slope:
-            return {
-                "signal": "SHORT", "entry_type": "PEAK_TURN",
-                "reason": "1m MA3 倒V字峰頂 → 立即轉向開空",
-                "atr": atr, "pivot_confirmed": True,
-                "pivot_score": 100,
-                "fast_pivot": True,
-                "live_pivot": allow_live_pivot,
-                "pivot_offset": -2,
-                "ma_alignment": ma_alignment
-            }
-        return {
-            "signal": None, "entry_type": "WAIT_PRE_PIVOT",
-            "reason": "1m MA3 峰頂轉折幅度不足，維持原開倉方向",
-            "atr": atr, "pivot_confirmed": False,
-            "pivot_score": 0, "ma3_slope": current_slope,
-            "ma_alignment": "WAIT"
-        }
-
-    # 峰谷沒有真正轉向時，以 MA3 相對 MA15 的位置決定方向。
-    # MA3 貼近 MA15（距離 <= 0.05 ATR）視為小波動，不產生反向開倉訊號。
-    # 若 MA3 距離 MA15 較大，代表市場已偏離均線，這時更容易出現真峰谷。
+    # 沒有真正轉向時，以 MA3 相對 MA15 的位置決定方向 (順勢邏輯)
     if 0 < ma15_distance <= min_pivot_slope:
         return {
             "signal": None, "entry_type": "WAIT_MA_NOISE",

@@ -188,11 +188,19 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
 
 # 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
 CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"
+DISABLE_CONTINUOUS_TREND_ENTRIES = os.getenv(
+    "DISABLE_CONTINUOUS_TREND_ENTRIES", "false"
+).lower() == "true"
 
 # 連續峰谷模式的空倉市價進場，最大允許離 MA3 的順向距離；超過代表
 # 已在大 K 尾端，等待回踩而非追價。持倉中的急速反手不受此限制。
 MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(
     0.0, float(os.getenv("MA3_MARKET_ENTRY_MAX_DISTANCE_ATR", "0.30"))
+)
+
+# 順勢市價單須與 KC 中軌保持的最小距離；不要求突破外軌。
+TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR = max(
+    0.0, float(os.getenv("TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR", "0.15"))
 )
 # 低波動時 MA5 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
@@ -290,6 +298,14 @@ CONTINUOUS_PIVOT_ONLY = os.getenv("CONTINUOUS_PIVOT_ONLY", "false").lower() == "
 PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR = max(0.0, float(os.getenv("PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR", "0.35")))
 PIVOT_LONG_ONLY = os.getenv("PIVOT_LONG_ONLY", "true").lower() == "true"
 PIVOT_MIN_KC_WIDTH_PCT = max(0.0, float(os.getenv("PIVOT_MIN_KC_WIDTH_PCT", "0.01")))
+# 峰谷轉向開倉的幾何品質門檻，皆以 KC 全通道寬度計算。
+# 弧度過小或峰谷貼近 KC/MA15 時，只允許既有出場，不開反向新倉。
+PIVOT_MIN_ARC_KC_WIDTH_PCT = max(
+    0.0, float(os.getenv("PIVOT_MIN_ARC_KC_WIDTH_PCT", "0.25"))
+)
+PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT = max(
+    0.0, float(os.getenv("PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT", "0.20"))
+)
 # 1 分鐘策略平倉後只冷靜一根完整 K，避免秒進秒出但保留趨勢續段。
 CONTINUOUS_REENTRY_COOLDOWN_SEC = max(
     0.0, float(os.getenv("CONTINUOUS_REENTRY_COOLDOWN_SEC", "60"))

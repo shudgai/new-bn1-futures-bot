@@ -38,8 +38,7 @@ from core.config import (
     get_profit_bank_capture_ratio,
     PROFIT_BANK_MIN_STEP_PCT,
     ENABLE_FIXED_PROFIT_LOCK_PCT, FIXED_PROFIT_LOCK_TRIGGER_PCT,
-    FIXED_PROFIT_LOCK_FLOOR_PCT, FIXED_PROFIT_TRAIL_RETAIN_RATIO,
-    get_fixed_profit_trail_retain_ratio,
+    FIXED_PROFIT_LOCK_FLOOR_PCT,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
     PROFIT_ALERT_MIN_PEAK_PCT,
@@ -797,6 +796,7 @@ class BinanceTestnetAccount:
             # STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
             fixed_pct_active = (
                 ENABLE_FIXED_PROFIT_LOCK_PCT
+                and bool(pos.get("outer_run_active") or meta.get("outer_run_active"))
                 and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
                 and highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT
             )
@@ -806,11 +806,7 @@ class BinanceTestnetAccount:
             )
             if fixed_pct_active or profit_bank_active:
                 if fixed_pct_active:
-                    retain_ratio = get_fixed_profit_trail_retain_ratio(highest_pnl)
-                    bank_lock_pct = max(
-                        FIXED_PROFIT_LOCK_FLOOR_PCT,
-                        highest_pnl * retain_ratio,
-                    )
+                    bank_lock_pct = FIXED_PROFIT_LOCK_FLOOR_PCT
                 else:
                     bank_lock_pct = min(
                         max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
@@ -885,7 +881,7 @@ class BinanceTestnetAccount:
                             pos["profit_bank_armed"] = True
                         old_sl = bank_sl
                         label = (
-                            f"0.5%＋峰值保留{retain_ratio:.0%}"
+                            f"0.5%觸發／固定鎖{FIXED_PROFIT_LOCK_FLOOR_PCT:.1%}"
                             if fixed_pct_active else "階梯移動停利"
                         )
                         self.log(
@@ -1037,7 +1033,9 @@ class BinanceTestnetAccount:
                     continue
 
             # ── 移動停利 / 原生 Trailing Stop 三階段升級 ──
-            if ENABLE_TRAILING_STOP:
+            if ENABLE_TRAILING_STOP and bool(
+                pos.get("outer_run_active") or meta.get("outer_run_active")
+            ):
                 atr_value = meta.get("atr", entry_p * 0.015)
                 atr_pct = atr_value / entry_p if entry_p > 0 else 0.015
                 highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
