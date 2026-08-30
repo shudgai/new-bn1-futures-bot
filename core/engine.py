@@ -1765,35 +1765,6 @@ class TradingEngine:
             meta = self.account.position_meta.setdefault(symbol, {})
             entry_mode = position.get("entry_mode") or meta.get("entry_mode")
             if entry_mode not in managed_modes:
-                
-                # ====== 階段性固定鎖利 (Stage-based Fixed Profit Lock) ======
-                current_price_esc = float(
-                    self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"]
-                )
-                entry_price_esc = float(position["entry_price"])
-                qty_esc = float(position["qty"])
-                direction_esc = 1 if position["side"] == "LONG" else -1
-                pnl_usdt = (current_price_esc - entry_price_esc) * qty_esc * direction_esc
-                
-                dca_stage = position.get("dca_stage") or meta.get("dca_stage") or 1
-                try:
-                    dca_stage_int = int(dca_stage)
-                except Exception:
-                    dca_stage_int = 1
-                
-                target_profit = 0.3 if dca_stage_int <= 3 else 0.2
-                
-                if pnl_usdt >= target_profit:
-                    self.account.log(f"💰 {symbol} 達到第 {dca_stage_int} 階固定鎖利目標 ({pnl_usdt:.4f} >= {target_profit}U)，強制市價平倉", "SUCCESS")
-                    await self.account.close_position(
-                        symbol=symbol,
-                        current_price=current_price_esc,
-                        close_reason=f"第{dca_stage_int}階固定鎖利({target_profit}U)",
-                        is_manual=True
-                    )
-                    return
-                # =========================================================
-
                 # 針對順勢/峰谷模式，加入無條件逃命機制：若MA3在外軌外發生轉折，立即平倉保住利潤
                 from core.config import CONTINUOUS_REVERSE_TIMEFRAME
                 df_escape = await self.fetch_klines(symbol, timeframe=CONTINUOUS_REVERSE_TIMEFRAME, limit=10)
