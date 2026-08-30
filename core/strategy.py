@@ -2422,28 +2422,28 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     c1_is_red = float(c1['close']) <= float(c1['open'])
 
     # 1. 尖端 (V 型谷底)
-    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev and c1_is_green:
+    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
         is_valley = True
         valley_reason = "MA3 尖端谷底"
     # 2. 小梯形 (底平緩：左側下降，底部平/微升降，右側上升)
-    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2) and c1_is_green:
+    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
         is_valley = True
         valley_reason = "MA3 小梯形谷底"
     # 3. 大V括弧 + 2根以上綠K
-    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2 and c1_is_green:
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
         is_valley = True
         valley_reason = f"MA3 大V括弧谷底 (附{greens}根綠K)"
 
     # 1. 尖端 (倒 V 型峰頂)
-    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev and c1_is_red:
+    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
         is_peak = True
         peak_reason = "MA3 尖端峰頂"
     # 2. 小梯形 (頂平緩：左側上升，頂部平/微升降，右側下降)
-    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2) and c1_is_red:
+    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
         is_peak = True
         peak_reason = "MA3 小梯形峰頂"
     # 3. 大V括弧 + 2根以上紅K
-    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2 and c1_is_red:
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
         is_peak = True
         peak_reason = f"MA3 大V括弧峰頂 (附{reds}根紅K)"
 
@@ -2512,28 +2512,28 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
     c1_is_red = float(c1['close']) <= float(c1['open'])
 
     # 1. 尖端 (V 型谷底)
-    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev and c1_is_green:
+    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
         is_valley = True
         reason_text = "MA3 尖端谷底向上轉折，空單平倉"
     # 2. 小梯形 (底平緩)
-    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2) and c1_is_green:
+    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
         is_valley = True
         reason_text = "MA3 小梯形谷底向上轉折，空單平倉"
     # 3. 大V括弧 + 2根以上綠K
-    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2 and c1_is_green:
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
         is_valley = True
         reason_text = f"MA3 大V括弧谷底(附{greens}根綠K)向上轉折，空單平倉"
 
     # 1. 尖端 (倒 V 型峰頂)
-    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev and c1_is_red:
+    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
         is_peak = True
         reason_text = "MA3 尖端峰頂向下轉折，多單平倉"
     # 2. 小梯形 (頂平緩)
-    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2) and c1_is_red:
+    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
         is_peak = True
         reason_text = "MA3 小梯形峰頂向下轉折，多單平倉"
     # 3. 大V括弧 + 2根以上紅K
-    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2 and c1_is_red:
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
         is_peak = True
         reason_text = f"MA3 大V括弧峰頂(附{reds}根紅K)向下轉折，多單平倉"
 
