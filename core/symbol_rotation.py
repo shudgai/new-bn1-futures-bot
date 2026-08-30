@@ -246,7 +246,7 @@ class SymbolRotation:
                         continue
                     allowed_crypto.add(market["symbol"].replace(":USDT", ""))
         excluded_bases = {
-            "1000PEPE", "APT", "FET", "TAO", "WIF",
+            "BTC", "ETH", "BNB", "APT", "FET", "TAO", "WIF",
             "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
             "USD1", "BUSD", "USTC",
         }
