@@ -162,8 +162,8 @@ class TradingEngine:
         self._continuous_last_entry_bar: Dict[str, tuple] = {}
         # ADX + MA3/MA15 距離的雙門檻狀態；預設 RANGE，需連續 3 根確認才進 TREND。
         self._continuous_wave_regime: Dict[str, str] = {}
-        # 在短週期 TREND 之上，再以個幣與 BTC 的 1h 趨勢確認牛／熊市。
-        # RANGE 保留給猴市的峰谷交易；BULL/BEAR 則只做同向順勢單。
+        # 在短週期 TREND 之上，以個幣自己的 1h 趨勢確認牛／熊市；
+        # RANGE 保留給猴市的峰谷交易，BULL/BEAR 則只做個幣同向順勢單。
         self._continuous_market_mode: Dict[str, str] = {}
         # OUTER_RUN 多單：第一根紅 K 收回上軌內先平多；第二根
         # 紅 K 收盤後才確認反手，於第三根 K 開始市價開空。
@@ -3026,16 +3026,15 @@ class TradingEngine:
     def _continuous_market_mode_for(
         self, symbol: str, wave_regime: str, price: float,
     ) -> str:
-        """將短週期波動型態升級為猴市／牛市／熊市交易模式。"""
+        """只依個幣自身趨勢，將短週期型態升級為猴市／牛市／熊市。"""
         if str(wave_regime).upper() != "TREND":
             return "RANGE"
 
         symbol_st = int(self.st_direction_1h_cache.get(symbol) or 0)
-        btc_st = int(self.btc_1h_st_direction or 0)
         ema50 = float(self.ema_50_1h_cache.get(symbol) or 0.0)
-        if symbol_st == 1 and btc_st == 1 and ema50 > 0 and price >= ema50:
+        if symbol_st == 1 and ema50 > 0 and price >= ema50:
             return "BULL"
-        if symbol_st == -1 and btc_st == -1 and ema50 > 0 and price <= ema50:
+        if symbol_st == -1 and ema50 > 0 and price <= ema50:
             return "BEAR"
         return "TREND"
 
@@ -4563,7 +4562,7 @@ class TradingEngine:
                     self.account.log(
                         f"🌐 {symbol} 市場模式 {previous_market_mode} → {market_mode} "
                         f"(個幣1h ST={self.st_direction_1h_cache.get(symbol, 0)}, "
-                        f"BTC1h ST={self.btc_1h_st_direction})",
+                        f"個幣1h EMA50={self.ema_50_1h_cache.get(symbol, 0):.8g})",
                         "INFO",
                     )
                 if symbol in self.account.positions:

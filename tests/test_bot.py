@@ -4182,6 +4182,23 @@ def test_continuous_entry_checks_current_symbol_trend_only_in_range():
     ))
 
 
+def test_continuous_market_mode_uses_1000pepe_trend_not_btc():
+    engine = object.__new__(TradingEngine)
+    engine.st_direction_1h_cache = {"1000PEPE/USDT": 1}
+    engine.ema_50_1h_cache = {"1000PEPE/USDT": 100.0}
+    engine.btc_1h_st_direction = -1
+
+    assert engine._continuous_market_mode_for(
+        "1000PEPE/USDT", "TREND", 101.0,
+    ) == "BULL"
+
+    engine.st_direction_1h_cache["1000PEPE/USDT"] = -1
+    engine.btc_1h_st_direction = 1
+    assert engine._continuous_market_mode_for(
+        "1000PEPE/USDT", "TREND", 99.0,
+    ) == "BEAR"
+
+
 def test_continuous_entry_rejects_directional_kc_extremes():
     frame = pd.DataFrame({
         "kc_middle": [100.0],
