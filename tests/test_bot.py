@@ -3484,6 +3484,70 @@ def test_outer_run_invalid_second_candle_cancels_short(candle):
     assert "取消開空" in reason
 
 
+def test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction():
+    frame = pd.DataFrame({
+        "ma3": [100.0, 101.0, 100.5],
+        "kc_upper": [102.0, 102.0, 102.0],
+        "kc_lower": [98.0, 98.0, 98.0],
+    })
+    peak = {
+        "signal": "SHORT", "entry_type": "PEAK_TURN",
+        "pivot_type": "PEAK_TURN", "pivot_confirmed": True,
+        "pivot_offset": -2,
+    }
+
+    assert TradingEngine._confirmed_outer_reversal("LONG", peak, frame) is False
+
+    frame.loc[frame.index[-2], "ma3"] = 102.1
+    assert TradingEngine._confirmed_outer_reversal("LONG", peak, frame) is True
+    assert TradingEngine._confirmed_outer_reversal("SHORT", peak, frame) is False
+
+
+def test_confirmed_outer_reversal_requires_closed_confirmed_pivot():
+    frame = pd.DataFrame({
+        "ma3": [100.0, 102.1, 101.5],
+        "kc_upper": [102.0, 102.0, 102.0],
+        "kc_lower": [98.0, 98.0, 98.0],
+    })
+    waiting = {
+        "signal": None, "entry_type": "WAIT_NEXT_KC_BAND",
+        "pivot_type": "PEAK_TURN", "pivot_confirmed": False,
+        "pivot_offset": -2,
+    }
+
+    assert TradingEngine._confirmed_outer_reversal("LONG", waiting, frame) is False
+
+
+@pytest.mark.anyio
+async def test_legacy_single_exit_does_not_manage_continuous_wave_position():
+    engine = object.__new__(TradingEngine)
+
+    class FakeAccount:
+        def __init__(self):
+            self.position_meta = {"BTC/USDT": {"entry_mode": "MA3_MA15_MARKET"}}
+            self.closed = []
+
+        async def close_position(self, *args, **kwargs):
+            self.closed.append((args, kwargs))
+            return True
+
+    engine.account = FakeAccount()
+
+    async def unexpected_fetch(*_args, **_kwargs):
+        raise AssertionError("continuous position must not enter legacy live-MA3 exit")
+
+    engine.fetch_klines = unexpected_fetch
+    await engine._process_single_exit(
+        "BTC/USDT",
+        {
+            "side": "LONG", "entry_mode": "MA3_MA15_MARKET",
+            "entry_price": 100.0,
+        },
+    )
+
+    assert engine.account.closed == []
+
+
 def test_matching_exit_pivot_uses_peak_for_long_and_trough_for_short():
     assert matching_exit_pivot_detected(
         "LONG", {"entry_type": "WAIT_NEXT_KC_BAND", "pivot_type": "PEAK_TURN"},
@@ -3679,7 +3743,7 @@ async def test_legacy_outer_peak_wait_is_discarded(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_outer_run_long_closes_on_first_red_and_opens_short_after_second(monkeypatch):
+async def test_outer_run_holds_through_unconfirmed_red_candles(monkeypatch):
     engine = TradingEngine()
     symbol = "DOGE/USDT"
 
@@ -3767,19 +3831,18 @@ async def test_outer_run_long_closes_on_first_red_and_opens_short_after_second(m
 
     await engine._process_single_symbol(symbol, 1_000.0, None, False)
 
-    assert len(engine.account.closed) == 1
-    assert "第一根紅K" in engine.account.closed[0]["reason"]
+    assert engine.account.closed == []
+    assert symbol in engine.account.positions
     assert opened == []
-    assert engine._kc_reversal_wait[symbol]["mode"] == "OUTER_RUN_SECOND_CANDLE"
+    assert symbol not in engine._kc_reversal_wait
 
     candle_step["value"] = 2
     engine.tickers[symbol] = 99.5
     await engine._process_single_symbol(symbol, 1_060.0, None, False)
 
-    assert len(engine.account.closed) == 1
-    assert len(opened) == 1
-    assert opened[0]["side"] == "SHORT"
-    assert "第二根紅K" in opened[0]["reason"]
+    assert engine.account.closed == []
+    assert symbol in engine.account.positions
+    assert opened == []
     assert symbol not in engine._kc_reversal_wait
 
 
