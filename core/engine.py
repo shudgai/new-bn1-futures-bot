@@ -4160,10 +4160,6 @@ class TradingEngine:
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        middle = (upper + lower) / 2.0
-        half_width = (upper - lower) / 2.0
-        lower_execution_zone = middle - half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
-        upper_execution_zone = middle + half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
         signal_middle = (signal_upper + signal_lower) / 2.0
         signal_half_width = (signal_upper - signal_lower) / 2.0
         signal_lower_zone = (
@@ -4192,13 +4188,11 @@ class TradingEngine:
             closed_trough
             and not trough_cancelled
             and price > signal_high
-            and price <= lower_execution_zone
         )
         peak_turn = bool(
             closed_peak
             and not peak_cancelled
             and price < signal_low
-            and price >= upper_execution_zone
         )
         live_lower_touch = live_low <= lower
         live_upper_touch = live_high >= upper
@@ -4211,8 +4205,6 @@ class TradingEngine:
             if closed_peak and not peak_turn:
                 if peak_cancelled:
                     reason = "CANCEL_SHORT"
-                elif live_low < signal_low and price < upper_execution_zone:
-                    reason = "MISSED_UPPER"
                 else:
                     reason = "WAIT_BREAK_LOW"
             elif live_upper_touch:
@@ -4223,8 +4215,6 @@ class TradingEngine:
             if closed_trough and not trough_turn:
                 if trough_cancelled:
                     reason = "CANCEL_LONG"
-                elif live_high > signal_high and price > lower_execution_zone:
-                    reason = "MISSED_LOWER"
                 else:
                     reason = "WAIT_BREAK_HIGH"
             elif live_lower_touch:
@@ -4238,15 +4228,11 @@ class TradingEngine:
             if closed_trough:
                 if trough_cancelled:
                     reason = "CANCEL_LONG"
-                elif live_high > signal_high and price > lower_execution_zone:
-                    reason = "MISSED_LOWER"
                 else:
                     reason = "WAIT_BREAK_HIGH"
             elif closed_peak:
                 if peak_cancelled:
                     reason = "CANCEL_SHORT"
-                elif live_low < signal_low and price < upper_execution_zone:
-                    reason = "MISSED_UPPER"
                 else:
                     reason = "WAIT_BREAK_LOW"
             elif live_lower_touch:
@@ -4754,8 +4740,6 @@ class TradingEngine:
                         "WAIT_BREAK_LOW": " | 上軌紅K已收盤，等待下一根破低",
                         "CANCEL_LONG": " | 多方候選已先破低取消",
                         "CANCEL_SHORT": " | 空方候選已先破高取消",
-                        "MISSED_LOWER": " | 下軌轉向已跑回中間，不追多",
-                        "MISSED_UPPER": " | 上軌轉向已跑回中間，不追空",
                     }.get(str(channel_action.get("reason") or ""), "")
                     signal_progress.append(
                         f"{coin} {existing_pos.get('side')} 持倉中 | "

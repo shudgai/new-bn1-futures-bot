@@ -145,14 +145,14 @@ def test_channel_swing_does_not_exit_in_outer_entry_zone_before_actual_rail():
     assert result["side"] is None
 
 
-def test_channel_swing_does_not_chase_after_price_returns_to_middle():
+def test_channel_swing_confirms_on_next_break_even_after_leaving_outer_zone():
     frame = _channel_frame()
     _closed_peak(frame)
 
     result = TradingEngine._channel_swing_action(frame, 100.6, "LONG")
 
-    assert result["action"] == "HOLD"
-    assert result["reason"] == "MISSED_UPPER"
+    assert result["action"] == "REVERSE"
+    assert result["side"] == "SHORT"
 
 
 def test_channel_swing_positions_are_not_managed_by_early_exit_loops():
