@@ -1221,6 +1221,14 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     ma3_curr = float(df['ma3'].iloc[-1])
     kc_middle = float(df['ema_20'].iloc[-1])
     
+    if 'kc_upper' in df.columns and 'kc_lower' in df.columns:
+        kc_upper = float(df['kc_upper'].iloc[-1])
+        kc_lower = float(df['kc_lower'].iloc[-1])
+    else:
+        from core.config import KELTNER_ATR_MULTIPLIER
+        kc_upper = kc_middle + atr_val * KELTNER_ATR_MULTIPLIER
+        kc_lower = kc_middle - atr_val * KELTNER_ATR_MULTIPLIER
+
     # 快速止損邏輯：一旦發現方向錯誤就立即平倉
     # 多單被強紅K擊中：實體>=0.5ATR 且穿破MA3 就平仓
     # 不需等到红K回到中軌，早發現早止損
@@ -1288,6 +1296,8 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         "opposite_candle_body_atr": candle_body / max(atr_val, 1e-12),
         "ma3_curr": ma3_curr,
         "kc_middle": kc_middle,
+        "kc_upper": kc_upper,
+        "kc_lower": kc_lower,
         "adx": float(df['adx'].iloc[-1]) if 'adx' in df.columns else 0.0,
         "atr": atr_val,
     }
