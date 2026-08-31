@@ -196,9 +196,23 @@ class PaperAccount:
         restored = False
         if not DISABLE_STOP_LOSS:
             for symbol, pos in self.positions.items():
+                meta = self.position_meta.setdefault(symbol, {})
+                entry_mode = str(
+                    pos.get("entry_mode") or meta.get("entry_mode") or ""
+                ).upper()
+                if entry_mode == "CHANNEL_SWING":
+                    if any(float(source.get(key) or 0.0) != 0.0 for source in (pos, meta) for key in (
+                        "sl", "tp", "initial_sl", "initial_risk",
+                    )):
+                        for source in (pos, meta):
+                            source["sl"] = 0.0
+                            source["tp"] = 0.0
+                            source["initial_sl"] = 0.0
+                            source["initial_risk"] = 0.0
+                        restored = True
+                    continue
                 if float(pos.get("sl") or 0.0) > 0:
                     continue
-                meta = self.position_meta.setdefault(symbol, {})
                 entry_price = float(pos.get("entry_price") or 0.0)
                 if entry_price <= 0:
                     continue

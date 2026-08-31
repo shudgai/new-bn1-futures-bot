@@ -4160,24 +4160,13 @@ class TradingEngine:
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        signal_middle = (signal_upper + signal_lower) / 2.0
-        signal_half_width = (signal_upper - signal_lower) / 2.0
-        signal_lower_zone = (
-            signal_middle - signal_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
-        )
-        signal_upper_zone = (
-            signal_middle + signal_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
-        )
-
         closed_trough = bool(
             signal_low <= signal_lower
             and signal_close > signal_open
-            and signal_close <= signal_lower_zone
         )
         closed_peak = bool(
             signal_high >= signal_upper
             and signal_close < signal_open
-            and signal_close >= signal_upper_zone
         )
         # 候選 K 必須已收盤；只允許緊接著的下一根 K 突破確認。
         # 若該 K 曾先走破反方向極值，OHLC 無法還原盤中先後次序，為避免
@@ -5788,116 +5777,6 @@ class TradingEngine:
             if df_1m.empty:
                 return signal_progress, detected_candidates
                 
-            # --- 通道振盪策略 (Channel Swing) ---
-            df_1m_live = self.strategy.compute_indicators(df_1m.copy())
-            if len(df_1m_live) >= 20:
-                live_candle = df_1m_live.iloc[-1]
-                kc_upper = float(live_candle.get("kc_upper") or 0)
-                kc_lower = float(live_candle.get("kc_lower") or 0)
-                
-                # === 持倉中：對面軌道到達 → 平倉 + 反手 (已停用，改由 _process_single_exit 峰谷判定) ===
-                # 這裡的邏輯原本是一碰到軌道就立刻平倉，導致錯失了衝出軌道外的「巨大峰頂/谷底」利潤。
-                # 現在全部統一交給 _process_single_exit 裡面的「外軌峰谷平倉」邏輯去處理，
-                # 它會等到 MA3 在軌道外形成峰頂/谷底才真正平倉！
-                # 持倉中，不再由這裡執行平倉反手
-                if self.account.positions.get(symbol):
-                    curr_side = self.account.positions[symbol].get("side")
-                    signal_progress.append(
-                        f"{symbol.replace('/USDT', '')} {curr_side} 持倉中 | 等待外軌 MA3 峰谷平倉"
-                    )
-                    return signal_progress, detected_candidates
-
-                # === 空倉：碰到 KC 邊界 → 直接開倉 ===
-                if not existing_pos:
-                    rip_ts = self._kc_rip_after.get(symbol, 0)
-                    in_rip_recovery = rip_ts > 0
-                    
-                    if in_rip_recovery:
-                        # --- KC 撕裂後：等待穩定再順勢入場 ---
-                        # 穩定條件：價格回到 KC 通道內，且 MA3 均線轉向與趨勢一致
-                        price_inside_kc = kc_lower < live_price < kc_upper
-                        ma3_live = (df_1m_live["ma3"] if "ma3" in df_1m_live.columns else df_1m_live["close"].rolling(3).mean()).dropna()
-                        
-                        stable_direction = None
-                        if price_inside_kc and len(ma3_live) >= 3:
-                            ma3_prev2 = float(ma3_live.iloc[-3])
-                            ma3_prev1 = float(ma3_live.iloc[-2])
-                            ma3_curr_v = float(ma3_live.iloc[-1])
-                            # 向上穩定：MA3 明顯向上走，開多
-                            if ma3_curr_v > ma3_prev1 > ma3_prev2:
-                                stable_direction = "LONG"
-                            # 向下穩定：MA3 明顯向下走，開空
-                            elif ma3_curr_v < ma3_prev1 < ma3_prev2:
-                                stable_direction = "SHORT"
-                        
-                        if stable_direction:
-                            # 行情穩定，清除冷卻記錄，順勢開倉
-                            self._kc_rip_after.pop(symbol, None)
-                            self.account.log(
-                                f"✅ [KC 撕裂復原] {symbol} 行情穩定，MA3 轉{stable_direction}，重新入場",
-                                "SUCCESS"
-                            )
-                            sig = {
-                                "detected": True, "side": stable_direction, "score": 100,
-                                "price": live_price,
-                                "atr": float(live_candle.get("atr") or live_price * 0.015),
-                                "entry_mode": "CHANNEL_SWING",
-                                "profit_profile": "TREND_EXTENSION",
-                                "action": "ENTER_MARKET", "target_price": None,
-                                "signal_candle_low": float(live_candle["low"]),
-                                "signal_candle_high": float(live_candle["high"]),
-                                "symbol": symbol, "live_price": live_price,
-                                "reason": f"Channel Swing 撕裂復原 → 行情穩定後順勢開{stable_direction}｜MA3 確認",
-                            }
-                            signal_progress["signals"].append(sig)
-                            return signal_progress, detected_candidates
-                        else:
-                            elapsed = int(time.time() - rip_ts)
-                            signal_progress.append(
-                                f"{symbol.replace('/USDT', '')} KC撕裂後等待穩定 | 已等{elapsed}秒 | 價格{'在通道內' if price_inside_kc else '在通道外'}"
-                            )
-                            return signal_progress, detected_candidates
-                    
-                    # --- 正常 Channel Swing 空倉邏輯 ---
-                    swing_direction = None
-                    if live_price <= kc_lower:
-                        swing_direction = "LONG"
-                    elif live_price >= kc_upper:
-                        swing_direction = "SHORT"
-                    
-                    if swing_direction:
-                        # 猴市「挑利潤大的做」過濾：根據 1h SuperTrend 大方向
-                        st_dir_1h = int(getattr(self, "st_direction_1h_cache", {}).get(symbol, 0))
-                        if st_dir_1h != 0:
-                            is_aligned = (swing_direction == "LONG" and st_dir_1h == 1) or (swing_direction == "SHORT" and st_dir_1h == -1)
-                            if not is_aligned:
-                                signal_progress.append(
-                                    f"{symbol.replace('/USDT', '')} 猴市過濾：大級別偏{'多' if st_dir_1h == 1 else '空'}，放棄逆向 {swing_direction}"
-                                )
-                                swing_direction = None
-
-                    if swing_direction:
-                        sig = {
-                            "detected": True, "side": swing_direction, "score": 100,
-                            "price": live_price,
-                            "atr": float(live_candle.get("atr") or live_price * 0.015),
-                            "entry_mode": "CHANNEL_SWING",
-                            "profit_profile": "TREND_EXTENSION",
-                            "action": "ENTER_MARKET", "target_price": None,
-                            "signal_candle_low": float(live_candle["low"]),
-                            "signal_candle_high": float(live_candle["high"]),
-                            "symbol": symbol, "live_price": live_price,
-                            "reason": f"Channel Swing → {'KC 下軌開多' if swing_direction == 'LONG' else 'KC 上軌開空'}｜kc={kc_lower:.6g}~{kc_upper:.6g}",
-                        }
-                        signal_progress["signals"].append(sig)
-                        return signal_progress, detected_candidates
-                    else:
-                        signal_progress.append(
-                            f"{symbol.replace('/USDT', '')} 通道中央等待 | KC {kc_lower:.6g}~{kc_upper:.6g}, 現價={live_price:.6g}"
-                        )
-                        return signal_progress, detected_candidates
-            # -----------------------------------
-
             # 只讀已收盤 1m K，避免未收線 RSI、量能與 MA3 重繪。
             df_1m = drop_unclosed_candle(df_1m, "1m")
             if len(df_1m) < 20:

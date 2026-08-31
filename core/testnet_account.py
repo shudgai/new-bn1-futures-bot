@@ -1395,8 +1395,23 @@ class BinanceTestnetAccount:
         """
         if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
             return
+        channel_swing_cleared = False
         for symbol, pos in list(self.positions.items()):
             meta = self.position_meta.get(symbol, {})
+            entry_mode = str(
+                pos.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper()
+            if entry_mode == "CHANNEL_SWING":
+                if any(float(source.get(key) or 0.0) != 0.0 for source in (pos, meta) for key in (
+                    "sl", "tp", "initial_sl", "initial_risk",
+                )):
+                    for source in (pos, meta):
+                        source["sl"] = 0.0
+                        source["tp"] = 0.0
+                        source["initial_sl"] = 0.0
+                        source["initial_risk"] = 0.0
+                    channel_swing_cleared = True
+                continue
             sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
                 continue
@@ -1424,6 +1439,8 @@ class BinanceTestnetAccount:
                     f"🚨 {symbol} 啟動時重建交易所硬停損失敗：{type(exc).__name__}: {exc}",
                     "DANGER",
                 )
+        if channel_swing_cleared:
+            self.save_state()
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:

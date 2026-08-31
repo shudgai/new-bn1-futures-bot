@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 import pandas as pd
 
@@ -48,6 +50,23 @@ def test_channel_swing_enters_only_after_closed_turn_candle_and_next_breakout():
         "action": "ENTER", "side": "SHORT",
         "kc_upper": 101.0, "kc_lower": 99.0, "reason": "",
     }
+
+
+def test_channel_swing_does_not_require_turn_candle_to_close_in_outer_zone():
+    frame = _channel_frame()
+    frame.loc[frame.index[-2], ["open", "close", "low", "high"]] = [
+        99.7, 99.8, 98.9, 99.85,
+    ]
+    long_entry = TradingEngine._channel_swing_action(frame, 99.9)
+
+    frame = _channel_frame()
+    frame.loc[frame.index[-2], ["open", "close", "low", "high"]] = [
+        100.3, 100.2, 100.15, 101.1,
+    ]
+    short_entry = TradingEngine._channel_swing_action(frame, 100.1)
+
+    assert (long_entry["action"], long_entry["side"]) == ("ENTER", "LONG")
+    assert (short_entry["action"], short_entry["side"]) == ("ENTER", "SHORT")
 
 
 def test_channel_swing_holds_between_entry_and_opposite_edge():
@@ -132,13 +151,11 @@ def test_channel_swing_short_waits_then_cancels_if_next_candle_breaks_high():
     assert cancelled["reason"] == "CANCEL_SHORT"
 
 
-def test_channel_swing_does_not_exit_in_outer_entry_zone_before_actual_rail():
+def test_channel_swing_does_not_exit_before_actual_rail_touch():
     frame = _channel_frame()
     frame.loc[frame.index[-2], ["open", "close", "low", "high"]] = [
         101.0, 100.9, 100.8, 100.95,
     ]
-    # 已進入 70% 外側進場區，但尚未觸及真正上軌；持倉不得平倉反手。
-
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
     assert result["action"] == "HOLD"
@@ -159,6 +176,15 @@ def test_channel_swing_positions_are_not_managed_by_early_exit_loops():
     assert TradingEngine._is_continuous_wave_position({
         "entry_mode": "CHANNEL_SWING",
     })
+
+
+def test_channel_swing_has_one_confirmation_rule_and_no_legacy_entry_paths():
+    action_source = inspect.getsource(TradingEngine._channel_swing_action)
+    process_source = inspect.getsource(TradingEngine._process_single_symbol)
+
+    assert "CONTINUOUS_ENTRY_OUTER_ZONE_RATIO" not in action_source
+    assert "KC 撕裂復原" not in process_source
+    assert "swing_direction" not in process_source
 
 
 @pytest.mark.anyio
@@ -192,3 +218,13 @@ async def test_channel_swing_position_is_stored_without_sl_or_tp(tmp_path, monke
 
     assert topped_up is False
     assert account.positions["BTC/USDT"]["margin"] == 50.0
+
+    reloaded = PaperAccount()
+    await reloaded.initialize()
+
+    assert reloaded.positions["BTC/USDT"]["sl"] == 0.0
+    assert reloaded.positions["BTC/USDT"]["tp"] == 0.0
+    assert not any(
+        "啟動保護遷移" in item.get("text", "")
+        for item in reloaded.logs
+    )
