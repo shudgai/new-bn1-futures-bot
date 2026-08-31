@@ -29,7 +29,7 @@ from core.config import (
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
-    TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR,
+    TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -1189,13 +1189,16 @@ class TradingEngine:
                             position, self.account.position_meta.get(symbol, {}),
                         )
                         if is_structure_exit_mode:
-                            if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
+                            if (
+                                not CONTINUOUS_OUTER_RAIL_EXIT_ONLY
+                                and pnl_pct <= -config.FIXED_STOP_LOSS_PCT
+                            ):
                                 await self.account.close_position(
                                     symbol, live_price,
                                     f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)",
                                 )
-                            # 連續波段不使用移動停利；只有不利方向 KC 外軌破軌、
-                            # 固定硬停損或手動平倉可以結束持倉。
+                            # 外軌專用模式會忽略固定百分比停損；只保留上方的
+                            # 不利方向 KC 外軌破軌與手動平倉。
                             continue
                         if not is_mega_trend:
                             if (
@@ -1373,7 +1376,7 @@ class TradingEngine:
                         )
                     )
                     trigger["two_bar_structure_failure_exit"] = structure_failure_exit
-                    if structure_failure_exit:
+                    if structure_failure_exit and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY:
                         curr_p = float(
                             self.tickers.get(symbol)
                             or exit_frame["close"].iloc[-1]
@@ -2957,6 +2960,13 @@ class TradingEngine:
         if SYMBOL_1H_ST_FILTER_ENABLED:
             sym_cache = getattr(self, "st_direction_1h_cache", {}) or {}
             sym_dir = int(sym_cache.get(symbol) or 0)
+            if sym_dir == 0:
+                if log_on_fail and hasattr(self, "account"):
+                    self.account.log(
+                        f"⏸️ {symbol} 暫不開倉：個幣 1h SuperTrend 尚未載入，等待趨勢確認",
+                        "INFO",
+                    )
+                return False
             if sym_dir != 0 and sym_dir != want_dir:
                 if log_on_fail and hasattr(self, "account"):
                     self.account.log(f"🛑 {symbol} 拒絕開倉：個幣 1h SuperTrend 方向不符 (1h={sym_dir})，跳過本次進場", "WARNING")
@@ -4266,7 +4276,7 @@ class TradingEngine:
         return "LONG" if long_turn else "SHORT" if short_turn else None
 
     def _continuous_entry_amount(self) -> float:
-        """Return one independent slot budget and reject entries when both slots are occupied."""
+        """Allocate available balance across the configured entry slots."""
         positions = getattr(self.account, "positions", {})
         pending_orders = getattr(self.account, "pending_limit_orders", {})
         committed = len(positions) + len(pending_orders)
@@ -4280,9 +4290,49 @@ class TradingEngine:
         if effective_slots > 0 and committed >= effective_slots:
             return 0.0
         remaining_slots = max(1, effective_slots - committed) if effective_slots > 0 else 1
-        # 兩槽採資金桶輪替：首筆用一半；第二筆用扣除首筆與手續費後
-        # 的所有剩餘資金。任一筆平倉後，釋放資金直接供下一筆使用。
+        # 依剩餘槽位平均分配；單槽模式直接使用全部可用餘額。
         return max(0.0, available / remaining_slots)
+
+    @staticmethod
+    def _continuous_entry_price_is_safe(
+        side: str, frame: pd.DataFrame, live_price: float,
+    ) -> tuple[bool, str]:
+        """Reject market entries near the directional KC extreme."""
+        required = {"kc_upper", "kc_lower"}
+        if frame is None or frame.empty or not required.issubset(frame.columns):
+            return False, "KC data unavailable"
+        middle_column = (
+            "kc_middle" if "kc_middle" in frame.columns
+            else "ema_20" if "ema_20" in frame.columns
+            else None
+        )
+        if middle_column is None:
+            return False, "KC middle data unavailable"
+        row = frame.iloc[-1]
+        try:
+            price = float(live_price)
+            middle = float(row[middle_column])
+            upper = float(row["kc_upper"])
+            lower = float(row["kc_lower"])
+        except (TypeError, ValueError):
+            return False, "KC data invalid"
+        if not all(math.isfinite(value) for value in (price, middle, upper, lower)):
+            return False, "KC data invalid"
+        if not lower < middle < upper:
+            return False, "KC channel invalid"
+
+        side = str(side or "").upper()
+        if side == "LONG":
+            limit = middle + (upper - middle) * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+            safe = price < limit
+            reason = f"price {price:.8g} is in the upper KC chase zone (limit {limit:.8g})"
+        elif side == "SHORT":
+            limit = middle - (middle - lower) * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+            safe = price > limit
+            reason = f"price {price:.8g} is in the lower KC chase zone (limit {limit:.8g})"
+        else:
+            return False, f"invalid entry side {side}"
+        return safe, "" if safe else reason
 
     async def _place_continuous_market_entry(
         self, symbol: str, side: str, df: pd.DataFrame, live_price: float,
@@ -4297,10 +4347,45 @@ class TradingEngine:
         if symbol in getattr(self.account, "positions", {}):
             self.account.log(f"⏸️ {symbol} 已有持倉，不重複占用槽位", "DEBUG")
             return False
+        # 一般行情不使用大週期方向限制；只有盤整時，才依該幣種目前
+        # 進場週期的 MA3/MA15 方向避免逆著短線結構開倉。
+        if str(wave_regime or "").upper() == "RANGE":
+            close = pd.to_numeric(df["close"], errors="coerce")
+            ma3 = pd.to_numeric(df["ma3"], errors="coerce") if "ma3" in df.columns else close.rolling(3).mean()
+            ma15 = pd.to_numeric(df["ma15"], errors="coerce") if "ma15" in df.columns else close.rolling(15).mean()
+            ma3_now = float(ma3.iloc[-1])
+            ma15_now = float(ma15.iloc[-1])
+            requested = str(side or "").upper()
+            aligned = (
+                (requested == "LONG" and ma3_now > ma15_now)
+                or (requested == "SHORT" and ma3_now < ma15_now)
+            )
+            if not aligned:
+                trend = "向上" if ma3_now > ma15_now else "向下" if ma3_now < ma15_now else "無方向"
+                self.account.log(
+                    f"🛑 {symbol} 盤整中目前趨勢{trend}（MA3={ma3_now:.8g}, "
+                    f"MA15={ma15_now:.8g}），拒絕開{('多' if requested == 'LONG' else '空')}",
+                    "WARNING",
+                )
+                return False
+        price_safe, unsafe_reason = self._continuous_entry_price_is_safe(
+            side, df, live_price,
+        )
+        if not price_safe:
+            self.account.log(
+                f"Entry blocked for {symbol} {side}: {unsafe_reason}; waiting for pullback",
+                "INFO",
+            )
+            return False
         amount_usdt = self._continuous_entry_amount()
+        leverage = get_leverage(symbol)
+        available_balance = max(0.0, float(self.account.get_available_balance()))
+        # 單槽使用全部可用餘額，但預留開倉 taker fee，避免紙帳戶扣成負值。
+        fee_safe_amount = available_balance / (1.0 + leverage * max(TAKER_FEE_RATE, 0.0))
+        amount_usdt = min(amount_usdt, fee_safe_amount)
         if amount_usdt < MIN_TRADE_USDT:
             self.account.log(
-                f"⏸️ {symbol} 兩個交易槽位已滿或可用保證金不足", "INFO"
+                f"⏸️ {symbol} 交易槽位已滿或可用保證金不足", "INFO"
             )
             return False
 
@@ -4308,11 +4393,13 @@ class TradingEngine:
         atr = atr_raw if pd.notna(atr_raw) and atr_raw > 0 else live_price * 0.015
         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
         sl, tp = build_sl_tp_for_side(live_price, side, sl_dist, tp_dist)
+        if CONTINUOUS_OUTER_RAIL_EXIT_ONLY:
+            sl, tp = 0.0, 0.0
         opened = await self.account.open_position(
             symbol=symbol, side=side, price=live_price,
             amount_usdt=amount_usdt, sl=sl, tp=tp,
             reason=f"{entry_type}: {reason}", atr=atr,
-            leverage=get_leverage(symbol), signal_score=score,
+            leverage=leverage, signal_score=score,
             entry_context={
                 "entry_mode": "MA3_MA15_MARKET", "timeframe": timeframe,
                 "wave_regime": str(wave_regime).upper(),
@@ -4610,8 +4697,8 @@ class TradingEngine:
                 elif wave_regime == "RANGE" and cr_entry_type in ("TREND_LONG", "TREND_SHORT") and not CONTINUOUS_TREND_ONLY:
                     signal_progress.append(f"{coin} 短波動：等待谷底買多／峰頂開空")
                     cr_signal = None
-                # 已按所在區間收盤跨過下一條 KC 軌道的峰谷，是正式反轉確認；
-                # 不再被 TREND／牛熊方向濾網二次攔截。
+                # 趨勢行情按牛／熊市限制開倉方向；盤整方向則在實際送單前，
+                # 由該幣種當前進場週期的 MA3／MA15 判定。
                 elif market_mode == "BULL" and cr_signal != "LONG" and not CONTINUOUS_PIVOT_ONLY and not confirmed_pivot_turn:
                     signal_progress.append(f"{coin} 牛市：只等順勢多單")
                     cr_signal = None

@@ -38,6 +38,7 @@ from core.config import (
     DISABLE_TAKE_PROFIT,
     DISABLE_STOP_LOSS,
     CONTINUOUS_PIVOT_ONLY,
+    CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
     ONLY_CLOSE_ON_PROFIT,
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT,
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO,
@@ -1306,7 +1307,7 @@ class PaperAccount:
                         "SUCCESS",
                     )
 
-            # 連續模式只由 RANGE 峰谷或 TREND 結構衰退出場；帳戶層保留硬停損與固定鎖利底線。
+            # 連續模式啟用外軌專用退出後，帳戶層固定止損只保留數值供顯示，不執行。
             wave_regime = str(pos.get("wave_regime") or meta.get("wave_regime") or "").upper()
             if wave_regime in ("RANGE", "TREND"):
                 outer_run_profit_lock_hold = bool(
@@ -1318,7 +1319,11 @@ class PaperAccount:
                     and ((side == "LONG" and curr_p <= current_sl)
                          or (side == "SHORT" and curr_p >= current_sl))
                 )
-                if hard_stop_hit and not outer_run_profit_lock_hold:
+                if (
+                    hard_stop_hit
+                    and not outer_run_profit_lock_hold
+                    and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY
+                ):
                     await self.close_position(symbol, current_sl, "觸發止損 (Stop-Loss)")
                     continue
                 pos["peak_pnl_pct"] = highest_pnl

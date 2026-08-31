@@ -990,9 +990,9 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("APT/USDT", 70) < SYMBOL_LEVERAGE["APT/USDT"]
 
 
-def test_two_slot_watchlist_excludes_btc_eth_bnb():
-    assert len(DEFAULT_SYMBOLS) == 15
-    assert {"BTC/USDT", "ETH/USDT", "BNB/USDT"}.isdisjoint(DEFAULT_SYMBOLS)
+def test_single_slot_watchlist_uses_only_1000pepe():
+    assert DEFAULT_SYMBOLS == ["1000PEPE/USDT"]
+    assert engine_module.MAX_SLOTS == 1
 
 
 def test_effective_slots_use_one_below_120_usdt():
@@ -1003,9 +1003,7 @@ def test_effective_slots_use_one_below_120_usdt():
     assert engine_module.get_effective_slot_count(225.0, configured_max=5) == 3
 
 
-def test_continuous_slot_reuses_remaining_available_funds(monkeypatch):
-    monkeypatch.setattr(engine_module, "MAX_SLOTS", 2)
-
+def test_continuous_single_slot_uses_all_available_funds():
     class SlotAccount:
         pending_limit_orders = {}
 
@@ -1018,17 +1016,10 @@ def test_continuous_slot_reuses_remaining_available_funds(monkeypatch):
 
     engine = object.__new__(TradingEngine)
     engine.account = SlotAccount()
-    assert engine._continuous_entry_amount() == pytest.approx(100.0)
+    assert engine._continuous_entry_amount() == pytest.approx(200.0)
 
-    engine.account.available = 99.0
-    assert engine._continuous_entry_amount() == pytest.approx(99.0)
-    engine.account.available = 200.0
-
-    engine.account.positions["SOL/USDT"] = {"margin": 100.0}
-    engine.account.available = 99.75
-    assert engine._continuous_entry_amount() == pytest.approx(99.75)
-
-    engine.account.positions["XRP/USDT"] = {"margin": 99.75}
+    engine.account.positions["1000PEPE/USDT"] = {"margin": 200.0}
+    engine.account.available = 0.0
     assert engine._continuous_entry_amount() == pytest.approx(0.0)
 
 
@@ -4026,7 +4017,7 @@ def test_wave_regime_requires_three_closed_bars_and_uses_hysteresis():
 
 
 @pytest.mark.anyio
-async def test_range_position_ignores_middle_profit_exit_but_keeps_hard_stop(tmp_path, monkeypatch):
+async def test_range_position_ignores_fixed_stop_in_outer_rail_only_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "range_account.json"))
     monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     account = PaperAccount()
@@ -4043,8 +4034,8 @@ async def test_range_position_ignores_middle_profit_exit_but_keeps_hard_stop(tmp
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(original_sl)
 
     await account.update_positions({"BTC/USDT": original_sl * 0.99})
-    assert "BTC/USDT" not in account.positions
-    assert account.trades[0]["reason"] == "觸發止損 (Stop-Loss)"
+    assert "BTC/USDT" in account.positions
+    assert not any(str(trade.get("action", "")).startswith("CLOSE") for trade in account.trades)
 
 
 @pytest.mark.anyio
@@ -4098,6 +4089,66 @@ def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
     opened = []
 
     class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+
+        def get_available_balance(self):
+            return 100.0
+
+        def get_wallet_balance(self):
+            return 100.0
+
+        async def open_position(self, **kwargs):
+            opened.append(kwargs)
+            return True
+
+        def log(self, *args, **kwargs):
+            return None
+
+    engine = object.__new__(TradingEngine)
+    engine.account = DummyAccount()
+    engine.st_direction_1h_cache = {"BTC/USDT": 1, "ETH/USDT": -1}
+    frame = pd.DataFrame({
+        "low": [99.6, 99.2, 99.5],
+        "high": [100.4, 101.3, 100.8],
+        "close": [100.0, 100.2, 100.1],
+        "atr": [1.0, 1.0, 1.0],
+        "kc_middle": [100.0, 100.0, 100.0],
+        "kc_upper": [102.0, 102.0, 102.0],
+        "kc_lower": [98.0, 98.0, 98.0],
+    })
+    assert asyncio.run(engine._place_continuous_market_entry(
+        "BTC/USDT", "LONG", frame, 100.0, "TREND_LONG", "test", 85, "1m"
+    ))
+    assert asyncio.run(engine._place_continuous_market_entry(
+        "ETH/USDT", "SHORT", frame, 100.0, "TREND_SHORT", "test", 85, "1m"
+    ))
+    assert asyncio.run(engine._place_continuous_market_entry(
+        "BTC/USDT", "SHORT", frame, 100.0, "PEAK_TURN", "test", 100, "1m"
+    ))
+
+    assert opened[0]["price"] == pytest.approx(100.0)
+    assert opened[0]["sl"] == opened[0]["tp"] == 0.0
+    assert opened[1]["sl"] == opened[1]["tp"] == 0.0
+    for order in opened:
+        total_debit = order["amount_usdt"] * (1 + order["leverage"] * TAKER_FEE_RATE)
+        assert total_debit == pytest.approx(100.0)
+    assert all(order["entry_context"]["entry_mode"] == "MA3_MA15_MARKET" for order in opened)
+
+
+def test_continuous_entry_checks_current_symbol_trend_only_in_range():
+    opened = []
+
+    class DummyAccount:
+        positions = {}
+        pending_limit_orders = {}
+
+        def get_available_balance(self):
+            return 100.0
+
+        def get_wallet_balance(self):
+            return 100.0
+
         async def open_position(self, **kwargs):
             opened.append(kwargs)
             return True
@@ -4108,23 +4159,49 @@ def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
     engine = object.__new__(TradingEngine)
     engine.account = DummyAccount()
     frame = pd.DataFrame({
-        "low": [99.6, 99.2, 99.5],
-        "high": [100.4, 101.3, 100.8],
-        "close": [100.0, 100.2, 100.1],
-        "atr": [1.0, 1.0, 1.0],
+        "low": [99.0] * 15,
+        "high": [103.0] * 15,
+        "close": list(range(88, 103)),
+        "atr": [1.0] * 15,
+        "kc_middle": [100.0] * 15,
+        "kc_upper": [104.0] * 15,
+        "kc_lower": [96.0] * 15,
     })
-    assert asyncio.run(engine._place_continuous_market_entry(
-        "BTC/USDT", "LONG", frame, 100.0, "TREND_LONG", "test", 85, "1m"
+
+    assert not asyncio.run(engine._place_continuous_market_entry(
+        "1000PEPE/USDT", "SHORT", frame, 100.0, "PEAK_TURN", "test", 100, "1m",
+        wave_regime="RANGE",
     ))
     assert asyncio.run(engine._place_continuous_market_entry(
-        "ETH/USDT", "SHORT", frame, 100.0, "TREND_SHORT", "test", 85, "1m"
+        "1000PEPE/USDT", "LONG", frame, 100.0, "TROUGH_TURN", "test", 100, "1m",
+        wave_regime="RANGE",
+    ))
+    assert asyncio.run(engine._place_continuous_market_entry(
+        "1000PEPE/USDT", "SHORT", frame, 100.0, "PEAK_TURN", "test", 100, "1m",
+        wave_regime="TREND",
     ))
 
-    assert opened[0]["price"] == pytest.approx(100.0)
-    assert opened[0]["sl"] < opened[0]["price"] < opened[0]["tp"]
-    assert opened[1]["tp"] < opened[1]["price"] < opened[1]["sl"]
-    assert all(order["entry_context"]["entry_mode"] == "MA3_MA15_MARKET" for order in opened)
 
+def test_continuous_entry_rejects_directional_kc_extremes():
+    frame = pd.DataFrame({
+        "kc_middle": [100.0],
+        "kc_upper": [102.0],
+        "kc_lower": [98.0],
+    })
+
+    assert TradingEngine._continuous_entry_price_is_safe("LONG", frame, 100.0)[0]
+    assert not TradingEngine._continuous_entry_price_is_safe("LONG", frame, 101.5)[0]
+    assert TradingEngine._continuous_entry_price_is_safe("SHORT", frame, 100.0)[0]
+    assert not TradingEngine._continuous_entry_price_is_safe("SHORT", frame, 98.5)[0]
+
+    ema_middle_frame = pd.DataFrame({
+        "ema_20": [100.0],
+        "kc_upper": [102.0],
+        "kc_lower": [98.0],
+    })
+    assert TradingEngine._continuous_entry_price_is_safe(
+        "SHORT", ema_middle_frame, 100.0,
+    )[0]
 
 def test_ma3_below_ma15_opens_short_even_when_still_rising():
     result = detect_ma3_ma15_cross_and_turn(

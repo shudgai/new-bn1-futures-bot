@@ -9,7 +9,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Binance Futures Bot 2.0 (Port 8006)</title>
+    <title>1000PEPE Futures Bot (Port 8006)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -221,7 +221,7 @@
         <!-- TOPBAR -->
         <div class="topbar">
             <div class="logo">
-                <span>🚀</span> Binance Bot 2.0
+                <span>🚀</span> 1000PEPE Bot
                 <span class="badge badge-port">PORT {{ bot.port }}</span>
                 <span v-if="bot.paper_trading" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
@@ -275,7 +275,7 @@
                         </div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">單次交易金額（固定）</div>
+                        <div class="stat-label">單槽帳戶開倉金額</div>
                         <div class="stat-val" style="color:var(--primary)">{{ bot.trade_amount }} USDT</div>
                     </div>
                     <div class="stat-box">
@@ -575,7 +575,7 @@
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
-                        symbols: [],
+                        symbols: ['1000PEPE/USDT'],
                         symbol_directions: {},
                         volatility_stats: {},
                         tickers: {},
@@ -595,7 +595,7 @@
                         logs: []
                     },
                     manualOrder: {
-                        symbol: 'BTC/USDT',
+                        symbol: '1000PEPE/USDT',
                         amount: 50.0
                     },
                     exportDate: '',
@@ -1035,7 +1035,7 @@
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : 'BTC/USDT',
+                                symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : '1000PEPE/USDT',
                                 side: side,
                                 amount: 0
                             })

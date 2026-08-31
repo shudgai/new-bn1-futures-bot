@@ -216,6 +216,16 @@ MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(
 TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR = max(
     0.0, float(os.getenv("TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR", "0.15"))
 )
+# 連續模式送出市價單前的最後防追價門檻。價格進入 KC 中軌至外軌的
+# 此比例後，LONG 視為太接近高點、SHORT 視為太接近低點，等待回踩。
+CONTINUOUS_ENTRY_OUTER_ZONE_RATIO = min(
+    1.0, max(0.0, float(os.getenv("CONTINUOUS_ENTRY_OUTER_ZONE_RATIO", "0.70")))
+)
+# 啟用後，連續模式的技術性結構失效只記錄、不平倉；僅在價格真正
+# 越過持倉不利方向的 KC 外軌時自動平倉（手動平倉仍可用）。
+CONTINUOUS_OUTER_RAIL_EXIT_ONLY = os.getenv(
+    "CONTINUOUS_OUTER_RAIL_EXIT_ONLY", "false"
+).lower() == "true"
 # 低波動時 MA5 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
 MA5_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA5_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
