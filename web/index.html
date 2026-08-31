@@ -727,6 +727,8 @@
                 }
                 this._candlestickSeries = null;
                 this._lastCandle = null;
+                this._chartHistorySignature = null;
+                this._chartMarkerSignature = null;
                 this._chartFailureCount = 0;
                 this._chartNextRetryAt = 0;
             },
@@ -844,15 +846,36 @@
                      this._kcUpperSeries, this._kcMiddleSeries, this._kcLowerSeries]
                         .forEach(series => series.applyOptions({ priceFormat }));
 
-                    this._candlestickSeries.setData(candles);
+                    // 只有歷史 K 棒真的前進時才整批重畫；同一根即時 K 棒只做
+                    // update，避免每次輪詢造成整張圖閃爍與視窗位置跳動。
+                    const previousBarTime = candles.length > 1 ? candles[candles.length - 2].time : 0;
+                    const historySignature = `${symbol}:${candles.length}:${previousBarTime}`;
+                    const fullRefresh = this._chartHistorySignature !== historySignature;
+                    if (fullRefresh) {
+                        this._candlestickSeries.setData(candles);
+                        this._ma3Series.setData(ma3);
+                        this._ma15Series.setData(ma15);
+                        this._ma99Series.setData(ma99);
+                        this._kcUpperSeries.setData(kcUpper);
+                        this._kcMiddleSeries.setData(kcMiddle);
+                        this._kcLowerSeries.setData(kcLower);
+                        this._chartHistorySignature = historySignature;
+                    } else {
+                        this._candlestickSeries.update(candles[candles.length - 1]);
+                        [
+                            [this._ma3Series, ma3], [this._ma15Series, ma15],
+                            [this._ma99Series, ma99], [this._kcUpperSeries, kcUpper],
+                            [this._kcMiddleSeries, kcMiddle], [this._kcLowerSeries, kcLower],
+                        ].forEach(([series, values]) => {
+                            if (values.length > 0) series.update(values[values.length - 1]);
+                        });
+                    }
                     if (candles.length > 0) this._lastCandle = candles[candles.length - 1];
-                    this._ma3Series.setData(ma3);
-                    this._ma15Series.setData(ma15);
-                    this._ma99Series.setData(ma99);
-                    this._kcUpperSeries.setData(kcUpper);
-                    this._kcMiddleSeries.setData(kcMiddle);
-                    this._kcLowerSeries.setData(kcLower);
-                    this._candlestickSeries.setMarkers(tradeMarkers);
+                    const markerSignature = JSON.stringify(tradeMarkers);
+                    if (this._chartMarkerSignature !== markerSignature) {
+                        this._candlestickSeries.setMarkers(tradeMarkers);
+                        this._chartMarkerSignature = markerSignature;
+                    }
                     
                     if (!this._chartRequestHasFit) {
                         this._chart.timeScale().fitContent();
@@ -1124,7 +1147,7 @@
                     if (this.chartModal.symbol && this._chart) {
                         this.fetchChartData(this.chartModal.symbol);
                     }
-                }, 1000);
+                }, 5000); // 後端 K 線快取為 5 秒；現價仍由 0.5 秒輪詢增量更新
             }
         }).mount('#app');
     </script>

@@ -96,7 +96,9 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await engine.stop()
+    # 程序真正關閉時才釋放交易所連線；網頁暫停機器人仍需保留行情連線，
+    # 否則再次啟動會重用已關閉的 ccxt instance。
+    await engine.stop(close_exchanges=True)
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():

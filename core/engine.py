@@ -186,9 +186,11 @@ class TradingEngine:
         # _position_trigger_loop）。ma_ok恢復True時清空，讓下次重新計時。
         self._soft_warning_since: Dict[str, float] = {}
         self.trigger_task: asyncio.Task = None
+        self.fixed_stop_task: asyncio.Task = None
         self.trend_follow_task: asyncio.Task = None
         self.trailing_sl_task: asyncio.Task = None
         self.market_scan_task: asyncio.Task = None
+        self.ticker_task: asyncio.Task = None
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
         # 就重複印一次（實測 ZEC/USDT 這樣連續洗了好幾分鐘）。只記錄狀態
@@ -933,7 +935,7 @@ class TradingEngine:
         self.analysis_task = asyncio.create_task(self._analysis_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
         self.trigger_task = asyncio.create_task(self._position_trigger_loop())
-        asyncio.create_task(self._fixed_stop_loss_loop())
+        self.fixed_stop_task = asyncio.create_task(self._fixed_stop_loss_loop())
         # KC失敗、ATR追蹤、RR分批與1h翻向出場背景任務
         self.trend_follow_task = asyncio.create_task(self._run_structured_exits())
         # 舊移動停損任務保留但預設停用，避免與結構ATR追蹤衝突
@@ -945,32 +947,32 @@ class TradingEngine:
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
 
-    async def stop(self):
-        if not self.is_running:
-            return
+    async def stop(self, close_exchanges: bool = False):
+        was_running = self.is_running
         self.is_running = False
-        if self.task:
-            self.task.cancel()
-        if self.rotation_task:
-            self.rotation_task.cancel()
-        if self.analysis_task:
-            self.analysis_task.cancel()
-        if self.trend_cache_task:
-            self.trend_cache_task.cancel()
-        if self.trigger_task:
-            self.trigger_task.cancel()
-        if self.trend_follow_task:
-            self.trend_follow_task.cancel()
-        if self.trailing_sl_task:
-            self.trailing_sl_task.cancel()
-        if self.market_scan_task:
-            self.market_scan_task.cancel()
-        if hasattr(self, 'ticker_task') and self.ticker_task:
-            self.ticker_task.cancel()
-        await self.exchange.close()
-        await self.ws_exchange.close()
-        await self.execution_exchange.close()
-        self.account.log("⏹️ 量化交易機器人已停止")
+        task_names = (
+            "task", "rotation_task", "analysis_task", "trend_cache_task",
+            "trigger_task", "fixed_stop_task", "trend_follow_task",
+            "trailing_sl_task", "market_scan_task", "ticker_task",
+        )
+        tasks = []
+        for name in task_names:
+            task = getattr(self, name, None)
+            if task:
+                task.cancel()
+                tasks.append(task)
+                setattr(self, name, None)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # UI 的停止只是暫停交易任務，不能關閉 ccxt；否則按下再次啟動後，
+        # fetch_klines 會一直得到 "instance was closed by the user"。
+        if close_exchanges:
+            await self.exchange.close()
+            await self.ws_exchange.close()
+            await self.execution_exchange.close()
+        if was_running:
+            self.account.log("⏹️ 量化交易機器人已停止")
 
     def request_trade_analysis(self) -> None:
         """平倉事件只設旗標，絕不在平倉／風控路徑等待 AI。"""
@@ -2326,6 +2328,8 @@ class TradingEngine:
                 ):
                     for symbol, position in list(self.account.positions.items()):
                         position_meta = self.account.position_meta.get(symbol, {})
+                        if self._is_continuous_wave_position(position, position_meta):
+                            continue
                         macro_trend_mode = str(
                             position.get("market_mode") or position_meta.get("market_mode") or ""
                         ).upper() in ("BULL", "BEAR")
@@ -3122,7 +3126,7 @@ class TradingEngine:
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         # 最後一道方向守門：避免在高週期趨勢不符時開錯方向 (MA5_CROSS_PIVOT 策略除外)
-        if entry_mode not in ("MA5_CROSS_PIVOT", "EXHAUSTION_SNIPER", "PIVOT_TURN"):
+        if entry_mode not in ("MA5_CROSS_PIVOT", "EXHAUSTION_SNIPER", "PIVOT_TURN", "CHANNEL_SWING"):
             if not self._entry_direction_allowed(symbol, side, planned_price):
                 return False
         candle_low = float(signal.get("signal_candle_low") or planned_price)
@@ -3247,6 +3251,8 @@ class TradingEngine:
                 round(structured_net_rr, 4) if structured_net_rr is not None else None
             ),
             "high_readiness_low_room": bool(signal.get("high_readiness_low_room")),
+            "wave_regime": signal.get("wave_regime"),
+            "market_mode": signal.get("market_mode"),
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,
@@ -4089,6 +4095,78 @@ class TradingEngine:
         return ("CONFIRMED" if confirmed else "INVALIDATED"), reason, bar_id
 
     @staticmethod
+    def _channel_swing_action(
+        frame: pd.DataFrame, live_price: float, current_side: str | None = None,
+    ) -> dict:
+        """KC 低買高賣：進入外側區後，等已收盤 MA3 峰谷才反向。"""
+        required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
+            return {"action": "WAIT", "reason": "KC data unavailable"}
+        row = frame.iloc[-1]
+        try:
+            price = float(live_price)
+            upper = float(row["kc_upper"])
+            lower = float(row["kc_lower"])
+        except (TypeError, ValueError):
+            return {"action": "WAIT", "reason": "KC data invalid"}
+        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+            return {"action": "WAIT", "reason": "KC channel invalid"}
+
+        # 峰／谷落在倒數第二根，最後一根是反向確認 K。外側資格必須由
+        # 峰／谷本身取得，不能沿用更早 K 棒的觸區紀錄到通道中央反手。
+        pivot_row = frame.iloc[-2]
+        pivot_upper = float(pivot_row["kc_upper"])
+        pivot_lower = float(pivot_row["kc_lower"])
+        pivot_middle = (pivot_upper + pivot_lower) / 2.0
+        pivot_half_width = (pivot_upper - pivot_lower) / 2.0
+        lower_trigger = pivot_middle - pivot_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+        upper_trigger = pivot_middle + pivot_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+        lower_zone_reached = bool(float(pivot_row["low"]) <= lower_trigger)
+        upper_zone_reached = bool(float(pivot_row["high"]) >= upper_trigger)
+
+        ma3_prev2 = float(frame["ma3"].iloc[-3])
+        ma3_prev = float(frame["ma3"].iloc[-2])
+        ma3_now = float(frame["ma3"].iloc[-1])
+        turn_epsilon = max((pivot_upper - pivot_lower) * 0.005, abs(ma3_prev) * 1e-8)
+        trough_confirmed = bool(
+            ma3_prev2 - ma3_prev >= turn_epsilon
+            and ma3_now - ma3_prev >= turn_epsilon
+            and float(row["close"]) > float(row["open"])
+        )
+        peak_confirmed = bool(
+            ma3_prev - ma3_prev2 >= turn_epsilon
+            and ma3_prev - ma3_now >= turn_epsilon
+            and float(row["close"]) < float(row["open"])
+        )
+
+        side = str(current_side or "").upper()
+        reason = ""
+        if side == "LONG":
+            action = "REVERSE" if upper_zone_reached and peak_confirmed else "HOLD"
+            target_side = "SHORT" if action == "REVERSE" else None
+            if upper_zone_reached and not peak_confirmed:
+                reason = "WAIT_PEAK"
+        elif side == "SHORT":
+            action = "REVERSE" if lower_zone_reached and trough_confirmed else "HOLD"
+            target_side = "LONG" if action == "REVERSE" else None
+            if lower_zone_reached and not trough_confirmed:
+                reason = "WAIT_TROUGH"
+        elif lower_zone_reached and trough_confirmed:
+            action, target_side = "ENTER", "LONG"
+        elif upper_zone_reached and peak_confirmed:
+            action, target_side = "ENTER", "SHORT"
+        else:
+            action, target_side = "WAIT", None
+            if lower_zone_reached:
+                reason = "WAIT_TROUGH"
+            elif upper_zone_reached:
+                reason = "WAIT_PEAK"
+        return {
+            "action": action, "side": target_side,
+            "kc_upper": upper, "kc_lower": lower, "reason": reason,
+        }
+
+    @staticmethod
     def _is_continuous_wave_position(position: dict, meta: dict | None = None) -> bool:
         """是否為應交由連續峰谷主循環管理出場的持倉。"""
         meta = meta or {}
@@ -4097,7 +4175,7 @@ class TradingEngine:
         ).upper()
         reason = str(position.get("reason") or meta.get("reason") or "").upper()
         return bool(
-            entry_mode in ("MA3_MA15_MARKET", "STRONG_LONG_BURST")
+            entry_mode in ("MA3_MA15_MARKET", "STRONG_LONG_BURST", "CHANNEL_SWING")
             or any(token in reason for token in (
                 "TROUGH_TURN", "PEAK_TURN", "RANGE_SWING_REVERSE",
                 "KC_MIDDLE_PEAK_REVERSE", "KC_MIDDLE_TROUGH_REVERSE",
@@ -4492,8 +4570,11 @@ class TradingEngine:
             except Exception as e:
                 self.account.log(f"⚠️ {symbol} 強勢多單檢測異常: {e}", "WARNING")
 
+            from core.config import ENABLE_CONTINUOUS_REVERSE_MODE
+
             # ====== 第二步：如果多單在外軌，不要提早出場（延後平倉邏輯）======
-            if symbol in self.account.positions:
+            # Channel Swing 要在碰到對面軌道時立即平倉，不能被這個舊外軌延伸收掉。
+            if symbol in self.account.positions and not ENABLE_CONTINUOUS_REVERSE_MODE:
                 pos = self.account.positions[symbol]
                 if pos.get("side") == "LONG":
                     try:
@@ -4523,6 +4604,90 @@ class TradingEngine:
 
             from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
             if ENABLE_CONTINUOUS_REVERSE_MODE:
+                # Channel Swing 優先：價格進入外側 70% 區後，等已收盤 MA3
+                # 真峰谷才開倉／反手，不要求價格真的突破 KC 外軌。
+                channel_df = await self.fetch_klines(
+                    symbol, timeframe="1m", limit=30, keep_live=False,
+                )
+                if not channel_df.empty:
+                    channel_df = self.strategy.compute_indicators(channel_df.copy())
+                channel_price = float(
+                    self.tickers.get(symbol)
+                    or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)
+                )
+                existing_pos = self.account.positions.get(symbol)
+                channel_action = self._channel_swing_action(
+                    channel_df, channel_price,
+                    existing_pos.get("side") if existing_pos else None,
+                )
+                action = channel_action.get("action")
+                target_side = channel_action.get("side")
+                kc_upper = float(channel_action.get("kc_upper") or 0.0)
+                kc_lower = float(channel_action.get("kc_lower") or 0.0)
+
+                if action == "REVERSE" and existing_pos:
+                    old_side = str(existing_pos.get("side") or "").upper()
+                    close_label = "到頂" if old_side == "LONG" else "到底"
+                    closed = await self.account.close_position(
+                        symbol, channel_price,
+                        f"Channel Swing {close_label}反手", is_manual=True,
+                    )
+                    if closed:
+                        self.account.log(
+                            f"🔄 [Channel Swing] {symbol} {old_side} {close_label}，"
+                            f"平倉後反手 {target_side}", "SUCCESS",
+                        )
+                        detected_candidates.append({
+                            "detected": True, "side": target_side, "score": 100,
+                            "price": channel_price, "live_price": channel_price,
+                            "atr": float(channel_df["atr"].iloc[-1]),
+                            "entry_mode": "CHANNEL_SWING",
+                            "profit_profile": "TREND_EXTENSION",
+                            "action": "ENTER_MARKET", "target_price": None,
+                            "signal_candle_low": float(channel_df["low"].iloc[-1]),
+                            "signal_candle_high": float(channel_df["high"].iloc[-1]),
+                            "symbol": symbol, "wave_regime": "RANGE",
+                            "market_mode": "RANGE",
+                            "reason": f"Channel Swing {close_label}反手 {target_side}",
+                        })
+                    return signal_progress, detected_candidates
+
+                if existing_pos:
+                    target = kc_upper if existing_pos.get("side") == "LONG" else kc_lower
+                    target_name = "上軌" if existing_pos.get("side") == "LONG" else "下軌"
+                    confirm_wait = {
+                        "WAIT_TROUGH": " | 已到下方外側區，等待谷底綠K",
+                        "WAIT_PEAK": " | 已到上方外側區，等待峰頂紅K",
+                    }.get(str(channel_action.get("reason") or ""), "")
+                    signal_progress.append(
+                        f"{coin} {existing_pos.get('side')} 持倉中 | "
+                        f"目標{target_name} {target:.8g}{confirm_wait}"
+                    )
+                    return signal_progress, detected_candidates
+
+                if action == "ENTER" and target_side:
+                    detected_candidates.append({
+                        "detected": True, "side": target_side, "score": 100,
+                        "price": channel_price, "live_price": channel_price,
+                        "atr": float(channel_df["atr"].iloc[-1]),
+                        "entry_mode": "CHANNEL_SWING",
+                        "profit_profile": "TREND_EXTENSION",
+                        "action": "ENTER_MARKET", "target_price": None,
+                        "signal_candle_low": float(channel_df["low"].iloc[-1]),
+                        "signal_candle_high": float(channel_df["high"].iloc[-1]),
+                        "symbol": symbol, "wave_regime": "RANGE",
+                        "market_mode": "RANGE",
+                        "reason": (
+                            "Channel Swing KC 下軌開多"
+                            if target_side == "LONG" else "Channel Swing KC 上軌開空"
+                        ),
+                    })
+                else:
+                    signal_progress.append(
+                        f"{coin} 通道中央等待 | KC {kc_lower:.8g}~{kc_upper:.8g}"
+                    )
+                return signal_progress, detected_candidates
+
                 from core.indicators import classify_wave_regime, detect_ma3_ma15_cross_and_turn
                 from core.strategy import build_sl_tp_for_side
                 # 連續峰谷模式使用設定的同一週期已收盤K，避免不同週期混用。
