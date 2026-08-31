@@ -58,7 +58,7 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "2"))
 # 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
 # 大盤行情中全部同向進場，反轉時同時承受損失。
 MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "0")))
@@ -916,7 +916,9 @@ MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
 # 假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是同一種情況，故允許
 # 繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件不受影響）。
 MAINSTREAM_SYMBOLS = {
-    "1000PEPE/USDT"
+    "AAVE/USDT", "ADA/USDT", "AVAX/USDT", "BCH/USDT", "DOGE/USDT",
+    "DOT/USDT", "ETC/USDT", "LINK/USDT", "LTC/USDT", "NEAR/USDT",
+    "SOL/USDT", "SUI/USDT", "TRX/USDT", "UNI/USDT", "XRP/USDT",
 }
 # VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
 # 價格極值。
@@ -1016,7 +1018,9 @@ AI_ADVISOR_WEIGHT = float(os.getenv("AI_ADVISOR_WEIGHT", "0.05"))
 # 高流動性候選池。已退場或近期反覆停損的
 # TAO/FET/APT/WIF/1000PEPE/ETH 不放回自動候選池。
 SYMBOL_CANDIDATE_POOL = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "AVAX/USDT"
+    "AAVE/USDT", "ADA/USDT", "AVAX/USDT", "BCH/USDT", "DOGE/USDT",
+    "DOT/USDT", "ETC/USDT", "LINK/USDT", "LTC/USDT", "NEAR/USDT",
+    "SOL/USDT", "SUI/USDT", "TRX/USDT", "UNI/USDT", "XRP/USDT",
 ]
 
 # 實績已確認為負期望的幣種暫停新倉；既有持倉仍由原 SL/TP 管理。

@@ -4194,6 +4194,21 @@ class TradingEngine:
         )
         return "LONG" if long_turn else "SHORT" if short_turn else None
 
+    def _continuous_entry_amount(self) -> float:
+        """Return one independent slot budget and reject entries when both slots are occupied."""
+        positions = getattr(self.account, "positions", {})
+        pending_orders = getattr(self.account, "pending_limit_orders", {})
+        committed = len(positions) + len(pending_orders)
+        if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
+            return 0.0
+
+        available_fn = getattr(self.account, "get_available_balance", None)
+        available = float(available_fn()) if available_fn else TRADE_AMOUNT_USDT
+        remaining_slots = max(1, MAX_SLOTS - committed) if MAX_SLOTS > 0 else 1
+        # 兩槽採資金桶輪替：首筆用一半；第二筆用扣除首筆與手續費後
+        # 的所有剩餘資金。任一筆平倉後，釋放資金直接供下一筆使用。
+        return max(0.0, available / remaining_slots)
+
     async def _place_continuous_market_entry(
         self, symbol: str, side: str, df: pd.DataFrame, live_price: float,
         entry_type: str, reason: str, score: int, timeframe: str,
@@ -4204,13 +4219,23 @@ class TradingEngine:
         from core.config import TRADE_AMOUNT_USDT, get_leverage
         from core.strategy import build_sl_tp_for_side
 
+        if symbol in getattr(self.account, "positions", {}):
+            self.account.log(f"⏸️ {symbol} 已有持倉，不重複占用槽位", "DEBUG")
+            return False
+        amount_usdt = self._continuous_entry_amount()
+        if amount_usdt < MIN_TRADE_USDT:
+            self.account.log(
+                f"⏸️ {symbol} 兩個交易槽位已滿或可用保證金不足", "INFO"
+            )
+            return False
+
         atr_raw = float(df["atr"].iloc[-1]) if "atr" in df.columns else 0.0
         atr = atr_raw if pd.notna(atr_raw) and atr_raw > 0 else live_price * 0.015
         sl_dist, tp_dist = compute_sl_tp_distance(live_price, atr)
         sl, tp = build_sl_tp_for_side(live_price, side, sl_dist, tp_dist)
         opened = await self.account.open_position(
             symbol=symbol, side=side, price=live_price,
-            amount_usdt=self.account.get_available_balance(), sl=sl, tp=tp,
+            amount_usdt=amount_usdt, sl=sl, tp=tp,
             reason=f"{entry_type}: {reason}", atr=atr,
             leverage=get_leverage(symbol), signal_score=score,
             entry_context={

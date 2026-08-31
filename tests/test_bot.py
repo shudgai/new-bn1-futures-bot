@@ -990,6 +990,36 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("APT/USDT", 70) < SYMBOL_LEVERAGE["APT/USDT"]
 
 
+def test_two_slot_watchlist_excludes_btc_eth_bnb():
+    assert len(DEFAULT_SYMBOLS) == 15
+    assert {"BTC/USDT", "ETH/USDT", "BNB/USDT"}.isdisjoint(DEFAULT_SYMBOLS)
+
+
+def test_continuous_slot_reuses_remaining_available_funds(monkeypatch):
+    monkeypatch.setattr(engine_module, "MAX_SLOTS", 2)
+
+    class SlotAccount:
+        pending_limit_orders = {}
+
+        def __init__(self):
+            self.positions = {}
+            self.available = 200.0
+
+        def get_available_balance(self):
+            return self.available
+
+    engine = object.__new__(TradingEngine)
+    engine.account = SlotAccount()
+    assert engine._continuous_entry_amount() == pytest.approx(100.0)
+
+    engine.account.positions["SOL/USDT"] = {"margin": 100.0}
+    engine.account.available = 99.75
+    assert engine._continuous_entry_amount() == pytest.approx(99.75)
+
+    engine.account.positions["XRP/USDT"] = {"margin": 99.75}
+    assert engine._continuous_entry_amount() == pytest.approx(0.0)
+
+
 def test_configured_trade_amount_uses_50_usdt_per_slot():
     # TRADE_AMOUNT_USDT / MAX_SLOTS 這兩個值本身會隨實測調整，不斷言死
     # 具體金額；只驗證設定有正確載入（都是正數）。
