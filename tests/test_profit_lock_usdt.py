@@ -72,7 +72,7 @@ async def test_fee_floor_then_half_usdt_ladder(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_outer_run_closes_after_one_usdt_net_giveback_at_300_margin(
+async def test_outer_run_ignores_one_usdt_giveback_even_after_pivot(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "outer_run_giveback.json"))
@@ -94,16 +94,19 @@ async def test_outer_run_closes_after_one_usdt_net_giveback_at_300_margin(
     # 峰頂尚未出現：即使已從最高淨利回吐超過1U，OUTER_RUN仍不停利。
     assert "BTC/USDT" in account.positions
 
-    # 峰頂出現後才啟動保護；既有回吐已達1U，下一次更新立即平倉。
+    # 即使殘留舊版峰頂保護旗標，連續波段也必須繼續持有。
     account.positions["BTC/USDT"]["outer_run_pivot_protect_armed"] = True
     account.position_meta["BTC/USDT"]["outer_run_pivot_protect_armed"] = True
     await account.update_positions({"BTC/USDT": 101.65})
-    assert "BTC/USDT" not in account.positions
-    assert "OUTER_RUN最高淨利回吐1.00U" in account.trades[0]["reason"]
+    assert "BTC/USDT" in account.positions
+    assert not any(
+        str(trade.get("action") or "").startswith("CLOSE")
+        for trade in account.trades
+    )
 
 
 @pytest.mark.anyio
-async def test_kc_structure_waits_for_pivot_then_closes_on_fixed_one_usdt_giveback(
+async def test_kc_structure_ignores_pivot_and_one_usdt_giveback(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "kc_pivot_giveback.json"))
@@ -125,8 +128,11 @@ async def test_kc_structure_waits_for_pivot_then_closes_on_fixed_one_usdt_giveba
     account.positions["BTC/USDT"]["kc_pivot_protect_armed"] = True
     account.position_meta["BTC/USDT"]["kc_pivot_protect_armed"] = True
     await account.update_positions({"BTC/USDT": 101.0})
-    assert "BTC/USDT" not in account.positions
-    assert "KC峰谷後最高淨利回吐1.00U" in account.trades[0]["reason"]
+    assert "BTC/USDT" in account.positions
+    assert not any(
+        str(trade.get("action") or "").startswith("CLOSE")
+        for trade in account.trades
+    )
 
 
 @pytest.mark.anyio

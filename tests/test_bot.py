@@ -3484,6 +3484,18 @@ def test_outer_run_invalid_second_candle_cancels_short(candle):
     assert "取消開空" in reason
 
 
+def test_adverse_kc_outer_break_is_directional():
+    # 空單在上軌內反彈仍續抱，只有真正漲出上軌才離場。
+    assert TradingEngine._adverse_kc_outer_breached("SHORT", 109.9, 110.0, 90.0) is False
+    assert TradingEngine._adverse_kc_outer_breached("SHORT", 110.0, 110.0, 90.0) is False
+    assert TradingEngine._adverse_kc_outer_breached("SHORT", 110.1, 110.0, 90.0) is True
+
+    # 多單對稱：下軌內回落續抱，跌出下軌才離場。
+    assert TradingEngine._adverse_kc_outer_breached("LONG", 90.1, 110.0, 90.0) is False
+    assert TradingEngine._adverse_kc_outer_breached("LONG", 90.0, 110.0, 90.0) is False
+    assert TradingEngine._adverse_kc_outer_breached("LONG", 89.9, 110.0, 90.0) is True
+
+
 def test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction():
     frame = pd.DataFrame({
         "ma3": [100.0, 101.0, 100.5],

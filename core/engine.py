@@ -1137,8 +1137,6 @@ class TradingEngine:
         while self.is_running:
             try:
                 for symbol, position in list(self.account.positions.items()):
-                    if CONTINUOUS_PIVOT_ONLY:
-                        continue
                     live_price = float(self.tickers.get(symbol) or position.get("mark_price") or position["entry_price"])
                     entry_price = float(position["entry_price"])
                     side = position["side"]
@@ -1159,9 +1157,8 @@ class TradingEngine:
                         kc_upper = float(trigger.get("kc_upper") or 0)
                         kc_lower = float(trigger.get("kc_lower") or 0)
                         if kc_upper > 0 and kc_lower > 0:
-                            is_kc_ripped = (
-                                (side == "LONG" and live_price < kc_lower)
-                                or (side == "SHORT" and live_price > kc_upper)
+                            is_kc_ripped = self._adverse_kc_outer_breached(
+                                side, live_price, kc_upper, kc_lower,
                             )
                             if is_kc_ripped:
                                 self.account.log(
@@ -1188,11 +1185,18 @@ class TradingEngine:
                             position["peak_pnl_pct"] = pnl_pct
                             highest_pnl = pnl_pct
                             
-                        is_structure_exit_mode = str(
-                            position.get("wave_regime")
-                            or self.account.position_meta.get(symbol, {}).get("wave_regime")
-                            or ""
-                        ).upper() in ("RANGE", "TREND")
+                        is_structure_exit_mode = self._is_continuous_wave_position(
+                            position, self.account.position_meta.get(symbol, {}),
+                        )
+                        if is_structure_exit_mode:
+                            if pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
+                                await self.account.close_position(
+                                    symbol, live_price,
+                                    f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)",
+                                )
+                            # 連續波段不使用移動停利；只有不利方向 KC 外軌破軌、
+                            # 固定硬停損或手動平倉可以結束持倉。
+                            continue
                         if not is_mega_trend:
                             if (
                                 not is_structure_exit_mode
@@ -1363,51 +1367,20 @@ class TradingEngine:
                         position.get("side"), exit_signal_info, exit_frame,
                     )
                     trigger["confirmed_outer_exit"] = confirmed_outer_exit
-                    pivot_protection_was_armed = bool(
-                        position_meta.get("outer_run_pivot_protect_armed")
-                        or position.get("outer_run_pivot_protect_armed")
-                    )
-                    outer_run_pivot_protect_armed = bool(
-                        pivot_protection_was_armed
-                        or (
-                            bool(kc_outer_lock.get("outer_run_active"))
-                            and confirmed_outer_exit
-                        )
-                    )
-                    position_meta["outer_run_pivot_protect_armed"] = outer_run_pivot_protect_armed
-                    position["outer_run_pivot_protect_armed"] = outer_run_pivot_protect_armed
-                    trigger["outer_run_pivot_protect_armed"] = outer_run_pivot_protect_armed
-                    if outer_run_pivot_protect_armed and not pivot_protection_was_armed:
-                        self.account.log(
-                            f"{symbol} OUTER_RUN峰谷已出現，啟動最高淨利回吐1U保護",
-                            "INFO",
-                        )
                     wave_regime = str(
                         position.get("wave_regime")
                         or position_meta.get("wave_regime")
                         or self._continuous_wave_regime.get(symbol, "TREND")
                     ).upper()
-                    kc_pivot_was_armed = bool(
-                        position_meta.get("kc_pivot_protect_armed")
-                        or position.get("kc_pivot_protect_armed")
-                    )
-                    kc_pivot_protect_armed = bool(
-                        kc_pivot_was_armed
-                        or (
-                            is_cr_position
-                            and wave_regime in ("RANGE", "TREND")
-                            and not kc_outer_lock.get("outer_run_active")
-                            and confirmed_outer_exit
-                        )
-                    )
-                    position_meta["kc_pivot_protect_armed"] = kc_pivot_protect_armed
-                    position["kc_pivot_protect_armed"] = kc_pivot_protect_armed
-                    trigger["kc_pivot_protect_armed"] = kc_pivot_protect_armed
-                    if kc_pivot_protect_armed and not kc_pivot_was_armed:
-                        self.account.log(
-                            f"{symbol} 反向外軌峰谷已確認，啟動最高淨利回吐1U保護",
-                            "INFO",
-                        )
+                    # 連續波段只由不利方向外軌破軌或硬停損離場；舊版峰谷後
+                    # 1U 回吐旗標可能由持久化資料帶回，必須明確清除。
+                    if is_cr_position:
+                        for protect_key in (
+                            "outer_run_pivot_protect_armed", "kc_pivot_protect_armed",
+                        ):
+                            position_meta[protect_key] = False
+                            position[protect_key] = False
+                            trigger[protect_key] = False
                     # 未收線訊號只保留在 UI 診斷，不得比已收盤的正式
                     # 外軌峰／谷更早平掉既有持倉。
                     live_rail_signal_info = detect_ma3_ma15_cross_and_turn(
@@ -1442,19 +1415,7 @@ class TradingEngine:
                         # 部位維持上面 _ma5_exit_ready 算出來的持倉時間/幅度
                         # 閘門說明，不要被這裡蓋掉。
                         trigger["ma5_exit_gate"] = (
-                            (
-                                "OUTER_RUN：外軌延伸中，固定鎖利＋ATR移動停利接管"
-                                if ENABLE_TRAILING_SL
-                                else "OUTER_RUN：外軌延伸中，等待回軌；僅固定鎖利保護"
-                            )
-                            if kc_outer_lock.get("outer_run_active")
-                            else "假突破：保持原持倉方向"
-                            if false_breakout_hold
-                            else (
-                                "強趨勢：追蹤最高/最低，等待兩根衰退確認"
-                                if str(position.get("wave_regime") or position_meta.get("wave_regime") or "").upper() == "TREND"
-                                else "等待下一個相反峰谷"
-                            )
+                            "連續波段續抱：只等不利方向 KC 外軌破軌或硬停損"
                         )
                     market_mode = str(
                         position.get("market_mode")
@@ -1709,24 +1670,22 @@ class TradingEngine:
                     )
                     # WAIT_PRE_PIVOT 代表斜率仍不足，必須維持原倉等待已收盤峰谷。
                     pre_turn_exit = False
-                    if (
-                        is_cr_position
-                        and wave_regime in ("RANGE", "TREND")
-                        and not outer_run_active
-                    ):
-                        # 只接受正式反向外軌峰谷出場或其後固定回吐1U；
-                        # KC內峰谷與其他技術型衰退訊號不再單獨平倉。
+                    if is_cr_position:
+                        # 中軌回踩、正式獲利側峰谷、MA轉向與回吐都不平倉。
+                        # 不利方向 KC 外軌破軌由固定停損迴圈處理。
                         live_next_rail_flatten = False
                         trend_exhaustion_exit = False
                         two_bar_opposite_trend_exit = False
                         live_pivot_exit = False
+                        opposite_pivot = False
+                        outer_rail_flatten = False
+                        outer_run_return_exit = False
+                        opposite_candle_exit = False
                         trigger["live_next_rail_flatten"] = False
                         trigger["trend_exhaustion_exit"] = False
                         trigger["two_bar_opposite_trend_exit"] = False
-                        if not confirmed_outer_exit:
-                            opposite_pivot = False
-                            outer_rail_flatten = False
-                            trigger["outer_rail_flatten"] = False
+                        trigger["outer_rail_flatten"] = False
+                        trigger["outer_run_return_pending"] = False
                     should_auto_close = bool(
                         (not false_breakout_hold or live_next_rail_flatten or live_pivot_exit or trend_exhaustion_exit or two_bar_opposite_trend_exit or outer_rail_flatten or outer_run_return_exit or opposite_candle_exit)
                         and (
@@ -4109,6 +4068,17 @@ class TradingEngine:
         )
 
     @staticmethod
+    def _adverse_kc_outer_breached(
+        position_side: str, live_price: float, kc_upper: float, kc_lower: float,
+    ) -> bool:
+        """價格是否已越過持倉不利方向的 KC 外軌。"""
+        side = str(position_side or "").upper()
+        return bool(
+            (side == "LONG" and kc_lower > 0 and live_price < kc_lower)
+            or (side == "SHORT" and kc_upper > 0 and live_price > kc_upper)
+        )
+
+    @staticmethod
     def _confirmed_outer_reversal(
         position_side: str, signal_info: dict, frame: pd.DataFrame,
     ) -> bool:
@@ -4679,23 +4649,12 @@ class TradingEngine:
                     _position_meta["kc_outer_run_armed"] = _outer_lock["armed"]
                     self.account.positions[symbol]["kc_outer_run_armed"] = _outer_lock["armed"]
                     outer_run_active = bool(_outer_lock["outer_run_active"])
-                    if outer_run_active and confirmed_outer_reversal:
-                        _position_meta["outer_run_pivot_protect_armed"] = True
-                        self.account.positions[symbol][
-                            "outer_run_pivot_protect_armed"
-                        ] = True
-                    _held_wave_regime = str(
-                        self.account.positions[symbol].get("wave_regime")
-                        or _position_meta.get("wave_regime")
-                        or ""
-                    ).upper()
-                    if (
-                        not outer_run_active
-                        and _held_wave_regime in ("RANGE", "TREND")
-                        and confirmed_outer_reversal
+                    for protect_key in (
+                        "outer_run_pivot_protect_armed", "kc_pivot_protect_armed",
                     ):
-                        _position_meta["kc_pivot_protect_armed"] = True
-                        self.account.positions[symbol]["kc_pivot_protect_armed"] = True
+                        _position_meta[protect_key] = False
+                        self.account.positions[symbol][protect_key] = False
+                    _position_meta["outer_run_return_pending"] = False
                     outer_run_return_detected = bool(
                         _outer_lock.get("returned_inside_outer")
                         or _position_meta.get("outer_run_return_pending", False)
@@ -4717,13 +4676,8 @@ class TradingEngine:
                             and _outer_confirm_close > float(_outer_lock["kc_lower"])
                         )
                     )
-                    outer_run_return_exit = bool(
-                        outer_run_return_detected
-                        and _outer_body_fully_inside
-                        and confirmed_outer_reversal
-                    )
-                    if outer_run_return_detected and not outer_run_return_exit:
-                        _position_meta["outer_run_return_pending"] = True
+                    # 獲利側回到軌內、峰谷轉向與回吐都不平倉。
+                    outer_run_return_exit = False
                     _position_meta["outer_run_active"] = outer_run_active
                     self.account.positions[symbol]["outer_run_active"] = outer_run_active
                     kc_outer_reversal_blocked = bool(_outer_lock["blocked"])
@@ -5191,75 +5145,12 @@ class TradingEngine:
                             else:
                                 signal_progress.append(f"{coin} 上軌峰頂：只平多，不開空")
                         elif curr_side != cr_signal:
-                            if not confirmed_outer_reversal:
-                                self.account.log(
-                                    f"{symbol} KC內 {cr_entry_type} 僅為回踩，"
-                                    f"未形成反向外軌峰谷，維持 {curr_side} 持倉",
-                                    "INFO",
-                                )
-                                return signal_progress, detected_candidates
-                            if outer_run_active:
-                                self.account.log(
-                                    f"{symbol} OUTER_RUN 延伸中：忽略 {cr_entry_type} 小轉折，"
-                                    f"等待反向K收回外軌內",
-                                    "INFO",
-                                )
-                                return signal_progress, detected_candidates
-                            if (
-                                CONTINUOUS_PIVOT_ONLY
-                                and PIVOT_LONG_ONLY
-                                and not cr_info.get("outer_run_direct_reverse")
-                            ):
-                                await self.account.close_position(
-                                    symbol=symbol, current_price=live_price,
-                                    close_reason=f"外軌峰谷轉向只平倉 ({cr_entry_type})",
-                                    is_manual=True,
-                                )
-                                return signal_progress, detected_candidates
-                            if CONTINUOUS_PIVOT_ONLY:
-                                position_pnl = float(
-                                    self.account.positions.get(symbol, {}).get("unrealized_pnl") or 0.0
-                                )
-                                pnl_action = (
-                                    "accept loss and reverse; do not hold"
-                                    if position_pnl <= 0.0 else "reverse with profit"
-                                )
-                                self.account.log(
-                                    f"REVERSAL {symbol}: {curr_side} -> {cr_signal}; "
-                                    f"unrealized PnL {position_pnl:+.4f} USDT; {pnl_action}",
-                                    "WARNING" if position_pnl <= 0.0 else "SUCCESS",
-                                )
-                                closed = await self.account.close_position(
-                                    symbol=symbol, current_price=live_price,
-                                    close_reason=f"外軌峰谷直接反手 ({cr_entry_type})",
-                                    is_manual=True,
-                                )
-                                should_open = bool(closed)
-                            if not CONTINUOUS_PIVOT_ONLY:
-                                self.account.log(
-                                    f"{symbol} confirmed {cr_entry_type}: close {curr_side}, immediately market-reverse {cr_signal}",
-                                    "WARNING",
-                                )
-                                closed = await self.account.close_position(
-                                    symbol=symbol,
-                                    current_price=live_price,
-                                    close_reason=f"confirmed pivot first candle ({cr_entry_type})",
-                                    is_manual=True,
-                                )
-                                if closed:
-                                    self._kc_reversal_wait[symbol] = {
-                                        "mode": "PIVOT_SECOND_CANDLE",
-                                        "from_side": curr_side,
-                                        "target_side": cr_signal,
-                                        "pivot_type": cr_entry_type,
-                                        "first_bar_id": entry_bar_id,
-                                        "first_close": float(df_cr_entry["close"].iloc[-1]),
-                                        "created_at": now_time,
-                                    }
-                                    signal_progress.append(
-                                        f"{coin} 正式峰谷第一根確認K已平倉，等待第二根收盤再開{cr_signal}"
-                                    )
-                                return signal_progress, detected_candidates
+                            self.account.log(
+                                f"{symbol} {cr_entry_type} 為持倉內反向波動；"
+                                f"只要尚未突破不利方向 KC 外軌就維持 {curr_side} 持倉",
+                                "INFO",
+                            )
+                            return signal_progress, detected_candidates
 
                         if should_open:
                             post_close_available = self.account.get_available_balance()

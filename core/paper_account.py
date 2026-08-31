@@ -1214,20 +1214,14 @@ class PaperAccount:
                     pos.get("outer_run_active") or meta.get("outer_run_active")
                 )
                 outer_run_protect = bool(
-                    outer_run_active
+                    not is_structure_exit_mode
+                    and outer_run_active
                     and (
                         pos.get("outer_run_pivot_protect_armed")
                         or meta.get("outer_run_pivot_protect_armed")
                     )
                 )
-                kc_structure_protect = bool(
-                    is_structure_exit_mode
-                    and not outer_run_active
-                    and (
-                        pos.get("kc_pivot_protect_armed")
-                        or meta.get("kc_pivot_protect_armed")
-                    )
-                )
+                kc_structure_protect = False
                 if (
                     (outer_run_protect or kc_structure_protect)
                     and peak_net_usdt > 0.0
