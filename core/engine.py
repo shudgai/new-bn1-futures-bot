@@ -1149,6 +1149,27 @@ class TradingEngine:
                             pnl_pct = (live_price - entry_price) / entry_price
                         else:
                             pnl_pct = (entry_price - live_price) / entry_price
+
+                        # Channel Swing 完全交由主循環的「對面 KC 外軌轉色」管理。
+                        # 不執行同側 KC 破軌、固定停損、結構破壞或移動停利。
+                        if entry_mode.upper() == "CHANNEL_SWING":
+                            if any(float(position.get(key) or 0.0) != 0.0 for key in (
+                                "sl", "initial_sl", "initial_risk",
+                            )):
+                                position["sl"] = 0.0
+                                position["initial_sl"] = 0.0
+                                position["initial_risk"] = 0.0
+                                meta = self.account.position_meta.setdefault(symbol, {})
+                                meta["sl"] = 0.0
+                                meta["initial_sl"] = 0.0
+                                meta["initial_risk"] = 0.0
+                                save_state = getattr(self.account, "save_state", None)
+                                if callable(save_state):
+                                    save_state()
+                            highest_pnl = float(position.get("peak_pnl_pct") or pnl_pct)
+                            if pnl_pct > highest_pnl:
+                                position["peak_pnl_pct"] = pnl_pct
+                            continue
                             
                         import core.config as config
 
@@ -3181,6 +3202,10 @@ class TradingEngine:
         initial_risk = abs(planned_price - sl)
         if initial_risk <= 0:
             return False
+        channel_swing_no_stop = entry_mode == "CHANNEL_SWING"
+        if channel_swing_no_stop:
+            sl = 0.0
+            initial_risk = 0.0
         structured_net_rr = None
         profit_profile = signal.get("profit_profile")
         if not profit_profile:
@@ -3221,7 +3246,8 @@ class TradingEngine:
         amount = dynamic_trade_amount
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
         amount, projected_risk = cap_margin_to_trade_risk(
-            amount, leverage, planned_price, sl,
+            amount, leverage, planned_price,
+            planned_price if channel_swing_no_stop else sl,
         )
         if amount < MIN_TRADE_USDT:
             self.account.log(f"🛑 {symbol} 風控縮減後金額 {amount:.2f}U 低於最小交易門檻 {MIN_TRADE_USDT}U，放棄掛單", "WARNING")
@@ -3269,9 +3295,14 @@ class TradingEngine:
             )
         if placed:
             order_type = "支撐限價" if is_limit else "市價"
+            protection_text = (
+                "無中途停損，僅對面KC外軌轉向平倉"
+                if channel_swing_no_stop
+                else f"硬停損 {sl:.8g}｜風險 {initial_risk:.8g}"
+            )
             self.account.log(
                 f"📝 [結構掛單] {symbol} {side} {entry_mode} {order_type} @ "
-                f"{planned_price:.8g}｜硬停損 {sl:.8g}｜風險 {initial_risk:.8g}",
+                f"{planned_price:.8g}｜{protection_text}",
                 "SUCCESS",
             )
         return bool(placed)
@@ -4098,72 +4129,130 @@ class TradingEngine:
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
     ) -> dict:
-        """KC 低買高賣：進入外側區後，等已收盤 MA3 峰谷才反向。"""
-        required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
+        """KC 低買高賣：外軌轉色 K 收盤後，由下一根突破確認。"""
+        required = {"open", "high", "low", "close", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
         row = frame.iloc[-1]
+        signal_row = frame.iloc[-2]
         try:
             price = float(live_price)
             upper = float(row["kc_upper"])
             lower = float(row["kc_lower"])
+            signal_upper = float(signal_row["kc_upper"])
+            signal_lower = float(signal_row["kc_lower"])
+            live_low = min(float(row["low"]), price)
+            live_high = max(float(row["high"]), price)
+            signal_open = float(signal_row["open"])
+            signal_close = float(signal_row["close"])
+            signal_low = float(signal_row["low"])
+            signal_high = float(signal_row["high"])
         except (TypeError, ValueError):
             return {"action": "WAIT", "reason": "KC data invalid"}
-        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+        if (
+            not all(math.isfinite(value) for value in (
+                price, upper, lower, signal_upper, signal_lower,
+                live_low, live_high, signal_open, signal_close,
+                signal_low, signal_high,
+            ))
+            or lower >= upper or signal_lower >= signal_upper
+            or signal_low > signal_high
+        ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        # 峰／谷落在倒數第二根，最後一根是反向確認 K。外側資格必須由
-        # 峰／谷本身取得，不能沿用更早 K 棒的觸區紀錄到通道中央反手。
-        pivot_row = frame.iloc[-2]
-        pivot_upper = float(pivot_row["kc_upper"])
-        pivot_lower = float(pivot_row["kc_lower"])
-        pivot_middle = (pivot_upper + pivot_lower) / 2.0
-        pivot_half_width = (pivot_upper - pivot_lower) / 2.0
-        lower_trigger = pivot_middle - pivot_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
-        upper_trigger = pivot_middle + pivot_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
-        lower_zone_reached = bool(float(pivot_row["low"]) <= lower_trigger)
-        upper_zone_reached = bool(float(pivot_row["high"]) >= upper_trigger)
-        lower_rail_reached = bool(float(pivot_row["low"]) <= pivot_lower)
-        upper_rail_reached = bool(float(pivot_row["high"]) >= pivot_upper)
+        middle = (upper + lower) / 2.0
+        half_width = (upper - lower) / 2.0
+        lower_execution_zone = middle - half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+        upper_execution_zone = middle + half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+        signal_middle = (signal_upper + signal_lower) / 2.0
+        signal_half_width = (signal_upper - signal_lower) / 2.0
+        signal_lower_zone = (
+            signal_middle - signal_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+        )
+        signal_upper_zone = (
+            signal_middle + signal_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
+        )
 
-        ma3_prev2 = float(frame["ma3"].iloc[-3])
-        ma3_prev = float(frame["ma3"].iloc[-2])
-        ma3_now = float(frame["ma3"].iloc[-1])
-        turn_epsilon = max((pivot_upper - pivot_lower) * 0.005, abs(ma3_prev) * 1e-8)
-        trough_confirmed = bool(
-            ma3_prev2 - ma3_prev >= turn_epsilon
-            and ma3_now - ma3_prev >= turn_epsilon
-            and float(row["close"]) > float(row["open"])
+        closed_trough = bool(
+            signal_low <= signal_lower
+            and signal_close > signal_open
+            and signal_close <= signal_lower_zone
         )
-        peak_confirmed = bool(
-            ma3_prev - ma3_prev2 >= turn_epsilon
-            and ma3_prev - ma3_now >= turn_epsilon
-            and float(row["close"]) < float(row["open"])
+        closed_peak = bool(
+            signal_high >= signal_upper
+            and signal_close < signal_open
+            and signal_close >= signal_upper_zone
         )
+        # 候選 K 必須已收盤；只允許緊接著的下一根 K 突破確認。
+        # 若該 K 曾先走破反方向極值，OHLC 無法還原盤中先後次序，為避免
+        # 已失敗的候選又被同一根 K 救回，保守地將整個候選視為取消。
+        trough_cancelled = bool(closed_trough and live_low < signal_low)
+        peak_cancelled = bool(closed_peak and live_high > signal_high)
+        trough_turn = bool(
+            closed_trough
+            and not trough_cancelled
+            and price > signal_high
+            and price <= lower_execution_zone
+        )
+        peak_turn = bool(
+            closed_peak
+            and not peak_cancelled
+            and price < signal_low
+            and price >= upper_execution_zone
+        )
+        live_lower_touch = live_low <= lower
+        live_upper_touch = live_high >= upper
 
         side = str(current_side or "").upper()
         reason = ""
         if side == "LONG":
-            # 已持倉後只認真正的對面 KC 外軌；70% 外側區僅供空倉找入口。
-            action = "REVERSE" if upper_rail_reached and peak_confirmed else "HOLD"
+            action = "REVERSE" if peak_turn else "HOLD"
             target_side = "SHORT" if action == "REVERSE" else None
-            if upper_rail_reached and not peak_confirmed:
-                reason = "WAIT_PEAK"
+            if closed_peak and not peak_turn:
+                if peak_cancelled:
+                    reason = "CANCEL_SHORT"
+                elif live_low < signal_low and price < upper_execution_zone:
+                    reason = "MISSED_UPPER"
+                else:
+                    reason = "WAIT_BREAK_LOW"
+            elif live_upper_touch:
+                reason = "WAIT_CLOSE_RED"
         elif side == "SHORT":
-            action = "REVERSE" if lower_rail_reached and trough_confirmed else "HOLD"
+            action = "REVERSE" if trough_turn else "HOLD"
             target_side = "LONG" if action == "REVERSE" else None
-            if lower_rail_reached and not trough_confirmed:
-                reason = "WAIT_TROUGH"
-        elif lower_zone_reached and trough_confirmed:
+            if closed_trough and not trough_turn:
+                if trough_cancelled:
+                    reason = "CANCEL_LONG"
+                elif live_high > signal_high and price > lower_execution_zone:
+                    reason = "MISSED_LOWER"
+                else:
+                    reason = "WAIT_BREAK_HIGH"
+            elif live_lower_touch:
+                reason = "WAIT_CLOSE_GREEN"
+        elif trough_turn:
             action, target_side = "ENTER", "LONG"
-        elif upper_zone_reached and peak_confirmed:
+        elif peak_turn:
             action, target_side = "ENTER", "SHORT"
         else:
             action, target_side = "WAIT", None
-            if lower_zone_reached:
-                reason = "WAIT_TROUGH"
-            elif upper_zone_reached:
-                reason = "WAIT_PEAK"
+            if closed_trough:
+                if trough_cancelled:
+                    reason = "CANCEL_LONG"
+                elif live_high > signal_high and price > lower_execution_zone:
+                    reason = "MISSED_LOWER"
+                else:
+                    reason = "WAIT_BREAK_HIGH"
+            elif closed_peak:
+                if peak_cancelled:
+                    reason = "CANCEL_SHORT"
+                elif live_low < signal_low and price < upper_execution_zone:
+                    reason = "MISSED_UPPER"
+                else:
+                    reason = "WAIT_BREAK_LOW"
+            elif live_lower_touch:
+                reason = "WAIT_CLOSE_GREEN"
+            elif live_upper_touch:
+                reason = "WAIT_CLOSE_RED"
         return {
             "action": action, "side": target_side,
             "kc_upper": upper, "kc_lower": lower, "reason": reason,
@@ -4607,10 +4696,10 @@ class TradingEngine:
 
             from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
             if ENABLE_CONTINUOUS_REVERSE_MODE:
-                # Channel Swing 優先：空倉可在外側 70% 區等峰谷進場；持倉後
-                # 必須真正觸及對面 KC 外軌並確認峰谷，通道中間絕不平倉。
+                # Channel Swing：開倉／反手都必須由當根 K 真正越過 KC 外軌、
+                # 轉成反向顏色且現價仍在外側區觸發；通道中間絕不追價。
                 channel_df = await self.fetch_klines(
-                    symbol, timeframe="1m", limit=30, keep_live=False,
+                    symbol, timeframe="1m", limit=200, keep_live=True,
                 )
                 if not channel_df.empty:
                     channel_df = self.strategy.compute_indicators(channel_df.copy())
@@ -4659,8 +4748,14 @@ class TradingEngine:
                     target = kc_upper if existing_pos.get("side") == "LONG" else kc_lower
                     target_name = "上軌" if existing_pos.get("side") == "LONG" else "下軌"
                     confirm_wait = {
-                        "WAIT_TROUGH": " | 已到下方外側區，等待谷底綠K",
-                        "WAIT_PEAK": " | 已到上方外側區，等待峰頂紅K",
+                        "WAIT_CLOSE_GREEN": " | 已越下軌，等待綠K收盤",
+                        "WAIT_CLOSE_RED": " | 已越上軌，等待紅K收盤",
+                        "WAIT_BREAK_HIGH": " | 下軌綠K已收盤，等待下一根破高",
+                        "WAIT_BREAK_LOW": " | 上軌紅K已收盤，等待下一根破低",
+                        "CANCEL_LONG": " | 多方候選已先破低取消",
+                        "CANCEL_SHORT": " | 空方候選已先破高取消",
+                        "MISSED_LOWER": " | 下軌轉向已跑回中間，不追多",
+                        "MISSED_UPPER": " | 上軌轉向已跑回中間，不追空",
                     }.get(str(channel_action.get("reason") or ""), "")
                     signal_progress.append(
                         f"{coin} {existing_pos.get('side')} 持倉中 | "

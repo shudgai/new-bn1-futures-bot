@@ -645,6 +645,8 @@ class BinanceTestnetAccount:
             # 處理，避免兩邊搶著建立不一致的止損止盈單。
             if (
                 pos.get("sl", 0.0) <= 0
+                and str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+                    != "CHANNEL_SWING"
                 and symbol not in self._orphan_protection_attempted
                 and symbol not in self.pending_limit_orders
             ):
@@ -1585,11 +1587,16 @@ class BinanceTestnetAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
-        try:
-            validate_sl_tp_pair(price, side, sl, tp)
-        except ValueError as exc:
-            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
-            return False
+        entry_mode = str(dict(entry_context or {}).get("entry_mode") or "").upper()
+        if entry_mode == "CHANNEL_SWING":
+            sl = 0.0
+            tp = 0.0
+        else:
+            try:
+                validate_sl_tp_pair(price, side, sl, tp)
+            except ValueError as exc:
+                self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
+                return False
         await self._ensure_markets()
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)
@@ -1673,11 +1680,16 @@ class BinanceTestnetAccount:
                 key: value for key, value in dict(entry_context or {}).items()
                 if key in ENTRY_CONTEXT_KEYS
             }
-            try:
-                validate_sl_tp_pair(execution_price, side, sl, tp)
-            except ValueError as exc:
-                self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
-                return False
+            is_channel_swing = str(entry_context.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+            if is_channel_swing:
+                sl = 0.0
+                tp = 0.0
+            else:
+                try:
+                    validate_sl_tp_pair(execution_price, side, sl, tp)
+                except ValueError as exc:
+                    self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
+                    return False
             is_exhaustion_sniper = entry_context.get("entry_mode") in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
             sl_distance = abs(price_ref - sl)
             tp_distance = abs(tp - price_ref)
@@ -1696,7 +1708,9 @@ class BinanceTestnetAccount:
                     else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
                 )
             # Ensure SL sits on correct side and respect a minimum distance
-            if not DISABLE_STOP_LOSS or is_exhaustion_sniper:
+            if is_channel_swing:
+                sl_price = 0.0
+            elif not DISABLE_STOP_LOSS or is_exhaustion_sniper:
                 atr_value = atr if atr > 0 else execution_price * 0.015
                 min_dist = max(price_ref * MIN_SL_DISTANCE_PCT, atr_value * STOP_LOSS_MULTIPLIER)
                 if side == "LONG":
@@ -1708,7 +1722,7 @@ class BinanceTestnetAccount:
                 sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             else:
                 sl_price = 0.0
-            if not DISABLE_STOP_LOSS and not is_exhaustion_sniper:
+            if not is_channel_swing and not DISABLE_STOP_LOSS and not is_exhaustion_sniper:
                 sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
                 sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
             structure_exit_only = str(entry_context.get("wave_regime") or "").upper() in ("RANGE", "TREND")
@@ -1726,7 +1740,7 @@ class BinanceTestnetAccount:
                 # 兩邊可能疊出重複的止損止盈單。先清一次掛單，確保接下來建的
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
-                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS and sl_price > 0:
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )

@@ -425,11 +425,20 @@ class PaperAccount:
     ) -> bool:
         if symbol in self.closing_lock:
             return False
-        
+
+        entry_mode = str(dict(entry_context or {}).get("entry_mode") or "").upper()
         is_top_up = symbol in self.positions
         if is_top_up:
             if self.positions[symbol]["side"] != side:
                 self.log(f"🛑 {symbol} 已有反向倉位，拒絕加碼", "WARNING")
+                return False
+            held_mode = str(
+                self.positions[symbol].get("entry_mode")
+                or self.position_meta.get(symbol, {}).get("entry_mode")
+                or ""
+            ).upper()
+            if entry_mode == "CHANNEL_SWING" or held_mode == "CHANNEL_SWING":
+                self.log(f"🛑 {symbol} Channel Swing 持倉中，拒絕加碼", "WARNING")
                 return False
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕開倉", "WARNING")
@@ -437,11 +446,15 @@ class PaperAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
-        try:
-            validate_sl_tp_pair(price, side, sl, tp)
-        except ValueError as exc:
-            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
-            return False
+        if entry_mode == "CHANNEL_SWING":
+            sl = 0.0
+            tp = 0.0
+        else:
+            try:
+                validate_sl_tp_pair(price, side, sl, tp)
+            except ValueError as exc:
+                self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
+                return False
 
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score) if signal_score is not None else get_leverage(symbol)
@@ -458,7 +471,6 @@ class PaperAccount:
                 sl = execution_price - sl_distance if side == "LONG" else execution_price + sl_distance
             if tp_distance > 0:
                 tp = execution_price + tp_distance if side == "LONG" else execution_price - tp_distance
-        entry_mode = dict(entry_context or {}).get("entry_mode")
         if entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
             # 市價滑價後，以實際成交價重算精確 1.2% 硬停損。
             sl = execution_price * (
@@ -466,7 +478,7 @@ class PaperAccount:
                 if side == "LONG"
                 else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
             )
-        if CONTINUOUS_PIVOT_ONLY:
+        if entry_mode == "CHANNEL_SWING" or CONTINUOUS_PIVOT_ONLY:
             sl = 0.0
             tp = 0.0
         elif DISABLE_STOP_LOSS and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):

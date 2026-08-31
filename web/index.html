@@ -9,7 +9,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>1000PEPE Futures Bot (Port 8006)</title>
+    <title>SOL Futures Bot (Port 8006)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -227,7 +227,7 @@
         <!-- TOPBAR -->
         <div class="topbar">
             <div class="logo">
-                <span>🚀</span> 1000PEPE Bot
+                <span>🚀</span> SOL Bot
                 <span class="badge badge-port">PORT {{ bot.port }}</span>
                 <span v-if="bot.paper_trading" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
@@ -584,7 +584,7 @@
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
-                        symbols: ['1000PEPE/USDT'],
+                        symbols: ['SOL/USDT'],
                         symbol_directions: {},
                         market_modes: {},
                         volatility_stats: {},
@@ -605,7 +605,7 @@
                         logs: []
                     },
                     manualOrder: {
-                        symbol: '1000PEPE/USDT',
+                        symbol: 'SOL/USDT',
                         amount: 50.0
                     },
                     exportDate: '',
@@ -1086,7 +1086,7 @@
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : '1000PEPE/USDT',
+                                symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : 'SOL/USDT',
                                 side: side,
                                 amount: 0
                             })
