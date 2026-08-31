@@ -995,6 +995,14 @@ def test_two_slot_watchlist_excludes_btc_eth_bnb():
     assert {"BTC/USDT", "ETH/USDT", "BNB/USDT"}.isdisjoint(DEFAULT_SYMBOLS)
 
 
+def test_effective_slots_use_one_below_120_usdt():
+    assert engine_module.get_effective_slot_count(99.99, configured_max=2) == 1
+    assert engine_module.get_effective_slot_count(119.99, configured_max=5) == 1
+    assert engine_module.get_effective_slot_count(120.0, configured_max=5) == 2
+    assert engine_module.get_effective_slot_count(224.99, configured_max=5) == 2
+    assert engine_module.get_effective_slot_count(225.0, configured_max=5) == 3
+
+
 def test_continuous_slot_reuses_remaining_available_funds(monkeypatch):
     monkeypatch.setattr(engine_module, "MAX_SLOTS", 2)
 
@@ -1011,6 +1019,10 @@ def test_continuous_slot_reuses_remaining_available_funds(monkeypatch):
     engine = object.__new__(TradingEngine)
     engine.account = SlotAccount()
     assert engine._continuous_entry_amount() == pytest.approx(100.0)
+
+    engine.account.available = 99.0
+    assert engine._continuous_entry_amount() == pytest.approx(99.0)
+    engine.account.available = 200.0
 
     engine.account.positions["SOL/USDT"] = {"margin": 100.0}
     engine.account.available = 99.75
@@ -3512,6 +3524,34 @@ def test_outer_run_invalid_second_candle_cancels_short(candle):
 
     assert status == "INVALIDATED"
     assert "取消開空" in reason
+
+
+def test_two_bar_structure_failure_exit_is_symmetric():
+    rising = pd.DataFrame({
+        "close": [100.0, 102.0, 103.0],
+        "ma3": [99.0, 100.0, 101.0],
+        "ma15": [100.0, 100.2, 100.4],
+        "ema_20": [100.0, 100.3, 100.6],
+        "kc_upper": [102.0, 102.3, 102.6],
+        "kc_lower": [98.0, 98.3, 98.6],
+    })
+    assert TradingEngine._two_bar_structure_failure_exit(rising, "SHORT") is True
+    assert TradingEngine._two_bar_structure_failure_exit(rising, "LONG") is False
+
+    falling = pd.DataFrame({
+        "close": [100.0, 98.0, 97.0],
+        "ma3": [101.0, 100.0, 99.0],
+        "ma15": [100.0, 99.8, 99.6],
+        "ema_20": [100.0, 99.7, 99.4],
+        "kc_upper": [102.0, 101.7, 101.4],
+        "kc_lower": [98.0, 97.7, 97.4],
+    })
+    assert TradingEngine._two_bar_structure_failure_exit(falling, "LONG") is True
+    assert TradingEngine._two_bar_structure_failure_exit(falling, "SHORT") is False
+
+    not_confirmed = rising.copy()
+    not_confirmed.loc[2, "close"] = 99.0
+    assert TradingEngine._two_bar_structure_failure_exit(not_confirmed, "SHORT") is False
 
 
 def test_adverse_kc_outer_break_is_directional():

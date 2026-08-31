@@ -8,7 +8,7 @@ import pandas as pd
 import weakref
 from typing import Dict, List
 from core.config import (
-    DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, TREND_FILTER_EMA_PERIOD,
+    DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
     PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
     PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
     PULLBACK_RETRY_COOLDOWN_SEC, get_pullback_target_depth,
@@ -1360,6 +1360,35 @@ class TradingEngine:
                         continue
                     exit_frame = self.strategy.compute_indicators(df_closed.copy())
                     exit_frame["ma15"] = exit_frame["close"].rolling(15).mean()
+                    structure_exit_frame = exit_frame
+                    if "timestamp" in exit_frame.columns:
+                        opened_ms = float(position.get("open_timestamp") or 0.0) * 1000.0
+                        structure_exit_frame = exit_frame[
+                            exit_frame["timestamp"].astype(float) >= opened_ms
+                        ]
+                    structure_failure_exit = bool(
+                        is_cr_position
+                        and self._two_bar_structure_failure_exit(
+                            structure_exit_frame, position.get("side"),
+                        )
+                    )
+                    trigger["two_bar_structure_failure_exit"] = structure_failure_exit
+                    if structure_failure_exit:
+                        curr_p = float(
+                            self.tickers.get(symbol)
+                            or exit_frame["close"].iloc[-1]
+                        )
+                        close_reason = (
+                            f"{exit_tf} 空方結構失效：MA3與KC連續上升，兩根收於中軌及MA15上方；先平空換幣"
+                            if position.get("side") == "SHORT" else
+                            f"{exit_tf} 多方結構失效：MA3與KC連續下降，兩根收於中軌及MA15下方；先平多換幣"
+                        )
+                        self.account.log(f"🛡️ {symbol} {close_reason}", "WARNING")
+                        await self.account.close_position(
+                            symbol, curr_p, close_reason, is_manual=True,
+                        )
+                        self._soft_warning_since.pop(symbol, None)
+                        continue
                     exit_signal_info = detect_ma3_ma15_cross_and_turn(
                         exit_frame, allow_live_pivot=False
                     )
@@ -4068,6 +4097,48 @@ class TradingEngine:
         )
 
     @staticmethod
+    def _two_bar_structure_failure_exit(
+        frame: pd.DataFrame, position_side: str,
+    ) -> bool:
+        """兩根已收盤 K 確認 MA3 與 KC 正持續朝持倉不利方向移動。"""
+        required = {"close", "ma3", "ma15", "ema_20", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
+            return False
+        recent = frame.iloc[-3:].dropna(subset=list(required))
+        if len(recent) < 3:
+            return False
+        close = recent["close"].astype(float)
+        ma3 = recent["ma3"].astype(float)
+        ma15 = recent["ma15"].astype(float)
+        middle = recent["ema_20"].astype(float)
+        side = str(position_side or "").upper()
+        if side == "SHORT":
+            upper = recent["kc_upper"].astype(float)
+            lines_rising = bool(
+                ma3.iloc[0] < ma3.iloc[1] < ma3.iloc[2]
+                and middle.iloc[0] < middle.iloc[1] < middle.iloc[2]
+                and upper.iloc[0] < upper.iloc[1] < upper.iloc[2]
+            )
+            closes_confirmed = bool(
+                close.iloc[-2] > max(middle.iloc[-2], ma15.iloc[-2])
+                and close.iloc[-1] > max(middle.iloc[-1], ma15.iloc[-1])
+            )
+            return lines_rising and closes_confirmed
+        if side == "LONG":
+            lower = recent["kc_lower"].astype(float)
+            lines_falling = bool(
+                ma3.iloc[0] > ma3.iloc[1] > ma3.iloc[2]
+                and middle.iloc[0] > middle.iloc[1] > middle.iloc[2]
+                and lower.iloc[0] > lower.iloc[1] > lower.iloc[2]
+            )
+            closes_confirmed = bool(
+                close.iloc[-2] < min(middle.iloc[-2], ma15.iloc[-2])
+                and close.iloc[-1] < min(middle.iloc[-1], ma15.iloc[-1])
+            )
+            return lines_falling and closes_confirmed
+        return False
+
+    @staticmethod
     def _adverse_kc_outer_breached(
         position_side: str, live_price: float, kc_upper: float, kc_lower: float,
     ) -> bool:
@@ -4199,12 +4270,16 @@ class TradingEngine:
         positions = getattr(self.account, "positions", {})
         pending_orders = getattr(self.account, "pending_limit_orders", {})
         committed = len(positions) + len(pending_orders)
-        if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
-            return 0.0
-
         available_fn = getattr(self.account, "get_available_balance", None)
         available = float(available_fn()) if available_fn else TRADE_AMOUNT_USDT
-        remaining_slots = max(1, MAX_SLOTS - committed) if MAX_SLOTS > 0 else 1
+        wallet_fn = getattr(self.account, "get_wallet_balance", None)
+        wallet_balance = float(wallet_fn()) if wallet_fn else (
+            available + sum(float(pos.get("margin") or 0.0) for pos in positions.values())
+        )
+        effective_slots = get_effective_slot_count(wallet_balance)
+        if effective_slots > 0 and committed >= effective_slots:
+            return 0.0
+        remaining_slots = max(1, effective_slots - committed) if effective_slots > 0 else 1
         # 兩槽採資金桶輪替：首筆用一半；第二筆用扣除首筆與手續費後
         # 的所有剩餘資金。任一筆平倉後，釋放資金直接供下一筆使用。
         return max(0.0, available / remaining_slots)

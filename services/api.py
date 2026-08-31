@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY
+    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY, get_effective_slot_count
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -147,7 +147,13 @@ async def get_status(response: Response):
             str(score): ("symbol_max" if cap is None else cap)
             for score, cap in SIGNAL_LEVERAGE_CAPS
         },
-        "trade_amount": round(engine.account.get_wallet_balance() / max(MAX_SLOTS, 1), 2) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
+        "max_slots": MAX_SLOTS,
+        "effective_slots": get_effective_slot_count(engine.account.get_wallet_balance()),
+        "trade_amount": round(
+            engine.account.get_wallet_balance() / max(
+                get_effective_slot_count(engine.account.get_wallet_balance()), 1
+            ), 2
+        ) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
         "pullback_outcome_stats": dict(engine.account.pullback_outcome_stats),
         "entry_filter_stats": dict(engine.account.entry_filter_stats),
         "entry_filter_last": dict(engine.account.entry_filter_last),

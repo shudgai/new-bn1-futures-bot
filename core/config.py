@@ -59,6 +59,20 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
 MAX_SLOTS = int(os.getenv("MAX_SLOTS", "2"))
+MIN_TWO_SLOT_BALANCE_USDT = float(os.getenv("MIN_TWO_SLOT_BALANCE_USDT", "120"))
+TARGET_SLOT_BALANCE_USDT = float(os.getenv("TARGET_SLOT_BALANCE_USDT", "75"))
+
+def get_effective_slot_count(wallet_balance: float, configured_max: int = None) -> int:
+    """依合約錢包餘額限制自動交易可用槽數。"""
+    slot_cap = MAX_SLOTS if configured_max is None else int(configured_max)
+    if slot_cap <= 0:
+        return 0
+    balance = max(0.0, float(wallet_balance or 0.0))
+    if slot_cap == 1 or balance < MIN_TWO_SLOT_BALANCE_USDT:
+        return 1
+    balance_slots = max(2, int(balance / max(TARGET_SLOT_BALANCE_USDT, 1.0)))
+    return min(slot_cap, balance_slots)
+
 # 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
 # 大盤行情中全部同向進場，反轉時同時承受損失。
 MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "0")))
