@@ -1,3 +1,4 @@
+import asyncio
 import os
 import csv
 import io
@@ -73,6 +74,13 @@ def active_leverage_by_score():
     }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="web-static")
+
+# 圖表資料只供顯示，不能讓瀏覽器每秒的請求與交易循環爭用 Binance 額度。
+# 成功資料短暫快取；外部行情暫時失敗時則回傳最後一份資料，讓介面保持可用。
+KLINE_CACHE_TTL_SECONDS = 5.0
+_kline_cache = {}
+_kline_inflight = {}
 
 class ManualOrderRequest(BaseModel):
     symbol: str
@@ -360,8 +368,7 @@ async def reset_account():
     raise HTTPException(status_code=501, detail="此帳戶類型不支援重置")
 
 
-@app.get("/api/klines")
-async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, include_live: bool = False):
+async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bool):
     """取得K線、均線與策略使用的 Keltner Channel 提供給前端圖表"""
     try:
         df = await engine.fetch_klines(
@@ -429,3 +436,48 @@ async def get_klines(symbol: str, timeframe: str = "5m", limit: int = 200, inclu
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/klines")
+async def get_klines(
+    response: Response,
+    symbol: str,
+    timeframe: str = "5m",
+    limit: int = 200,
+    include_live: bool = False,
+):
+    """圖表 K 線快取與 single-flight；圖表故障不得拖慢交易資料流。"""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    if timeframe not in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}:
+        raise HTTPException(status_code=400, detail="不支援的 K 線週期")
+    limit = max(20, min(int(limit), 500))
+    key = (symbol, timeframe, limit, bool(include_live))
+    now = time.monotonic()
+    cached = _kline_cache.get(key)
+    if cached and now - cached["saved_at"] < KLINE_CACHE_TTL_SECONDS:
+        return {
+            **cached["payload"],
+            "cache": {"source": "cache", "age_seconds": round(now - cached["saved_at"], 2)},
+        }
+
+    task = _kline_inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(_load_klines(symbol, timeframe, limit, include_live))
+        _kline_inflight[key] = task
+    try:
+        payload = await asyncio.shield(task)
+        saved_at = time.monotonic()
+        _kline_cache[key] = {"payload": payload, "saved_at": saved_at}
+        return {**payload, "cache": {"source": "live", "age_seconds": 0.0}}
+    except Exception:
+        cached = _kline_cache.get(key)
+        if cached:
+            age = time.monotonic() - cached["saved_at"]
+            return {
+                **cached["payload"],
+                "cache": {"source": "stale", "age_seconds": round(age, 2)},
+            }
+        raise
+    finally:
+        if task.done() and _kline_inflight.get(key) is task:
+            _kline_inflight.pop(key, None)

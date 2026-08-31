@@ -9,7 +9,7 @@ def _frame(side: str) -> pd.DataFrame:
         return pd.DataFrame({
             "open": [100.0, 99.0, 97.9, 98.8],
             "close": [99.5, 98.5, 98.2, 99.4],
-            "high": [100.2, 99.2, 98.7, 99.6],
+            "high": [102.5, 99.2, 98.7, 99.6],
             "low": [99.3, 98.2, 97.8, 98.7],
             "ma3": [100.0, 97.0, 98.0, 99.0],
             "ma15": [101.0] * 4,
@@ -22,7 +22,7 @@ def _frame(side: str) -> pd.DataFrame:
         "open": [100.0, 101.0, 102.0, 101.2],
         "close": [100.5, 101.5, 101.8, 100.6],
         "high": [100.7, 101.8, 102.2, 101.3],
-        "low": [99.8, 100.8, 101.3, 100.4],
+        "low": [97.5, 100.8, 101.3, 100.4],
         "ma3": [100.0, 103.0, 102.0, 101.0],
         "ma15": [99.0] * 4,
         "ema_20": [100.0] * 4,
@@ -50,12 +50,12 @@ def test_short_requires_red_second_k_in_upper_half_channel():
     assert offset == -3
 
 
-def test_second_k_outside_required_half_channel_is_rejected():
+def test_second_k_crossing_far_beyond_required_rail_is_accepted():
     frame = _frame("SHORT")
-    frame.loc[frame.index[-1], "close"] = 99.5
+    frame.loc[frame.index[-1], ["open", "close", "low"]] = [100.0, 97.8, 97.5]
     ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
-    assert ok is False
-    assert "required KC zone" in reason
+    assert ok is True
+    assert "confirmation passed" in reason
 
 
 def test_peak_red_k_crossing_below_lower_rail_confirms_strong_short():
@@ -136,7 +136,7 @@ def test_low_volume_third_red_candle_still_confirms_short():
         "open": [100.0, 101.0, 102.0, 101.7, 101.2],
         "close": [100.5, 101.5, 101.8, 101.6, 100.6],
         "high": [100.7, 101.8, 102.2, 101.8, 101.3],
-        "low": [99.8, 100.8, 101.3, 101.5, 100.4],
+        "low": [97.5, 100.8, 101.3, 101.5, 100.4],
         "ma3": [100.0, 103.0, 102.0, 101.5, 101.0],
         "ma15": [99.0] * 5,
         "ema_20": [100.0] * 5,
@@ -155,7 +155,7 @@ def test_doji_is_skipped_and_next_red_can_confirm_short():
         "open": [100.0, 101.0, 102.0, 101.70, 101.2],
         "close": [100.5, 101.5, 101.8, 101.69, 100.6],
         "high": [100.7, 101.8, 102.2, 101.9, 101.3],
-        "low": [99.8, 100.8, 101.3, 101.5, 100.4],
+        "low": [97.5, 100.8, 101.3, 101.5, 100.4],
         "ma3": [100.0, 103.0, 102.0, 101.5, 101.0],
         "ma15": [99.0] * 5,
         "ema_20": [100.0] * 5,
@@ -246,11 +246,11 @@ def test_original_5887ffa_first_confirmation_then_strict_second_k():
     assert offset == -3
     assert "confirmation passed" in reason
 
-    # 第二根若衝到中軌上方，即使原版 MA3 V 型仍成立也不得開倉。
+    # 跨越所需下軌後即為有效；一次衝過更多軌道不能反而判成失敗。
     frame.loc[frame.index[-1], "close"] = 100.5
     frame.loc[frame.index[-1], "high"] = 100.7
-    blocked, blocked_reason, _ = TradingEngine._validate_strict_pivot_entry(
+    accepted, accepted_reason, _ = TradingEngine._validate_strict_pivot_entry(
         frame, first["side"],
     )
-    assert blocked is False
-    assert "required KC zone" in blocked_reason
+    assert accepted is True
+    assert "confirmation passed" in accepted_reason

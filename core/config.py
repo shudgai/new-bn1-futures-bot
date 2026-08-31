@@ -306,6 +306,18 @@ PIVOT_MIN_ARC_KC_WIDTH_PCT = max(
 PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT = max(
     0.0, float(os.getenv("PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT", "0.20"))
 )
+# 強反轉收盤 K 若已深入下一個 KC 區間，可直接解除 MA15／KC 中軌附近的
+# 盤旋等待，不必再多等一根 K。三個門檻分別是：收盤深入下一區間比例、
+# K 棒實體位於下一區間的比例，以及實體相對 ATR 的最小倍數。
+PIVOT_STRONG_RAIL_PENETRATION_RATIO = min(
+    1.0, max(0.0, float(os.getenv("PIVOT_STRONG_RAIL_PENETRATION_RATIO", "0.50")))
+)
+PIVOT_STRONG_BODY_IN_NEXT_ZONE_RATIO = min(
+    1.0, max(0.0, float(os.getenv("PIVOT_STRONG_BODY_IN_NEXT_ZONE_RATIO", "0.60")))
+)
+PIVOT_STRONG_BODY_ATR_MULT = max(
+    0.0, float(os.getenv("PIVOT_STRONG_BODY_ATR_MULT", "0.80"))
+)
 # 1 分鐘策略平倉後只冷靜一根完整 K，避免秒進秒出但保留趨勢續段。
 CONTINUOUS_REENTRY_COOLDOWN_SEC = max(
     0.0, float(os.getenv("CONTINUOUS_REENTRY_COOLDOWN_SEC", "60"))
@@ -821,6 +833,13 @@ ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "true").lower() =
 PROFIT_LOCK_FEE_MULTIPLIER = max(0.0, float(os.getenv("PROFIT_LOCK_FEE_MULTIPLIER", "2.0")))
 PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "0.5")))
 PROFIT_LOCK_GIVEBACK_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_GIVEBACK_USDT", "0.8")))
+PROFIT_LOCK_BASE_MARGIN_USDT = max(
+    0.01, float(os.getenv("PROFIT_LOCK_BASE_MARGIN_USDT", "150.0"))
+)
+# OUTER_RUN 專用最高淨利回吐：不論單筆保證金或部位金額，一律固定 1U。
+OUTER_RUN_NET_GIVEBACK_USDT = max(
+    0.0, float(os.getenv("OUTER_RUN_NET_GIVEBACK_USDT", "1.0"))
+)
 # 觸發門檻：未實現利潤達到此值（USDT）時開始鎖利
 PROFIT_LOCK_TRIGGER_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_TRIGGER_USDT", "4.0")))
 # 鎖利地板：止損移動後保證至少保留此值（USDT）的利潤

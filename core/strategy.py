@@ -53,7 +53,11 @@ import core.config as _core_config
 
 # Ensure runtime config edits are respected when this module is reloaded during tests
 STRUCTURED_SUPPORT_NEAR_ATR = getattr(_core_config, "STRUCTURED_SUPPORT_NEAR_ATR", STRUCTURED_SUPPORT_NEAR_ATR)
-from core.indicators import bars_since_supertrend_flip, get_dynamic_adx_floor
+from core.indicators import (
+    bars_since_supertrend_flip,
+    evaluate_minimum_kc_wave,
+    get_dynamic_adx_floor,
+)
 from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     KC_TOUCH_LOOKBACK_BARS,
@@ -2452,6 +2456,9 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     atr14 = price * 0.015 # 給個默認 atr，因為取消了原始計算
 
     if is_valley:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "TROUGH_TURN")
+        if not full_wave["passed"]:
+            return {"detected": False, "reason": full_wave["reason"]}
         return {
             "detected": True,
             "side": "LONG",
@@ -2461,6 +2468,9 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
             "reason": valley_reason,
         }
     elif is_peak:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "PEAK_TURN")
+        if not full_wave["passed"]:
+            return {"detected": False, "reason": full_wave["reason"]}
         return {
             "detected": True,
             "side": "SHORT",
@@ -2538,8 +2548,14 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
         reason_text = f"MA3 大V括弧峰頂(附{reds}根紅K)向下轉折，多單平倉"
 
     if side == "LONG" and is_peak:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "PEAK_TURN")
+        if not full_wave["passed"]:
+            return {"close": False, "reason": full_wave["reason"]}
         return {"close": True, "reason": reason_text}
     elif side == "SHORT" and is_valley:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "TROUGH_TURN")
+        if not full_wave["passed"]:
+            return {"close": False, "reason": full_wave["reason"]}
         return {"close": True, "reason": reason_text}
 
     return {"close": False, "reason": "MA3 尚未出現反向轉折"}

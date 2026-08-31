@@ -79,6 +79,8 @@ from core.config import (
     ENABLE_FIXED_PROFIT_LOCK_LADDER,
     FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
+    ENABLE_PROFIT_LOCK_USDT,
+    OUTER_RUN_NET_GIVEBACK_USDT,
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
@@ -691,6 +693,57 @@ class BinanceTestnetAccount:
             if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
                 meta["highest_pnl_pct"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
+            wave_regime = str(
+                pos.get("wave_regime") or meta.get("wave_regime") or ""
+            ).upper()
+            is_structure_exit_mode = wave_regime in ("RANGE", "TREND")
+
+            # OUTER_RUN峰谷出現前完全不停利；峰谷出現後等待正式出場期間，
+            # 若最高淨利固定回吐1U，才以保護性例外提前平倉。
+            outer_run_active = bool(
+                pos.get("outer_run_active") or meta.get("outer_run_active")
+            )
+            if ENABLE_PROFIT_LOCK_USDT and (outer_run_active or is_structure_exit_mode):
+                qty = float(pos.get("qty") or 0.0)
+                notional_value = qty * entry_p
+                round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
+                estimated_net_usdt = (
+                    pnl_pct * notional_value - round_trip_fee
+                    - notional_value * SLIPPAGE_PCT
+                )
+                peak_net_key = "outer_run_peak_net_usdt"
+                peak_net_usdt = max(
+                    float(meta.get(peak_net_key) or estimated_net_usdt),
+                    estimated_net_usdt,
+                )
+                meta[peak_net_key] = peak_net_usdt
+                giveback_usdt = OUTER_RUN_NET_GIVEBACK_USDT
+                outer_run_protect = bool(
+                    outer_run_active
+                    and (
+                        pos.get("outer_run_pivot_protect_armed")
+                        or meta.get("outer_run_pivot_protect_armed")
+                    )
+                )
+                kc_structure_protect = bool(
+                    is_structure_exit_mode
+                    and not outer_run_active
+                    and (
+                        pos.get("kc_pivot_protect_armed")
+                        or meta.get("kc_pivot_protect_armed")
+                    )
+                )
+                if (
+                    (outer_run_protect or kc_structure_protect)
+                    and peak_net_usdt > 0.0
+                    and peak_net_usdt - estimated_net_usdt >= giveback_usdt
+                ):
+                    protect_scope = "OUTER_RUN" if outer_run_protect else "KC峰谷後"
+                    await self.close_position(
+                        symbol, mark_p,
+                        f"{protect_scope}最高淨利回吐{giveback_usdt:.2f}U保護平倉",
+                    )
+                    continue
             exhaustion_grace = (
                 entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
                 and now_ts - float(pos.get("open_timestamp") or meta.get("open_timestamp") or now_ts)
@@ -701,7 +754,7 @@ class BinanceTestnetAccount:
                 # 也不執行任何獲利／技術型出場。
                 continue
             # RANGE 峰谷與 TREND 結構衰退出場交由主引擎處理；交易所硬停損單照常保留。
-            if str(pos.get("wave_regime") or meta.get("wave_regime") or "").upper() in ("RANGE", "TREND"):
+            if is_structure_exit_mode:
                 continue
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")

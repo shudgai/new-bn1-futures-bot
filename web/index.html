@@ -13,8 +13,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
     <style>
         :root {
             --bg: #f4f6f9;
@@ -677,6 +677,10 @@
                 });
             },
             closeChartModal() {
+                if (this._chartAbortController) {
+                    this._chartAbortController.abort();
+                    this._chartAbortController = null;
+                }
                 try {
                     if (document.fullscreenElement && this.$refs.chartCard && document.fullscreenElement === this.$refs.chartCard) {
                         document.exitFullscreen().catch(() => {});
@@ -694,6 +698,10 @@
                     } catch(e) {}
                     this._chart = null;
                 }
+                this._candlestickSeries = null;
+                this._lastCandle = null;
+                this._chartFailureCount = 0;
+                this._chartNextRetryAt = 0;
             },
             async toggleChartFullscreen() {
                 const card = this.$refs.chartCard;
@@ -711,6 +719,9 @@
             initChart() {
                 const container = document.getElementById('tv-chart');
                 if (!container) return;
+                if (!window.LightweightCharts) {
+                    throw new Error('本機圖表元件未載入；交易功能不受影響，請重新整理頁面');
+                }
                 
                 if (this._chart) {
                     this._chart.remove();
@@ -738,22 +749,31 @@
                 this._kcLowerSeries = this._chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
 
                 if (this._chartResizeObserver) this._chartResizeObserver.disconnect();
-                this._chartResizeObserver = new ResizeObserver(entries => {
-                    const rect = entries[0]?.contentRect;
-                    if (rect && this._chart && rect.width > 0 && rect.height > 0) {
-                        this._chart.applyOptions({ width: rect.width, height: rect.height });
-                    }
-                });
-                this._chartResizeObserver.observe(container);
+                if (window.ResizeObserver) {
+                    this._chartResizeObserver = new ResizeObserver(entries => {
+                        const rect = entries[0]?.contentRect;
+                        if (rect && this._chart && rect.width > 0 && rect.height > 0) {
+                            this._chart.applyOptions({ width: rect.width, height: rect.height });
+                        }
+                    });
+                    this._chartResizeObserver.observe(container);
+                }
             },
             async fetchChartData(symbol) {
                 if (!symbol || !this._chart || symbol !== this.chartModal.symbol) return;
                 if (this._chartFetchInFlight) return;
+                if (Date.now() < (this._chartNextRetryAt || 0)) return;
                 this._chartFetchInFlight = true;
+                const controller = new AbortController();
+                this._chartAbortController = controller;
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, { cache: 'no-store' });
-                    if (!res.ok) throw new Error("Failed to fetch K-lines");
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, {
+                        cache: 'no-store', signal: controller.signal
+                    });
+                    if (!res.ok) throw new Error(`K 線服務暫時無法使用（HTTP ${res.status}）`);
                     const json = await res.json();
+                    if (!Array.isArray(json.data) || json.data.length === 0) throw new Error('K 線資料為空');
                     // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
                     if (!this._chart || symbol !== this.chartModal.symbol) return;
                     
@@ -811,13 +831,23 @@
                         this._chart.timeScale().fitContent();
                         this._chartRequestHasFit = true;
                     }
+                    this._chartFailureCount = 0;
+                    this._chartNextRetryAt = 0;
+                    this.chartModal.error = "";
                     this.chartModal.loading = false;
                 } catch (e) {
                     if (symbol === this.chartModal.symbol) {
-                        this.chartModal.error = e.message;
+                        this._chartFailureCount = (this._chartFailureCount || 0) + 1;
+                        const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(this._chartFailureCount, 5)));
+                        this._chartNextRetryAt = Date.now() + retryDelay;
+                        const message = e.name === 'AbortError' ? 'K 線請求逾時，正在自動重試' : e.message;
+                        if (!this._lastCandle) this.chartModal.error = message;
+                        console.warn('Chart refresh failed; trading UI remains active:', message);
                         this.chartModal.loading = false;
                     }
                 } finally {
+                    clearTimeout(timeoutId);
+                    if (this._chartAbortController === controller) this._chartAbortController = null;
                     this._chartFetchInFlight = false;
                 }
             },
@@ -942,7 +972,12 @@
                                     this._lastCandle.close = currentPrice;
                                     if (currentPrice > this._lastCandle.high) this._lastCandle.high = currentPrice;
                                     if (currentPrice < this._lastCandle.low) this._lastCandle.low = currentPrice;
-                                    this._candlestickSeries.update(this._lastCandle);
+                                    try {
+                                        this._candlestickSeries.update(this._lastCandle);
+                                    } catch (chartError) {
+                                        // 圖表繪製失敗只能影響圖表，不得中斷持倉、損益與交易狀態更新。
+                                        console.warn('Chart tick update failed; live trading data continues:', chartError);
+                                    }
                                 }
                             }
                         }

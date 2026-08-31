@@ -69,6 +69,8 @@ from core.config import (
     PROFIT_LOCK_FEE_MULTIPLIER,
     PROFIT_LOCK_LADDER_STEP_USDT,
     PROFIT_LOCK_GIVEBACK_USDT,
+    PROFIT_LOCK_BASE_MARGIN_USDT,
+    OUTER_RUN_NET_GIVEBACK_USDT,
     PROFIT_LOCK_TRIGGER_USDT,
     PROFIT_LOCK_FLOOR_USDT,
     PROFIT_LOCK_TRAIL_RATIO,
@@ -95,9 +97,19 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ACCOUNTING_VERSION = 2
 
 
-def get_profit_lock_giveback_usdt(peak_usdt: float) -> float:
-    """Return the fixed 0.8 USDT giveback used by the 0.5U profit ladder."""
-    return PROFIT_LOCK_GIVEBACK_USDT
+def get_profit_lock_scale(margin_usdt: float) -> float:
+    """150U 單筆保證金為1倍；倉位放大時鎖利與回吐同比例放大。"""
+    margin = float(margin_usdt or 0.0)
+    return margin / PROFIT_LOCK_BASE_MARGIN_USDT if margin > 0 else 1.0
+
+
+def get_profit_lock_giveback_usdt(peak_usdt: float, margin_usdt: float = 0.0) -> float:
+    return PROFIT_LOCK_GIVEBACK_USDT * get_profit_lock_scale(margin_usdt)
+
+
+def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
+    """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
+    return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -798,6 +810,30 @@ class PaperAccount:
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        position = self.positions[symbol]
+        meta = self.position_meta.get(symbol, {})
+        # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
+        # 止損先平倉。硬虧損停損（尚未鎖利）與手動平倉仍照常執行。
+        outer_run_profit_lock_hold = bool(
+            not is_manual
+            and (position.get("outer_run_active") or meta.get("outer_run_active"))
+            and (position.get("is_breakeven_moved") or meta.get("is_breakeven_moved"))
+            and close_reason in (
+                "觸發止損 (Stop-Loss)",
+                "觸發移動止利 (Trailing Take-Profit)",
+            )
+        )
+        if outer_run_profit_lock_hold:
+            reject_key = (symbol, "OUTER_RUN_PROFIT_LOCK_HOLD")
+            now_ts = time.time()
+            if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
+                self._auto_close_reject_logged_at[reject_key] = now_ts
+                self.log(
+                    f"⏸️ [OUTER_RUN死抱] {symbol} 仍在外軌延伸，忽略鎖利平倉；"
+                    "等待相反K收盤回到外軌內",
+                    "INFO",
+                )
+            return False
         # 全域停損關閉時，一般自動平倉仍拒絕；已啟動的 USDT 階梯鎖利例外。
         profit_lock_close = bool(
             self.position_meta.get(symbol, {}).get("profit_lock_usdt_armed")
@@ -1136,12 +1172,118 @@ class PaperAccount:
                 total_unrealized += unrealized
                 continue
 
-            # 固定百分比鎖利是所有波段模式的最低獲利保護線。
-            # 必須在 RANGE/TREND 提前返回之前執行，否則連續模式永遠不會鎖利。
-            # 這裡只設定固定底線；原 ATR 移動停利可再把 SL 往有利方向推進。
+            wave_regime = str(
+                pos.get("wave_regime") or meta.get("wave_regime") or ""
+            ).upper()
+            is_structure_exit_mode = wave_regime in ("RANGE", "TREND")
+
+            # 所有倉位持續記錄最高淨利；KC內 RANGE／TREND 不設 U 階梯，
+            # 只在正式峰谷出現後使用固定回吐1U保護。
+            if ENABLE_PROFIT_LOCK_USDT:
+                qty = float(pos.get("qty") or meta.get("qty") or 0.0)
+                notional_value = qty * entry_p
+                unrealized_usdt = pnl_pct * notional_value
+                margin_usdt = float(pos.get("margin") or meta.get("margin") or 0.0)
+                lock_scale = get_profit_lock_scale(margin_usdt)
+                peak_usdt_key = "profit_lock_peak_usdt"
+                previous_peak_usdt = float(meta.get(peak_usdt_key) or 0.0)
+                peak_usdt = max(previous_peak_usdt, unrealized_usdt)
+                if peak_usdt > previous_peak_usdt:
+                    meta[peak_usdt_key] = peak_usdt
+
+                round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
+                minimum_profit_floor = max(
+                    PROFIT_LOCK_FLOOR_USDT * lock_scale,
+                    round_trip_fee * PROFIT_LOCK_FEE_MULTIPLIER,
+                )
+                trailing_gap_usdt = get_profit_lock_giveback_usdt(
+                    peak_usdt, margin_usdt
+                )
+                outer_run_giveback_usdt = get_outer_run_net_giveback_usdt(
+                    margin_usdt
+                )
+                estimated_net_usdt = (
+                    unrealized_usdt - round_trip_fee
+                    - notional_value * SLIPPAGE_PCT
+                )
+                peak_net_key = "outer_run_peak_net_usdt"
+                previous_peak_net = float(meta.get(peak_net_key) or estimated_net_usdt)
+                peak_net_usdt = max(previous_peak_net, estimated_net_usdt)
+                meta[peak_net_key] = peak_net_usdt
+                outer_run_active = bool(
+                    pos.get("outer_run_active") or meta.get("outer_run_active")
+                )
+                outer_run_protect = bool(
+                    outer_run_active
+                    and (
+                        pos.get("outer_run_pivot_protect_armed")
+                        or meta.get("outer_run_pivot_protect_armed")
+                    )
+                )
+                kc_structure_protect = bool(
+                    is_structure_exit_mode
+                    and not outer_run_active
+                    and (
+                        pos.get("kc_pivot_protect_armed")
+                        or meta.get("kc_pivot_protect_armed")
+                    )
+                )
+                if (
+                    (outer_run_protect or kc_structure_protect)
+                    and peak_net_usdt > 0.0
+                    and peak_net_usdt - estimated_net_usdt >= outer_run_giveback_usdt
+                ):
+                    protect_scope = "OUTER_RUN" if outer_run_protect else "KC峰谷後"
+                    closed = await self.close_position(
+                        symbol, curr_p,
+                        f"{protect_scope}最高淨利回吐{outer_run_giveback_usdt:.2f}U保護平倉",
+                        is_manual=True,
+                    )
+                    if closed:
+                        continue
+                activation_peak_usdt = max(
+                    PROFIT_LOCK_TRIGGER_USDT * lock_scale,
+                    minimum_profit_floor + trailing_gap_usdt,
+                )
+                if (
+                    not is_structure_exit_mode
+                    and peak_usdt + 1e-9 >= activation_peak_usdt
+                    and qty > 0 and entry_p > 0
+                ):
+                    ladder_step = PROFIT_LOCK_LADDER_STEP_USDT * lock_scale
+                    completed_steps = math.floor(
+                        max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
+                    )
+                    step_floor_usdt = minimum_profit_floor + completed_steps * ladder_step
+                    floor_price_move = step_floor_usdt / max(qty, 1e-12)
+                    floor_sl = (
+                        entry_p + floor_price_move
+                        if side == "LONG" else entry_p - floor_price_move
+                    )
+                    improves_usdt = (
+                        floor_sl > current_sl + entry_p * 1e-12
+                        if side == "LONG"
+                        else current_sl <= 0 or floor_sl < current_sl - entry_p * 1e-12
+                    )
+                    if improves_usdt:
+                        pos["sl"] = meta["sl"] = floor_sl
+                        current_sl = floor_sl
+                        pos["is_breakeven_moved"] = meta["is_breakeven_moved"] = True
+                        pos["profit_lock_usdt_armed"] = meta["profit_lock_usdt_armed"] = True
+                        mode = f"{ladder_step:g}U_LADDER_{trailing_gap_usdt:g}U_GAP"
+                        pos["profit_lock_mode"] = meta["profit_lock_mode"] = mode
+                        profit_lock_updated_this_cycle = True
+                        self.log(
+                            f"🔐 [U階梯鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
+                            f"→ 鎖 {step_floor_usdt:.2f}U（每{ladder_step:g}U推進，"
+                            f"保留{trailing_gap_usdt:g}U空間），保護線 {floor_sl:.6g}",
+                            "SUCCESS",
+                        )
+
+            # 非連續策略保留舊固定百分比保護；KC內與 OUTER_RUN 不使用此線。
             if (
                 ENABLE_FIXED_PROFIT_LOCK_PCT
-                and not ENABLE_PROFIT_LOCK_USDT
+                and not is_structure_exit_mode
                 and bool(pos.get("outer_run_active") or meta.get("outer_run_active"))
                 and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
                 and highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT
@@ -1173,12 +1315,16 @@ class PaperAccount:
             # 連續模式只由 RANGE 峰谷或 TREND 結構衰退出場；帳戶層保留硬停損與固定鎖利底線。
             wave_regime = str(pos.get("wave_regime") or meta.get("wave_regime") or "").upper()
             if wave_regime in ("RANGE", "TREND"):
+                outer_run_profit_lock_hold = bool(
+                    (pos.get("outer_run_active") or meta.get("outer_run_active"))
+                    and (pos.get("is_breakeven_moved") or meta.get("is_breakeven_moved"))
+                )
                 hard_stop_hit = (
                     current_sl > 0
                     and ((side == "LONG" and curr_p <= current_sl)
                          or (side == "SHORT" and curr_p >= current_sl))
                 )
-                if hard_stop_hit:
+                if hard_stop_hit and not outer_run_profit_lock_hold:
                     await self.close_position(symbol, current_sl, "觸發止損 (Stop-Loss)")
                     continue
                 pos["peak_pnl_pct"] = highest_pnl
@@ -1273,18 +1419,30 @@ class PaperAccount:
                 # 1. 自動計算手續費 (幣安 Taker 費率單程約 0.05%，來回 0.1%)
                 round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
                 
-                # 2. 最低保護利潤為來回手續費的2倍。
-                minimum_profit_floor = round_trip_fee * PROFIT_LOCK_FEE_MULTIPLIER
+                # 2. 第一階至少鎖住設定的固定 U 地板，同時必須足以支付
+                #    指定倍數的來回手續費，避免名義鎖利實際仍為淨虧損。
+                minimum_profit_floor = max(
+                    PROFIT_LOCK_FLOOR_USDT,
+                    round_trip_fee * PROFIT_LOCK_FEE_MULTIPLIER,
+                )
 
                 # 3. 本金級距的最低呼吸空間：已廢除，改為絕對值
-                trailing_gap_usdt = get_profit_lock_giveback_usdt(peak_usdt)
-                activation_peak_usdt = minimum_profit_floor + trailing_gap_usdt
+                margin_usdt = float(pos.get("margin") or meta.get("margin") or 0.0)
+                lock_scale = get_profit_lock_scale(margin_usdt)
+                trailing_gap_usdt = get_profit_lock_giveback_usdt(
+                    peak_usdt, margin_usdt
+                )
+                activation_peak_usdt = max(
+                    PROFIT_LOCK_TRIGGER_USDT * lock_scale,
+                    minimum_profit_floor + trailing_gap_usdt,
+                )
 
                 # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
                 # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
                 if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
-                    # 第一階鎖住雙邊手續費 x2；峰值每再增加 0.5U，保護線增加 0.5U。
-                    ladder_step = PROFIT_LOCK_LADDER_STEP_USDT
+                    # 第一階鎖固定 U 地板；峰值每增加一個設定步距，
+                    # 保護線同步增加同樣 U 數（目前為 1U、3U、5U……）。
+                    ladder_step = PROFIT_LOCK_LADDER_STEP_USDT * lock_scale
                     completed_steps = math.floor(
                         max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
                     )
@@ -1309,13 +1467,15 @@ class PaperAccount:
                         meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = True
                         meta["profit_lock_usdt_armed"] = True
-                        pos["profit_lock_mode"] = "0.5U_LADDER_0.8U_TRAIL"
-                        meta["profit_lock_mode"] = "0.5U_LADDER_0.8U_TRAIL"
+                        mode = f"{ladder_step:g}U_LADDER_{trailing_gap_usdt:g}U_GAP"
+                        pos["profit_lock_mode"] = mode
+                        meta["profit_lock_mode"] = mode
                         profit_lock_updated_this_cycle = True
                         
                         self.log(
                             f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"→ 0.5U階梯鎖 {step_floor_usdt:.2f}U（回吐0.8U），保護線 {floor_sl:.6g}",
+                            f"→ 每{ladder_step:g}U階梯鎖 {step_floor_usdt:.2f}U"
+                            f"（保留{trailing_gap_usdt:g}U空間），保護線 {floor_sl:.6g}",
                             "SUCCESS",
                         )
 

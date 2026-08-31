@@ -187,6 +187,33 @@ def evaluate_kc_outer_run_lock(
     return result
 
 
+def matching_exit_pivot_detected(side: str, signal_info: dict) -> bool:
+    """持倉方向對應的正式出場峰／谷是否已形成。"""
+    if not isinstance(signal_info, dict):
+        return False
+    pivot_type = str(signal_info.get("pivot_type") or "").upper()
+    entry_type = str(signal_info.get("entry_type") or "").upper()
+    if not pivot_type and entry_type in ("PEAK_TURN", "TROUGH_TURN"):
+        pivot_type = entry_type
+    if entry_type not in ("PEAK_TURN", "TROUGH_TURN", "WAIT_NEXT_KC_BAND"):
+        return False
+    expected_pivot = (
+        "PEAK_TURN" if str(side or "").upper() == "LONG"
+        else "TROUGH_TURN" if str(side or "").upper() == "SHORT"
+        else ""
+    )
+    return bool(expected_pivot and pivot_type == expected_pivot)
+
+
+def should_arm_outer_run_pivot_protection(
+    side: str, outer_run_active: bool, signal_info: dict,
+) -> bool:
+    """峰／谷已形成後，才允許 OUTER_RUN 的固定 1U 回吐保護接管。"""
+    return bool(
+        outer_run_active and matching_exit_pivot_detected(side, signal_info)
+    )
+
+
 def detect_strong_trend_exhaustion(
     df: pd.DataFrame, side: str, previous_extreme: float = None,
     previous_ma3_extreme: float = None, retrace_atr: float = 0.15,
@@ -258,6 +285,76 @@ def detect_strong_trend_exhaustion(
         "adx": float(adx.iloc[-1]), "spread_atr": float(spread.iloc[-1]) / atr,
     })
     return result
+
+
+def detect_two_bar_opposite_trend(df: pd.DataFrame, side: str) -> dict:
+    """兩根已收盤 K 明確轉成持倉反方向時，提供保護性平倉訊號。
+
+    這不是反手進場訊號；反向新倉仍必須等待完整峰谷與跨軌確認。
+    """
+    result = {
+        "exit": False, "opposite_side": None, "two_bar_confirmed": False,
+        "reason": "",
+    }
+    required = {"open", "close", "ma3", "ma15"}
+    if df is None or len(df) < 3 or not required.issubset(df.columns):
+        return result
+
+    work = df.dropna(subset=list(required))
+    if len(work) < 3:
+        return result
+    side = str(side or "").upper()
+    if side not in ("LONG", "SHORT"):
+        return result
+
+    last3 = work.iloc[-3:]
+    opens = pd.to_numeric(last3["open"], errors="coerce")
+    closes = pd.to_numeric(last3["close"], errors="coerce")
+    ma3 = pd.to_numeric(last3["ma3"], errors="coerce")
+    ma15 = pd.to_numeric(last3["ma15"], errors="coerce")
+
+    if side == "LONG":
+        confirmed = bool(
+            closes.iloc[-2] < opens.iloc[-2]
+            and closes.iloc[-1] < opens.iloc[-1]
+            and closes.iloc[-2] < ma3.iloc[-2]
+            and closes.iloc[-1] < ma3.iloc[-1]
+            and ma3.iloc[-2] < ma15.iloc[-2]
+            and ma3.iloc[-1] < ma15.iloc[-1]
+            and ma3.iloc[-1] < ma3.iloc[-2] <= ma3.iloc[-3]
+        )
+        opposite_side = "SHORT"
+        reason = "連續兩根紅K收在MA3下方，且MA3已在MA15下方持續下彎"
+    else:
+        confirmed = bool(
+            closes.iloc[-2] > opens.iloc[-2]
+            and closes.iloc[-1] > opens.iloc[-1]
+            and closes.iloc[-2] > ma3.iloc[-2]
+            and closes.iloc[-1] > ma3.iloc[-1]
+            and ma3.iloc[-2] > ma15.iloc[-2]
+            and ma3.iloc[-1] > ma15.iloc[-1]
+            and ma3.iloc[-1] > ma3.iloc[-2] >= ma3.iloc[-3]
+        )
+        opposite_side = "LONG"
+        reason = "連續兩根綠K收在MA3上方，且MA3已在MA15上方持續上彎"
+
+    result.update({
+        "exit": confirmed,
+        "opposite_side": opposite_side if confirmed else None,
+        "two_bar_confirmed": confirmed,
+        "reason": reason if confirmed else "",
+    })
+    return result
+
+
+def allow_two_bar_protective_exit(exit_signal_info: dict) -> bool:
+    """兩根反向 K 只能保護有效反向波段，不能繞過既有峰谷濾網。"""
+    blocked_states = {
+        "WAIT_MA_NOISE",
+        "WAIT_FULL_KC_WAVE",
+        "WAIT_NEXT_KC_BAND",
+    }
+    return str((exit_signal_info or {}).get("entry_type") or "") not in blocked_states
 
 
 def get_dynamic_adx_floor(df: pd.DataFrame, direction: int) -> tuple[float, bool]:
@@ -472,6 +569,170 @@ def drop_unclosed_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
+def evaluate_minimum_kc_wave(
+    df: pd.DataFrame,
+    pivot_offset: int,
+    pivot_type: str,
+    lookback: int = 20,
+) -> dict:
+    """Require at least one full KC width of travel before a reversal.
+
+    A peak measures the ordered rise from the lowest low before the peak to
+    the peak high. A trough measures the ordered drop from the highest high
+    before the trough to the trough low. Confirmation candles after the pivot
+    are excluded, so crossing the next rail cannot manufacture a full wave.
+    """
+    empty = {
+        "passed": False,
+        "wave_distance": 0.0,
+        "kc_width": 0.0,
+        "origin_price": None,
+        "extreme_price": None,
+        "reason": "KC／波段資料不足",
+    }
+    if (
+        df is None
+        or df.empty
+        or not {"high", "low"}.issubset(df.columns)
+    ):
+        return empty
+
+    size = len(df)
+    pivot_index = int(pivot_offset)
+    if pivot_index < 0:
+        pivot_index += size
+    if pivot_index < 1 or pivot_index >= size:
+        return empty
+
+    pivot = df.iloc[pivot_index]
+    if {"kc_upper", "kc_lower"}.issubset(df.columns):
+        kc_upper = float(pivot["kc_upper"])
+        kc_lower = float(pivot["kc_lower"])
+    elif "ema_20" in df.columns and "atr" in df.columns:
+        from core.config import KELTNER_ATR_MULTIPLIER
+        middle = float(pivot["ema_20"])
+        atr = float(pivot["atr"])
+        kc_upper = middle + atr * KELTNER_ATR_MULTIPLIER
+        kc_lower = middle - atr * KELTNER_ATR_MULTIPLIER
+    else:
+        return empty
+
+    kc_width = kc_upper - kc_lower
+    if not np.isfinite(kc_width) or kc_width <= 0:
+        return empty
+
+    lookback_start = max(0, pivot_index - max(2, int(lookback)) + 1)
+    start = lookback_start
+    direction = str(pivot_type or "").upper()
+    if "ma3" in df.columns and pivot_index - start >= 2:
+        ma3 = pd.to_numeric(df["ma3"], errors="coerce")
+        # Measure only the latest directional leg. An older large move inside
+        # the lookback must not validate a new, shallow pullback.
+        for index in range(pivot_index - 1, start, -1):
+            previous = float(ma3.iloc[index - 1])
+            current = float(ma3.iloc[index])
+            following = float(ma3.iloc[index + 1])
+            if not all(np.isfinite(value) for value in (
+                previous, current, following,
+            )):
+                continue
+            opposite_turn = (
+                direction == "PEAK_TURN"
+                and current <= previous
+                and current < following
+            ) or (
+                direction == "TROUGH_TURN"
+                and current >= previous
+                and current > following
+            )
+            if opposite_turn:
+                start = index
+                break
+
+    before_and_pivot = df.iloc[start:pivot_index + 1]
+    if direction == "PEAK_TURN":
+        highs = pd.to_numeric(
+            before_and_pivot["high"], errors="coerce"
+        ).to_numpy()
+        if not np.isfinite(highs).any():
+            return empty
+        extreme_index = start + int(np.nanargmax(highs))
+        origin_slice = df.iloc[start:extreme_index + 1]
+        extreme_price = float(df["high"].iloc[extreme_index])
+        origin_price = float(
+            pd.to_numeric(origin_slice["low"], errors="coerce").min()
+        )
+        wave_distance = extreme_price - origin_price
+        label = "峰頂上漲"
+    elif direction == "TROUGH_TURN":
+        lows = pd.to_numeric(
+            before_and_pivot["low"], errors="coerce"
+        ).to_numpy()
+        if not np.isfinite(lows).any():
+            return empty
+        extreme_index = start + int(np.nanargmin(lows))
+        origin_slice = df.iloc[start:extreme_index + 1]
+        extreme_price = float(df["low"].iloc[extreme_index])
+        origin_price = float(
+            pd.to_numeric(origin_slice["high"], errors="coerce").max()
+        )
+        wave_distance = origin_price - extreme_price
+        label = "谷底下跌"
+    else:
+        return empty
+
+    # 最近幾根內的小幅 MA3 抖動不能把同一個完整波段切斷。若最新局部腿不足，
+    # 再檢查最近 10 根的有序價格路徑；更久以前的大行情仍不得替新波段背書。
+    if wave_distance + kc_width * 1e-12 < kc_width:
+        context_start = max(lookback_start, pivot_index - 9)
+        context = df.iloc[context_start:pivot_index + 1]
+        if direction == "PEAK_TURN":
+            values = pd.to_numeric(context["high"], errors="coerce").to_numpy()
+            if np.isfinite(values).any():
+                context_extreme_index = context_start + int(np.nanargmax(values))
+                context_origin = float(pd.to_numeric(
+                    df.iloc[context_start:context_extreme_index + 1]["low"],
+                    errors="coerce",
+                ).min())
+                context_extreme = float(df["high"].iloc[context_extreme_index])
+                context_distance = context_extreme - context_origin
+                if context_distance > wave_distance:
+                    wave_distance = context_distance
+                    origin_price = context_origin
+                    extreme_price = context_extreme
+        else:
+            values = pd.to_numeric(context["low"], errors="coerce").to_numpy()
+            if np.isfinite(values).any():
+                context_extreme_index = context_start + int(np.nanargmin(values))
+                context_origin = float(pd.to_numeric(
+                    df.iloc[context_start:context_extreme_index + 1]["high"],
+                    errors="coerce",
+                ).max())
+                context_extreme = float(df["low"].iloc[context_extreme_index])
+                context_distance = context_origin - context_extreme
+                if context_distance > wave_distance:
+                    wave_distance = context_distance
+                    origin_price = context_origin
+                    extreme_price = context_extreme
+
+    passed = bool(
+        np.isfinite(wave_distance)
+        and wave_distance + kc_width * 1e-12 >= kc_width
+    )
+    return {
+        "passed": passed,
+        "wave_distance": max(float(wave_distance), 0.0),
+        "kc_width": float(kc_width),
+        "origin_price": origin_price,
+        "extreme_price": extreme_price,
+        "reason": (
+            f"{label}距離 {wave_distance:.8g} >= KC全寬 {kc_width:.8g}"
+            if passed
+            else f"{label}距離 {wave_distance:.8g} < KC全寬 {kc_width:.8g}，視為途中小回調"
+        ),
+    }
+
+
 def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     """
     1m MA3 / MA15 連續轉向邏輯：
@@ -552,28 +813,74 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     from core.config import (
         PIVOT_MIN_ARC_KC_WIDTH_PCT,
         PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT,
+        PIVOT_STRONG_BODY_ATR_MULT,
+        PIVOT_STRONG_BODY_IN_NEXT_ZONE_RATIO,
+        PIVOT_STRONG_RAIL_PENETRATION_RATIO,
     )
 
     # 真峰谷形成後保留最多 5 根已收盤 K，直到反向 K 真正收盤跨過下一軌。
     # 避免轉彎當下尚未跨軌，後面真的跨軌時峰谷訊號卻已經消失。
-    # 必須保證左右兩側皆為已收盤 K 線 (最晚的峰谷在 len(df)-3)
+    # 最後一根已是收盤 K；因此前一根 (len(df)-2) 若被最新 K 明確反向確認，
+    # 就立即承認峰谷，不再固定多等一根，避免像黑框綠 K 一樣晚一分鐘進場。
     ma3_values = pd.to_numeric(df["ma3"], errors="coerce")
     recent_pivot = None
     search_start = max(1, len(df) - 6)
-    for pivot_index in range(len(df) - 3, search_start - 1, -1):
+    for pivot_index in range(len(df) - 2, search_start - 1, -1):
         left = float(ma3_values.iloc[pivot_index] - ma3_values.iloc[pivot_index - 1])
+        left_two_bar = left
+        if pivot_index >= 2:
+            left_two_bar = float(
+                ma3_values.iloc[pivot_index] - ma3_values.iloc[pivot_index - 2]
+            )
         right = float(ma3_values.iloc[pivot_index + 1] - ma3_values.iloc[pivot_index])
-        if left >= min_pivot_slope and right <= -min_pivot_slope:
+        # 第一根轉折可能只是近乎走平，第二根才明確離開峰／谷。
+        # 若已有第二根右側收盤 K，就用兩根累積位移補確認；前一根剛成峰谷時，
+        # 則以最新收盤 K 的單根明確位移確認。
+        right_two_bar = right
+        if pivot_index + 2 < len(df):
+            right_two_bar = float(
+                ma3_values.iloc[pivot_index + 2] - ma3_values.iloc[pivot_index]
+            )
+        if (
+            max(left, left_two_bar) >= min_pivot_slope
+            and right <= 0.0
+            and min(right, right_two_bar) <= -min_pivot_slope
+        ):
             recent_pivot = ("PEAK_TURN", pivot_index - len(df))
             break
-        if left <= -min_pivot_slope and right >= min_pivot_slope:
+        if (
+            min(left, left_two_bar) <= -min_pivot_slope
+            and right >= 0.0
+            and max(right, right_two_bar) >= min_pivot_slope
+        ):
             recent_pivot = ("TROUGH_TURN", pivot_index - len(df))
             break
 
     peak_shape = bool(recent_pivot and recent_pivot[0] == "PEAK_TURN")
     trough_shape = bool(recent_pivot and recent_pivot[0] == "TROUGH_TURN")
     pivot_shape_detected = bool(peak_shape or trough_shape)
+    pivot_type = recent_pivot[0] if recent_pivot else ""
     pivot_offset = int(recent_pivot[1]) if recent_pivot else -2
+
+    full_wave = (
+        evaluate_minimum_kc_wave(
+            df,
+            pivot_offset,
+            "PEAK_TURN" if peak_shape else "TROUGH_TURN",
+        )
+        if pivot_shape_detected else None
+    )
+    if pivot_shape_detected and not full_wave["passed"]:
+        return {
+            "signal": None, "entry_type": "WAIT_FULL_KC_WAVE",
+            "reason": f"1m {full_wave['reason']}，不平倉、不反手",
+            "atr": atr, "pivot_confirmed": False, "pivot_score": 0,
+            "pivot_type": pivot_type,
+            "ma3_slope": current_slope, "pivot_offset": pivot_offset,
+            "ma_alignment": "WAIT",
+            "wave_distance": full_wave["wave_distance"],
+            "required_wave_distance": full_wave["kc_width"],
+        }
     
     kc_middle_at_pivot = float(df["ema_20"].iloc[pivot_offset])
     kc_upper_at_pivot = kc_middle_at_pivot + atr * KELTNER_ATR_MULTIPLIER
@@ -595,13 +902,15 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         else: # 在下軌～中軌 或 更低
             confirmation_rail_name, confirmation_rail = "KC下軌", kc_lower_now
             
-        for i in range(pivot_offset + 1, -1):
+        # df 的最後一根是最新「已收盤」K，range 終點必須用 0 才會包含 -1。
+        # 舊寫法以 -1 為終點，會漏掉最新收盤 K，固定讓轉向晚一分鐘。
+        for i in range(pivot_offset + 1, 0):
             c_close = float(df["close"].iloc[i])
             c_open = float(df["open"].iloc[i])
             if c_close < c_open:
                 mid_i = float(df["ema_20"].iloc[i])
                 rail_i = mid_i + atr * KELTNER_ATR_MULTIPLIER if confirmation_rail_name == "KC上軌" else mid_i if confirmation_rail_name == "KC中軌" else mid_i - atr * KELTNER_ATR_MULTIPLIER
-                if c_close < rail_i:
+                if c_close < rail_i and c_open < rail_i:
                     crossed_any_rail = True
                     break
 
@@ -613,15 +922,54 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         else: # 在中軌～上軌 或 更高
             confirmation_rail_name, confirmation_rail = "KC上軌", kc_upper_now
             
-        for i in range(pivot_offset + 1, -1):
+        for i in range(pivot_offset + 1, 0):
             c_close = float(df["close"].iloc[i])
             c_open = float(df["open"].iloc[i])
             if c_close > c_open:
                 mid_i = float(df["ema_20"].iloc[i])
                 rail_i = mid_i - atr * KELTNER_ATR_MULTIPLIER if confirmation_rail_name == "KC下軌" else mid_i if confirmation_rail_name == "KC中軌" else mid_i + atr * KELTNER_ATR_MULTIPLIER
-                if c_close > rail_i:
+                if c_close > rail_i and c_open > rail_i:
                     crossed_any_rail = True
                     break
+
+    # 「剛越線」仍沿用原本峰谷確認；但若最新已收盤 K 已大幅進入下一個
+    # KC 區間，代表價格本身已先於慢速 MA3/MA15 明確轉向。這條強確認只看
+    # 最新收盤 K，不能由較早曾經跨軌的 K 棒代替。
+    current_open = float(current_candle["open"])
+    current_body = abs(current_close - current_open)
+    rail_step = max((kc_upper_now - kc_lower_now) / 2.0, abs(atr) * 1e-12)
+    current_crossed_rail = False
+    rail_penetration_ratio = 0.0
+    body_in_next_zone_ratio = 0.0
+    if confirmation_rail is not None and current_body > 0:
+        if trough_shape and current_is_green and current_close > confirmation_rail:
+            current_crossed_rail = True
+            rail_penetration_ratio = max(
+                0.0, (current_close - confirmation_rail) / rail_step
+            )
+            body_beyond_rail = max(
+                0.0, current_close - max(current_open, confirmation_rail)
+            )
+            body_in_next_zone_ratio = min(1.0, body_beyond_rail / current_body)
+        elif peak_shape and current_is_red and current_close < confirmation_rail:
+            current_crossed_rail = True
+            rail_penetration_ratio = max(
+                0.0, (confirmation_rail - current_close) / rail_step
+            )
+            body_beyond_rail = max(
+                0.0, min(current_open, confirmation_rail) - current_close
+            )
+            body_in_next_zone_ratio = min(1.0, body_beyond_rail / current_body)
+
+    strong_rail_confirmation = bool(
+        current_crossed_rail
+        and current_body + abs(atr) * 1e-12
+        >= abs(atr) * PIVOT_STRONG_BODY_ATR_MULT
+        and rail_penetration_ratio + 1e-12
+        >= PIVOT_STRONG_RAIL_PENETRATION_RATIO
+        and body_in_next_zone_ratio + 1e-12
+        >= PIVOT_STRONG_BODY_IN_NEXT_ZONE_RATIO
+    )
 
     # ==============================================================================
     # 盤旋過濾 (Hovering Filter)
@@ -634,21 +982,45 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
         kc_up_at_pivot = kc_mid_at_pivot + atr * KELTNER_ATR_MULTIPLIER
         kc_low_at_pivot = kc_mid_at_pivot - atr * KELTNER_ATR_MULTIPLIER
         
+        # 外軌是正常峰谷常出現的位置，不能因貼近外軌而擋掉有效轉向。
+        # 盤旋禁區只依用戶指定的 MA15 與 KC 中軌判定。
         min_dist_to_lines = min(
             abs(ma3_at_pivot - ma15_at_pivot),
-            abs(ma3_at_pivot - kc_mid_at_pivot),
-            abs(ma3_at_pivot - kc_up_at_pivot),
-            abs(ma3_at_pivot - kc_low_at_pivot)
+            abs(ma3_at_pivot - kc_mid_at_pivot)
         )
         
         minimum_line_distance = kc_width * PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT
         minimum_arc = kc_width * PIVOT_MIN_ARC_KC_WIDTH_PCT
         shallow_arc = recent_ma3_range + kc_width * 1e-12 < minimum_arc
 
+        # MA3 是三根平均，剛轉向時會慢於價格。若前一根剛成峰谷，且目前已是
+        # 連續第二根明確反向 K、實體至少 0.5 ATR 並已跨指定軌，可立即確認；
+        # MA15／中軌距離禁令仍由 is_hovering 獨立執行，不能被此條件繞過。
+        previous_candle = df.iloc[-2]
+        previous_open = float(previous_candle["open"])
+        previous_close = float(previous_candle["close"])
+        second_clear_confirmation = bool(
+            pivot_offset == -2
+            and crossed_any_rail
+            and current_body >= abs(atr) * 0.5
+            and (
+                (trough_shape and previous_close > previous_open and current_is_green)
+                or (peak_shape and previous_close < previous_open and current_is_red)
+            )
+        )
+        if second_clear_confirmation:
+            shallow_arc = False
+
         if min_dist_to_lines + kc_width * 1e-12 < minimum_line_distance:
             is_hovering = True
+        if strong_rail_confirmation:
+            # 價格已用足夠大的已收盤實體深入下一區間時，MA15／中軌只是
+            # 慢速指標的落後，不得再讓 WAIT_MA_NOISE 固定延遲一根。
+            is_hovering = False
+            shallow_arc = False
 
-    if pivot_shape_detected and (is_hovering or shallow_arc) and not crossed_any_rail:
+    # 靠近 MA15／KC 中軌或弧度不足，本身就是禁止交易條件；後續跨軌不可繞過。
+    if pivot_shape_detected and (is_hovering or shallow_arc):
         ma15_at_pivot = float(df["ma15"].iloc[pivot_offset])
         kc_middle_at_pivot = float(df["ema_20"].iloc[pivot_offset])
         return {
@@ -659,6 +1031,7 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
                 else "1m MA3 V/倒V 距KC或MA15不足，不轉向開倉"
             ),
             "atr": atr, "pivot_confirmed": False,
+            "pivot_type": pivot_type,
             "pivot_score": 0, "ma3_slope": current_slope,
             "live_pivot": False, "pivot_offset": pivot_offset,
             "ma_alignment": ma_alignment,
@@ -669,6 +1042,10 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
             "nearest_line_kc_width_pct": min_dist_to_lines / kc_width,
             "minimum_arc_kc_width_pct": PIVOT_MIN_ARC_KC_WIDTH_PCT,
             "minimum_line_distance_kc_width_pct": PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT,
+            "strong_rail_confirmation": strong_rail_confirmation,
+            "rail_penetration_ratio": rail_penetration_ratio,
+            "body_in_next_zone_ratio": body_in_next_zone_ratio,
+            "confirmation_body_atr": current_body / max(abs(atr), 1e-12),
         }
 
     # 峰谷即使形狀與距離合格，也必須由確認 K 的收盤價跨過其所在區間的下一軌
@@ -678,30 +1055,42 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
                 "signal": None,
                 "entry_type": "WAIT_NEXT_KC_BAND",
                 "reason": (
-                    f"1m 峰頂紅K尚未收破當根{confirmation_rail_name}，不平多、不開空"
+                    f"1m 峰頂紅K實體尚未完全站到當根{confirmation_rail_name}，不平多、不開空"
                     if peak_shape
-                    else f"1m 谷底綠K尚未收過當根{confirmation_rail_name}，不平空、不開多"
+                    else f"1m 谷底綠K實體尚未完全站到當根{confirmation_rail_name}，不平空、不開多"
                 ),
                 "atr": atr, "pivot_confirmed": False, "pivot_score": 0,
+                "pivot_type": pivot_type,
                 "ma3_slope": current_slope, "ma3_curr": ma3_curr, "ma15_curr": ma15_curr,
                 "kc_middle": kc_middle_now, "kc_upper": kc_upper_now, "kc_lower": kc_lower_now,
                 "confirmation_rail": confirmation_rail, "confirmation_rail_name": confirmation_rail_name,
                 "confirmation_close": current_close, "pivot_offset": pivot_offset, "ma_alignment": "WAIT",
+                "strong_rail_confirmation": strong_rail_confirmation,
+                "rail_penetration_ratio": rail_penetration_ratio,
+                "body_in_next_zone_ratio": body_in_next_zone_ratio,
+                "confirmation_body_atr": current_body / max(abs(atr), 1e-12),
             }
         else:
             return {
                 "signal": "SHORT" if peak_shape else "LONG",
                 "entry_type": "PEAK_TURN" if peak_shape else "TROUGH_TURN",
                 "reason": (
-                    f"1m 真峰頂後紅K已收破當根{confirmation_rail_name} → 平多開空"
+                    f"1m 真峰頂後紅K實體已完全站到當根{confirmation_rail_name} → 平多開空"
                     if peak_shape
-                    else f"1m 真谷底後綠K已收過當根{confirmation_rail_name} → 平空開多"
+                    else f"1m 真谷底後綠K實體已完全站到當根{confirmation_rail_name} → 平空開多"
                 ),
                 "atr": atr, "pivot_confirmed": True, "pivot_score": 100,
+                "pivot_type": pivot_type,
                 "fast_pivot": False, "live_pivot": allow_live_pivot,
                 "pivot_offset": pivot_offset, "ma_alignment": ma_alignment,
                 "confirmation_rail": confirmation_rail,
                 "confirmation_rail_name": confirmation_rail_name,
+                "wave_distance": full_wave["wave_distance"],
+                "required_wave_distance": full_wave["kc_width"],
+                "strong_rail_confirmation": strong_rail_confirmation,
+                "rail_penetration_ratio": rail_penetration_ratio,
+                "body_in_next_zone_ratio": body_in_next_zone_ratio,
+                "confirmation_body_atr": current_body / max(abs(atr), 1e-12),
             }
 
     # MA3 自身最近三根幾乎走平時，不論位於 MA15 上方或下方都不開新方向。
@@ -853,15 +1242,37 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
     if side == "LONG":
         if pre_peak_exit:
             reasons.append("強紅K實體>=0.5ATR且收破MA3 -> 保護性平多")
-        if is_peak_forming and float(curr['low']) <= kc_middle:
+        peak_offset = idx_max - len(recent_ma5)
+        full_peak_wave = evaluate_minimum_kc_wave(
+            df, peak_offset, "PEAK_TURN"
+        )
+        if (
+            is_peak_forming
+            and candle_close < candle_open
+            and candle_close < kc_middle
+            and full_peak_wave["passed"]
+        ):
             strong = True
-            reasons.append("MA5 嚴格峰頂且紅K到KC中軌(倒V型) -> 出場多單")
+            reasons.append(
+                "MA5 嚴格峰頂、完整波段且紅K收破KC中軌(倒V型) -> 出場多單"
+            )
     else:
         if pre_trough_exit:
             reasons.append("強綠K實體>=0.5ATR且收上MA3 -> 保護性平空")
-        if is_trough_forming and float(curr['high']) >= kc_middle:
+        trough_offset = idx_min - len(recent_ma5)
+        full_trough_wave = evaluate_minimum_kc_wave(
+            df, trough_offset, "TROUGH_TURN"
+        )
+        if (
+            is_trough_forming
+            and candle_close > candle_open
+            and candle_close > kc_middle
+            and full_trough_wave["passed"]
+        ):
             strong = True
-            reasons.append("MA5 嚴格谷底且綠K到KC中軌(V型) -> 出場空單")
+            reasons.append(
+                "MA5 嚴格谷底、完整波段且綠K收過KC中軌(V型) -> 出場空單"
+            )
 
     return {
         "active": bool(reasons),

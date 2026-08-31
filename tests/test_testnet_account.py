@@ -834,6 +834,7 @@ async def test_percentage_trailing_stop_updates_sl_and_removes_tp(tmp_path, monk
         "atr": 1.0,
         "initial_risk": 0.2,
         "highest_pnl_pct": 0.0,
+        "outer_run_active": True,
     }
     exchange.positions = [{
         "symbol": "DOGEUSDT",
