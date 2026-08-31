@@ -54,14 +54,14 @@ def test_channel_swing_holds_between_entry_and_opposite_edge():
     assert TradingEngine._channel_swing_action(frame, 100.0, "SHORT")["action"] == "HOLD"
 
 
-def test_channel_swing_reverses_only_at_opposite_edge():
+def test_channel_swing_reverses_only_after_touching_opposite_rail():
     frame = _channel_frame()
-    frame.loc[frame.index[-2], "high"] = 100.75
+    frame.loc[frame.index[-2], "high"] = 101.1
     _confirm_peak(frame)
     long_exit = TradingEngine._channel_swing_action(frame, 100.2, "LONG")
 
     frame = _channel_frame()
-    frame.loc[frame.index[-2], "low"] = 99.25
+    frame.loc[frame.index[-2], "low"] = 98.9
     _confirm_trough(frame)
     short_exit = TradingEngine._channel_swing_action(frame, 99.8, "SHORT")
 
@@ -71,7 +71,7 @@ def test_channel_swing_reverses_only_at_opposite_edge():
 
 def test_channel_swing_waits_for_confirmed_pivot_after_reaching_outer_zone():
     frame = _channel_frame()
-    frame.loc[frame.index[-2], "low"] = 99.25
+    frame.loc[frame.index[-2], "low"] = 98.9
 
     no_trough = TradingEngine._channel_swing_action(frame, 99.5, "SHORT")
 
@@ -79,19 +79,18 @@ def test_channel_swing_waits_for_confirmed_pivot_after_reaching_outer_zone():
     assert no_trough["reason"] == "WAIT_TROUGH"
 
     frame = _channel_frame()
-    frame.loc[frame.index[-2], "high"] = 100.75
+    frame.loc[frame.index[-2], "high"] = 101.1
     no_peak = TradingEngine._channel_swing_action(frame, 100.5, "LONG")
 
     assert no_peak["action"] == "HOLD"
     assert no_peak["reason"] == "WAIT_PEAK"
 
 
-def test_channel_swing_does_not_reuse_an_old_outer_zone_touch_in_the_middle():
+def test_channel_swing_does_not_exit_in_outer_entry_zone_before_actual_rail():
     frame = _channel_frame()
-    frame.loc[frame.index[-5], "high"] = 100.9
+    frame.loc[frame.index[-2], "high"] = 100.9
     _confirm_peak(frame)
-    # 真正形成 MA3 峰頂的倒數第二根仍在中間區，較早觸區不能帶過來反手。
-    frame.loc[frame.index[-2], "high"] = 100.5
+    # 已進入 70% 外側進場區，但尚未觸及真正上軌；持倉不得平倉反手。
 
     result = TradingEngine._channel_swing_action(frame, 100.2, "LONG")
 

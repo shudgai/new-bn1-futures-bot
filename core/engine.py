@@ -4123,6 +4123,8 @@ class TradingEngine:
         upper_trigger = pivot_middle + pivot_half_width * CONTINUOUS_ENTRY_OUTER_ZONE_RATIO
         lower_zone_reached = bool(float(pivot_row["low"]) <= lower_trigger)
         upper_zone_reached = bool(float(pivot_row["high"]) >= upper_trigger)
+        lower_rail_reached = bool(float(pivot_row["low"]) <= pivot_lower)
+        upper_rail_reached = bool(float(pivot_row["high"]) >= pivot_upper)
 
         ma3_prev2 = float(frame["ma3"].iloc[-3])
         ma3_prev = float(frame["ma3"].iloc[-2])
@@ -4142,14 +4144,15 @@ class TradingEngine:
         side = str(current_side or "").upper()
         reason = ""
         if side == "LONG":
-            action = "REVERSE" if upper_zone_reached and peak_confirmed else "HOLD"
+            # 已持倉後只認真正的對面 KC 外軌；70% 外側區僅供空倉找入口。
+            action = "REVERSE" if upper_rail_reached and peak_confirmed else "HOLD"
             target_side = "SHORT" if action == "REVERSE" else None
-            if upper_zone_reached and not peak_confirmed:
+            if upper_rail_reached and not peak_confirmed:
                 reason = "WAIT_PEAK"
         elif side == "SHORT":
-            action = "REVERSE" if lower_zone_reached and trough_confirmed else "HOLD"
+            action = "REVERSE" if lower_rail_reached and trough_confirmed else "HOLD"
             target_side = "LONG" if action == "REVERSE" else None
-            if lower_zone_reached and not trough_confirmed:
+            if lower_rail_reached and not trough_confirmed:
                 reason = "WAIT_TROUGH"
         elif lower_zone_reached and trough_confirmed:
             action, target_side = "ENTER", "LONG"
@@ -4604,8 +4607,8 @@ class TradingEngine:
 
             from core.config import ENABLE_CONTINUOUS_REVERSE_MODE, CONTINUOUS_REVERSE_TIMEFRAME, TRADE_AMOUNT_USDT, get_leverage
             if ENABLE_CONTINUOUS_REVERSE_MODE:
-                # Channel Swing 優先：價格進入外側 70% 區後，等已收盤 MA3
-                # 真峰谷才開倉／反手，不要求價格真的突破 KC 外軌。
+                # Channel Swing 優先：空倉可在外側 70% 區等峰谷進場；持倉後
+                # 必須真正觸及對面 KC 外軌並確認峰谷，通道中間絕不平倉。
                 channel_df = await self.fetch_klines(
                     symbol, timeframe="1m", limit=30, keep_live=False,
                 )
