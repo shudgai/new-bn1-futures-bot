@@ -182,6 +182,12 @@
             display: flex; justify-content: space-between; align-items: center;
         }
         .chart-modal-title { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 12px; }
+        .market-mode-badge { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; font-size:13px; font-weight:800; white-space:nowrap; }
+        .market-mode-bull { background:#dcfce7; color:#15803d; }
+        .market-mode-bear { background:#fee2e2; color:#b91c1c; }
+        .market-mode-range { background:#fef3c7; color:#92400e; }
+        .market-mode-trend { background:#dbeafe; color:#1d4ed8; }
+        .market-mode-wait { background:#e2e8f0; color:#475569; }
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; height: 500px; width: 100%; position: relative; }
         .chart-container { width: 100%; height: 100%; }
@@ -525,7 +531,10 @@
     <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
         <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" :aria-label="chartModal.symbol + ' K線圖'">
             <div class="chart-modal-header">
-                <div class="chart-modal-title">📈 {{ chartModal.symbol }} K線圖</div>
+                <div class="chart-modal-title">
+                    📈 {{ chartModal.symbol }} K線圖
+                    <span class="market-mode-badge" :class="'market-mode-' + chartMarketMode.toLowerCase()">市場：{{ chartMarketLabel }}</span>
+                </div>
                 <div class="chart-header-actions">
                     <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
                     <button class="btn chart-fullscreen-btn" @click.stop="toggleChartFullscreen">
@@ -577,6 +586,7 @@
                         leverage_by_score: {},
                         symbols: ['1000PEPE/USDT'],
                         symbol_directions: {},
+                        market_modes: {},
                         volatility_stats: {},
                         tickers: {},
                         positions: [],
@@ -615,6 +625,23 @@
                         }))
                         .filter(item => item.price !== null && item.price !== undefined)
                         .sort((a, b) => a.name.localeCompare(b.name));
+                },
+                chartMarketMode() {
+                    const rawMode = String(
+                        ((this.bot.market_modes || {})[this.chartModal.symbol]) || 'WAIT'
+                    ).toUpperCase();
+                    return ['BULL', 'BEAR', 'RANGE', 'TREND'].includes(rawMode)
+                        ? rawMode
+                        : 'WAIT';
+                },
+                chartMarketLabel() {
+                    return {
+                        BULL: '牛市',
+                        BEAR: '熊市',
+                        RANGE: '盤整市',
+                        TREND: '趨勢確認中',
+                        WAIT: '等待判定',
+                    }[this.chartMarketMode];
                 },
                 sortedVolatility() {
                     const stats = this.bot.volatility_stats || {};
@@ -963,6 +990,7 @@
                         if (incomingTickerTime < currentTickerTime) return;
                         if (data.symbols) this.bot.symbols = data.symbols;
                         if (data.symbol_directions) this.bot.symbol_directions = data.symbol_directions;
+                        if (data.market_modes) this.bot.market_modes = data.market_modes;
                         if (data.tickers) {
                             this.bot.tickers = data.tickers;
                             // 讓圖表最後一根 K 線實時隨 ticker 跳動（每 500ms），消除視覺延遲

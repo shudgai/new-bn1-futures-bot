@@ -163,6 +163,10 @@ async def get_status(response: Response):
         "slippage_pct": SLIPPAGE_PCT,
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
         "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
+        "market_modes": {
+            symbol: engine._continuous_market_mode.get(symbol, "WAIT")
+            for symbol in dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])
+        },
         "symbol_rotation": engine.symbol_rotation.status(),
         "volatility_stats": {
             symbol: engine.symbol_rotation.volatility_stats[symbol]
@@ -194,6 +198,10 @@ async def get_prices(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
+        "market_modes": {
+            symbol: engine._continuous_market_mode.get(symbol, "WAIT")
+            for symbol in dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])
+        },
         "tickers": visible_tickers(),
         "ticker_updated_at": engine.last_ticker_success_ts,
         "positions": positions_with_triggers(),
