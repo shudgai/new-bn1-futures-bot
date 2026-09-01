@@ -5943,6 +5943,7 @@ class TradingEngine:
                         "STALE_TROUGH_TURN": " | 舊下軌谷底已突破，不補追",
                         "STALE_PEAK_TURN": " | 舊上軌峰頂已跌破，不補追",
                         "CHOP_WAIT_NO_ENTRY": " | CHOP_WAIT 盤整鎖，外軌V也不開倉",
+                        "KC_WIDTH_TOO_NARROW": " | KC寬度不足，獲利空間太窄",
                         "WAIT_DYNAMIC_TREND": " | 上軌外但趨勢品質不足，暫不追多",
                         "WAIT_DYNAMIC_DOWNTREND": " | 下軌外但趨勢品質不足，暫不追空",
                         "WAIT_TREND_BREAK": " | 上軌動能成立，等待下一根破高",
