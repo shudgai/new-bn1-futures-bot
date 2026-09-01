@@ -134,7 +134,6 @@
             /* 手機版隱藏 AI 分析卡 */
             .ai-analysis-card { display: none !important; }
             /* 手機版專屬買賣快捷列 */
-            .mobile-manual-trade-bar { display: flex !important; }
         }
 
         .up { color: var(--up); font-weight: 700; }
@@ -219,7 +218,6 @@
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
         /* 桌面預設隱藏手機專屬快捷列 */
-        .mobile-manual-trade-bar { display: none; }
 </style>
 </head>
 <body>
@@ -463,29 +461,6 @@
                     </button>
                 </div>
 
-                <!-- MANUAL ORDER PANEL -->
-                <div class="card">
-                    <div class="card-title">⚡ 手動開倉 (依策略自動配置止損/止盈)</div>
-                    <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
-                        <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
-                        <div style="display:flex; gap:8px;">
-                            <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做多 (LONG)</button>
-                            <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做空 (SHORT)</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
-                <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
-                    <div v-for="symbol in bot.symbols" :key="'mobile-manual-' + symbol" style="width:100%;">
-                        <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ symbol }}</div>
-                        <div style="display:flex; gap:10px;">
-                            <button class="btn btn-success" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder">買進 LONG</button>
-                            <button class="btn btn-danger" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder">賣出 SHORT</button>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- AI TRADE HISTORY ANALYSIS -->
                 <div class="card ai-analysis-card">
                     <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
@@ -571,7 +546,6 @@
                 },
                 isProcessing: false,
                 isTogglingBot: false,
-                isPlacingOrder: false,
                 isClosingPos: {},
                 isResetting: false,
                 isAnalyzing: false,
@@ -1080,25 +1054,6 @@
                         await this.fetchStatus();
                     } finally {
                         this.isAnalyzing = false;
-                    }
-                },
-                async placeOrder(symbol, side) {
-                    if (this.isPlacingOrder) return;
-                    this.isPlacingOrder = true;
-                    try {
-                        const res = await this.authorizedFetch('/api/manual_order', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                symbol: symbol,
-                                side: side,
-                                amount: 0
-                            })
-                        });
-                        if (!res) return;
-                        await this.fetchStatus();
-                    } finally {
-                        this.isPlacingOrder = false;
                     }
                 },
                 async closePos(symbol) {
