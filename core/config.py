@@ -903,7 +903,7 @@ PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT"
 # ---------------------------------------------------------------------------
 # 固定百分比鎖利（Fixed Profit Lock by Unlevered %)
 # 理念：無槓桿利潤達到 FIXED_PROFIT_LOCK_TRIGGER_PCT（目前 0.5%），
-#       立即先鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT，之後按峰值級距保留 70%／80%／85%。
+#       立即先鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT。
 #       保護線只往有利方向移動。
 #       地板止損只往有利方向移動，不會被收緊後放寬。
 # 與 ENABLE_TRAILING_STOP（移動停利）並行：兩套都啟用時同時運作，
@@ -915,22 +915,7 @@ FIXED_PROFIT_LOCK_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_TRIG
 # 鎖利地板：止損移動後保證至少鎖住此比例（無槓桿）的利潤
 # 第一階段與觸發門檻相同；正式環境由 .env 設為 0.5%
 FIXED_PROFIT_LOCK_FLOOR_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_FLOOR_PCT", "0.006")))
-# 峰值分級：0.51%～<1.1%保留70%，1.1%～<2.1%保留80%，2.1%以上保留85%。
-FIXED_PROFIT_TRAIL_RETAIN_RATIO = min(1.0, max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_RETAIN_RATIO", "0.70"))))
-FIXED_PROFIT_TRAIL_TIER2_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER2_TRIGGER_PCT", "0.011")))
-FIXED_PROFIT_TRAIL_TIER2_RETAIN_RATIO = min(1.0, max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER2_RETAIN_RATIO", "0.80"))))
-FIXED_PROFIT_TRAIL_TIER3_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER3_TRIGGER_PCT", "0.021")))
-FIXED_PROFIT_TRAIL_TIER3_RETAIN_RATIO = min(1.0, max(0.0, float(os.getenv("FIXED_PROFIT_TRAIL_TIER3_RETAIN_RATIO", "0.85"))))
-
-def get_fixed_profit_trail_retain_ratio(highest_pnl: float) -> float:
-    peak = max(0.0, float(highest_pnl or 0.0))
-    if peak + 1e-12 >= FIXED_PROFIT_TRAIL_TIER3_TRIGGER_PCT:
-        return FIXED_PROFIT_TRAIL_TIER3_RETAIN_RATIO
-    if peak + 1e-12 >= FIXED_PROFIT_TRAIL_TIER2_TRIGGER_PCT:
-        return FIXED_PROFIT_TRAIL_TIER2_RETAIN_RATIO
-    return FIXED_PROFIT_TRAIL_RETAIN_RATIO
-
-# --- 急升急降過濾：排除短期劇烈波動的幣種 ---
+# --- 急升急降過濾# --- 急升急降過濾：排除短期劇烈波動的幣種 ---
 # RAPID_MOVE_WINDOW: 回看幾根5分K（3根=15分鐘）
 RAPID_MOVE_WINDOW = int(os.getenv("RAPID_MOVE_WINDOW", "3"))
 # RAPID_MOVE_THRESHOLD: 窗口內漲跌幅超過此值（%）則排除

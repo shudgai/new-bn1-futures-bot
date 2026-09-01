@@ -532,23 +532,6 @@ class SymbolRotation:
             await asyncio.sleep(0.05)
         return results
 
-    @staticmethod
-    def _blend_ai_scores(metrics: List[dict], ai_ranking: List[str]) -> Dict[str, float]:
-        quant = {item["symbol"]: item["quant_score"] for item in metrics}
-        if not ai_ranking:
-            return quant
-        count = max(len(ai_ranking) - 1, 1)
-        ai_scores = {
-            symbol: 1.0 - (index / count)
-            for index, symbol in enumerate(ai_ranking)
-        }
-        return {
-            symbol: (
-                score * (1.0 - AI_ADVISOR_WEIGHT)
-                + ai_scores.get(symbol, 0.5) * AI_ADVISOR_WEIGHT
-            )
-            for symbol, score in quant.items()
-        }
 
     @staticmethod
     def choose_directional_symbols(

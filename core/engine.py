@@ -48,7 +48,7 @@ from core.config import (
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
-    compute_pullback_target, compute_net_reward_risk, detect_ma5_reversal,
+    compute_pullback_target, compute_net_reward_risk,
     has_volume_divergence, check_exhaustion_entry_filters,
 )
 
@@ -210,7 +210,6 @@ class TradingEngine:
         self.fixed_stop_task: asyncio.Task = None
         self.trend_follow_task: asyncio.Task = None
         self.trailing_sl_task: asyncio.Task = None
-        self.market_scan_task: asyncio.Task = None
         self.ticker_task: asyncio.Task = None
         # 歷史係數降分 log 節流：同一個 symbol 在績效數據沒變的情況下，
         # 每輪主迴圈都會重算出同樣的係數/分數，導致同一則訊息每 5~10 秒
@@ -224,72 +223,6 @@ class TradingEngine:
         # 需達到 BREAKOUT_KC_FAIL_CONFIRM_BARS 根才實際關倉，防止單根回踩誤觸
         self._kc_fail_count: Dict[str, int] = {}
 
-    def _detect_ma5_consolidation(self, df: pd.DataFrame) -> dict:
-        """Detect a confirmed low-volatility MA5 chop zone on closed candles."""
-        result = {"detected": False, "reason": "insufficient_data"}
-        if df is None or len(df) < 20:
-            return result
-
-        work = df.copy()
-        if "ma5" not in work.columns:
-            work["ma5"] = work["close"].rolling(window=5).mean()
-
-        high = work["high"].astype(float)
-        low = work["low"].astype(float)
-        close = work["close"].astype(float)
-        tr = pd.concat([
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low - close.shift(1)).abs(),
-        ], axis=1).max(axis=1)
-        atr_series = tr.rolling(window=14, min_periods=5).mean()
-        atr = float(atr_series.iloc[-1])
-        if pd.isna(atr) or atr <= 0:
-            atr = max(float(close.iloc[-1]) * 0.015, 1e-12)
-
-        if "adx" in work.columns and not pd.isna(work["adx"].iloc[-1]):
-            adx = float(work["adx"].iloc[-1])
-        else:
-            period = 14
-            up_move = high.diff()
-            down_move = -low.diff()
-            plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
-            minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
-            tr_smooth = tr.ewm(alpha=1 / period, adjust=False).mean()
-            plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / (tr_smooth + 1e-12)
-            minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / (tr_smooth + 1e-12)
-            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
-            adx = float(dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1])
-
-        recent_ma5 = work["ma5"].dropna().astype(float).iloc[-5:]
-        if len(recent_ma5) < 5:
-            return result
-        steps = recent_ma5.diff().dropna()
-        min_turn_step = atr * 0.005
-        signs = [1 if step > min_turn_step else -1 if step < -min_turn_step else 0 for step in steps]
-        meaningful_signs = [sign for sign in signs if sign]
-        direction_changes = sum(
-            current != previous
-            for previous, current in zip(meaningful_signs, meaningful_signs[1:])
-        )
-        ma5_range_atr = (float(recent_ma5.max()) - float(recent_ma5.min())) / atr
-        last_three_flat = bool((steps.abs().iloc[-3:] <= atr * 0.08).all())
-        detected = bool(
-            ma5_range_atr <= 0.15
-            and direction_changes >= 2
-            and last_three_flat
-            and adx <= 18.0
-        )
-        return {
-            "detected": detected,
-            "reason": "ma5_chop" if detected else "not_consolidating",
-            "atr": atr,
-            "adx": adx,
-            "ma5_range_atr": ma5_range_atr,
-            "direction_changes": direction_changes,
-            "range_high": float(high.iloc[-5:].max()),
-            "range_low": float(low.iloc[-5:].min()),
-        }
 
     def _ma5_timing_ready(self, symbol: str, signal: dict, now: float) -> tuple:
         """已收盤轉彎直接放行；盤中投影須連續多輪成立，失效即清零。"""
@@ -961,8 +894,6 @@ class TradingEngine:
         self.trend_follow_task = asyncio.create_task(self._run_structured_exits())
         # 舊移動停損任務保留但預設停用，避免與結構ATR追蹤衝突
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
-        # 無 MA5 模式不啟動全市場 MA5 掃描。
-        self.market_scan_task = None
         # 獨立的即時價格更新任務
         self.ticker_task = asyncio.create_task(self._ticker_loop())
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
@@ -974,7 +905,7 @@ class TradingEngine:
         task_names = (
             "task", "rotation_task", "analysis_task", "trend_cache_task",
             "trigger_task", "fixed_stop_task", "trend_follow_task",
-            "trailing_sl_task", "market_scan_task", "ticker_task",
+            "trailing_sl_task", "ticker_task",
         )
         tasks = []
         for name in task_names:
@@ -1083,80 +1014,6 @@ class TradingEngine:
                 self.symbol_rotation.last_reason = f"輪替失敗，保留原牌面：{type(exc).__name__}"
                 self.account.log(f"⚠️ [幣種輪替] 暫時失敗，保留原牌面並繼續交易：{type(exc).__name__}: {exc}", "WARNING")
                 await asyncio.sleep(30)
-
-    async def _run_market_wide_ma5_scan_loop(self):
-        """每 5 分鐘掃一次 DEFAULT_SYMBOLS 之外的合約候選幣，用跟主迴圈
-        完全相同的 detect_ma5_reversal 判斷；一旦掃到已經達標（detected=
-        True）但還沒被監控的幣，直接加入 DEFAULT_SYMBOLS，讓主迴圈下一輪
-        (5秒內) 用正常流程（結構性SL/動態槓桿/KC驗證）接手進場，不用等
-        15分鐘一次的幣種輪替（那邊排的是綜合品質分數，不是「現在有沒有
-        拐頭」）。跟 bot process 生命週期綁在一起，沒有排程時間上限。"""
-        SCAN_INTERVAL_SEC = 300
-        while self.is_running:
-            try:
-                await self.exchange.load_markets()
-                tickers = await self.exchange.fetch_tickers()
-                candidates = self.symbol_rotation.market_candidates(
-                    tickers, self.exchange.markets, self.execution_symbols
-                )
-                watched = set(DEFAULT_SYMBOLS) | set(self.account.positions.keys())
-                to_scan = [s for s in candidates if s not in watched]
-
-                for symbol in to_scan:
-                    try:
-                        df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=100)
-                        if df_1m.empty or len(df_1m) < 50:
-                            continue
-                        df_1h = await self.fetch_klines(symbol, timeframe="1h", limit=150)
-                        if df_1h.empty or len(df_1h) < 30:
-                            continue
-
-                        df_1m = self.strategy.compute_indicators(df_1m)
-                        computed_1h = self.strategy.compute_indicators(df_1h)
-                        ema_50_1h = float(
-                            df_1h['close'].ewm(span=min(len(df_1h), TREND_FILTER_EMA_PERIOD), adjust=False)
-                            .mean().iloc[-1]
-                        )
-                        st_direction_1h = int(computed_1h['st_direction'].iloc[-1])
-                        ma5 = float(df_1m['close'].rolling(5).mean().iloc[-1])
-                        ma15 = float(df_1m['close'].rolling(15).mean().iloc[-1])
-                        current_direction = "LONG" if ma5 > ma15 else "SHORT"
-
-                        sig = detect_ma5_reversal(
-                            df_1m,
-                            side=current_direction,
-                            ema_50_1h=ema_50_1h,
-                            st_direction_1h=st_direction_1h,
-                            btc_st_direction_1h=self.btc_1h_st_direction,
-                            btc_st_flip_age=self.btc_1h_st_flip_age,
-                            symbol=symbol,
-                            indicators_precomputed=True,
-                        )
-                        if sig["detected"] and symbol not in DEFAULT_SYMBOLS:
-                            if getattr(config, "ENABLE_SYMBOL_ROTATION", True):
-                                DEFAULT_SYMBOLS.append(symbol)
-                                self.account.log(
-                                    f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
-                                    f"{sig.get('score', 65)}分已符合MA5拐頭條件（原本不在監控名單內），"
-                                    f"已加入監控，交由主迴圈接手進場｜{sig['reason']}",
-                                    "SUCCESS",
-                                )
-                            else:
-                                self.account.log(
-                                    f"🎯 [全市場掃描] {symbol.replace('/USDT', '')} {sig['side']} "
-                                    f"{sig.get('score', 65)}分符合進場條件，但因自動幣種輪替已關閉，略過加入監控清單",
-                                    "INFO"
-                                )
-                    except Exception:
-                        continue
-                    await asyncio.sleep(0.05)
-
-                await asyncio.sleep(SCAN_INTERVAL_SEC)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                self.account.log(f"⚠️ [全市場掃描] 暫時失敗：{type(exc).__name__}: {exc}", "WARNING")
-                await asyncio.sleep(SCAN_INTERVAL_SEC)
 
 
     async def _fixed_stop_loss_loop(self):
@@ -3732,7 +3589,7 @@ class TradingEngine:
                     symbol, f"限價掛單 {order_timeout:.0f} 秒未成交"
                 )
                 # MA5拐頭/回撤底單逾時未成交不設冷卻：下一輪(5秒後)
-                # detect_ma5_reversal會用最新K線與KC重新估價，型態若仍成立便再掛；
+                # 會用最新K線與KC重新估價，型態若仍成立便再掛；
                 # 若價格已經走遠、型態不再成立，策略本身自然回HOLD，不需要額外
                 # 冷卻機制硬擋——避免因為冷卻而錯過還在成立的真實訊號，也不會
                 # 變成無腦追價，追不追完全看MA5型態當下是否仍然成立。
