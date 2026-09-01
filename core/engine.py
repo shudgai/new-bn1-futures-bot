@@ -4243,6 +4243,7 @@ class TradingEngine:
         entry_turn_low: float | None = None,
         entry_turn_high: float | None = None,
     ) -> dict:
+        import core.config as config
         """空手只做 KC 外軌峰谷轉向；持倉則依對側峰谷平倉或反手。"""
         required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
@@ -4392,6 +4393,7 @@ class TradingEngine:
         signal_width = signal_upper - signal_lower
         signal_middle = (signal_upper + signal_lower) / 2.0
         live_width = upper - lower
+        live_width_pct = live_width / max((upper + lower) / 2.0, 1e-12)
         raw_trough = bool(signal_low <= signal_lower and signal_close > signal_open)
         raw_peak = bool(signal_high >= signal_upper and signal_close < signal_open)
         trough_outer_depth = (signal_lower - signal_ma3) / signal_width
@@ -4561,6 +4563,8 @@ class TradingEngine:
             elif peak_turn:
                 if prior_up_context:
                     action, target_side, reason = "HOLD", None, "COUNTERTREND_REVERSE_BLOCKED"
+                elif live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+                    action, target_side, reason = "EXIT", None, "KC_WIDTH_TOO_NARROW"
                 else:
                     action, target_side = "REVERSE", "SHORT"
             elif opposite_turn_ready:
@@ -4596,6 +4600,8 @@ class TradingEngine:
             elif trough_turn:
                 if prior_down_context:
                     action, target_side, reason = "HOLD", None, "COUNTERTREND_REVERSE_BLOCKED"
+                elif live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+                    action, target_side, reason = "EXIT", None, "KC_WIDTH_TOO_NARROW"
                 else:
                     action, target_side = "REVERSE", "LONG"
             elif opposite_turn_ready:
@@ -4615,13 +4621,19 @@ class TradingEngine:
             and not trough_broken_before_live
             and (trough_trend_confirmed or not prior_down_context)
         ):
-            action, target_side = "ENTER", "LONG"
+            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+                action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
+            else:
+                action, target_side = "ENTER", "LONG"
         elif (
             peak_turn
             and not peak_broken_before_live
             and (peak_trend_confirmed or not prior_up_context)
         ):
-            action, target_side = "ENTER", "SHORT"
+            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+                action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
+            else:
+                action, target_side = "ENTER", "SHORT"
         else:
             action, target_side = "WAIT", None
             if trough_turn and prior_down_context:
