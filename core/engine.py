@@ -4243,7 +4243,7 @@ class TradingEngine:
         entry_turn_low: float | None = None,
         entry_turn_high: float | None = None,
     ) -> dict:
-        """KC 外軌峰谷與外側趨勢：確認後進場，失敗時平倉或追勢。"""
+        """空手只做 KC 外軌峰谷轉向；持倉則依對側峰谷平倉或反手。"""
         required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
@@ -4464,10 +4464,8 @@ class TradingEngine:
                 )
             )
         )
-        # 先往前找有效的 KC 外軌谷峰作為方向基準；當下價格突破候選極值且
-        # MA3 已呈同向趨勢就立即追入。K 棒顏色完全不列入條件：紅 K 也可
-        # 追多、綠 K 也可追空，不等待兩根同色 K 或 40% 回通道。抵達對側
-        # 外軌時仍交給嚴格外側追勢規則，避免拿舊谷峰在波尾追單。
+        # 先往前找有效的 KC 外軌谷峰；後續價格突破候選極值且 MA3 同向轉彎
+        # 才算轉向成立。確認 K 顏色不限，但空手禁止直接追逐 KC 外側延伸行情。
         trough_trend_confirmed = bool(
             closed_trough
             and not trough_cancelled
@@ -4508,29 +4506,7 @@ class TradingEngine:
         live_upper_touch = live_high >= upper
         context_row = frame.iloc[-3]
         context_ma3 = float(context_row["ma3"])
-        prior_ma3_slope = previous_ma3 - context_ma3
-        live_ma3_slope = live_ma3 - previous_ma3
-        # 空倉追勢只接受已完整站在 KC 外軌、且 MA3 仍在加速延伸的走勢。
-        # 單根刺穿外軌、MA3 剛轉正／轉負，或斜率已開始收斂，都可能已接近
-        # 峰頂／谷底，不能在波尾追單。
-        outer_uptrend = bool(
-            price > upper
-            and float(row["open"]) > upper
-            and live_ma3 > upper
-            and prior_ma3_slope > 0.0
-            and live_ma3_slope + 1e-12 >= prior_ma3_slope
-            and price > float(row["open"])
-            and not peak_reentry_ready
-        )
-        outer_downtrend = bool(
-            price < lower
-            and float(row["open"]) < lower
-            and live_ma3 < lower
-            and prior_ma3_slope < 0.0
-            and live_ma3_slope - 1e-12 <= prior_ma3_slope
-            and price < float(row["open"])
-            and not trough_reentry_ready
-        )
+        # 空手不直接追逐 KC 外側延伸；只接受上方已確認的外軌峰谷轉向。
         context_middle = (
             float(context_row["kc_upper"]) + float(context_row["kc_lower"])
         ) / 2.0
@@ -4611,10 +4587,6 @@ class TradingEngine:
                 reason = "CANCEL_LONG" if trough_cancelled else "WAIT_BREAK_HIGH"
             elif action == "HOLD" and live_lower_touch:
                 reason = "WAIT_CLOSE_GREEN"
-        elif outer_uptrend:
-            action, target_side, reason = "ENTER", "LONG", "UPPER_OUTER_TREND"
-        elif outer_downtrend:
-            action, target_side, reason = "ENTER", "SHORT", "LOWER_OUTER_TREND"
         elif trough_turn and (trough_trend_confirmed or not prior_down_context):
             action, target_side = "ENTER", "LONG"
         elif peak_turn and (peak_trend_confirmed or not prior_up_context):
@@ -5231,17 +5203,9 @@ class TradingEngine:
                             channel_df, channel_price, target_side,
                         ),
                         "reason": (
-                            "Channel Swing KC 上軌外漲勢追多"
-                            if channel_action.get("reason") == "UPPER_OUTER_TREND"
-                            else "Channel Swing KC 下軌外跌勢追空"
-                            if channel_action.get("reason") == "LOWER_OUTER_TREND"
-                            else "Channel Swing 前段多勢延續開多"
-                            if channel_action.get("reason") == "UP_TREND_CONTINUATION"
-                            else "Channel Swing 前段空勢延續開空"
-                            if channel_action.get("reason") == "DOWN_TREND_CONTINUATION"
-                            else "Channel Swing KC 下軌開多"
+                            "Channel Swing KC 下軌谷底轉向開多"
                             if target_side == "LONG"
-                            else "Channel Swing KC 上軌開空"
+                            else "Channel Swing KC 上軌峰頂轉向開空"
                         ),
                     })
                 else:

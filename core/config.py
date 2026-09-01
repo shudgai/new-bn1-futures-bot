@@ -206,7 +206,7 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
 # 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
 CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"
 DISABLE_CONTINUOUS_TREND_ENTRIES = os.getenv(
-    "DISABLE_CONTINUOUS_TREND_ENTRIES", "false"
+    "DISABLE_CONTINUOUS_TREND_ENTRIES", "true"
 ).lower() == "true"
 
 # 連續峰谷模式的空倉市價進場，最大允許離 MA3 的順向距離；超過代表
@@ -319,7 +319,7 @@ BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
     0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.001"))
 )
 
-ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "false").lower() == "true"
+ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "true").lower() == "true"
 CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
 CONTINUOUS_PIVOT_ONLY = os.getenv("CONTINUOUS_PIVOT_ONLY", "false").lower() == "true"
 PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR = max(0.0, float(os.getenv("PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR", "0.35")))

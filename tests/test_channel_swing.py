@@ -211,14 +211,14 @@ def test_channel_swing_keeps_multi_candle_leg_through_opposite_color_candle():
     assert (result["action"], result["side"]) == ("ENTER", "LONG")
 
 
-def test_empty_slot_enters_when_price_and_ma3_trend_outside_kc():
+def test_empty_slot_does_not_chase_kc_outer_trend_without_pivot_turn():
     up = _channel_frame()
     up.loc[up.index[-3], "ma3"] = 100.5
     up.loc[up.index[-2], "ma3"] = 100.9
     up.loc[up.index[-1], ["open", "close", "high", "ma3"]] = [
         101.1, 101.4, 101.5, 101.3,
     ]
-    long_entry = TradingEngine._channel_swing_action(up, 101.4)
+    long_wait = TradingEngine._channel_swing_action(up, 101.4)
 
     down = _channel_frame()
     down.loc[down.index[-3], "ma3"] = 99.5
@@ -226,14 +226,12 @@ def test_empty_slot_enters_when_price_and_ma3_trend_outside_kc():
     down.loc[down.index[-1], ["open", "close", "low", "ma3"]] = [
         98.9, 98.6, 98.5, 98.7,
     ]
-    short_entry = TradingEngine._channel_swing_action(down, 98.6)
+    short_wait = TradingEngine._channel_swing_action(down, 98.6)
 
-    assert (long_entry["action"], long_entry["side"]) == ("ENTER", "LONG")
-    assert long_entry["reason"] == "UPPER_OUTER_TREND"
-    assert long_entry["turn_low"] is None
-    assert (short_entry["action"], short_entry["side"]) == ("ENTER", "SHORT")
-    assert short_entry["reason"] == "LOWER_OUTER_TREND"
-    assert short_entry["turn_high"] is None
+    assert (long_wait["action"], long_wait["side"]) == ("WAIT", None)
+    assert long_wait["turn_low"] is None
+    assert (short_wait["action"], short_wait["side"]) == ("WAIT", None)
+    assert short_wait["turn_high"] is None
 
 
 def test_empty_slot_does_not_chase_price_outside_without_ma3_trend():
