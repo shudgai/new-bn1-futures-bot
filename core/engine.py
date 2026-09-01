@@ -6368,7 +6368,16 @@ class TradingEngine:
                 if TEST_BUDGET_CAP_USDT > 0:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)
                 from core.config import ENABLE_CONTINUOUS_REVERSE_MODE
-                entry_scan_allowed = not daily_halt and available_balance >= MIN_TRADE_USDT
+                # 開機先完成第一輪全市場排名，避免種子幣在真正最強候選出爐前搶走唯一槽位。
+                rotation_ready = (
+                    not SYMBOL_ROTATION_ENABLED
+                    or self.symbol_rotation.last_rotation_at > 0.0
+                )
+                entry_scan_allowed = (
+                    not daily_halt
+                    and available_balance >= MIN_TRADE_USDT
+                    and rotation_ready
+                )
                 manage_continuous_position = ENABLE_CONTINUOUS_REVERSE_MODE and bool(self.account.positions)
                 if entry_scan_allowed or manage_continuous_position:
                     signal_progress = []
