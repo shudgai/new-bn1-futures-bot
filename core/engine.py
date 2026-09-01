@@ -4805,6 +4805,61 @@ class TradingEngine:
         }
 
     @staticmethod
+    def _channel_opposite_outer_trend_action(
+        frame: pd.DataFrame, live_price: float, current_side: str | None,
+    ) -> dict:
+        """Reverse a wrong-side position after three directional outer bars."""
+        required = {"open", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
+            return {"action": "HOLD", "side": None, "reason": "OUTER_TREND_DATA_UNAVAILABLE"}
+        try:
+            recent = frame.iloc[-3:].copy()
+            opens = recent["open"].astype(float).tolist()
+            closes = recent["close"].astype(float).tolist()
+            closes[-1] = float(live_price)
+            ma3 = recent["ma3"].astype(float).tolist()
+            ma15 = recent["ma15"].astype(float).tolist()
+            upper = recent["kc_upper"].astype(float).tolist()
+            lower = recent["kc_lower"].astype(float).tolist()
+        except (TypeError, ValueError, IndexError):
+            return {"action": "HOLD", "side": None, "reason": "OUTER_TREND_DATA_INVALID"}
+        values = opens + closes + ma3 + ma15 + upper + lower
+        if not all(math.isfinite(value) for value in values):
+            return {"action": "HOLD", "side": None, "reason": "OUTER_TREND_DATA_INVALID"}
+
+        side = str(current_side or "").upper()
+        if side == "SHORT":
+            uptrend = bool(
+                all(close > open_ for open_, close in zip(opens, closes))
+                and closes[0] < closes[1] < closes[2]
+                and ma3[-2] >= upper[-2] and ma3[-1] >= upper[-1]
+                and ma3[-1] > ma3[-2] and ma3[-1] > ma15[-1]
+                and closes[-1] >= upper[-1]
+            )
+            if uptrend:
+                return {
+                    "action": "REVERSE", "side": "LONG",
+                    "reason": "OPPOSITE_UPPER_OUTER_UPTREND",
+                }
+        elif side == "LONG":
+            downtrend = bool(
+                all(close < open_ for open_, close in zip(opens, closes))
+                and closes[0] > closes[1] > closes[2]
+                and ma3[-2] <= lower[-2] and ma3[-1] <= lower[-1]
+                and ma3[-1] < ma3[-2] and ma3[-1] < ma15[-1]
+                and closes[-1] <= lower[-1]
+            )
+            if downtrend:
+                return {
+                    "action": "REVERSE", "side": "SHORT",
+                    "reason": "OPPOSITE_LOWER_OUTER_DOWNTREND",
+                }
+        return {
+            "action": "HOLD", "side": None,
+            "reason": "WAIT_OPPOSITE_OUTER_TREND",
+        }
+
+    @staticmethod
     def _channel_live_inner_reentry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
@@ -5371,12 +5426,19 @@ class TradingEngine:
             and confirmation_low < signal_low
         )
         side = str(current_side or "").upper()
+        opposite_outer_trend = TradingEngine._channel_opposite_outer_trend_action(
+            frame, price, side,
+        )
         live_inner_reentry = TradingEngine._channel_live_inner_reentry_action(
             frame, price,
         )
         reason = ""
         if side == "LONG":
-            if (
+            if opposite_outer_trend.get("action") == "REVERSE":
+                action, target_side, reason = (
+                    "REVERSE", "SHORT", "OPPOSITE_LOWER_OUTER_DOWNTREND"
+                )
+            elif (
                 live_inner_reentry.get("action") == "ENTER"
                 and live_inner_reentry.get("side") == "SHORT"
             ):
@@ -5389,7 +5451,11 @@ class TradingEngine:
                     if live_upper_touch else "WAIT_UPPER_RED_REENTRY"
                 )
         elif side == "SHORT":
-            if (
+            if opposite_outer_trend.get("action") == "REVERSE":
+                action, target_side, reason = (
+                    "REVERSE", "LONG", "OPPOSITE_UPPER_OUTER_UPTREND"
+                )
+            elif (
                 live_inner_reentry.get("action") == "ENTER"
                 and live_inner_reentry.get("side") == "LONG"
             ):
@@ -6125,7 +6191,16 @@ class TradingEngine:
 
                 if action == "REVERSE" and existing_pos:
                     old_side = str(existing_pos.get("side") or "").upper()
-                    close_label = "KC_OUTER_PEAK" if old_side == "LONG" else "KC_OUTER_TROUGH"
+                    reverse_reason = str(channel_action.get("reason") or "")
+                    if reverse_reason == "OPPOSITE_UPPER_OUTER_UPTREND":
+                        close_label = "KC_UPPER_OUTER_UPTREND"
+                    elif reverse_reason == "OPPOSITE_LOWER_OUTER_DOWNTREND":
+                        close_label = "KC_LOWER_OUTER_DOWNTREND"
+                    else:
+                        close_label = (
+                            "KC_OUTER_PEAK"
+                            if old_side == "LONG" else "KC_OUTER_TROUGH"
+                        )
                     # 單幣模式：確認 KC 外側峰／谷後先立即平掉原倉；只有平倉
                     # 成功才建立同幣反向候選，禁止先掃描或等待其他幣種。
                     closed = await self.account.close_position(
@@ -6137,7 +6212,11 @@ class TradingEngine:
                     if channel_closed_bar_id is not None:
                         self._channel_swing_last_reverse_bar[symbol] = channel_closed_bar_id
                     switch_reason = (
-                        f"KC outer peak close-first then reopen {target_side}"
+                        f"KC upper outer uptrend close-first then reopen {target_side}"
+                        if reverse_reason == "OPPOSITE_UPPER_OUTER_UPTREND"
+                        else f"KC lower outer downtrend close-first then reopen {target_side}"
+                        if reverse_reason == "OPPOSITE_LOWER_OUTER_DOWNTREND"
+                        else f"KC outer peak close-first then reopen {target_side}"
                         if old_side == "LONG"
                         else f"KC outer trough close-first then reopen {target_side}"
                     )

@@ -1003,9 +1003,12 @@ def test_live_outer_ma3_trend_immediately_reverses_failed_turn():
     ]
     held_short = TradingEngine._channel_swing_action(up, 101.3, "SHORT")
 
-    # It should just hold since failed trend reversal requires it to go to opposite side or opposite V-turn. Wait, failed trend is removed entirely, so it just HOLDs.
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == (
+        "REVERSE", "SHORT", "OPPOSITE_LOWER_OUTER_DOWNTREND",
+    )
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == (
+        "REVERSE", "LONG", "OPPOSITE_UPPER_OUTER_UPTREND",
+    )
 
 
 def test_second_live_outer_candle_does_not_reverse_before_third():
