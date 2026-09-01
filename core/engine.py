@@ -4321,7 +4321,10 @@ class TradingEngine:
             lower = float(live["kc_lower"])
         except (TypeError, ValueError, IndexError):
             return {"action": "WAIT", "side": None, "reason": "OUTER_UPTREND_DATA_INVALID"}
-        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+        if (
+            not all(math.isfinite(value) for value in (price, upper, lower))
+            or lower >= upper
+        ):
             return {"action": "WAIT", "side": None, "reason": "OUTER_UPTREND_DATA_INVALID"}
 
         if not pending:
@@ -4754,6 +4757,52 @@ class TradingEngine:
         return TradingEngine._channel_outer_uptrend_entry_action(
             frame, live_price, pending,
         )
+
+    @staticmethod
+    def _channel_live_outer_entry_action(
+        frame: pd.DataFrame, live_price: float,
+    ) -> dict:
+        """Enter immediately when live price reaches either current KC rail."""
+        required = {"kc_upper", "kc_lower"}
+        if frame is None or frame.empty or not required.issubset(frame.columns):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_UNAVAILABLE",
+            }
+        try:
+            live = frame.iloc[-1]
+            price = float(live_price)
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+        except (TypeError, ValueError, IndexError):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_INVALID",
+            }
+        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_INVALID",
+            }
+        if price >= upper:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        if price <= lower:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        return {
+            "action": "WAIT", "side": None,
+            "reason": "WAIT_LIVE_OUTER_BREAK",
+            "kc_upper": upper, "kc_lower": lower,
+        }
 
     def _record_channel_chop_event(
         self, symbol: str, event: str, frame: pd.DataFrame,
@@ -5812,6 +5861,15 @@ class TradingEngine:
                     existing_pos.get("channel_turn_low") if existing_pos else None,
                     existing_pos.get("channel_turn_high") if existing_pos else None,
                 )
+                # 空手時，現價碰到／越過當前 KC 外軌即優先順勢進場；
+                # 不等收盤、不看 K 色，也不套用軌道內 V 型訊號的 KC 寬度門檻。
+                if not existing_pos:
+                    live_outer_action = self._channel_live_outer_entry_action(
+                        channel_df, channel_price,
+                    )
+                    if live_outer_action.get("action") == "ENTER":
+                        channel_action = live_outer_action
+                        self._channel_outer_trend_wait.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
                 # 服務重啟或首次掃描時，只要當前仍鎖定，或上一根資料仍處於
                 # 盤整，就能在緊接的 live K 確認突破。
@@ -6027,6 +6085,11 @@ class TradingEngine:
                         "reason": (
                             f"Channel Swing CHOP momentum breakout {target_side}"
                             if channel_action.get("reason") in ("CHOP_BREAKOUT_LONG", "CHOP_BREAKOUT_SHORT")
+                            else f"Channel Swing live KC outer break {target_side}"
+                            if channel_action.get("reason") in (
+                                "KC_LIVE_UPPER_BREAK_LONG",
+                                "KC_LIVE_LOWER_BREAK_SHORT",
+                            )
                             else "Channel Swing KC upper trend confirmed LONG"
                             if channel_action.get("reason") in (
                                 "KC_UPPER_TREND_CONFIRMED_LONG",

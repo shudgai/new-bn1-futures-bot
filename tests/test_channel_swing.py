@@ -37,6 +37,40 @@ def _closed_peak(frame: pd.DataFrame):
     frame.loc[frame.index[-1], "ma3"] = 100.0
 
 
+def test_live_price_at_upper_kc_enters_long_without_close_color_or_width_filter():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+    frame.loc[frame.index[-1], ["open", "close"]] = [100.3, 100.1]
+
+    result = TradingEngine._channel_live_outer_entry_action(frame, 100.2)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "KC_LIVE_UPPER_BREAK_LONG",
+    )
+    assert (100.2 - 99.8) / 100.2 < 0.005
+
+
+def test_live_price_at_lower_kc_enters_short_without_close_color_or_width_filter():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+    frame.loc[frame.index[-1], ["open", "close"]] = [99.7, 99.9]
+
+    result = TradingEngine._channel_live_outer_entry_action(frame, 99.8)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "SHORT", "KC_LIVE_LOWER_BREAK_SHORT",
+    )
+    assert (100.2 - 99.8) / 99.8 < 0.005
+
+
+def test_live_price_inside_kc_does_not_use_immediate_outer_entry():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+
+    result = TradingEngine._channel_live_outer_entry_action(frame, 100.0)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "WAIT", None, "WAIT_LIVE_OUTER_BREAK",
+    )
+
+
 def test_channel_swing_enters_only_after_closed_turn_candle_and_next_breakout():
     frame = _channel_frame()
     _closed_trough(frame)
