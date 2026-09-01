@@ -4622,7 +4622,7 @@ class TradingEngine:
     def _channel_live_outer_entry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
-        """Enter immediately when live price reaches either current KC rail."""
+        """Detect a live KC rail touch only for the same-bar rechase exception."""
         required = {"kc_upper", "kc_lower"}
         if frame is None or frame.empty or not required.issubset(frame.columns):
             return {
@@ -5093,12 +5093,13 @@ class TradingEngine:
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
         row = frame.iloc[-1]
-        # -2 是候選已收盤 K，-1 是緊接的即時確認 K。
-        # 禁止往前搜尋舊峰谷補追，候選只在下一根 K 有效。
-        signal_pos = len(frame) - 2
+        # -3 是候選已收盤 K，-2 是緊接且已完整收盤的確認 K，-1 只提供
+        # 當前價格與 KC 狀態。禁止用尚未收盤、可能變色的即時 K 確認峰谷。
+        # 候選只限緊接的第二根 K；若第二根未保持同向顏色，訊號失效。
+        signal_pos = len(frame) - 3
         try:
             signal_row = frame.iloc[signal_pos]
-            confirmation_row = frame.iloc[-1]
+            confirmation_row = frame.iloc[-2]
 
             price = float(live_price)
             upper = float(row["kc_upper"])
@@ -5119,6 +5120,8 @@ class TradingEngine:
             signal_close = float(signal_row["close"])
             signal_low = float(signal_row["low"])
             signal_high = float(signal_row["high"])
+            confirmation_open = float(confirmation_row["open"])
+            confirmation_close = float(confirmation_row["close"])
             confirmation_low = float(confirmation_row["low"])
             confirmation_high = float(confirmation_row["high"])
             live_ma3 = float(row["ma3"])
@@ -5131,6 +5134,7 @@ class TradingEngine:
                 price, upper, lower, signal_upper, signal_lower,
                 live_low, live_high, live_close, signal_open, signal_close,
                 signal_low, signal_high, live_ma3, signal_ma3, previous_ma3,
+                confirmation_open, confirmation_close,
                 confirmation_low, confirmation_high,
             ))
             or lower >= upper or signal_lower >= signal_upper
@@ -5243,11 +5247,13 @@ class TradingEngine:
         trough_turn = bool(
             closed_trough
             and not trough_cancelled
+            and confirmation_close > confirmation_open
             and confirmation_high > signal_high
         )
         peak_turn = bool(
             closed_peak
             and not peak_cancelled
+            and confirmation_close < confirmation_open
             and confirmation_low < signal_low
         )
         side = str(current_side or "").upper()
@@ -5864,15 +5870,6 @@ class TradingEngine:
                     )
                     if immediate_rechase.get("action") == "REVERSE":
                         channel_action = immediate_rechase
-                # 空手時，現價碰到／越過當前 KC 外軌即優先順勢進場；
-                # 不等收盤、不看 K 色，也不套用軌道內 V 型訊號的 KC 寬度門檻。
-                if not existing_pos:
-                    live_outer_action = self._channel_live_outer_entry_action(
-                        channel_df, channel_price,
-                    )
-                    if live_outer_action.get("action") == "ENTER":
-                        channel_action = live_outer_action
-                        self._channel_outer_trend_wait.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
                 # 服務重啟或首次掃描時，只要當前仍鎖定，或上一根資料仍處於
                 # 盤整，就能在緊接的 live K 確認突破。
