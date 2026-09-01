@@ -154,13 +154,13 @@ def test_invalid_shallow_candidate_does_not_hide_earlier_valid_turn():
     short_frame.loc[short_frame.index[-1], ["close", "ma3"]] = [100.2, 100.2]
     short_turn = TradingEngine._channel_swing_action(short_frame, 100.2)
 
-    assert (long_turn["action"], long_turn["side"]) == ("ENTER", "LONG")
-    assert long_turn["turn_low"] == pytest.approx(98.7)
-    assert (short_turn["action"], short_turn["side"]) == ("ENTER", "SHORT")
-    assert short_turn["turn_high"] == pytest.approx(101.3)
+    assert (long_turn["action"], long_turn["reason"]) == ("WAIT", "STALE_TROUGH_TURN")
+    assert long_turn["side"] is None
+    assert (short_turn["action"], short_turn["reason"]) == ("WAIT", "STALE_PEAK_TURN")
+    assert short_turn["side"] is None
 
 
-def test_channel_swing_accepts_multiple_green_or_red_candles_as_one_turn_leg():
+def test_flat_entry_does_not_reuse_multi_candle_confirmed_turn():
     long_frame = _channel_frame()
     long_frame.loc[long_frame.index[-4], ["open", "close", "low", "high", "ma3"]] = [
         98.8, 98.9, 98.7, 98.95, 98.7,
@@ -187,13 +187,13 @@ def test_channel_swing_accepts_multiple_green_or_red_candles_as_one_turn_leg():
     short_frame.loc[short_frame.index[-1], ["close", "ma3"]] = [100.2, 100.2]
     short_turn = TradingEngine._channel_swing_action(short_frame, 100.2)
 
-    assert (long_turn["action"], long_turn["side"]) == ("ENTER", "LONG")
-    assert long_turn["turn_low"] == pytest.approx(98.7)
-    assert (short_turn["action"], short_turn["side"]) == ("ENTER", "SHORT")
-    assert short_turn["turn_high"] == pytest.approx(101.3)
+    assert (long_turn["action"], long_turn["reason"]) == ("WAIT", "STALE_TROUGH_TURN")
+    assert long_turn["side"] is None
+    assert (short_turn["action"], short_turn["reason"]) == ("WAIT", "STALE_PEAK_TURN")
+    assert short_turn["side"] is None
 
 
-def test_channel_swing_keeps_multi_candle_leg_through_opposite_color_candle():
+def test_flat_entry_does_not_reuse_turn_after_opposite_color_candle():
     frame = _channel_frame()
     frame.loc[frame.index[-4], ["open", "close", "low", "high", "ma3"]] = [
         98.8, 98.9, 98.7, 98.95, 98.7,
@@ -208,7 +208,8 @@ def test_channel_swing_keeps_multi_candle_leg_through_opposite_color_candle():
 
     result = TradingEngine._channel_swing_action(frame, 99.8)
 
-    assert (result["action"], result["side"]) == ("ENTER", "LONG")
+    assert (result["action"], result["reason"]) == ("WAIT", "STALE_TROUGH_TURN")
+    assert result["side"] is None
 
 
 def test_empty_slot_does_not_chase_kc_outer_trend_without_pivot_turn():
@@ -481,12 +482,12 @@ def test_confirmed_outer_pivot_opens_before_forty_percent_reentry():
     assert short_entry["turn_high"] == pytest.approx(101.3)
 
 
-def test_current_trend_after_outer_pivot_opens_regardless_of_candle_color():
+def test_current_trend_does_not_reuse_already_confirmed_outer_pivot():
     frame = _channel_frame()
     frame.loc[frame.index[-4], ["open", "close", "low", "high", "ma3"]] = [
         98.8, 98.9, 98.7, 98.95, 98.7,
     ]
-    # 當下是紅 K；只要前段谷底與 MA3 漲勢成立仍須立即追多。
+    # 前段谷底早已被中間 K 突破；即使當下仍有漲勢也不能補追。
     frame.loc[frame.index[-3], ["open", "close", "low", "high", "ma3"]] = [
         99.1, 99.0, 98.9, 99.2, 99.0,
     ]
@@ -499,8 +500,8 @@ def test_current_trend_after_outer_pivot_opens_regardless_of_candle_color():
 
     result = TradingEngine._channel_swing_action(frame, 99.5)
 
-    assert (result["action"], result["side"]) == ("ENTER", "LONG")
-    assert result["turn_low"] == pytest.approx(98.7)
+    assert (result["action"], result["reason"]) == ("WAIT", "STALE_TROUGH_TURN")
+    assert result["side"] is None
 
 
 def test_current_downtrend_after_outer_peak_opens_on_green_candle():

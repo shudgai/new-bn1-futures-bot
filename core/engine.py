@@ -4359,6 +4359,23 @@ class TradingEngine:
             live_ma3 = float(row["ma3"])
             signal_ma3 = float(signal_row["ma3"])
             previous_ma3 = float(frame.iloc[-2]["ma3"])
+            # 可往前找外軌峰谷，但若中間已經突破確認過，空手不得拿舊訊號補追。
+            prior_confirmation_rows = frame.iloc[signal_pos + 1:-1]
+            trough_broken_before_live = False
+            peak_broken_before_live = False
+            if not prior_confirmation_rows.empty:
+                prior_high = float(pd.to_numeric(
+                    prior_confirmation_rows["high"], errors="coerce"
+                ).max())
+                prior_low = float(pd.to_numeric(
+                    prior_confirmation_rows["low"], errors="coerce"
+                ).min())
+                trough_broken_before_live = bool(
+                    math.isfinite(prior_high) and prior_high > signal_high
+                )
+                peak_broken_before_live = bool(
+                    math.isfinite(prior_low) and prior_low < signal_low
+                )
         except (TypeError, ValueError):
             return {"action": "WAIT", "reason": "KC data invalid"}
         if (
@@ -4542,7 +4559,10 @@ class TradingEngine:
             elif returned_to_entry_outer:
                 action, target_side, reason = "EXIT", None, "RETURNED_LOWER_OUTER"
             elif peak_turn:
-                action, target_side = "REVERSE", "SHORT"
+                if prior_up_context:
+                    action, target_side, reason = "HOLD", None, "COUNTERTREND_REVERSE_BLOCKED"
+                else:
+                    action, target_side = "REVERSE", "SHORT"
             elif opposite_turn_ready:
                 action, target_side, reason = "EXIT", None, "UPPER_OUTER_FALLING"
             else:
@@ -4574,7 +4594,10 @@ class TradingEngine:
             elif returned_to_entry_outer:
                 action, target_side, reason = "EXIT", None, "RETURNED_UPPER_OUTER"
             elif trough_turn:
-                action, target_side = "REVERSE", "LONG"
+                if prior_down_context:
+                    action, target_side, reason = "HOLD", None, "COUNTERTREND_REVERSE_BLOCKED"
+                else:
+                    action, target_side = "REVERSE", "LONG"
             elif opposite_turn_ready:
                 action, target_side, reason = "EXIT", None, "LOWER_OUTER_RISING"
             else:
@@ -4587,9 +4610,17 @@ class TradingEngine:
                 reason = "CANCEL_LONG" if trough_cancelled else "WAIT_BREAK_HIGH"
             elif action == "HOLD" and live_lower_touch:
                 reason = "WAIT_CLOSE_GREEN"
-        elif trough_turn and (trough_trend_confirmed or not prior_down_context):
+        elif (
+            trough_turn
+            and not trough_broken_before_live
+            and (trough_trend_confirmed or not prior_down_context)
+        ):
             action, target_side = "ENTER", "LONG"
-        elif peak_turn and (peak_trend_confirmed or not prior_up_context):
+        elif (
+            peak_turn
+            and not peak_broken_before_live
+            and (peak_trend_confirmed or not prior_up_context)
+        ):
             action, target_side = "ENTER", "SHORT"
         else:
             action, target_side = "WAIT", None
@@ -4597,6 +4628,10 @@ class TradingEngine:
                 reason = "COUNTERTREND_LONG_BLOCKED"
             elif peak_turn and prior_up_context:
                 reason = "COUNTERTREND_SHORT_BLOCKED"
+            elif trough_turn and trough_broken_before_live:
+                reason = "STALE_TROUGH_TURN"
+            elif peak_turn and peak_broken_before_live:
+                reason = "STALE_PEAK_TURN"
             elif raw_trough and not closed_trough:
                 reason = "V_TOO_CLOSE_KC"
             elif raw_peak and not closed_peak:
@@ -5209,8 +5244,13 @@ class TradingEngine:
                         ),
                     })
                 else:
+                    wait_detail = {
+                        "STALE_TROUGH_TURN": " | 舊下軌谷底已突破，不補追",
+                        "STALE_PEAK_TURN": " | 舊上軌峰頂已跌破，不補追",
+                    }.get(str(channel_action.get("reason") or ""), "")
                     signal_progress.append(
                         f"{coin} 通道中央等待 | KC {kc_lower:.8g}~{kc_upper:.8g}"
+                        f"{wait_detail}"
                     )
                 return signal_progress, detected_candidates
 
