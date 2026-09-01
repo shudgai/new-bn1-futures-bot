@@ -865,6 +865,7 @@ class SuperTrendKeltnerStrategy:
             volume_ratio=volume_ratio,
             score=85,
             df=df,
+            min_volume_ratio=KELTNER_MIN_VOLUME_RATIO,
         )
         if quality_gate["blocked"]:
             return {
@@ -882,9 +883,14 @@ class SuperTrendKeltnerStrategy:
         volume_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
         volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
         aligned = st_direction_1h in (None, direction)
-        btc_contrary = False
-        btc_score_penalty = 0
-        btc_allocation_factor = 1.0
+        btc_contrary = bool(
+            BTC_REGIME_FILTER_ENABLED
+            and btc_st_direction_1h in (-1, 1)
+            and btc_st_direction_1h != direction
+        )
+        # 結構單不因 BTC 反向完全消失，但必須同步降分與半倉。
+        btc_score_penalty = BTC_REGIME_SCORE_PENALTY if btc_contrary else 0
+        btc_allocation_factor = 0.5 if btc_contrary else 1.0
         common = {
             "side": side, "price": price, "atr": atr,
             "signal_candle_low": float(curr["low"]),
@@ -1142,9 +1148,12 @@ class SuperTrendKeltnerStrategy:
                 pullback_target = ema30 - BREAKOUT_PULLBACK_ATR_MULT * atr
                 pullback_target = max(pullback_target, price * 1.0005)
             return {
-                "action": "ENTER_MARKET", "entry_mode": "BREAKOUT",
-                "score": 100, # Max score for direct market entry
-                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜市價追車突破",
+                "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT",
+                "score": 100,
+                "target_price": pullback_target,
+                "signal_candle_low": float(curr["low"]),
+                "signal_candle_high": float(curr["high"]),
+                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜等待EMA30回踩Maker",
                 "prior_high": prior_high, "prior_low": prior_low, **common,
             }
 

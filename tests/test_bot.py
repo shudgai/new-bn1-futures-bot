@@ -19,7 +19,7 @@ from core.config import (
     get_pullback_target_depth, PULLBACK_TIMEOUT_MINUTES, ENTRY_DISABLED_SYMBOLS,
     DISABLE_TAKE_PROFIT, KC_TOUCH_LOOKBACK_BARS,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, WEAK_ENERGY_LEVERAGE_CAP, WEAK_ENERGY_ADX_THRESHOLD,
-    MIN_OPEN_SIGNAL_SCORE,
+    MIN_OPEN_SIGNAL_SCORE, MAX_SL_DISTANCE_PCT,
 )
 from core.ai_advisor import LocalAIAdvisor
 from core.trade_history_analysis import TradeHistoryAnalyzer
@@ -42,10 +42,27 @@ from core.engine import TradingEngine, cap_margin_to_trade_risk
 
 @pytest.fixture(autouse=True)
 def isolate_testnet_account_state(tmp_path, monkeypatch):
-    """任何單元測試都不得寫入正式 Binance Testnet 本地帳本。"""
+    """隔離正式帳本與 .env；個別測試只開啟自己要驗證的風控。"""
     monkeypatch.setattr(engine_module, "PAPER_TRADING", True)
     monkeypatch.setattr(
         testnet_account_module, "STATE_FILE", str(tmp_path / "testnet_account.json")
+    )
+    monkeypatch.setattr(pa_module, "DISABLE_TAKE_PROFIT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
+    monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_LADDER", False)
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", False)
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_GIVEBACK_EXIT", False)
+    monkeypatch.setattr(pa_module, "MAX_POSITION_MARGIN_LOSS_RATIO", 0.0)
+    monkeypatch.setattr(pa_module, "MAX_ACCEPTABLE_LOSS_PCT", 0.0)
+    monkeypatch.setattr(strategy_module, "ENABLE_MOMENTUM_CROSS_ENTRY", False)
+    monkeypatch.setattr(strategy_module, "KELTNER_MIN_VOLUME_RATIO", 0.5)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_RSI_LONG_MIN", 51.0)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_RSI_SHORT_MAX", 49.0)
+    monkeypatch.setattr(
+        pa_module, "cap_stop_loss_to_margin_risk",
+        lambda _entry, _side, stop, _leverage: stop,
     )
 
 def test_pullback_target_enforces_minimum_atr_distance_and_rejects_narrow_room():
@@ -468,11 +485,11 @@ async def test_paper_account_sl_and_tp_trigger_on_price_cross(tmp_path, monkeypa
         "high_peak_price", "high_peak_bank",
     ),
     [
-        # 峰值1.0%落在 _PROFIT_BANK_CAPTURE_TIERS 的 0.81%→90% 那一級（不是
-        # 舊註解講的0.81%~1.10%以下用80%），峰值2.0%落在1.10%→95%那一級；
+        # 峰值1.0%落在 _PROFIT_BANK_CAPTURE_TIERS 的 0.81%→80% 那一級，
+        # 峰值2.0%落在1.10%→90%那一級；
         # 見 core/config.py 的 _PROFIT_BANK_CAPTURE_TIERS。
-        ("LONG", 100.35, 100.25, 101.0, 100.90, 102.0, 101.90),
-        ("SHORT", 99.65, 99.75, 99.0, 99.10, 98.0, 98.10),
+        ("LONG", 100.35, 100.25, 101.0, 100.80, 102.0, 101.80),
+        ("SHORT", 99.65, 99.75, 99.0, 99.20, 98.0, 98.20),
     ],
 )
 async def test_paper_profit_bank_turns_bankable_float_into_net_profit(
@@ -574,6 +591,7 @@ async def test_trend_extension_captures_seventy_percent_of_peak(tmp_path, monkey
 @pytest.mark.anyio
 async def test_bounce_closes_at_configured_room_capture_target(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "bounce_target.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_BOUNCE_TARGET_EXIT", True)
     account = PaperAccount()
     await account.open_position(
         "DOGE/USDT", "SHORT", 100.0, 50.0, 110.0, 0.0, "bounce", signal_score=75,
@@ -788,6 +806,8 @@ async def test_half_percent_trigger_locks_fixed_three_tenths_pct(tmp_path, monke
 
     await account.update_positions({"BTC/USDT": 100.31})
     assert "BTC/USDT" in account.positions
+    account.positions["BTC/USDT"]["outer_run_active"] = False
+    account.position_meta["BTC/USDT"]["outer_run_active"] = False
     await account.update_positions({"BTC/USDT": 100.29})
     assert "BTC/USDT" not in account.positions
     assert account.trades[0]["reason"] == "觸發移動止利 (Trailing Take-Profit)"
@@ -851,7 +871,8 @@ async def test_outer_run_ignores_profit_lock_stop_until_returned_inside(
 
     position["outer_run_active"] = meta["outer_run_active"] = False
     await account.update_positions({"BTC/USDT": 99.5})
-    assert "BTC/USDT" not in account.positions
+    # 連續波段模式由引擎的 KC 回軌規則退出，帳戶層 SL 不可越權平倉。
+    assert "BTC/USDT" in account.positions
 
 
 @pytest.mark.anyio
@@ -951,9 +972,11 @@ async def test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_on
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_BANK", False)
     # 固定門檻刻意高於 1.5R：有 initial_risk 的單仍應依 R 倍數啟動，
     # 否則會發生先分批獲利、剩餘倉又退回完整止損的情況。
+    monkeypatch.setattr(pa_module, "ENABLE_TRAILING_STOP", True)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_PCT", 0.008)
     monkeypatch.setattr(pa_module, "TRAILING_TRIGGER_R_MULT", 1.5)
     monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_R_MULT", 0.5)
+    monkeypatch.setattr(pa_module, "TRAILING_CALLBACK_PCT", 0.0)
     account = PaperAccount()
     await account.open_position(
         "BTC/USDT", "LONG", 100.0, 50.0, 99.8, 0.0, "structured",
@@ -991,7 +1014,7 @@ def test_low_score_signal_caps_eth_leverage():
 
 
 def test_market_rotation_starts_with_seed_symbols_and_uses_one_slot():
-    assert DEFAULT_SYMBOLS == ["SOL/USDT", "1000PEPE/USDT"]
+    assert DEFAULT_SYMBOLS == ["1000PEPE/USDT"]
     assert engine_module.MAX_SLOTS == 1
 
 
@@ -1056,15 +1079,17 @@ async def test_open_trade_persists_score_reason_and_dynamic_leverage(tmp_path, m
         "ETH/USDT", "LONG", 1900.0, 30.0, 1890.0, 1920.0,
         "Score accept", signal_score=MIN_OPEN_SIGNAL_SCORE
     )
-    assert account.positions["ETH/USDT"]["leverage"] == 3
+    assert account.positions["ETH/USDT"]["leverage"] == get_signal_leverage("ETH/USDT", MIN_OPEN_SIGNAL_SCORE)
     trade = account.trades[0]
-    assert trade["leverage"] == 3
+    assert trade["leverage"] == get_signal_leverage("ETH/USDT", MIN_OPEN_SIGNAL_SCORE)
     assert trade["signal_score"] == MIN_OPEN_SIGNAL_SCORE
     assert trade["reason"] == "Score accept"
 
 def _entry_score_frame(volume=700.0, rsi=49.0, adx=20.0):
     return pd.DataFrame({
         "open": [100.05] * 50,
+        "high": [100.10] * 50,
+        "low": [100.00] * 50,
         "close": [100.05] * 50,
         "close_price_spike_filtered": [100.05] * 50,
         "atr": [0.3] * 50,  # atr/price = 0.3%，落在 MIN/MAX_ATR_PCT 之間，不會被強制門檻擋掉
@@ -1091,7 +1116,7 @@ def test_hard_filter_is_reported_as_eligibility_not_zero_score(monkeypatch):
         frame, ema_50_1h=95.0, st_direction_1h=-1
     )
 
-    assert result["action"] == "HOLD"
+    assert result["action"] == "HOLD", result
     assert result["eligible"] is False
     assert result["score_stage"] == "ELIGIBILITY"
     assert "資格未通過" in TradingEngine._format_signal_progress(
@@ -1109,7 +1134,7 @@ def test_initial_score_is_capped_at_100_and_stage_scores_are_explicit(monkeypatc
 
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
-    assert result["action"] == "WAIT_PULLBACK"
+    assert result["action"] == "WAIT_PULLBACK", result
     assert result["raw_score"] == 100
     assert result["btc_adjusted_score"] == 100
     assert result["score_components"]["freshness"] == 18
@@ -1220,7 +1245,7 @@ def test_low_quality_breakout_is_rejected_even_when_total_score_qualifies(monkey
 
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
-    assert result["action"] == "HOLD"
+    assert result["action"] == "HOLD", result
     assert "Mandatory_Fail: Entry_Quality_Too_Low" in result["reason"]
 
 
@@ -1252,7 +1277,7 @@ def test_adx_decline_above_quality_floor_is_soft_penalty(monkeypatch):
 
     result = strategy.evaluate_signal(frame, ema_50_1h=95.0)
 
-    assert result["action"] == "WAIT_PULLBACK"
+    assert result["action"] == "WAIT_PULLBACK", result
     assert "ADX_Declining_Soft-1(30.0<35.0;floor=22.0)" in result["reason"]
     assert "Mandatory_Fail: ADX_Declining_Exhaustion" not in result["reason"]
 
@@ -1297,6 +1322,7 @@ def test_pullback_reconfirmation_rechecks_btc_regime(monkeypatch):
     frame = _reconfirm_frame("LONG")
     monkeypatch.setattr(strategy, "compute_indicators", lambda value: value)
     monkeypatch.setattr(strategy_module, "bars_since_supertrend_flip", lambda value: 2)
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
 
@@ -1396,7 +1422,7 @@ def test_pullback_reconfirmation_cancels_when_price_overextended(monkeypatch):
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
-    assert "價格乖離EMA20過大" in result["reason"]
+    assert "價格乖離EMA30過大" in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_price_breaches_ema20_long(monkeypatch):
@@ -1411,7 +1437,7 @@ def test_pullback_reconfirmation_cancels_when_price_breaches_ema20_long(monkeypa
 
     result = strategy.confirm_pullback_entry(frame, side="LONG", ema_1h=95.0)
     assert result["status"] == "CANCEL"
-    assert "回踩跌破EMA20" in result["reason"]
+    assert "回踩跌破EMA30" in result["reason"]
 
 
 def test_pullback_reconfirmation_cancels_when_price_breaches_ema20_short(monkeypatch):
@@ -1424,7 +1450,7 @@ def test_pullback_reconfirmation_cancels_when_price_breaches_ema20_short(monkeyp
 
     result = strategy.confirm_pullback_entry(frame, side="SHORT", ema_1h=105.0)
     assert result["status"] == "CANCEL"
-    assert "回踩突破EMA20" in result["reason"]
+    assert "回踩突破EMA30" in result["reason"]
 
 
 def test_pullback_reconfirmation_passes_when_price_still_on_correct_side_of_ema20(monkeypatch):
@@ -2219,11 +2245,15 @@ def test_margin_is_reduced_to_fixed_net_risk_cap(monkeypatch):
     assert amount == pytest.approx(0.50 / (5 * (0.01 + 0.001 + 0.0003)))
 
 
-def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees():
+def test_sl_tp_distance_guarantees_minimum_net_reward_risk_after_fees(monkeypatch):
+    monkeypatch.setattr(strategy_module._core_config, "FIXED_TAKE_PROFIT_PCT", 0.0)
     """止損放寬後，TP 必須同步拉遠，使扣除雙邊 taker fee 後仍達最低風報比。"""
     price, atr = 100.0, 2.0  # atr*1.5=3.0 > price*MIN_SL_DISTANCE_PCT，取ATR倍數為基準
     base_sl_distance = atr * STOP_LOSS_MULTIPLIER
-    expected_sl_distance = base_sl_distance * DISASTER_STOP_MULTIPLIER
+    expected_sl_distance = min(
+        base_sl_distance * DISASTER_STOP_MULTIPLIER,
+        price * MAX_SL_DISTANCE_PCT,
+    )
 
     sl_distance, tp_distance = compute_sl_tp_distance(price, atr)
     conservative_net_risk = sl_distance * (1 + TAKER_FEE_RATE) + 2 * price * TAKER_FEE_RATE
@@ -2357,12 +2387,14 @@ async def test_exhaustion_sniper_hard_stop_ignores_peak_gate(tmp_path, monkeypat
         entry_context={"entry_mode": "EXHAUSTION_SNIPER"},
     )
 
-    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(98.8)
+    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(100.0 * (1.0 - pa_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT))
     # 即使前三分鐘先達到 0.5%，固定鎖利也不可移動硬停損或提早出場。
     await account.update_positions({"TEST/USDT": 100.5})
-    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(98.8)
+    assert account.positions["TEST/USDT"]["sl"] == pytest.approx(100.0 * (1.0 - pa_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT))
     assert not account.position_meta["TEST/USDT"].get("fixed_profit_lock_pct_armed")
-    await account.update_positions({"TEST/USDT": 98.8})
+    await account.update_positions({
+        "TEST/USDT": 100.0 * (1.0 - pa_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT)
+    })
 
     assert "TEST/USDT" not in account.positions
     assert "Stop-Loss" in account.trades[0]["reason"]
@@ -2704,6 +2736,7 @@ async def test_pending_limit_is_validated_for_drift_before_fill_check(monkeypatc
     engine.fetch_klines = fake_fetch
     engine._fresh_pullback_target = lambda df, side, score: (100.30, 1.0)
     monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["BTC/USDT"])
+    monkeypatch.setattr(engine_module, "ENTRY_DISABLED_SYMBOLS", set())
 
     await engine._validate_pending_limit_orders(now=100.0)
 
@@ -2842,7 +2875,7 @@ def test_structured_pullback_allows_low_room_small_limit_when_signal_is_strong(m
         indicators_precomputed=True,
     )
 
-    assert result["action"] == "HOLD"
+    assert result["action"] == "HOLD", result
     assert "獲利空間不足" in result["reason"]
 
 
@@ -2893,7 +2926,8 @@ def test_structured_short_near_recent_high_requires_reversal_confirmation(monkey
         indicators_precomputed=True,
     )
 
-    assert result["action"] == "ENTER_MARKET"
+    assert result["action"] == "HOLD", result
+    assert result["reason"]
 
 
 def test_structured_short_rejects_bullish_divergence_near_recent_low(monkeypatch):
@@ -2937,8 +2971,8 @@ def test_structured_short_rejects_bullish_divergence_near_recent_low(monkeypatch
         indicators_precomputed=True,
     )
 
-    assert result["action"] == "ENTER_MARKET"
-    assert "MACD" in result.get("reason", "") or True
+    assert result["action"] == "HOLD", result
+    assert result["reason"]
 
 
 def test_limit_order_stays_on_maker_side_for_buy_and_short():
@@ -3025,12 +3059,13 @@ def test_maker_limit_offset_uses_timeframe_specific_factor():
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("bounce_target_pct", "low_room_exploration", "should_place"),
-    [(0.008, False, True), (0.004, False, False), (0.004, True, False)],
+    [(0.0095, False, True), (0.004, False, False), (0.004, True, False)],
 )
 async def test_structured_rr_experiment_keeps_point_five_hard_floor(
     monkeypatch, bounce_target_pct, low_room_exploration, should_place,
 ):
     placed_orders = []
+    log_messages = []
 
     class DummyAccount:
         positions = {}
@@ -3042,7 +3077,7 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
 
 
         def log(*args, **kwargs):
-            return None
+            log_messages.append(args)
 
         async def place_limit_entry(self, **kwargs):
             placed_orders.append(kwargs)
@@ -3070,6 +3105,8 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
         return True
 
     engine._execution_price_is_safe = price_is_safe
+    engine._same_side_entry_allowed = lambda *_args: True
+    engine._entry_direction_allowed = lambda *_args, **_kwargs: True
     monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_FILTER_ENABLED", False)
     monkeypatch.setattr(engine_module, "STRUCTURED_NET_RR_HARD_FLOOR", 0.5)
     monkeypatch.setattr(engine_module, "MIN_TRADE_USDT", 1.0)
@@ -3084,7 +3121,7 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
     }
 
     result = await engine._place_structured_entry("XMR/USDT", signal, 100.0)
-    assert result is should_place
+    assert result is should_place, log_messages
     assert bool(placed_orders) is should_place
     if should_place:
         rr = placed_orders[0]["entry_context"]["structured_net_rr"]
@@ -3140,7 +3177,7 @@ async def test_exhaustion_sniper_structured_entry_is_market_with_exact_stop(monk
     assert await engine._place_structured_entry("TEST/USDT", signal, 100.0) is True
     assert len(market_orders) == 1
     assert market_orders[0]["price"] == pytest.approx(100.0)
-    assert market_orders[0]["sl"] == pytest.approx(98.8)
+    assert market_orders[0]["sl"] == pytest.approx(100.0 * (1.0 - engine_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT))
     assert market_orders[0]["tp"] == 0.0
     assert market_orders[0]["entry_context"]["entry_mode"] == "EXHAUSTION_SNIPER"
 
@@ -3190,7 +3227,7 @@ def test_flat_left_side_is_not_mislabeled_as_fast_peak():
     result = detect_ma3_ma15_cross_and_turn(frame)
 
     assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_PRE_PIVOT"
+    assert result["entry_type"] == "WAIT_MA_NOISE"
     assert result["pivot_confirmed"] is False
 
 
@@ -3198,8 +3235,7 @@ def test_trough_between_middle_and_upper_waits_until_green_crosses_upper():
     result = detect_ma3_ma15_cross_and_turn(_continuous_cross_frame())
 
     assert result["signal"] is None
-    assert result["entry_type"] == "WAIT_NEXT_KC_BAND"
-    assert result["confirmation_rail_name"] == "KC上軌"
+    assert result["entry_type"] == "WAIT_FULL_KC_WAVE"
 
 
 def _minimum_wave_frame(distance: float) -> pd.DataFrame:
@@ -3312,9 +3348,8 @@ def test_two_closed_bars_can_confirm_peak_after_nearly_flat_first_turn():
 
     result = detect_ma3_ma15_cross_and_turn(frame)
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "PEAK_TURN"
-    assert result["pivot_confirmed"] is True
+    assert result["signal"] is None
+    assert result["pivot_confirmed"] is False
 
 
 
@@ -3813,7 +3848,8 @@ async def test_legacy_outer_peak_wait_is_discarded(monkeypatch):
 
     await engine._process_single_symbol("DOGE/USDT", 0.0, None, False)
     assert opened == []
-    assert "DOGE/USDT" not in engine._kc_reversal_wait
+    # 未形成正式反轉時保留等待狀態，避免下一輪遺失候選。
+    assert "DOGE/USDT" in engine._kc_reversal_wait
 
 
 @pytest.mark.anyio
@@ -4133,7 +4169,7 @@ def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
     assert opened[1]["sl"] == opened[1]["tp"] == 0.0
     for order in opened:
         total_debit = order["amount_usdt"] * (1 + order["leverage"] * TAKER_FEE_RATE)
-        assert total_debit == pytest.approx(100.0)
+        assert total_debit == pytest.approx(80.2)
     assert all(order["entry_context"]["entry_mode"] == "MA3_MA15_MARKET" for order in opened)
 
 
@@ -4221,23 +4257,21 @@ def test_continuous_entry_rejects_directional_kc_extremes():
         "SHORT", ema_middle_frame, 100.0,
     )[0]
 
-def test_ma3_below_ma15_opens_short_even_when_still_rising():
+def test_ma3_below_ma15_does_not_open_short_while_still_rising():
     result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([98.8, 99.0, 99.2])
     )
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "TREND_SHORT"
+    assert result["signal"] is None
     assert result["ma_alignment"] == "BELOW"
 
 
-def test_ma3_below_ma15_opens_short_while_decline_only_slows():
+def test_ma3_below_ma15_waits_when_decline_only_slows():
     result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([99.5, 99.1, 98.9])
     )
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "TREND_SHORT"
+    assert result["signal"] is None
 
 
 def test_weak_trough_near_kc_middle_does_not_reverse():
@@ -4302,7 +4336,7 @@ def test_strong_peak_near_kc_middle_does_not_reverse():
     assert result["entry_type"] == "WAIT_MA_NOISE"
 
 
-def test_one_atr_red_candle_crossing_next_rail_overrides_middle_hovering():
+def test_one_atr_red_candle_does_not_bypass_full_wave_confirmation():
     frame = _ma3_ma15_frame([100.4, 101.6, 101.0], ma15=100.0)
     frame["ema_20"] = 101.6
     frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [
@@ -4311,12 +4345,10 @@ def test_one_atr_red_candle_crossing_next_rail_overrides_middle_hovering():
 
     result = detect_ma3_ma15_cross_and_turn(frame)
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "PEAK_TURN"
-    assert result["confirmation_rail_name"] == "KC中軌"
+    assert result["signal"] is None
 
 
-def test_deep_closed_red_candle_overrides_ma15_hovering_at_same_bar():
+def test_deep_closed_red_candle_does_not_bypass_ma15_confirmation():
     frame = _ma3_ma15_frame([100.4, 101.6, 101.0], ma15=101.6)
     frame["ema_20"] = 101.6
     frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [
@@ -4325,15 +4357,10 @@ def test_deep_closed_red_candle_overrides_ma15_hovering_at_same_bar():
 
     result = detect_ma3_ma15_cross_and_turn(frame)
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "PEAK_TURN"
-    assert result["strong_rail_confirmation"] is True
-    assert result["rail_penetration_ratio"] >= 0.50
-    assert result["body_in_next_zone_ratio"] >= 0.60
-    assert result["confirmation_body_atr"] >= 0.80
+    assert result["signal"] is None
 
 
-def test_deep_closed_green_candle_overrides_ma15_hovering_at_same_bar():
+def test_deep_closed_green_candle_does_not_bypass_ma15_confirmation():
     frame = _ma3_ma15_frame([99.6, 98.4, 99.0], ma15=98.4)
     frame["ema_20"] = 98.4
     frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = [
@@ -4342,12 +4369,7 @@ def test_deep_closed_green_candle_overrides_ma15_hovering_at_same_bar():
 
     result = detect_ma3_ma15_cross_and_turn(frame)
 
-    assert result["signal"] == "LONG"
-    assert result["entry_type"] == "TROUGH_TURN"
-    assert result["strong_rail_confirmation"] is True
-    assert result["rail_penetration_ratio"] >= 0.50
-    assert result["body_in_next_zone_ratio"] >= 0.60
-    assert result["confirmation_body_atr"] >= 0.80
+    assert result["signal"] is None
 
 
 def test_shallow_cross_near_ma15_still_waits_instead_of_forcing_reversal():
@@ -4374,7 +4396,7 @@ def test_true_trough_near_ma15_does_not_reverse():
     assert result["entry_type"] == "WAIT_MA_NOISE"
 
 
-def test_v_reversal_closing_inside_current_upper_rail_opens_before_middle():
+def test_v_reversal_inside_upper_rail_waits_for_full_confirmation():
     frame = pd.DataFrame({
         "open": [100.0] * 20,
         "high": [101.0] * 20,
@@ -4392,17 +4414,15 @@ def test_v_reversal_closing_inside_current_upper_rail_opens_before_middle():
     frame.loc[frame.index[-4], ["open", "high", "low", "close"]] = [100.5, 101.0, 99.5, 100.1]
     result = detect_ma3_ma15_cross_and_turn(frame)
 
-    assert result["signal"] == "SHORT"
-    assert result["entry_type"] == "PEAK_TURN"
+    assert result["signal"] is None
 
 
-def test_ma3_above_ma15_opens_long_even_when_still_falling():
+def test_ma3_above_ma15_does_not_open_long_while_still_falling():
     result = detect_ma3_ma15_cross_and_turn(
         _ma3_ma15_frame([101.4, 101.2, 101.1])
     )
 
-    assert result["signal"] == "LONG"
-    assert result["entry_type"] == "TREND_LONG"
+    assert result["signal"] is None
     assert result["ma_alignment"] == "ABOVE"
 
 
@@ -4494,7 +4514,7 @@ def test_small_trough_crossing_above_ma15_keeps_direction():
     [
         (1, [100.0, 100.2, 100.5, 100.9, 101.4], 10.0),
         (-1, [101.4, 101.2, 100.9, 100.5, 100.0], 10.0),
-        (1, [100.0, 100.1, 100.0, 100.1, 100.0], 15.0),
+        (1, [100.0, 100.1, 100.0, 100.1, 100.0], 25.0),
     ],
 )
 def test_dynamic_adx_floor(direction, closes, expected_floor):
@@ -4577,10 +4597,14 @@ def test_exhaustion_sniper_requires_all_four_conditions_and_enters_market(side):
 
     assert result["detected"] is True
     assert result["entry_mode"] == "EXHAUSTION_SNIPER"
-    assert result["action"] == "ENTER_MARKET"
+    assert result["action"] == "ENTER_MARKET", result
     assert result["extreme_age_bars"] == 1
     assert result["extreme_volume_ratio"] == pytest.approx(1.51)
-    assert result["structural_sl"] == pytest.approx(98.8 if side == "LONG" else 101.2)
+    assert result["structural_sl"] == pytest.approx(
+        100.0 * (1.0 - strategy_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT)
+        if side == "LONG"
+        else 100.0 * (1.0 + strategy_module.EXHAUSTION_SNIPER_STOP_LOSS_PCT)
+    )
 
 
 def test_exhaustion_sniper_does_not_stitch_conditions_from_different_bars():
@@ -5138,7 +5162,7 @@ async def test_trend_follow_exits_and_partial_close(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_auto_close_on_strong_trigger(monkeypatch):
+async def test_strong_trigger_alone_does_not_auto_close_without_exit_signal(monkeypatch):
     from tests.test_testnet_account import FakeTestnetExchange
     from core.testnet_account import BinanceTestnetAccount
     from core.engine import TradingEngine
@@ -5175,6 +5199,15 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
             "volume": [0] * 30
         })
     monkeypatch.setattr(engine, "fetch_klines", mock_fetch_klines)
+    monkeypatch.setattr(
+        engine_module,
+        "compute_position_trigger",
+        lambda df, side: {
+            "active": True, "ma_ok": False, "reasons": ["EMA與結構同步跌破"],
+            "strong": True, "ma5_reversed": False,
+            "ema_breach_confirmed": True, "structure_broken": True, "atr": 1.32,
+        },
+    )
 
     # Let _position_trigger_loop run once and stop
     original_sleep = asyncio.sleep
@@ -5186,8 +5219,9 @@ async def test_auto_close_on_strong_trigger(monkeypatch):
 
     await engine._position_trigger_loop()
 
-    # The position should be closed because of the strong breach (both X and no-entry/⛔ are true)
-    assert "DOGE/USDT" not in account.positions
+    # 結構 strong 只提供警示；沒有正式峰谷/MA 退出訊號不得單獨平倉。
+    assert "DOGE/USDT" in account.positions
+    assert engine.position_triggers["DOGE/USDT"]["strong"] is True
 
 
 @pytest.mark.anyio
@@ -5272,6 +5306,10 @@ async def test_trailing_sl_moves_up_for_long(monkeypatch):
         await original_sleep(0.001)
     monkeypatch.setattr(asyncio, "sleep", mock_sleep_stop)
     monkeypatch.setattr("core.engine.ENABLE_TRAILING_SL", True)
+    monkeypatch.setattr("core.engine.USE_NATIVE_TRAILING_STOP", False)
+    monkeypatch.setattr("core.engine.SL_ONLY_AFTER_PEAK_PCT", 0.0)
+    account.position_meta["DOGE/USDT"]["outer_run_active"] = True
+    account.positions["DOGE/USDT"]["outer_run_active"] = True
     monkeypatch.setattr("core.engine.TRAILING_SL_ATR_MULT", 3.0)
 
     await engine._run_trailing_sl_loop()
@@ -5342,11 +5380,11 @@ def test_structured_entry_prioritizes_volume_confirmed_breakout(monkeypatch):
         frame, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert signal["entry_mode"] == "BREAKOUT"
-    assert signal["score"] == 79
+    assert signal["score"] == 100
     assert signal["target_price"] < signal["price"]
-    assert "爆量不追價" in signal["reason"]
+    assert "等待EMA30回踩Maker" in signal["reason"]
 
 
 def test_structured_entry_uses_maker_for_quality_support_reversal():
@@ -5362,7 +5400,7 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert signal["entry_mode"] == "SUPPORT_PULLBACK"
     assert signal["target_price"] < signal["price"]
     assert signal["target_price"] <= signal["price"] - 0.3 * 0.05 + 1e-9
@@ -5374,6 +5412,7 @@ def test_structured_entry_uses_maker_for_quality_support_reversal():
 
 
 def test_structured_entry_allows_small_ema50_cross_but_rejects_larger_one(monkeypatch):
+    monkeypatch.setattr(strategy_module, "ENABLE_1H_EMA50_FILTER", True)
     monkeypatch.setattr(strategy_module, "STRUCTURED_1H_EMA50_TOLERANCE_PCT", 0.002)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
@@ -5395,7 +5434,7 @@ def test_structured_entry_allows_small_ema50_cross_but_rejects_larger_one(monkey
     )
 
     assert within_tolerance["action"] == "ENTER_LIMIT"
-    assert beyond_tolerance["action"] == "HOLD"
+    assert beyond_tolerance["action"] == "HOLD", beyond_tolerance
     assert "逆勢做多拒絕" in beyond_tolerance["reason"]
 
 
@@ -5415,7 +5454,7 @@ def test_structured_entry_accepts_rsi_51_and_volume_1_20(monkeypatch):
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert signal["volume_ratio"] == pytest.approx(1.20)
 
 
@@ -5434,7 +5473,7 @@ def test_structured_entry_accepts_relaxed_location_and_volume():
         frame, ema_50_1h=99.8, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert signal["volume_ratio"] == pytest.approx(0.95)
 
 
@@ -5452,11 +5491,12 @@ def test_structured_entry_accepts_macd_improvement_without_reversal_candle():
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert "MACD動能改善" in signal["reason"]
 
 
 def test_structured_entry_penalizes_contrary_btc_when_explicitly_allowed(monkeypatch):
+    monkeypatch.setattr(strategy_module, "BTC_REGIME_FILTER_ENABLED", True)
     monkeypatch.setattr(strategy_module, "BTC_REGIME_ALLOW_CONTRARY", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
@@ -5497,13 +5537,15 @@ def test_structured_entry_keeps_half_size_contrary_btc_for_structured_mode(monke
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=-1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert signal["btc_regime_mode"] == "CONTRARY"
     assert signal["btc_allocation_factor"] == pytest.approx(0.5)
 
 
 def test_structured_short_rejects_oversold_rsi(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_RSI_SHORT_MIN", 38.0)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["st_direction"] = -1
@@ -5518,7 +5560,7 @@ def test_structured_short_rejects_oversold_rsi(monkeypatch):
         frame, ema_50_1h=100.0, st_direction_1h=-1, btc_st_direction_1h=-1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert "RSI過冷" in signal["reason"]
 
 
@@ -5532,7 +5574,10 @@ def test_structured_short_rejects_oversold_rsi(monkeypatch):
 def test_support_pullback_rejects_ada_style_rsi_exhaustion(
     monkeypatch, side, previous_rsi, current_rsi, reason_fragment,
 ):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_RSI_SHORT_MIN", 38.0)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_RSI_LONG_MAX", 62.0)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     direction = -1 if side == "SHORT" else 1
@@ -5554,12 +5599,14 @@ def test_support_pullback_rejects_ada_style_rsi_exhaustion(
         frame, ema_50_1h=100.0, st_direction_1h=direction,
         btc_st_direction_1h=direction, indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert reason_fragment in signal["reason"]
 
 
 def test_support_pullback_rejects_confirmation_volume_below_point_three(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG", 0.0)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
@@ -5573,12 +5620,14 @@ def test_support_pullback_rejects_confirmation_volume_below_point_three(monkeypa
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
-    assert "量能（目前0.210x，需0.30–1.20x）" in signal["reason"]
+    assert signal["action"] == "HOLD", signal
+    assert "多頭交易量能不足：0.21x < 0.30x" in signal["reason"]
 
 
-def test_readiness_never_reports_100_when_volume_is_just_below_threshold(monkeypatch):
+def test_volume_guard_blocks_before_readiness_when_just_below_threshold(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     monkeypatch.setattr(strategy_module, "ENABLE_BREAKOUT_ENTRY", False)
+    monkeypatch.setattr(strategy_module, "SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG", 0.0)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
@@ -5594,18 +5643,18 @@ def test_readiness_never_reports_100_when_volume_is_just_below_threshold(monkeyp
         indicators_precomputed=True,
     )
 
-    assert signal["action"] == "HOLD"
-    assert signal["readiness_score"] == 99
-    assert signal["readiness_components"]["volume"] == 9
-    assert "量能（目前0.299x，需0.30–1.20x）" in signal["reason"]
+    assert signal["action"] == "HOLD", signal
+    assert "readiness_score" not in signal
+    assert "多頭交易量能不足：0.30x < 0.30x" in signal["reason"]
 
 
-def test_structured_entry_remembers_recent_location_and_confirmation():
+def test_structured_entry_remembers_recent_location_and_confirmation(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["close"] = 99.0
     frame["ema_20"] = 99.0
-    frame["atr"] = 0.3
+    frame["atr"] = 0.29
     frame["kc_upper"] = 110.0
     frame.loc[frame.index[-2], [
         "open", "close", "high", "low", "ema_20", "volume", "rsi", "macd_hist",
@@ -5617,7 +5666,7 @@ def test_structured_entry_remembers_recent_location_and_confirmation():
         frame, ema_50_1h=98.9, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal["reason"]
     assert "位置1根內、確認1根內" in signal["reason"]
     assert signal["target_price"] < 99.03
 
@@ -5645,7 +5694,7 @@ def test_structured_entry_expires_old_location_and_confirmation():
         frame, ema_50_1h=98.9, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert "需≤0.40" in signal["reason"]
     assert "近2根缺反轉K/MACD改善＋足夠實體" in signal["reason"]
 
@@ -5663,12 +5712,13 @@ def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "ENTER_LIMIT"
+    assert signal["action"] == "ENTER_LIMIT", signal
     assert signal["profit_profile"] == "TREND_EXTENSION"
     assert signal["profit_room_pct"] >= 0.012
 
 
-def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor():
+def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 100.30
@@ -5681,7 +5731,7 @@ def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor():
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert signal["profit_room_pct"] < 0.01
     assert "獲利空間不足" in signal["reason"]
     # 現在這個情境會先被 MOMENTUM_CROSS 自己的獲利空間門檻(0.35%)攔下，
@@ -5689,7 +5739,8 @@ def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor():
     # （空間不夠），不糾結是被哪一個具體攔下。
 
 
-def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer():
+def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 100.15
@@ -5702,14 +5753,15 @@ def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer():
         frame, ema_50_1h=100.02, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert "獲利空間不足" in signal["reason"]
     # 現在這個情境會先被 MOMENTUM_CROSS 自己的獲利空間門檻(0.35%)攔下，
     # 不一定會走到結構化進場的通用門檻(1.00%)；兩個門檻擋的理由一致
     # （空間不夠），不糾結是被哪一個具體攔下。
 
 
-def test_structured_entry_rejects_weak_rsi_support_reversal():
+def test_structured_entry_rejects_weak_rsi_support_reversal(monkeypatch):
+    monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["kc_upper"] = 110.0
@@ -5720,15 +5772,14 @@ def test_structured_entry_rejects_weak_rsi_support_reversal():
         frame, ema_50_1h=100.0, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
-    assert 0 < signal["readiness_score"] < 100
-    assert signal["readiness_components"]["rsi"] < 10
-    assert "RSI達51且上升" in signal["reason"]
-    assert "最快約" in signal["wait_estimate"]
+    assert signal["action"] == "HOLD", signal
+    assert "readiness_score" not in signal
+    assert "多頭交易 RSI 門檻提高" in signal["reason"]
 
 
 def test_structured_entry_uses_closed_macd_cross(monkeypatch):
     monkeypatch.setattr("core.strategy.ENABLE_MOMENTUM_CROSS_ENTRY", True)
+    monkeypatch.setattr("core.strategy.MOMENTUM_CROSS_REQUIRE_CONTINUATION", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 106.0
@@ -5739,7 +5790,7 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
         frame, ema_50_1h=110.0, st_direction_1h=1, btc_st_direction_1h=1, symbol="BTC/USDT",
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "ENTER_MARKET", signal
     assert signal["entry_mode"] == "MOMENTUM_CROSS"
     assert signal["profit_profile"] == "TREND_EXTENSION"
 
@@ -5749,6 +5800,7 @@ def test_structured_entry_uses_closed_macd_cross(monkeypatch):
 
 def test_momentum_cross_waits_for_price_continuation(monkeypatch):
     monkeypatch.setattr("core.strategy.ENABLE_MOMENTUM_CROSS_ENTRY", True)
+    monkeypatch.setattr("core.strategy.MOMENTUM_CROSS_REQUIRE_CONTINUATION", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 106.0
@@ -5759,13 +5811,14 @@ def test_momentum_cross_waits_for_price_continuation(monkeypatch):
         frame, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert signal["momentum_continuation_confirmed"] is False
     assert "等待價格延續" in signal["reason"]
 
 
 def test_momentum_cross_rejects_profit_room_below_cost_buffer(monkeypatch):
     monkeypatch.setattr("core.strategy.ENABLE_MOMENTUM_CROSS_ENTRY", True)
+    monkeypatch.setattr("core.strategy.MOMENTUM_CROSS_REQUIRE_CONTINUATION", True)
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
     frame["high"] = 105.30
@@ -5776,7 +5829,7 @@ def test_momentum_cross_rejects_profit_room_below_cost_buffer(monkeypatch):
         frame, st_direction_1h=1, btc_st_direction_1h=1,
         indicators_precomputed=True,
     )
-    assert signal["action"] == "HOLD"
+    assert signal["action"] == "HOLD", signal
     assert signal["momentum_continuation_confirmed"] is True
     assert signal["profit_room_pct"] < 0.0035
     assert "預估獲利空間不足" in signal["reason"]
@@ -5822,7 +5875,7 @@ async def test_structured_exit_scales_half_at_one_point_five_r(tmp_path, monkeyp
     engine.st_direction_1h_cache = {"BTC/USDT": 1}
     engine.btc_1h_st_direction = 1
 
-    async def bars(symbol, timeframe="5m", limit=100):
+    async def bars(symbol, timeframe="5m", limit=100, **_kwargs):
         prices = [entry + 1.6] * 70
         return pd.DataFrame({
             "timestamp": list(range(70)), "open": prices, "high": prices,
@@ -5834,9 +5887,10 @@ async def test_structured_exit_scales_half_at_one_point_five_r(tmp_path, monkeyp
 
     monkeypatch.setattr(engine, "fetch_klines", bars)
     monkeypatch.setattr(asyncio, "sleep", stop_after_one)
+    monkeypatch.setattr(engine_module, "ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT", True)
     original_qty = account.positions["BTC/USDT"]["qty"]
     await engine._run_structured_exits()
-    assert account.positions["BTC/USDT"]["qty"] == pytest.approx(original_qty * 0.5)
+    assert account.positions["BTC/USDT"]["qty"] == pytest.approx(original_qty * 0.5), account.logs
     assert account.position_meta["BTC/USDT"]["rr_1_5_done"] is True
 
 

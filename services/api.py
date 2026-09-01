@@ -402,7 +402,10 @@ async def manual_close(req: ManualCloseRequest):
     if position is None:
         return {"status": "already_closed", "message": f"{symbol} 已平倉"}
 
-    price = engine.tickers.get(symbol, position["entry_price"])
+    price = engine.tickers.get(symbol)
+    if not price:
+        price = float(position.get("mark_price") or position.get("entry_price", 0.0))
+        
     success = await account.close_position(symbol, price, "手動平倉", is_manual=True)
     if success:
         return {"status": "success", "message": f"手動平倉 {symbol}"}

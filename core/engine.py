@@ -4911,10 +4911,103 @@ class TradingEngine:
     def _channel_live_inner_reentry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
-        """Disabled live inner reentry by user request."""
+        """Allow one deep reentry candle or two in-channel bodies totaling half KC."""
+        required = {"open", "close", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_INNER_REENTRY_DATA_UNAVAILABLE",
+            }
+        try:
+            previous = frame.iloc[-2]
+            live = frame.iloc[-1]
+            previous_open = float(previous["open"])
+            previous_close = float(previous["close"])
+            previous_upper = float(previous["kc_upper"])
+            previous_lower = float(previous["kc_lower"])
+            live_open = float(live["open"])
+            price = float(live_price)
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+        except (TypeError, ValueError, IndexError):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_INNER_REENTRY_DATA_INVALID",
+            }
+        values = (
+            previous_open, previous_close, previous_upper, previous_lower,
+            live_open, price, upper, lower,
+        )
+        if (
+            not all(math.isfinite(value) for value in values)
+            or lower >= upper or previous_lower >= previous_upper
+        ):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_INNER_REENTRY_DATA_INVALID",
+            }
+        if not lower < price < upper:
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "WAIT_PRICE_INSIDE_KC",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+        width = upper - lower
+        if (
+            live_open >= upper
+            and price < live_open
+            and upper - price + 1e-12 >= width * 0.5
+        ):
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_INNER_RED_HALF_REENTRY_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        if (
+            live_open <= lower
+            and price > live_open
+            and price - lower + 1e-12 >= width * 0.5
+        ):
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_INNER_GREEN_HALF_REENTRY_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        previous_body_inside = bool(
+            previous_lower <= previous_open <= previous_upper
+            and previous_lower <= previous_close <= previous_upper
+        )
+        live_body_inside = lower <= live_open <= upper
+        combined_body = (
+            abs(previous_close - previous_open) + abs(price - live_open)
+        )
+        two_body_ready = combined_body + 1e-12 >= width * 0.5
+        if (
+            previous_body_inside and live_body_inside and two_body_ready
+            and previous_close < previous_open and price < live_open
+        ):
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_INNER_TWO_RED_HALF_REENTRY_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        if (
+            previous_body_inside and live_body_inside and two_body_ready
+            and previous_close > previous_open and price > live_open
+        ):
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_INNER_TWO_GREEN_HALF_REENTRY_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
         return {
             "action": "WAIT", "side": None,
-            "reason": "KC_INNER_REENTRY_DISABLED",
+            "reason": "WAIT_INNER_REENTRY_HALF_KC",
+            "kc_upper": upper, "kc_lower": lower,
         }
 
     def _record_channel_chop_event(

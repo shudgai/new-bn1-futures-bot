@@ -1044,6 +1044,7 @@ async def test_native_trailing_failure_restores_fixed_stop(tmp_path, monkeypatch
     await account.initialize()
     account.position_meta["DOGE/USDT"] = {
         "sl": 98.0,
+        "outer_run_active": True,
         "tp": 0.0,
         "atr": 1.0,
         "highest_pnl_pct": 0.0,
