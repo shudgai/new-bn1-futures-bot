@@ -4860,6 +4860,54 @@ class TradingEngine:
         }
 
     @staticmethod
+    def _channel_is_immediate_outer_rechase(reason: str | None) -> bool:
+        return str(reason or "") in {
+            "SAME_BAR_UPPER_OUTER_RECHASE",
+            "SAME_BAR_LOWER_OUTER_RECHASE",
+        }
+
+    @staticmethod
+    def _channel_same_bar_outer_rechase_action(
+        frame: pd.DataFrame, live_price: float, current_side: str | None,
+        last_reverse_bar: object,
+    ) -> dict:
+        """Immediately chase the opposite live rail after a same-bar reversal."""
+        if (
+            frame is None or len(frame) < 2
+            or last_reverse_bar != frame.index[-2]
+        ):
+            return {
+                "action": "HOLD", "side": None,
+                "reason": "WAIT_SAME_BAR_OUTER_RECHASE",
+            }
+        live_outer = TradingEngine._channel_live_outer_entry_action(
+            frame, live_price,
+        )
+        side = str(current_side or "").upper()
+        target_side = str(live_outer.get("side") or "").upper()
+        if live_outer.get("action") != "ENTER" or target_side == side:
+            return {
+                "action": "HOLD", "side": None,
+                "reason": "WAIT_SAME_BAR_OUTER_RECHASE",
+            }
+        if side == "SHORT" and target_side == "LONG":
+            live_outer.update({
+                "action": "REVERSE",
+                "reason": "SAME_BAR_UPPER_OUTER_RECHASE",
+            })
+            return live_outer
+        if side == "LONG" and target_side == "SHORT":
+            live_outer.update({
+                "action": "REVERSE",
+                "reason": "SAME_BAR_LOWER_OUTER_RECHASE",
+            })
+            return live_outer
+        return {
+            "action": "HOLD", "side": None,
+            "reason": "WAIT_SAME_BAR_OUTER_RECHASE",
+        }
+
+    @staticmethod
     def _channel_live_inner_reentry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
@@ -5245,9 +5293,14 @@ class TradingEngine:
     @staticmethod
     def _channel_chop_gate(
         action: str, target_side: str | None, locked: bool,
-        has_position: bool,
+        has_position: bool, reason: str | None = None,
     ) -> tuple[str, str | None, str | None]:
-        """Block new exposure in chop; a confirmed reversal becomes close-only."""
+        """Block chop exposure except an immediate same-bar outer rechase."""
+        if (
+            action == "REVERSE"
+            and TradingEngine._channel_is_immediate_outer_rechase(reason)
+        ):
+            return action, target_side, None
         if not locked:
             return action, target_side, None
         if action == "ENTER":
@@ -6039,6 +6092,15 @@ class TradingEngine:
                     existing_pos.get("channel_turn_low") if existing_pos else None,
                     existing_pos.get("channel_turn_high") if existing_pos else None,
                 )
+                if existing_pos:
+                    immediate_rechase = self._channel_same_bar_outer_rechase_action(
+                        channel_df,
+                        channel_price,
+                        existing_pos.get("side"),
+                        self._channel_swing_last_reverse_bar.get(symbol),
+                    )
+                    if immediate_rechase.get("action") == "REVERSE":
+                        channel_action = immediate_rechase
                 # 空手時，現價碰到／越過當前 KC 外軌即優先順勢進場；
                 # 不等收盤、不看 K 色，也不套用軌道內 V 型訊號的 KC 寬度門檻。
                 if not existing_pos:
@@ -6127,6 +6189,7 @@ class TradingEngine:
                 # 無條件反手的充分條件。盤整鎖期間可平舊倉，但不得開新倉。
                 action, target_side, chop_gate_reason = self._channel_chop_gate(
                     action, target_side, chop_locked, bool(existing_pos),
+                    channel_action.get("reason"),
                 )
                 if chop_gate_reason:
                     channel_action["reason"] = chop_gate_reason
@@ -6139,6 +6202,9 @@ class TradingEngine:
                 )
                 if (
                     action == "REVERSE"
+                    and not self._channel_is_immediate_outer_rechase(
+                        channel_action.get("reason")
+                    )
                     and channel_closed_bar_id is not None
                     and self._channel_swing_last_reverse_bar.get(symbol)
                     == channel_closed_bar_id
@@ -6192,7 +6258,11 @@ class TradingEngine:
                 if action == "REVERSE" and existing_pos:
                     old_side = str(existing_pos.get("side") or "").upper()
                     reverse_reason = str(channel_action.get("reason") or "")
-                    if reverse_reason == "OPPOSITE_UPPER_OUTER_UPTREND":
+                    if reverse_reason == "SAME_BAR_UPPER_OUTER_RECHASE":
+                        close_label = "KC_UPPER_OUTER_RECHASE"
+                    elif reverse_reason == "SAME_BAR_LOWER_OUTER_RECHASE":
+                        close_label = "KC_LOWER_OUTER_RECHASE"
+                    elif reverse_reason == "OPPOSITE_UPPER_OUTER_UPTREND":
                         close_label = "KC_UPPER_OUTER_UPTREND"
                     elif reverse_reason == "OPPOSITE_LOWER_OUTER_DOWNTREND":
                         close_label = "KC_LOWER_OUTER_DOWNTREND"
@@ -6212,7 +6282,11 @@ class TradingEngine:
                     if channel_closed_bar_id is not None:
                         self._channel_swing_last_reverse_bar[symbol] = channel_closed_bar_id
                     switch_reason = (
-                        f"KC upper outer uptrend close-first then reopen {target_side}"
+                        f"KC upper outer rechase close-first then reopen {target_side}"
+                        if reverse_reason == "SAME_BAR_UPPER_OUTER_RECHASE"
+                        else f"KC lower outer rechase close-first then reopen {target_side}"
+                        if reverse_reason == "SAME_BAR_LOWER_OUTER_RECHASE"
+                        else f"KC upper outer uptrend close-first then reopen {target_side}"
                         if reverse_reason == "OPPOSITE_UPPER_OUTER_UPTREND"
                         else f"KC lower outer downtrend close-first then reopen {target_side}"
                         if reverse_reason == "OPPOSITE_LOWER_OUTER_DOWNTREND"

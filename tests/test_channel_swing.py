@@ -61,6 +61,51 @@ def test_live_price_at_lower_kc_enters_short_without_close_color_or_width_filter
     assert (100.2 - 99.8) / 99.8 < 0.005
 
 
+def test_same_bar_upper_outer_rechase_immediately_reverses_short_without_half_kc():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+
+    result = TradingEngine._channel_same_bar_outer_rechase_action(
+        frame, 100.2, "SHORT", frame.index[-2],
+    )
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "LONG", "SAME_BAR_UPPER_OUTER_RECHASE",
+    )
+    assert (100.2 - 99.8) / 100.2 < 0.005
+
+
+def test_same_bar_lower_outer_rechase_immediately_reverses_long_without_half_kc():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+
+    result = TradingEngine._channel_same_bar_outer_rechase_action(
+        frame, 99.8, "LONG", frame.index[-2],
+    )
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "SHORT", "SAME_BAR_LOWER_OUTER_RECHASE",
+    )
+    assert (100.2 - 99.8) / 99.8 < 0.005
+
+
+def test_outer_rechase_requires_the_position_to_come_from_same_live_bar():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+
+    result = TradingEngine._channel_same_bar_outer_rechase_action(
+        frame, 100.2, "SHORT", frame.index[-3],
+    )
+
+    assert (result["action"], result["side"]) == ("HOLD", None)
+
+
+def test_same_bar_outer_rechase_bypasses_chop_close_only_gate():
+    assert TradingEngine._channel_chop_gate(
+        "REVERSE", "LONG", True, True, "SAME_BAR_UPPER_OUTER_RECHASE",
+    ) == ("REVERSE", "LONG", None)
+    assert TradingEngine._channel_chop_gate(
+        "REVERSE", "SHORT", True, True, "SAME_BAR_LOWER_OUTER_RECHASE",
+    ) == ("REVERSE", "SHORT", None)
+
+
 def test_live_price_inside_kc_does_not_use_immediate_outer_entry():
     frame = _channel_frame(lower=99.8, upper=100.2)
 
