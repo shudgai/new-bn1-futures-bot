@@ -5124,6 +5124,8 @@ class TradingEngine:
             confirmation_close = float(confirmation_row["close"])
             confirmation_low = float(confirmation_row["low"])
             confirmation_high = float(confirmation_row["high"])
+            confirmation_upper = float(confirmation_row["kc_upper"])
+            confirmation_lower = float(confirmation_row["kc_lower"])
             live_ma3 = float(row["ma3"])
             signal_ma3 = float(signal_row["ma3"])
             previous_ma3 = float(frame.iloc[-2]["ma3"])
@@ -5136,92 +5138,39 @@ class TradingEngine:
                 signal_low, signal_high, live_ma3, signal_ma3, previous_ma3,
                 confirmation_open, confirmation_close,
                 confirmation_low, confirmation_high,
+                confirmation_upper, confirmation_lower,
             ))
             or lower >= upper or signal_lower >= signal_upper
+            or confirmation_lower >= confirmation_upper
             or signal_low > signal_high
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
         signal_width = signal_upper - signal_lower
-        signal_middle = (signal_upper + signal_lower) / 2.0
+
         live_width = upper - lower
         live_width_pct = live_width / max((upper + lower) / 2.0, 1e-12)
         raw_trough = bool(signal_low <= signal_lower and signal_close > signal_open)
         raw_peak = bool(signal_high >= signal_upper and signal_close < signal_open)
-        trough_outer_depth = (signal_lower - signal_ma3) / signal_width
-        peak_outer_depth = (signal_ma3 - signal_upper) / signal_width
-        trough_reentry = (live_ma3 - lower) / live_width
-        peak_reentry = (upper - live_ma3) / live_width
-        trough_body_reentry = (live_close - lower) / live_width
-        peak_body_reentry = (upper - live_close) / live_width
-        trough_deep_level = (
-            signal_lower + signal_width * CHANNEL_SWING_MIN_REENTRY_RATIO
-        )
-        peak_deep_level = (
-            signal_upper - signal_width * CHANNEL_SWING_MIN_REENTRY_RATIO
-        )
-        trough_body_deep_inside = bool(
-            trough_deep_level <= signal_open <= signal_middle
-            and trough_deep_level <= signal_close <= signal_middle
-        )
-        peak_body_deep_inside = bool(
-            signal_middle <= signal_open <= peak_deep_level
-            and signal_middle <= signal_close <= peak_deep_level
-        )
-        trough_body_crossed_in = bool(
-            raw_trough
-            and signal_open <= trough_deep_level
-            and signal_close >= trough_deep_level
-        )
-        peak_body_crossed_in = bool(
-            raw_peak
-            and signal_open >= peak_deep_level
-            and signal_close <= peak_deep_level
-        )
-        trough_body_outside = bool(
-            signal_open <= signal_lower and signal_close <= signal_lower
-        )
-        peak_body_outside = bool(
-            signal_open >= signal_upper and signal_close >= signal_upper
-        )
+        confirmation_width = confirmation_upper - confirmation_lower
         closed_trough = raw_trough
         closed_peak = raw_peak
-        lower_v_green_reentered = bool(
-            raw_trough
-            and signal_open <= signal_lower
-            and signal_lower <= signal_close <= signal_middle
-        )
-        upper_v_red_reentered = bool(
-            raw_peak
-            and signal_open >= signal_upper
-            and signal_middle <= signal_close <= signal_upper
-        )
         # 下一根若曾突破候選反方向極值，OHLC 無法還原盤中先後次序，
         # 採保守作法直接取消，不允許後續 K 救回舊候選。
         trough_cancelled = bool(closed_trough and confirmation_low < signal_low)
         peak_cancelled = bool(closed_peak and confirmation_high > signal_high)
         trough_reentry_ready = bool(
             closed_trough
-            and live_ma3 > signal_ma3
-            and (
-                trough_body_deep_inside
-                or trough_body_crossed_in
-                or (
-                    trough_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
-                    and trough_body_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
-                )
+            and confirmation_close + 1e-12 >= (
+                confirmation_lower
+                + confirmation_width * CHANNEL_SWING_MIN_REENTRY_RATIO
             )
         )
         peak_reentry_ready = bool(
             closed_peak
-            and live_ma3 < signal_ma3
-            and (
-                peak_body_deep_inside
-                or peak_body_crossed_in
-                or (
-                    peak_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
-                    and peak_body_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
-                )
+            and confirmation_close - 1e-12 <= (
+                confirmation_upper
+                - confirmation_width * CHANNEL_SWING_MIN_REENTRY_RATIO
             )
         )
         live_lower_touch = live_low <= lower
@@ -5249,12 +5198,27 @@ class TradingEngine:
             and not trough_cancelled
             and confirmation_close > confirmation_open
             and confirmation_high > signal_high
+            and trough_reentry_ready
         )
         peak_turn = bool(
             closed_peak
             and not peak_cancelled
             and confirmation_close < confirmation_open
             and confirmation_low < signal_low
+            and peak_reentry_ready
+        )
+        confirmation_middle = (confirmation_upper + confirmation_lower) / 2.0
+        strong_rebound_long = bool(
+            not closed_trough
+            and confirmation_close > confirmation_open
+            and confirmation_close > confirmation_middle
+            and (confirmation_close - confirmation_open) >= 0.5 * (confirmation_upper - confirmation_middle)
+        )
+        strong_rebound_short = bool(
+            not closed_peak
+            and confirmation_close < confirmation_open
+            and confirmation_close < confirmation_middle
+            and (confirmation_open - confirmation_close) >= 0.5 * (confirmation_middle - confirmation_lower)
         )
         side = str(current_side or "").upper()
         opposite_outer_trend = TradingEngine._channel_opposite_outer_trend_action(
@@ -5264,7 +5228,7 @@ class TradingEngine:
         if side == "LONG":
             if peak_turn:
                 action, target_side, reason = (
-                    "EXIT", None, "KC_UPPER_PEAK_CONFIRMED"
+                    "REVERSE", "SHORT", "KC_UPPER_PEAK_CONFIRMED"
                 )
             elif opposite_outer_trend.get("action") == "REVERSE":
                 action, target_side, reason = (
@@ -5278,7 +5242,7 @@ class TradingEngine:
         elif side == "SHORT":
             if trough_turn:
                 action, target_side, reason = (
-                    "EXIT", None, "KC_LOWER_TROUGH_CONFIRMED"
+                    "REVERSE", "LONG", "KC_LOWER_TROUGH_CONFIRMED"
                 )
             elif opposite_outer_trend.get("action") == "REVERSE":
                 action, target_side, reason = (
@@ -5289,19 +5253,21 @@ class TradingEngine:
                     "WAIT_CLOSE_GREEN_IN_LOWER_MIDDLE"
                     if live_lower_touch else "WAIT_LOWER_GREEN_REENTRY"
                 )
-        elif trough_turn:
+        elif trough_turn or strong_rebound_long:
             if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
                 action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
             else:
                 action, target_side, reason = (
-                    "ENTER", "LONG", "OUTER_TROUGH_NEXT_BREAK_LONG"
+                    "ENTER", "LONG",
+                    "STRONG_MIDDLE_REBOUND_LONG" if strong_rebound_long and not trough_turn else "OUTER_TROUGH_NEXT_BREAK_LONG"
                 )
-        elif peak_turn:
+        elif peak_turn or strong_rebound_short:
             if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
                 action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
             else:
                 action, target_side, reason = (
-                    "ENTER", "SHORT", "OUTER_PEAK_NEXT_BREAK_SHORT"
+                    "ENTER", "SHORT",
+                    "STRONG_MIDDLE_REBOUND_SHORT" if strong_rebound_short and not peak_turn else "OUTER_PEAK_NEXT_BREAK_SHORT"
                 )
         else:
             action, target_side = "WAIT", None

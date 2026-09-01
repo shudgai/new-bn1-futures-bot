@@ -333,12 +333,12 @@ PIVOT_MIN_ARC_KC_WIDTH_PCT = max(
 PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT = max(
     0.0, float(os.getenv("PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT", "0.20"))
 )
-# Channel Swing 峰谷必須讓 MA3 明確離開外軌；轉向後 MA3 與實體收盤皆須走完外軌到中軌區間的 80%（全通道 40%）。
+# Channel Swing 只採用緊接的第二根已收盤 K；其實體收盤必須至少進入全通道 50%，影線不計。
 CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
     0.0, float(os.getenv("CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO", "0.10"))
 )
 CHANNEL_SWING_MIN_REENTRY_RATIO = min(
-    1.0, max(0.0, float(os.getenv("CHANNEL_SWING_MIN_REENTRY_RATIO", "0.40")))
+    1.0, max(0.0, float(os.getenv("CHANNEL_SWING_MIN_REENTRY_RATIO", "0.50")))
 )
 CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
     os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "12")
