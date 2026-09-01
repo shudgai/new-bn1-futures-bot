@@ -61,6 +61,40 @@ def test_live_price_at_lower_kc_enters_short_without_close_color_or_width_filter
     assert (100.2 - 99.8) / 99.8 < 0.005
 
 
+def test_held_long_does_not_exit_on_upper_rail_touch_without_confirmed_peak():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+
+    result = TradingEngine._channel_swing_action(frame, 101.0, "LONG")
+
+    assert (result["action"], result["side"]) == ("HOLD", None)
+
+
+def test_held_short_does_not_exit_on_lower_rail_touch_without_confirmed_trough():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+
+    result = TradingEngine._channel_swing_action(frame, 99.0, "SHORT")
+
+    assert (result["action"], result["side"]) == ("HOLD", None)
+
+
+def test_channel_entry_cannot_reuse_the_bar_that_just_exited():
+    bar_id = 12345
+
+    assert TradingEngine._channel_entry_reuses_exit_bar(
+        "ENTER", False, bar_id, bar_id,
+    )
+    assert not TradingEngine._channel_entry_reuses_exit_bar(
+        "ENTER", False, bar_id + 1, bar_id,
+    )
+    assert not TradingEngine._channel_entry_reuses_exit_bar(
+        "REVERSE", True, bar_id, bar_id,
+    )
+    engine = object.__new__(TradingEngine)
+    assert engine._channel_entry_reuses_exit_bar(
+        "ENTER", False, bar_id, bar_id,
+    )
+
+
 def test_same_bar_upper_outer_rechase_immediately_reverses_short_without_half_kc():
     frame = _channel_frame(lower=99.8, upper=100.2)
 
@@ -116,127 +150,62 @@ def test_live_price_inside_kc_does_not_use_immediate_outer_entry():
     )
 
 
-def test_single_red_candle_reenters_half_kc_width_for_short():
+def test_single_red_k_returns_inside_kc_without_entry_or_reversal():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
         101.2, 99.9, 101.3, 99.8,
     ]
 
-    result = TradingEngine._channel_live_inner_reentry_action(frame, 99.9)
+    flat = TradingEngine._channel_swing_action(frame, 99.9)
+    held_long = TradingEngine._channel_swing_action(frame, 99.9, "LONG")
 
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "SHORT", "KC_INNER_RED_HALF_REENTRY_SHORT",
-    )
+    assert (flat["action"], flat["side"]) == ("WAIT", None)
+    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
 
 
-def test_single_green_candle_reenters_half_kc_width_for_long():
+def test_single_green_k_returns_inside_kc_without_entry_or_reversal():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
         98.8, 100.1, 100.2, 98.7,
     ]
 
-    result = TradingEngine._channel_live_inner_reentry_action(frame, 100.1)
+    flat = TradingEngine._channel_swing_action(frame, 100.1)
+    held_short = TradingEngine._channel_swing_action(frame, 100.1, "SHORT")
 
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "LONG", "KC_INNER_GREEN_HALF_REENTRY_LONG",
-    )
-
-
-def test_single_red_candle_below_half_kc_reentry_waits():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-1], ["open", "close"]] = [101.2, 100.1]
-
-    result = TradingEngine._channel_live_inner_reentry_action(frame, 100.1)
-
-    assert (result["action"], result["side"], result["reason"]) == (
-        "WAIT", None, "WAIT_INNER_REENTRY_HALF_KC",
-    )
+    assert (flat["action"], flat["side"]) == ("WAIT", None)
+    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
 
 
-def test_two_red_candles_inside_kc_are_added_for_half_width_entry():
+def test_red_k_inside_kc_does_not_enter_or_reverse():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-2], ["open", "close"]] = [100.8, 100.2]
     frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 99.8]
 
-    result = TradingEngine._channel_live_inner_reentry_action(frame, 99.8)
+    flat = TradingEngine._channel_swing_action(frame, 99.8)
+    held_long = TradingEngine._channel_swing_action(frame, 99.8, "LONG")
 
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "SHORT", "KC_INNER_TWO_RED_HALF_REENTRY_SHORT",
-    )
+    assert (flat["action"], flat["side"]) == ("WAIT", None)
+    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
 
 
-def test_two_green_candles_inside_kc_are_added_for_half_width_entry():
+def test_green_k_inside_kc_does_not_enter_or_reverse():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-2], ["open", "close"]] = [99.2, 99.8]
     frame.loc[frame.index[-1], ["open", "close"]] = [99.8, 100.2]
 
-    result = TradingEngine._channel_live_inner_reentry_action(frame, 100.2)
+    flat = TradingEngine._channel_swing_action(frame, 100.2)
+    held_short = TradingEngine._channel_swing_action(frame, 100.2, "SHORT")
 
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "LONG", "KC_INNER_TWO_GREEN_HALF_REENTRY_LONG",
-    )
-
-
-def test_two_red_candles_inside_kc_below_half_width_wait():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-2], ["open", "close"]] = [100.6, 100.3]
-    frame.loc[frame.index[-1], ["open", "close"]] = [100.3, 100.0]
-
-    result = TradingEngine._channel_live_inner_reentry_action(frame, 100.0)
-
-    assert (result["action"], result["side"], result["reason"]) == (
-        "WAIT", None, "WAIT_INNER_REENTRY_HALF_KC",
-    )
+    assert (flat["action"], flat["side"]) == ("WAIT", None)
+    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
 
 
-def test_held_long_can_reverse_from_two_red_bodies_inside_kc():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-2], ["open", "close"]] = [100.8, 100.2]
-    frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 99.8]
-
-    result = TradingEngine._channel_swing_action(frame, 99.8, "LONG")
-
-    assert (result["action"], result["side"], result["reason"]) == (
-        "REVERSE", "SHORT", "UPPER_RED_HALF_KC_REENTRY",
-    )
-
-
-def test_held_long_reverses_only_after_single_red_half_kc_reentry():
-    enough = _channel_frame(lower=99.0, upper=101.0)
-    enough.loc[enough.index[-1], ["open", "close", "high", "low"]] = [
-        101.2, 99.9, 101.3, 99.8,
-    ]
-    shallow = _channel_frame(lower=99.0, upper=101.0)
-    shallow.loc[shallow.index[-1], ["open", "close", "high", "low"]] = [
-        101.2, 100.1, 101.3, 100.0,
-    ]
-
-    reversed_action = TradingEngine._channel_swing_action(enough, 99.9, "LONG")
-    held_action = TradingEngine._channel_swing_action(shallow, 100.1, "LONG")
-
-    assert (reversed_action["action"], reversed_action["side"]) == (
-        "REVERSE", "SHORT",
-    )
-    assert (held_action["action"], held_action["side"]) == ("HOLD", None)
-
-
-def test_held_short_reverses_only_after_single_green_half_kc_reentry():
-    enough = _channel_frame(lower=99.0, upper=101.0)
-    enough.loc[enough.index[-1], ["open", "close", "high", "low"]] = [
-        98.8, 100.1, 100.2, 98.7,
-    ]
-    shallow = _channel_frame(lower=99.0, upper=101.0)
-    shallow.loc[shallow.index[-1], ["open", "close", "high", "low"]] = [
-        98.8, 99.9, 100.0, 98.7,
-    ]
-
-    reversed_action = TradingEngine._channel_swing_action(enough, 100.1, "SHORT")
-    held_action = TradingEngine._channel_swing_action(shallow, 99.9, "SHORT")
-
-    assert (reversed_action["action"], reversed_action["side"]) == (
-        "REVERSE", "LONG",
-    )
-    assert (held_action["action"], held_action["side"]) == ("HOLD", None)
+def test_live_inner_reentry_exception_is_removed():
+    assert not hasattr(TradingEngine, "_channel_live_inner_reentry_action")
+    action_source = inspect.getsource(TradingEngine._channel_swing_action)
+    process_source = inspect.getsource(TradingEngine._process_single_symbol)
+    assert "INNER_" not in action_source
+    assert "inner_reentry" not in process_source
 
 
 def test_channel_swing_enters_only_after_closed_turn_candle_and_next_breakout():
@@ -555,7 +524,7 @@ def test_channel_swing_holds_between_entry_and_opposite_edge():
 
 
 
-def test_held_position_waits_when_outer_candle_has_not_closed_inside_channel():
+def test_confirmed_outer_pivot_exits_even_without_deep_body_reentry():
     frame = _channel_frame()
     _closed_peak(frame)
     held_long = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
@@ -564,10 +533,14 @@ def test_held_position_waits_when_outer_candle_has_not_closed_inside_channel():
     _closed_trough(frame)
     held_short = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == (
+        "EXIT", None, "KC_UPPER_PEAK_CONFIRMED",
+    )
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == (
+        "EXIT", None, "KC_LOWER_TROUGH_CONFIRMED",
+    )
 
-def test_previous_outer_red_does_not_reverse_without_live_half_kc_reentry():
+def test_previous_outer_red_confirmed_peak_exits_without_live_half_kc_reentry():
     frame = _channel_frame()
     frame.loc[frame.index[-2], ["open", "close", "high", "low", "ma3"]] = [
         101.2, 100.8, 101.3, 100.7, 101.0,
@@ -575,10 +548,12 @@ def test_previous_outer_red_does_not_reverse_without_live_half_kc_reentry():
 
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
-    assert (result["action"], result["side"]) == ("HOLD", None)
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "KC_UPPER_PEAK_CONFIRMED",
+    )
 
 
-def test_previous_outer_green_does_not_reverse_without_live_half_kc_reentry():
+def test_previous_outer_green_confirmed_trough_exits_without_live_half_kc_reentry():
     frame = _channel_frame()
     frame.loc[frame.index[-2], ["open", "close", "high", "low", "ma3"]] = [
         98.8, 99.2, 99.3, 98.7, 99.0,
@@ -586,7 +561,9 @@ def test_previous_outer_green_does_not_reverse_without_live_half_kc_reentry():
 
     result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
-    assert (result["action"], result["side"]) == ("HOLD", None)
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "KC_LOWER_TROUGH_CONFIRMED",
+    )
 
 
 def test_channel_swing_does_not_enter_from_unclosed_live_green_or_red_candle():
@@ -723,7 +700,7 @@ def test_held_position_does_not_use_later_live_break_to_confirm_reentry():
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
-def test_flat_entry_can_use_ma3_but_held_position_requires_body_reentry():
+def test_flat_entry_uses_ma3_and_held_position_exits_on_confirmed_trough():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-2], ["open", "ma3"]] = [98.8, 98.9]
@@ -732,7 +709,7 @@ def test_flat_entry_can_use_ma3_but_held_position_requires_body_reentry():
     held_short = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (empty["action"], empty["side"]) == ("ENTER", "LONG")
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_short["action"], held_short["side"]) == ("EXIT", None)
 
 def test_confirmed_outer_pivot_opens_before_forty_percent_reentry():
     long_frame = _channel_frame()
@@ -909,7 +886,7 @@ def test_old_outer_pivot_does_not_chase_at_opposite_outer_rail():
     assert (result["action"], result["side"]) == ("WAIT", None)
 
 
-def test_shallow_outer_reentry_cannot_fall_back_to_live_ma3_entry():
+def test_shallow_outer_reentry_still_exits_held_short_on_confirmed_trough():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-1], "ma3"] = 99.2  # only 10% into KC channel
@@ -918,7 +895,7 @@ def test_shallow_outer_reentry_cannot_fall_back_to_live_ma3_entry():
     held_short = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (empty["action"], empty["side"]) == ("ENTER", "LONG")
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_short["action"], held_short["side"]) == ("EXIT", None)
 
 
 def test_channel_swing_reentry_boundary_is_80_percent_of_outer_half():
@@ -936,7 +913,7 @@ def test_channel_swing_reentry_boundary_is_80_percent_of_outer_half():
     assert (accepted["action"], accepted["side"]) == ("ENTER", "LONG")
 
 
-def test_live_ma3_turn_neither_enters_nor_changes_held_reentry_rule():
+def test_live_ma3_turn_does_not_block_confirmed_trough_exit():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-1], ["open", "close", "high", "ma3"]] = [
@@ -947,7 +924,7 @@ def test_live_ma3_turn_neither_enters_nor_changes_held_reentry_rule():
     held_short = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (empty["action"], empty["side"]) == ("ENTER", "LONG")
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_short["action"], held_short["side"]) == ("EXIT", None)
 
 
 def test_channel_swing_positions_are_not_managed_by_early_exit_loops():
@@ -1096,7 +1073,7 @@ def test_live_outer_price_without_ma3_outside_does_not_reverse():
     assert (held_long["action"], held_long["side"]) == ("HOLD", None)
 
 
-def test_outer_turn_without_body_reentry_does_not_close_or_reverse():
+def test_confirmed_outer_peak_and_trough_exit_without_body_reentry():
     long_frame = _channel_frame()
     _closed_peak(long_frame)
     held_long = TradingEngine._channel_swing_action(long_frame, 101.1, "LONG")
@@ -1105,11 +1082,15 @@ def test_outer_turn_without_body_reentry_does_not_close_or_reverse():
     _closed_trough(short_frame)
     held_short = TradingEngine._channel_swing_action(short_frame, 98.9, "SHORT")
 
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == (
+        "EXIT", None, "KC_UPPER_PEAK_CONFIRMED",
+    )
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == (
+        "EXIT", None, "KC_LOWER_TROUGH_CONFIRMED",
+    )
 
 
-def test_previous_red_cross_does_not_reverse_when_live_candle_started_inside_kc():
+def test_confirmed_peak_exits_when_live_candle_started_inside_kc():
     frame = _channel_frame()
     frame.loc[frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [
         101.2, 100.2, 99.7, 101.3, 100.9,
@@ -1120,9 +1101,9 @@ def test_previous_red_cross_does_not_reverse_when_live_candle_started_inside_kc(
 
     result = TradingEngine._channel_swing_action(frame, 99.6, "LONG")
 
-    assert (result["action"], result["side"]) == ("HOLD", None)
+    assert (result["action"], result["side"]) == ("EXIT", None)
 
-def test_previous_green_cross_does_not_reverse_when_live_candle_started_inside_kc():
+def test_confirmed_trough_exits_when_live_candle_started_inside_kc():
     frame = _channel_frame()
     frame.loc[frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [
         98.8, 99.8, 98.7, 100.3, 99.1,
@@ -1133,7 +1114,7 @@ def test_previous_green_cross_does_not_reverse_when_live_candle_started_inside_k
 
     result = TradingEngine._channel_swing_action(frame, 100.4, "SHORT")
 
-    assert (result["action"], result["side"]) == ("HOLD", None)
+    assert (result["action"], result["side"]) == ("EXIT", None)
 
 def test_btc_1m_pulse_requires_atr_move_and_ma3_alignment(monkeypatch):
     monkeypatch.setattr("core.engine.BTC_1M_PULSE_FILTER_ENABLED", True)

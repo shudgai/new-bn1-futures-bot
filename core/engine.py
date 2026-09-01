@@ -168,6 +168,9 @@ class TradingEngine:
         # Channel Swing 每根已收盤 K 最多只能觸發一次反手，避免新倉
         # 在下一輪掃描重複使用同一根確認 K 再次反向成交。
         self._channel_swing_last_reverse_bar: Dict[str, object] = {}
+        # Channel Swing 平倉後，同一根 live K 不得再次用任何入口重開。
+        # 下一根已收盤 K 出現後自動解鎖；即時同 K 反手規格不受影響。
+        self._channel_swing_last_exit_bar: Dict[str, object] = {}
         # 盤整鎖：均線與 KC 中軌反覆交叉時，外軌 V 只可作為持倉離場
         # 確認，不得開新倉或平倉後立即反手。需三根已收盤 K 明確同向才解鎖。
         self._channel_chop_locked: Dict[str, bool] = {}
@@ -4907,109 +4910,6 @@ class TradingEngine:
             "reason": "WAIT_SAME_BAR_OUTER_RECHASE",
         }
 
-    @staticmethod
-    def _channel_live_inner_reentry_action(
-        frame: pd.DataFrame, live_price: float,
-    ) -> dict:
-        """Allow one deep reentry candle or two in-channel bodies totaling half KC."""
-        required = {"open", "close", "kc_upper", "kc_lower"}
-        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
-            return {
-                "action": "WAIT", "side": None,
-                "reason": "KC_INNER_REENTRY_DATA_UNAVAILABLE",
-            }
-        try:
-            previous = frame.iloc[-2]
-            live = frame.iloc[-1]
-            previous_open = float(previous["open"])
-            previous_close = float(previous["close"])
-            previous_upper = float(previous["kc_upper"])
-            previous_lower = float(previous["kc_lower"])
-            live_open = float(live["open"])
-            price = float(live_price)
-            upper = float(live["kc_upper"])
-            lower = float(live["kc_lower"])
-        except (TypeError, ValueError, IndexError):
-            return {
-                "action": "WAIT", "side": None,
-                "reason": "KC_INNER_REENTRY_DATA_INVALID",
-            }
-        values = (
-            previous_open, previous_close, previous_upper, previous_lower,
-            live_open, price, upper, lower,
-        )
-        if (
-            not all(math.isfinite(value) for value in values)
-            or lower >= upper or previous_lower >= previous_upper
-        ):
-            return {
-                "action": "WAIT", "side": None,
-                "reason": "KC_INNER_REENTRY_DATA_INVALID",
-            }
-        if not lower < price < upper:
-            return {
-                "action": "WAIT", "side": None,
-                "reason": "WAIT_PRICE_INSIDE_KC",
-                "kc_upper": upper, "kc_lower": lower,
-            }
-        width = upper - lower
-        if (
-            live_open >= upper
-            and price < live_open
-            and upper - price + 1e-12 >= width * 0.5
-        ):
-            return {
-                "action": "ENTER", "side": "SHORT",
-                "reason": "KC_INNER_RED_HALF_REENTRY_SHORT",
-                "kc_upper": upper, "kc_lower": lower,
-                "turn_low": None, "turn_high": None,
-            }
-        if (
-            live_open <= lower
-            and price > live_open
-            and price - lower + 1e-12 >= width * 0.5
-        ):
-            return {
-                "action": "ENTER", "side": "LONG",
-                "reason": "KC_INNER_GREEN_HALF_REENTRY_LONG",
-                "kc_upper": upper, "kc_lower": lower,
-                "turn_low": None, "turn_high": None,
-            }
-        previous_body_inside = bool(
-            previous_lower <= previous_open <= previous_upper
-            and previous_lower <= previous_close <= previous_upper
-        )
-        live_body_inside = lower <= live_open <= upper
-        combined_body = (
-            abs(previous_close - previous_open) + abs(price - live_open)
-        )
-        two_body_ready = combined_body + 1e-12 >= width * 0.5
-        if (
-            previous_body_inside and live_body_inside and two_body_ready
-            and previous_close < previous_open and price < live_open
-        ):
-            return {
-                "action": "ENTER", "side": "SHORT",
-                "reason": "KC_INNER_TWO_RED_HALF_REENTRY_SHORT",
-                "kc_upper": upper, "kc_lower": lower,
-                "turn_low": None, "turn_high": None,
-            }
-        if (
-            previous_body_inside and live_body_inside and two_body_ready
-            and previous_close > previous_open and price > live_open
-        ):
-            return {
-                "action": "ENTER", "side": "LONG",
-                "reason": "KC_INNER_TWO_GREEN_HALF_REENTRY_LONG",
-                "kc_upper": upper, "kc_lower": lower,
-                "turn_low": None, "turn_high": None,
-            }
-        return {
-            "action": "WAIT", "side": None,
-            "reason": "WAIT_INNER_REENTRY_HALF_KC",
-            "kc_upper": upper, "kc_lower": lower,
-        }
-
     def _record_channel_chop_event(
         self, symbol: str, event: str, frame: pd.DataFrame,
         direction: str | None = None, live_bar: bool = False,
@@ -5291,6 +5191,21 @@ class TradingEngine:
         }
 
     @staticmethod
+    def _channel_entry_reuses_exit_bar(
+        action: str, has_position: bool, closed_bar_id: object,
+        last_exit_bar: object,
+    ) -> bool:
+        """Block a flat-position entry from reusing the K that just exited."""
+        return bool(
+            action == "ENTER"
+            and not has_position
+            and closed_bar_id is not None
+            and closed_bar_id == last_exit_bar
+        )
+
+
+
+    @staticmethod
     def _channel_chop_gate(
         action: str, target_side: str | None, locked: bool,
         has_position: bool, reason: str | None = None,
@@ -5482,21 +5397,15 @@ class TradingEngine:
         opposite_outer_trend = TradingEngine._channel_opposite_outer_trend_action(
             frame, price, side,
         )
-        live_inner_reentry = TradingEngine._channel_live_inner_reentry_action(
-            frame, price,
-        )
         reason = ""
         if side == "LONG":
-            if opposite_outer_trend.get("action") == "REVERSE":
+            if peak_turn:
+                action, target_side, reason = (
+                    "EXIT", None, "KC_UPPER_PEAK_CONFIRMED"
+                )
+            elif opposite_outer_trend.get("action") == "REVERSE":
                 action, target_side, reason = (
                     "REVERSE", "SHORT", "OPPOSITE_LOWER_OUTER_DOWNTREND"
-                )
-            elif (
-                live_inner_reentry.get("action") == "ENTER"
-                and live_inner_reentry.get("side") == "SHORT"
-            ):
-                action, target_side, reason = (
-                    "REVERSE", "SHORT", "UPPER_RED_HALF_KC_REENTRY"
                 )
             else:
                 action, target_side, reason = "HOLD", None, (
@@ -5504,16 +5413,13 @@ class TradingEngine:
                     if live_upper_touch else "WAIT_UPPER_RED_REENTRY"
                 )
         elif side == "SHORT":
-            if opposite_outer_trend.get("action") == "REVERSE":
+            if trough_turn:
+                action, target_side, reason = (
+                    "EXIT", None, "KC_LOWER_TROUGH_CONFIRMED"
+                )
+            elif opposite_outer_trend.get("action") == "REVERSE":
                 action, target_side, reason = (
                     "REVERSE", "LONG", "OPPOSITE_UPPER_OUTER_UPTREND"
-                )
-            elif (
-                live_inner_reentry.get("action") == "ENTER"
-                and live_inner_reentry.get("side") == "LONG"
-            ):
-                action, target_side, reason = (
-                    "REVERSE", "LONG", "LOWER_GREEN_HALF_KC_REENTRY"
                 )
             else:
                 action, target_side, reason = "HOLD", None, (
@@ -6110,15 +6016,6 @@ class TradingEngine:
                     if live_outer_action.get("action") == "ENTER":
                         channel_action = live_outer_action
                         self._channel_outer_trend_wait.pop(symbol, None)
-                    else:
-                        inner_reentry_action = (
-                            self._channel_live_inner_reentry_action(
-                                channel_df, channel_price,
-                            )
-                        )
-                        if inner_reentry_action.get("action") == "ENTER":
-                            channel_action = inner_reentry_action
-                            self._channel_outer_trend_wait.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
                 # 服務重啟或首次掃描時，只要當前仍鎖定，或上一根資料仍處於
                 # 盤整，就能在緊接的 live K 確認突破。
@@ -6200,6 +6097,13 @@ class TradingEngine:
                 channel_closed_bar_id = (
                     channel_df.index[-2] if len(channel_df) >= 2 else None
                 )
+                if self._channel_entry_reuses_exit_bar(
+                    action, bool(existing_pos), channel_closed_bar_id,
+                    getattr(self, "_channel_swing_last_exit_bar", {}).get(symbol),
+                ):
+                    action = "HOLD"
+                    target_side = None
+                    channel_action["reason"] = "EXIT_BAR_ALREADY_USED"
                 if (
                     action == "REVERSE"
                     and not self._channel_is_immediate_outer_rechase(
@@ -6249,6 +6153,8 @@ class TradingEngine:
                         f"Channel Swing {exit_reason}", is_manual=True,
                     )
                     if closed:
+                        if channel_closed_bar_id is not None:
+                            self._channel_swing_last_exit_bar[symbol] = channel_closed_bar_id
                         self.account.log(
                             f"⏹️ [Channel Swing] {symbol} 轉向失敗或抵達對側KC外軌，"
                             "先平倉並等待下一個真正峰谷", "SUCCESS",
@@ -6363,13 +6269,6 @@ class TradingEngine:
                             if channel_action.get("reason") in (
                                 "KC_LIVE_UPPER_BREAK_LONG",
                                 "KC_LIVE_LOWER_BREAK_SHORT",
-                            )
-                            else f"Channel Swing inner half-width reentry {target_side}"
-                            if channel_action.get("reason") in (
-                                "KC_INNER_RED_HALF_REENTRY_SHORT",
-                                "KC_INNER_GREEN_HALF_REENTRY_LONG",
-                                "KC_INNER_TWO_RED_HALF_REENTRY_SHORT",
-                                "KC_INNER_TWO_GREEN_HALF_REENTRY_LONG",
                             )
                             else "Channel Swing KC upper trend confirmed LONG"
                             if channel_action.get("reason") in (
