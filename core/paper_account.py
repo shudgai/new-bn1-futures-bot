@@ -440,8 +440,18 @@ class PaperAccount:
     ) -> bool:
         if symbol in self.closing_lock:
             return False
+        if symbol in self.pending_limit_orders:
+            self.log(f"🛑 {symbol} 已有待成交掛單，拒絕重複市價開倉", "WARNING")
+            return False
 
-        entry_mode = str(dict(entry_context or {}).get("entry_mode") or "").upper()
+        entry_payload = dict(entry_context or {})
+        entry_mode = str(entry_payload.get("entry_mode") or "").upper()
+        dca_stage = entry_payload.get("dca_stage")
+        explicit_dca_top_up = bool(
+            ENABLE_DCA_LIMIT
+            and isinstance(dca_stage, (int, float))
+            and int(dca_stage) >= 2
+        )
         is_top_up = symbol in self.positions
         if is_top_up:
             if self.positions[symbol]["side"] != side:
@@ -454,6 +464,9 @@ class PaperAccount:
             ).upper()
             if entry_mode == "CHANNEL_SWING" or held_mode == "CHANNEL_SWING":
                 self.log(f"🛑 {symbol} Channel Swing 持倉中，拒絕加碼", "WARNING")
+                return False
+            if not explicit_dca_top_up:
+                self.log(f"🛑 {symbol} 已有同向持倉，非 DCA 加碼一律拒絕", "WARNING")
                 return False
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(f"🛑 {symbol} 訊號分數 {signal_score} 低於 {MIN_OPEN_SIGNAL_SCORE} 分下限，拒絕開倉", "WARNING")
@@ -641,8 +654,22 @@ class PaperAccount:
             amount_usdt = amount_usdt / 3.0
 
         if symbol in self.positions:
-            # 只有在非 DCA 首次進場（也就是 DCA 2、3 階加倉）時，才允許在已有持倉時繼續掛單
-            if not is_dca_call:
+            held = self.positions[symbol]
+            held_mode = str(
+                held.get("entry_mode")
+                or self.position_meta.get(symbol, {}).get("entry_mode")
+                or ""
+            ).upper()
+            dca_stage = entry_ctx.get("dca_stage")
+            valid_dca_top_up = bool(
+                ENABLE_DCA_LIMIT
+                and is_dca_call
+                and isinstance(dca_stage, (int, float))
+                and int(dca_stage) >= 2
+                and str(held.get("side") or "").upper() == str(side or "").upper()
+                and held_mode != "CHANNEL_SWING"
+            )
+            if not valid_dca_top_up:
                 return False
         elif symbol in self.pending_limit_orders or symbol in self.closing_lock:
             return False
@@ -903,6 +930,7 @@ class PaperAccount:
                 return False
         self.closing_lock.add(symbol)
         try:
+            self.pending_limit_orders.pop(symbol, None)
             pos = self.positions.pop(symbol)
             meta = self.position_meta.pop(symbol, {})
             side = pos["side"]
@@ -988,7 +1016,10 @@ class PaperAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        if not 0.0 < float(fraction) < 1.0:
+            return False
         self.closing_lock.add(symbol)
+        self.pending_limit_orders.pop(symbol, None)
         try:
             pos = self.positions[symbol]
             meta = self.position_meta.setdefault(symbol, {})

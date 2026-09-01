@@ -319,10 +319,13 @@ async def test_testnet_account_manual_close_is_reduce_only(tmp_path, monkeypatch
         "DOGE/USDT", "LONG", 100.0, 50.0, 98.0, 103.0, "test", leverage=5
     )
 
+    account.pending_limit_orders["DOGE/USDT"] = {"side": "LONG"}
+
     success = await account.close_position("DOGE/USDT", 101.0, "手動平倉")
 
     assert success is True
     assert "DOGE/USDT" not in account.positions
+    assert "DOGE/USDT" not in account.pending_limit_orders
     assert exchange.orders[-1]["params"]["reduceOnly"] is True
     assert "DOGE/USDT" in exchange.cancelled
 
@@ -965,9 +968,12 @@ async def test_partial_close_position(tmp_path, monkeypatch):
     pos = account.positions["DOGE/USDT"]
     qty_before = pos["qty"]
 
+    account.pending_limit_orders["DOGE/USDT"] = {"side": "LONG"}
+
     # Partial close 50%
     success = await account.partial_close_position("DOGE/USDT", current_price=101.0, close_reason="ROE達5%減倉一半", fraction=0.5)
     assert success is True
+    assert "DOGE/USDT" not in account.pending_limit_orders
 
     # Check that position still exists but qty is halved
     assert "DOGE/USDT" in account.positions
@@ -1074,3 +1080,91 @@ async def test_native_trailing_failure_restores_fixed_stop(tmp_path, monkeypatch
 
     await account.update_positions({"DOGE/USDT": 106.0})
     assert exchange.trailing_attempts == 1
+
+
+@pytest.mark.anyio
+async def test_testnet_market_entry_rejects_existing_pending_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "pending-conflict.json"))
+    monkeypatch.setattr(
+        BinanceTestnetAccount, "credentials_configured", staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    account.pending_limit_orders["DOGE/USDT"] = {"side": "LONG"}
+
+    opened = await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 105.0, "conflict",
+        leverage=5, signal_score=80,
+    )
+
+    assert opened is False
+    assert account.positions == {}
+    assert exchange.orders == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fraction", [0.0, 1.0, 1.2])
+async def test_testnet_partial_close_rejects_non_partial_fraction(
+    tmp_path, monkeypatch, fraction,
+):
+    monkeypatch.setattr(
+        testnet_module, "STATE_FILE", str(tmp_path / f"invalid-partial-{fraction}.json"),
+    )
+    monkeypatch.setattr(
+        BinanceTestnetAccount, "credentials_configured", staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    assert await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 105.0, "open", leverage=5,
+    )
+    qty_before = account.positions["DOGE/USDT"]["qty"]
+    orders_before = len(exchange.orders)
+
+    closed = await account.partial_close_position(
+        "DOGE/USDT", 101.0, "invalid", fraction=fraction,
+    )
+
+    assert closed is False
+    assert account.positions["DOGE/USDT"]["qty"] == qty_before
+    assert len(exchange.orders) == orders_before
+
+
+@pytest.mark.anyio
+async def test_testnet_dca_pending_top_up_requires_stage_two_and_same_side(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(testnet_module, "STATE_FILE", str(tmp_path / "dca-pending.json"))
+    monkeypatch.setattr(testnet_module, "ENABLE_DCA_LIMIT", True)
+    monkeypatch.setattr(
+        BinanceTestnetAccount, "credentials_configured", staticmethod(lambda: True),
+    )
+    exchange = FakeTestnetExchange()
+    account = BinanceTestnetAccount(exchange)
+    await account.initialize()
+    assert await account.open_position(
+        "DOGE/USDT", "LONG", 100.0, 50.0, 95.0, 105.0, "open", leverage=5,
+    )
+
+    stage_one = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 99.0, 10.0, 94.0, 104.0, "bad stage",
+        leverage=5, signal_score=80,
+        entry_context={"entry_mode": "BREAKOUT", "dca_stage": 1},
+    )
+    opposite = await account.place_limit_entry(
+        "DOGE/USDT", "SHORT", 101.0, 10.0, 106.0, 96.0, "bad side",
+        leverage=5, signal_score=80,
+        entry_context={"entry_mode": "BREAKOUT", "dca_stage": 2},
+    )
+    valid = await account.place_limit_entry(
+        "DOGE/USDT", "LONG", 99.0, 10.0, 94.0, 104.0, "valid DCA",
+        leverage=5, signal_score=80,
+        entry_context={"entry_mode": "BREAKOUT", "dca_stage": 2},
+    )
+
+    assert stage_one is False
+    assert opposite is False
+    assert valid is True
+    assert account.pending_limit_orders["DOGE/USDT"]["side"] == "LONG"

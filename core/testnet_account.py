@@ -1584,7 +1584,11 @@ class BinanceTestnetAccount:
     ) -> bool:
         """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
         訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
-        if symbol in self.positions or symbol in self.closing_lock:
+        if (
+            symbol in self.positions
+            or symbol in self.pending_limit_orders
+            or symbol in self.closing_lock
+        ):
             return False
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
@@ -1877,8 +1881,22 @@ class BinanceTestnetAccount:
             amount_usdt = amount_usdt / 3.0
 
         if symbol in self.positions:
-            # 只有在非 DCA 首次進場（也就是 DCA 2、3 階加倉）時，才允許在已有持倉時繼續掛單
-            if not is_dca_call:
+            held = self.positions[symbol]
+            held_mode = str(
+                held.get("entry_mode")
+                or self.position_meta.get(symbol, {}).get("entry_mode")
+                or ""
+            ).upper()
+            dca_stage = entry_ctx.get("dca_stage")
+            valid_dca_top_up = bool(
+                ENABLE_DCA_LIMIT
+                and is_dca_call
+                and isinstance(dca_stage, (int, float))
+                and int(dca_stage) >= 2
+                and str(held.get("side") or "").upper() == str(side or "").upper()
+                and held_mode != "CHANNEL_SWING"
+            )
+            if not valid_dca_top_up:
                 return False
         elif symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False
@@ -2229,6 +2247,7 @@ class BinanceTestnetAccount:
             })
             self.position_meta.pop(symbol, None)
             self.positions.pop(symbol, None)
+            self.pending_limit_orders.pop(symbol, None)
             await self.refresh(force=True)
             self.log(
                 f"🏁 Binance Testnet 平倉 [{position['side']}] {symbol} @ "
@@ -2261,6 +2280,8 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        if not 0.0 < float(fraction) < 1.0:
+            return False
         self.closing_lock.add(symbol)
         position = dict(self.positions[symbol])
         meta = self.position_meta.get(symbol, {})
@@ -2272,6 +2293,7 @@ class BinanceTestnetAccount:
 
             # 1. 撤銷所有現有止損止盈單
             await self._cancel_all_orders(symbol)
+            self.pending_limit_orders.pop(symbol, None)
 
             # 2. 市價單平倉一半
             close_side = "sell" if position["side"] == "LONG" else "buy"
