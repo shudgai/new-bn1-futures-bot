@@ -71,6 +71,48 @@ def test_live_price_inside_kc_does_not_use_immediate_outer_entry():
     )
 
 
+def test_two_red_bodies_total_half_kc_width_enter_short_inside_channel():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["open", "close"]] = [100.8, 100.2]
+    frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 99.8]
+
+    result = TradingEngine._channel_live_inner_two_candle_entry_action(
+        frame, 99.8,
+    )
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "SHORT", "KC_INNER_TWO_RED_BODY_SHORT",
+    )
+
+
+def test_two_green_bodies_total_half_kc_width_enter_long_inside_channel():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["open", "close"]] = [99.2, 99.8]
+    frame.loc[frame.index[-1], ["open", "close"]] = [99.8, 100.2]
+
+    result = TradingEngine._channel_live_inner_two_candle_entry_action(
+        frame, 100.2,
+    )
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "KC_INNER_TWO_GREEN_BODY_LONG",
+    )
+
+
+def test_two_same_color_bodies_below_half_kc_width_wait():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["open", "close"]] = [100.5, 100.2]
+    frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 100.0]
+
+    result = TradingEngine._channel_live_inner_two_candle_entry_action(
+        frame, 100.0,
+    )
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "WAIT", None, "WAIT_INNER_TWO_BODY_HALF_KC",
+    )
+
+
 def test_channel_swing_enters_only_after_closed_turn_candle_and_next_breakout():
     frame = _channel_frame()
     _closed_trough(frame)

@@ -856,8 +856,6 @@
                     const kcMiddle = [];
                     const kcLower = [];
                     const tradeMarkers = [];
-                    const chopMarkers = [];
-                    const channelMarkers = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
@@ -875,33 +873,10 @@
                                     OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣出開空' },
                                     CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '賣出平多' },
                                     CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
-                                    PREALERT_LONG: { position: 'belowBar', color: '#f59e0b', shape: 'arrowUp', text: '預警買多（1m轉向）' },
-                                    PREALERT_SHORT: { position: 'aboveBar', color: '#f59e0b', shape: 'arrowDown', text: '預警賣出（1m轉向）' },
                                 }[trade.action];
                                 if (!markerStyle) return;
                                 tradeMarkers.push({ time: d.time, ...markerStyle, size: 1 });
                             });
-                        (d.chop_markers || []).forEach(event => {
-                            const markerStyle = {
-                                CHOP_LOCK: { position: "aboveBar", color: "#64748b", shape: "circle", text: "CHOP鎖定" },
-                                CHOP_UNLOCK_LONG: { position: "belowBar", color: "#16a34a", shape: "square", text: "CHOP解鎖多" },
-                                CHOP_UNLOCK_SHORT: { position: "aboveBar", color: "#dc2626", shape: "square", text: "CHOP解鎖空" },
-                            }[event.action];
-                            if (!markerStyle) return;
-                            chopMarkers.push({ time: d.time, ...markerStyle, size: 1 });
-                        });
-                        (d.channel_markers || []).forEach(event => {
-                            const markerStyle = {
-                                CHANNEL_WAIT: { position: "belowBar", color: "#0284c7", shape: "circle" },
-                                CHANNEL_CANCEL: { position: "aboveBar", color: "#f97316", shape: "circle" },
-                                CHANNEL_BLOCK: { position: "aboveBar", color: "#dc2626", shape: "square" },
-                            }[event.action];
-                            if (!markerStyle) return;
-                            channelMarkers.push({
-                                time: d.time, ...markerStyle,
-                                size: 1,
-                            });
-                        });
                     });
                     
                     const referencePrice = Number(candles[candles.length - 1]?.close || 0);
@@ -936,8 +911,7 @@
                         });
                     }
                     if (candles.length > 0) this._lastCandle = candles[candles.length - 1];
-                    const chartMarkers = [...tradeMarkers, ...chopMarkers, ...channelMarkers]
-                        .sort((a, b) => a.time - b.time);
+                    const chartMarkers = tradeMarkers.sort((a, b) => a.time - b.time);
                     const markerSignature = JSON.stringify(chartMarkers);
                     if (this._chartMarkerSignature !== markerSignature) {
                         this._candlestickSeries.setMarkers(chartMarkers);
