@@ -466,20 +466,24 @@
                 <!-- MANUAL ORDER PANEL -->
                 <div class="card">
                     <div class="card-title">⚡ 手動開倉 (依策略自動配置止損/止盈)</div>
-                    <div style="display:flex; gap:8px; margin-top:8px;">
-                        <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做多 (LONG)' }}</button>
-                        <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">{{ isPlacingOrder ? '處理中...' : '做空 (SHORT)' }}</button>
+                    <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
+                        <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做多 (LONG)</button>
+                            <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做空 (SHORT)</button>
+                        </div>
                     </div>
                 </div>
 
                 <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
-                <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px;">
-                    <button class="btn btn-success"
-                        style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
-                        @click="placeOrder('LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1 }">&#x1F4C8; {{ isPlacingOrder ? '處理中' : '買進 LONG' }}</button>
-                    <button class="btn btn-danger"
-                        style="padding:18px 0; font-size:17px; font-weight:900; border-radius:14px; flex:1; letter-spacing:1px;"
-                        @click="placeOrder('SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1 }">&#x1F4C9; {{ isPlacingOrder ? '處理中' : '賣出 SHORT' }}</button>
+                <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
+                    <div v-for="symbol in bot.symbols" :key="'mobile-manual-' + symbol" style="width:100%;">
+                        <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ symbol }}</div>
+                        <div style="display:flex; gap:10px;">
+                            <button class="btn btn-success" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder">買進 LONG</button>
+                            <button class="btn btn-danger" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder">賣出 SHORT</button>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- AI TRADE HISTORY ANALYSIS -->
@@ -1078,7 +1082,7 @@
                         this.isAnalyzing = false;
                     }
                 },
-                async placeOrder(side) {
+                async placeOrder(symbol, side) {
                     if (this.isPlacingOrder) return;
                     this.isPlacingOrder = true;
                     try {
@@ -1086,7 +1090,7 @@
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                symbol: this.bot.symbols && this.bot.symbols.length > 0 ? this.bot.symbols[0] : 'SOL/USDT',
+                                symbol: symbol,
                                 side: side,
                                 amount: 0
                             })

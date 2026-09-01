@@ -356,9 +356,8 @@ class SymbolRotation:
                 df_1h = drop_unclosed_candle(pd.DataFrame(raw_1h, columns=columns), "1h")
                 if len(df) < 50 or len(df_1h) < 30:
                     continue
-                listing_cutoff = time.time() * 1000 - SYMBOL_MIN_LISTING_DAYS * 86400 * 1000
-                if float(df_1h.iloc[0]["timestamp"]) > listing_cutoff:
-                    continue
+                # 上市天數已在 market_candidates() 依 Binance onboardDate 過濾。
+                # 這裡只抓 200 根 1h K（約 8 天），不可再用首根 K 誤判上市天數。
 
                 computed = self.strategy.compute_indicators(df)
                 computed_1h = self.strategy.compute_indicators(df_1h)

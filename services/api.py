@@ -279,10 +279,11 @@ async def toggle_bot():
 async def manual_order(req: ManualOrderRequest):
     symbol = req.symbol.strip()
     side = req.side.upper()
-    amount = req.amount if req.amount > 0 else TRADE_AMOUNT_USDT
 
     if symbol not in engine.tickers:
         raise HTTPException(status_code=400, detail="幣種價格尚未載入")
+    if symbol in engine.account.positions:
+        raise HTTPException(status_code=400, detail=f"{symbol} 已有持倉")
 
     price = engine.tickers[symbol]
 
@@ -295,6 +296,19 @@ async def manual_order(req: ManualOrderRequest):
 
     from core.strategy import compute_sl_tp_distance, build_sl_tp_for_side
     from core.config import get_leverage
+    leverage = get_leverage(symbol)
+    if req.amount > 0:
+        amount = req.amount
+    else:
+        slot_amount = max(0.0, float(engine._continuous_entry_amount()))
+        available = max(0.0, float(engine.account.get_available_balance()))
+        fee_safe_available = available / (
+            1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
+        )
+        amount = min(slot_amount, fee_safe_available)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="沒有可用交易槽位或餘額不足")
+
     sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
     sl, tp = build_sl_tp_for_side(price, side, sl_dist, tp_dist)
 
@@ -307,7 +321,7 @@ async def manual_order(req: ManualOrderRequest):
         tp=tp,
         reason=f"手動開倉_{side}",
         atr=atr,
-        leverage=get_leverage(symbol),
+        leverage=leverage,
         signal_score=100
     )
     if not success:

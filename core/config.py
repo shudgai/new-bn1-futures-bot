@@ -58,7 +58,10 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "2"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
+CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
+    1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
+)
 MIN_TWO_SLOT_BALANCE_USDT = float(os.getenv("MIN_TWO_SLOT_BALANCE_USDT", "120"))
 TARGET_SLOT_BALANCE_USDT = float(os.getenv("TARGET_SLOT_BALANCE_USDT", "75"))
 
@@ -75,7 +78,7 @@ def get_effective_slot_count(wallet_balance: float, configured_max: int = None) 
 
 # 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
 # 大盤行情中全部同向進場，反轉時同時承受損失。
-MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "0")))
+MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "1")))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
@@ -330,6 +333,16 @@ PIVOT_MIN_ARC_KC_WIDTH_PCT = max(
 PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT = max(
     0.0, float(os.getenv("PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT", "0.20"))
 )
+# Channel Swing 峰谷必須讓 MA3 明確離開外軌；轉向後 MA3 與實體收盤皆須走完外軌到中軌區間的 80%（全通道 40%）。
+CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
+    0.0, float(os.getenv("CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO", "0.10"))
+)
+CHANNEL_SWING_MIN_REENTRY_RATIO = min(
+    1.0, max(0.0, float(os.getenv("CHANNEL_SWING_MIN_REENTRY_RATIO", "0.40")))
+)
+CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
+    os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "12")
+))
 # 強反轉收盤 K 若已深入下一個 KC 區間，可直接解除 MA15／KC 中軌附近的
 # 盤旋等待，不必再多等一根 K。三個門檻分別是：收盤深入下一區間比例、
 # K 棒實體位於下一區間的比例，以及實體相對 ATR 的最小倍數。
@@ -522,6 +535,17 @@ BTC_REGIME_SCORE_PENALTY = max(0, int(os.getenv("BTC_REGIME_SCORE_PENALTY", "6")
 BTC_REGIME_ALLOCATION_FACTOR = min(
     1.0, max(0.0, float(os.getenv("BTC_REGIME_ALLOCATION_FACTOR", "0.5")))
 )
+# BTC 1m 強脈衝只守新倉方向：明確急漲時擋空、明確急跌時擋多；
+# 中性行情不干預個幣自身的 KC 外軌谷峰。
+BTC_1M_PULSE_FILTER_ENABLED = os.getenv(
+    "BTC_1M_PULSE_FILTER_ENABLED", "true"
+).lower() == "true"
+BTC_1M_PULSE_LOOKBACK_BARS = max(2, int(
+    os.getenv("BTC_1M_PULSE_LOOKBACK_BARS", "3")
+))
+BTC_1M_PULSE_MIN_ATR = max(0.0, float(
+    os.getenv("BTC_1M_PULSE_MIN_ATR", "0.50")
+))
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
@@ -918,7 +942,7 @@ RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
 # 幣種本身波動率越高，同樣的倉位金額下止損被觸發時虧的錢就越大，
 # 而移動止利鎖住的獲利卻不會跟著等比放大，造成贏小賠大。
 # 探索模式以半倉收集樣本，ATR 上限放寬至 0.8%；仍排除更極端的高波動幣。
-MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.008"))
+MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.004"))
 # MIN_ATR_PCT：探索池下限放寬至 0.05%，讓 ETH、XRP、LINK 等主流幣
 # 留在監控範圍；更低波動仍視為缺乏足夠價格空間。
 MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
@@ -990,31 +1014,33 @@ def get_position_multiplier(score: int) -> float:
 # API 負擔：報價是一次批次拿全部幣種，不隨幣數增加；K 線只對還沒進場/
 # 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
 # Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "42"))
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "12"))
 SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() == "true"
 ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
-SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "900"))
+SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "300"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
-# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設15分鐘）才會換牌，尚未持倉的候選觀察
+# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設5分鐘）才會換牌，尚未持倉的候選觀察
 # 名單如果在這段期間變得明顯不健康（流動性枯竭、24h暴漲暴跌、波動率長期
 # 偏離可交易區間），不用等到下一次整點輪替才處理——只用當下 ticker 資料
 # 判斷（不用額外呼叫 AI/抓K線，成本很低），每隔這個秒數就檢查一次，發現
 # 就立刻換掉。已經有持倉的幣種不受影響，維持只等SL/TP/24h時間過濾出場。
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
-# 跟著 SYMBOL_ROTATION_COUNT 等比放大（24→12 是 1:2），維持多空對稱席次。
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "12"))
+# 12 檔觀察名單最多各保留 6 檔多勢／空勢候選，維持多空對稱席次。
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "6"))
 # 輪替候選池常因 ATR 與方向分數雙重過濾只剩個位數，監控分數降到40；真正進場仍需 MIN_OPEN_SIGNAL_SCORE，
 # 因此只會增加持續觀察的幣，不會讓40分訊號直接下單。
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "40"))
-SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "100"))
+SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "40"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "50000000"))
 SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "5.0"))
 SYMBOL_ROTATION_MAX_CHANGES = int(os.getenv("SYMBOL_ROTATION_MAX_CHANGES", "3"))
 SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "14"))
 SYMBOL_MAX_24H_CHANGE_PCT = float(os.getenv("SYMBOL_MAX_24H_CHANGE_PCT", "50.0"))
 SYMBOL_MAX_FUNDING_RATE = float(os.getenv("SYMBOL_MAX_FUNDING_RATE", "0.0001"))
-SYMBOL_MIN_KC_WIDTH_PCT = float(os.getenv("SYMBOL_MIN_KC_WIDTH_PCT", "0.03"))
-SYMBOL_MAX_ADX_RANGE = float(os.getenv("SYMBOL_MAX_ADX_RANGE", "25.0"))
+# 以價格比例表示；0.0003 = 0.03%，不是 3%。
+SYMBOL_MIN_KC_WIDTH_PCT = float(os.getenv("SYMBOL_MIN_KC_WIDTH_PCT", "0.0003"))
+# Channel Swing 可接受強趨勢；100 僅排除異常值，不把高 ADX 強勢幣踢掉。
+SYMBOL_MAX_ADX_RANGE = float(os.getenv("SYMBOL_MAX_ADX_RANGE", "100.0"))
 # 最近 20 筆中樣本已足且持續負期望的幣，先退出新倉輪替；這不是永久黑名單，
 # 新資料改善或調整環境變數後即可重新入選。
 SYMBOL_HISTORY_QUARANTINE_MIN_TRADES = int(os.getenv("SYMBOL_HISTORY_QUARANTINE_MIN_TRADES", "8"))

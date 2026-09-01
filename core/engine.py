@@ -9,6 +9,7 @@ import weakref
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
+    CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION,
     PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
     PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
     PULLBACK_RETRY_COOLDOWN_SEC, get_pullback_target_depth,
@@ -30,6 +31,10 @@ from core.config import (
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
+    CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO, CHANNEL_SWING_MIN_REENTRY_RATIO,
+    CHANNEL_SWING_TURN_LOOKBACK_BARS,
+    BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
+    BTC_1M_PULSE_MIN_ATR,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -3235,16 +3240,22 @@ class TradingEngine:
                         "WARNING",
                     )
                     return False
-        wallet_balance_fn = getattr(self.account, "get_wallet_balance", None)
-        if wallet_balance_fn is None:
-            wallet_balance_fn = self.account.get_available_balance
-        dynamic_trade_amount = (
-            wallet_balance_fn() / max(MAX_SLOTS, 1)
-            if MAX_SLOTS > 0
-            else TRADE_AMOUNT_USDT
-        )
-        amount = dynamic_trade_amount
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
+        if channel_swing_no_stop:
+            available_bal = max(0.0, float(self.account.get_available_balance()))
+            fee_safe_available = available_bal / (
+                1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
+            )
+            amount = min(self._continuous_entry_amount(), fee_safe_available)
+        else:
+            wallet_balance_fn = getattr(self.account, "get_wallet_balance", None)
+            if wallet_balance_fn is None:
+                wallet_balance_fn = self.account.get_available_balance
+            amount = (
+                wallet_balance_fn() / max(MAX_SLOTS, 1)
+                if MAX_SLOTS > 0
+                else TRADE_AMOUNT_USDT
+            )
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price,
             planned_price if channel_swing_no_stop else sl,
@@ -3266,6 +3277,8 @@ class TradingEngine:
             "entry_mode": entry_mode,
             "initial_sl": sl, "initial_risk": initial_risk,
             "signal_candle_low": candle_low, "signal_candle_high": candle_high,
+            "channel_turn_low": signal.get("channel_turn_low"),
+            "channel_turn_high": signal.get("channel_turn_high"),
             "btc_regime_at_entry": signal.get("btc_regime_mode", "ALIGNED"),
             "btc_direction_1h_at_entry": self.btc_1h_st_direction,
             "btc_score_penalty": int(signal.get("btc_score_penalty") or 0),
@@ -4126,104 +4139,504 @@ class TradingEngine:
         return ("CONFIRMED" if confirmed else "INVALIDATED"), reason, bar_id
 
     @staticmethod
+    def _detect_btc_1m_pulse(
+        frame: pd.DataFrame, live_price: float,
+    ) -> str | None:
+        """Return a strong BTC 1m impulse direction, otherwise remain neutral."""
+        required = {"close", "ma3", "atr"}
+        lookback = BTC_1M_PULSE_LOOKBACK_BARS
+        if (
+            not BTC_1M_PULSE_FILTER_ENABLED
+            or frame is None or len(frame) < lookback + 2
+            or not required.issubset(frame.columns)
+        ):
+            return None
+        try:
+            price = float(live_price)
+            ma3_now = float(frame["ma3"].iloc[-1])
+            ma3_previous = float(frame["ma3"].iloc[-2])
+            baseline = float(frame["close"].iloc[-(lookback + 1)])
+            atr = max(float(frame["atr"].iloc[-1]), abs(price) * 1e-12)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if not all(math.isfinite(value) for value in (
+            price, ma3_now, ma3_previous, baseline, atr,
+        )):
+            return None
+        move_atr = (price - baseline) / atr
+        if (
+            move_atr >= BTC_1M_PULSE_MIN_ATR
+            and ma3_now > ma3_previous
+            and price >= ma3_now
+        ):
+            return "LONG"
+        if (
+            move_atr <= -BTC_1M_PULSE_MIN_ATR
+            and ma3_now < ma3_previous
+            and price <= ma3_now
+        ):
+            return "SHORT"
+        return None
+
+    @staticmethod
+    def _btc_pulse_blocks_entry(side: str, btc_1m_pulse: str | None) -> bool:
+        pulse = str(btc_1m_pulse or "").upper()
+        requested = str(side or "").upper()
+        return (
+            pulse in ("LONG", "SHORT")
+            and requested in ("LONG", "SHORT")
+            and pulse != requested
+        )
+
+    @staticmethod
+    def _directional_trend_quality(
+        frame: pd.DataFrame, live_price: float, side: str,
+    ) -> float:
+        """ATR-normalized current trend quality used for cross-symbol ranking."""
+        required = {"close", "ma3", "atr"}
+        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
+            return 0.0
+        try:
+            direction = 1.0 if str(side).upper() == "LONG" else -1.0
+            price = float(live_price)
+            previous_close = float(frame["close"].iloc[-2])
+            ma3_now = float(frame["ma3"].iloc[-1])
+            ma3_previous = float(frame["ma3"].iloc[-2])
+            atr = max(float(frame["atr"].iloc[-1]), abs(price) * 1e-12)
+        except (TypeError, ValueError, IndexError):
+            return 0.0
+        values = (price, previous_close, ma3_now, ma3_previous, atr)
+        if not all(math.isfinite(value) for value in values):
+            return 0.0
+        ma3_impulse = max(0.0, direction * (ma3_now - ma3_previous) / atr)
+        price_impulse = max(0.0, direction * (price - previous_close) / atr)
+        return round(ma3_impulse * 2.0 + price_impulse, 6)
+
+    @staticmethod
+    def _select_strongest_same_side_candidates(
+        candidates: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        """Keep only the strongest candidate for each direction in one scan."""
+        ranked = sorted(
+            candidates,
+            key=lambda item: (
+                float(item.get("trend_quality") or 0.0),
+                float(item.get("score") or 0.0),
+            ),
+            reverse=True,
+        )
+        selected = []
+        skipped = []
+        used_sides = set()
+        for candidate in ranked:
+            side = str(candidate.get("side") or "").upper()
+            if side in used_sides:
+                skipped.append(candidate)
+                continue
+            used_sides.add(side)
+            selected.append(candidate)
+        return selected, skipped
+
+    @staticmethod
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
+        entry_turn_low: float | None = None,
+        entry_turn_high: float | None = None,
     ) -> dict:
-        """KC 低買高賣：外軌轉色 K 收盤後，由下一根突破確認。"""
-        required = {"open", "high", "low", "close", "kc_upper", "kc_lower"}
+        """KC 外軌峰谷與外側趨勢：確認後進場，失敗時平倉或追勢。"""
+        required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
         row = frame.iloc[-1]
-        signal_row = frame.iloc[-2]
+        signal_pos = len(frame) - 2
         try:
+            lookback_start = max(
+                0, len(frame) - 1 - CHANNEL_SWING_TURN_LOOKBACK_BARS
+            )
+            latest_raw_pos = None
+            qualified_pos = None
+            for candidate_pos in range(len(frame) - 2, lookback_start - 1, -1):
+                candidate = frame.iloc[candidate_pos]
+                candidate_open = float(candidate["open"])
+                candidate_close = float(candidate["close"])
+                candidate_low = float(candidate["low"])
+                candidate_high = float(candidate["high"])
+                candidate_lower = float(candidate["kc_lower"])
+                candidate_upper = float(candidate["kc_upper"])
+                candidate_ma3 = float(candidate["ma3"])
+                candidate_width = candidate_upper - candidate_lower
+                candidate_middle = (candidate_upper + candidate_lower) / 2.0
+                raw_green = bool(
+                    candidate_close > candidate_open
+                    and candidate_low <= candidate_lower
+                )
+                raw_red = bool(
+                    candidate_close < candidate_open
+                    and candidate_high >= candidate_upper
+                )
+                if (raw_green or raw_red) and latest_raw_pos is None:
+                    latest_raw_pos = candidate_pos
+                if candidate_width <= 0:
+                    continue
+                candidate_trough_deep = (
+                    candidate_lower
+                    + candidate_width * CHANNEL_SWING_MIN_REENTRY_RATIO
+                )
+                candidate_peak_deep = (
+                    candidate_upper
+                    - candidate_width * CHANNEL_SWING_MIN_REENTRY_RATIO
+                )
+                candidate_trough_crossed_in = bool(
+                    raw_green
+                    and candidate_open <= candidate_trough_deep
+                    and candidate_close >= candidate_trough_deep
+                )
+                candidate_peak_crossed_in = bool(
+                    raw_red
+                    and candidate_open >= candidate_peak_deep
+                    and candidate_close <= candidate_peak_deep
+                )
+                green_qualified = bool(
+                    raw_green
+                    and (
+                        (
+                            candidate_open <= candidate_lower
+                            and candidate_close <= candidate_lower
+                            and (candidate_lower - candidate_ma3) / candidate_width
+                            >= CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO
+                        )
+                        or (
+                            candidate_trough_deep <= candidate_open <= candidate_middle
+                            and candidate_trough_deep <= candidate_close <= candidate_middle
+                        )
+                        or candidate_trough_crossed_in
+                    )
+                )
+                red_qualified = bool(
+                    raw_red
+                    and (
+                        (
+                            candidate_open >= candidate_upper
+                            and candidate_close >= candidate_upper
+                            and (candidate_ma3 - candidate_upper) / candidate_width
+                            >= CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO
+                        )
+                        or (
+                            candidate_middle <= candidate_open <= candidate_peak_deep
+                            and candidate_middle <= candidate_close <= candidate_peak_deep
+                        )
+                        or candidate_peak_crossed_in
+                    )
+                )
+                if green_qualified or red_qualified:
+                    qualified_pos = candidate_pos
+                    break
+            if qualified_pos is not None:
+                signal_pos = qualified_pos
+            elif latest_raw_pos is not None:
+                signal_pos = latest_raw_pos
+            signal_row = frame.iloc[signal_pos]
+
             price = float(live_price)
             upper = float(row["kc_upper"])
             lower = float(row["kc_lower"])
             signal_upper = float(signal_row["kc_upper"])
             signal_lower = float(signal_row["kc_lower"])
-            live_low = min(float(row["low"]), price)
-            live_high = max(float(row["high"]), price)
+            continuation_rows = frame.iloc[signal_pos + 1:]
+            live_low = min(
+                float(pd.to_numeric(continuation_rows["low"], errors="coerce").min()),
+                price,
+            )
+            live_high = max(
+                float(pd.to_numeric(continuation_rows["high"], errors="coerce").max()),
+                price,
+            )
+            live_close = float(row["close"])
             signal_open = float(signal_row["open"])
             signal_close = float(signal_row["close"])
             signal_low = float(signal_row["low"])
             signal_high = float(signal_row["high"])
+            live_ma3 = float(row["ma3"])
+            signal_ma3 = float(signal_row["ma3"])
+            previous_ma3 = float(frame.iloc[-2]["ma3"])
         except (TypeError, ValueError):
             return {"action": "WAIT", "reason": "KC data invalid"}
         if (
             not all(math.isfinite(value) for value in (
                 price, upper, lower, signal_upper, signal_lower,
-                live_low, live_high, signal_open, signal_close,
-                signal_low, signal_high,
+                live_low, live_high, live_close, signal_open, signal_close,
+                signal_low, signal_high, live_ma3, signal_ma3, previous_ma3,
             ))
             or lower >= upper or signal_lower >= signal_upper
             or signal_low > signal_high
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
+        signal_width = signal_upper - signal_lower
+        signal_middle = (signal_upper + signal_lower) / 2.0
+        live_width = upper - lower
+        raw_trough = bool(signal_low <= signal_lower and signal_close > signal_open)
+        raw_peak = bool(signal_high >= signal_upper and signal_close < signal_open)
+        trough_outer_depth = (signal_lower - signal_ma3) / signal_width
+        peak_outer_depth = (signal_ma3 - signal_upper) / signal_width
+        trough_reentry = (live_ma3 - lower) / live_width
+        peak_reentry = (upper - live_ma3) / live_width
+        trough_body_reentry = (live_close - lower) / live_width
+        peak_body_reentry = (upper - live_close) / live_width
+        trough_deep_level = (
+            signal_lower + signal_width * CHANNEL_SWING_MIN_REENTRY_RATIO
+        )
+        peak_deep_level = (
+            signal_upper - signal_width * CHANNEL_SWING_MIN_REENTRY_RATIO
+        )
+        trough_body_deep_inside = bool(
+            trough_deep_level <= signal_open <= signal_middle
+            and trough_deep_level <= signal_close <= signal_middle
+        )
+        peak_body_deep_inside = bool(
+            signal_middle <= signal_open <= peak_deep_level
+            and signal_middle <= signal_close <= peak_deep_level
+        )
+        trough_body_crossed_in = bool(
+            raw_trough
+            and signal_open <= trough_deep_level
+            and signal_close >= trough_deep_level
+        )
+        peak_body_crossed_in = bool(
+            raw_peak
+            and signal_open >= peak_deep_level
+            and signal_close <= peak_deep_level
+        )
+        trough_body_outside = bool(
+            signal_open <= signal_lower and signal_close <= signal_lower
+        )
+        peak_body_outside = bool(
+            signal_open >= signal_upper and signal_close >= signal_upper
+        )
         closed_trough = bool(
-            signal_low <= signal_lower
-            and signal_close > signal_open
+            raw_trough
+            and (
+                (
+                    trough_body_outside
+                    and trough_outer_depth >= CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO
+                )
+                or trough_body_deep_inside
+                or trough_body_crossed_in
+            )
         )
         closed_peak = bool(
-            signal_high >= signal_upper
-            and signal_close < signal_open
+            raw_peak
+            and (
+                (
+                    peak_body_outside
+                    and peak_outer_depth >= CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO
+                )
+                or peak_body_deep_inside
+                or peak_body_crossed_in
+            )
         )
-        # 候選 K 必須已收盤；只允許緊接著的下一根 K 突破確認。
-        # 若該 K 曾先走破反方向極值，OHLC 無法還原盤中先後次序，為避免
-        # 已失敗的候選又被同一根 K 救回，保守地將整個候選視為取消。
+        # 候選 K 必須已收盤；後續 K 可混色，只看整體 MA3 推進。
+        # 若確認段曾先走破反方向極值，OHLC 無法還原盤中先後次序，為避免
+        # 已失敗的候選又被後續 K 救回，整個候選視為取消。
         trough_cancelled = bool(closed_trough and live_low < signal_low)
         peak_cancelled = bool(closed_peak and live_high > signal_high)
-        trough_turn = bool(
+        trough_reentry_ready = bool(
+            closed_trough
+            and live_ma3 > signal_ma3
+            and (
+                trough_body_deep_inside
+                or trough_body_crossed_in
+                or (
+                    trough_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
+                    and trough_body_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
+                )
+            )
+        )
+        peak_reentry_ready = bool(
+            closed_peak
+            and live_ma3 < signal_ma3
+            and (
+                peak_body_deep_inside
+                or peak_body_crossed_in
+                or (
+                    peak_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
+                    and peak_body_reentry + 1e-12 >= CHANNEL_SWING_MIN_REENTRY_RATIO
+                )
+            )
+        )
+        # 先往前找有效的 KC 外軌谷峰作為方向基準；當下價格突破候選極值且
+        # MA3 已呈同向趨勢就立即追入。K 棒顏色完全不列入條件：紅 K 也可
+        # 追多、綠 K 也可追空，不等待兩根同色 K 或 40% 回通道。抵達對側
+        # 外軌時仍交給嚴格外側追勢規則，避免拿舊谷峰在波尾追單。
+        trough_trend_confirmed = bool(
             closed_trough
             and not trough_cancelled
             and price > signal_high
+            and price + 1e-12 >= (float(row["high"]) + float(row["low"])) / 2.0
+            and live_ma3 > signal_ma3
+            and live_ma3 + 1e-12 >= previous_ma3
+            and price < upper
         )
-        peak_turn = bool(
+        peak_trend_confirmed = bool(
             closed_peak
             and not peak_cancelled
             and price < signal_low
+            and price - 1e-12 <= (float(row["high"]) + float(row["low"])) / 2.0
+            and live_ma3 < signal_ma3
+            and live_ma3 - 1e-12 <= previous_ma3
+            and price > lower
+        )
+        trough_turn = bool(
+            trough_trend_confirmed
+            or (
+                trough_reentry_ready
+                and not trough_cancelled
+                and price > signal_high
+                and price < upper
+            )
+        )
+        peak_turn = bool(
+            peak_trend_confirmed
+            or (
+                peak_reentry_ready
+                and not peak_cancelled
+                and price < signal_low
+                and price > lower
+            )
         )
         live_lower_touch = live_low <= lower
         live_upper_touch = live_high >= upper
-
+        context_row = frame.iloc[-3]
+        context_ma3 = float(context_row["ma3"])
+        prior_ma3_slope = previous_ma3 - context_ma3
+        live_ma3_slope = live_ma3 - previous_ma3
+        # 空倉追勢只接受已完整站在 KC 外軌、且 MA3 仍在加速延伸的走勢。
+        # 單根刺穿外軌、MA3 剛轉正／轉負，或斜率已開始收斂，都可能已接近
+        # 峰頂／谷底，不能在波尾追單。
+        outer_uptrend = bool(
+            price > upper
+            and float(row["open"]) > upper
+            and live_ma3 > upper
+            and prior_ma3_slope > 0.0
+            and live_ma3_slope + 1e-12 >= prior_ma3_slope
+            and price > float(row["open"])
+            and not peak_reentry_ready
+        )
+        outer_downtrend = bool(
+            price < lower
+            and float(row["open"]) < lower
+            and live_ma3 < lower
+            and prior_ma3_slope < 0.0
+            and live_ma3_slope - 1e-12 <= prior_ma3_slope
+            and price < float(row["open"])
+            and not trough_reentry_ready
+        )
+        context_middle = (
+            float(context_row["kc_upper"]) + float(context_row["kc_lower"])
+        ) / 2.0
+        live_middle = (upper + lower) / 2.0
+        prior_up_context = bool(
+            live_ma3 > context_ma3
+            and live_middle > context_middle
+            and price > live_middle
+        )
+        prior_down_context = bool(
+            live_ma3 < context_ma3
+            and live_middle < context_middle
+            and price < live_middle
+        )
         side = str(current_side or "").upper()
         reason = ""
         if side == "LONG":
-            action = "REVERSE" if peak_turn else "HOLD"
-            target_side = "SHORT" if action == "REVERSE" else None
-            if closed_peak and not peak_turn:
-                if peak_cancelled:
-                    reason = "CANCEL_SHORT"
-                else:
-                    reason = "WAIT_BREAK_LOW"
-            elif live_upper_touch:
+            returned_to_entry_outer = bool(
+                float(row["open"]) < lower
+                and price < lower
+                and price < float(row["open"])
+            )
+            entry_outer_trend = bool(
+                returned_to_entry_outer
+                and live_ma3 < lower
+                and live_ma3 < previous_ma3
+            )
+            opposite_turn_ready = bool(peak_reentry_ready and not peak_cancelled)
+            if entry_outer_trend:
+                action, target_side, reason = (
+                    "REVERSE", "SHORT", "FAILED_LONG_TURN_OUTER_TREND"
+                )
+            elif returned_to_entry_outer:
+                action, target_side, reason = "EXIT", None, "RETURNED_LOWER_OUTER"
+            elif peak_turn:
+                action, target_side = "REVERSE", "SHORT"
+            elif opposite_turn_ready:
+                action, target_side, reason = "EXIT", None, "UPPER_OUTER_FALLING"
+            else:
+                action, target_side = "HOLD", None
+            if action == "HOLD" and raw_peak and not closed_peak:
+                reason = "V_TOO_CLOSE_KC"
+            elif action == "HOLD" and closed_peak and not peak_reentry_ready:
+                reason = "KC_REENTRY_TOO_SHALLOW"
+            elif action == "HOLD" and closed_peak and not peak_turn:
+                reason = "CANCEL_SHORT" if peak_cancelled else "WAIT_BREAK_LOW"
+            elif action == "HOLD" and live_upper_touch:
                 reason = "WAIT_CLOSE_RED"
         elif side == "SHORT":
-            action = "REVERSE" if trough_turn else "HOLD"
-            target_side = "LONG" if action == "REVERSE" else None
-            if closed_trough and not trough_turn:
-                if trough_cancelled:
-                    reason = "CANCEL_LONG"
-                else:
-                    reason = "WAIT_BREAK_HIGH"
-            elif live_lower_touch:
+            returned_to_entry_outer = bool(
+                float(row["open"]) > upper
+                and price > upper
+                and price > float(row["open"])
+            )
+            entry_outer_trend = bool(
+                returned_to_entry_outer
+                and live_ma3 > upper
+                and live_ma3 > previous_ma3
+            )
+            opposite_turn_ready = bool(trough_reentry_ready and not trough_cancelled)
+            if entry_outer_trend:
+                action, target_side, reason = (
+                    "REVERSE", "LONG", "FAILED_SHORT_TURN_OUTER_TREND"
+                )
+            elif returned_to_entry_outer:
+                action, target_side, reason = "EXIT", None, "RETURNED_UPPER_OUTER"
+            elif trough_turn:
+                action, target_side = "REVERSE", "LONG"
+            elif opposite_turn_ready:
+                action, target_side, reason = "EXIT", None, "LOWER_OUTER_RISING"
+            else:
+                action, target_side = "HOLD", None
+            if action == "HOLD" and raw_trough and not closed_trough:
+                reason = "V_TOO_CLOSE_KC"
+            elif action == "HOLD" and closed_trough and not trough_reentry_ready:
+                reason = "KC_REENTRY_TOO_SHALLOW"
+            elif action == "HOLD" and closed_trough and not trough_turn:
+                reason = "CANCEL_LONG" if trough_cancelled else "WAIT_BREAK_HIGH"
+            elif action == "HOLD" and live_lower_touch:
                 reason = "WAIT_CLOSE_GREEN"
-        elif trough_turn:
+        elif outer_uptrend:
+            action, target_side, reason = "ENTER", "LONG", "UPPER_OUTER_TREND"
+        elif outer_downtrend:
+            action, target_side, reason = "ENTER", "SHORT", "LOWER_OUTER_TREND"
+        elif trough_turn and (trough_trend_confirmed or not prior_down_context):
             action, target_side = "ENTER", "LONG"
-        elif peak_turn:
+        elif peak_turn and (peak_trend_confirmed or not prior_up_context):
             action, target_side = "ENTER", "SHORT"
         else:
             action, target_side = "WAIT", None
-            if closed_trough:
-                if trough_cancelled:
-                    reason = "CANCEL_LONG"
-                else:
-                    reason = "WAIT_BREAK_HIGH"
+            if trough_turn and prior_down_context:
+                reason = "COUNTERTREND_LONG_BLOCKED"
+            elif peak_turn and prior_up_context:
+                reason = "COUNTERTREND_SHORT_BLOCKED"
+            elif raw_trough and not closed_trough:
+                reason = "V_TOO_CLOSE_KC"
+            elif raw_peak and not closed_peak:
+                reason = "V_TOO_CLOSE_KC"
+            elif closed_trough and not trough_reentry_ready:
+                reason = "KC_REENTRY_TOO_SHALLOW"
+            elif closed_peak and not peak_reentry_ready:
+                reason = "KC_REENTRY_TOO_SHALLOW"
+            elif closed_trough:
+                reason = "CANCEL_LONG" if trough_cancelled else "WAIT_BREAK_HIGH"
             elif closed_peak:
-                if peak_cancelled:
-                    reason = "CANCEL_SHORT"
-                else:
-                    reason = "WAIT_BREAK_LOW"
+                reason = "CANCEL_SHORT" if peak_cancelled else "WAIT_BREAK_LOW"
             elif live_lower_touch:
                 reason = "WAIT_CLOSE_GREEN"
             elif live_upper_touch:
@@ -4231,6 +4644,16 @@ class TradingEngine:
         return {
             "action": action, "side": target_side,
             "kc_upper": upper, "kc_lower": lower, "reason": reason,
+            "turn_low": (
+                signal_low if trough_turn and reason == ""
+                else live_low if reason == "FAILED_SHORT_TURN_OUTER_TREND"
+                else None
+            ),
+            "turn_high": (
+                signal_high if peak_turn and reason == ""
+                else live_high if reason == "FAILED_LONG_TURN_OUTER_TREND"
+                else None
+            ),
         }
 
     @staticmethod
@@ -4420,7 +4843,7 @@ class TradingEngine:
         return "LONG" if long_turn else "SHORT" if short_turn else None
 
     def _continuous_entry_amount(self) -> float:
-        """Allocate available balance across the configured entry slots."""
+        """Allocate configured wallet fraction while preserving a fee/risk buffer."""
         positions = getattr(self.account, "positions", {})
         pending_orders = getattr(self.account, "pending_limit_orders", {})
         committed = len(positions) + len(pending_orders)
@@ -4433,9 +4856,14 @@ class TradingEngine:
         effective_slots = get_effective_slot_count(wallet_balance)
         if effective_slots > 0 and committed >= effective_slots:
             return 0.0
-        remaining_slots = max(1, effective_slots - committed) if effective_slots > 0 else 1
-        # 依剩餘槽位平均分配；單槽模式直接使用全部可用餘額。
-        return max(0.0, available / remaining_slots)
+        if committed == 0:
+            fraction = (
+                CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
+                if effective_slots == 1 else 0.5
+            )
+            return max(0.0, min(available, wallet_balance * fraction))
+        # 多槽模式的補位只使用當下可用資金。
+        return max(0.0, available)
 
     @staticmethod
     def _continuous_entry_price_is_safe(
@@ -4581,6 +5009,17 @@ class TradingEngine:
                         strong_burst, df_1m_signal, strong_live_price,
                     )
 
+                    strong_burst_btc_blocked = bool(
+                        strong_burst.get("detected")
+                        and strong_live_entry_valid
+                        and self._btc_pulse_blocks_entry("LONG", btc_1m_turn)
+                    )
+                    if strong_burst_btc_blocked:
+                        signal_progress.append(
+                            f"{coin} 強勢多單遭 BTC 1m SHORT 強脈衝阻擋"
+                        )
+                        return signal_progress, detected_candidates
+
                     if (
                         strong_burst.get("detected")
                         and strong_live_entry_valid
@@ -4617,6 +5056,9 @@ class TradingEngine:
                                 "reason": strong_burst.get("reason") + " | 強勢多單，黑圈轉向",
                                 "live_price": strong_live_price,
                                 "entry_mode": "STRONG_LONG_BURST",
+                                "trend_quality": self._directional_trend_quality(
+                                    df_1m_signal, strong_live_price, "LONG",
+                                ),
                                 "in_outer_rail": strong_burst.get("in_outer_rail", False),
                                 "kc_upper": strong_burst.get("kc_upper"),
                                 "kc_middle": strong_burst.get("kc_middle"),
@@ -4686,11 +5128,39 @@ class TradingEngine:
                 channel_action = self._channel_swing_action(
                     channel_df, channel_price,
                     existing_pos.get("side") if existing_pos else None,
+                    existing_pos.get("channel_turn_low") if existing_pos else None,
+                    existing_pos.get("channel_turn_high") if existing_pos else None,
                 )
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
                 kc_upper = float(channel_action.get("kc_upper") or 0.0)
                 kc_lower = float(channel_action.get("kc_lower") or 0.0)
+
+                if (
+                    action in ("ENTER", "REVERSE")
+                    and target_side
+                    and self._btc_pulse_blocks_entry(target_side, btc_1m_turn)
+                ):
+                    pulse = str(btc_1m_turn).upper()
+                    signal_progress.append(
+                        f"{coin} {target_side} 訊號遭 BTC 1m {pulse} 強脈衝阻擋；"
+                        "既有持倉不變" if existing_pos else
+                        f"{coin} {target_side} 訊號遭 BTC 1m {pulse} 強脈衝阻擋"
+                    )
+                    return signal_progress, detected_candidates
+
+                if action == "EXIT" and existing_pos:
+                    exit_reason = str(channel_action.get("reason") or "KC_OUTER_EXIT")
+                    closed = await self.account.close_position(
+                        symbol, channel_price,
+                        f"Channel Swing {exit_reason}", is_manual=True,
+                    )
+                    if closed:
+                        self.account.log(
+                            f"⏹️ [Channel Swing] {symbol} 轉向失敗或抵達對側KC外軌，"
+                            "先平倉並等待下一個真正峰谷", "SUCCESS",
+                        )
+                    return signal_progress, detected_candidates
 
                 if action == "REVERSE" and existing_pos:
                     old_side = str(existing_pos.get("side") or "").upper()
@@ -4713,9 +5183,14 @@ class TradingEngine:
                             "action": "ENTER_MARKET", "target_price": None,
                             "signal_candle_low": float(channel_df["low"].iloc[-1]),
                             "signal_candle_high": float(channel_df["high"].iloc[-1]),
+                            "channel_turn_low": channel_action.get("turn_low"),
+                            "channel_turn_high": channel_action.get("turn_high"),
                             "symbol": symbol, "wave_regime": "RANGE",
                             "market_mode": "RANGE",
                             "reason": f"Channel Swing {close_label}反手 {target_side}",
+                            "trend_quality": self._directional_trend_quality(
+                                channel_df, channel_price, target_side,
+                            ),
                         })
                     return signal_progress, detected_candidates
 
@@ -4729,6 +5204,8 @@ class TradingEngine:
                         "WAIT_BREAK_LOW": " | 上軌紅K已收盤，等待下一根破低",
                         "CANCEL_LONG": " | 多方候選已先破低取消",
                         "CANCEL_SHORT": " | 空方候選已先破高取消",
+                        "V_TOO_CLOSE_KC": " | V線離KC外軌太近，不平倉不轉向",
+                        "KC_REENTRY_TOO_SHALLOW": " | 站回KC通道比例不足，不平倉不轉向",
                     }.get(str(channel_action.get("reason") or ""), "")
                     signal_progress.append(
                         f"{coin} {existing_pos.get('side')} 持倉中 | "
@@ -4746,11 +5223,25 @@ class TradingEngine:
                         "action": "ENTER_MARKET", "target_price": None,
                         "signal_candle_low": float(channel_df["low"].iloc[-1]),
                         "signal_candle_high": float(channel_df["high"].iloc[-1]),
+                        "channel_turn_low": channel_action.get("turn_low"),
+                        "channel_turn_high": channel_action.get("turn_high"),
                         "symbol": symbol, "wave_regime": "RANGE",
                         "market_mode": "RANGE",
+                        "trend_quality": self._directional_trend_quality(
+                            channel_df, channel_price, target_side,
+                        ),
                         "reason": (
-                            "Channel Swing KC 下軌開多"
-                            if target_side == "LONG" else "Channel Swing KC 上軌開空"
+                            "Channel Swing KC 上軌外漲勢追多"
+                            if channel_action.get("reason") == "UPPER_OUTER_TREND"
+                            else "Channel Swing KC 下軌外跌勢追空"
+                            if channel_action.get("reason") == "LOWER_OUTER_TREND"
+                            else "Channel Swing 前段多勢延續開多"
+                            if channel_action.get("reason") == "UP_TREND_CONTINUATION"
+                            else "Channel Swing 前段空勢延續開空"
+                            if channel_action.get("reason") == "DOWN_TREND_CONTINUATION"
+                            else "Channel Swing KC 下軌開多"
+                            if target_side == "LONG"
+                            else "Channel Swing KC 上軌開空"
                         ),
                     })
                 else:
@@ -5885,22 +6376,23 @@ class TradingEngine:
 
                     now_time = time.time()
                     
-                    # 抓取 BTC 1m 判斷即時轉彎方向
+                    # BTC 1m 只在強脈衝時守新倉方向；中性時不干預個幣峰谷。
                     btc_1m_turn = None
                     try:
-                        btc_df_1m = await self.fetch_klines("BTC/USDT", timeframe="1m", limit=30)
-                        if not btc_df_1m.empty and len(btc_df_1m) >= 8:
-                            btc_live = float(self.tickers.get("BTC/USDT") or btc_df_1m['close'].iloc[-1])
-                            btc_target = float(btc_df_1m['close'].iloc[-8])
-                            btc_is_green = float(btc_df_1m['close'].iloc[-1]) > float(btc_df_1m['open'].iloc[-1])
-                            btc_is_red = float(btc_df_1m['close'].iloc[-1]) < float(btc_df_1m['open'].iloc[-1])
-                            
-                            if btc_live > btc_target and btc_is_green:
-                                btc_1m_turn = "LONG"
-                            elif btc_live < btc_target and btc_is_red:
-                                btc_1m_turn = "SHORT"
+                        btc_df_1m = await self.fetch_klines(
+                            "BTC/USDT", timeframe="1m", limit=30, keep_live=True,
+                        )
+                        if not btc_df_1m.empty:
+                            btc_df_1m = self.strategy.compute_indicators(btc_df_1m.copy())
+                            btc_live = float(
+                                self.tickers.get("BTC/USDT")
+                                or btc_df_1m["close"].iloc[-1]
+                            )
+                            btc_1m_turn = self._detect_btc_1m_pulse(
+                                btc_df_1m, btc_live,
+                            )
                     except Exception as e:
-                        self.account.log(f"⚠️ 無法取得 BTC 1m 轉彎資料: {e}", "WARNING")
+                        self.account.log(f"⚠️ 無法取得 BTC 1m 脈衝資料: {e}", "WARNING")
 
                     # 幣種輪替現在跑在獨立背景任務，可能在這個迴圈 await 期間改動 DEFAULT_SYMBOLS，
                     # 用 list(...) 先拍一份快照，避免邊跑邊被換牌造成跳過或重複掃描。
@@ -5918,8 +6410,17 @@ class TradingEngine:
                             signal_progress.extend(prog)
                             detected_candidates.extend(cands)
                     if detected_candidates:
-                        # Sort by score descending
-                        detected_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+                        detected_candidates, skipped_same_side = (
+                            self._select_strongest_same_side_candidates(
+                                detected_candidates
+                            )
+                        )
+                        for skipped in skipped_same_side:
+                            skipped_coin = skipped["symbol"].replace("/USDT", "")
+                            signal_progress.append(
+                                f"{skipped_coin} {skipped['side']} 同向候選未入選；"
+                                f"趨勢品質 {float(skipped.get('trend_quality') or 0.0):.2f}"
+                            )
                         from core.config import MAX_SLOTS
                         for sig in detected_candidates:
                             symbol = sig["symbol"]

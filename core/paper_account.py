@@ -118,6 +118,7 @@ ENTRY_CONTEXT_KEYS = (
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
+    "channel_turn_low", "channel_turn_high",
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
     "profit_profile", "profit_room_pct",
     "bounce_capture_ratio", "bounce_target_pct",

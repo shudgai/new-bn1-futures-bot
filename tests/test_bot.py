@@ -990,20 +990,20 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("APT/USDT", 70) < SYMBOL_LEVERAGE["APT/USDT"]
 
 
-def test_single_slot_watchlist_uses_only_1000pepe():
-    assert DEFAULT_SYMBOLS == ["1000PEPE/USDT"]
+def test_market_rotation_starts_with_seed_symbols_and_uses_one_slot():
+    assert DEFAULT_SYMBOLS == ["SOL/USDT", "1000PEPE/USDT"]
     assert engine_module.MAX_SLOTS == 1
 
 
-def test_effective_slots_use_one_below_120_usdt():
-    assert engine_module.get_effective_slot_count(99.99, configured_max=2) == 1
-    assert engine_module.get_effective_slot_count(119.99, configured_max=5) == 1
+def test_effective_slots_keep_two_slots_at_low_balance():
+    assert engine_module.get_effective_slot_count(99.99, configured_max=2) == 2
+    assert engine_module.get_effective_slot_count(119.99, configured_max=5) == 2
     assert engine_module.get_effective_slot_count(120.0, configured_max=5) == 2
     assert engine_module.get_effective_slot_count(224.99, configured_max=5) == 2
     assert engine_module.get_effective_slot_count(225.0, configured_max=5) == 3
 
 
-def test_continuous_single_slot_uses_all_available_funds():
+def test_continuous_single_slot_uses_eighty_percent_then_blocks_second():
     class SlotAccount:
         pending_limit_orders = {}
 
@@ -1016,10 +1016,10 @@ def test_continuous_single_slot_uses_all_available_funds():
 
     engine = object.__new__(TradingEngine)
     engine.account = SlotAccount()
-    assert engine._continuous_entry_amount() == pytest.approx(200.0)
+    assert engine._continuous_entry_amount() == pytest.approx(160.0)
 
-    engine.account.positions["1000PEPE/USDT"] = {"margin": 200.0}
-    engine.account.available = 0.0
+    engine.account.positions["SOL/USDT"] = {"margin": 160.0}
+    engine.account.available = 40.0
     assert engine._continuous_entry_amount() == pytest.approx(0.0)
 
 
@@ -1722,12 +1722,13 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
             "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
         },
     }
-    assert SymbolRotation.market_candidates(tickers, markets) == ["ALT/USDT", "BTC/USDT"]
+    # BTC 是全市場方向基準，不列入個幣輪替下單；其餘候選仍按成交量排序。
+    assert SymbolRotation.market_candidates(tickers, markets) == ["ALT/USDT"]
 
     # 指定執行交易所合約集合時，只保留兩邊都可交易的交集。
     assert SymbolRotation.market_candidates(
         tickers, markets, {"BTC/USDT"}
-    ) == ["BTC/USDT"]
+    ) == []
 
 
 @pytest.mark.anyio
