@@ -474,6 +474,19 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "timestamp": event_timestamp,
             })
 
+        channel_markers = {}
+        for event in engine._channel_signal_events.get(symbol, []):
+            event_timestamp = int(event.get("timestamp") or 0)
+            matching_bars = df.index[df["timestamp"] <= event_timestamp]
+            if len(matching_bars) == 0:
+                continue
+            channel_markers.setdefault(matching_bars[-1], []).append({
+                "action": event.get("action"),
+                "reason": event.get("reason") or "",
+                "label": event.get("label") or event.get("reason") or "",
+                "timestamp": event_timestamp,
+            })
+
         # 準備資料
         result = []
         for index, row in df.iterrows():
@@ -493,6 +506,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "kc_lower": None if pd.isna(indicators.loc[index, 'kc_lower']) else indicators.loc[index, 'kc_lower'],
                 "trade_markers": trade_markers.get(index, []),
                 "chop_markers": chop_markers.get(index, []),
+                "channel_markers": channel_markers.get(index, []),
                 "is_live": bool(include_live and index == df.index[-1]),
             })
             

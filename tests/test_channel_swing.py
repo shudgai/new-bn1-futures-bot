@@ -1368,3 +1368,56 @@ async def test_channel_swing_position_is_stored_without_sl_or_tp(tmp_path, monke
         "啟動保護遷移" in item.get("text", "")
         for item in reloaded.logs
     )
+
+
+def test_channel_swing_ignores_legacy_structured_stop_cooldown():
+    assert TradingEngine._structured_stop_cooldown_blocks(
+        "CHANNEL_SWING", 3600.0,
+    ) is False
+    assert TradingEngine._structured_stop_cooldown_blocks(
+        "BREAKOUT", 3600.0,
+    ) is True
+    assert TradingEngine._structured_stop_cooldown_blocks(
+        "BREAKOUT", 0.0,
+    ) is False
+
+
+def test_channel_signal_events_deduplicate_and_track_reason_transitions():
+    class LogAccount:
+        def __init__(self):
+            self.logs = []
+
+        def log(self, text, level):
+            self.logs.append((text, level))
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine._channel_signal_events = {}
+    engine.account = LogAccount()
+    frame = _channel_frame()
+    frame["timestamp"] = [index * 60_000 for index in range(len(frame))]
+
+    engine._record_channel_signal_event(
+        "TEST/USDT", "KC_WIDTH_TOO_NARROW", frame,
+    )
+    first_event = engine._channel_signal_events["TEST/USDT"][0]
+    assert (first_event["action"], first_event["reason"]) == (
+        "CHANNEL_BLOCK", "KC_WIDTH_TOO_NARROW",
+    )
+    assert first_event["label"] == "KC寬度不足設定門檻"
+
+    frame.loc[frame.index[-1], "timestamp"] += 60_000
+    engine._record_channel_signal_event(
+        "TEST/USDT", "KC_WIDTH_TOO_NARROW", frame,
+    )
+    assert len(engine._channel_signal_events["TEST/USDT"]) == 1
+    assert len(engine.account.logs) == 1
+
+    engine._record_channel_signal_event(
+        "TEST/USDT", "CANCEL_LONG", frame,
+    )
+    assert len(engine._channel_signal_events["TEST/USDT"]) == 2
+    replacement = engine._channel_signal_events["TEST/USDT"][-1]
+    assert (replacement["action"], replacement["reason"]) == (
+        "CHANNEL_CANCEL", "CANCEL_LONG",
+    )
+    assert len(engine.account.logs) == 2

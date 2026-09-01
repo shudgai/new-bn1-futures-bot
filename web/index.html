@@ -857,6 +857,7 @@
                     const kcLower = [];
                     const tradeMarkers = [];
                     const chopMarkers = [];
+                    const channelMarkers = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
@@ -888,6 +889,19 @@
                             }[event.action];
                             if (!markerStyle) return;
                             chopMarkers.push({ time: d.time, ...markerStyle, size: 1 });
+                        });
+                        (d.channel_markers || []).forEach(event => {
+                            const markerStyle = {
+                                CHANNEL_WAIT: { position: "belowBar", color: "#0284c7", shape: "circle" },
+                                CHANNEL_CANCEL: { position: "aboveBar", color: "#f97316", shape: "circle" },
+                                CHANNEL_BLOCK: { position: "aboveBar", color: "#dc2626", shape: "square" },
+                            }[event.action];
+                            if (!markerStyle) return;
+                            channelMarkers.push({
+                                time: d.time, ...markerStyle,
+                                text: event.label || event.reason || "Channel狀態",
+                                size: 1,
+                            });
                         });
                     });
                     
@@ -923,7 +937,7 @@
                         });
                     }
                     if (candles.length > 0) this._lastCandle = candles[candles.length - 1];
-                    const chartMarkers = [...tradeMarkers, ...chopMarkers]
+                    const chartMarkers = [...tradeMarkers, ...chopMarkers, ...channelMarkers]
                         .sort((a, b) => a.time - b.time);
                     const markerSignature = JSON.stringify(chartMarkers);
                     if (this._chartMarkerSignature !== markerSignature) {

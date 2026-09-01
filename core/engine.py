@@ -173,6 +173,8 @@ class TradingEngine:
         self._channel_chop_locked: Dict[str, bool] = {}
         # K 線圖使用的 CHOP_WAIT 狀態切換紀錄；只保存近期事件。
         self._channel_chop_events: Dict[str, list[dict]] = {}
+        # K 線圖與日誌使用的 Channel Swing 等待／取消／阻擋狀態。
+        self._channel_signal_events: Dict[str, list[dict]] = {}
         # KC 外軌趨勢追單採多空對稱：先確認既有趨勢品質，再由下一根
         # 突破候選極值；過熱時等待回踩／回抽外軌後重新突破。
         self._channel_outer_trend_wait: Dict[str, dict] = {}
@@ -3138,6 +3140,18 @@ class TradingEngine:
             return False
         return True
 
+    @staticmethod
+    def _structured_stop_cooldown_blocks(
+        entry_mode: str, remaining: float,
+    ) -> bool:
+        """Channel Swing uses its own confirmation and ignores legacy stop cooldowns."""
+        return bool(
+            remaining > 0
+            and str(entry_mode or "").upper() not in (
+                "EXHAUSTION_SNIPER", "PIVOT_TURN", "CHANNEL_SWING",
+            )
+        )
+
     async def _place_structured_entry(
         self, symbol: str, signal: dict, live_price: float
     ) -> bool:
@@ -3154,7 +3168,9 @@ class TradingEngine:
             self.symbol_rotation, "get_stop_cooldown_remaining", lambda *_args: 0.0
         )
         stop_cooldown_remaining = float(stop_cooldown_fn(symbol, side) or 0.0)
-        if stop_cooldown_remaining > 0 and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
+        if self._structured_stop_cooldown_blocks(
+            entry_mode, stop_cooldown_remaining,
+        ):
             self.account.log(
                 f"🛑 {symbol} {side} 近期同方向連續停損，冷卻尚餘 "
                 f"{stop_cooldown_remaining / 3600.0:.1f} 小時，拒絕結構化進場",
@@ -4767,6 +4783,90 @@ class TradingEngine:
         })
         del events[:-100]
 
+    def _record_channel_signal_event(
+        self, symbol: str, reason: str, frame: pd.DataFrame,
+    ) -> None:
+        """Record visible Channel Swing state transitions without log spam."""
+        reason_name = str(reason or "").strip()
+        if not reason_name:
+            return
+        labels = {
+            "KC data unavailable": "KC資料不足",
+            "KC data invalid": "KC資料無效",
+            "KC channel invalid": "KC通道無效",
+            "WAIT_ADJACENT_OUTER_CANDIDATE": "等待緊接的外軌候選K",
+            "WAIT_CLOSE_GREEN": "觸下軌，等待綠K收盤",
+            "WAIT_CLOSE_RED": "觸上軌，等待紅K收盤",
+            "WAIT_BREAK_HIGH": "多方候選成立，等待下一根破高",
+            "WAIT_BREAK_LOW": "空方候選成立，等待下一根破低",
+            "CANCEL_LONG": "多方候選先破低，已取消",
+            "CANCEL_SHORT": "空方候選先破高，已取消",
+            "V_TOO_CLOSE_KC": "V線離KC外軌太近",
+            "KC_REENTRY_TOO_SHALLOW": "站回KC通道幅度不足",
+            "KC_WIDTH_TOO_NARROW": "KC寬度不足設定門檻",
+            "CHOP_WAIT_NO_ENTRY": "CHOP_WAIT阻擋一般峰谷進場",
+            "CHOP_WAIT_NO_MOMENTUM": "CHOP_WAIT等待有效動能",
+            "WAIT_CHOP_MOMENTUM_BREAK": "CHOP動能候選等待下一根確認",
+            "CANCEL_CHOP_BREAKOUT": "CHOP動能突破候選已取消",
+            "WAIT_DYNAMIC_TREND": "上軌外多方趨勢品質不足",
+            "WAIT_DYNAMIC_DOWNTREND": "下軌外空方趨勢品質不足",
+            "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",
+            "WAIT_DOWNTREND_BREAK": "下軌空方動能等待下一根破低",
+            "WAIT_TREND_RETEST": "多方過熱，等待回踩上軌",
+            "WAIT_DOWNTREND_RETEST": "空方過熱，等待回抽下軌",
+            "WAIT_TREND_RETEST_BREAK": "上軌回踩成立，等待破高",
+            "WAIT_DOWNTREND_RETEST_BREAK": "下軌回抽成立，等待破低",
+            "CANCEL_TREND_CONFIRM": "多方趨勢候選確認失敗",
+            "CANCEL_TREND_CONFIRM_EXPIRED": "多方趨勢候選逾時",
+            "CANCEL_TREND_RETEST": "多方回踩候選已取消",
+            "CANCEL_DOWNTREND_CONFIRM": "空方趨勢候選確認失敗",
+            "CANCEL_DOWNTREND_CONFIRM_EXPIRED": "空方趨勢候選逾時",
+            "CANCEL_DOWNTREND_RETEST": "空方回抽候選已取消",
+        }
+        label = labels.get(reason_name, reason_name)
+        cancel_reason = (
+            reason_name.startswith("CANCEL_")
+            or reason_name in ("CANCEL_LONG", "CANCEL_SHORT")
+        )
+        block_reason = (
+            reason_name in (
+                "KC data unavailable", "KC data invalid", "KC channel invalid",
+                "V_TOO_CLOSE_KC", "KC_REENTRY_TOO_SHALLOW",
+                "KC_WIDTH_TOO_NARROW", "CHOP_WAIT_NO_ENTRY",
+            )
+            or reason_name.endswith("_DATA_INVALID")
+        )
+        action = (
+            "CHANNEL_CANCEL" if cancel_reason
+            else "CHANNEL_BLOCK" if block_reason
+            else "CHANNEL_WAIT"
+        )
+        try:
+            timestamp_ms = int(float(frame.iloc[-1]["timestamp"]))
+        except (TypeError, ValueError, IndexError, KeyError):
+            timestamp_ms = int(time.time() * 1000)
+        events = self._channel_signal_events.setdefault(symbol, [])
+        if events and int(events[-1].get("timestamp") or 0) == timestamp_ms:
+            if events[-1].get("reason") == reason_name:
+                return
+            events[-1] = {
+                "timestamp": timestamp_ms, "action": action,
+                "reason": reason_name, "label": label,
+            }
+        elif events and events[-1].get("reason") == reason_name:
+            return
+        else:
+            events.append({
+                "timestamp": timestamp_ms, "action": action,
+                "reason": reason_name, "label": label,
+            })
+            del events[:-100]
+        level = "WARNING" if action != "CHANNEL_WAIT" else "INFO"
+        self.account.log(
+            f"🧭 [Channel Swing狀態] {symbol} {label} ({reason_name})",
+            level,
+        )
+
     @staticmethod
     def _channel_chop_state(frame: pd.DataFrame) -> dict:
         """Detect closed-bar whipsaw and require a three-bar directional unlock."""
@@ -5785,6 +5885,10 @@ class TradingEngine:
                 )
                 if chop_gate_reason:
                     channel_action["reason"] = chop_gate_reason
+                if not existing_pos and action != "ENTER":
+                    self._record_channel_signal_event(
+                        symbol, channel_action.get("reason"), channel_df,
+                    )
                 channel_closed_bar_id = (
                     channel_df.index[-2] if len(channel_df) >= 2 else None
                 )
