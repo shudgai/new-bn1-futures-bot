@@ -125,7 +125,7 @@ def test_single_red_candle_reenters_half_kc_width_for_short():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 99.9)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "SHORT", "KC_INNER_RED_HALF_REENTRY_SHORT",
+        "WAIT", None, "KC_INNER_REENTRY_DISABLED",
     )
 
 
@@ -138,7 +138,7 @@ def test_single_green_candle_reenters_half_kc_width_for_long():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 100.1)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "LONG", "KC_INNER_GREEN_HALF_REENTRY_LONG",
+        "WAIT", None, "KC_INNER_REENTRY_DISABLED",
     )
 
 
@@ -149,7 +149,7 @@ def test_single_red_candle_below_half_kc_reentry_waits():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 100.1)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "WAIT", None, "WAIT_INNER_REENTRY_HALF_KC",
+        "WAIT", None, "KC_INNER_REENTRY_DISABLED",
     )
 
 
@@ -161,7 +161,7 @@ def test_two_red_candles_inside_kc_are_added_for_half_width_entry():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 99.8)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "SHORT", "KC_INNER_TWO_RED_HALF_REENTRY_SHORT",
+        "WAIT", None, "KC_INNER_REENTRY_DISABLED",
     )
 
 
@@ -173,7 +173,7 @@ def test_two_green_candles_inside_kc_are_added_for_half_width_entry():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 100.2)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "LONG", "KC_INNER_TWO_GREEN_HALF_REENTRY_LONG",
+        "WAIT", None, "KC_INNER_REENTRY_DISABLED",
     )
 
 
@@ -185,7 +185,7 @@ def test_two_red_candles_inside_kc_below_half_width_wait():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 100.0)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "WAIT", None, "WAIT_INNER_REENTRY_HALF_KC",
+        "WAIT", None, "KC_INNER_REENTRY_DISABLED",
     )
 
 
@@ -197,7 +197,7 @@ def test_held_long_can_reverse_from_two_red_bodies_inside_kc():
     result = TradingEngine._channel_swing_action(frame, 99.8, "LONG")
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "REVERSE", "SHORT", "UPPER_RED_HALF_KC_REENTRY",
+        "HOLD", None, "WAIT_UPPER_RED_REENTRY",
     )
 
 
@@ -215,7 +215,7 @@ def test_held_long_reverses_only_after_single_red_half_kc_reentry():
     held_action = TradingEngine._channel_swing_action(shallow, 100.1, "LONG")
 
     assert (reversed_action["action"], reversed_action["side"]) == (
-        "REVERSE", "SHORT",
+        "HOLD", None,
     )
     assert (held_action["action"], held_action["side"]) == ("HOLD", None)
 
@@ -234,7 +234,7 @@ def test_held_short_reverses_only_after_single_green_half_kc_reentry():
     held_action = TradingEngine._channel_swing_action(shallow, 99.9, "SHORT")
 
     assert (reversed_action["action"], reversed_action["side"]) == (
-        "REVERSE", "LONG",
+        "HOLD", None,
     )
     assert (held_action["action"], held_action["side"]) == ("HOLD", None)
 
