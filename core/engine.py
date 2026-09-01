@@ -173,9 +173,9 @@ class TradingEngine:
         self._channel_chop_locked: Dict[str, bool] = {}
         # K 線圖使用的 CHOP_WAIT 狀態切換紀錄；只保存近期事件。
         self._channel_chop_events: Dict[str, list[dict]] = {}
-        # 上軌外趨勢追多改為兩階段：先記錄外軌收盤，再等三根已收盤 K
-        # 排除盤整；過熱時還要等回踩上軌與下一根重新突破。
-        self._channel_uptrend_wait: Dict[str, dict] = {}
+        # KC 外軌趨勢追單採多空對稱：先確認既有趨勢品質，再由下一根
+        # 突破候選極值；過熱時等待回踩／回抽外軌後重新突破。
+        self._channel_outer_trend_wait: Dict[str, dict] = {}
         # ADX + MA3/MA15 距離的雙門檻狀態；預設 RANGE，需連續 3 根確認才進 TREND。
         self._continuous_wave_regime: Dict[str, str] = {}
         # 在短週期 TREND 之上，以個幣自己的 1h 趨勢確認牛／熊市；
@@ -4349,6 +4349,7 @@ class TradingEngine:
                 "action": "WAIT", "side": None,
                 "reason": "WAIT_TREND_BREAK", "kc_upper": upper,
                 "pending": {
+                    "side": "LONG",
                     "candidate_bar_id": str(closed.index[-1]),
                     "candidate_close": latest_close,
                     "candidate_high": float(latest["high"]),
@@ -4496,6 +4497,247 @@ class TradingEngine:
             ),
             "kc_upper": upper, "pending": pending,
         }
+
+    @staticmethod
+    def _channel_outer_downtrend_entry_action(
+        frame: pd.DataFrame, live_price: float, pending: dict | None = None,
+    ) -> dict:
+        """Mirror the upper-rail trend entry for lower-rail SHORT setups."""
+        required = {
+            "open", "high", "low", "close", "ma3", "ma15",
+            "kc_upper", "kc_lower",
+        }
+        if frame is None or len(frame) < 6 or not required.issubset(frame.columns):
+            return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_UNAVAILABLE"}
+        try:
+            live = frame.iloc[-1]
+            closed = frame.iloc[:-1].dropna(subset=list(required)).copy()
+            if len(closed) < 5:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "OUTER_DOWNTREND_DATA_UNAVAILABLE",
+                }
+            latest = closed.iloc[-1]
+            price = float(live_price)
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+        except (TypeError, ValueError, IndexError):
+            return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_INVALID"}
+        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+            return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_INVALID"}
+
+        if not pending:
+            latest_close = float(latest["close"])
+            latest_lower = float(latest["kc_lower"])
+            if latest_close > latest_lower:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "WAIT_OUTER_DOWNTREND", "kc_lower": lower,
+                    "pending": None,
+                }
+            quality = closed.tail(6)
+            quality_middle = (
+                quality["kc_upper"].astype(float)
+                + quality["kc_lower"].astype(float)
+            ) / 2.0
+            quality_close = quality["close"].astype(float)
+            quality_ma3 = quality["ma3"].astype(float)
+            quality_ma15 = quality["ma15"].astype(float)
+            total_path = float(quality_close.diff().abs().sum())
+            efficiency = (
+                abs(float(quality_close.iloc[-1] - quality_close.iloc[0]))
+                / total_path if total_path > 0 else 0.0
+            )
+            alignment = quality_ma3 - quality_ma15
+            trend_clear = bool(
+                len(quality) >= 6
+                and (quality_close.iloc[-3:] < quality_middle.iloc[-3:]).all()
+                and (alignment.iloc[-3:] < 0).all()
+                and float(quality_ma15.iloc[-1]) < float(quality_ma15.iloc[-3])
+                and float(quality_middle.iloc[-1]) < float(quality_middle.iloc[-3])
+                and efficiency >= 0.45
+            )
+            if not trend_clear:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "WAIT_DYNAMIC_DOWNTREND", "kc_lower": lower,
+                    "efficiency": efficiency, "pending": None,
+                }
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "WAIT_DOWNTREND_BREAK", "kc_lower": lower,
+                "pending": {
+                    "side": "SHORT",
+                    "candidate_bar_id": str(closed.index[-1]),
+                    "candidate_close": latest_close,
+                    "candidate_high": float(latest["high"]),
+                    "candidate_low": float(latest["low"]),
+                    "confirmed": False,
+                },
+            }
+
+        pending = dict(pending)
+        candidate_id = str(pending.get("candidate_bar_id") or "")
+        positions = [
+            pos for pos, bar_id in enumerate(closed.index)
+            if str(bar_id) == candidate_id
+        ]
+        if not positions:
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "CANCEL_DOWNTREND_CONFIRM", "kc_lower": lower,
+                "pending": None,
+            }
+        candidate_pos = positions[-1]
+        confirmation = closed.iloc[candidate_pos + 1:]
+        if len(confirmation) > 12:
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "CANCEL_DOWNTREND_CONFIRM_EXPIRED",
+                "kc_lower": lower, "pending": None,
+            }
+
+        confirmation_middle = (
+            confirmation["kc_upper"].astype(float)
+            + confirmation["kc_lower"].astype(float)
+        ) / 2.0
+        invalidated = bool(
+            (confirmation["close"].astype(float) >= confirmation_middle).any()
+            or (
+                confirmation["ma3"].astype(float)
+                >= confirmation["ma15"].astype(float)
+            ).any()
+        )
+        if invalidated:
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "CANCEL_DOWNTREND_CONFIRM", "kc_lower": lower,
+                "pending": None,
+            }
+
+        if not pending.get("confirmed"):
+            if candidate_pos != len(closed) - 1:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "CANCEL_DOWNTREND_CONFIRM_EXPIRED",
+                    "kc_lower": lower, "pending": None,
+                }
+            candidate_high = float(pending["candidate_high"])
+            candidate_low = float(pending["candidate_low"])
+            live_middle = (upper + lower) / 2.0
+            if (
+                float(live["high"]) > candidate_high
+                or price >= live_middle
+                or float(live["ma3"]) >= float(live["ma15"])
+            ):
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "CANCEL_DOWNTREND_CONFIRM",
+                    "kc_lower": lower, "pending": None,
+                }
+            if price >= candidate_low:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "WAIT_DOWNTREND_BREAK",
+                    "kc_lower": lower, "pending": pending,
+                }
+            pending["confirmed"] = True
+            pending["confirmed_bar_id"] = str(live.name)
+
+        width = upper - lower
+        lower_distance = lower - price
+        if abs(lower_distance) <= width * 0.25:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LOWER_TREND_CONFIRMED_SHORT",
+                "kc_lower": lower, "pending": None,
+                "turn_low": None, "turn_high": None,
+            }
+        if price > lower + width * 0.25:
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "CANCEL_DOWNTREND_CONFIRM",
+                "kc_lower": lower, "pending": None,
+            }
+
+        # 過熱時不追空；等待已收盤紅 K 回抽下軌，再由緊接的即時 K
+        # 跌破其低點。若下一根先破高或逾時，回抽候選作廢。
+        retest_bar_id = str(pending.get("retest_bar_id") or "")
+        if retest_bar_id:
+            if retest_bar_id != str(closed.index[-1]):
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "CANCEL_DOWNTREND_RETEST",
+                    "kc_lower": lower, "pending": None,
+                }
+            retest_high = float(pending["retest_high"])
+            retest_low = float(pending["retest_low"])
+            if float(live["high"]) > retest_high:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "CANCEL_DOWNTREND_RETEST",
+                    "kc_lower": lower, "pending": None,
+                }
+            if price < retest_low:
+                return {
+                    "action": "ENTER", "side": "SHORT",
+                    "reason": "KC_LOWER_RETEST_BREAK_SHORT",
+                    "kc_lower": lower, "pending": None,
+                    "turn_low": None, "turn_high": None,
+                }
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "WAIT_DOWNTREND_RETEST_BREAK",
+                "kc_lower": lower, "pending": pending,
+            }
+
+        latest_open = float(latest["open"])
+        latest_close = float(latest["close"])
+        latest_high = float(latest["high"])
+        latest_lower = float(latest["kc_lower"])
+        if (
+            latest_close < latest_open
+            and latest_high >= latest_lower
+            and latest_close <= latest_lower
+        ):
+            pending["retest_bar_id"] = str(closed.index[-1])
+            pending["retest_high"] = latest_high
+            pending["retest_low"] = float(latest["low"])
+        return {
+            "action": "WAIT", "side": None,
+            "reason": (
+                "WAIT_DOWNTREND_RETEST_BREAK"
+                if pending.get("retest_bar_id") else "WAIT_DOWNTREND_RETEST"
+            ),
+            "kc_lower": lower, "pending": pending,
+        }
+
+    @staticmethod
+    def _channel_outer_trend_entry_action(
+        frame: pd.DataFrame, live_price: float, pending: dict | None = None,
+    ) -> dict:
+        """Dispatch symmetric KC outer-trend entries by candidate direction."""
+        if str((pending or {}).get("side") or "").upper() == "SHORT":
+            return TradingEngine._channel_outer_downtrend_entry_action(
+                frame, live_price, pending,
+            )
+        if not pending:
+            required = {"close", "kc_lower"}
+            if (
+                frame is not None and len(frame) >= 2
+                and required.issubset(frame.columns)
+            ):
+                try:
+                    latest = frame.iloc[-2]
+                    if float(latest["close"]) <= float(latest["kc_lower"]):
+                        return TradingEngine._channel_outer_downtrend_entry_action(
+                            frame, live_price,
+                        )
+                except (TypeError, ValueError, IndexError):
+                    pass
+        return TradingEngine._channel_outer_uptrend_entry_action(
+            frame, live_price, pending,
+        )
 
     def _record_channel_chop_event(
         self, symbol: str, event: str, frame: pd.DataFrame,
@@ -5439,7 +5681,7 @@ class TradingEngine:
                 if chop_locked:
                     self._channel_chop_locked[symbol] = True
                     # 被盤整鎖擋掉的趨勢候選不得保留到解鎖後補開。
-                    self._channel_uptrend_wait.pop(symbol, None)
+                    self._channel_outer_trend_wait.pop(symbol, None)
                     if not was_chop_locked:
                         self._record_channel_chop_event(
                             symbol, "LOCK", channel_df,
@@ -5484,7 +5726,7 @@ class TradingEngine:
                         channel_action = chop_breakout_action
                         chop_locked = False
                         self._channel_chop_locked.pop(symbol, None)
-                        self._channel_uptrend_wait.pop(symbol, None)
+                        self._channel_outer_trend_wait.pop(symbol, None)
                         if not (
                             was_chop_locked
                             and chop_info.get("clear_direction")
@@ -5512,23 +5754,28 @@ class TradingEngine:
                     and not existing_pos
                     and channel_action.get("action") != "ENTER"
                 ):
-                    outer_chase_action = self._channel_outer_uptrend_entry_action(
+                    outer_chase_action = self._channel_outer_trend_entry_action(
                         channel_df, channel_price,
-                        self._channel_uptrend_wait.get(symbol),
+                        self._channel_outer_trend_wait.get(symbol),
                     )
                     next_wait = outer_chase_action.get("pending")
                     if next_wait:
-                        self._channel_uptrend_wait[symbol] = next_wait
+                        self._channel_outer_trend_wait[symbol] = next_wait
                     else:
-                        self._channel_uptrend_wait.pop(symbol, None)
+                        self._channel_outer_trend_wait.pop(symbol, None)
                     if (
                         outer_chase_action.get("action") == "ENTER"
                         or outer_chase_action.get("reason")
-                        not in ("WAIT_OUTER_UPTREND", "OUTER_UPTREND_DATA_UNAVAILABLE")
+                        not in (
+                            "WAIT_OUTER_UPTREND",
+                            "WAIT_OUTER_DOWNTREND",
+                            "OUTER_UPTREND_DATA_UNAVAILABLE",
+                            "OUTER_DOWNTREND_DATA_UNAVAILABLE",
+                        )
                     ):
                         channel_action = outer_chase_action
                 elif existing_pos:
-                    self._channel_uptrend_wait.pop(symbol, None)
+                    self._channel_outer_trend_wait.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
                 # 「碰 KC 外軌並成 V」是轉向的必要條件，不是在盤整中
@@ -5681,6 +5928,11 @@ class TradingEngine:
                                 "KC_UPPER_TREND_CONFIRMED_LONG",
                                 "KC_UPPER_RETEST_BREAK_LONG",
                             )
+                            else "Channel Swing KC lower trend confirmed SHORT"
+                            if channel_action.get("reason") in (
+                                "KC_LOWER_TREND_CONFIRMED_SHORT",
+                                "KC_LOWER_RETEST_BREAK_SHORT",
+                            )
                             else "Channel Swing KC lower outer trough LONG"
                             if target_side == "LONG"
                             else "Channel Swing KC upper outer peak SHORT"
@@ -5692,14 +5944,21 @@ class TradingEngine:
                         "STALE_PEAK_TURN": " | 舊上軌峰頂已跌破，不補追",
                         "CHOP_WAIT_NO_ENTRY": " | CHOP_WAIT 盤整鎖，外軌V也不開倉",
                         "WAIT_DYNAMIC_TREND": " | 上軌外但趨勢品質不足，暫不追多",
+                        "WAIT_DYNAMIC_DOWNTREND": " | 下軌外但趨勢品質不足，暫不追空",
                         "WAIT_TREND_BREAK": " | 上軌動能成立，等待下一根破高",
+                        "WAIT_DOWNTREND_BREAK": " | 下軌動能成立，等待下一根破低",
                         "WAIT_CHOP_MOMENTUM_BREAK": " | 盤整突破候選成立，等待下一根確認",
                         "CANCEL_CHOP_BREAKOUT": " | 盤整突破候選失敗取消",
                         "WAIT_TREND_RETEST": " | 趨勢已確認但價格過熱，等待回踩上軌",
+                        "WAIT_DOWNTREND_RETEST": " | 空方趨勢已確認但價格過熱，等待回抽下軌",
                         "WAIT_TREND_RETEST_BREAK": " | 上軌回踩成立，等待下一根破高",
+                        "WAIT_DOWNTREND_RETEST_BREAK": " | 下軌回抽成立，等待下一根破低",
                         "CANCEL_TREND_CONFIRM": " | 趨勢確認失敗，候選取消",
                         "CANCEL_TREND_CONFIRM_EXPIRED": " | 趨勢候選逾時取消",
                         "CANCEL_TREND_RETEST": " | 上軌回踩突破失敗，候選取消",
+                        "CANCEL_DOWNTREND_CONFIRM": " | 空方趨勢確認失敗，候選取消",
+                        "CANCEL_DOWNTREND_CONFIRM_EXPIRED": " | 空方趨勢候選逾時取消",
+                        "CANCEL_DOWNTREND_RETEST": " | 下軌回抽突破失敗，候選取消",
                     }.get(str(channel_action.get("reason") or ""), "")
                     signal_progress.append(
                         f"{coin} 通道中央等待 | KC {kc_lower:.8g}~{kc_upper:.8g}"

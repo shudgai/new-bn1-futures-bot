@@ -1054,6 +1054,7 @@ def test_kc_upper_outer_uptrend_uses_existing_quality_without_three_bar_delay():
     candidate = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.25)
 
     assert (candidate["action"], candidate["reason"]) == ("WAIT", "WAIT_TREND_BREAK")
+    assert candidate["pending"]["side"] == "LONG"
     assert candidate["pending"]["confirmed"] is False
 
     entered = TradingEngine._channel_outer_uptrend_entry_action(
@@ -1096,6 +1097,85 @@ def test_kc_upper_outer_uptrend_does_not_chase_when_break_is_too_far():
 
     assert result["action"] == "WAIT"
     assert result["reason"] in ("WAIT_TREND_RETEST", "WAIT_TREND_RETEST_BREAK")
+    assert result["pending"]["confirmed"] is True
+
+
+def _dynamic_lower_trend_frame():
+    frame = _channel_frame()
+    for position in range(13, 19):
+        middle = 100.5 - (position - 13) * 0.10
+        close = middle - 0.80 - (position - 13) * 0.05
+        frame.loc[position, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [
+            close + 0.15, close, close + 0.20, close - 0.10,
+            middle - 0.30, middle - 0.10, middle - 1.0, middle + 1.0,
+        ]
+    frame.loc[19, [
+        "open", "close", "high", "low", "ma3", "ma15",
+        "kc_lower", "kc_upper",
+    ]] = [98.90, 98.85, 98.95, 98.84, 99.45, 99.75, 98.90, 100.90]
+    return frame
+
+
+def test_kc_lower_outer_downtrend_uses_symmetric_next_bar_break():
+    frame = _dynamic_lower_trend_frame()
+
+    candidate = TradingEngine._channel_outer_trend_entry_action(frame, 98.95)
+
+    assert (candidate["action"], candidate["reason"]) == (
+        "WAIT", "WAIT_DOWNTREND_BREAK",
+    )
+    assert candidate["pending"]["side"] == "SHORT"
+    assert candidate["pending"]["confirmed"] is False
+
+    entered = TradingEngine._channel_outer_trend_entry_action(
+        frame, 98.85, candidate["pending"],
+    )
+    assert (entered["action"], entered["side"]) == ("ENTER", "SHORT")
+    assert entered["reason"] == "KC_LOWER_TREND_CONFIRMED_SHORT"
+
+
+def test_kc_lower_outer_downtrend_waits_when_trend_is_ambiguous():
+    frame = _dynamic_lower_trend_frame()
+    frame.loc[16:18, ["ma3", "ma15"]] = [[100.1, 100.0]] * 3
+
+    result = TradingEngine._channel_outer_trend_entry_action(frame, 98.95)
+
+    assert (result["action"], result["reason"]) == (
+        "WAIT", "WAIT_DYNAMIC_DOWNTREND",
+    )
+    assert result["pending"] is None
+
+
+def test_kc_lower_outer_downtrend_next_bar_failure_cancels_candidate():
+    frame = _dynamic_lower_trend_frame()
+    seed = TradingEngine._channel_outer_trend_entry_action(frame, 98.95)
+    frame.loc[19, "high"] = float(seed["pending"]["candidate_high"]) + 0.01
+
+    result = TradingEngine._channel_outer_trend_entry_action(
+        frame, 98.92, seed["pending"],
+    )
+
+    assert (result["action"], result["reason"]) == (
+        "WAIT", "CANCEL_DOWNTREND_CONFIRM",
+    )
+    assert result["pending"] is None
+
+
+def test_kc_lower_outer_downtrend_does_not_chase_when_break_is_too_far():
+    frame = _dynamic_lower_trend_frame()
+    seed = TradingEngine._channel_outer_trend_entry_action(frame, 98.95)
+
+    result = TradingEngine._channel_outer_trend_entry_action(
+        frame, 98.0, seed["pending"],
+    )
+
+    assert result["action"] == "WAIT"
+    assert result["reason"] in (
+        "WAIT_DOWNTREND_RETEST", "WAIT_DOWNTREND_RETEST_BREAK",
+    )
     assert result["pending"]["confirmed"] is True
 
 
