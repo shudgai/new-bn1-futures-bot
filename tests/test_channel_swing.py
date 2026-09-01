@@ -104,11 +104,11 @@ def test_single_red_candle_below_half_kc_reentry_waits():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 100.1)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "WAIT", None, "WAIT_INNER_SINGLE_CANDLE_HALF_KC",
+        "WAIT", None, "WAIT_INNER_REENTRY_HALF_KC",
     )
 
 
-def test_two_red_candles_are_not_added_together_for_inner_entry():
+def test_two_red_candles_inside_kc_are_added_for_half_width_entry():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-2], ["open", "close"]] = [100.8, 100.2]
     frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 99.8]
@@ -116,7 +116,43 @@ def test_two_red_candles_are_not_added_together_for_inner_entry():
     result = TradingEngine._channel_live_inner_reentry_action(frame, 99.8)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "WAIT", None, "WAIT_INNER_SINGLE_CANDLE_HALF_KC",
+        "ENTER", "SHORT", "KC_INNER_TWO_RED_HALF_REENTRY_SHORT",
+    )
+
+
+def test_two_green_candles_inside_kc_are_added_for_half_width_entry():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["open", "close"]] = [99.2, 99.8]
+    frame.loc[frame.index[-1], ["open", "close"]] = [99.8, 100.2]
+
+    result = TradingEngine._channel_live_inner_reentry_action(frame, 100.2)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "KC_INNER_TWO_GREEN_HALF_REENTRY_LONG",
+    )
+
+
+def test_two_red_candles_inside_kc_below_half_width_wait():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["open", "close"]] = [100.6, 100.3]
+    frame.loc[frame.index[-1], ["open", "close"]] = [100.3, 100.0]
+
+    result = TradingEngine._channel_live_inner_reentry_action(frame, 100.0)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "WAIT", None, "WAIT_INNER_REENTRY_HALF_KC",
+    )
+
+
+def test_held_long_can_reverse_from_two_red_bodies_inside_kc():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["open", "close"]] = [100.8, 100.2]
+    frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 99.8]
+
+    result = TradingEngine._channel_swing_action(frame, 99.8, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "SHORT", "UPPER_RED_HALF_KC_REENTRY",
     )
 
 
