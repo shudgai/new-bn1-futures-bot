@@ -4805,21 +4805,18 @@ class TradingEngine:
         }
 
     @staticmethod
-    def _channel_live_inner_two_candle_entry_action(
+    def _channel_live_inner_reentry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
-        """Enter inside KC when two same-color bodies total half its width."""
-        required = {"open", "close", "kc_upper", "kc_lower"}
-        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
+        """Require one live candle to penetrate at least half the KC width."""
+        required = {"open", "kc_upper", "kc_lower"}
+        if frame is None or frame.empty or not required.issubset(frame.columns):
             return {
                 "action": "WAIT", "side": None,
-                "reason": "KC_INNER_TWO_BODY_DATA_UNAVAILABLE",
+                "reason": "KC_INNER_REENTRY_DATA_UNAVAILABLE",
             }
         try:
-            first = frame.iloc[-2]
             live = frame.iloc[-1]
-            first_open = float(first["open"])
-            first_close = float(first["close"])
             live_open = float(live["open"])
             price = float(live_price)
             upper = float(live["kc_upper"])
@@ -4827,13 +4824,13 @@ class TradingEngine:
         except (TypeError, ValueError, IndexError):
             return {
                 "action": "WAIT", "side": None,
-                "reason": "KC_INNER_TWO_BODY_DATA_INVALID",
+                "reason": "KC_INNER_REENTRY_DATA_INVALID",
             }
-        values = (first_open, first_close, live_open, price, upper, lower)
+        values = (live_open, price, upper, lower)
         if not all(math.isfinite(value) for value in values) or lower >= upper:
             return {
                 "action": "WAIT", "side": None,
-                "reason": "KC_INNER_TWO_BODY_DATA_INVALID",
+                "reason": "KC_INNER_REENTRY_DATA_INVALID",
             }
         if not lower < price < upper:
             return {
@@ -4841,25 +4838,32 @@ class TradingEngine:
                 "reason": "WAIT_PRICE_INSIDE_KC",
                 "kc_upper": upper, "kc_lower": lower,
             }
-        combined_body = abs(first_close - first_open) + abs(price - live_open)
-        body_ready = combined_body + 1e-12 >= (upper - lower) * 0.5
-        if body_ready and first_close < first_open and price < live_open:
+        width = upper - lower
+        if (
+            live_open >= upper
+            and price < live_open
+            and upper - price + 1e-12 >= width * 0.5
+        ):
             return {
                 "action": "ENTER", "side": "SHORT",
-                "reason": "KC_INNER_TWO_RED_BODY_SHORT",
+                "reason": "KC_INNER_RED_HALF_REENTRY_SHORT",
                 "kc_upper": upper, "kc_lower": lower,
                 "turn_low": None, "turn_high": None,
             }
-        if body_ready and first_close > first_open and price > live_open:
+        if (
+            live_open <= lower
+            and price > live_open
+            and price - lower + 1e-12 >= width * 0.5
+        ):
             return {
                 "action": "ENTER", "side": "LONG",
-                "reason": "KC_INNER_TWO_GREEN_BODY_LONG",
+                "reason": "KC_INNER_GREEN_HALF_REENTRY_LONG",
                 "kc_upper": upper, "kc_lower": lower,
                 "turn_low": None, "turn_high": None,
             }
         return {
             "action": "WAIT", "side": None,
-            "reason": "WAIT_INNER_TWO_BODY_HALF_KC",
+            "reason": "WAIT_INNER_SINGLE_CANDLE_HALF_KC",
             "kc_upper": upper, "kc_lower": lower,
         }
 
@@ -5327,11 +5331,17 @@ class TradingEngine:
             and confirmation_low < signal_low
         )
         side = str(current_side or "").upper()
+        live_inner_reentry = TradingEngine._channel_live_inner_reentry_action(
+            frame, price,
+        )
         reason = ""
         if side == "LONG":
-            if peak_turn:
+            if (
+                live_inner_reentry.get("action") == "ENTER"
+                and live_inner_reentry.get("side") == "SHORT"
+            ):
                 action, target_side, reason = (
-                    "REVERSE", "SHORT", "UPPER_V_RED_REENTRY"
+                    "REVERSE", "SHORT", "UPPER_RED_HALF_KC_REENTRY"
                 )
             else:
                 action, target_side, reason = "HOLD", None, (
@@ -5339,9 +5349,12 @@ class TradingEngine:
                     if live_upper_touch else "WAIT_UPPER_RED_REENTRY"
                 )
         elif side == "SHORT":
-            if trough_turn:
+            if (
+                live_inner_reentry.get("action") == "ENTER"
+                and live_inner_reentry.get("side") == "LONG"
+            ):
                 action, target_side, reason = (
-                    "REVERSE", "LONG", "LOWER_V_GREEN_REENTRY"
+                    "REVERSE", "LONG", "LOWER_GREEN_HALF_KC_REENTRY"
                 )
             else:
                 action, target_side, reason = "HOLD", None, (
@@ -5930,13 +5943,13 @@ class TradingEngine:
                         channel_action = live_outer_action
                         self._channel_outer_trend_wait.pop(symbol, None)
                     else:
-                        inner_two_action = (
-                            self._channel_live_inner_two_candle_entry_action(
+                        inner_reentry_action = (
+                            self._channel_live_inner_reentry_action(
                                 channel_df, channel_price,
                             )
                         )
-                        if inner_two_action.get("action") == "ENTER":
-                            channel_action = inner_two_action
+                        if inner_reentry_action.get("action") == "ENTER":
+                            channel_action = inner_reentry_action
                             self._channel_outer_trend_wait.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
                 # 服務重啟或首次掃描時，只要當前仍鎖定，或上一根資料仍處於
@@ -6158,10 +6171,10 @@ class TradingEngine:
                                 "KC_LIVE_UPPER_BREAK_LONG",
                                 "KC_LIVE_LOWER_BREAK_SHORT",
                             )
-                            else f"Channel Swing inner two candle body {target_side}"
+                            else f"Channel Swing inner half-width reentry {target_side}"
                             if channel_action.get("reason") in (
-                                "KC_INNER_TWO_RED_BODY_SHORT",
-                                "KC_INNER_TWO_GREEN_BODY_LONG",
+                                "KC_INNER_RED_HALF_REENTRY_SHORT",
+                                "KC_INNER_GREEN_HALF_REENTRY_LONG",
                             )
                             else "Channel Swing KC upper trend confirmed LONG"
                             if channel_action.get("reason") in (
