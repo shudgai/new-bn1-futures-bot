@@ -74,6 +74,7 @@ def active_leverage_by_score():
     }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+BOT_PAUSED_FILE = os.path.join(os.path.dirname(WEB_DIR), "data", "bot_paused.flag")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="web-static")
 
 # 圖表資料只供顯示，不能讓瀏覽器每秒的請求與交易循環爭用 Binance 額度。
@@ -92,6 +93,10 @@ class ManualCloseRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
+    if os.path.exists(BOT_PAUSED_FILE):
+        await engine.account.initialize()
+        engine.account.log("⏸️ 機器人維持暫停；按下啟動後才接管持倉", "INFO")
+        return
     await engine.start()
 
 @app.on_event("shutdown")
@@ -130,7 +135,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": (f"KC {os.getenv('CONTINUOUS_REVERSE_TIMEFRAME', '1m')} MA3須越外軌 + 兩根K半通道 + 0.15ATR線距 ({len(DEFAULT_SYMBOLS)}幣雙向)" if CONTINUOUS_PIVOT_ONLY and not PIVOT_LONG_ONLY else f"KC 3m下軌 + 1m谷底提早買入・3m上軌平多 ({len(DEFAULT_SYMBOLS)}幣只做多)" if CONTINUOUS_PIVOT_ONLY else f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)"),
+        "strategy": (f"KC {os.getenv('CONTINUOUS_REVERSE_TIMEFRAME', '1m')} MA3須越外軌 + 兩根K半通道 + 0.15ATR線距 ({len(DEFAULT_SYMBOLS)}幣順勢)" if CONTINUOUS_PIVOT_ONLY and not PIVOT_LONG_ONLY else f"KC 3m下軌 + 1m谷底提早買入・3m上軌平多 ({len(DEFAULT_SYMBOLS)}幣只做多)" if CONTINUOUS_PIVOT_ONLY else f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣順勢)"),
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -164,7 +169,10 @@ async def get_status(response: Response):
         "taker_fee_rate": TAKER_FEE_RATE,
         "slippage_pct": SLIPPAGE_PCT,
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
-        "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
+        "symbol_directions": {
+            symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
+            for symbol in DEFAULT_SYMBOLS
+        },
         "market_modes": {
             symbol: engine._continuous_market_mode.get(symbol, "WAIT")
             for symbol in dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])
@@ -200,6 +208,10 @@ async def get_prices(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
+        "symbol_directions": {
+            symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
+            for symbol in DEFAULT_SYMBOLS
+        },
         "market_modes": {
             symbol: engine._continuous_market_mode.get(symbol, "WAIT")
             for symbol in dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])
@@ -271,7 +283,12 @@ async def run_ai_trade_analysis():
 async def toggle_bot():
     if engine.is_running:
         await engine.stop()
+        os.makedirs(os.path.dirname(BOT_PAUSED_FILE), exist_ok=True)
+        with open(BOT_PAUSED_FILE, "w", encoding="utf-8") as pause_file:
+            pause_file.write("paused\n")
     else:
+        if os.path.exists(BOT_PAUSED_FILE):
+            os.remove(BOT_PAUSED_FILE)
         await engine.start()
     return {"is_running": engine.is_running}
 
@@ -322,7 +339,12 @@ async def manual_order(req: ManualOrderRequest):
         reason=f"手動開倉_{side}",
         atr=atr,
         leverage=leverage,
-        signal_score=100
+        signal_score=100,
+        entry_context={
+            "entry_mode": "CHANNEL_SWING",
+            "wave_regime": "RANGE",
+            "market_mode": "RANGE",
+        },
     )
     if not success:
         raise HTTPException(status_code=400, detail="已有該幣種持倉或系統異常")
@@ -440,6 +462,18 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                     "price": None,
                 })
 
+        chop_markers = {}
+        for event in engine._channel_chop_events.get(symbol, []):
+            event_timestamp = int(event.get("timestamp") or 0)
+            matching_bars = df.index[df["timestamp"] <= event_timestamp]
+            if len(matching_bars) == 0:
+                continue
+            chop_markers.setdefault(matching_bars[-1], []).append({
+                "action": event.get("action"),
+                "reason": event.get("reason") or "",
+                "timestamp": event_timestamp,
+            })
+
         # 準備資料
         result = []
         for index, row in df.iterrows():
@@ -458,6 +492,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "kc_middle": None if pd.isna(indicators.loc[index, 'ema_20']) else indicators.loc[index, 'ema_20'],
                 "kc_lower": None if pd.isna(indicators.loc[index, 'kc_lower']) else indicators.loc[index, 'kc_lower'],
                 "trade_markers": trade_markers.get(index, []),
+                "chop_markers": chop_markers.get(index, []),
                 "is_live": bool(include_live and index == df.index[-1]),
             })
             

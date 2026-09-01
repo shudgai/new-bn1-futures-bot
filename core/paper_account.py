@@ -1173,7 +1173,7 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-            if CONTINUOUS_PIVOT_ONLY:
+            if entry_mode == "CHANNEL_SWING" or CONTINUOUS_PIVOT_ONLY:
                 pos["sl"] = meta["sl"] = 0.0
                 pos["tp"] = meta["tp"] = 0.0
                 pos["peak_pnl_pct"] = highest_pnl

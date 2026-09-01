@@ -1029,110 +1029,145 @@ def test_entries_only_match_ranked_market_direction():
     assert TradingEngine._entry_matches_ranked_direction("SHORT", None) is False
 
 
-def test_kc_upper_outer_uptrend_first_bar_only_creates_wait_candidate():
+def _dynamic_upper_trend_frame():
     frame = _channel_frame()
-    frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15", "kc_upper"]] = [
-        [100.4, 100.5, 100.40, 100.30, 101.0],
-        [100.8, 101.2, 100.80, 100.40, 101.0],
-        [101.2, 101.3, 101.00, 100.50, 101.0],
-    ]
-
-    result = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.3)
-
-    assert (result["action"], result["side"]) == ("WAIT", None)
-    assert result["reason"] == "WAIT_TREND_CONFIRM"
-    assert result["pending"]["confirmed"] is False
-
-
-def _confirmed_upper_trend_frames():
-    frame = _channel_frame()
-    frame.loc[15, ["open", "close", "high", "low", "ma3", "ma15"]] = [
-        100.8, 101.2, 101.3, 100.7, 100.5, 100.2,
-    ]
-    for position, middle, close in (
-        (16, 100.1, 101.25),
-        (17, 100.2, 101.40),
-        (18, 100.3, 101.55),
-    ):
-        frame.loc[
-            position,
-            ["open", "close", "high", "low", "ma3", "ma15", "kc_lower", "kc_upper"],
-        ] = [
-            close - 0.10, close, close + 0.10, middle + 0.90,
-            middle + 0.35, middle + 0.20, middle - 1.0, middle + 1.0,
+    for position in range(13, 19):
+        middle = 99.5 + (position - 13) * 0.10
+        close = middle + 0.80 + (position - 13) * 0.05
+        frame.loc[position, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [
+            close - 0.15, close, close + 0.10, close - 0.20,
+            middle + 0.30, middle + 0.10, middle - 1.0, middle + 1.0,
         ]
-    frame.loc[
-        19,
-        ["open", "close", "high", "low", "ma3", "ma15", "kc_lower", "kc_upper"],
-    ] = [101.4, 101.45, 101.5, 101.35, 100.8, 100.6, 99.4, 101.4]
-    seed = TradingEngine._channel_outer_uptrend_entry_action(
-        frame.iloc[:17].copy(), 101.25,
+    frame.loc[19, [
+        "open", "close", "high", "low", "ma3", "ma15",
+        "kc_lower", "kc_upper",
+    ]] = [101.20, 101.35, 101.36, 101.15, 100.55, 100.25, 99.10, 101.10]
+    return frame
+
+
+def test_kc_upper_outer_uptrend_uses_existing_quality_without_three_bar_delay():
+    frame = _dynamic_upper_trend_frame()
+
+    candidate = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.25)
+
+    assert (candidate["action"], candidate["reason"]) == ("WAIT", "WAIT_TREND_BREAK")
+    assert candidate["pending"]["confirmed"] is False
+
+    entered = TradingEngine._channel_outer_uptrend_entry_action(
+        frame, 101.35, candidate["pending"],
     )
-    return frame, seed["pending"]
+    assert (entered["action"], entered["side"]) == ("ENTER", "LONG")
+    assert entered["reason"] == "KC_UPPER_TREND_CONFIRMED_LONG"
 
 
-def test_kc_upper_outer_uptrend_enters_only_after_three_clear_closed_bars():
-    frame, pending = _confirmed_upper_trend_frames()
+def test_kc_upper_outer_uptrend_waits_when_existing_trend_is_ambiguous():
+    frame = _dynamic_upper_trend_frame()
+    frame.loc[16:18, ["ma3", "ma15"]] = [[100.0, 100.1]] * 3
 
-    result = TradingEngine._channel_outer_uptrend_entry_action(
-        frame, 101.45, pending,
-    )
+    result = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.25)
 
-    assert (result["action"], result["side"]) == ("ENTER", "LONG")
-    assert result["reason"] == "KC_UPPER_TREND_CONFIRMED_LONG"
-
-
-def test_kc_upper_outer_uptrend_cancels_if_confirmation_closes_below_middle():
-    frame, pending = _confirmed_upper_trend_frames()
-    frame.loc[17, ["close", "ma3"]] = [100.1, 100.4]
-
-    result = TradingEngine._channel_outer_uptrend_entry_action(
-        frame, 101.45, pending,
-    )
-
-    assert (result["action"], result["reason"]) == (
-        "WAIT", "CANCEL_TREND_CONFIRM",
-    )
+    assert (result["action"], result["reason"]) == ("WAIT", "WAIT_DYNAMIC_TREND")
     assert result["pending"] is None
 
 
-def test_kc_upper_outer_uptrend_does_not_chase_when_too_far_above_upper():
-    frame, pending = _confirmed_upper_trend_frames()
+def test_kc_upper_outer_uptrend_next_bar_failure_cancels_candidate():
+    frame = _dynamic_upper_trend_frame()
+    seed = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.25)
+    frame.loc[19, "low"] = float(seed["pending"]["candidate_low"]) - 0.01
 
     result = TradingEngine._channel_outer_uptrend_entry_action(
-        frame, 102.0, pending,
+        frame, 101.20, seed["pending"],
     )
 
-    assert (result["action"], result["reason"]) == (
-        "WAIT", "WAIT_TREND_RETEST_BREAK",
+    assert (result["action"], result["reason"]) == ("WAIT", "CANCEL_TREND_CONFIRM")
+    assert result["pending"] is None
+
+
+def test_kc_upper_outer_uptrend_does_not_chase_when_break_is_too_far():
+    frame = _dynamic_upper_trend_frame()
+    seed = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.25)
+
+    result = TradingEngine._channel_outer_uptrend_entry_action(
+        frame, 102.0, seed["pending"],
     )
+
+    assert result["action"] == "WAIT"
+    assert result["reason"] in ("WAIT_TREND_RETEST", "WAIT_TREND_RETEST_BREAK")
     assert result["pending"]["confirmed"] is True
 
 
 def test_kc_upper_wick_without_outer_close_does_not_chase():
-    frame = _channel_frame()
-    frame.loc[frame.index[-3:], ["open", "close", "high", "ma3", "ma15"]] = [
-        [100.4, 100.5, 100.6, 100.40, 100.30],
-        [100.8, 100.9, 101.2, 100.80, 100.40],
-        [100.9, 101.1, 101.2, 101.00, 100.50],
-    ]
+    frame = _dynamic_upper_trend_frame()
+    frame.loc[18, "close"] = float(frame.loc[18, "kc_upper"]) - 0.01
 
     result = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.1)
 
     assert (result["action"], result["side"]) == ("WAIT", None)
+    assert result["reason"] == "WAIT_OUTER_UPTREND"
 
 
-def test_kc_upper_outer_uptrend_waits_when_ma15_is_not_rising():
+def _chop_momentum_frame(side):
     frame = _channel_frame()
-    frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15", "kc_upper"]] = [
-        [100.4, 100.5, 100.40, 100.50, 101.0],
-        [100.8, 101.2, 100.80, 100.40, 101.0],
-        [101.2, 101.3, 101.00, 100.30, 101.0],
-    ]
+    for position in range(10, 18):
+        close = 99.95 if position % 2 == 0 else 100.05
+        frame.loc[position, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [100.0, close, close + 0.05, close - 0.05, close, 100.0, 99.0, 101.0]
+    if side == "LONG":
+        frame.loc[18, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [100.10, 100.50, 100.60, 100.05, 100.30, 100.05, 99.02, 101.02]
+        frame.loc[19, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [100.50, 100.65, 100.66, 100.45, 100.40, 100.10, 99.04, 101.04]
+    else:
+        frame.loc[18, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [99.90, 99.50, 99.95, 99.40, 99.70, 99.95, 98.98, 100.98]
+        frame.loc[19, [
+            "open", "close", "high", "low", "ma3", "ma15",
+            "kc_lower", "kc_upper",
+        ]] = [99.50, 99.35, 99.55, 99.34, 99.60, 99.90, 98.96, 100.96]
+    return frame
 
-    result = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.3)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+def test_chop_wait_can_enter_long_from_inside_kc_after_confirmed_momentum_break():
+    frame = _chop_momentum_frame("LONG")
+
+    result = TradingEngine._channel_chop_breakout_action(frame, 100.65)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "CHOP_BREAKOUT_LONG",
+    )
+    assert float(frame.loc[18, "close"]) < float(frame.loc[18, "kc_upper"])
+
+
+def test_chop_wait_can_enter_short_from_inside_kc_after_confirmed_momentum_break():
+    frame = _chop_momentum_frame("SHORT")
+
+    result = TradingEngine._channel_chop_breakout_action(frame, 99.35)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "SHORT", "CHOP_BREAKOUT_SHORT",
+    )
+    assert float(frame.loc[18, "close"]) > float(frame.loc[18, "kc_lower"])
+
+
+def test_chop_momentum_candidate_still_waits_for_next_bar_break():
+    frame = _chop_momentum_frame("LONG")
+
+    result = TradingEngine._channel_chop_breakout_action(frame, 100.55)
+
+    assert (result["action"], result["reason"]) == (
+        "WAIT", "WAIT_CHOP_MOMENTUM_BREAK",
+    )
 
 
 def test_strongest_ranked_symbol_uses_target_direction_final_score():

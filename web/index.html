@@ -134,6 +134,7 @@
             /* 手機版隱藏 AI 分析卡 */
             .ai-analysis-card { display: none !important; }
             /* 手機版專屬買賣快捷列 */
+            .mobile-manual-trade-bar { display: flex !important; }
         }
 
         .up { color: var(--up); font-weight: 700; }
@@ -218,6 +219,7 @@
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
         /* 桌面預設隱藏手機專屬快捷列 */
+        .mobile-manual-trade-bar { display: none; }
 </style>
 </head>
 <body>
@@ -461,6 +463,29 @@
                     </button>
                 </div>
 
+                <!-- MANUAL ORDER PANEL -->
+                <div class="card">
+                    <div class="card-title">⚡ 手動開倉（交由機器人依 KC 收盤反手管理）</div>
+                    <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
+                        <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做多 (LONG)</button>
+                            <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做空 (SHORT)</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
+                <div class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
+                    <div v-for="symbol in bot.symbols" :key="'mobile-manual-' + symbol" style="width:100%;">
+                        <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ symbol }}</div>
+                        <div style="display:flex; gap:10px;">
+                            <button class="btn btn-success" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder">買進 LONG</button>
+                            <button class="btn btn-danger" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder">賣出 SHORT</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- AI TRADE HISTORY ANALYSIS -->
                 <div class="card ai-analysis-card">
                     <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
@@ -546,6 +571,7 @@
                 },
                 isProcessing: false,
                 isTogglingBot: false,
+                isPlacingOrder: false,
                 isClosingPos: {},
                 isResetting: false,
                 isAnalyzing: false,
@@ -734,13 +760,51 @@
                     this._chart.remove();
                 }
                 this._chartRequestHasFit = false;
+
+                const chartTimeToDate = (time) => {
+                    if (typeof time === "number") return new Date(time * 1000);
+                    return new Date(Date.UTC(time.year, time.month - 1, time.day));
+                };
+                const taipeiDateTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei",
+                    year: "numeric", month: "2-digit", day: "2-digit",
+                    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+                });
+                const taipeiYearFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei", year: "numeric",
+                });
+                const taipeiMonthFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit",
+                });
+                const taipeiDayFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei", month: "2-digit", day: "2-digit",
+                });
+                const taipeiClockFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei",
+                    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+                });
                 
                 this._chart = LightweightCharts.createChart(container, {
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#cccccc' },
-                    timeScale: { borderColor: '#cccccc', timeVisible: true },
+                    localization: {
+                        locale: 'zh-TW',
+                        timeFormatter: (time) =>
+                            taipeiDateTimeFormatter.format(chartTimeToDate(time)),
+                    },
+                    timeScale: {
+                        borderColor: '#cccccc',
+                        timeVisible: true,
+                        tickMarkFormatter: (time, tickMarkType) => {
+                            const date = chartTimeToDate(time);
+                            if (tickMarkType === 0) return taipeiYearFormatter.format(date);
+                            if (tickMarkType === 1) return taipeiMonthFormatter.format(date);
+                            if (tickMarkType === 2) return taipeiDayFormatter.format(date);
+                            return taipeiClockFormatter.format(date);
+                        },
+                    },
                 });
                 
                 this._candlestickSeries = this._chart.addCandlestickSeries({
@@ -792,6 +856,7 @@
                     const kcMiddle = [];
                     const kcLower = [];
                     const tradeMarkers = [];
+                    const chopMarkers = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
@@ -815,6 +880,15 @@
                                 if (!markerStyle) return;
                                 tradeMarkers.push({ time: d.time, ...markerStyle, size: 1 });
                             });
+                        (d.chop_markers || []).forEach(event => {
+                            const markerStyle = {
+                                CHOP_LOCK: { position: "aboveBar", color: "#64748b", shape: "circle", text: "CHOP鎖定" },
+                                CHOP_UNLOCK_LONG: { position: "belowBar", color: "#16a34a", shape: "square", text: "CHOP解鎖多" },
+                                CHOP_UNLOCK_SHORT: { position: "aboveBar", color: "#dc2626", shape: "square", text: "CHOP解鎖空" },
+                            }[event.action];
+                            if (!markerStyle) return;
+                            chopMarkers.push({ time: d.time, ...markerStyle, size: 1 });
+                        });
                     });
                     
                     const referencePrice = Number(candles[candles.length - 1]?.close || 0);
@@ -849,9 +923,11 @@
                         });
                     }
                     if (candles.length > 0) this._lastCandle = candles[candles.length - 1];
-                    const markerSignature = JSON.stringify(tradeMarkers);
+                    const chartMarkers = [...tradeMarkers, ...chopMarkers]
+                        .sort((a, b) => a.time - b.time);
+                    const markerSignature = JSON.stringify(chartMarkers);
                     if (this._chartMarkerSignature !== markerSignature) {
-                        this._candlestickSeries.setMarkers(tradeMarkers);
+                        this._candlestickSeries.setMarkers(chartMarkers);
                         this._chartMarkerSignature = markerSignature;
                     }
                     
@@ -994,8 +1070,8 @@
                         if (data.market_modes) this.bot.market_modes = data.market_modes;
                         if (data.tickers) {
                             this.bot.tickers = data.tickers;
-                            // 讓圖表最後一根 K 線實時隨 ticker 跳動（每 500ms），消除視覺延遲
-                            if (this.chartModal.show && this.chartModal.symbol && this._candlestickSeries && this._lastCandle) {
+                            // ticker 只更新價格與持倉；K 線由 5 秒增量請求更新，避免 500ms 重畫閃爍
+                            if (false && this.chartModal.show && this.chartModal.symbol && this._candlestickSeries && this._lastCandle) {
                                 const currentPrice = this.getCurrPrice(this.chartModal.symbol);
                                 if (currentPrice !== null && currentPrice !== undefined) {
                                     this._lastCandle.close = currentPrice;
@@ -1054,6 +1130,25 @@
                         await this.fetchStatus();
                     } finally {
                         this.isAnalyzing = false;
+                    }
+                },
+                async placeOrder(symbol, side) {
+                    if (this.isPlacingOrder) return;
+                    this.isPlacingOrder = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/manual_order', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                symbol: symbol,
+                                side: side,
+                                amount: 0
+                            })
+                        });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isPlacingOrder = false;
                     }
                 },
                 async closePos(symbol) {
