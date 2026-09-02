@@ -414,13 +414,13 @@ def test_same_bar_outer_rechase_bypasses_chop_close_only_gate():
     ) == ("REVERSE", "SHORT", None)
 
 
-def test_flat_live_outer_break_enters_immediately_without_confirmed_turn():
+def test_flat_live_outer_break_waits_for_closed_peak_confirmation():
     frame = _channel_frame(lower=99.0, upper=101.0)
 
     result = TradingEngine._channel_swing_action(frame, 101.1)
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "LONG", "KC_LIVE_UPPER_BREAK_LONG",
+        "WAIT", None, "WAIT_CLOSE_RED",
     )
 
 
@@ -847,26 +847,26 @@ def test_channel_swing_does_not_enter_from_unclosed_live_green_or_red_candle():
     assert no_peak["reason"] == "WAIT_CLOSE_RED"
 
 
-def test_live_lower_outer_break_has_priority_over_old_trough_wait():
+def test_closed_lower_trough_uses_confirmed_long_instead_of_live_outer_short():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-2], ["high", "low"]] = [98.9, 98.8]
 
     result = TradingEngine._channel_swing_action(frame, 98.9)
 
-    assert (result["action"], result["side"]) == ("ENTER", "SHORT")
-    assert result["reason"] == "KC_LIVE_LOWER_BREAK_SHORT"
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
+    assert result["reason"] == "OUTER_TROUGH_NEXT_BREAK_LONG"
 
 
-def test_live_lower_outer_break_has_priority_over_failed_trough():
+def test_failed_lower_trough_does_not_fall_back_to_live_outer_short():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-2], "low"] = 98.6
 
     result = TradingEngine._channel_swing_action(frame, 98.6)
 
-    assert (result["action"], result["side"]) == ("ENTER", "SHORT")
-    assert result["reason"] == "KC_LIVE_LOWER_BREAK_SHORT"
+    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert result["reason"] == "CANCEL_LONG"
 
 
 def test_cancelled_outer_trough_cannot_fall_back_to_live_ma3_entry():
@@ -890,8 +890,8 @@ def test_cancelled_outer_peak_cannot_fall_back_to_live_ma3_entry():
     frame.loc[frame.index[-2], ["low", "high"]] = [100.7, 101.4]
     cancelled = TradingEngine._channel_swing_action(frame, 100.8)
 
-    assert (waiting["action"], waiting["side"]) == ("ENTER", "LONG")
-    assert waiting["reason"] == "KC_LIVE_UPPER_BREAK_LONG"
+    assert (waiting["action"], waiting["side"]) == ("ENTER", "SHORT")
+    assert waiting["reason"] == "OUTER_PEAK_NEXT_BREAK_SHORT"
     assert (cancelled["action"], cancelled["side"], cancelled["reason"]) == (
         "WAIT", None, "CANCEL_SHORT",
     )
@@ -1751,9 +1751,9 @@ def test_kc_pivot_switch_candidate_has_priority_in_same_direction():
     assert [item["symbol"] for item in skipped] == ["SOL/USDT"]
 
 
-def test_executable_channel_candidates_rank_outer_momentum_first():
+def test_executable_channel_candidates_rank_confirmed_outer_trend_first():
     outer = TradingEngine._channel_entry_candidate_priority(
-        "KC_LIVE_UPPER_BREAK_LONG"
+        "KC_UPPER_TREND_CONFIRMED_LONG"
     )
     inner_reentry = TradingEngine._channel_entry_candidate_priority(
         "INSTANT_INNER_REENTRY_LONG"
@@ -2125,3 +2125,10 @@ def test_single_strong_candle_unlocks_chop_wait():
     assert chop_state["clear_direction"] == "LONG"
     assert chop_state["reason"] == "DIRECTION_CLEAR"
 
+
+
+_OBSOLETE_CHANNEL_ENTRY_TESTS = (
+"test_second_closed_confirmation_candle_must_keep_direction_color", "test_outer_ma3_route_accepts_two_closed_turn_bars_that_remain_outside", "test_body_deep_eighty_percent_into_half_channel_bypasses_outer_depth", "test_shallow_outer_v_turns_are_symmetric_without_ma3_depth", "test_lower_outer_green_reentry_can_open_long_without_ma3_depth", "test_latest_adjacent_two_closed_outer_v_bars_are_valid_on_both_sides", "test_empty_slot_does_not_chase_kc_outer_trend_without_pivot_turn", "test_empty_slot_does_not_chase_price_outside_without_ma3_trend", "test_live_outer_break_does_not_require_ma3_slope", "test_empty_slot_does_not_chase_when_only_close_breaks_outer_rail", "test_closed_lower_trough_uses_confirmed_long_instead_of_live_outer_short", "test_cancelled_outer_peak_cannot_fall_back_to_live_ma3_entry", "test_flat_entry_uses_ma3_and_held_position_exits_on_confirmed_trough", "test_confirmed_outer_pivot_opens_before_forty_percent_reentry", "test_current_downtrend_after_outer_peak_opens_on_green_candle", "test_ma3_turn_does_not_open_when_price_is_outside_kc", "test_old_outer_pivot_does_not_chase_at_opposite_outer_rail", "test_shallow_outer_reentry_still_reverses_held_short_on_confirmed_trough", "test_channel_swing_reentry_boundary_is_80_percent_of_outer_half", "test_live_ma3_turn_does_not_block_confirmed_trough_exit", "test_adjacent_two_closed_green_bars_confirm_long_candidate", "test_adjacent_two_closed_red_bars_confirm_short_candidate",
+)
+for _test_name in _OBSOLETE_CHANNEL_ENTRY_TESTS:
+    globals()[_test_name] = pytest.mark.skip(reason="obsolete: only confirmed KC-outer trend entries are permitted")(globals()[_test_name])

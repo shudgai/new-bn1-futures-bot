@@ -5525,12 +5525,8 @@ class TradingEngine:
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        if not str(current_side or "").upper():
-            live_outer = TradingEngine._channel_live_outer_entry_action(
-                frame, price,
-            )
-            if live_outer.get("action") == "ENTER":
-                return live_outer
+        # 空手時不因即時碰觸或突破 KC 外軌直接追單；新倉只接受外側趨勢
+        # 經已收盤 K 與下一根突破確認的順勢交易。
 
         three_candle_exit = TradingEngine._channel_three_candle_exit_action(
             frame, current_side,
@@ -5560,7 +5556,7 @@ class TradingEngine:
             }
 
         # 1. 優先檢查即時內軌回轉例外
-        if hasattr(TradingEngine, "_channel_live_inner_reentry_action"):
+        if str(current_side or "").upper() and hasattr(TradingEngine, "_channel_live_inner_reentry_action"):
             inner_action = TradingEngine._channel_live_inner_reentry_action(
                 frame, live_price, current_side
             )
@@ -5679,22 +5675,8 @@ class TradingEngine:
                     "WAIT_CLOSE_GREEN_IN_LOWER_MIDDLE"
                     if live_lower_touch else "WAIT_LOWER_GREEN_REENTRY"
                 )
-        elif trough_turn:
-            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
-                action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
-            else:
-                action, target_side, reason = (
-                    "ENTER", "LONG",
-                    "OUTER_TROUGH_NEXT_BREAK_LONG"
-                )
-        elif peak_turn:
-            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
-                action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
-            else:
-                action, target_side, reason = (
-                    "ENTER", "SHORT",
-                    "OUTER_PEAK_NEXT_BREAK_SHORT"
-                )
+        elif trough_turn or peak_turn:
+            action, target_side, reason = "WAIT", None, "OUTER_REVERSAL_ENTRY_DISABLED"
         else:
             action, target_side = "WAIT", None
             if trough_turn and prior_down_context:
@@ -6316,22 +6298,14 @@ class TradingEngine:
                     existing_pos.get("channel_turn_low") if existing_pos else None,
                     existing_pos.get("channel_turn_high") if existing_pos else None,
                 )
-                if existing_pos:
-                    immediate_rechase = self._channel_same_bar_outer_rechase_action(
-                        channel_df,
-                        channel_price,
-                        existing_pos.get("side"),
-                        self._channel_swing_last_reverse_bar.get(symbol),
-                    )
-                    if immediate_rechase.get("action") == "REVERSE":
-                        channel_action = immediate_rechase
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
                 # 服務重啟或首次掃描時，只要當前仍鎖定，或上一根資料仍處於
                 # 盤整，就能在緊接的 live K 確認突破。
                 chop_breakout_context = bool(
                     chop_locked or recent_chop_detected
                 )
-                if not existing_pos and chop_breakout_context:
+                if False:  # Channel Swing 新倉僅保留已確認的 KC 外側趨勢
+
                     chop_breakout_action = self._channel_chop_breakout_action(
                         channel_df, channel_price,
                     )
@@ -6391,6 +6365,11 @@ class TradingEngine:
                     self._channel_outer_trend_wait.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
+                # 外軌峰谷、內軌回轉與同 K 反手只可平舊倉，不建立新倉。
+                if existing_pos and action == "REVERSE":
+                    action = "EXIT"
+                    target_side = None
+                    channel_action["reason"] = f"{channel_action.get('reason') or 'CHANNEL_REVERSAL'}_EXIT_ONLY"
                 # 上軌紅 K 建立的空單在通道內不反覆改開多：只有
                 # 即時綠 K 回到上軌外才准許反手。半通道即時平倉
                 # 是 EXIT，不受此反手鎖影響。

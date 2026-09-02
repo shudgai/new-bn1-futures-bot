@@ -60,8 +60,21 @@ SELECTION_FILE = os.path.join(DATA_DIR, "symbol_selection.json")
 
 # Keep a just-profited symbol off the board briefly while the bot finds a new setup.
 PROFIT_EXIT_SYMBOL_COOLDOWN_SEC = float(
-    os.getenv("PROFIT_EXIT_SYMBOL_COOLDOWN_SEC", "180")
+    os.getenv("PROFIT_EXIT_SYMBOL_COOLDOWN_SEC", "1800")
 )
+RESCAN_SYMBOL_COOLDOWN_SEC = float(
+    os.getenv("RESCAN_SYMBOL_COOLDOWN_SEC", "300")
+)
+MEME_SCAN_RESERVE = max(0, int(os.getenv("MEME_SCAN_RESERVE", "10")))
+MEME_MIN_VOLUME_FACTOR = min(1.0, max(0.05, float(
+    os.getenv("MEME_MIN_VOLUME_FACTOR", "0.25")
+)))
+MEME_BASES = frozenset({
+    "DOGE", "1000SHIB", "SHIB", "1000PEPE", "PEPE", "WIF",
+    "1000BONK", "BONK", "1000FLOKI", "FLOKI", "MEME", "DOGS",
+    "BRETT", "POPCAT", "PNUT", "PENGU", "TRUMP", "FARTCOIN",
+    "PUMP", "NEIRO", "1000SATS", "SATS",
+})
 
 
 def _trade_ts(trade: dict) -> float:
@@ -136,10 +149,16 @@ class SymbolRotation:
         protected.update(
             getattr(self.account, "pending_limit_orders", {}).keys()
         )
-        self.next_rotation_exclusions.update(
+        rescanned = {
             str(symbol).strip() for symbol in symbols
             if str(symbol).strip() and str(symbol).strip() not in protected
-        )
+        }
+        self.next_rotation_exclusions.update(rescanned)
+        cooldown_until = time.time() + RESCAN_SYMBOL_COOLDOWN_SEC
+        for symbol in rescanned:
+            self.replacement_cooldowns[symbol] = max(
+                self.replacement_cooldowns.get(symbol, 0.0), cooldown_until,
+            )
         self.last_rotation_at = 0.0
 
     def replacement_exclusions(self) -> set[str]:
@@ -321,13 +340,17 @@ class SymbolRotation:
 
 
     @staticmethod
+    def _is_meme_symbol(symbol: str) -> bool:
+        base = str(symbol or "").split("/", 1)[0].upper()
+        return base in MEME_BASES
+
+    @staticmethod
     def market_candidates(
         tickers: dict, markets: dict = None, execution_symbols: set = None
     ) -> List[str]:
         normalized = SymbolRotation._normalize_tickers(tickers)
         allowed_crypto = None
         if markets:
-            import time
             now_ms = time.time() * 1000
             min_listing_ms = SYMBOL_MIN_LISTING_DAYS * 24 * 60 * 60 * 1000
             allowed_crypto = set()
@@ -346,33 +369,56 @@ class SymbolRotation:
                     if onboard and now_ms - int(onboard) < min_listing_ms:
                         continue
                     allowed_crypto.add(market["symbol"].replace(":USDT", ""))
+
         excluded_bases = {
-            "BTC", "ETH", "BNB", "APT", "FET", "TAO", "WIF",
+            "BTC", "ETH", "BNB", "APT", "FET", "TAO",
             "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
             "USD1", "BUSD", "USTC",
         }
-        ranked = []
+        normal_ranked = []
+        meme_ranked = []
+        meme_min_volume = SYMBOL_MIN_QUOTE_VOLUME * MEME_MIN_VOLUME_FACTOR
         for symbol, ticker in normalized.items():
             if not symbol.endswith("/USDT") or symbol in ENTRY_DISABLED_SYMBOLS:
                 continue
-            # 所有模式都可從主網全市場挑選；非紙上模式由 execution_symbols
-            # 再限制為執行交易所實際存在且可下單的合約交集。
             if execution_symbols is not None and symbol not in execution_symbols:
                 continue
             if allowed_crypto is not None and symbol not in allowed_crypto:
                 continue
-            base = symbol.split("/", 1)[0]
+            base = symbol.split("/", 1)[0].upper()
             quote_volume = float(ticker.get("quoteVolume") or 0.0)
             change_pct = abs(float(ticker.get("percentage") or 0.0))
             if (
                 base in excluded_bases
                 or base.endswith(("UP", "DOWN", "BULL", "BEAR"))
-                or quote_volume < SYMBOL_MIN_QUOTE_VOLUME or change_pct > SYMBOL_MAX_24H_CHANGE_PCT
+                or change_pct > SYMBOL_MAX_24H_CHANGE_PCT
             ):
                 continue
-            ranked.append((quote_volume, symbol))
-        ranked.sort(reverse=True)
-        return [symbol for _, symbol in ranked[:SYMBOL_MARKET_SCAN_LIMIT]]
+            if quote_volume >= SYMBOL_MIN_QUOTE_VOLUME:
+                normal_ranked.append((quote_volume, symbol))
+            if (
+                SymbolRotation._is_meme_symbol(symbol)
+                and quote_volume >= meme_min_volume
+            ):
+                meme_ranked.append((quote_volume, symbol))
+
+        normal_ranked.sort(reverse=True)
+        meme_ranked.sort(reverse=True)
+        reserve = min(MEME_SCAN_RESERVE, SYMBOL_MARKET_SCAN_LIMIT)
+        selected = [
+            symbol for _, symbol in normal_ranked[:max(0, SYMBOL_MARKET_SCAN_LIMIT - reserve)]
+        ]
+        for _, symbol in meme_ranked:
+            if symbol not in selected:
+                selected.append(symbol)
+            if sum(SymbolRotation._is_meme_symbol(item) for item in selected) >= reserve:
+                break
+        for _, symbol in normal_ranked:
+            if len(selected) >= SYMBOL_MARKET_SCAN_LIMIT:
+                break
+            if symbol not in selected:
+                selected.append(symbol)
+        return selected[:SYMBOL_MARKET_SCAN_LIMIT]
 
     def build_metrics(self, tickers: dict, candidates: List[str] = None) -> List[dict]:
         candidates = candidates or SYMBOL_CANDIDATE_POOL
@@ -467,13 +513,14 @@ class SymbolRotation:
                 ticker = normalized.get(symbol, {})
                 price = float(ticker.get("last") or curr["close"])
 
-                # 急升急降過濾：回看最近 N 根5分K，漲跌幅超標則跳過
+                # 近期方向加速度供迷因突發偵測使用；已超過急漲跌上限仍淘汰，避免追尾。
+                recent_change_pct = 0.0
                 if len(df) >= RAPID_MOVE_WINDOW + 1:
                     recent_close = float(df.iloc[-1]["close"])
                     past_close = float(df.iloc[-(RAPID_MOVE_WINDOW + 1)]["close"])
                     if past_close > 0:
-                        recent_change_pct = abs((recent_close - past_close) / past_close * 100.0)
-                        if recent_change_pct > RAPID_MOVE_THRESHOLD:
+                        recent_change_pct = (recent_close - past_close) / past_close * 100.0
+                        if abs(recent_change_pct) > RAPID_MOVE_THRESHOLD:
                             continue
 
                 atr = max(float(curr["atr"]), price * 0.0001)
@@ -490,6 +537,12 @@ class SymbolRotation:
                 kc_width_pct = (float(curr["kc_upper"]) - float(curr["kc_lower"])) / kc_middle if kc_middle > 0 else 0.0
                 vol_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
                 volume_ratio = float(curr["volume"]) / vol_ma if vol_ma > 0 else 0.0
+                is_meme = self._is_meme_symbol(symbol)
+                meme_burst_energy = bool(
+                    is_meme
+                    and volume_ratio >= max(KELTNER_MIN_VOLUME_RATIO, 1.5)
+                    and 0.35 <= abs(recent_change_pct) <= RAPID_MOVE_THRESHOLD
+                )
                 liquidity = (log_volumes[symbol] - low) / spread
                 quote_volume = float(ticker.get("quoteVolume") or 0.0)
                 change_pct = float(ticker.get("percentage") or 0.0)
@@ -568,6 +621,11 @@ class SymbolRotation:
                         else min(max((55.0 - rsi) / 15.0, 0.0), 1.0)
                     )
                     directional_change = change_pct if is_long else -change_pct
+                    meme_burst = bool(
+                        meme_burst_energy
+                        and ((is_long and recent_change_pct > 0.0)
+                             or (not is_long and recent_change_pct < 0.0))
+                    )
                     movement_score = max(0.0, 1.0 - abs(directional_change - 3.0) / 7.0)
                     # 在合格 ATR 區間內，優先選波動較大的主流合約；超出上限
                     # 仍會由 atr_eligible／volatility_excluded 淘汰，避免把極端
@@ -600,20 +658,26 @@ class SymbolRotation:
                         + history_score * 10.0
                         + movement_score * 5.0
                         + volatility_priority * VOLATILITY_ROTATION_WEIGHT
+                        + (12.0 if meme_burst else 0.0)
                     ) - overheat_penalty
                     results.append({
                         "symbol": symbol,
                         "direction": direction,
                         "quant_score": quant_score,
-                        "eligible": self._direction_is_eligible(
-                            trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
-                            volatility_excluded, history_quarantined,
+                        "eligible": (
+                            self._direction_is_eligible(
+                                trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
+                                volatility_excluded, history_quarantined,
+                            ) or meme_burst
                         ) and (adx <= SYMBOL_MAX_ADX_RANGE) and (
                             kc_width_pct >= SYMBOL_MIN_KC_WIDTH_PCT
                         ) and entry_priority > 0 and (
                             volume_ratio >= KELTNER_MIN_VOLUME_RATIO
                         ),
                         "entry_priority": entry_priority,
+                        "is_meme": is_meme,
+                        "meme_burst": meme_burst,
+                        "recent_change_pct": recent_change_pct,
                         "energy_eligible": volume_ratio >= KELTNER_MIN_VOLUME_RATIO,
                         "atr_eligible": atr_eligible,
                         "atr_pct": atr_pct,
