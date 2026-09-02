@@ -7869,7 +7869,6 @@ class TradingEngine:
                                 f"{float(skipped.get('profit_potential') or 0.0):.2f}%／"
                                 f"趨勢品質 {float(skipped.get('trend_quality') or 0.0):.2f}"
                             )
-                        from core.config import MAX_SLOTS
                         for sig in detected_candidates:
                             symbol = sig["symbol"]
                             coin = symbol.replace("/USDT", "")
