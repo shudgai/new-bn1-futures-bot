@@ -795,21 +795,37 @@ class SymbolRotation:
             if symbol not in best_by_symbol or item.get("final_score", 0.0) > best_by_symbol[symbol].get("final_score", 0.0):
                 best_by_symbol[symbol] = item
 
-        # 只保留本輪仍合格或已有持倉的幣；不合格幣立即退出，不再為了湊滿
-        # 固定數量留在牌面。空缺只由本輪完整合格的 desired_items 補上。
+        # 介面上的幣種要留足時間觀察。只有替代者已在 KC 可立即進場區
+        # (entry_priority=3) 才換出原本的觀察幣；其餘尚在等待型的候選留在
+        # 掃描池，避免牌面因分數短暫變動不停跳換。
+        immediate_incoming = [
+            item for item in desired_items
+            if (
+                item["symbol"] not in current[:SYMBOL_ROTATION_COUNT]
+                and int(item.get("entry_priority") or 0) >= 3
+            )
+        ]
+
+        # 先維持目前的非停用觀察幣與持倉；若有立即可交易的替代者，再只
+        # 換出等量的最低優先級觀察幣，而非一次清空整個介面。
         changes = []
         current_slice = list(current[:SYMBOL_ROTATION_COUNT])
         selected = [
             symbol for symbol in current_slice
             if symbol in held_positions
-            or (symbol in desired_by_symbol and symbol not in ENTRY_DISABLED_SYMBOLS)
+            or symbol not in ENTRY_DISABLED_SYMBOLS
         ]
         removed = [
             symbol for symbol in current_slice
             if symbol not in selected and symbol not in held_positions
         ]
+        incoming_pool = (
+            [item for item in desired_items if item["symbol"] not in selected]
+            if len(selected) < SYMBOL_ROTATION_COUNT
+            else immediate_incoming
+        )
         incoming_items = sorted(
-            [item for item in desired_items if item["symbol"] not in selected],
+            incoming_pool,
             key=lambda item: (
                 int(item.get("entry_priority") or 0),
                 item.get("final_score", 0.0),
@@ -818,14 +834,26 @@ class SymbolRotation:
         )
         for incoming_item in incoming_items:
             if len(selected) >= SYMBOL_ROTATION_COUNT:
-                break
-            selected.append(incoming_item["symbol"])
-            if removed:
+                replaceable = [
+                    symbol for symbol in selected
+                    if symbol not in held_positions
+                ]
+                if not replaceable:
+                    break
+                outgoing = min(
+                    replaceable,
+                    key=lambda symbol: (
+                        int((best_by_symbol.get(symbol) or {}).get("entry_priority") or 0),
+                        float((best_by_symbol.get(symbol) or {}).get("final_score") or 0.0),
+                    ),
+                )
+                selected.remove(outgoing)
                 changes.append({
-                    "out": removed.pop(0),
+                    "out": outgoing,
                     "in": incoming_item["symbol"],
                     "direction": incoming_item["direction"],
                 })
+            selected.append(incoming_item["symbol"])
         for outgoing in removed:
             changes.append({"out": outgoing, "in": "", "direction": ""})
 

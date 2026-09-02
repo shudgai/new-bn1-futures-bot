@@ -793,6 +793,28 @@ def test_kc_lower_outer_downtrend_uses_symmetric_next_bar_break():
     assert (entered['action'], entered['side']) == ('ENTER', 'SHORT')
     assert entered['reason'] == 'KC_LOWER_TREND_CONFIRMED_SHORT'
 
+def test_kc_lower_red_touch_can_seed_short_before_it_closes_outside_rail():
+    frame = _dynamic_lower_trend_frame()
+    # 已收盤紅 K 觸及下軌，但收盤仍在通道內；下一根破低才可追空。
+    frame.loc[18, ['open', 'close', 'high', 'low', 'kc_lower']] = [99.15, 99.02, 99.18, 98.90, 98.95]
+    candidate = TradingEngine._channel_outer_trend_entry_action(frame, 98.98)
+    assert (candidate['action'], candidate['reason']) == ('WAIT', 'WAIT_DOWNTREND_BREAK')
+    assert candidate['pending']['side'] == 'SHORT'
+    entered = TradingEngine._channel_outer_trend_entry_action(frame, 98.84, candidate['pending'])
+    assert (entered['action'], entered['side'], entered['reason']) == (
+        'ENTER', 'SHORT', 'KC_LOWER_TREND_CONFIRMED_SHORT',
+    )
+
+def test_kc_lower_short_touch_cancels_on_v_rebound_before_low_break():
+    frame = _dynamic_lower_trend_frame()
+    frame.loc[18, ['open', 'close', 'high', 'low', 'kc_lower']] = [99.15, 99.02, 99.18, 98.90, 98.95]
+    candidate = TradingEngine._channel_outer_trend_entry_action(frame, 98.98)
+    frame.loc[19, 'high'] = float(candidate['pending']['candidate_high']) + 0.01
+    result = TradingEngine._channel_outer_trend_entry_action(frame, 99.0, candidate['pending'])
+    assert (result['action'], result['reason'], result['pending']) == (
+        'WAIT', 'CANCEL_DOWNTREND_CONFIRM', None,
+    )
+
 def test_kc_lower_outer_downtrend_waits_when_trend_is_ambiguous():
     frame = _dynamic_lower_trend_frame()
     frame.loc[16:18, ['ma3', 'ma15']] = [[100.1, 100.0]] * 3
@@ -816,12 +838,12 @@ def test_kc_lower_outer_downtrend_does_not_chase_when_break_is_too_far():
     assert result['reason'] in ('WAIT_DOWNTREND_RETEST', 'WAIT_DOWNTREND_RETEST_BREAK')
     assert result['pending']['confirmed'] is True
 
-def test_kc_upper_wick_without_outer_close_does_not_chase():
+def test_kc_upper_green_touch_waits_for_next_bar_high_break():
     frame = _dynamic_upper_trend_frame()
     frame.loc[18, 'close'] = float(frame.loc[18, 'kc_upper']) - 0.01
     result = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.1)
     assert (result['action'], result['side']) == ('WAIT', None)
-    assert result['reason'] == 'WAIT_OUTER_UPTREND'
+    assert result['reason'] == 'WAIT_TREND_BREAK'
 
 def _chop_momentum_frame(side):
     frame = _channel_frame()

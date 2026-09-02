@@ -4310,9 +4310,13 @@ class TradingEngine:
             return {"action": "WAIT", "side": None, "reason": "OUTER_UPTREND_DATA_INVALID"}
 
         if not pending:
+            latest_open = float(latest["open"])
             latest_close = float(latest["close"])
+            latest_high = max(float(latest["high"]), latest_close)
             latest_upper = float(latest["kc_upper"])
-            if latest_close < latest_upper:
+            # 趨勢追多也必須由剛收盤的順勢綠 K 碰到上軌建立候選；
+            # 下一根仍要破高才進場，與下軌追空完全鏡像。
+            if latest_high < latest_upper or latest_close <= latest_open:
                 return {
                     "action": "WAIT", "side": None,
                     "reason": "WAIT_OUTER_UPTREND", "kc_upper": upper,
@@ -4533,9 +4537,14 @@ class TradingEngine:
             return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_INVALID"}
 
         if not pending:
+            latest_open = float(latest["open"])
             latest_close = float(latest["close"])
+            latest_low = min(float(latest["low"]), latest_close)
             latest_lower = float(latest["kc_lower"])
-            if latest_close > latest_lower:
+            # 熊市下軌不再要求收盤已經跌到軌外：順勢紅 K 只要觸及
+            # 下軌就建立候選，下一根必須續跌破低才開空。這可捕捉剛破
+            # 軌的延續段，同時不把 V 型反彈當成空單。
+            if latest_low > latest_lower or latest_close >= latest_open:
                 return {
                     "action": "WAIT", "side": None,
                     "reason": "WAIT_OUTER_DOWNTREND", "kc_lower": lower,
@@ -4735,7 +4744,7 @@ class TradingEngine:
             ):
                 try:
                     latest = frame.iloc[-2]
-                    if float(latest["close"]) <= float(latest["kc_lower"]):
+                    if min(float(latest["low"]), float(latest["close"])) <= float(latest["kc_lower"]):
                         return TradingEngine._channel_outer_downtrend_entry_action(
                             frame, live_price,
                         )

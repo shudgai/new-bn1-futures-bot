@@ -1929,12 +1929,14 @@ def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch
             "direction": "LONG",
             "eligible": True,
             "final_score": 90.0 - index,
+            "entry_priority": 3,
         })
         metrics.append({
             "symbol": f"S{index}/USDT",
             "direction": "SHORT",
             "eligible": True,
             "final_score": 89.0 - index,
+            "entry_priority": 3,
         })
     held_symbol = "OLD11/USDT"
     selected, directions, changes = SymbolRotation.choose_directional_symbols(
@@ -1949,7 +1951,7 @@ def test_directional_rotation_selects_six_each_and_protects_position(monkeypatch
     assert all(change["out"] != held_symbol for change in changes)
 
 
-def test_directional_rotation_removes_all_ineligible_old_symbols(monkeypatch):
+def test_directional_rotation_keeps_old_symbols_when_no_replacement_is_ready(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 12)
@@ -1970,9 +1972,35 @@ def test_directional_rotation_removes_all_ineligible_old_symbols(monkeypatch):
         current, {}, metrics
     )
 
-    assert len(selected) == 12
-    assert len(changes) == 12
-    assert all(symbol.startswith("NEW") for symbol in selected)
+    assert selected == current
+    assert changes == []
+
+
+def test_directional_rotation_replaces_only_for_immediately_tradeable_symbol(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 3)
+    current = ["OLD1/USDT", "OLD2/USDT", "OLD3/USDT"]
+    metrics = [
+        {
+            "symbol": "READY/USDT", "direction": "SHORT", "eligible": True,
+            "final_score": 90.0, "entry_priority": 3,
+        },
+        {
+            "symbol": "WAITING/USDT", "direction": "LONG", "eligible": True,
+            "final_score": 95.0, "entry_priority": 2,
+        },
+    ]
+
+    selected, directions, changes = SymbolRotation.choose_directional_symbols(
+        current, {}, metrics,
+    )
+
+    assert "READY/USDT" in selected
+    assert "WAITING/USDT" not in selected
+    assert len(selected) == len(current)
+    assert changes == [{"out": "OLD1/USDT", "in": "READY/USDT", "direction": "SHORT"}]
+    assert directions["READY/USDT"] == "SHORT"
 
 
 def test_directional_rotation_backfills_missing_shorts_with_longs(monkeypatch):
