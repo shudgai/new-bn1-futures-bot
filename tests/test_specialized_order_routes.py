@@ -110,6 +110,8 @@ async def test_ma3_ma15_continuation_routes_to_market_for_both_sides(side):
         "kc_middle": [100.0] * 20,
         "kc_upper": [102.0] * 20,
         "kc_lower": [98.0] * 20,
+        "volume": [150.0] * 20,
+        "vol_ma_20": [100.0] * 20,
     })
 
     placed = await engine._place_continuous_market_entry(

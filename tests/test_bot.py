@@ -1013,14 +1013,18 @@ def test_low_score_signal_caps_eth_leverage():
     assert get_signal_leverage("APT/USDT", 70) < SYMBOL_LEVERAGE["APT/USDT"]
 
 
-def test_market_rotation_starts_with_seed_symbols_and_uses_one_slot():
+def test_market_rotation_starts_with_seed_symbols_and_has_configured_slots():
     assert DEFAULT_SYMBOLS == ["1000PEPE/USDT"]
-    assert engine_module.MAX_SLOTS == 1
+    assert engine_module.MAX_SLOTS > 0
 
 
-def test_effective_slots_keep_two_slots_at_low_balance():
-    assert engine_module.get_effective_slot_count(99.99, configured_max=2) == 2
-    assert engine_module.get_effective_slot_count(119.99, configured_max=5) == 2
+def test_effective_slots_reduce_to_one_below_minimum_two_slot_balance(monkeypatch):
+    monkeypatch.setitem(
+        engine_module.get_effective_slot_count.__globals__,
+        "MIN_TWO_SLOT_BALANCE_USDT", 120.0,
+    )
+    assert engine_module.get_effective_slot_count(99.99, configured_max=2) == 1
+    assert engine_module.get_effective_slot_count(119.99, configured_max=5) == 1
     assert engine_module.get_effective_slot_count(120.0, configured_max=5) == 2
     assert engine_module.get_effective_slot_count(224.99, configured_max=5) == 2
     assert engine_module.get_effective_slot_count(225.0, configured_max=5) == 3
@@ -1711,6 +1715,56 @@ def test_consecutive_hard_stops_start_directional_cooldown(monkeypatch):
         "symbol": "ZEC/USDT", "side": "LONG", "reason": "目標平倉",
     })
     assert rotation.get_stop_cooldown_remaining("ZEC/USDT", "LONG", now=now) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("direction", "price", "expected_priority"),
+    [
+        ("LONG", 100.2, 3),
+        ("SHORT", 98.8, 3),
+        ("LONG", 99.2, 2),
+        ("SHORT", 99.8, 2),
+        ("LONG", 99.7, 1),
+        ("SHORT", 99.3, 1),
+        ("LONG", 101.0, 0),
+        ("SHORT", 98.0, 0),
+    ],
+)
+def test_kc_entry_setup_prioritizes_fresh_outer_moves_and_rejects_runaways(
+    direction, price, expected_priority,
+):
+    setup = SymbolRotation._kc_entry_setup(
+        price=price,
+        kc_upper=100.0,
+        kc_lower=99.0,
+        atr=1.0,
+        direction=direction,
+    )
+
+    assert setup["priority"] == expected_priority
+
+
+def test_directional_rotation_prefers_kc_outer_setup_over_higher_score(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 40.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 1)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 1)
+    metrics = [
+        {
+            "symbol": "INSIDE/USDT", "direction": "LONG", "eligible": True,
+            "entry_priority": 1, "final_score": 99.0,
+        },
+        {
+            "symbol": "OUTER/USDT", "direction": "LONG", "eligible": True,
+            "entry_priority": 3, "final_score": 70.0,
+        },
+    ]
+
+    selected, directions, _ = SymbolRotation.choose_directional_symbols(
+        [], {}, metrics,
+    )
+
+    assert selected == ["OUTER/USDT"]
+    assert directions == {"OUTER/USDT": "LONG"}
 
 
 def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
@@ -3598,6 +3652,8 @@ def test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction():
         "ma3": [100.0, 101.0, 100.5],
         "kc_upper": [102.0, 102.0, 102.0],
         "kc_lower": [98.0, 98.0, 98.0],
+        "volume": [150.0, 150.0, 150.0],
+        "vol_ma_20": [100.0, 100.0, 100.0],
     })
     peak = {
         "signal": "SHORT", "entry_type": "PEAK_TURN",
@@ -4153,7 +4209,16 @@ def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
         "kc_middle": [100.0, 100.0, 100.0],
         "kc_upper": [102.0, 102.0, 102.0],
         "kc_lower": [98.0, 98.0, 98.0],
+        "volume": [150.0, 150.0, 150.0],
+        "vol_ma_20": [100.0, 100.0, 100.0],
     })
+    low_energy = frame.copy()
+    low_energy["volume"] = 100.0
+    assert not asyncio.run(engine._place_continuous_market_entry(
+        "BTC/USDT", "LONG", low_energy, 100.0,
+        "TREND_LONG", "low energy", 85, "1m",
+    ))
+    assert opened == []
     assert asyncio.run(engine._place_continuous_market_entry(
         "BTC/USDT", "LONG", frame, 100.0, "TREND_LONG", "test", 85, "1m"
     ))
@@ -4197,12 +4262,15 @@ def test_continuous_entry_checks_current_symbol_trend_only_in_range():
     engine.account = DummyAccount()
     frame = pd.DataFrame({
         "low": [99.0] * 15,
-        "high": [103.0] * 15,
+        "high": [101.0] * 15,
+        "open": list(range(88, 103)),
         "close": list(range(88, 103)),
         "atr": [1.0] * 15,
         "kc_middle": [100.0] * 15,
         "kc_upper": [104.0] * 15,
         "kc_lower": [96.0] * 15,
+        "volume": [150.0] * 15,
+        "vol_ma_20": [100.0] * 15,
     })
 
     assert not asyncio.run(engine._place_continuous_market_entry(

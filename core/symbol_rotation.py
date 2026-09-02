@@ -51,6 +51,7 @@ from core.config import (
     MAINSTREAM_SYMBOLS,
     WEAK_ENERGY_ADX_THRESHOLD,
     WEAK_ENERGY_LEVERAGE_CAP,
+    KELTNER_MIN_VOLUME_RATIO,
 )
 
 
@@ -127,6 +128,18 @@ class SymbolRotation:
             cooldowns = {}
             self.replacement_cooldowns = cooldowns
         cooldowns[symbol] = time.time() + PROFIT_EXIT_SYMBOL_COOLDOWN_SEC
+        self.last_rotation_at = 0.0
+
+    def request_rescan(self, symbols: Iterable[str]) -> None:
+        """Force the next scan to use a different, one-cycle candidate board."""
+        protected = set(getattr(self.account, "positions", {}).keys())
+        protected.update(
+            getattr(self.account, "pending_limit_orders", {}).keys()
+        )
+        self.next_rotation_exclusions.update(
+            str(symbol).strip() for symbol in symbols
+            if str(symbol).strip() and str(symbol).strip() not in protected
+        )
         self.last_rotation_at = 0.0
 
     def replacement_exclusions(self) -> set[str]:
@@ -218,6 +231,42 @@ class SymbolRotation:
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
             and not volatility_excluded
         )
+
+    @staticmethod
+    def _kc_entry_setup(
+        price: float, kc_upper: float, kc_lower: float, atr: float, direction: str,
+    ) -> dict:
+        """Rank KC geography by how soon it can become an entry."""
+        values = (price, kc_upper, kc_lower, atr)
+        if (
+            not all(math.isfinite(float(value)) for value in values)
+            or atr <= 0.0
+            or kc_upper <= kc_lower
+        ):
+            return {"priority": 0, "score": 0.0, "distance_atr": math.inf}
+
+        side = str(direction or "").upper()
+        if side == "LONG":
+            if kc_upper <= price <= kc_upper + atr * 0.8:
+                distance = (price - kc_upper) / atr
+                return {"priority": 3, "score": 1.0 - (distance / 0.8) * 0.05, "distance_atr": distance}
+            if kc_lower - atr * 0.8 <= price <= kc_lower + atr * 0.5:
+                distance = abs(price - kc_lower) / atr
+                return {"priority": 2, "score": 0.66 - min(distance, 1.0) * 0.05, "distance_atr": distance}
+            if kc_upper - atr * 1.5 <= price < kc_upper:
+                distance = (kc_upper - price) / atr
+                return {"priority": 1, "score": 0.33 - min(distance / 1.5, 1.0) * 0.05, "distance_atr": distance}
+        elif side == "SHORT":
+            if kc_lower - atr * 0.8 <= price <= kc_lower:
+                distance = (kc_lower - price) / atr
+                return {"priority": 3, "score": 1.0 - (distance / 0.8) * 0.05, "distance_atr": distance}
+            if kc_upper - atr * 0.5 <= price <= kc_upper + atr * 0.8:
+                distance = abs(price - kc_upper) / atr
+                return {"priority": 2, "score": 0.66 - min(distance, 1.0) * 0.05, "distance_atr": distance}
+            if kc_lower < price <= kc_lower + atr * 1.5:
+                distance = (price - kc_lower) / atr
+                return {"priority": 1, "score": 0.33 - min(distance / 1.5, 1.0) * 0.05, "distance_atr": distance}
+        return {"priority": 0, "score": 0.0, "distance_atr": math.inf}
 
     def get_history_allocation_factor(self, symbol: str, side: str) -> float:
         """保留探索機會，同時限制樣本不足或負期望方向的試錯成本。"""
@@ -415,7 +464,8 @@ class SymbolRotation:
                 computed_1h = self.strategy.compute_indicators(df_1h)
                 curr = computed.iloc[-1]
                 st_direction_1h = int(computed_1h.iloc[-1]["st_direction"])
-                price = float(curr["close"])
+                ticker = normalized.get(symbol, {})
+                price = float(ticker.get("last") or curr["close"])
 
                 # 急升急降過濾：回看最近 N 根5分K，漲跌幅超標則跳過
                 if len(df) >= RAPID_MOVE_WINDOW + 1:
@@ -441,7 +491,6 @@ class SymbolRotation:
                 vol_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
                 volume_ratio = float(curr["volume"]) / vol_ma if vol_ma > 0 else 0.0
                 liquidity = (log_volumes[symbol] - low) / spread
-                ticker = normalized.get(symbol, {})
                 quote_volume = float(ticker.get("quoteVolume") or 0.0)
                 change_pct = float(ticker.get("percentage") or 0.0)
 
@@ -505,9 +554,14 @@ class SymbolRotation:
                     st_5m_aligned = st_direction == wanted_direction
                     st_1h_aligned = st_direction_1h == wanted_direction
                     st_aligned = st_5m_aligned and st_1h_aligned
-                    kc_target = float(curr["kc_upper"] if is_long else curr["kc_lower"])
-                    kc_distance_atr = abs(price - kc_target) / atr
-                    kc_score = max(0.0, 1.0 - kc_distance_atr / 2.0)
+                    kc_upper = float(curr["kc_upper"])
+                    kc_lower = float(curr["kc_lower"])
+                    kc_setup = self._kc_entry_setup(
+                        price, kc_upper, kc_lower, atr, direction,
+                    )
+                    entry_priority = int(kc_setup["priority"])
+                    kc_score = float(kc_setup["score"])
+                    kc_distance_atr = float(kc_setup["distance_atr"])
                     rsi_score = (
                         min(max((rsi - 45.0) / 15.0, 0.0), 1.0)
                         if is_long
@@ -537,10 +591,10 @@ class SymbolRotation:
                     else:
                         history_score = 0.50
                     quant_score = (
-                        (1.0 if trend_aligned else 0.0) * 20.0
-                        + (1.0 if st_aligned else 0.0) * 15.0
-                        + kc_score * 15.0
-                        + rsi_score * 10.0
+                        (1.0 if trend_aligned else 0.0) * 10.0
+                        + (1.0 if st_aligned else 0.0) * 10.0
+                        + kc_score * 30.0
+                        + rsi_score * 5.0
                         + min(volume_ratio / 0.8, 1.0) * 10.0
                         + liquidity * 15.0
                         + history_score * 10.0
@@ -554,7 +608,13 @@ class SymbolRotation:
                         "eligible": self._direction_is_eligible(
                             trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
                             volatility_excluded, history_quarantined,
-                        ) and (adx <= SYMBOL_MAX_ADX_RANGE) and (kc_width_pct >= SYMBOL_MIN_KC_WIDTH_PCT),
+                        ) and (adx <= SYMBOL_MAX_ADX_RANGE) and (
+                            kc_width_pct >= SYMBOL_MIN_KC_WIDTH_PCT
+                        ) and entry_priority > 0 and (
+                            volume_ratio >= KELTNER_MIN_VOLUME_RATIO
+                        ),
+                        "entry_priority": entry_priority,
+                        "energy_eligible": volume_ratio >= KELTNER_MIN_VOLUME_RATIO,
                         "atr_eligible": atr_eligible,
                         "atr_pct": atr_pct,
                         "history_quarantined": history_quarantined,
@@ -600,7 +660,10 @@ class SymbolRotation:
         for direction in ("LONG", "SHORT"):
             side_ranked = sorted(
                 [item for item in qualified if item["direction"] == direction],
-                key=lambda item: item["final_score"],
+                key=lambda item: (
+                    int(item.get("entry_priority") or 0),
+                    item["final_score"],
+                ),
                 reverse=True,
             )
             for item in side_ranked:
@@ -618,7 +681,10 @@ class SymbolRotation:
         if len(selected_items) < SYMBOL_ROTATION_COUNT:
             mixed_backfill = sorted(
                 [item for item in qualified if item["symbol"] not in used_symbols],
-                key=lambda item: item["final_score"],
+                key=lambda item: (
+                    int(item.get("entry_priority") or 0),
+                    item["final_score"],
+                ),
                 reverse=True,
             )
             for item in mixed_backfill:
@@ -640,7 +706,13 @@ class SymbolRotation:
                     item for item in selected_items if item["symbol"] not in held_positions
                 ]
             if replaceable:
-                removed = min(replaceable, key=lambda item: item["final_score"])
+                removed = min(
+                    replaceable,
+                    key=lambda item: (
+                        int(item.get("entry_priority") or 0),
+                        item["final_score"],
+                    ),
+                )
                 selected_items.remove(removed)
                 used_symbols.discard(removed["symbol"])
             selected_items.append({
@@ -674,7 +746,10 @@ class SymbolRotation:
         ]
         incoming_items = sorted(
             [item for item in desired_items if item["symbol"] not in selected],
-            key=lambda item: item.get("final_score", 0.0),
+            key=lambda item: (
+                int(item.get("entry_priority") or 0),
+                item.get("final_score", 0.0),
+            ),
             reverse=True,
         )
         for incoming_item in incoming_items:

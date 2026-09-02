@@ -20,6 +20,8 @@ def _narrow_channel_frame() -> pd.DataFrame:
         "kc_lower": [99.8] * rows,
         "kc_upper": [100.2] * rows,
         "atr": [0.1] * rows,
+        "volume": [150.0] * rows,
+        "vol_ma_20": [100.0] * rows,
     })
 
 
@@ -31,6 +33,7 @@ class _IdentityStrategy:
 
 class _Rotation:
     direction_map = {}
+    volatility_stats = {}
 
     @staticmethod
     def get_dynamic_leverage(_symbol, _score):
@@ -84,10 +87,12 @@ def _execution_engine(frame, side, close_succeeds):
     engine.symbol_rotation = _Rotation()
     engine.tickers = {SYMBOL: 100.2 if side == "SHORT" else 99.8}
     engine._channel_swing_last_reverse_bar = {SYMBOL: frame.index[-2]}
+    engine._channel_swing_last_exit_bar = {}
     engine._channel_chop_locked = {SYMBOL: True}
     engine._channel_chop_events = {}
     engine._channel_signal_events = {}
     engine._channel_outer_trend_wait = {}
+    engine._channel_outer_reentry_after_exit = {}
     engine.btc_1h_st_direction = 0
 
     async def fetch_klines(_symbol, timeframe, limit, **_kwargs):
@@ -164,3 +169,25 @@ async def test_same_bar_outer_rechase_never_opens_when_close_fails(
     assert candidates == []
     assert [event[0] for event in engine.account.events] == ["close"]
     assert engine.account.positions[SYMBOL]["side"] == old_side
+
+
+@pytest.mark.anyio
+async def test_low_volume_reverse_closes_old_position_without_reopening(monkeypatch):
+    monkeypatch.setattr(config, "ENABLE_CONTINUOUS_REVERSE_MODE", True)
+    monkeypatch.setattr("core.engine.KELTNER_MIN_VOLUME_RATIO", 1.2)
+    frame = _narrow_channel_frame()
+    frame["volume"] = 100.0
+    frame["vol_ma_20"] = 100.0
+    engine = _execution_engine(frame, "SHORT", close_succeeds=True)
+
+    progress, candidates = await engine._process_single_symbol(
+        SYMBOL, now_time=1.0, btc_1m_turn=None, daily_halt=False,
+    )
+
+    assert candidates == []
+    assert SYMBOL not in engine.account.positions
+    assert [event[0] for event in engine.account.events] == ["close"]
+    assert any(
+        "反手訊號量能不足" in message and "只平舊倉不開反向倉" in message
+        for message in progress
+    )

@@ -3036,6 +3036,17 @@ class TradingEngine:
         score = int(signal.get("score") or 0)
         side = signal["side"]
         entry_mode = signal["entry_mode"]
+        signal_volume_ratio = signal.get("volume_ratio")
+        if (
+            signal_volume_ratio is not None
+            and float(signal_volume_ratio) < KELTNER_MIN_VOLUME_RATIO
+        ):
+            self.account.log(
+                f"🛑 {symbol} {side} 當下量能 {float(signal_volume_ratio):.2f}x "
+                f"低於 {KELTNER_MIN_VOLUME_RATIO:.2f}x，取消結構化開倉",
+                "WARNING",
+            )
+            return False
         if not self._same_side_entry_allowed(symbol, side):
             return False
         stop_cooldown_fn = getattr(
@@ -4153,6 +4164,57 @@ class TradingEngine:
         return round(ma3_impulse * 2.0 + price_impulse, 6)
 
     @staticmethod
+    def _channel_volume_ratio(frame: pd.DataFrame) -> float:
+        """Return the current candle volume relative to its rolling mean."""
+        if frame is None or frame.empty or "volume" not in frame.columns:
+            return 0.0
+        try:
+            volume = float(frame["volume"].iloc[-1])
+            if "vol_ma_20" in frame.columns:
+                volume_ma = float(frame["vol_ma_20"].iloc[-1])
+            else:
+                volume_ma = float(frame["volume"].iloc[:-1].tail(20).mean())
+        except (TypeError, ValueError, IndexError):
+            return 0.0
+        if not math.isfinite(volume) or not math.isfinite(volume_ma) or volume_ma <= 0:
+            return 0.0
+        return max(0.0, volume / volume_ma)
+
+    @staticmethod
+    def _channel_held_volume_is_declining(frame: pd.DataFrame) -> bool:
+        """Confirm low energy with three completed, consecutively weaker bars."""
+        if frame is None or len(frame) < 4 or "volume" not in frame.columns:
+            return False
+        closed = frame.iloc[:-1].tail(3)
+        if len(closed) < 3:
+            return False
+        try:
+            volumes = [float(value) for value in closed["volume"]]
+            if "vol_ma_20" in closed.columns:
+                means = [float(value) for value in closed["vol_ma_20"]]
+            else:
+                baseline = float(frame["volume"].iloc[:-1].tail(20).mean())
+                means = [baseline] * 3
+            ratios = [volume / mean if mean > 0 else 0.0 for volume, mean in zip(volumes, means)]
+        except (TypeError, ValueError):
+            return False
+        return (
+            all(math.isfinite(value) for value in ratios)
+            and ratios[0] > ratios[1] > ratios[2]
+            and ratios[2] < KELTNER_MIN_VOLUME_RATIO
+        )
+
+    def _candidate_profit_potential(
+        self, symbol: str, side: str, atr: float, price: float,
+    ) -> float:
+        """Estimate directional profit space from daily range and current ATR."""
+        stats = getattr(self.symbol_rotation, "volatility_stats", {}).get(symbol, {})
+        daily_key = "avg_daily_up_pct" if str(side).upper() == "LONG" else "avg_daily_down_pct"
+        daily_space = float(stats.get(daily_key) or 0.0)
+        atr_space = float(atr) / float(price) * 100.0 if price else 0.0
+        return round(max(daily_space, atr_space), 6)
+
+    @staticmethod
     def _select_strongest_same_side_candidates(
         candidates: list[dict],
     ) -> tuple[list[dict], list[dict]]:
@@ -4161,7 +4223,15 @@ class TradingEngine:
             candidates,
             key=lambda item: (
                 int(item.get("priority") or 0),
+                float(
+                    item.get("profit_potential")
+                    or (
+                        float(item.get("atr") or 0.0)
+                        / max(float(item.get("live_price") or item.get("price") or 0.0), 1e-12)
+                    )
+                ),
                 float(item.get("trend_quality") or 0.0),
+                float(item.get("volume_ratio") or 0.0),
                 float(item.get("score") or 0.0),
             ),
             reverse=True,
@@ -4177,6 +4247,36 @@ class TradingEngine:
             used_sides.add(side)
             selected.append(candidate)
         return selected, skipped
+
+    @staticmethod
+    def _candidate_board_refresh_needed(
+        opened_any: bool, position_count: int, pending_count: int,
+        max_slots: int, seconds_since_refresh: float,
+    ) -> bool:
+        """Refresh after a fill, or while capacity remains without a new fill."""
+        if opened_any:
+            return True
+        committed = max(0, int(position_count)) + max(0, int(pending_count))
+        has_capacity = max_slots <= 0 or committed < max_slots
+        return has_capacity and seconds_since_refresh >= 15.0
+
+    @staticmethod
+    def _channel_entry_candidate_priority(reason: str | None) -> int:
+        """Rank executable Channel Swing entries without changing their rules."""
+        reason = str(reason or "")
+        if reason in {
+            "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+            "KC_UPPER_TREND_CONFIRMED_LONG", "KC_LOWER_TREND_CONFIRMED_SHORT",
+            "KC_UPPER_RETEST_BREAK_LONG", "KC_LOWER_RETEST_BREAK_SHORT",
+            "CHOP_BREAKOUT_LONG", "CHOP_BREAKOUT_SHORT",
+        }:
+            return 3
+        if reason in {
+            "INSTANT_INNER_REENTRY_LONG", "INSTANT_INNER_REENTRY_SHORT",
+            "LIVE_INNER_REENTRY_LONG", "LIVE_INNER_REENTRY_SHORT",
+        }:
+            return 2
+        return 1
 
     @staticmethod
     def _channel_outer_uptrend_entry_action(
@@ -4646,7 +4746,6 @@ class TradingEngine:
         )
 
     @staticmethod
-    @staticmethod
     def _channel_live_inner_reentry_action(
         frame, live_price, current_side
     ) -> dict:
@@ -4686,8 +4785,8 @@ class TradingEngine:
                 # Two candle condition
                 two_candle_condition = (
                     prev_close < prev_open and price < live_open
-                    and prev_open <= upper and price >= lower
-                    and (prev_open - price) >= 0.5 * width
+                    and prev_close <= upper and price >= lower
+                    and ((prev_open - prev_close) + (live_open - price)) >= 0.5 * width
                 )
 
                 if single_condition or two_candle_condition:
@@ -4698,7 +4797,7 @@ class TradingEngine:
                         ),
                         "side": "SHORT" if (not side or reversal_volume_ok) else None,
                         "reason": (
-                            "INSTANT_INNER_REENTRY_SHORT" if not side
+                            "LIVE_INNER_REENTRY_SHORT" if not side
                             else "INSTANT_INNER_REENTRY_REVERSE_SHORT"
                             if reversal_volume_ok
                             else "INSTANT_INNER_REENTRY_EXIT_LONG_LOW_VOLUME"
@@ -4716,8 +4815,8 @@ class TradingEngine:
                 # Two candle condition
                 two_candle_condition = (
                     prev_close > prev_open and price > live_open
-                    and prev_open >= lower and price <= upper
-                    and (price - prev_open) >= 0.5 * width
+                    and prev_close >= lower and price <= upper
+                    and ((prev_close - prev_open) + (price - live_open)) >= 0.5 * width
                 )
 
                 if single_condition or two_candle_condition:
@@ -4728,7 +4827,7 @@ class TradingEngine:
                         ),
                         "side": "LONG" if (not side or reversal_volume_ok) else None,
                         "reason": (
-                            "INSTANT_INNER_REENTRY_LONG" if not side
+                            "LIVE_INNER_REENTRY_LONG" if not side
                             else "INSTANT_INNER_REENTRY_REVERSE_LONG"
                             if reversal_volume_ok
                             else "INSTANT_INNER_REENTRY_EXIT_SHORT_LOW_VOLUME"
@@ -5135,8 +5234,25 @@ class TradingEngine:
             and float(ma15.iloc[-1] - ma15.iloc[-4]) <= -median_width * 0.08
             and efficiency >= 0.55
         )
+        latest = closed.iloc[-1]
+        latest_middle = float(middle.iloc[-1])
+        latest_width = float(width.iloc[-1])
+        latest_open = float(latest.get("open", latest["close"]))
+        latest_close = float(latest["close"])
+        latest_body = abs(latest_close - latest_open)
+        strong_long = bool(
+            latest_open < latest_middle < latest_close
+            and latest_body >= latest_width * 0.25
+            and float(latest["ma3"]) > float(latest["ma15"])
+        )
+        strong_short = bool(
+            latest_open > latest_middle > latest_close
+            and latest_body >= latest_width * 0.25
+            and float(latest["ma3"]) < float(latest["ma15"])
+        )
         clear_direction = (
-            "LONG" if clear_long else "SHORT" if clear_short else None
+            "LONG" if clear_long or strong_long
+            else "SHORT" if clear_short or strong_short else None
         )
         detected = bool(chop_votes >= 2 and clear_direction is None)
         return {
@@ -5408,6 +5524,13 @@ class TradingEngine:
             or signal_low > signal_high
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
+
+        if not str(current_side or "").upper():
+            live_outer = TradingEngine._channel_live_outer_entry_action(
+                frame, price,
+            )
+            if live_outer.get("action") == "ENTER":
+                return live_outer
 
         three_candle_exit = TradingEngine._channel_three_candle_exit_action(
             frame, current_side,
@@ -5917,6 +6040,14 @@ class TradingEngine:
         if symbol in getattr(self.account, "positions", {}):
             self.account.log(f"⏸️ {symbol} 已有持倉，不重複占用槽位", "DEBUG")
             return False
+        entry_volume_ratio = self._channel_volume_ratio(df)
+        if entry_volume_ratio < KELTNER_MIN_VOLUME_RATIO:
+            self.account.log(
+                f"🛑 {symbol} {side} 當下量能 {entry_volume_ratio:.2f}x "
+                f"低於 {KELTNER_MIN_VOLUME_RATIO:.2f}x，取消市價開倉並等待換幣",
+                "WARNING",
+            )
+            return False
         latest = df.iloc[-1]
         if not self._abnormal_market_entry_allowed(
             symbol, side, live_price, float(latest.get("atr") or 0.0),
@@ -6134,28 +6265,6 @@ class TradingEngine:
                     or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)
                 )
                 existing_pos = self.account.positions.get(symbol)
-                if existing_pos:
-                    low_volume_exit = self._channel_low_volume_exit_action(
-                        channel_df, channel_price, existing_pos, now_time,
-                    )
-                    if low_volume_exit.get("action") == "EXIT":
-                        exit_reason = str(low_volume_exit.get("reason") or "LOW_VOLUME_NO_TREND_EXIT")
-                        closed = await self.account.close_position(
-                            symbol, channel_price,
-                            f"Channel Swing {exit_reason}", is_manual=True,
-                        )
-                        if closed:
-                            if len(channel_df) >= 2:
-                                self._channel_swing_last_exit_bar[symbol] = channel_df.index[-2]
-                            self.symbol_rotation.request_replacement(symbol)
-                            self.rotation_event.set()
-                            self.account.log(
-                                f"🔄 [低量退出] {symbol} 最近三根均量比 "
-                                f"{float(low_volume_exit.get('volume_ratio') or 0.0):.2f}x，"
-                                "無法形成趨勢，平倉並改找有量幣種",
-                                "WARNING",
-                            )
-                        return signal_progress, detected_candidates
                 ranked_direction = str(
                     self.symbol_rotation.direction_map.get(symbol) or ""
                 ).upper()
@@ -6332,25 +6441,37 @@ class TradingEngine:
                 kc_upper = float(channel_action.get("kc_upper") or 0.0)
                 kc_lower = float(channel_action.get("kc_lower") or 0.0)
 
-                # 即時量能門檻過濾
-                volume = float(channel_df["volume"].iloc[-1])
-                volume_ma = float(channel_df["vol_ma_20"].iloc[-1])
-                volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
-                from core.config import KELTNER_MIN_VOLUME_RATIO
+                volume_ratio = self._channel_volume_ratio(channel_df)
                 volume_ok = volume_ratio >= KELTNER_MIN_VOLUME_RATIO
+
+                if (
+                    existing_pos
+                    and action in ("HOLD", "WAIT")
+                    and self._channel_held_volume_is_declining(channel_df)
+                ):
+                    action = "EXIT"
+                    target_side = None
+                    channel_action["reason"] = "HELD_LOW_VOLUME_DECLINE_EXIT"
+                    signal_progress.append(
+                        f"{coin} 持倉量能連續三根衰退且降至 "
+                        f"{KELTNER_MIN_VOLUME_RATIO:.2f}x 以下，執行低量退出"
+                    )
 
                 if action in ("ENTER", "REVERSE") and target_side and not volume_ok:
                     if action == "ENTER":
                         signal_progress.append(
-                            f"{coin} {target_side} 量能不足({volume_ratio:.2f}x)，等待／換幣"
+                            f"{coin} {target_side} 排名候選但當下量能不足"
+                            f"({volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)，禁止開倉並換幣"
                         )
                         return signal_progress, detected_candidates
-                    elif action == "REVERSE":
-                        action = "EXIT"
-                        channel_action["reason"] = str(channel_action.get("reason", "")) + "_LOW_VOL"
-                        signal_progress.append(
-                            f"{coin} 反手訊號量能不足({volume_ratio:.2f}x)，只平倉不反手"
-                        )
+                    action = "EXIT"
+                    target_side = None
+                    channel_action["reason"] = (
+                        f"{channel_action.get('reason') or 'REVERSE'}_LOW_VOLUME"
+                    )
+                    signal_progress.append(
+                        f"{coin} 反手訊號量能不足({volume_ratio:.2f}x)，只平舊倉不開反向倉"
+                    )
 
                 if (
                     action == "ENTER"
@@ -6388,7 +6509,7 @@ class TradingEngine:
                     if closed:
                         if channel_closed_bar_id is not None:
                             self._channel_swing_last_exit_bar[symbol] = channel_closed_bar_id
-                        if self._channel_exit_requests_rotation(exit_reason):
+                        if self._channel_exit_requests_rotation(exit_reason) or "LOW_VOLUME" in exit_reason:
                             request_replacement = getattr(
                                 self.symbol_rotation, "request_replacement", None,
                             )
@@ -6399,15 +6520,14 @@ class TradingEngine:
                                 rotation_event.set()
                             self._channel_outer_trend_wait.pop(symbol, None)
                             self.account.log(
-                                f"🔄 [Channel Swing] {symbol} KC外止盈完成；"
-                                "不再等待原幣回外軌，立即重新排名換幣",
+                                f"🔄 [Channel Swing] {symbol} 平倉完成；立即重新排名換幣",
                                 "SUCCESS",
                             )
                         else:
                             self.account.log(
-                                f"⏹️ [Channel Swing] {symbol} 轉向失敗或抵達對側KC外軌，"
-                                "先平倉並等待下一個真正峰谷", "SUCCESS",
-                            )
+                            f"⏹️ [Channel Swing] {symbol} 轉向失敗或抵達對側KC外軌，"
+                            "先平倉並等待下一個真正峰谷", "SUCCESS",
+                        )
                     return signal_progress, detected_candidates
 
                 if action == "REVERSE" and existing_pos:
@@ -6456,9 +6576,14 @@ class TradingEngine:
                     )
                     detected_candidates.append({
                         "detected": True, "side": target_side,
-                        "score": 100, "priority": 1,
+                        "score": 100, "priority": 4,
                         "price": channel_price, "live_price": channel_price,
                         "atr": float(channel_df["atr"].iloc[-1]),
+                        "volume_ratio": volume_ratio,
+                        "profit_potential": self._candidate_profit_potential(
+                            symbol, target_side, float(channel_df["atr"].iloc[-1]),
+                            channel_price,
+                        ),
                         "entry_mode": "CHANNEL_SWING",
                         "profit_profile": "TREND_EXTENSION",
                         "action": "ENTER_MARKET", "target_price": None,
@@ -6497,8 +6622,16 @@ class TradingEngine:
                 if action == "ENTER" and target_side:
                     detected_candidates.append({
                         "detected": True, "side": target_side, "score": 100,
+                        "priority": self._channel_entry_candidate_priority(
+                            channel_action.get("reason"),
+                        ),
                         "price": channel_price, "live_price": channel_price,
                         "atr": float(channel_df["atr"].iloc[-1]),
+                        "volume_ratio": volume_ratio,
+                        "profit_potential": self._candidate_profit_potential(
+                            symbol, target_side, float(channel_df["atr"].iloc[-1]),
+                            channel_price,
+                        ),
                         "entry_mode": "CHANNEL_SWING",
                         "profit_profile": "TREND_EXTENSION",
                         "action": "ENTER_MARKET", "target_price": None,
@@ -6529,10 +6662,6 @@ class TradingEngine:
                                 "KC_LOWER_TREND_CONFIRMED_SHORT",
                                 "KC_LOWER_RETEST_BREAK_SHORT",
                             )
-                            else "Channel Swing instant inner reentry LONG"
-                            if channel_action.get("reason") == "INSTANT_INNER_REENTRY_LONG"
-                            else "Channel Swing instant inner reentry SHORT"
-                            if channel_action.get("reason") == "INSTANT_INNER_REENTRY_SHORT"
                             else "Channel Swing KC lower outer trough LONG"
                             if target_side == "LONG"
                             else "Channel Swing KC upper outer peak SHORT"
@@ -7197,6 +7326,16 @@ class TradingEngine:
                     if not cr_signal:
                         return signal_progress, detected_candidates
 
+                    if not has_pos:
+                        entry_volume_ratio = self._channel_volume_ratio(df_cr_entry)
+                        if entry_volume_ratio < KELTNER_MIN_VOLUME_RATIO:
+                            signal_progress.append(
+                                f"{coin} {cr_signal} 訊號成立但當下量能不足"
+                                f"({entry_volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)，"
+                                "禁止開倉並換幣"
+                            )
+                            return signal_progress, detected_candidates
+
                     # 空倉的新市價單不可追在 MA3 順向延伸的尾端：這正是
                     # 12:37 追空、12:40 大綠K追多後立刻被反向掃掉的情形。
                     # 已持倉的急速反手在持倉管理迴圈處理，故不會被這裡擋住。
@@ -7736,6 +7875,7 @@ class TradingEngine:
                             prog, cands = res
                             signal_progress.extend(prog)
                             detected_candidates.extend(cands)
+                    opened_any = False
                     if detected_candidates:
                         detected_candidates, skipped_same_side = (
                             self._select_strongest_same_side_candidates(
@@ -7746,6 +7886,8 @@ class TradingEngine:
                             skipped_coin = skipped["symbol"].replace("/USDT", "")
                             signal_progress.append(
                                 f"{skipped_coin} {skipped['side']} 同向候選未入選；"
+                                f"預估利潤空間 "
+                                f"{float(skipped.get('profit_potential') or 0.0):.2f}%／"
                                 f"趨勢品質 {float(skipped.get('trend_quality') or 0.0):.2f}"
                             )
                         from core.config import MAX_SLOTS
@@ -7758,23 +7900,40 @@ class TradingEngine:
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,槽位已滿({MAX_SLOTS})")
                                 continue
 
-                            await self._place_structured_entry(
+                            opened = await self._place_structured_entry(
                                 symbol,
                                 sig,
                                 sig["live_price"]
                             )
+                            opened_any = bool(opened) or opened_any
 
-                    if (
-                        not self.account.positions
-                        and not detected_candidates
-                        and now_time - self._last_empty_pivot_rescan_at >= 60.0
-                    ):
+                    refresh_needed = self._candidate_board_refresh_needed(
+                        opened_any,
+                        len(self.account.positions),
+                        len(self.account.pending_limit_orders),
+                        MAX_SLOTS,
+                        now_time - self._last_empty_pivot_rescan_at,
+                    )
+                    if refresh_needed:
                         self._last_empty_pivot_rescan_at = now_time
-                        self.symbol_rotation.last_rotation_at = 0.0
-                        self.account.log(
-                            "🔄 [空手無訊號] 目前牌面無可開倉訊號，要求重新掃描市場",
-                            "INFO",
-                        )
+                        request_rescan = getattr(self.symbol_rotation, "request_rescan", None)
+                        if callable(request_rescan):
+                            request_rescan(symbols_snapshot)
+                        else:
+                            self.symbol_rotation.last_rotation_at = 0.0
+                        self.rotation_event.set()
+                        if opened_any:
+                            self.account.log(
+                                "🔄 [成交後刷新] 保留新持倉；暫時排除其餘未持倉牌面，"
+                                "立即尋找下一個可開倉幣種",
+                                "INFO",
+                            )
+                        else:
+                            self.account.log(
+                                "🔄 [空槽未成交] 目前牌面無可開倉或下單未成功；"
+                                "暫時排除本批未持倉幣並立即重新掃描市場",
+                                "INFO",
+                            )
 
                     self._log_signal_progress(signal_progress, now_time, symbols_snapshot)
                     if now_time - self._last_diagnostic_stats_save_at >= 60.0:
