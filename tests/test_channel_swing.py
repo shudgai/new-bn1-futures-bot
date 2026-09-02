@@ -9,6 +9,27 @@ from core.symbol_rotation import SymbolRotation
 def _channel_frame(lower: float=99.0, upper: float=101.0) -> pd.DataFrame:
     return pd.DataFrame({'open': [100.0] * 20, 'close': [100.0] * 20, 'high': [100.5] * 20, 'low': [99.5] * 20, 'ma3': [100.0] * 20, 'ma15': [100.0] * 20, 'volume': [150.0] * 20, 'vol_ma_20': [100.0] * 20, 'kc_lower': [lower] * 20, 'kc_upper': [upper] * 20})
 
+@pytest.mark.parametrize(
+    ("side", "price", "live_open", "previous_close", "expected"),
+    [
+        ("LONG", 101.2, 101.0, 101.1, True),
+        ("LONG", 101.2, 101.3, 101.1, False),
+        ("LONG", 100.9, 100.7, 100.8, False),
+        ("SHORT", 98.8, 99.0, 98.9, True),
+        ("SHORT", 98.8, 98.7, 98.9, False),
+        ("SHORT", 99.1, 99.3, 99.2, False),
+    ],
+)
+def test_new_entry_requires_directional_move_outside_kc(
+    side, price, live_open, previous_close, expected,
+):
+    frame = _channel_frame()
+    frame.loc[frame.index[-2], "close"] = previous_close
+    frame.loc[frame.index[-1], "open"] = live_open
+    assert TradingEngine._channel_outer_directional_entry_allowed(
+        frame, price, side,
+    ) is expected
+
 def _closed_trough(frame: pd.DataFrame):
     frame.loc[frame.index[-3], ['open', 'close', 'low', 'high']] = [98.8, 98.9, 98.7, 98.95]
     frame.loc[frame.index[-3], 'ma3'] = 98.7

@@ -4371,6 +4371,38 @@ class TradingEngine:
         return 1
 
     @staticmethod
+    def _channel_outer_directional_entry_allowed(
+        frame: pd.DataFrame, live_price: float, target_side: str | None,
+    ) -> bool:
+        """Allow entries only while price extends directionally beyond a KC rail."""
+        required = {"open", "close", "kc_upper", "kc_lower"}
+        if (
+            frame is None
+            or len(frame) < 2
+            or not required.issubset(frame.columns)
+        ):
+            return False
+        try:
+            live = frame.iloc[-1]
+            price = float(live_price)
+            live_open = float(live["open"])
+            previous_close = float(frame.iloc[-2]["close"])
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return False
+        if not all(math.isfinite(value) for value in (
+            price, live_open, previous_close, upper, lower,
+        )) or lower >= upper:
+            return False
+        side = str(target_side or "").upper()
+        if side == "LONG":
+            return price >= upper and price > live_open and price > previous_close
+        if side == "SHORT":
+            return price <= lower and price < live_open and price < previous_close
+        return False
+
+    @staticmethod
     def _channel_outer_uptrend_entry_action(
         frame: pd.DataFrame, live_price: float, pending: dict | None = None,
     ) -> dict:
@@ -6515,6 +6547,16 @@ class TradingEngine:
                     self._channel_outer_trend_wait.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
+                if (
+                    not existing_pos
+                    and action == "ENTER"
+                    and not self._channel_outer_directional_entry_allowed(
+                        channel_df, channel_price, target_side,
+                    )
+                ):
+                    action = "WAIT"
+                    target_side = None
+                    channel_action["reason"] = "WAIT_KC_OUTER_DIRECTIONAL_MOVE"
                 # 外軌峰谷、內軌回轉與同 K 反手只可平舊倉，不建立新倉。
                 if existing_pos and action == "REVERSE":
                     action = "EXIT"
