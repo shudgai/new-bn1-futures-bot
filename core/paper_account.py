@@ -126,6 +126,7 @@ ENTRY_CONTEXT_KEYS = (
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
     "eligibility_note", "wave_regime", "market_mode", "entry_market_mode",
+    "channel_entry_profile",
 )
 
 

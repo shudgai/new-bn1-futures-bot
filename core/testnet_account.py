@@ -104,6 +104,7 @@ ENTRY_CONTEXT_KEYS = (
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount", "wave_regime",
+    "channel_entry_profile",
 )
 
 
