@@ -969,6 +969,14 @@ class SymbolRotation:
             ][:SYMBOL_ROTATION_COUNT]
             directions = {symbol: "BOTH" for symbol in selected}
             changes = []
+
+        # 當沒有任何合格幣種時，放入指定的備用迷因幣
+        if not selected:
+            for meme in ["1000PEPE/USDT", "1000BONK/USDT", "1000SHIB/USDT"]:
+                if meme not in ENTRY_DISABLED_SYMBOLS and meme not in forced_exclusions:
+                    selected.append(meme)
+                    directions[meme] = "BOTH"
+                    changes.append({"out": "", "in": meme, "direction": "BOTH"})
         # 持倉中的幣強制保留，即使已被輪替出去也不可移除
         for held_symbol in self.account.positions:
             if held_symbol not in selected:

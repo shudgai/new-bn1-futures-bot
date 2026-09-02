@@ -4119,7 +4119,7 @@ class TradingEngine:
         """Only the market-ranked direction may open a position."""
         requested = str(side or "").upper()
         ranked = str(ranked_direction or "").upper()
-        return requested in ("LONG", "SHORT") and requested == ranked
+        return requested in ("LONG", "SHORT") and (ranked == "BOTH" or requested == ranked)
 
     def _strongest_ranked_symbol(self, side: str) -> tuple[str | None, float]:
         """Return the highest final-score symbol for the requested direction."""
@@ -5528,58 +5528,21 @@ class TradingEngine:
         # 空手時不因即時碰觸或突破 KC 外軌直接追單；新倉只接受外側趨勢
         # 經已收盤 K 與下一根突破確認的順勢交易。
 
-        three_candle_exit = TradingEngine._channel_three_candle_exit_action(
-            frame, current_side,
-        )
-        if three_candle_exit.get("action") == "EXIT":
-            return three_candle_exit
-
-        # Wrong-side outer stop: flatten on an adverse MA3 turn outside the rail.
         held_side = str(current_side or "").upper()
-        if (
-            held_side == "LONG"
-            and price < lower
-            and live_ma3 < previous_ma3 - 1e-12
-        ):
-            return {
-                "action": "EXIT", "side": None,
-                "reason": "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
-            }
-        if (
-            held_side == "SHORT"
-            and price > upper
-            and live_ma3 > previous_ma3 + 1e-12
-        ):
-            return {
-                "action": "EXIT", "side": None,
-                "reason": "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
-            }
-
-        # 1. 優先檢查即時內軌回轉例外
-        if str(current_side or "").upper() and hasattr(TradingEngine, "_channel_live_inner_reentry_action"):
-            inner_action = TradingEngine._channel_live_inner_reentry_action(
-                frame, live_price, current_side
-            )
-            if inner_action.get("action") in ("ENTER", "EXIT", "REVERSE"):
-                held_side = str(current_side or "").upper()
-                if held_side in ("LONG", "SHORT") and inner_action.get("action") == "REVERSE":
-                    return {
-                        "action": "EXIT", "side": None,
-                        "reason": (
-                            "KC_UPPER_RED_REENTRY_EXIT"
-                            if held_side == "LONG"
-                            else "KC_LOWER_GREEN_REENTRY_EXIT"
-                        ),
-                        "kc_upper": inner_action.get("kc_upper"),
-                        "kc_lower": inner_action.get("kc_lower"),
-                    }
-                return inner_action
-
-        outer_reentry_exit = TradingEngine._channel_outer_reentry_exit_action(
-            frame, live_price, current_side,
-        )
-        if outer_reentry_exit.get("action") == "EXIT":
-            return outer_reentry_exit
+        if held_side == "LONG":
+            # 獲利側：上軌外，MA3 轉彎向下 (峰頂)
+            if price > upper and live_ma3 < previous_ma3 - 1e-12:
+                return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
+            # 虧損側：下軌外，MA3 轉彎向上 (谷底)
+            if price < lower and live_ma3 > previous_ma3 + 1e-12:
+                return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
+        elif held_side == "SHORT":
+            # 獲利側：下軌外，MA3 轉彎向上 (谷底)
+            if price < lower and live_ma3 > previous_ma3 + 1e-12:
+                return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
+            # 虧損側：上軌外，MA3 轉彎向下 (峰頂)
+            if price > upper and live_ma3 < previous_ma3 - 1e-12:
+                return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
 
         signal_width = signal_upper - signal_lower
 
