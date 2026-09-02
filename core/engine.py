@@ -7871,13 +7871,13 @@ class TradingEngine:
                     )
                     if refresh_needed:
                         self._last_empty_pivot_rescan_at = now_time
-                        request_rescan = getattr(self.symbol_rotation, "request_rescan", None)
-                        if callable(request_rescan):
-                            request_rescan(symbols_snapshot)
-                        else:
-                            self.symbol_rotation.last_rotation_at = 0.0
-                        self.rotation_event.set()
                         if opened_any:
+                            request_rescan = getattr(self.symbol_rotation, "request_rescan", None)
+                            if callable(request_rescan):
+                                request_rescan(symbols_snapshot)
+                            else:
+                                self.symbol_rotation.last_rotation_at = 0.0
+                            self.rotation_event.set()
                             self.account.log(
                                 "🔄 [成交後刷新] 保留新持倉；暫時排除其餘未持倉牌面，"
                                 "立即尋找下一個可開倉幣種",
@@ -7885,8 +7885,8 @@ class TradingEngine:
                             )
                         else:
                             self.account.log(
-                                "🔄 [空槽未成交] 目前牌面無可開倉或下單未成功；"
-                                "暫時排除本批未持倉幣並立即重新掃描市場",
+                                "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，"
+                                "不因空槽排除整批幣種",
                                 "INFO",
                             )
 

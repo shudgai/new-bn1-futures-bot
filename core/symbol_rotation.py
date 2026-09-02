@@ -1010,6 +1010,9 @@ class SymbolRotation:
             if held_symbol not in selected:
                 selected.append(held_symbol)
                 directions[held_symbol] = "BOTH"
+        # 輪替評分仍同時比較多／空以挑選值得觀察的標的，但進場掃描
+        # 不鎖死單一方向：同一幣的 KC 多、空條件都要被偵測。
+        directions = {symbol: "BOTH" for symbol in selected}
         DEFAULT_SYMBOLS[:] = selected
         self.direction_map = directions
         self.next_rotation_exclusions.difference_update(forced_exclusions)
