@@ -5414,6 +5414,27 @@ class TradingEngine:
         if three_candle_exit.get("action") == "EXIT":
             return three_candle_exit
 
+        # Wrong-side outer stop: flatten on an adverse MA3 turn outside the rail.
+        held_side = str(current_side or "").upper()
+        if (
+            held_side == "LONG"
+            and price < lower
+            and live_ma3 < previous_ma3 - 1e-12
+        ):
+            return {
+                "action": "EXIT", "side": None,
+                "reason": "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
+            }
+        if (
+            held_side == "SHORT"
+            and price > upper
+            and live_ma3 > previous_ma3 + 1e-12
+        ):
+            return {
+                "action": "EXIT", "side": None,
+                "reason": "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
+            }
+
         # 1. 優先檢查即時內軌回轉例外
         if hasattr(TradingEngine, "_channel_live_inner_reentry_action"):
             inner_action = TradingEngine._channel_live_inner_reentry_action(

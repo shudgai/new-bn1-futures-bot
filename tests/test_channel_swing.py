@@ -86,6 +86,45 @@ def test_held_short_does_not_exit_on_lower_rail_touch_without_confirmed_trough()
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
+def test_held_long_exits_below_lower_rail_when_ma3_turns_down():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], "ma3"] = 100.0
+    frame.loc[frame.index[-1], "ma3"] = 99.7
+
+    result = TradingEngine._channel_swing_action(frame, 98.9, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
+    )
+
+
+def test_held_short_mirrors_upper_outer_ma3_turn_exit():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], "ma3"] = 100.0
+    frame.loc[frame.index[-1], "ma3"] = 100.3
+
+    result = TradingEngine._channel_swing_action(frame, 101.1, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
+    )
+
+
+def test_wrong_side_outer_price_does_not_exit_without_ma3_turn():
+    long_frame = _channel_frame(lower=99.0, upper=101.0)
+    long_frame.loc[long_frame.index[-2], "ma3"] = 99.8
+    long_frame.loc[long_frame.index[-1], "ma3"] = 100.0
+    short_frame = _channel_frame(lower=99.0, upper=101.0)
+    short_frame.loc[short_frame.index[-2], "ma3"] = 100.2
+    short_frame.loc[short_frame.index[-1], "ma3"] = 100.0
+
+    held_long = TradingEngine._channel_swing_action(long_frame, 98.9, "LONG")
+    held_short = TradingEngine._channel_swing_action(short_frame, 101.1, "SHORT")
+
+    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
+    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+
+
 def test_held_long_exits_after_three_closed_falling_red_candles():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-4:-1], ["open", "close"]] = [
@@ -1192,7 +1231,7 @@ def test_partial_body_crossing_entry_side_outer_rail_keeps_position():
 
 
 
-def test_entry_side_outer_body_does_not_exit_without_opposite_reentry():
+def test_entry_side_outer_body_exits_when_ma3_turns_against_position():
     long_frame = _channel_frame()
     long_frame.loc[long_frame.index[-1], ["open", "close", "low", "ma3"]] = [
         98.9, 98.8, 98.7, 99.2,
@@ -1205,11 +1244,15 @@ def test_entry_side_outer_body_does_not_exit_without_opposite_reentry():
     ]
     held_short = TradingEngine._channel_swing_action(short_frame, 101.2, "SHORT")
 
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == (
+        "EXIT", None, "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
+    )
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == (
+        "EXIT", None, "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
+    )
 
 
-def test_live_outer_ma3_trend_immediately_reverses_failed_turn():
+def test_live_outer_ma3_trend_flattens_failed_turn():
     down = _channel_frame()
     down.loc[down.index[-3], ["open", "close"]] = [99.6, 99.4]
     down.loc[down.index[-2], ["open", "close", "ma3"]] = [99.3, 98.9, 98.8]
@@ -1227,14 +1270,14 @@ def test_live_outer_ma3_trend_immediately_reverses_failed_turn():
     held_short = TradingEngine._channel_swing_action(up, 101.3, "SHORT")
 
     assert (held_long["action"], held_long["side"], held_long["reason"]) == (
-        "REVERSE", "SHORT", "OPPOSITE_LOWER_OUTER_DOWNTREND",
+        "EXIT", None, "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
     )
     assert (held_short["action"], held_short["side"], held_short["reason"]) == (
-        "REVERSE", "LONG", "OPPOSITE_UPPER_OUTER_UPTREND",
+        "EXIT", None, "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
     )
 
 
-def test_second_live_outer_candle_does_not_reverse_before_third():
+def test_second_live_outer_candle_flattens_on_ma3_turn():
     down = _channel_frame()
     down.loc[down.index[-3], ["open", "close"]] = [99.2, 99.4]
     down.loc[down.index[-2], ["open", "close", "ma3"]] = [99.3, 99.1, 99.4]
@@ -1251,11 +1294,15 @@ def test_second_live_outer_candle_does_not_reverse_before_third():
     ]
     held_short = TradingEngine._channel_swing_action(up, 101.3, "SHORT")
 
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == (
+        "EXIT", None, "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
+    )
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == (
+        "EXIT", None, "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
+    )
 
 
-def test_live_outer_price_without_ma3_outside_does_not_reverse():
+def test_live_outer_price_flattens_on_ma3_turn_even_before_ma3_reaches_rail():
     up = _channel_frame()
     up.loc[up.index[-2], "ma3"] = 100.6
     up.loc[up.index[-1], ["open", "close", "high", "ma3"]] = [
@@ -1270,8 +1317,12 @@ def test_live_outer_price_without_ma3_outside_does_not_reverse():
     ]
     held_long = TradingEngine._channel_swing_action(down, 98.7, "LONG")
 
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == (
+        "EXIT", None, "SHORT_UPPER_OUTER_TREND_CHANGED_EXIT",
+    )
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == (
+        "EXIT", None, "LONG_LOWER_OUTER_TREND_CHANGED_EXIT",
+    )
 
 
 def test_confirmed_outer_peak_and_trough_exit_without_body_reentry():
