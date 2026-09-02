@@ -3240,6 +3240,7 @@ class TradingEngine:
             "market_mode": signal.get("market_mode"),
             "entry_market_mode": signal.get("market_mode"),
             "channel_entry_profile": signal.get("channel_entry_profile"),
+            "channel_entry_profile_basis": signal.get("channel_entry_profile_basis"),
         }
         kwargs = dict(
             symbol=symbol, side=side, amount_usdt=amount, sl=sl, tp=0.0,
@@ -4514,6 +4515,8 @@ class TradingEngine:
             "KC_INNER_UPTREND_LONG", "KC_INNER_DOWNTREND_SHORT",
             "KC_UPPER_TREND_CONFIRMED_LONG", "KC_LOWER_TREND_CONFIRMED_SHORT",
             "KC_UPPER_RETEST_BREAK_LONG", "KC_LOWER_RETEST_BREAK_SHORT",
+            "BULL_KC_LOWER_TROUGH_CONFIRMED_LONG",
+            "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT",
         }:
             return 4
         if reason in {
@@ -5183,9 +5186,24 @@ class TradingEngine:
 
     @staticmethod
     def _channel_entry_is_trend_follow(position: dict | None) -> bool:
-        """Classify the whole trade from its original Channel Swing entry route."""
+        """Classify the whole trade from market alignment at entry or later promotion."""
         position = position or {}
         explicit = str(position.get("channel_entry_profile") or "").upper()
+        profile_basis = str(
+            position.get("channel_entry_profile_basis") or ""
+        ).upper()
+        if profile_basis == "MARKET_ALIGNMENT" and explicit:
+            return explicit == "TREND_FOLLOW"
+        side = str(position.get("side") or "").upper()
+        btc_direction = int(position.get("btc_direction_1h_at_entry") or 0)
+        if side in ("LONG", "SHORT") and btc_direction in (-1, 1):
+            return (side == "LONG") == (btc_direction == 1)
+        entry_mode = str(
+            position.get("entry_market_mode")
+            or position.get("market_mode") or ""
+        ).upper()
+        if side in ("LONG", "SHORT") and entry_mode in ("BULL", "BEAR"):
+            return (side == "LONG") == (entry_mode == "BULL")
         if explicit:
             return explicit == "TREND_FOLLOW"
         source = " ".join(
@@ -5204,6 +5222,60 @@ class TradingEngine:
             "OUTER DOWNTREND",
         )
         return any(marker in source for marker in trend_markers)
+
+    @staticmethod
+    def _channel_entry_profile_for_market(
+        side: str | None, market_mode: str | None, btc_direction: int = 0,
+    ) -> str:
+        """Freeze exit style from direction alignment at entry time."""
+        requested = str(side or "").upper()
+        direction = int(btc_direction or 0)
+        if direction not in (-1, 1):
+            mode = str(market_mode or "").upper()
+            direction = 1 if mode == "BULL" else -1 if mode == "BEAR" else 0
+        if direction == 0 or requested not in ("LONG", "SHORT"):
+            return "PIVOT"
+        aligned = (requested == "LONG") == (direction == 1)
+        return "TREND_FOLLOW" if aligned else "COUNTER_TREND"
+
+    def _channel_macro_market_mode(self, symbol: str) -> str:
+        """Use the global BTC direction first, then the symbol market mode."""
+        btc_direction = int(getattr(self, "btc_1h_st_direction", 0) or 0)
+        if btc_direction == 1:
+            return "BULL"
+        if btc_direction == -1:
+            return "BEAR"
+        return str(
+            getattr(self, "_continuous_market_mode", {}).get(symbol) or "RANGE"
+        ).upper()
+
+    def _channel_position_direction_is_strong(
+        self, symbol: str, position: dict | None,
+    ) -> bool:
+        """Promote only after the market or symbol becomes aligned post-entry."""
+        position = position or {}
+        held_side = str(position.get("side") or "").upper()
+        wanted_direction = 1 if held_side == "LONG" else -1 if held_side == "SHORT" else 0
+        if wanted_direction == 0:
+            return False
+
+        entry_btc = int(position.get("btc_direction_1h_at_entry") or 0)
+        current_btc = int(getattr(self, "btc_1h_st_direction", 0) or 0)
+        if current_btc == wanted_direction and entry_btc != wanted_direction:
+            return True
+
+        local_mode = str(
+            getattr(self, "_continuous_market_mode", {}).get(symbol) or ""
+        ).upper()
+        local_aligned = (
+            (held_side == "LONG" and local_mode == "BULL")
+            or (held_side == "SHORT" and local_mode == "BEAR")
+        )
+        transition_at = float(
+            getattr(self, "_market_mode_transition_at", {}).get(symbol) or 0.0
+        )
+        opened_at = float(position.get("open_timestamp") or 0.0)
+        return bool(local_aligned and opened_at > 0 and transition_at >= opened_at)
 
     @staticmethod
     def _channel_trend_follow_return_exit_action(
@@ -6076,22 +6148,28 @@ class TradingEngine:
         elif (
             trough_turn
             and closed_ma3_trough
-            and str(market_mode or "").upper() == "RANGE"
+            and str(market_mode or "").upper() in ("RANGE", "BULL")
         ):
-            action, target_side, reason = (
-                "ENTER", "LONG", "RANGE_KC_LOWER_TROUGH_CONFIRMED_LONG"
+            reason = (
+                "BULL_KC_LOWER_TROUGH_CONFIRMED_LONG"
+                if str(market_mode or "").upper() == "BULL"
+                else "RANGE_KC_LOWER_TROUGH_CONFIRMED_LONG"
             )
+            action, target_side = "ENTER", "LONG"
         elif (
             peak_turn
             and closed_ma3_peak
-            and str(market_mode or "").upper() == "RANGE"
+            and str(market_mode or "").upper() in ("RANGE", "BEAR")
         ):
-            action, target_side, reason = (
-                "ENTER", "SHORT", "RANGE_KC_UPPER_PEAK_CONFIRMED_SHORT"
+            reason = (
+                "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT"
+                if str(market_mode or "").upper() == "BEAR"
+                else "RANGE_KC_UPPER_PEAK_CONFIRMED_SHORT"
             )
+            action, target_side = "ENTER", "SHORT"
         elif trough_turn or peak_turn:
             action, target_side, reason = (
-                "WAIT", None, "OUTER_REVERSAL_REQUIRES_RANGE"
+                "WAIT", None, "OUTER_PIVOT_AGAINST_MARKET_TREND"
             )
         else:
             action, target_side = "WAIT", None
@@ -6708,6 +6786,27 @@ class TradingEngine:
                     self._record_btc_lead_shadow_candidate(
                         symbol, channel_df, channel_price, chop_locked,
                     )
+                channel_market_mode = self._channel_macro_market_mode(symbol)
+                if (
+                    existing_pos
+                    and not self._channel_entry_is_trend_follow(existing_pos)
+                    and self._channel_position_direction_is_strong(
+                        symbol, existing_pos,
+                    )
+                ):
+                    existing_pos["channel_entry_profile"] = "TREND_FOLLOW"
+                    existing_pos["channel_entry_profile_basis"] = "MARKET_ALIGNMENT"
+                    position_meta = self.account.position_meta.setdefault(symbol, {})
+                    position_meta["channel_entry_profile"] = "TREND_FOLLOW"
+                    position_meta["channel_entry_profile_basis"] = "MARKET_ALIGNMENT"
+                    save_state = getattr(self.account, "save_state", None)
+                    if callable(save_state):
+                        save_state()
+                    self.account.log(
+                        f"📈 [Channel Swing] {symbol} {existing_pos.get('side')} "
+                        "持倉方向轉強；本單升級為回KC通道平倉",
+                        "SUCCESS",
+                    )
                 if existing_pos and self._channel_entry_is_trend_follow(existing_pos):
                     channel_action = self._channel_trend_follow_return_exit_action(
                         channel_df, channel_price, existing_pos.get("side"),
@@ -6719,10 +6818,7 @@ class TradingEngine:
                         existing_pos.get("side") if existing_pos else None,
                         existing_pos.get("channel_turn_low") if existing_pos else None,
                         existing_pos.get("channel_turn_high") if existing_pos else None,
-                        (
-                            existing_pos.get("market_mode")
-                            or self._continuous_market_mode.get(symbol)
-                        ) if existing_pos else self._continuous_market_mode.get(symbol),
+                        channel_market_mode,
                     )
                 inner_trend_action = (
                     self._channel_inner_trend_entry_action(
@@ -7039,9 +7135,7 @@ class TradingEngine:
 
                 if action == "ENTER" and target_side:
                     signal_code = str(channel_action.get("reason") or "")
-                    candidate_market_mode = str(
-                        self._continuous_market_mode.get(symbol) or "RANGE"
-                    ).upper()
+                    candidate_market_mode = channel_market_mode
                     detected_candidates.append({
                         "detected": True, "side": target_side, "score": 100,
                         "priority": self._channel_entry_candidate_priority(
@@ -7067,12 +7161,11 @@ class TradingEngine:
                         ),
                         "market_mode": candidate_market_mode,
                         "signal_code": signal_code,
-                        "channel_entry_profile": (
-                            "TREND_FOLLOW"
-                            if self._channel_entry_is_trend_follow({
-                                "signal_code": signal_code,
-                            }) else "PIVOT"
+                        "channel_entry_profile": self._channel_entry_profile_for_market(
+                            target_side, candidate_market_mode,
+                            self.btc_1h_st_direction,
                         ),
+                        "channel_entry_profile_basis": "MARKET_ALIGNMENT",
                         "trend_quality": self._directional_trend_quality(
                             channel_df, channel_price, target_side,
                         ),
@@ -7172,7 +7265,7 @@ class TradingEngine:
                 previous_market_mode = self._continuous_market_mode.get(symbol, "RANGE")
                 self._continuous_market_mode[symbol] = market_mode
                 if market_mode != previous_market_mode:
-                    if previous_market_mode == "RANGE" and market_mode in ("BULL", "BEAR"):
+                    if market_mode in ("BULL", "BEAR"):
                         self._market_mode_transition_at[symbol] = now_time
                     elif market_mode == "RANGE":
                         self._market_mode_transition_at.pop(symbol, None)

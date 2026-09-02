@@ -58,6 +58,66 @@ def test_channel_entry_profile_uses_the_whole_entry_route():
     }) is False
 
 
+def test_channel_entry_profile_uses_market_alignment_not_signal_route():
+    assert TradingEngine._channel_entry_profile_for_market(
+        "SHORT", "RANGE", -1,
+    ) == "TREND_FOLLOW"
+    assert TradingEngine._channel_entry_profile_for_market(
+        "LONG", "RANGE", -1,
+    ) == "COUNTER_TREND"
+    assert TradingEngine._channel_entry_profile_for_market(
+        "LONG", "BULL", 0,
+    ) == "TREND_FOLLOW"
+    assert TradingEngine._channel_entry_is_trend_follow({
+        "side": "LONG",
+        "btc_direction_1h_at_entry": -1,
+        "reason": "Channel Swing live KC outer break LONG",
+    }) is False
+
+
+def test_promoted_profile_stays_trend_follow_after_market_changes():
+    assert TradingEngine._channel_entry_is_trend_follow({
+        "side": "LONG",
+        "btc_direction_1h_at_entry": -1,
+        "channel_entry_profile": "TREND_FOLLOW",
+        "channel_entry_profile_basis": "MARKET_ALIGNMENT",
+    }) is True
+
+
+def test_held_position_upgrades_only_when_direction_strengthens_after_entry():
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.btc_1h_st_direction = -1
+    engine._continuous_market_mode = {"COIN/USDT": "BULL"}
+    engine._market_mode_transition_at = {"COIN/USDT": 900.0}
+    position = {
+        "side": "LONG", "open_timestamp": 1_000.0,
+        "btc_direction_1h_at_entry": -1,
+    }
+    assert engine._channel_position_direction_is_strong(
+        "COIN/USDT", position,
+    ) is False
+
+    engine._market_mode_transition_at["COIN/USDT"] = 1_100.0
+    assert engine._channel_position_direction_is_strong(
+        "COIN/USDT", position,
+    ) is True
+
+    engine._continuous_market_mode["COIN/USDT"] = "RANGE"
+    engine.btc_1h_st_direction = 1
+    assert engine._channel_position_direction_is_strong(
+        "COIN/USDT", position,
+    ) is True
+
+
+def test_global_btc_direction_has_priority_for_new_entries():
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.btc_1h_st_direction = -1
+    engine._continuous_market_mode = {"COIN/USDT": "BULL"}
+    assert engine._channel_macro_market_mode("COIN/USDT") == "BEAR"
+    engine.btc_1h_st_direction = 0
+    assert engine._channel_macro_market_mode("COIN/USDT") == "BULL"
+
+
 def test_trend_follow_long_exits_on_live_red_candle_inside_kc():
     frame = _channel_frame()
     frame.loc[frame.index[-1], ["open", "close"]] = [101.2, 100.8]
@@ -881,8 +941,46 @@ def test_range_flat_confirmed_outer_peak_enters_short():
     )
 
 
-@pytest.mark.parametrize("market_mode", [None, "BULL", "BEAR", "TREND"])
-def test_flat_outer_pivot_requires_explicit_range_mode(market_mode):
+def test_bear_market_enters_short_at_confirmed_peak_but_not_long_at_trough():
+    trough = _channel_frame()
+    _closed_trough(trough)
+    peak = _channel_frame()
+    _closed_peak(peak)
+    long_result = TradingEngine._channel_swing_action(
+        trough, 99.2, market_mode="BEAR",
+    )
+    short_result = TradingEngine._channel_swing_action(
+        peak, 100.8, market_mode="BEAR",
+    )
+    assert (long_result["action"], long_result["reason"]) == (
+        "WAIT", "OUTER_PIVOT_AGAINST_MARKET_TREND",
+    )
+    assert (short_result["action"], short_result["side"], short_result["reason"]) == (
+        "ENTER", "SHORT", "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT",
+    )
+
+
+def test_bull_market_enters_long_at_confirmed_trough_but_not_short_at_peak():
+    trough = _channel_frame()
+    _closed_trough(trough)
+    peak = _channel_frame()
+    _closed_peak(peak)
+    long_result = TradingEngine._channel_swing_action(
+        trough, 99.2, market_mode="BULL",
+    )
+    short_result = TradingEngine._channel_swing_action(
+        peak, 100.8, market_mode="BULL",
+    )
+    assert (long_result["action"], long_result["side"], long_result["reason"]) == (
+        "ENTER", "LONG", "BULL_KC_LOWER_TROUGH_CONFIRMED_LONG",
+    )
+    assert (short_result["action"], short_result["reason"]) == (
+        "WAIT", "OUTER_PIVOT_AGAINST_MARKET_TREND",
+    )
+
+
+@pytest.mark.parametrize("market_mode", [None, "TREND"])
+def test_directionless_market_does_not_use_outer_pivot_entry(market_mode):
     trough = _channel_frame()
     _closed_trough(trough)
     peak = _channel_frame()
@@ -895,8 +993,6 @@ def test_flat_outer_pivot_requires_explicit_range_mode(market_mode):
     )
     assert (long_result["action"], long_result["side"]) == ("WAIT", None)
     assert (short_result["action"], short_result["side"]) == ("WAIT", None)
-    assert long_result["reason"] == "OUTER_REVERSAL_REQUIRES_RANGE"
-    assert short_result["reason"] == "OUTER_REVERSAL_REQUIRES_RANGE"
 
 
 def test_range_outer_pivot_requires_confirmed_ma3_turn():
@@ -1579,6 +1675,7 @@ def test_channel_entry_context_preserves_original_market_mode():
     assert "market_mode" in ENTRY_CONTEXT_KEYS
     assert "entry_market_mode" in ENTRY_CONTEXT_KEYS
     assert "channel_entry_profile" in ENTRY_CONTEXT_KEYS
+    assert "channel_entry_profile_basis" in ENTRY_CONTEXT_KEYS
 
 
 def test_shallow_adjacent_outer_reversal_enters_without_half_channel_reentry():
