@@ -16,6 +16,8 @@ def _channel_frame(lower: float = 99.0, upper: float = 101.0) -> pd.DataFrame:
         "low": [99.5] * 20,
         "ma3": [100.0] * 20,
         "ma15": [100.0] * 20,
+        "volume": [150.0] * 20,
+        "vol_ma_20": [100.0] * 20,
         "kc_lower": [lower] * 20,
         "kc_upper": [upper] * 20,
     })
@@ -83,6 +85,126 @@ def test_held_short_does_not_exit_on_lower_rail_touch_without_confirmed_trough()
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
+def test_held_long_exits_on_shallow_red_reentry():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["close", "ma3"]] = [101.2, 101.3]
+    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [101.2, 100.8, 101.1]
+
+    result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "KC_UPPER_RED_REENTRY_EXIT",
+    )
+
+
+def test_held_short_exits_on_shallow_green_reentry():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], ["close", "ma3"]] = [98.8, 98.7]
+    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [98.8, 99.2, 98.9]
+
+    result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "KC_LOWER_GREEN_REENTRY_EXIT",
+    )
+
+
+def test_deep_red_reentry_with_low_volume_exits_long_without_short_entry():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low", "volume"]] = [
+        101.3, 100.0, 101.3, 100.0, 40.0,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "INSTANT_INNER_REENTRY_EXIT_LONG_LOW_VOLUME",
+    )
+
+
+def test_held_long_keeps_position_when_red_candle_remains_above_upper_rail():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
+        102.0, 101.2, 102.1, 101.1,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 101.2, "LONG")
+
+    assert (result["action"], result["side"]) == ("HOLD", None)
+
+
+def test_first_red_half_channel_reentry_exits_long_without_reversing():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    # 第一根即時紅 K 從上軌外回到通道內 0.5 倍寬度：101 - 100 = 1。
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
+        101.3, 100.0, 101.3, 100.0,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "SHORT", "INSTANT_INNER_REENTRY_REVERSE_SHORT",
+    )
+
+
+def test_first_green_half_channel_reentry_exits_short_without_reversing():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    # 多空鏡像：99 + 1 = 100，回到通道內半寬即先平空。
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
+        98.7, 100.0, 100.0, 98.7,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "LONG", "INSTANT_INNER_REENTRY_REVERSE_LONG",
+    )
+
+
+def test_red_outer_reentry_requires_ma3_gap_and_reenters_long():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [102.0, 101.2, 100.5]
+
+    result = TradingEngine._channel_outer_reentry_reenter_action(frame, 101.2, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "KC_UPPER_RED_REENTRY_REENTER",
+    )
+
+
+def test_green_outer_reentry_requires_ma3_gap_and_reenters_short():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [98.0, 98.8, 99.5]
+
+    result = TradingEngine._channel_outer_reentry_reenter_action(frame, 98.8, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "SHORT", "KC_LOWER_GREEN_REENTRY_REENTER",
+    )
+
+
+def test_upper_red_peak_short_only_allows_green_reversal_at_upper_rail():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+
+    frame.loc[frame.index[-1], "open"] = 100.8
+    assert not TradingEngine._channel_upper_red_short_reversal_allowed(frame, 100.9)
+
+    frame.loc[frame.index[-1], "open"] = 101.1
+    assert not TradingEngine._channel_upper_red_short_reversal_allowed(frame, 101.0)
+
+    frame.loc[frame.index[-1], "open"] = 100.9
+    assert TradingEngine._channel_upper_red_short_reversal_allowed(frame, 101.0)
+
+
+def test_upper_red_peak_short_origin_is_scoped_to_channel_peak_entries():
+    assert TradingEngine._channel_is_upper_red_peak_short({
+        "side": "SHORT", "entry_mode": "CHANNEL_SWING", "channel_turn_high": 101.0,
+    })
+    assert not TradingEngine._channel_is_upper_red_peak_short({
+        "side": "SHORT", "entry_mode": "CHANNEL_SWING", "channel_turn_low": 99.0,
+    })
+
+
 def test_channel_entry_cannot_reuse_the_bar_that_just_exited():
     bar_id = 12345
 
@@ -146,6 +268,14 @@ def test_same_bar_outer_rechase_bypasses_chop_close_only_gate():
     ) == ("REVERSE", "SHORT", None)
 
 
+def test_flat_live_outer_break_does_not_enter_without_confirmed_turn():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+
+    result = TradingEngine._channel_swing_action(frame, 101.1)
+
+    assert (result["action"], result["side"]) == ("WAIT", None)
+
+
 def test_live_price_inside_kc_does_not_use_immediate_outer_entry():
     frame = _channel_frame(lower=99.8, upper=100.2)
 
@@ -156,58 +286,6 @@ def test_live_price_inside_kc_does_not_use_immediate_outer_entry():
     )
 
 
-def test_single_red_k_returns_inside_kc_without_entry_or_reversal():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
-        101.2, 99.9, 101.3, 99.8,
-    ]
-
-    flat = TradingEngine._channel_swing_action(frame, 99.9)
-    held_long = TradingEngine._channel_swing_action(frame, 99.9, "LONG")
-
-    assert (flat["action"], flat["side"]) == ("WAIT", None)
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-
-
-def test_single_green_k_returns_inside_kc_without_entry_or_reversal():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [
-        98.8, 100.1, 100.2, 98.7,
-    ]
-
-    flat = TradingEngine._channel_swing_action(frame, 100.1)
-    held_short = TradingEngine._channel_swing_action(frame, 100.1, "SHORT")
-
-    assert (flat["action"], flat["side"]) == ("WAIT", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
-
-
-def test_red_k_inside_kc_does_not_enter_or_reverse():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-2], ["open", "close"]] = [100.8, 100.2]
-    frame.loc[frame.index[-1], ["open", "close"]] = [100.2, 99.8]
-
-    flat = TradingEngine._channel_swing_action(frame, 99.8)
-    held_long = TradingEngine._channel_swing_action(frame, 99.8, "LONG")
-
-    assert (flat["action"], flat["side"]) == ("WAIT", None)
-    assert (held_long["action"], held_long["side"]) == ("HOLD", None)
-
-
-def test_green_k_inside_kc_does_not_enter_or_reverse():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-2], ["open", "close"]] = [99.2, 99.8]
-    frame.loc[frame.index[-1], ["open", "close"]] = [99.8, 100.2]
-
-    flat = TradingEngine._channel_swing_action(frame, 100.2)
-    held_short = TradingEngine._channel_swing_action(frame, 100.2, "SHORT")
-
-    assert (flat["action"], flat["side"]) == ("WAIT", None)
-    assert (held_short["action"], held_short["side"]) == ("HOLD", None)
-
-
-def test_live_inner_reentry_exception_is_removed():
-    assert not hasattr(TradingEngine, "_channel_live_inner_reentry_action")
     action_source = inspect.getsource(TradingEngine._channel_swing_action)
     process_source = inspect.getsource(TradingEngine._process_single_symbol)
     assert "INNER_" not in action_source
@@ -438,9 +516,9 @@ def test_empty_slot_does_not_chase_kc_outer_trend_without_pivot_turn():
     ]
     short_wait = TradingEngine._channel_swing_action(down, 98.6)
 
-    assert (long_wait["action"], long_wait["side"]) == ("WAIT", None)
+    assert (long_wait["action"], long_wait["side"]) == ("ENTER", "LONG")
     assert long_wait["turn_low"] is None
-    assert (short_wait["action"], short_wait["side"]) == ("WAIT", None)
+    assert (short_wait["action"], short_wait["side"]) == ("ENTER", "SHORT")
     assert short_wait["turn_high"] is None
 
 
@@ -453,7 +531,7 @@ def test_empty_slot_does_not_chase_price_outside_without_ma3_trend():
 
     result = TradingEngine._channel_swing_action(frame, 101.4)
 
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
 
 
 def test_empty_slot_does_not_chase_outer_move_when_ma3_is_losing_slope():
@@ -485,7 +563,7 @@ def test_empty_slot_does_not_chase_when_only_close_breaks_outer_rail():
 
     result = TradingEngine._channel_swing_action(frame, 101.4)
 
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
 
 
 def test_prior_downtrend_inside_kc_does_not_open_continuation_chase():
@@ -505,7 +583,7 @@ def test_prior_downtrend_inside_kc_does_not_open_continuation_chase():
 
     result = TradingEngine._channel_swing_action(frame, 99.6)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
     assert result["reason"] == "WAIT_ADJACENT_OUTER_CANDIDATE"
     assert result["turn_low"] is None
     assert result["turn_high"] is None
@@ -528,7 +606,7 @@ def test_prior_downtrend_blocks_green_countertrend_long_entry():
 
     result = TradingEngine._channel_swing_action(frame, 99.6)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
     assert result["reason"] == "WAIT_ADJACENT_OUTER_CANDIDATE"
 
 
@@ -549,7 +627,7 @@ def test_prior_uptrend_inside_kc_does_not_open_continuation_chase():
 
     result = TradingEngine._channel_swing_action(frame, 100.4)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
     assert result["reason"] == "WAIT_ADJACENT_OUTER_CANDIDATE"
     assert result["turn_low"] is None
     assert result["turn_high"] is None
@@ -625,7 +703,7 @@ def test_channel_swing_waits_for_next_candle_breakout():
 
     result = TradingEngine._channel_swing_action(frame, 98.9)
 
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
     assert result["reason"] == "WAIT_BREAK_HIGH"
 
 
@@ -636,7 +714,7 @@ def test_channel_swing_cancels_failed_trough_before_entry():
 
     result = TradingEngine._channel_swing_action(frame, 98.6)
 
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
     assert result["reason"] == "CANCEL_LONG"
 
 
@@ -892,7 +970,7 @@ def test_inside_kc_ma3_continuation_without_turn_still_waits():
 
     result = TradingEngine._channel_swing_action(frame, 100.2)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
 
 
 def test_ma3_turn_does_not_open_when_price_is_outside_kc():
@@ -904,7 +982,7 @@ def test_ma3_turn_does_not_open_when_price_is_outside_kc():
 
     result = TradingEngine._channel_swing_action(frame, 101.2)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
 
 
 def test_old_outer_pivot_does_not_chase_at_opposite_outer_rail():
@@ -918,7 +996,7 @@ def test_old_outer_pivot_does_not_chase_at_opposite_outer_rail():
 
     result = TradingEngine._channel_swing_action(frame, 101.1)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
 
 
 def test_shallow_outer_reentry_still_reverses_held_short_on_confirmed_trough():
@@ -1303,7 +1381,7 @@ def test_kc_upper_outer_uptrend_does_not_chase_when_break_is_too_far():
         frame, 102.0, seed["pending"],
     )
 
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
     assert result["reason"] in ("WAIT_TREND_RETEST", "WAIT_TREND_RETEST_BREAK")
     assert result["pending"]["confirmed"] is True
 
@@ -1380,7 +1458,7 @@ def test_kc_lower_outer_downtrend_does_not_chase_when_break_is_too_far():
         frame, 98.0, seed["pending"],
     )
 
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
     assert result["reason"] in (
         "WAIT_DOWNTREND_RETEST", "WAIT_DOWNTREND_RETEST_BREAK",
     )
@@ -1393,7 +1471,7 @@ def test_kc_upper_wick_without_outer_close_does_not_chase():
 
     result = TradingEngine._channel_outer_uptrend_entry_action(frame, 101.1)
 
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"]) == ("ENTER", "LONG")
     assert result["reason"] == "WAIT_OUTER_UPTREND"
 
 
@@ -1651,4 +1729,105 @@ def test_strong_middle_rebound_enters_without_outer_touch():
     result = TradingEngine._channel_swing_action(frame, 100.8)
     assert (result.get("action"), result.get("side")) == ("ENTER", "LONG")
     assert result.get("reason") == "STRONG_MIDDLE_REBOUND_LONG"
+
+
+def test_instant_inner_reentry_short_single_candle():
+    """Test that a single red candle returning from the upper band by 50% triggers a SHORT reentry."""
+    import pandas as pd
+    from core.engine import TradingEngine
+    
+    df = pd.DataFrame([
+        {"open": 100, "high": 105, "low": 95, "close": 102, "ma3": 100, "kc_upper": 105, "kc_lower": 95},
+        # Prev: Green
+        {"open": 100, "high": 108, "low": 100, "close": 106, "ma3": 102, "kc_upper": 105, "kc_lower": 95},
+        # Live: Red, opened above upper, dropped inside by > 50%
+        # kc_upper = 105, kc_lower = 95, width = 10
+        # price = 99 (105 - 99 = 6 >= 0.5 * 10)
+        {"open": 106, "high": 106, "low": 98, "close": 99, "ma3": 103, "kc_upper": 105, "kc_lower": 95},
+    ])
+    live_price = 99.0
+    action_data = TradingEngine._channel_live_inner_reentry_action(df, live_price, None)
+    assert action_data["action"] == "ENTER"
+    assert action_data["side"] == "SHORT"
+    assert action_data["reason"] == "LIVE_INNER_REENTRY_SHORT"
+
+def test_instant_inner_reentry_short_two_candles():
+    """Test that two red candles returning from the upper band by 50% triggers a SHORT reentry."""
+    import pandas as pd
+    from core.engine import TradingEngine
+    
+    df = pd.DataFrame([
+        {"open": 100, "high": 105, "low": 95, "close": 102, "ma3": 100, "kc_upper": 105, "kc_lower": 95},
+        # Prev: Red, fully inside. Open = 104, Close = 101. (Body = 3)
+        {"open": 104, "high": 104, "low": 101, "close": 101, "ma3": 102, "kc_upper": 105, "kc_lower": 95},
+        # Live: Red, fully inside. Open = 101, Price = 98. (Body = 3)
+        # Total body = 6 >= 0.5 * 10
+        {"open": 101, "high": 101, "low": 97, "close": 98, "ma3": 103, "kc_upper": 105, "kc_lower": 95},
+    ])
+    live_price = 98.0
+    action_data = TradingEngine._channel_live_inner_reentry_action(df, live_price, None)
+    assert action_data["action"] == "ENTER"
+    assert action_data["side"] == "SHORT"
+    assert action_data["reason"] == "LIVE_INNER_REENTRY_SHORT"
+
+
+def test_instant_inner_reentry_long_first_candle_opens_outside():
+    """Test that a two-candle long reentry works even if the first candle opens below the KC lower band."""
+    import pandas as pd
+    from core.engine import TradingEngine
+    
+    df = pd.DataFrame([
+        {"open": 100, "high": 105, "low": 95, "close": 98, "ma3": 100, "kc_upper": 105, "kc_lower": 95},
+        # Prev: Green, opened below lower band (94 < 95), closed inside (96 > 95)
+        {"open": 94, "high": 97, "low": 93, "close": 96, "ma3": 102, "kc_upper": 105, "kc_lower": 95},
+        # Live: Green, fully inside. Open = 96, Price = 99.
+        # Bodies = (96 - 94 = 2) + (99 - 96 = 3) = 5.
+        # Width = 10. 5 >= 0.5 * 10
+        {"open": 96, "high": 100, "low": 96, "close": 99, "ma3": 103, "kc_upper": 105, "kc_lower": 95},
+    ])
+    live_price = 99.0
+    action_data = TradingEngine._channel_live_inner_reentry_action(df, live_price, None)
+    assert action_data["action"] == "ENTER"
+    assert action_data["side"] == "LONG"
+    assert action_data["reason"] == "LIVE_INNER_REENTRY_LONG"
+
+
+def test_single_strong_candle_unlocks_chop_wait():
+    """Test that a single strong candle crossing the middle band unlocks CHOP_WAIT early."""
+    import pandas as pd
+    from core.engine import TradingEngine
+    
+    # Needs at least 14 rows for _channel_chop_state
+    # Let's create a chopping history
+    data = []
+    for i in range(13):
+        data.append({
+            "open": 100, "close": 100 + (1 if i % 2 == 0 else -1),
+            "high": 102, "low": 98,
+            "ma3": 100, "ma15": 100,
+            "kc_upper": 105, "kc_lower": 95
+        })
+    # Now append the single strong candle that unlocks it (LONG)
+    # Middle is 100. It must cross 100 and have body >= 0.5 * (105-100) = 2.5
+    data.append({
+        "open": 99, "close": 102,  # Body is 3 >= 2.5. Closes > 100.
+        "high": 103, "low": 98,
+        "ma3": 101, "ma15": 100,
+        "kc_upper": 105, "kc_lower": 95
+    })
+    # Add a live candle (ignored by chop state which looks at closed)
+    data.append({
+        "open": 102, "close": 102,
+        "high": 103, "low": 101,
+        "ma3": 101, "ma15": 100,
+        "kc_upper": 105, "kc_lower": 95
+    })
+    
+    df = pd.DataFrame(data)
+    chop_state = TradingEngine._channel_chop_state(df)
+    
+    # Because of the chopping history, it would normally be detected as chop.
+    # But because of the strong candle, clear_direction should be LONG.
+    assert chop_state["clear_direction"] == "LONG"
+    assert chop_state["reason"] == "DIRECTION_CLEAR"
 

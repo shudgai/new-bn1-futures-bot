@@ -304,12 +304,9 @@ async def manual_order(req: ManualOrderRequest):
 
     price = engine.tickers[symbol]
 
-    # 從最新 K 線計算真實 ATR 以便與自動下單規則一致
-    df = await engine.fetch_klines(symbol, timeframe="5m", limit=30)
-    if not df.empty and "atr" in df.columns:
-        atr = float(df["atr"].iloc[-1])
-    else:
-        atr = price * 0.015
+    # 手動單使用 CHANNEL_SWING 管理，進場後不設 SL/TP；不應為了未使用的
+    # ATR 等待外部 K 線請求。交易所請求卡住時，原本會讓按鈕長時間無回應。
+    atr = price * 0.015
 
     from core.strategy import compute_sl_tp_distance, build_sl_tp_for_side
     from core.config import get_leverage

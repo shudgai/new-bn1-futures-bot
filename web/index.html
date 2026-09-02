@@ -875,7 +875,13 @@
                                     CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
                                 }[trade.action];
                                 if (!markerStyle) return;
-                                tradeMarkers.push({ time: d.time, ...markerStyle, size: 1 });
+                                const price = Number(trade.price);
+                                const priceText = Number.isFinite(price) && price > 0
+                                    ? " @ " + this.formatPrice(price) : "";
+                                tradeMarkers.push({
+                                    time: d.time, ...markerStyle,
+                                    text: markerStyle.text + priceText, size: 1,
+                                });
                             });
                     });
                     

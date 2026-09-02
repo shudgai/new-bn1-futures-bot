@@ -29,6 +29,7 @@ from core.config import (
     SYMBOL_MIN_LISTING_DAYS,
     SYMBOL_MAX_24H_CHANGE_PCT,
     SYMBOL_MAX_FUNDING_RATE,
+    VOLATILITY_ROTATION_WEIGHT,
     SYMBOL_MAX_ADX_RANGE,
     SYMBOL_MIN_KC_WIDTH_PCT,
     SYMBOL_HISTORY_QUARANTINE_MIN_TRADES,
@@ -463,16 +464,12 @@ class SymbolRotation:
                     )
                     directional_change = change_pct if is_long else -change_pct
                     movement_score = max(0.0, 1.0 - abs(directional_change - 3.0) / 7.0)
-                    # 波動品質：用實測 ATR% 是否落在策略實際會用到的可交易區間
-                    # （MIN_ATR_PCT ~ MAX_ATR_PCT）中段來評分，跟 movement_score
-                    # （看瞬間 24h 漲跌）是兩個角度——這裡看的是這個幣種「持續性的
-                    # 5m 波動」跟策略實際下單門檻合不合拍，同一套公式跟
-                    # strategy.py 的 quality_bonus 一致，不重新發明。
-                    atr_mid = (MIN_ATR_PCT + MAX_ATR_PCT) / 2.0
-                    atr_half_range = (MAX_ATR_PCT - MIN_ATR_PCT) / 2.0
-                    volatility_quality = (
-                        max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
-                        if atr_half_range > 0 else 0.0
+                    # 在合格 ATR 區間內，優先選波動較大的主流合約；超出上限
+                    # 仍會由 atr_eligible／volatility_excluded 淘汰，避免把極端
+                    # 拉砸幣誤選成「高波動機會」。
+                    volatility_priority = (
+                        min(max((atr_pct - MIN_ATR_PCT) / (MAX_ATR_PCT - MIN_ATR_PCT), 0.0), 1.0)
+                        if MAX_ATR_PCT > MIN_ATR_PCT else 0.0
                     )
                     stat = history.get(
                         (symbol, direction),
@@ -497,7 +494,7 @@ class SymbolRotation:
                         + liquidity * 15.0
                         + history_score * 10.0
                         + movement_score * 5.0
-                        + volatility_quality * 5.0
+                        + volatility_priority * VOLATILITY_ROTATION_WEIGHT
                     ) - overheat_penalty
                     results.append({
                         "symbol": symbol,

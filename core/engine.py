@@ -31,6 +31,8 @@ from core.config import (
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
+    ABNORMAL_MARKET_GUARD_ENABLED, ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR,
+    ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT, ABNORMAL_MARKET_ADVERSE_MOVE_PCT,
     CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO, CHANNEL_SWING_MIN_REENTRY_RATIO,
     CHANNEL_SWING_TURN_LOOKBACK_BARS,
     BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
@@ -171,6 +173,8 @@ class TradingEngine:
         # Channel Swing 平倉後，同一根 live K 不得再次用任何入口重開。
         # 下一根已收盤 K 出現後自動解鎖；即時同 K 反手規格不受影響。
         self._channel_swing_last_exit_bar: Dict[str, object] = {}
+        # 外軌回到通道而平倉後，只允許同一根反色K以明確MA3距離回到外軌再進場。
+        self._channel_outer_reentry_after_exit: Dict[str, dict] = {}
         # 盤整鎖：均線與 KC 中軌反覆交叉時，外軌 V 只可作為持倉離場
         # 確認，不得開新倉或平倉後立即反手。需三根已收盤 K 明確同向才解鎖。
         self._channel_chop_locked: Dict[str, bool] = {}
@@ -2708,7 +2712,7 @@ class TradingEngine:
                 if MAX_SLOTS > 0
                 else TRADE_AMOUNT_USDT
             )
-            amount = dynamic_trade_amount
+            amount = min(dynamic_trade_amount, TRADE_AMOUNT_USDT)
             btc_allocation_factor = float(sig.get("btc_allocation_factor", 1.0) or 1.0)
             pool[symbol] = {
                 "symbol": symbol,
@@ -3042,6 +3046,14 @@ class TradingEngine:
         is_limit = signal.get("action") == "ENTER_LIMIT"
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
+        if not self._abnormal_market_entry_allowed(
+            symbol, side, planned_price, atr,
+            float(signal.get("signal_candle_open") or planned_price),
+            float(signal.get("signal_candle_high") or planned_price),
+            float(signal.get("signal_candle_low") or planned_price),
+            float(signal.get("signal_candle_close") or planned_price),
+        ):
+            return False
         # 最後一道方向守門：避免在高週期趨勢不符時開錯方向 (MA5_CROSS_PIVOT 策略除外)
         if entry_mode not in ("MA5_CROSS_PIVOT", "EXHAUSTION_SNIPER", "PIVOT_TURN", "CHANNEL_SWING"):
             if not self._entry_direction_allowed(symbol, side, planned_price):
@@ -3142,10 +3154,10 @@ class TradingEngine:
             wallet_balance_fn = getattr(self.account, "get_wallet_balance", None)
             if wallet_balance_fn is None:
                 wallet_balance_fn = self.account.get_available_balance
-            amount = (
+            amount = min(
                 wallet_balance_fn() / max(MAX_SLOTS, 1)
-                if MAX_SLOTS > 0
-                else TRADE_AMOUNT_USDT
+                if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
+                TRADE_AMOUNT_USDT,
             )
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price,
@@ -3264,7 +3276,7 @@ class TradingEngine:
             if MAX_SLOTS > 0
             else TRADE_AMOUNT_USDT
         )
-        amount_usdt = dynamic_trade_amount
+        amount_usdt = min(dynamic_trade_amount, TRADE_AMOUNT_USDT)
         if self.account.get_available_balance() < amount_usdt:
             return False
 
@@ -4402,7 +4414,9 @@ class TradingEngine:
             lower = float(live["kc_lower"])
         except (TypeError, ValueError, IndexError):
             return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_INVALID"}
-        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+        if not all(math.isfinite(value) for value in (
+            price, upper, lower, candle_open, candle_high, candle_low,
+        )) or lower >= upper:
             return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_INVALID"}
 
         if not pending:
@@ -4619,6 +4633,204 @@ class TradingEngine:
         )
 
     @staticmethod
+    @staticmethod
+    def _channel_live_inner_reentry_action(
+        frame, live_price, current_side
+    ) -> dict:
+        """回到 KC 內先平倉；半寬且有量能時才反手。"""
+        import core.config as config
+        if frame is None or len(frame) < 2:
+            return {"action": "WAIT"}
+        
+        try:
+            live = frame.iloc[-1]
+            prev = frame.iloc[-2]
+            
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+            width = upper - lower
+            if width <= 0: return {"action": "WAIT"}
+            
+            price = float(live_price)
+            live_open = float(live["open"])
+            prev_open = float(prev["open"])
+            prev_close = float(prev["close"])
+            volume = float(live.get("volume") or 0.0)
+            volume_ma = float(live.get("vol_ma_20") or 0.0)
+            volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
+            reversal_volume_ok = volume_ratio >= config.KELTNER_MIN_VOLUME_RATIO
+
+            side = str(current_side or "").upper()
+
+            # Short entry logic
+            if side in ("", "LONG"):
+                # Single candle condition
+                single_condition = (
+                    live_open >= upper and price < upper 
+                    and (upper - price) >= 0.5 * width
+                )
+                
+                # Two candle condition
+                two_candle_condition = (
+                    prev_close < prev_open and price < live_open
+                    and prev_open <= upper and price >= lower
+                    and (prev_open - price) >= 0.5 * width
+                )
+                
+                if single_condition or two_candle_condition:
+                    return {
+                        "action": (
+                            "ENTER" if not side else "REVERSE"
+                            if reversal_volume_ok else "EXIT"
+                        ),
+                        "side": "SHORT" if (not side or reversal_volume_ok) else None,
+                        "reason": (
+                            "INSTANT_INNER_REENTRY_SHORT" if not side
+                            else "INSTANT_INNER_REENTRY_REVERSE_SHORT"
+                            if reversal_volume_ok
+                            else "INSTANT_INNER_REENTRY_EXIT_LONG_LOW_VOLUME"
+                        ),
+                    }
+
+            # Long entry logic
+            if side in ("", "SHORT"):
+                # Single candle condition
+                single_condition = (
+                    live_open <= lower and price > lower 
+                    and (price - lower) >= 0.5 * width
+                )
+                
+                # Two candle condition
+                two_candle_condition = (
+                    prev_close > prev_open and price > live_open
+                    and prev_open >= lower and price <= upper
+                    and (price - prev_open) >= 0.5 * width
+                )
+                
+                if single_condition or two_candle_condition:
+                    return {
+                        "action": (
+                            "ENTER" if not side else "REVERSE"
+                            if reversal_volume_ok else "EXIT"
+                        ),
+                        "side": "LONG" if (not side or reversal_volume_ok) else None,
+                        "reason": (
+                            "INSTANT_INNER_REENTRY_LONG" if not side
+                            else "INSTANT_INNER_REENTRY_REVERSE_LONG"
+                            if reversal_volume_ok
+                            else "INSTANT_INNER_REENTRY_EXIT_SHORT_LOW_VOLUME"
+                        ),
+                    }
+                    
+        except (ValueError, TypeError, KeyError):
+            pass
+            
+        return {"action": "WAIT"}
+
+    @staticmethod
+    def _channel_outer_reentry_exit_action(
+        frame: pd.DataFrame, live_price: float, current_side: str | None,
+    ) -> dict:
+        """Flatten a KC outer-run position when its opposite candle returns inside."""
+        required = {"open", "close", "ma3", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
+            return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_UNAVAILABLE"}
+        try:
+            live = frame.iloc[-1]
+            previous = frame.iloc[-2]
+            price = float(live_price)
+            live_open = float(live["open"])
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+            previous_upper = float(previous["kc_upper"])
+            previous_lower = float(previous["kc_lower"])
+            previous_close = float(previous["close"])
+            ma3_now = float(live["ma3"])
+            ma3_previous = float(previous["ma3"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_INVALID"}
+        values = (
+            price, live_open, upper, lower, previous_upper, previous_lower,
+            previous_close, ma3_now, ma3_previous,
+        )
+        if not all(math.isfinite(value) for value in values) or lower >= upper:
+            return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_INVALID"}
+
+        side = str(current_side or "").upper()
+        width = upper - lower
+        if side == "LONG":
+            # 上軌外追多後，紅 K 必須實際深入通道至少半寬才可平多；
+            # 仍在外軌或只淺回通道皆續抱。
+            red_inside = (
+                lower <= price < upper and price < live_open
+            )
+            came_from_upper_outer = live_open >= upper or previous_close >= previous_upper
+            if came_from_upper_outer and red_inside:
+                return {
+                    "action": "EXIT", "side": None,
+                    "reason": "KC_UPPER_RED_REENTRY_EXIT",
+                    "kc_upper": upper, "kc_lower": lower,
+                }
+        elif side == "SHORT":
+            # 多空鏡像：綠 K 必須自下軌外深入通道至少半寬，才可平空。
+            green_inside = (
+                lower < price <= upper and price > live_open
+            )
+            came_from_lower_outer = live_open <= lower or previous_close <= previous_lower
+            if came_from_lower_outer and green_inside:
+                return {
+                    "action": "EXIT", "side": None,
+                    "reason": "KC_LOWER_GREEN_REENTRY_EXIT",
+                    "kc_upper": upper, "kc_lower": lower,
+                }
+        return {"action": "HOLD", "side": None, "reason": "WAIT_KC_REENTRY_EXIT"}
+
+    @staticmethod
+    def _channel_outer_reentry_reenter_action(
+        frame: pd.DataFrame, live_price: float, exited_side: str | None,
+    ) -> dict:
+        """Re-enter only if the same opposite candle recovers the original outer rail.
+
+        MA3 must remain at least 10% of the current KC width away from that rail,
+        leaving room for a renewed outer-run rather than a rail-touch whipsaw.
+        """
+        required = {"open", "ma3", "kc_upper", "kc_lower"}
+        if frame is None or frame.empty or not required.issubset(frame.columns):
+            return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_REENTER_DATA_UNAVAILABLE"}
+        try:
+            live = frame.iloc[-1]
+            price = float(live_price)
+            live_open = float(live["open"])
+            ma3 = float(live["ma3"])
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_REENTER_DATA_INVALID"}
+        if not all(math.isfinite(value) for value in (price, live_open, ma3, upper, lower)) or lower >= upper:
+            return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_REENTER_DATA_INVALID"}
+        width = upper - lower
+        side = str(exited_side or "").upper()
+        if (
+            side == "LONG" and price >= upper and price < live_open
+            and upper - ma3 >= width * 0.10
+        ):
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_UPPER_RED_REENTRY_REENTER",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+        if (
+            side == "SHORT" and price <= lower and price > live_open
+            and ma3 - lower >= width * 0.10
+        ):
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LOWER_GREEN_REENTRY_REENTER",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+        return {"action": "WAIT", "side": None, "reason": "WAIT_KC_REENTRY_REENTER"}
+
+    @staticmethod
     def _channel_live_outer_entry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
@@ -4634,6 +4846,9 @@ class TradingEngine:
             price = float(live_price)
             upper = float(live["kc_upper"])
             lower = float(live["kc_lower"])
+            candle_open = float(live["open"])
+            candle_high = max(float(live["high"]), price)
+            candle_low = min(float(live["low"]), price)
         except (TypeError, ValueError, IndexError):
             return {
                 "action": "WAIT", "side": None,
@@ -5063,6 +5278,35 @@ class TradingEngine:
 
 
     @staticmethod
+    def _channel_upper_red_short_reversal_allowed(
+        frame: pd.DataFrame, live_price: float,
+    ) -> bool:
+        """Allow reversal only for a green live candle at or above KC upper rail."""
+        required = {"open", "kc_upper"}
+        if frame is None or frame.empty or not required.issubset(frame.columns):
+            return False
+        try:
+            live = frame.iloc[-1]
+            return bool(
+                float(live_price) >= float(live["kc_upper"])
+                and float(live_price) > float(live["open"])
+            )
+        except (TypeError, ValueError, IndexError, KeyError):
+            return False
+
+    @staticmethod
+    def _channel_is_upper_red_peak_short(position: dict) -> bool:
+        """Identify a Channel Swing short originated by an upper-rail red peak."""
+        try:
+            return bool(
+                str(position.get("side") or "").upper() == "SHORT"
+                and str(position.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+                and float(position.get("channel_turn_high") or 0.0) > 0.0
+            )
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    @staticmethod
     def _channel_chop_gate(
         action: str, target_side: str | None, locked: bool,
         has_position: bool, reason: str | None = None,
@@ -5145,6 +5389,20 @@ class TradingEngine:
             or signal_low > signal_high
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
+
+        # 1. 優先檢查即時內軌回轉例外
+        if hasattr(TradingEngine, "_channel_live_inner_reentry_action"):
+            inner_action = TradingEngine._channel_live_inner_reentry_action(
+                frame, live_price, current_side
+            )
+            if inner_action.get("action") in ("ENTER", "EXIT", "REVERSE"):
+                return inner_action
+
+        outer_reentry_exit = TradingEngine._channel_outer_reentry_exit_action(
+            frame, live_price, current_side,
+        )
+        if outer_reentry_exit.get("action") == "EXIT":
+            return outer_reentry_exit
 
         signal_width = signal_upper - signal_lower
 
@@ -5254,7 +5512,7 @@ class TradingEngine:
                     if live_lower_touch else "WAIT_LOWER_GREEN_REENTRY"
                 )
         elif trough_turn or strong_rebound_long:
-            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+            if trough_turn and not strong_rebound_long and live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
                 action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
             else:
                 action, target_side, reason = (
@@ -5262,7 +5520,7 @@ class TradingEngine:
                     "STRONG_MIDDLE_REBOUND_LONG" if strong_rebound_long and not trough_turn else "OUTER_TROUGH_NEXT_BREAK_LONG"
                 )
         elif peak_turn or strong_rebound_short:
-            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+            if peak_turn and not strong_rebound_short and live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
                 action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
             else:
                 action, target_side, reason = (
@@ -5513,9 +5771,9 @@ class TradingEngine:
                 CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
                 if effective_slots == 1 else 0.5
             )
-            return max(0.0, min(available, wallet_balance * fraction))
+            return max(0.0, min(available, wallet_balance * fraction, TRADE_AMOUNT_USDT))
         # 多槽模式的補位只使用當下可用資金。
-        return max(0.0, available)
+        return max(0.0, min(available, TRADE_AMOUNT_USDT))
 
     @staticmethod
     def _continuous_entry_price_is_safe(
@@ -5558,6 +5816,49 @@ class TradingEngine:
             return False, f"invalid entry side {side}"
         return safe, "" if safe else reason
 
+    def _abnormal_market_entry_allowed(
+        self, symbol: str, side: str, price: float, atr: float,
+        candle_open: float, candle_high: float, candle_low: float,
+        candle_close: float,
+    ) -> bool:
+        """阻止異常拉砸期間的新倉；絕不觸發既有持倉的平倉。"""
+        if not ABNORMAL_MARKET_GUARD_ENABLED:
+            return True
+        values = (price, atr, candle_open, candle_high, candle_low, candle_close)
+        if not all(math.isfinite(float(value or 0.0)) for value in values):
+            return True
+        if price <= 0 or atr <= 0 or candle_high < candle_low or candle_open <= 0:
+            return True
+
+        range_pct = (candle_high - candle_low) / price
+        range_atr = (candle_high - candle_low) / atr
+        signed_move_pct = (candle_close - candle_open) / candle_open
+        requested = str(side or "").upper()
+        excessive_range = (
+            (ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR > 0
+             and range_atr >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR)
+            or (ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT > 0
+                and range_pct >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT)
+        )
+        adverse_impulse = (
+            (requested == "LONG" and signed_move_pct <= -ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
+            or (requested == "SHORT" and signed_move_pct >= ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
+        )
+        if not excessive_range and not adverse_impulse:
+            return True
+
+        reasons = []
+        if excessive_range:
+            reasons.append(f"K線振幅 {range_atr:.1f} ATR / {range_pct:.2%}")
+        if adverse_impulse:
+            reasons.append(f"逆向單根變動 {signed_move_pct:.2%}")
+        self.account.log(
+            f"🛡️ {symbol} 異常拉砸／流動性風險，暫停新開{requested}："
+            + "；".join(reasons),
+            "WARNING",
+        )
+        return False
+
     async def _place_continuous_market_entry(
         self, symbol: str, side: str, df: pd.DataFrame, live_price: float,
         entry_type: str, reason: str, score: int, timeframe: str,
@@ -5570,6 +5871,15 @@ class TradingEngine:
 
         if symbol in getattr(self.account, "positions", {}):
             self.account.log(f"⏸️ {symbol} 已有持倉，不重複占用槽位", "DEBUG")
+            return False
+        latest = df.iloc[-1]
+        if not self._abnormal_market_entry_allowed(
+            symbol, side, live_price, float(latest.get("atr") or 0.0),
+            float(latest.get("open") or live_price),
+            float(latest.get("high") or live_price),
+            float(latest.get("low") or live_price),
+            float(latest.get("close") or live_price),
+        ):
             return False
         # 一般行情不使用大週期方向限制；只有盤整時，才依該幣種目前
         # 進場週期的 MA3/MA15 方向避免逆著短線結構開倉。
@@ -5900,8 +6210,42 @@ class TradingEngine:
                         channel_action = outer_chase_action
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
+                reentry_action = False
+                reentry_state = self._channel_outer_reentry_after_exit.get(symbol)
+                if not existing_pos and reentry_state:
+                    live_bar = channel_df.index[-1]
+                    source_bar = reentry_state.get("live_bar")
+                    next_bar = reentry_state.get("next_bar")
+                    if live_bar == source_bar or live_bar == next_bar:
+                        channel_action = self._channel_outer_reentry_reenter_action(
+                            channel_df, channel_price, reentry_state.get("side"),
+                        )
+                        reentry_action = channel_action.get("action") == "ENTER"
+                    elif next_bar is None:
+                        # Keep the re-entry window alive through the immediately
+                        # following live K; MA3 may need that one bar to widen.
+                        reentry_state["next_bar"] = live_bar
+                        channel_action = self._channel_outer_reentry_reenter_action(
+                            channel_df, channel_price, reentry_state.get("side"),
+                        )
+                        reentry_action = channel_action.get("action") == "ENTER"
+                    else:
+                        self._channel_outer_reentry_after_exit.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
+                # 上軌紅 K 建立的空單在通道內不反覆改開多：只有
+                # 即時綠 K 回到上軌外才准許反手。半通道即時平倉
+                # 是 EXIT，不受此反手鎖影響。
+                if (
+                    action == "REVERSE"
+                    and target_side == "LONG"
+                    and self._channel_is_upper_red_peak_short(existing_pos or {})
+                    and not self._channel_upper_red_short_reversal_allowed(
+                        channel_df, channel_price,
+                    )
+                ):
+                    action, target_side = "HOLD", None
+                    channel_action["reason"] = "UPPER_RED_SHORT_LOCK_WAIT_GREEN_OUTER"
                 # 「碰 KC 外軌並成 V」是轉向的必要條件，不是在盤整中
                 # 無條件反手的充分條件。盤整鎖期間可平舊倉，但不得開新倉。
                 action, target_side, chop_gate_reason = self._channel_chop_gate(
@@ -5917,7 +6261,7 @@ class TradingEngine:
                 channel_closed_bar_id = (
                     channel_df.index[-2] if len(channel_df) >= 2 else None
                 )
-                if self._channel_entry_reuses_exit_bar(
+                if not reentry_action and self._channel_entry_reuses_exit_bar(
                     action, bool(existing_pos), channel_closed_bar_id,
                     getattr(self, "_channel_swing_last_exit_bar", {}).get(symbol),
                 ):

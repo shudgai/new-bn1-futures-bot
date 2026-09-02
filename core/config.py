@@ -224,6 +224,19 @@ TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR = max(
 CONTINUOUS_ENTRY_OUTER_ZONE_RATIO = min(
     1.0, max(0.0, float(os.getenv("CONTINUOUS_ENTRY_OUTER_ZONE_RATIO", "0.70")))
 )
+# 異常拉砸保護只阻止新倉：既有部位仍完全依各策略原本的出場規則管理。
+ABNORMAL_MARKET_GUARD_ENABLED = os.getenv(
+    "ABNORMAL_MARKET_GUARD_ENABLED", "true"
+).lower() == "true"
+ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR = max(
+    0.0, float(os.getenv("ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR", "4.0"))
+)
+ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT = max(
+    0.0, float(os.getenv("ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT", "0.025"))
+)
+ABNORMAL_MARKET_ADVERSE_MOVE_PCT = max(
+    0.0, float(os.getenv("ABNORMAL_MARKET_ADVERSE_MOVE_PCT", "0.012"))
+)
 # 啟用後，連續模式的技術性結構失效只記錄、不平倉；僅在價格真正
 # 越過持倉不利方向的 KC 外軌時自動平倉（手動平倉仍可用）。
 CONTINUOUS_OUTER_RAIL_EXIT_ONLY = os.getenv(
@@ -1022,6 +1035,11 @@ SYMBOL_ROTATION_MAX_CHANGES = int(os.getenv("SYMBOL_ROTATION_MAX_CHANGES", "3"))
 SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "14"))
 SYMBOL_MAX_24H_CHANGE_PCT = float(os.getenv("SYMBOL_MAX_24H_CHANGE_PCT", "50.0"))
 SYMBOL_MAX_FUNDING_RATE = float(os.getenv("SYMBOL_MAX_FUNDING_RATE", "0.0001"))
+# 輪替排序偏好「安全範圍內較高 ATR」的權重；ATR 超出 MAX_ATR_PCT 的幣仍
+# 會被原本的資格檢查淘汰，不會因追求波動而納入極端標的。
+VOLATILITY_ROTATION_WEIGHT = max(
+    0.0, float(os.getenv("VOLATILITY_ROTATION_WEIGHT", "25.0"))
+)
 # 以價格比例表示；0.0003 = 0.03%，不是 3%。
 SYMBOL_MIN_KC_WIDTH_PCT = float(os.getenv("SYMBOL_MIN_KC_WIDTH_PCT", "0.0003"))
 # Channel Swing 可接受強趨勢；100 僅排除異常值，不把高 ADX 強勢幣踢掉。
