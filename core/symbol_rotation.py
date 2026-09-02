@@ -112,7 +112,15 @@ class SymbolRotation:
         # Pending forces a fresh scan; cooldown prevents immediate reselection.
         self.next_rotation_exclusions: set[str] = set()
         self.replacement_cooldowns: Dict[str, float] = {}
+        # Confirmed outer candidates stay on the two-symbol board until the
+        # immediately-adjacent confirmation candle resolves.
+        self.setup_protected_symbols: set[str] = set()
         self._restore_profit_exit_cooldowns()
+
+    def set_setup_protected_symbols(self, symbols: Iterable[str]) -> None:
+        self.setup_protected_symbols = {
+            str(symbol).strip() for symbol in symbols if str(symbol).strip()
+        }
 
     def _restore_profit_exit_cooldowns(self) -> None:
         now_time = time.time()
@@ -710,6 +718,7 @@ class SymbolRotation:
         current: List[str],
         held_positions: Dict[str, dict],
         metrics: List[dict],
+        setup_protected_symbols: Iterable[str] = (),
     ) -> tuple[List[str], Dict[str, str], List[dict]]:
         qualified = [
             item for item in metrics
@@ -787,6 +796,59 @@ class SymbolRotation:
             })
             used_symbols.add(symbol)
 
+        # A confirmed outer setup only has the next adjacent candle to enter.
+        protected_setups = {
+            str(symbol).strip() for symbol in setup_protected_symbols
+            if str(symbol).strip() and str(symbol).strip() not in held_positions
+        }
+        protected_items = []
+        for protected_symbol in protected_setups:
+            if protected_symbol not in current:
+                continue
+            matching = [
+                item for item in metrics
+                if item.get("symbol") == protected_symbol
+            ]
+            protected_items.append(
+                max(
+                    matching,
+                    key=lambda item: item.get("final_score", 0.0),
+                )
+                if matching else {
+                    "symbol": protected_symbol, "direction": "BOTH",
+                    "entry_priority": 4, "final_score": 100.0,
+                }
+            )
+        protected_items.sort(
+            key=lambda item: (
+                int(item.get("entry_priority") or 0),
+                item.get("final_score", 0.0),
+            ),
+            reverse=True,
+        )
+        for protected in protected_items:
+            if protected["symbol"] in used_symbols:
+                continue
+            replaceable = [
+                item for item in selected_items
+                if item["symbol"] not in held_positions
+                and item["symbol"] not in protected_setups
+            ]
+            if len(selected_items) >= SYMBOL_ROTATION_COUNT:
+                if not replaceable:
+                    break
+                removed = min(
+                    replaceable,
+                    key=lambda item: (
+                        int(item.get("entry_priority") or 0),
+                        item.get("final_score", 0.0),
+                    ),
+                )
+                selected_items.remove(removed)
+                used_symbols.discard(removed["symbol"])
+            selected_items.append(protected)
+            used_symbols.add(protected["symbol"])
+
         desired_items = selected_items[:SYMBOL_ROTATION_COUNT]
         desired_by_symbol = {item["symbol"]: item for item in desired_items}
         best_by_symbol = {}
@@ -794,6 +856,37 @@ class SymbolRotation:
             symbol = item["symbol"]
             if symbol not in best_by_symbol or item.get("final_score", 0.0) > best_by_symbol[symbol].get("final_score", 0.0):
                 best_by_symbol[symbol] = item
+
+        # 單槽的兩幣牌面必須真的是本輪最佳候選，不能沿用大牌面時
+        # 「等待立即可交易者才換幣」的舊名單黏著邏輯。
+        if SYMBOL_ROTATION_COUNT <= 2:
+            selected = [item["symbol"] for item in desired_items]
+            current_slice = list(current[:SYMBOL_ROTATION_COUNT])
+            removed = [
+                symbol for symbol in current_slice
+                if symbol not in selected and symbol not in held_positions
+            ]
+            incoming = [symbol for symbol in selected if symbol not in current_slice]
+            changes = []
+            for index, outgoing in enumerate(removed):
+                incoming_symbol = incoming[index] if index < len(incoming) else ""
+                incoming_item = desired_by_symbol.get(incoming_symbol, {})
+                changes.append({
+                    "out": outgoing,
+                    "in": incoming_symbol,
+                    "direction": incoming_item.get("direction", ""),
+                })
+            for incoming_symbol in incoming[len(removed):]:
+                incoming_item = desired_by_symbol.get(incoming_symbol, {})
+                changes.append({
+                    "out": "",
+                    "in": incoming_symbol,
+                    "direction": incoming_item.get("direction", ""),
+                })
+            directions = {
+                item["symbol"]: item["direction"] for item in desired_items
+            }
+            return selected, directions, changes
 
         # 介面上的幣種要留足時間觀察。只有替代者已在 KC 可立即進場區
         # (entry_priority=3) 才換出原本的觀察幣；其餘尚在等待型的候選留在
@@ -876,7 +969,7 @@ class SymbolRotation:
         held = set(self.account.positions.keys())
         changes: List[dict] = []
         for symbol in list(DEFAULT_SYMBOLS):
-            if symbol in held:
+            if symbol in held or symbol in self.setup_protected_symbols:
                 continue
             if symbol in ENTRY_DISABLED_SYMBOLS:
                 reason = "已暫停新倉"
@@ -988,6 +1081,7 @@ class SymbolRotation:
             list(DEFAULT_SYMBOLS),
             self.account.positions,
             directional,
+            self.setup_protected_symbols,
         )
         if candidates and unavailable_count >= len(candidates) and not qualified_symbols:
             selected = [

@@ -6324,3 +6324,47 @@ async def test_bounce_early_profit_guard_captures_saga_sized_move(tmp_path, monk
     assert account.trades[0]["reason"] == "早期獲利保護回吐平倉"
     assert account.trades[0]["pnl"] > 0
     assert account.trades[0]["price"] < 100.0
+
+
+def test_two_symbol_rotation_keeps_confirmed_outer_setup_on_board(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 40.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 1)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 2)
+    metrics = [
+        {"symbol": "SOL/USDT", "direction": "LONG", "eligible": True,
+         "entry_priority": 3, "final_score": 99.0},
+        {"symbol": "XRP/USDT", "direction": "SHORT", "eligible": True,
+         "entry_priority": 3, "final_score": 98.0},
+        {"symbol": "1000PEPE/USDT", "direction": "LONG", "eligible": True,
+         "entry_priority": 3, "final_score": 70.0},
+    ]
+
+    selected, directions, _ = SymbolRotation.choose_directional_symbols(
+        ["1000PEPE/USDT", "XRP/USDT"], {}, metrics, {"1000PEPE/USDT"},
+    )
+
+    assert "1000PEPE/USDT" in selected
+    assert len(selected) == 2
+    assert directions["1000PEPE/USDT"] == "LONG"
+
+
+def test_two_symbol_rotation_keeps_kc_inner_trend_even_if_next_rank_is_unqualified(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 40.0)
+    monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 1)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 2)
+    metrics = [
+        {"symbol": "NEWLONG/USDT", "direction": "LONG", "eligible": True,
+         "entry_priority": 3, "final_score": 99.0},
+        {"symbol": "NEWSHORT/USDT", "direction": "SHORT", "eligible": True,
+         "entry_priority": 3, "final_score": 98.0},
+        {"symbol": "ZEC/USDT", "direction": "LONG", "eligible": False,
+         "entry_priority": 1, "final_score": 10.0},
+    ]
+
+    selected, directions, _ = SymbolRotation.choose_directional_symbols(
+        ["ZEC/USDT", "OLD/USDT"], {}, metrics, {"ZEC/USDT"},
+    )
+
+    assert "ZEC/USDT" in selected
+    assert len(selected) == 2
+    assert directions["ZEC/USDT"] == "LONG"

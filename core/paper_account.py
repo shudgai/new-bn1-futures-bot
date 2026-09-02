@@ -125,7 +125,7 @@ ENTRY_CONTEXT_KEYS = (
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount",
-    "eligibility_note", "wave_regime",
+    "eligibility_note", "wave_regime", "market_mode", "entry_market_mode",
 )
 
 

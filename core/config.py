@@ -58,9 +58,13 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "2"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
 CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
     1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
+)
+# 單槽卡倉至少持有此秒數後，才允許讓位給另一幣的 confirmed outer trend。
+CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC = max(
+    0.0, float(os.getenv("CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC", "900"))
 )
 MIN_TWO_SLOT_BALANCE_USDT = float(os.getenv("MIN_TWO_SLOT_BALANCE_USDT", "120"))
 TARGET_SLOT_BALANCE_USDT = float(os.getenv("TARGET_SLOT_BALANCE_USDT", "75"))
@@ -346,12 +350,9 @@ PIVOT_MIN_ARC_KC_WIDTH_PCT = max(
 PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT = max(
     0.0, float(os.getenv("PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT", "0.20"))
 )
-# Channel Swing 只採用緊接的第二根已收盤 K；其實體收盤必須至少進入全通道 50%，影線不計。
+# Channel Swing 只採用緊接的第二根已收盤 K；突破候選順向極值即確認，不再要求站回固定 KC 比例。
 CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
     0.0, float(os.getenv("CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO", "0.10"))
-)
-CHANNEL_SWING_MIN_REENTRY_RATIO = min(
-    1.0, max(0.0, float(os.getenv("CHANNEL_SWING_MIN_REENTRY_RATIO", "0.50")))
 )
 CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
     os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "12")
@@ -1007,12 +1008,9 @@ def get_position_multiplier(score: int) -> float:
     return 0.0
 
 # --- 動態幣種輪替與本機 AI 輔助 ---
-# 12→16→18→24 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會出現達標
-# 訊號），而不是放寬同一批幣的評分門檻（那樣會直接增加假突破機率）。
-# API 負擔：報價是一次批次拿全部幣種，不隨幣數增加；K 線只對還沒進場/
-# 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
-# Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "15"))
+# 單槽模式只監控當輪最強的一多一空，避免大名單中的次級訊號搶先進場。
+# 全市場掃描範圍不變，只縮小最終監控牌面。
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "2"))
 SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() == "true"
 ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "300"))
@@ -1023,8 +1021,8 @@ SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "30
 # 判斷（不用額外呼叫 AI/抓K線，成本很低），每隔這個秒數就檢查一次，發現
 # 就立刻換掉。已經有持倉的幣種不受影響，維持只等SL/TP/24h時間過濾出場。
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
-# 12 檔觀察名單最多各保留 6 檔多勢／空勢候選，維持多空對稱席次。
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "6"))
+# 兩檔觀察名單各保留 1 檔最強多勢／空勢候選。
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "1"))
 # 輪替候選池常因 ATR 與方向分數雙重過濾只剩個位數，監控分數降到40；真正進場仍需 MIN_OPEN_SIGNAL_SCORE，
 # 因此只會增加持續觀察的幣，不會讓40分訊號直接下單。
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "40"))
