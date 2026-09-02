@@ -690,6 +690,13 @@ def test_btc_1m_pulse_requires_atr_move_and_ma3_alignment(monkeypatch):
     frame['ma3'] = [100.8, 100.8, 100.7, 100.5, 100.2]
     assert TradingEngine._detect_btc_1m_pulse(frame, 100.0) == 'SHORT'
 
+def test_btc_lead_shadow_records_aligned_outer_reaction_without_order():
+    engine = TradingEngine.__new__(TradingEngine)
+    engine._btc_lead_shadow_active = {"key": ("LONG", 1), "side": "LONG", "started_at": 0.0}
+    engine._btc_lead_shadow_events = []
+    engine._record_btc_lead_shadow_candidate("TEST/USDT", _dynamic_upper_trend_frame(), 101.2, False)
+    assert engine.btc_lead_shadow_status()["eligible_events"] == 1
+
 def test_adjacent_two_closed_green_bars_confirm_long_candidate():
     frame = _channel_frame()
     _closed_trough(frame)

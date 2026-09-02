@@ -166,6 +166,7 @@ async def get_status(response: Response):
         "entry_filter_last": dict(engine.account.entry_filter_last),
         "shadow_parameter_stats": dict(engine.account.shadow_parameter_stats),
         "shadow_parameter_last": dict(engine.account.shadow_parameter_last),
+        "btc_lead_shadow": engine.btc_lead_shadow_status(),
         "taker_fee_rate": TAKER_FEE_RATE,
         "slippage_pct": SLIPPAGE_PCT,
         "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),

@@ -6354,6 +6354,10 @@ class TradingEngine:
                             f"確認 {chop_info.get('clear_direction')} 方向",
                             "INFO",
                         )
+                if not existing_pos:
+                    self._record_btc_lead_shadow_candidate(
+                        symbol, channel_df, channel_price, chop_locked,
+                    )
                 channel_action = self._channel_swing_action(
                     channel_df, channel_price,
                     existing_pos.get("side") if existing_pos else None,
@@ -7895,6 +7899,7 @@ class TradingEngine:
                                 btc_1m_turn = self._detect_btc_1m_pulse(
                                     btc_df_1m, btc_live,
                                 )
+                                self._begin_btc_lead_shadow(btc_1m_turn, btc_df_1m)
                         except Exception as e:
                             self.account.log(f"⚠️ 無法取得 BTC 1m 脈衝資料: {e}", "WARNING")
 
