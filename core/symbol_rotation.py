@@ -57,9 +57,9 @@ from core.config import (
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 SELECTION_FILE = os.path.join(DATA_DIR, "symbol_selection.json")
 
-# Keep a just-profited symbol off the board while the bot finds a new setup.
+# Keep a just-profited symbol off the board briefly while the bot finds a new setup.
 PROFIT_EXIT_SYMBOL_COOLDOWN_SEC = float(
-    os.getenv("PROFIT_EXIT_SYMBOL_COOLDOWN_SEC", "900")
+    os.getenv("PROFIT_EXIT_SYMBOL_COOLDOWN_SEC", "180")
 )
 
 
