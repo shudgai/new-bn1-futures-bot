@@ -5381,6 +5381,12 @@ class TradingEngine:
             "LONG" if clear_long or strong_long
             else "SHORT" if clear_short or strong_short else None
         )
+        near_chop_votes = sum((
+            ma_crosses >= 2,
+            middle_crosses >= 2,
+            efficiency <= 0.40,
+        ))
+        near_lock = bool(near_chop_votes >= 2 and clear_direction is None)
         detected = bool(chop_votes >= 2 and clear_direction is None)
         return {
             "detected": detected,
@@ -5393,6 +5399,8 @@ class TradingEngine:
             "middle_crosses": middle_crosses,
             "efficiency": efficiency,
             "chop_votes": chop_votes,
+            "near_lock": near_lock,
+            "near_chop_votes": near_chop_votes,
         }
 
     @staticmethod
@@ -5567,6 +5575,16 @@ class TradingEngine:
             "THREE_GREEN_RISING_CLOSE_EXIT_SHORT",
         }
 
+
+    @staticmethod
+    def _channel_near_chop_entry_gate(
+        action: str, target_side: str | None, near_lock: bool,
+        has_position: bool,
+    ) -> tuple[str, str | None, str | None]:
+        """Avoid new KC-outer entries when the closed bars are about to lock."""
+        if action == "ENTER" and target_side and near_lock and not has_position:
+            return "WAIT", None, "CHOP_NEAR_LOCK_NO_ENTRY"
+        return action, target_side, None
 
     @staticmethod
     def _channel_chop_gate(
@@ -6509,6 +6527,12 @@ class TradingEngine:
                 )
                 if chop_gate_reason:
                     channel_action["reason"] = chop_gate_reason
+                action, target_side, near_chop_reason = self._channel_near_chop_entry_gate(
+                    action, target_side, bool(chop_info.get("near_lock")),
+                    bool(existing_pos),
+                )
+                if near_chop_reason:
+                    channel_action["reason"] = near_chop_reason
                 if not existing_pos and action != "ENTER":
                     self._record_channel_signal_event(
                         symbol, channel_action.get("reason"), channel_df,

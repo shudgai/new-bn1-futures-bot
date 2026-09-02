@@ -462,6 +462,11 @@ def test_channel_chop_state_unlocks_after_three_clear_closed_bars():
     assert result['detected'] is False
     assert result['clear_direction'] == 'LONG'
 
+def test_channel_near_chop_gate_blocks_only_new_entries():
+    assert TradingEngine._channel_near_chop_entry_gate("ENTER", "LONG", True, False) == ("WAIT", None, "CHOP_NEAR_LOCK_NO_ENTRY")
+    assert TradingEngine._channel_near_chop_entry_gate("ENTER", "SHORT", False, False) == ("ENTER", "SHORT", None)
+    assert TradingEngine._channel_near_chop_entry_gate("EXIT", None, True, True) == ("EXIT", None, None)
+
 def test_channel_chop_gate_blocks_entry_and_turns_reverse_into_close_only():
     assert TradingEngine._channel_chop_gate('ENTER', 'LONG', True, False) == ('WAIT', None, 'CHOP_WAIT_NO_ENTRY')
     assert TradingEngine._channel_chop_gate('REVERSE', 'SHORT', True, True) == ('EXIT', None, 'CHOP_WAIT_CLOSE_ONLY')
