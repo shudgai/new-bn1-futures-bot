@@ -5010,7 +5010,25 @@ class TradingEngine:
                 "action": "WAIT", "side": None,
                 "reason": "KC_LIVE_OUTER_DATA_INVALID",
             }
+        # 首根破軌可追，但若近 12 根已從低點／高點走超過 1.25 倍 KC
+        # 通道寬度，代表已在波段中後段（HYPE、1000SHIB 類型），不再追。
+        try:
+            closed_window = frame.iloc[-13:-1]
+            recent_low = float(closed_window["low"].astype(float).min())
+            recent_high = float(closed_window["high"].astype(float).max())
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_INVALID",
+            }
+        width = upper - lower
         if price >= upper:
+            if price - recent_low > width * 1.25:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "KC_UPPER_EXTENSION_LATE",
+                    "kc_upper": upper, "kc_lower": lower,
+                }
             return {
                 "action": "ENTER", "side": "LONG",
                 "reason": "KC_LIVE_UPPER_BREAK_LONG",
@@ -5018,6 +5036,12 @@ class TradingEngine:
                 "turn_low": None, "turn_high": None,
             }
         if price <= lower:
+            if recent_high - price > width * 1.25:
+                return {
+                    "action": "WAIT", "side": None,
+                    "reason": "KC_LOWER_EXTENSION_LATE",
+                    "kc_upper": upper, "kc_lower": lower,
+                }
             return {
                 "action": "ENTER", "side": "SHORT",
                 "reason": "KC_LIVE_LOWER_BREAK_SHORT",
@@ -5188,6 +5212,8 @@ class TradingEngine:
             "CANCEL_CHOP_BREAKOUT": "CHOP動能突破候選已取消",
             "WAIT_DYNAMIC_TREND": "上軌外多方趨勢品質不足",
             "WAIT_DYNAMIC_DOWNTREND": "下軌外空方趨勢品質不足",
+            "KC_UPPER_EXTENSION_LATE": "上漲延伸過大，不追多",
+            "KC_LOWER_EXTENSION_LATE": "下跌延伸過大，不追空",
             "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",
             "WAIT_DOWNTREND_BREAK": "下軌空方動能等待下一根破低",
             "WAIT_TREND_RETEST": "多方過熱，等待回踩上軌",
@@ -5616,11 +5642,11 @@ class TradingEngine:
 
         held_side = str(current_side or "").upper()
         mode = str(market_mode or "RANGE").upper()
-        # 猴市在外軌峰谷立即鎖利；牛／熊市只讓順勢倉延伸，直到
-        # 反向 K 實際踏回 KC 通道才退出。逆勢倉仍使用外軌峰谷保護。
-        if (mode == "BULL" and held_side == "LONG") or (
+        # 所有市場型態都讓外軌持倉延伸，直到反向 K 實際踏回 KC 通道
+        # 才退出；猴市不再因外軌 MA3 峰谷而提早平倉。
+        if held_side and (mode == "RANGE" or (mode == "BULL" and held_side == "LONG") or (
             mode == "BEAR" and held_side == "SHORT"
-        ):
+        )):
             return TradingEngine._channel_outer_reentry_exit_action(
                 frame, price, held_side,
             )
@@ -6717,6 +6743,8 @@ class TradingEngine:
                         "KC_WIDTH_TOO_NARROW": " | KC寬度不足，獲利空間太窄",
                         "WAIT_DYNAMIC_TREND": " | 上軌外但趨勢品質不足，暫不追多",
                         "WAIT_DYNAMIC_DOWNTREND": " | 下軌外但趨勢品質不足，暫不追空",
+                        "KC_UPPER_EXTENSION_LATE": " | 已走過大段上漲，不從後段追多",
+                        "KC_LOWER_EXTENSION_LATE": " | 已走過大段下跌，不從後段追空",
                         "WAIT_TREND_BREAK": " | 上軌動能成立，等待下一根破高",
                         "WAIT_DOWNTREND_BREAK": " | 下軌動能成立，等待下一根破低",
                         "WAIT_CHOP_MOMENTUM_BREAK": " | 盤整突破候選成立，等待下一根確認",
