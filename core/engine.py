@@ -4373,6 +4373,13 @@ class TradingEngine:
         """Close one stale Channel Swing position before opening a stronger symbol."""
         positions = getattr(self.account, "positions", {})
         pending = getattr(self.account, "pending_limit_orders", {})
+        signal_code = str(
+            candidate.get("signal_code") or candidate.get("reason") or ""
+        )
+        strong_first_touch = signal_code in {
+            "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+            "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
+        }
         if (
             daily_halt
             or MAX_SLOTS != 1
@@ -4380,7 +4387,9 @@ class TradingEngine:
             or pending
             or str(candidate.get("entry_mode") or "").upper() != "CHANNEL_SWING"
             or int(candidate.get("priority") or 0) < 4
-            or str(candidate.get("signal_code") or candidate.get("reason") or "") not in {
+            or signal_code not in {
+                "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+                "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
                 "KC_UPPER_TREND_CONFIRMED_LONG",
                 "KC_LOWER_TREND_CONFIRMED_SHORT",
                 "KC_LIVE_UPPER_BREAK_LONG",
@@ -4427,14 +4436,18 @@ class TradingEngine:
                 or (current_market_mode == "BEAR" and held_side == "LONG")
             )
         )
-        if (
-            not adverse_range_transition
-            and age_sec < CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC
-        ) or net_pnl > 0.0:
-            return False, False
-
         side = str(candidate.get("side") or "").upper()
         if side not in ("LONG", "SHORT"):
+            return False, False
+        if strong_first_touch and side != held_side:
+            return False, False
+        if not strong_first_touch and (
+            (
+                not adverse_range_transition
+                and age_sec < CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC
+            )
+            or net_pnl > 0.0
+        ):
             return False, False
         if not await self._execution_price_is_safe(new_symbol, side):
             return True, False
@@ -4510,6 +4523,11 @@ class TradingEngine:
     def _channel_entry_candidate_priority(reason: str | None) -> int:
         """Rank executable Channel Swing entries without changing their rules."""
         reason = str(reason or "")
+        if reason in {
+            "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+            "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
+        }:
+            return 5
         if reason in {
             "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
             "KC_INNER_UPTREND_LONG", "KC_INNER_DOWNTREND_SHORT",
@@ -5355,6 +5373,71 @@ class TradingEngine:
             "reason": "WAIT_TREND_OPPOSITE_CANDLE_INSIDE_KC",
             "kc_upper": live_upper, "kc_lower": live_lower,
         }
+
+    @staticmethod
+    def _channel_strong_first_outer_touch_action(
+        frame: pd.DataFrame, live_price: float,
+    ) -> dict:
+        """Enter a directional run on its first live touch of a KC outer rail."""
+        required = {"open", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
+            return {"action": "WAIT", "side": None, "reason": "KC_STRONG_TOUCH_DATA_UNAVAILABLE"}
+        try:
+            recent = frame.iloc[-4:]
+            opens = recent["open"].astype(float).tolist()
+            closes = recent["close"].astype(float).tolist()
+            closes[-1] = float(live_price)
+            ma3 = recent["ma3"].astype(float).tolist()
+            ma15_now = float(recent["ma15"].iloc[-1])
+            upper = float(recent["kc_upper"].iloc[-1])
+            lower = float(recent["kc_lower"].iloc[-1])
+            previous_close = float(recent["close"].iloc[-2])
+            previous_upper = float(recent["kc_upper"].iloc[-2])
+            previous_lower = float(recent["kc_lower"].iloc[-2])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "WAIT", "side": None, "reason": "KC_STRONG_TOUCH_DATA_INVALID"}
+        values = opens + closes + ma3 + [
+            ma15_now, upper, lower, previous_close, previous_upper, previous_lower,
+        ]
+        if not all(math.isfinite(value) for value in values) or lower >= upper:
+            return {"action": "WAIT", "side": None, "reason": "KC_STRONG_TOUCH_DATA_INVALID"}
+
+        rising_steps = sum(curr > prev for prev, curr in zip(closes, closes[1:]))
+        falling_steps = sum(curr < prev for prev, curr in zip(closes, closes[1:]))
+        bullish_bars = sum(close > open_ for open_, close in zip(opens, closes))
+        bearish_bars = sum(close < open_ for open_, close in zip(opens, closes))
+        ma3_rising = ma3[-3] < ma3[-2] < ma3[-1]
+        ma3_falling = ma3[-3] > ma3[-2] > ma3[-1]
+
+        if (
+            previous_close < previous_upper
+            and closes[-1] >= upper
+            and closes[-1] > closes[0]
+            and rising_steps >= 2
+            and bullish_bars >= 2
+            and ma3_rising and ma3[-1] > ma15_now
+        ):
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        if (
+            previous_close > previous_lower
+            and closes[-1] <= lower
+            and closes[-1] < closes[0]
+            and falling_steps >= 2
+            and bearish_bars >= 2
+            and ma3_falling and ma3[-1] < ma15_now
+        ):
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        return {"action": "WAIT", "side": None, "reason": "WAIT_STRONG_FIRST_KC_TOUCH"}
 
     @staticmethod
     def _channel_live_outer_entry_action(
@@ -6878,10 +6961,16 @@ class TradingEngine:
                     # 空手時即時外軌突破優先：現價到上軌追多、到下軌追空。
                     # 仍在通道內時先判斷簡單 MA3 趨勢；尚未形成時，才讓
                     # BULL/BEAR/TREND 繼續走已收盤外軌候選路徑。
+                    strong_touch_action = self._channel_strong_first_outer_touch_action(
+                        channel_df, channel_price,
+                    )
                     live_outer_action = self._channel_live_outer_entry_action(
                         channel_df, channel_price,
                     )
-                    if live_outer_action.get("action") == "ENTER":
+                    if strong_touch_action.get("action") == "ENTER":
+                        channel_action = strong_touch_action
+                        self._channel_outer_trend_wait.pop(symbol, None)
+                    elif live_outer_action.get("action") == "ENTER":
                         channel_action = live_outer_action
                         self._channel_outer_trend_wait.pop(symbol, None)
                     elif inner_trend_action.get("action") == "ENTER":
@@ -7172,6 +7261,11 @@ class TradingEngine:
                         "reason": (
                             f"Channel Swing CHOP momentum breakout {target_side}"
                             if channel_action.get("reason") in ("CHOP_BREAKOUT_LONG", "CHOP_BREAKOUT_SHORT")
+                            else f"Channel Swing strong first KC outer touch {target_side}"
+                            if channel_action.get("reason") in (
+                                "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+                                "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
+                            )
                             else f"Channel Swing live KC outer break {target_side}"
                             if channel_action.get("reason") in (
                                 "KC_LIVE_UPPER_BREAK_LONG",

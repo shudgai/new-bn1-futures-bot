@@ -195,6 +195,40 @@ def test_same_bar_rechase_detector_sees_live_lower_kc_without_width_filter():
     assert (result['action'], result['side'], result['reason']) == ('ENTER', 'SHORT', 'KC_LIVE_LOWER_BREAK_SHORT')
     assert (100.2 - 99.8) / 99.8 < 0.005
 
+def test_strong_run_enters_long_on_first_live_upper_kc_touch():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-4:], "open"] = [99.6, 99.8, 100.1, 100.6]
+    frame.loc[frame.index[-4:], "close"] = [99.8, 100.1, 100.5, 100.8]
+    frame.loc[frame.index[-4:], "ma3"] = [99.7, 99.9, 100.2, 100.6]
+    frame.loc[frame.index[-1], "ma15"] = 100.0
+    result = TradingEngine._channel_strong_first_outer_touch_action(frame, 101.0)
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+    )
+
+
+def test_strong_run_enters_short_on_first_live_lower_kc_touch():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-4:], "open"] = [100.4, 100.2, 99.9, 99.4]
+    frame.loc[frame.index[-4:], "close"] = [100.2, 99.9, 99.5, 99.2]
+    frame.loc[frame.index[-4:], "ma3"] = [100.3, 100.1, 99.8, 99.4]
+    frame.loc[frame.index[-1], "ma15"] = 100.0
+    result = TradingEngine._channel_strong_first_outer_touch_action(frame, 99.0)
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "SHORT", "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
+    )
+
+
+def test_strong_touch_fast_path_is_only_for_the_first_outer_touch():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-4:], "open"] = [99.6, 99.8, 100.4, 101.0]
+    frame.loc[frame.index[-4:], "close"] = [99.8, 100.3, 101.1, 101.2]
+    frame.loc[frame.index[-4:], "ma3"] = [99.7, 100.0, 100.5, 101.0]
+    frame.loc[frame.index[-1], "ma15"] = 100.0
+    result = TradingEngine._channel_strong_first_outer_touch_action(frame, 101.3)
+    assert result["action"] == "WAIT"
+
+
 def test_live_outer_entry_waits_when_upper_wick_touches_but_price_is_inside():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-1], ['open', 'low', 'high']] = [100.5, 100.4, 101.1]
@@ -1310,6 +1344,71 @@ async def test_stale_losing_channel_position_closes_before_stronger_confirmed_en
     )
 
     assert (handled, opened) == (True, True)
+    assert events == [
+        ("close", "OLD/USDT"),
+        ("replace", "OLD/USDT"),
+        ("open", "NEW/USDT"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_strong_first_touch_immediately_takes_over_recent_profitable_same_side(
+    monkeypatch,
+):
+    monkeypatch.setattr("core.engine.MAX_SLOTS", 1)
+    monkeypatch.setattr("core.engine.CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC", 900.0)
+    events = []
+
+    class Account:
+        positions = {
+            "OLD/USDT": {
+                "side": "LONG", "entry_mode": "CHANNEL_SWING",
+                "entry_price": 100.0, "qty": 1.0, "open_timestamp": 990.0,
+            }
+        }
+        pending_limit_orders = {}
+
+        def log(self, *_args, **_kwargs):
+            pass
+
+        async def close_position(self, symbol, *_args, **_kwargs):
+            events.append(("close", symbol))
+            self.positions.pop(symbol)
+            return True
+
+    class Rotation:
+        def request_replacement(self, symbol):
+            events.append(("replace", symbol))
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = Account()
+    engine.symbol_rotation = Rotation()
+    engine.rotation_event = None
+    engine.tickers = {"OLD/USDT": 101.0}
+    engine._continuous_market_mode = {}
+    engine._execution_price_is_safe = lambda *_args: None
+
+    async def execution_safe(*_args):
+        return True
+
+    async def place(symbol, *_args):
+        events.append(("open", symbol))
+        return True
+
+    engine._execution_price_is_safe = execution_safe
+    engine._abnormal_market_entry_allowed = lambda *_args: True
+    engine._place_structured_entry = place
+    candidate = {
+        "symbol": "NEW/USDT", "side": "LONG",
+        "entry_mode": "CHANNEL_SWING", "priority": 5,
+        "signal_code": "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+        "reason": "Channel Swing strong first upper touch LONG",
+        "live_price": 50.0, "atr": 0.5,
+    }
+
+    assert await engine._try_channel_stronger_symbol_takeover(
+        candidate, now_time=1000.0, daily_halt=False,
+    ) == (True, True)
     assert events == [
         ("close", "OLD/USDT"),
         ("replace", "OLD/USDT"),
