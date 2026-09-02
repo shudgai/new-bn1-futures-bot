@@ -1,7 +1,6 @@
 import pandas as pd
 import pytest
 
-import core.config as config
 from core.engine import TradingEngine
 
 
@@ -120,17 +119,10 @@ def _execution_engine(frame, side, close_succeeds):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "old_side,new_side,expected_reason",
-    [
-        ("SHORT", "LONG", "upper outer rechase"),
-        ("LONG", "SHORT", "lower outer rechase"),
-    ],
-)
-async def test_same_bar_outer_rechase_closes_then_opens_immediately(
-    monkeypatch, old_side, new_side, expected_reason,
+@pytest.mark.parametrize("old_side", ["LONG", "SHORT"])
+async def test_outer_rechase_holds_position_without_confirmed_exit_or_reverse(
+    old_side,
 ):
-    monkeypatch.setattr(config, "ENABLE_CONTINUOUS_REVERSE_MODE", True)
     frame = _narrow_channel_frame()
     engine = _execution_engine(frame, old_side, close_succeeds=True)
 
@@ -138,42 +130,13 @@ async def test_same_bar_outer_rechase_closes_then_opens_immediately(
         SYMBOL, now_time=1.0, btc_1m_turn=None, daily_halt=False,
     )
 
-    assert SYMBOL not in engine.account.positions
-    assert len(candidates) == 1
-    assert candidates[0]["side"] == new_side
-    assert expected_reason in candidates[0]["reason"]
-    assert engine.account.events[0][0] == "close"
-
-    opened = await engine._place_structured_entry(
-        SYMBOL, candidates[0], candidates[0]["live_price"],
-    )
-
-    assert opened is True
-    assert [event[0] for event in engine.account.events] == ["close", "open"]
-    assert engine.account.positions[SYMBOL]["side"] == new_side
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("old_side", ["LONG", "SHORT"])
-async def test_same_bar_outer_rechase_never_opens_when_close_fails(
-    monkeypatch, old_side,
-):
-    monkeypatch.setattr(config, "ENABLE_CONTINUOUS_REVERSE_MODE", True)
-    frame = _narrow_channel_frame()
-    engine = _execution_engine(frame, old_side, close_succeeds=False)
-
-    _, candidates = await engine._process_single_symbol(
-        SYMBOL, now_time=1.0, btc_1m_turn=None, daily_halt=False,
-    )
-
     assert candidates == []
-    assert [event[0] for event in engine.account.events] == ["close"]
+    assert engine.account.events == []
     assert engine.account.positions[SYMBOL]["side"] == old_side
 
 
 @pytest.mark.anyio
-async def test_low_volume_reverse_closes_old_position_without_reopening(monkeypatch):
-    monkeypatch.setattr(config, "ENABLE_CONTINUOUS_REVERSE_MODE", True)
+async def test_low_volume_outer_rechase_keeps_existing_position(monkeypatch):
     monkeypatch.setattr("core.engine.KELTNER_MIN_VOLUME_RATIO", 1.2)
     frame = _narrow_channel_frame()
     frame["volume"] = 100.0
@@ -185,9 +148,6 @@ async def test_low_volume_reverse_closes_old_position_without_reopening(monkeypa
     )
 
     assert candidates == []
-    assert SYMBOL not in engine.account.positions
-    assert [event[0] for event in engine.account.events] == ["close"]
-    assert any(
-        "反手訊號量能不足" in message and "只平舊倉不開反向倉" in message
-        for message in progress
-    )
+    assert engine.account.events == []
+    assert engine.account.positions[SYMBOL]["side"] == "SHORT"
+    assert not any("反手訊號" in message for message in progress)

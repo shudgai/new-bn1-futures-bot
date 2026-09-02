@@ -620,6 +620,67 @@ def test_confirmed_outer_peak_and_trough_exit_without_body_reentry():
     assert (held_long['action'], held_long['side'], held_long['reason']) == ('EXIT', None, 'KC_UPPER_OUTER_PEAK_EXIT')
     assert (held_short['action'], held_short['side'], held_short['reason']) == ('EXIT', None, 'KC_LOWER_OUTER_VALLEY_EXIT')
 
+def test_bull_long_waits_for_red_candle_to_reenter_kc_before_exiting():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [101.2, 100.8, 101.3, 100.7]
+    result = TradingEngine._channel_swing_action(frame, 100.8, "LONG", market_mode="BULL")
+    assert (result["action"], result["side"], result["reason"]) == ("EXIT", None, "KC_UPPER_RED_REENTRY_EXIT")
+
+
+def test_bull_long_holds_while_the_reversal_candle_is_still_outside_kc():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [101.3, 101.1, 101.4, 101.05]
+    result = TradingEngine._channel_swing_action(frame, 101.1, "LONG", market_mode="BULL")
+    assert (result["action"], result["side"], result["reason"]) == ("HOLD", None, "WAIT_KC_REENTRY_EXIT")
+
+
+def test_bull_long_does_not_exit_on_the_upper_kc_boundary():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [101.2, 101.0, 101.3, 100.9]
+    result = TradingEngine._channel_swing_action(frame, 101.0, "LONG", market_mode="BULL")
+    assert (result["action"], result["side"], result["reason"]) == ("HOLD", None, "WAIT_KC_REENTRY_EXIT")
+
+def test_bear_short_waits_for_green_candle_to_reenter_kc_before_exiting():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [98.8, 99.2, 99.3, 98.7]
+    result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT", market_mode="BEAR")
+    assert (result["action"], result["side"], result["reason"]) == ("EXIT", None, "KC_LOWER_GREEN_REENTRY_EXIT")
+
+
+def test_bear_short_holds_while_the_reversal_candle_is_still_outside_kc():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [98.7, 98.9, 98.95, 98.6]
+    result = TradingEngine._channel_swing_action(frame, 98.9, "SHORT", market_mode="BEAR")
+    assert (result["action"], result["side"], result["reason"]) == ("HOLD", None, "WAIT_KC_REENTRY_EXIT")
+
+
+def test_bear_short_does_not_exit_on_the_lower_kc_boundary():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-1], ["open", "close", "high", "low"]] = [98.8, 99.0, 99.1, 98.7]
+    result = TradingEngine._channel_swing_action(frame, 99.0, "SHORT", market_mode="BEAR")
+    assert (result["action"], result["side"], result["reason"]) == ("HOLD", None, "WAIT_KC_REENTRY_EXIT")
+
+
+def test_switching_from_range_to_bull_changes_long_exit_to_kc_reentry_only():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    _closed_peak(frame)
+    range_exit = TradingEngine._channel_swing_action(frame, 101.1, "LONG", market_mode="RANGE")
+    bull_hold = TradingEngine._channel_swing_action(frame, 101.1, "LONG", market_mode="BULL")
+    assert (range_exit["action"], range_exit["reason"]) == ("EXIT", "KC_UPPER_OUTER_PEAK_EXIT")
+    assert (bull_hold["action"], bull_hold["reason"]) == ("HOLD", "WAIT_KC_REENTRY_EXIT")
+
+def test_range_and_countertrend_channel_positions_keep_outer_pivot_exit():
+    long_frame = _channel_frame()
+    _closed_peak(long_frame)
+    range_long = TradingEngine._channel_swing_action(long_frame, 101.1, "LONG", market_mode="RANGE")
+    bear_long = TradingEngine._channel_swing_action(long_frame, 101.1, "LONG", market_mode="BEAR")
+    short_frame = _channel_frame()
+    _closed_trough(short_frame)
+    range_short = TradingEngine._channel_swing_action(short_frame, 98.9, "SHORT", market_mode="RANGE")
+    bull_short = TradingEngine._channel_swing_action(short_frame, 98.9, "SHORT", market_mode="BULL")
+    assert range_long["reason"] == bear_long["reason"] == "KC_UPPER_OUTER_PEAK_EXIT"
+    assert range_short["reason"] == bull_short["reason"] == "KC_LOWER_OUTER_VALLEY_EXIT"
+
 def test_btc_1m_pulse_requires_atr_move_and_ma3_alignment(monkeypatch):
     monkeypatch.setattr('core.engine.BTC_1M_PULSE_FILTER_ENABLED', True)
     frame = pd.DataFrame({'close': [100.0, 100.0, 100.2, 100.5, 100.8], 'ma3': [100.0, 100.0, 100.1, 100.3, 100.6], 'atr': [1.0] * 5})

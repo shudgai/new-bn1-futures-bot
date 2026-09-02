@@ -5465,6 +5465,7 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
         entry_turn_low: float | None = None,
         entry_turn_high: float | None = None,
+        market_mode: str | None = None,
     ) -> dict:
         import core.config as config
         """空手只做 KC 外軌峰谷轉向；持倉則依對側峰谷平倉或反手。"""
@@ -5529,19 +5530,32 @@ class TradingEngine:
         # 經已收盤 K 與下一根突破確認的順勢交易。
 
         held_side = str(current_side or "").upper()
+        mode = str(market_mode or "RANGE").upper()
+        # 猴市在外軌峰谷立即鎖利；牛／熊市只讓順勢倉延伸，直到
+        # 反向 K 實際踏回 KC 通道才退出。逆勢倉仍使用外軌峰谷保護。
+        if (mode == "BULL" and held_side == "LONG") or (
+            mode == "BEAR" and held_side == "SHORT"
+        ):
+            return TradingEngine._channel_outer_reentry_exit_action(
+                frame, price, held_side,
+            )
+        # 出場極值只能由兩根已收盤 K 證實；即時 K 的 MA3 尚會變動，
+        # 因此僅以它的價格確認是否仍在 KC 外軌，不能拿來立即平倉。
+        closed_ma3_peak = previous_ma3 < signal_ma3 - 1e-12
+        closed_ma3_trough = previous_ma3 > signal_ma3 + 1e-12
         if held_side == "LONG":
-            # 獲利側：上軌外，MA3 轉彎向下 (峰頂)
-            if price > upper and live_ma3 < previous_ma3 - 1e-12:
+            # 獲利側：上軌外，已確認 MA3 峰頂
+            if price > upper and closed_ma3_peak:
                 return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
-            # 虧損側：下軌外，MA3 轉彎向上 (谷底)
-            if price < lower and live_ma3 > previous_ma3 + 1e-12:
+            # 虧損側：下軌外，已確認 MA3 谷底
+            if price < lower and closed_ma3_trough:
                 return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
         elif held_side == "SHORT":
-            # 獲利側：下軌外，MA3 轉彎向上 (谷底)
-            if price < lower and live_ma3 > previous_ma3 + 1e-12:
+            # 獲利側：下軌外，已確認 MA3 谷底
+            if price < lower and closed_ma3_trough:
                 return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
-            # 虧損側：上軌外，MA3 轉彎向下 (峰頂)
-            if price > upper and live_ma3 < previous_ma3 - 1e-12:
+            # 虧損側：上軌外，已確認 MA3 峰頂
+            if price > upper and closed_ma3_peak:
                 return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
 
         signal_width = signal_upper - signal_lower
@@ -6260,6 +6274,10 @@ class TradingEngine:
                     existing_pos.get("side") if existing_pos else None,
                     existing_pos.get("channel_turn_low") if existing_pos else None,
                     existing_pos.get("channel_turn_high") if existing_pos else None,
+                    (
+                        existing_pos.get("market_mode")
+                        or self._continuous_market_mode.get(symbol, "RANGE")
+                    ) if existing_pos else None,
                 )
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
                 # 服務重啟或首次掃描時，只要當前仍鎖定，或上一根資料仍處於
@@ -6385,19 +6403,6 @@ class TradingEngine:
 
                 volume_ratio = self._channel_volume_ratio(channel_df)
                 volume_ok = volume_ratio >= KELTNER_MIN_VOLUME_RATIO
-
-                if (
-                    existing_pos
-                    and action in ("HOLD", "WAIT")
-                    and self._channel_held_volume_is_declining(channel_df)
-                ):
-                    action = "EXIT"
-                    target_side = None
-                    channel_action["reason"] = "HELD_LOW_VOLUME_DECLINE_EXIT"
-                    signal_progress.append(
-                        f"{coin} 持倉量能連續三根衰退且降至 "
-                        f"{KELTNER_MIN_VOLUME_RATIO:.2f}x 以下，執行低量退出"
-                    )
 
                 if action in ("ENTER", "REVERSE") and target_side and not volume_ok:
                     if action == "ENTER":
