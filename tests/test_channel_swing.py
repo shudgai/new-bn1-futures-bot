@@ -1898,13 +1898,13 @@ def test_instant_inner_reentry_short_single_candle():
     from core.engine import TradingEngine
     
     df = pd.DataFrame([
-        {"open": 100, "high": 105, "low": 95, "close": 102, "ma3": 100, "kc_upper": 105, "kc_lower": 95},
+        {"open": 100, "high": 105, "low": 95, "close": 102, "ma3": 100, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
         # Prev: Green
-        {"open": 100, "high": 108, "low": 100, "close": 106, "ma3": 102, "kc_upper": 105, "kc_lower": 95},
+        {"open": 100, "high": 108, "low": 100, "close": 106, "ma3": 102, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
         # Live: Red, opened above upper, dropped inside by > 50%
         # kc_upper = 105, kc_lower = 95, width = 10
         # price = 99 (105 - 99 = 6 >= 0.5 * 10)
-        {"open": 106, "high": 106, "low": 98, "close": 99, "ma3": 103, "kc_upper": 105, "kc_lower": 95},
+        {"open": 106, "high": 106, "low": 98, "close": 99, "ma3": 103, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
     ])
     live_price = 99.0
     action_data = TradingEngine._channel_live_inner_reentry_action(df, live_price, None)
@@ -1918,12 +1918,12 @@ def test_instant_inner_reentry_short_two_candles():
     from core.engine import TradingEngine
     
     df = pd.DataFrame([
-        {"open": 100, "high": 105, "low": 95, "close": 102, "ma3": 100, "kc_upper": 105, "kc_lower": 95},
+        {"open": 100, "high": 105, "low": 95, "close": 102, "ma3": 100, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
         # Prev: Red, fully inside. Open = 104, Close = 101. (Body = 3)
-        {"open": 104, "high": 104, "low": 101, "close": 101, "ma3": 102, "kc_upper": 105, "kc_lower": 95},
+        {"open": 104, "high": 104, "low": 101, "close": 101, "ma3": 102, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
         # Live: Red, fully inside. Open = 101, Price = 98. (Body = 3)
         # Total body = 6 >= 0.5 * 10
-        {"open": 101, "high": 101, "low": 97, "close": 98, "ma3": 103, "kc_upper": 105, "kc_lower": 95},
+        {"open": 101, "high": 101, "low": 97, "close": 98, "ma3": 103, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
     ])
     live_price = 98.0
     action_data = TradingEngine._channel_live_inner_reentry_action(df, live_price, None)
@@ -1938,13 +1938,13 @@ def test_instant_inner_reentry_long_first_candle_opens_outside():
     from core.engine import TradingEngine
     
     df = pd.DataFrame([
-        {"open": 100, "high": 105, "low": 95, "close": 98, "ma3": 100, "kc_upper": 105, "kc_lower": 95},
+        {"open": 100, "high": 105, "low": 95, "close": 98, "ma3": 100, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
         # Prev: Green, opened below lower band (94 < 95), closed inside (96 > 95)
-        {"open": 94, "high": 97, "low": 93, "close": 96, "ma3": 102, "kc_upper": 105, "kc_lower": 95},
+        {"open": 94, "high": 97, "low": 93, "close": 96, "ma3": 102, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
         # Live: Green, fully inside. Open = 96, Price = 99.
         # Bodies = (96 - 94 = 2) + (99 - 96 = 3) = 5.
         # Width = 10. 5 >= 0.5 * 10
-        {"open": 96, "high": 100, "low": 96, "close": 99, "ma3": 103, "kc_upper": 105, "kc_lower": 95},
+        {"open": 96, "high": 100, "low": 96, "close": 99, "ma3": 103, "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100, "volume": 100, "vol_ma_20": 100},
     ])
     live_price = 99.0
     action_data = TradingEngine._channel_live_inner_reentry_action(df, live_price, None)
@@ -1966,7 +1966,7 @@ def test_single_strong_candle_unlocks_chop_wait():
             "open": 100, "close": 100 + (1 if i % 2 == 0 else -1),
             "high": 102, "low": 98,
             "ma3": 100, "ma15": 100,
-            "kc_upper": 105, "kc_lower": 95
+            "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100
         })
     # Now append the single strong candle that unlocks it (LONG)
     # Middle is 100. It must cross 100 and have body >= 0.5 * (105-100) = 2.5
@@ -1974,14 +1974,14 @@ def test_single_strong_candle_unlocks_chop_wait():
         "open": 99, "close": 102,  # Body is 3 >= 2.5. Closes > 100.
         "high": 103, "low": 98,
         "ma3": 101, "ma15": 100,
-        "kc_upper": 105, "kc_lower": 95
+        "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100
     })
     # Add a live candle (ignored by chop state which looks at closed)
     data.append({
         "open": 102, "close": 102,
         "high": 103, "low": 101,
         "ma3": 101, "ma15": 100,
-        "kc_upper": 105, "kc_lower": 95
+        "kc_upper": 105, "kc_lower": 95, "volume": 100, "vol_ma_20": 100
     })
     
     df = pd.DataFrame(data)

@@ -47,6 +47,7 @@ from core.config import (
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
     CONTINUOUS_REENTRY_COOLDOWN_SEC, MA5_STOP_LOSS_COOLDOWN_SEC,
     EXHAUSTION_SNIPER_STOP_LOSS_PCT, EXHAUSTION_SNIPER_GRACE_SEC,
+    KELTNER_MIN_VOLUME_RATIO,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
@@ -6133,6 +6134,28 @@ class TradingEngine:
                     or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)
                 )
                 existing_pos = self.account.positions.get(symbol)
+                if existing_pos:
+                    low_volume_exit = self._channel_low_volume_exit_action(
+                        channel_df, channel_price, existing_pos, now_time,
+                    )
+                    if low_volume_exit.get("action") == "EXIT":
+                        exit_reason = str(low_volume_exit.get("reason") or "LOW_VOLUME_NO_TREND_EXIT")
+                        closed = await self.account.close_position(
+                            symbol, channel_price,
+                            f"Channel Swing {exit_reason}", is_manual=True,
+                        )
+                        if closed:
+                            if len(channel_df) >= 2:
+                                self._channel_swing_last_exit_bar[symbol] = channel_df.index[-2]
+                            self.symbol_rotation.request_replacement(symbol)
+                            self.rotation_event.set()
+                            self.account.log(
+                                f"🔄 [低量退出] {symbol} 最近三根均量比 "
+                                f"{float(low_volume_exit.get('volume_ratio') or 0.0):.2f}x，"
+                                "無法形成趨勢，平倉並改找有量幣種",
+                                "WARNING",
+                            )
+                        return signal_progress, detected_candidates
                 ranked_direction = str(
                     self.symbol_rotation.direction_map.get(symbol) or ""
                 ).upper()
@@ -6308,6 +6331,26 @@ class TradingEngine:
                     channel_action["reason"] = "REVERSE_ALREADY_USED_THIS_BAR"
                 kc_upper = float(channel_action.get("kc_upper") or 0.0)
                 kc_lower = float(channel_action.get("kc_lower") or 0.0)
+
+                # 即時量能門檻過濾
+                volume = float(channel_df["volume"].iloc[-1])
+                volume_ma = float(channel_df["vol_ma_20"].iloc[-1])
+                volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
+                from core.config import KELTNER_MIN_VOLUME_RATIO
+                volume_ok = volume_ratio >= KELTNER_MIN_VOLUME_RATIO
+
+                if action in ("ENTER", "REVERSE") and target_side and not volume_ok:
+                    if action == "ENTER":
+                        signal_progress.append(
+                            f"{coin} {target_side} 量能不足({volume_ratio:.2f}x)，等待／換幣"
+                        )
+                        return signal_progress, detected_candidates
+                    elif action == "REVERSE":
+                        action = "EXIT"
+                        channel_action["reason"] = str(channel_action.get("reason", "")) + "_LOW_VOL"
+                        signal_progress.append(
+                            f"{coin} 反手訊號量能不足({volume_ratio:.2f}x)，只平倉不反手"
+                        )
 
                 if (
                     action == "ENTER"
