@@ -37,15 +37,31 @@ def test_same_bar_rechase_detector_sees_live_lower_kc_without_width_filter():
     assert (result['action'], result['side'], result['reason']) == ('ENTER', 'SHORT', 'KC_LIVE_LOWER_BREAK_SHORT')
     assert (100.2 - 99.8) / 99.8 < 0.005
 
+def test_live_outer_entry_allows_fresh_long_break_despite_prior_extension():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-13:-1], ['low', 'high']] = [98.0, 101.1]
+    frame.loc[frame.index[-1], ['open', 'low', 'high']] = [100.8, 100.7, 101.1]
+    result = TradingEngine._channel_live_outer_entry_action(frame, 101.1)
+    assert (result['action'], result['side']) == ('ENTER', 'LONG')
+
+def test_live_outer_entry_allows_fresh_short_break_despite_prior_extension():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-13:-1], ['low', 'high']] = [98.9, 102.0]
+    frame.loc[frame.index[-1], ['open', 'low', 'high']] = [99.2, 98.9, 99.3]
+    result = TradingEngine._channel_live_outer_entry_action(frame, 98.9)
+    assert (result['action'], result['side']) == ('ENTER', 'SHORT')
+
 def test_live_outer_entry_blocks_late_extended_long_run():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-13:-1], ['low', 'high']] = [98.0, 101.1]
+    frame.loc[frame.index[-1], ['open', 'low', 'high']] = [101.6, 101.2, 101.7]
     result = TradingEngine._channel_live_outer_entry_action(frame, 101.1)
     assert (result['action'], result['reason']) == ('WAIT', 'KC_UPPER_EXTENSION_LATE')
 
 def test_live_outer_entry_blocks_late_extended_short_run():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-13:-1], ['low', 'high']] = [98.9, 102.0]
+    frame.loc[frame.index[-1], ['open', 'low', 'high']] = [98.4, 98.3, 98.8]
     result = TradingEngine._channel_live_outer_entry_action(frame, 98.9)
     assert (result['action'], result['reason']) == ('WAIT', 'KC_LOWER_EXTENSION_LATE')
 

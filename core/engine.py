@@ -4986,7 +4986,7 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
         """Detect a live KC rail touch only for the same-bar rechase exception."""
-        required = {"kc_upper", "kc_lower"}
+        required = {"open", "high", "low", "kc_upper", "kc_lower"}
         if frame is None or frame.empty or not required.issubset(frame.columns):
             return {
                 "action": "WAIT", "side": None,
@@ -5000,7 +5000,7 @@ class TradingEngine:
             candle_open = float(live["open"])
             candle_high = max(float(live["high"]), price)
             candle_low = min(float(live["low"]), price)
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, KeyError):
             return {
                 "action": "WAIT", "side": None,
                 "reason": "KC_LIVE_OUTER_DATA_INVALID",
@@ -5010,8 +5010,8 @@ class TradingEngine:
                 "action": "WAIT", "side": None,
                 "reason": "KC_LIVE_OUTER_DATA_INVALID",
             }
-        # 首根破軌可追，但若近 12 根已從低點／高點走超過 1.25 倍 KC
-        # 通道寬度，代表已在波段中後段（HYPE、1000SHIB 類型），不再追。
+        # 當根 K 從通道內剛破軌且仍貼近外軌時可立即追；若已在
+        # 外側走遠，近 12 根延伸超過 1.25 倍 KC 寬度才視為後段不追。
         try:
             closed_window = frame.iloc[-13:-1]
             recent_low = float(closed_window["low"].astype(float).min())
@@ -5022,8 +5022,16 @@ class TradingEngine:
                 "reason": "KC_LIVE_OUTER_DATA_INVALID",
             }
         width = upper - lower
+        fresh_upper_break = (
+            candle_open < upper and candle_low < upper
+            and price - upper <= width * 0.25
+        )
+        fresh_lower_break = (
+            candle_open > lower and candle_high > lower
+            and lower - price <= width * 0.25
+        )
         if price >= upper:
-            if price - recent_low > width * 1.25:
+            if not fresh_upper_break and price - recent_low > width * 1.25:
                 return {
                     "action": "WAIT", "side": None,
                     "reason": "KC_UPPER_EXTENSION_LATE",
@@ -5036,7 +5044,7 @@ class TradingEngine:
                 "turn_low": None, "turn_high": None,
             }
         if price <= lower:
-            if recent_high - price > width * 1.25:
+            if not fresh_lower_break and recent_high - price > width * 1.25:
                 return {
                     "action": "WAIT", "side": None,
                     "reason": "KC_LOWER_EXTENSION_LATE",
