@@ -986,7 +986,13 @@ class TradingEngine:
                     60.0 if not self.account.positions
                     else float(SYMBOL_ROTATION_INTERVAL_SEC)
                 )
-                if now_time - self.symbol_rotation.last_rotation_at >= rotation_interval_sec:
+                replacement_pending = bool(
+                    getattr(self.symbol_rotation, "next_rotation_exclusions", set())
+                )
+                if (
+                    replacement_pending
+                    or now_time - self.symbol_rotation.last_rotation_at >= rotation_interval_sec
+                ):
                     changes = await self.symbol_rotation.rotate(self.exchange, self.execution_symbols)
                     if changes:
                         change_text = "、".join(

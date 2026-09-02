@@ -57,6 +57,11 @@ from core.config import (
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 SELECTION_FILE = os.path.join(DATA_DIR, "symbol_selection.json")
 
+# Keep a just-profited symbol off the board while the bot finds a new setup.
+PROFIT_EXIT_SYMBOL_COOLDOWN_SEC = float(
+    os.getenv("PROFIT_EXIT_SYMBOL_COOLDOWN_SEC", "900")
+)
+
 
 def _trade_ts(trade: dict) -> float:
     """從交易記錄中取出 Unix 時間戳（秒）。
@@ -90,15 +95,50 @@ class SymbolRotation:
         self.last_reason = "尚未執行"
         self.volatility_stats: Dict[str, dict] = {}
         self.atr_history: Dict[str, List[float]] = {}
-        # 剛完成 KC 外止盈的幣只排除下一輪排名，輪替成功後解除。
+        # Pending forces a fresh scan; cooldown prevents immediate reselection.
         self.next_rotation_exclusions: set[str] = set()
+        self.replacement_cooldowns: Dict[str, float] = {}
+        self._restore_profit_exit_cooldowns()
+
+    def _restore_profit_exit_cooldowns(self) -> None:
+        now_time = time.time()
+        for trade in getattr(self.account, "trades", []):
+            reason = str(trade.get("reason") or "")
+            if not str(trade.get("action") or "").startswith("CLOSE"):
+                continue
+            if not any(token in reason for token in (
+                "KC_UPPER_RED_REENTRY_EXIT",
+                "KC_LOWER_GREEN_REENTRY_EXIT",
+            )):
+                continue
+            symbol = str(trade.get("symbol") or "").strip()
+            cooldown_until = _trade_ts(trade) + PROFIT_EXIT_SYMBOL_COOLDOWN_SEC
+            if symbol and cooldown_until > now_time:
+                self.replacement_cooldowns[symbol] = cooldown_until
+                self.next_rotation_exclusions.add(symbol)
 
     def request_replacement(self, symbol: str) -> None:
         symbol = str(symbol or "").strip()
         if not symbol:
             return
         self.next_rotation_exclusions.add(symbol)
+        cooldowns = getattr(self, "replacement_cooldowns", None)
+        if cooldowns is None:
+            cooldowns = {}
+            self.replacement_cooldowns = cooldowns
+        cooldowns[symbol] = time.time() + PROFIT_EXIT_SYMBOL_COOLDOWN_SEC
         self.last_rotation_at = 0.0
+
+    def replacement_exclusions(self) -> set[str]:
+        now_time = time.time()
+        cooldowns = getattr(self, "replacement_cooldowns", None)
+        if cooldowns is None:
+            cooldowns = {}
+            self.replacement_cooldowns = cooldowns
+        expired = [symbol for symbol, until in cooldowns.items() if until <= now_time]
+        for symbol in expired:
+            cooldowns.pop(symbol, None)
+        return set(getattr(self, "next_rotation_exclusions", set())) | set(cooldowns)
 
 
 
@@ -714,7 +754,7 @@ class SymbolRotation:
             and market.get("info", {}).get("underlyingType") == "COIN"
         )
         candidates = self.market_candidates(tickers, exchange.markets, execution_symbols)
-        forced_exclusions = set(self.next_rotation_exclusions)
+        forced_exclusions = self.replacement_exclusions()
         if forced_exclusions:
             candidates = [
                 symbol for symbol in candidates if symbol not in forced_exclusions

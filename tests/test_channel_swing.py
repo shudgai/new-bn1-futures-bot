@@ -241,15 +241,30 @@ def test_kc_outer_profit_exit_has_no_same_symbol_reentry_path():
     assert "_channel_outer_reentry_after_exit" not in process_source
 
 
-def test_profit_exit_requests_one_shot_symbol_replacement():
+def test_profit_exit_requests_immediate_symbol_replacement_with_cooldown():
     rotation = SymbolRotation.__new__(SymbolRotation)
     rotation.next_rotation_exclusions = set()
+    rotation.replacement_cooldowns = {}
     rotation.last_rotation_at = 123.0
 
     rotation.request_replacement("SOL/USDT")
 
     assert rotation.next_rotation_exclusions == {"SOL/USDT"}
+    assert rotation.replacement_cooldowns["SOL/USDT"] > 0.0
+    assert rotation.replacement_exclusions() == {"SOL/USDT"}
     assert rotation.last_rotation_at == 0.0
+
+
+def test_profit_exit_symbol_stays_excluded_after_pending_scan_is_consumed():
+    rotation = SymbolRotation.__new__(SymbolRotation)
+    rotation.next_rotation_exclusions = set()
+    rotation.replacement_cooldowns = {}
+    rotation.last_rotation_at = 123.0
+
+    rotation.request_replacement("AAVE/USDT")
+    rotation.next_rotation_exclusions.clear()
+
+    assert rotation.replacement_exclusions() == {"AAVE/USDT"}
 
 
 def test_upper_red_peak_short_only_allows_green_reversal_at_upper_rail():
