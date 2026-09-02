@@ -1193,6 +1193,10 @@ class TradingEngine:
                         is_profitable and not df.empty and has_volume_divergence(df, warn_dir)
                     )
                     self.position_triggers[symbol] = trigger
+                    # Channel Swing 的自動處置只由主循環的對側 KC 外軌峰谷負責。
+                    # 此背景迴圈保留 UI 診斷更新，但不執行任何中途平倉或反手。
+                    if pos_entry_mode.upper() == "CHANNEL_SWING":
+                        continue
                     position_meta = self.account.position_meta.get(symbol, {})
                     kc_outer_lock = {"blocked": False, "armed": False, "released": False}
                     if is_cr_position:
@@ -4352,6 +4356,10 @@ class TradingEngine:
             "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
             "KC_UPPER_TREND_CONFIRMED_LONG", "KC_LOWER_TREND_CONFIRMED_SHORT",
             "KC_UPPER_RETEST_BREAK_LONG", "KC_LOWER_RETEST_BREAK_SHORT",
+        }:
+            return 4
+        if reason in {
+            "KC_UPPER_TOUCH_LONG", "KC_LOWER_TOUCH_SHORT",
             "CHOP_BREAKOUT_LONG", "CHOP_BREAKOUT_SHORT",
         }:
             return 3
@@ -5013,7 +5021,9 @@ class TradingEngine:
                 "action": "WAIT", "side": None,
                 "reason": "KC_LIVE_OUTER_DATA_INVALID",
             }
-        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+        if not all(math.isfinite(value) for value in (
+            price, upper, lower, candle_open, candle_high, candle_low,
+        )) or lower >= upper:
             return {
                 "action": "WAIT", "side": None,
                 "reason": "KC_LIVE_OUTER_DATA_INVALID",
@@ -5061,6 +5071,24 @@ class TradingEngine:
             return {
                 "action": "ENTER", "side": "SHORT",
                 "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        # 破軌前先允許「由通道內觸軌」：影線已碰到外軌，且現價仍在
+        # 外軌內側 10% KC 全寬範圍內。離軌過遠便繼續等待，避免回落後追價。
+        opened_inside = lower < candle_open < upper
+        touch_distance = width * 0.10
+        if opened_inside and candle_high >= upper and price >= upper - touch_distance:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_UPPER_TOUCH_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+                "turn_low": None, "turn_high": None,
+            }
+        if opened_inside and candle_low <= lower and price <= lower + touch_distance:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LOWER_TOUCH_SHORT",
                 "kc_upper": upper, "kc_lower": lower,
                 "turn_low": None, "turn_high": None,
             }
@@ -5671,37 +5699,23 @@ class TradingEngine:
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        # 空手時不因即時碰觸或突破 KC 外軌直接追單；新倉只接受外側趨勢
-        # 經已收盤 K 與下一根突破確認的順勢交易。
+        # 空手進場由主流程先判斷即時 KC 外側，再判斷通道內觸軌與其他方式。
 
         held_side = str(current_side or "").upper()
-        mode = str(market_mode or "RANGE").upper()
-        # 所有市場型態都讓外軌持倉延伸，直到反向 K 實際踏回 KC 通道
-        # 才退出；猴市不再因外軌 MA3 峰谷而提早平倉。
-        if held_side and (mode == "RANGE" or (mode == "BULL" and held_side == "LONG") or (
-            mode == "BEAR" and held_side == "SHORT"
-        )):
-            return TradingEngine._channel_outer_reentry_exit_action(
-                frame, price, held_side,
-            )
         # 出場極值只能由兩根已收盤 K 證實；即時 K 的 MA3 尚會變動，
         # 因此僅以它的價格確認是否仍在 KC 外軌，不能拿來立即平倉。
         closed_ma3_peak = previous_ma3 < signal_ma3 - 1e-12
         closed_ma3_trough = previous_ma3 > signal_ma3 + 1e-12
         if held_side == "LONG":
-            # 獲利側：上軌外，已確認 MA3 峰頂
-            if price > upper and closed_ma3_peak:
+            # 開倉後途中不動；只在對側上軌外形成已確認 MA3 峰頂時平倉。
+            if price >= upper and signal_ma3 >= signal_upper and closed_ma3_peak:
                 return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
-            # 虧損側：下軌外，已確認 MA3 谷底
-            if price < lower and closed_ma3_trough:
-                return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
+            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         elif held_side == "SHORT":
-            # 獲利側：下軌外，已確認 MA3 谷底
-            if price < lower and closed_ma3_trough:
+            # 開倉後途中不動；只在對側下軌外形成已確認 MA3 谷底時平倉。
+            if price <= lower and signal_ma3 <= signal_lower and closed_ma3_trough:
                 return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
-            # 虧損側：上軌外，已確認 MA3 峰頂
-            if price > upper and closed_ma3_peak:
-                return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
+            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
         signal_width = signal_upper - signal_lower
 
@@ -6782,6 +6796,8 @@ class TradingEngine:
                             if channel_action.get("reason") in (
                                 "KC_LIVE_UPPER_BREAK_LONG",
                                 "KC_LIVE_LOWER_BREAK_SHORT",
+                                "KC_UPPER_TOUCH_LONG",
+                                "KC_LOWER_TOUCH_SHORT",
                             )
                             else "Channel Swing KC upper trend confirmed LONG"
                             if channel_action.get("reason") in (
