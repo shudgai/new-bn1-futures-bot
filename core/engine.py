@@ -182,6 +182,10 @@ class TradingEngine:
         self._channel_chop_events: Dict[str, list[dict]] = {}
         # K 線圖與日誌使用的 Channel Swing 等待／取消／阻擋狀態。
         self._channel_signal_events: Dict[str, list[dict]] = {}
+        # BTC 領先影子監控：只記錄 BTC 脈衝後各幣同向首個 KC 外軌事件，
+        # 不參與下單，用來驗證是否真的存在可利用的秒級領先。
+        self._btc_lead_shadow_active: dict = {}
+        self._btc_lead_shadow_events: list[dict] = []
         # KC 外軌趨勢追單採多空對稱：先確認既有趨勢品質，再由下一根
         # 突破候選極值；過熱時等待回踩／回抽外軌後重新突破。
         self._channel_outer_trend_wait: Dict[str, dict] = {}
@@ -4102,6 +4106,78 @@ class TradingEngine:
             return "SHORT"
         return None
 
+    def _begin_btc_lead_shadow(
+        self, direction: str | None, frame: pd.DataFrame,
+    ) -> None:
+        """Start one shadow observation window for a newly detected BTC pulse."""
+        side = str(direction or "").upper()
+        if side not in ("LONG", "SHORT") or frame is None or frame.empty:
+            self._btc_lead_shadow_active = {}
+            return
+        try:
+            bar_id = int(float(frame.iloc[-1]["timestamp"]))
+        except (KeyError, TypeError, ValueError, IndexError):
+            return
+        active = getattr(self, "_btc_lead_shadow_active", {})
+        if active.get("key") != (side, bar_id):
+            self._btc_lead_shadow_active = {
+                "key": (side, bar_id), "side": side,
+                "started_at": time.time(), "bar_id": bar_id,
+            }
+
+    def _record_btc_lead_shadow_candidate(
+        self, symbol: str, frame: pd.DataFrame, live_price: float,
+        chop_locked: bool,
+    ) -> None:
+        """Record, but never trade, a coin's first aligned outer reaction to BTC."""
+        active = getattr(self, "_btc_lead_shadow_active", {})
+        if not active or frame is None or frame.empty:
+            return
+        try:
+            row = frame.iloc[-1]
+            price = float(live_price)
+            upper = float(row["kc_upper"])
+            lower = float(row["kc_lower"])
+            ma3 = float(row["ma3"])
+            ma15 = float(row["ma15"])
+            volume_ratio = float(row.get("volume") or 0.0) / max(
+                float(row.get("vol_ma_20") or 0.0), 1e-12,
+            )
+        except (KeyError, TypeError, ValueError, IndexError):
+            return
+        side = str(active.get("side") or "")
+        aligned_outer = (
+            side == "LONG" and price >= upper and ma3 > ma15
+        ) or (
+            side == "SHORT" and price <= lower and ma3 < ma15
+        )
+        if not aligned_outer or volume_ratio < 1.0:
+            return
+        events = getattr(self, "_btc_lead_shadow_events", [])
+        pulse_key = active.get("key")
+        if any(event.get("pulse_key") == pulse_key and event.get("symbol") == symbol for event in events):
+            return
+        events.append({
+            "timestamp": time.time(), "pulse_key": pulse_key,
+            "symbol": symbol, "side": side,
+            "delay_sec": round(max(0.0, time.time() - float(active["started_at"])), 3),
+            "price": price, "kc_upper": upper, "kc_lower": lower,
+            "volume_ratio": round(volume_ratio, 3), "chop_locked": bool(chop_locked),
+        })
+        del events[:-200]
+        self._btc_lead_shadow_events = events
+
+    def btc_lead_shadow_status(self) -> dict:
+        events = list(getattr(self, "_btc_lead_shadow_events", []))
+        eligible = [event for event in events if not event.get("chop_locked")]
+        delays = [float(event["delay_sec"]) for event in eligible]
+        return {
+            "active": dict(getattr(self, "_btc_lead_shadow_active", {})),
+            "events": events[-30:], "total_events": len(events),
+            "eligible_events": len(eligible),
+            "average_delay_sec": round(sum(delays) / len(delays), 3) if delays else None,
+        }
+
     @staticmethod
     def _btc_pulse_blocks_entry(side: str, btc_1m_pulse: str | None) -> bool:
         pulse = str(btc_1m_pulse or "").upper()
@@ -6331,10 +6407,16 @@ class TradingEngine:
                     and not existing_pos
                     and channel_action.get("action") != "ENTER"
                 ):
-                    outer_chase_action = self._channel_outer_trend_entry_action(
+                    # 使用者確認：第一根即時突破 KC 外軌且量能達標就追。
+                    # 後段共用的 volume_ok 與 CHOP_WAIT 閘門仍會阻擋弱量／盤整。
+                    outer_chase_action = self._channel_live_outer_entry_action(
                         channel_df, channel_price,
-                        self._channel_outer_trend_wait.get(symbol),
                     )
+                    if outer_chase_action.get("action") != "ENTER":
+                        outer_chase_action = self._channel_outer_trend_entry_action(
+                            channel_df, channel_price,
+                            self._channel_outer_trend_wait.get(symbol),
+                        )
                     next_wait = outer_chase_action.get("pending")
                     if next_wait:
                         self._channel_outer_trend_wait[symbol] = next_wait

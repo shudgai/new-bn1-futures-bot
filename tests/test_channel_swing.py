@@ -584,7 +584,8 @@ def test_channel_swing_has_one_confirmation_rule_and_no_legacy_entry_paths():
     assert 'KC_INNER_TWO_GREEN_CROSS_UP' not in action_source
     assert 'KC_INNER_TWO_RED_CROSS_DOWN' not in action_source
     assert 'inner_ma3_turn' not in action_source
-    assert '_channel_live_outer_entry_action(' not in process_source
+    # 使用者明確開啟：首根有量的即時 KC 外軌突破可在主流程追單。
+    assert '_channel_live_outer_entry_action(' in process_source
     reverse_start = process_source.index('if action == "REVERSE" and existing_pos:')
     reverse_end = process_source.index('if existing_pos:', reverse_start + 1)
     reverse_source = process_source[reverse_start:reverse_end]
