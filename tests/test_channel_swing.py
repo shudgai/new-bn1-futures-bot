@@ -6,6 +6,7 @@ import pandas as pd
 import core.paper_account as pa_module
 from core.engine import TradingEngine
 from core.paper_account import PaperAccount
+from core.symbol_rotation import SymbolRotation
 
 
 def _channel_frame(lower: float = 99.0, upper: float = 101.0) -> pd.DataFrame:
@@ -85,6 +86,68 @@ def test_held_short_does_not_exit_on_lower_rail_touch_without_confirmed_trough()
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
+def test_held_long_exits_after_three_closed_falling_red_candles():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-4:-1], ["open", "close"]] = [
+        [102.0, 101.8], [101.9, 101.6], [101.7, 101.4],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "THREE_RED_FALLING_CLOSE_EXIT_LONG",
+    )
+
+
+def test_held_short_mirrors_three_closed_rising_green_candle_exit():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-4:-1], ["open", "close"]] = [
+        [98.0, 98.2], [98.1, 98.4], [98.3, 98.6],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "THREE_GREEN_RISING_CLOSE_EXIT_SHORT",
+    )
+
+
+def test_three_candle_exit_never_counts_the_live_candle():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-3:], ["open", "close"]] = [
+        [102.0, 101.8], [101.9, 101.6], [101.7, 101.4],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 101.4, "LONG")
+
+    assert result["action"] == "HOLD"
+
+
+def test_three_red_candle_exit_ignores_ma3_and_kc_distance():
+    frame = _channel_frame(lower=90.0, upper=110.0)
+    frame.loc[frame.index[-4:-1], ["open", "close"]] = [
+        [102.0, 101.8], [101.9, 101.6], [101.7, 101.4],
+    ]
+    frame.loc[frame.index[-2], "ma3"] = 95.0
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "LONG")
+
+    assert (result["action"], result["reason"]) == (
+        "EXIT", "THREE_RED_FALLING_CLOSE_EXIT_LONG",
+    )
+
+
+def test_three_red_candles_require_falling_closes():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-4:-1], ["open", "close"]] = [
+        [102.0, 101.6], [101.9, 101.7], [101.8, 101.5],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 100.0, "LONG")
+
+    assert result["action"] == "HOLD"
+
+
 def test_held_long_exits_on_shallow_red_reentry():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-2], ["close", "ma3"]] = [101.2, 101.3]
@@ -143,7 +206,7 @@ def test_first_red_half_channel_reentry_exits_long_without_reversing():
     result = TradingEngine._channel_swing_action(frame, 100.0, "LONG")
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "REVERSE", "SHORT", "INSTANT_INNER_REENTRY_REVERSE_SHORT",
+        "EXIT", None, "KC_UPPER_RED_REENTRY_EXIT",
     )
 
 
@@ -157,30 +220,36 @@ def test_first_green_half_channel_reentry_exits_short_without_reversing():
     result = TradingEngine._channel_swing_action(frame, 100.0, "SHORT")
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "REVERSE", "LONG", "INSTANT_INNER_REENTRY_REVERSE_LONG",
+        "EXIT", None, "KC_LOWER_GREEN_REENTRY_EXIT",
     )
 
 
-def test_red_outer_reentry_requires_ma3_gap_and_reenters_long():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [102.0, 101.2, 100.5]
-
-    result = TradingEngine._channel_outer_reentry_reenter_action(frame, 101.2, "LONG")
-
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "LONG", "KC_UPPER_RED_REENTRY_REENTER",
+def test_kc_outer_profit_exits_request_rotation_for_both_sides():
+    assert TradingEngine._channel_exit_requests_rotation(
+        "KC_UPPER_RED_REENTRY_EXIT"
     )
-
-
-def test_green_outer_reentry_requires_ma3_gap_and_reenters_short():
-    frame = _channel_frame(lower=99.0, upper=101.0)
-    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [98.0, 98.8, 99.5]
-
-    result = TradingEngine._channel_outer_reentry_reenter_action(frame, 98.8, "SHORT")
-
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", "SHORT", "KC_LOWER_GREEN_REENTRY_REENTER",
+    assert TradingEngine._channel_exit_requests_rotation(
+        "KC_LOWER_GREEN_REENTRY_EXIT"
     )
+    assert not TradingEngine._channel_exit_requests_rotation("KC_OUTER_PEAK")
+
+
+def test_kc_outer_profit_exit_has_no_same_symbol_reentry_path():
+    process_source = inspect.getsource(TradingEngine._process_single_symbol)
+
+    assert not hasattr(TradingEngine, "_channel_outer_reentry_reenter_action")
+    assert "_channel_outer_reentry_after_exit" not in process_source
+
+
+def test_profit_exit_requests_one_shot_symbol_replacement():
+    rotation = SymbolRotation.__new__(SymbolRotation)
+    rotation.next_rotation_exclusions = set()
+    rotation.last_rotation_at = 123.0
+
+    rotation.request_replacement("SOL/USDT")
+
+    assert rotation.next_rotation_exclusions == {"SOL/USDT"}
+    assert rotation.last_rotation_at == 0.0
 
 
 def test_upper_red_peak_short_only_allows_green_reversal_at_upper_rail():
@@ -307,7 +376,10 @@ def test_channel_swing_waits_until_second_candle_is_fully_closed():
     live_turned_red = TradingEngine._channel_swing_action(trough, 98.8, "SHORT")
 
     assert (live_green_flat["action"], live_green_flat["side"]) == ("WAIT", None)
-    assert (live_green_held["action"], live_green_held["side"]) == ("HOLD", None)
+    assert (
+        live_green_held["action"], live_green_held["side"],
+        live_green_held["reason"],
+    ) == ("EXIT", None, "KC_LOWER_GREEN_REENTRY_EXIT")
     assert (live_turned_red["action"], live_turned_red["side"]) == ("HOLD", None)
 
 
@@ -1213,7 +1285,9 @@ def test_confirmed_peak_exits_when_third_live_candle_started_inside_kc():
 
     result = TradingEngine._channel_swing_action(frame, 99.6, "LONG")
 
-    assert (result["action"], result["side"]) == ("REVERSE", "SHORT")
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "KC_UPPER_RED_REENTRY_EXIT",
+    )
 
 
 def test_confirmed_trough_exits_when_third_live_candle_started_inside_kc():
@@ -1225,7 +1299,9 @@ def test_confirmed_trough_exits_when_third_live_candle_started_inside_kc():
 
     result = TradingEngine._channel_swing_action(frame, 100.4, "SHORT")
 
-    assert (result["action"], result["side"]) == ("REVERSE", "LONG")
+    assert (result["action"], result["side"], result["reason"]) == (
+        "EXIT", None, "KC_LOWER_GREEN_REENTRY_EXIT",
+    )
 
 
 def test_btc_1m_pulse_requires_atr_move_and_ma3_alignment(monkeypatch):
@@ -1708,27 +1784,46 @@ def test_channel_signal_events_deduplicate_and_track_reason_transitions():
     )
     assert len(engine.account.logs) == 2
 
-def test_strong_middle_rebound_enters_without_outer_touch():
+def test_strong_middle_rebound_without_outer_touch_does_not_enter_long():
     frame = _channel_frame()
-    
-    # 設置 KC
     for i in range(1, 4):
-        frame.loc[frame.index[-i], ["kc_lower", "ema_20", "kc_upper"]] = [99.0, 100.0, 101.0]
-
-    # Candle -3: not touching lower KC, just some small candle above lower KC
-    frame.loc[frame.index[-3], ["open", "close", "low", "high", "ma3"]] = [99.5, 99.6, 99.4, 99.7, 99.5]
-    
-    # Candle -2 (Confirmation): strong green candle covering 70%+ of the upper half channel
-    # Middle is 100.0, Upper is 101.0, width = 1.0. 70% is 0.7.
-    # We want close - open >= 0.7.
-    frame.loc[frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [99.9, 100.7, 99.8, 100.8, 100.2]
-    
-    # Live candle
-    frame.loc[frame.index[-1], ["open", "close", "low", "ma3"]] = [100.7, 100.8, 100.6, 100.5]
+        frame.loc[frame.index[-i], ["kc_lower", "ema_20", "kc_upper"]] = [
+            99.0, 100.0, 101.0,
+        ]
+    frame.loc[frame.index[-3], ["open", "close", "low", "high", "ma3"]] = [
+        99.5, 99.6, 99.4, 99.7, 99.5,
+    ]
+    frame.loc[frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [
+        99.9, 100.7, 99.8, 100.8, 100.2,
+    ]
+    frame.loc[frame.index[-1], ["open", "close", "low", "ma3"]] = [
+        100.7, 100.8, 100.6, 100.5,
+    ]
 
     result = TradingEngine._channel_swing_action(frame, 100.8)
-    assert (result.get("action"), result.get("side")) == ("ENTER", "LONG")
-    assert result.get("reason") == "STRONG_MIDDLE_REBOUND_LONG"
+
+    assert (result.get("action"), result.get("side")) == ("WAIT", None)
+
+
+def test_strong_middle_rebound_without_outer_touch_does_not_enter_short():
+    frame = _channel_frame()
+    for i in range(1, 4):
+        frame.loc[frame.index[-i], ["kc_lower", "ema_20", "kc_upper"]] = [
+            99.0, 100.0, 101.0,
+        ]
+    frame.loc[frame.index[-3], ["open", "close", "low", "high", "ma3"]] = [
+        100.5, 100.4, 100.3, 100.6, 100.5,
+    ]
+    frame.loc[frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [
+        100.1, 99.3, 99.2, 100.2, 99.8,
+    ]
+    frame.loc[frame.index[-1], ["open", "close", "high", "ma3"]] = [
+        99.3, 99.2, 99.4, 99.5,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 99.2)
+
+    assert (result.get("action"), result.get("side")) == ("WAIT", None)
 
 
 def test_instant_inner_reentry_short_single_candle():

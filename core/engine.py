@@ -135,6 +135,7 @@ class TradingEngine:
         self.analysis_task: asyncio.Task = None
         self.trend_cache_task: asyncio.Task = None
         self.analysis_event = asyncio.Event()
+        self.rotation_event = asyncio.Event()
         self.account.on_trade_closed = self.request_trade_analysis
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
@@ -173,8 +174,6 @@ class TradingEngine:
         # Channel Swing 平倉後，同一根 live K 不得再次用任何入口重開。
         # 下一根已收盤 K 出現後自動解鎖；即時同 K 反手規格不受影響。
         self._channel_swing_last_exit_bar: Dict[str, object] = {}
-        # 外軌回到通道而平倉後，只允許同一根反色K以明確MA3距離回到外軌再進場。
-        self._channel_outer_reentry_after_exit: Dict[str, dict] = {}
         # 盤整鎖：均線與 KC 中軌反覆交叉時，外軌 V 只可作為持倉離場
         # 確認，不得開新倉或平倉後立即反手。需三根已收盤 K 明確同向才解鎖。
         self._channel_chop_locked: Dict[str, bool] = {}
@@ -1009,7 +1008,11 @@ class TradingEngine:
                             for item in purge_changes
                         )
                         self.account.log(f"🚨 [不健康幣種淘汰] {change_text}", "WARNING")
-                await asyncio.sleep(30)  # 30 秒檢查一次是否到了下次輪替/健康檢查時間
+                try:
+                    await asyncio.wait_for(self.rotation_event.wait(), timeout=30.0)
+                    self.rotation_event.clear()
+                except asyncio.TimeoutError:
+                    pass
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1029,7 +1032,7 @@ class TradingEngine:
                     entry_price = float(position["entry_price"])
                     side = position["side"]
                     entry_mode = str(position.get("entry_mode") or position.get("reason") or "")
-                    
+
                     if entry_price > 0 and live_price > 0:
                         if side == "LONG":
                             pnl_pct = (live_price - entry_price) / entry_price
@@ -1056,7 +1059,7 @@ class TradingEngine:
                             if pnl_pct > highest_pnl:
                                 position["peak_pnl_pct"] = pnl_pct
                             continue
-                            
+
                         import core.config as config
 
                         # === KC 破軌緊急停損 (全模式適用) ===
@@ -1081,19 +1084,19 @@ class TradingEngine:
                                 )
                                 continue
                         # ================================================
-                        
+
                         # --- 大爆走 (Mega Trend) 模式檢查 ---
                         # 若處於強烈單邊趨勢 (ADX >= 30)，關閉移動停利與固定止損，完全交給 MA5 轉向平倉
                         trigger = self.position_triggers.get(symbol, {})
                         adx_val = trigger.get("adx", 0.0)
                         is_mega_trend = (adx_val >= 30.0)
-                        
+
                         # Trailing Stop Logic
                         highest_pnl = position.get("peak_pnl_pct", pnl_pct)
                         if pnl_pct > highest_pnl:
                             position["peak_pnl_pct"] = pnl_pct
                             highest_pnl = pnl_pct
-                            
+
                         is_structure_exit_mode = self._is_continuous_wave_position(
                             position, self.account.position_meta.get(symbol, {}),
                         )
@@ -1118,7 +1121,7 @@ class TradingEngine:
                                     self.account.log(f"🚨 [移動停利觸發] {symbol} 從最高 +{highest_pnl*100:.2f}% 回落至 +{pnl_pct*100:.2f}%，執行自動平倉", "SUCCESS")
                                     await self.account.close_position(symbol, live_price, f"移動停利 (最高 +{highest_pnl*100:.2f}%)")
                                     continue # Skip fixed stop loss check since it's closed
-                                    
+
                             # Fixed Stop Loss Logic (只對非 Channel Swing 開倉有效，Channel Swing 已有上面的KC撕裂防線)
                             if "CHANNEL_SWING" not in entry_mode and pnl_pct <= -config.FIXED_STOP_LOSS_PCT:
                                 await self.account.close_position(symbol, live_price, f"固定止損 ({config.FIXED_STOP_LOSS_PCT*100:.1f}%)")
@@ -1126,7 +1129,7 @@ class TradingEngine:
                             # 即使在大爆走模式，如果帳面嚴重虧損仍需終極防線，避免ADX騙線
                             if pnl_pct <= -config.FIXED_STOP_LOSS_PCT * 2.0:
                                 await self.account.close_position(symbol, live_price, f"終極防線止損 ({config.FIXED_STOP_LOSS_PCT*200:.1f}%)")
-                
+
                 import asyncio
                 await asyncio.sleep(10)
             except Exception as e:
@@ -1898,7 +1901,7 @@ class TradingEngine:
                     ma3_prev = float(df_escape["ma3"].iloc[-2])
                     kc_upper = float(df_escape["kc_upper"].iloc[-2])
                     kc_lower = float(df_escape["kc_lower"].iloc[-2])
-                    
+
                     if side_esc == "LONG" and ma3_now < ma3_prev and (ma3_prev > kc_upper or ma3_now > kc_upper):
                         self.account.log(f"⚠️ {symbol} 上軌外峰頂無條件逃命平多！", "WARNING")
                         await self.account.close_position(
@@ -2066,20 +2069,20 @@ class TradingEngine:
                     curr_close = float(df_1m['close'].iloc[-1])
                     kc_upper = float(df_1m['kc_upper'].iloc[-1]) if 'kc_upper' in df_1m.columns else curr_close
                     kc_lower = float(df_1m['kc_lower'].iloc[-1]) if 'kc_lower' in df_1m.columns else curr_close
-                    
+
                     is_touching = (side == "LONG" and current_price >= kc_upper) or (side == "SHORT" and current_price <= kc_lower)
-                    
+
                     if is_touching or meta.get("band_touched"):
                         meta["band_touched"] = True
-                        
+
                         # 已經摸到對面軌道！現在只等 MA3 彎頭 (check_simple_ma5_exit)
                         from core.strategy import check_simple_ma5_exit
                         exit_signal = check_simple_ma5_exit(df_1m, position)
-                        
+
                         if exit_signal.get("close"):
                             self.account.log(f"🎯 [外軌峰谷平倉] {symbol} {side} 單於軌道外出現 {exit_signal.get('reason')}，鎖定最大利潤 {unrealized_pnl_pct:.2%}，平倉！", "SUCCESS")
                             await self.account.close_position(symbol, current_price, f"外軌峰谷 ({exit_signal.get('reason')})")
-                            
+
                             # 觸發極速反手
                             target_side = "SHORT" if side == "LONG" else "LONG"
                             self._kc_reversal_wait[symbol] = {
@@ -2242,7 +2245,7 @@ class TradingEngine:
                         ).upper() in ("BULL", "BEAR")
                         if not ENABLE_TREND_FOLLOW_EXIT and not macro_trend_mode:
                             continue
-                        
+
                         # 0a. 若已由 Binance 原生毫秒級 Trailing Stop 接管（Tier 2+），
                         # 屏蔽微觀趨勢平倉，放手博取大波段。Tier 1 只是本地移到保本價
                         # （仍是靜態單，不是交易所主動追蹤），不算「已接管」，這裡不能
@@ -2250,7 +2253,7 @@ class TradingEngine:
                         # 止損防護。
                         if position_meta.get("native_trailing_tier", 0) >= 2:
                             continue
-                            
+
                         # 0b. 1H 大週期趨勢過濾器：大級別方向與持倉不一致時，跳過 15m EMA20 止損以防橫盤雙巴
                         st_dir_1h = self.st_direction_1h_cache.get(symbol)
                         if st_dir_1h is not None:
@@ -2273,7 +2276,7 @@ class TradingEngine:
                         df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
                         if df.empty or len(df) < 20:
                             continue
-                        
+
                         # 計算 15m ATR 肯特納帶狀緩衝
                         high_low = df['high'] - df['low']
                         high_cp = (df['high'] - df['close'].shift()).abs()
@@ -2281,24 +2284,24 @@ class TradingEngine:
                         df['tr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
                         df['atr'] = df['tr'].rolling(window=14).mean()
                         df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-                        
+
                         # 取最後兩根已收盤的 K 棒
                         last_bar = df.iloc[-1]
                         prev_bar = df.iloc[-2]
-                        
+
                         close_p1 = float(last_bar['close'])
                         ema20_val1 = float(last_bar['ema_20'])
                         atr_val1 = float(last_bar['atr']) if not pd.isna(last_bar['atr']) else close_p1 * 0.015
                         buffer1 = max(close_p1 * 0.003, 0.5 * atr_val1)
-                        
+
                         close_p2 = float(prev_bar['close'])
                         ema20_val2 = float(prev_bar['ema_20'])
                         atr_val2 = float(prev_bar['atr']) if not pd.isna(prev_bar['atr']) else close_p2 * 0.015
                         buffer2 = max(close_p2 * 0.003, 0.5 * atr_val2)
-                        
+
                         side = position["side"]
                         curr_p = self.tickers.get(symbol) or close_p1
-                        
+
                         if side == "LONG":
                             if close_p1 < (ema20_val1 - buffer1) and close_p2 < (ema20_val2 - buffer2):
                                 self.account.log(
@@ -2319,7 +2322,7 @@ class TradingEngine:
                                     self.account.log(f"⏸️ [自動停損已停用] 跳過 15m EMA20 自動平倉 {symbol}", "INFO")
                                 else:
                                     await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體突破EMA20緩衝")
-                
+
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
                 break
@@ -2475,7 +2478,7 @@ class TradingEngine:
                     *DEFAULT_SYMBOLS,
                     *self.account.positions.keys(),
                 ]))
-                
+
                 # 若無監控幣種，短暫等待
                 if not monitored_symbols:
                     await asyncio.sleep(1)
@@ -2483,7 +2486,7 @@ class TradingEngine:
 
                 # watch_tickers 會一直等待直到有新的 WebSocket 封包抵達
                 tickers = await self.ws_exchange.watch_tickers(monitored_symbols)
-                
+
                 for sym, t in tickers.items():
                     if 'last' in t and t['last'] is not None:
                         price = float(t['last'])
@@ -2494,9 +2497,9 @@ class TradingEngine:
                         clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
                         self.ticker_volumes[clean_sym] = float(t['quoteVolume'])
                         self.ticker_volumes[sym] = float(t['quoteVolume'])
-                
+
                 self.last_ticker_success_ts = time.time()
-                
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -3492,13 +3495,13 @@ class TradingEngine:
 
             candles_1m = await self.fetch_klines(symbol, timeframe="1m", limit=20)
             candidate_for_check = dict(candidate, target_price=fresh_target, atr=fresh_atr)
-            
+
             from core.config import ENABLE_TRAILING_ENTRY, TRAILING_REVERSAL_ATR_MULT, TRAILING_ENTRY_TYPE
-            
+
             reversal_confirmed = False
             use_post_only = True
             live_price = self.tickers.get(symbol, live_price)
-            
+
             if ENABLE_TRAILING_ENTRY:
                 if "local_extreme" not in candidate:
                     candidate["local_extreme"] = live_price
@@ -3507,7 +3510,7 @@ class TradingEngine:
                         candidate["local_extreme"] = min(candidate["local_extreme"], live_price)
                     else:
                         candidate["local_extreme"] = max(candidate["local_extreme"], live_price)
-                
+
                 bounce_distance = abs(live_price - candidate["local_extreme"])
                 if bounce_distance >= TRAILING_REVERSAL_ATR_MULT * fresh_atr:
                     reversal_confirmed = True
@@ -3515,7 +3518,7 @@ class TradingEngine:
                     self.account.log(f"📈 [Trailing Entry] {symbol} {candidate['side']} 從極值 {candidate['local_extreme']:.8g} 反彈 {bounce_distance/max(fresh_atr, 1e-12):.2f} ATR，確認進場", "INFO")
             else:
                 reversal_confirmed = self._pullback_reversal_confirmed(candidate_for_check, candles_1m)
-                
+
             if not reversal_confirmed:
                 continue
 
@@ -3874,7 +3877,7 @@ class TradingEngine:
         ma15_now = float(confirm_2["ma15"])
         ma15_old = float(frame.iloc[-6]["ma15"]) if len(frame) >= 6 else float(frame.iloc[0]["ma15"])
         ma15_slope_atr = (ma15_now - ma15_old) / max(atr, 1e-8)
-        
+
         # 過濾過激趨勢：做多時禁止均線急跌，做空時禁止均線急漲 (設定 0.25 ATR 為判定門檻)
         if side == "LONG" and ma15_slope_atr < -0.25:
             return False, f"MA15 slope ({ma15_slope_atr:.2f} ATR) too steep downwards", pivot_offset
@@ -4412,6 +4415,9 @@ class TradingEngine:
             price = float(live_price)
             upper = float(live["kc_upper"])
             lower = float(live["kc_lower"])
+            candle_open = float(live["open"])
+            candle_high = float(live["high"])
+            candle_low = float(live["low"])
         except (TypeError, ValueError, IndexError):
             return {"action": "WAIT", "side": None, "reason": "OUTER_DOWNTREND_DATA_INVALID"}
         if not all(math.isfinite(value) for value in (
@@ -4641,16 +4647,16 @@ class TradingEngine:
         import core.config as config
         if frame is None or len(frame) < 2:
             return {"action": "WAIT"}
-        
+
         try:
             live = frame.iloc[-1]
             prev = frame.iloc[-2]
-            
+
             upper = float(live["kc_upper"])
             lower = float(live["kc_lower"])
             width = upper - lower
             if width <= 0: return {"action": "WAIT"}
-            
+
             price = float(live_price)
             live_open = float(live["open"])
             prev_open = float(prev["open"])
@@ -4666,17 +4672,17 @@ class TradingEngine:
             if side in ("", "LONG"):
                 # Single candle condition
                 single_condition = (
-                    live_open >= upper and price < upper 
+                    live_open >= upper and price < upper
                     and (upper - price) >= 0.5 * width
                 )
-                
+
                 # Two candle condition
                 two_candle_condition = (
                     prev_close < prev_open and price < live_open
                     and prev_open <= upper and price >= lower
                     and (prev_open - price) >= 0.5 * width
                 )
-                
+
                 if single_condition or two_candle_condition:
                     return {
                         "action": (
@@ -4696,17 +4702,17 @@ class TradingEngine:
             if side in ("", "SHORT"):
                 # Single candle condition
                 single_condition = (
-                    live_open <= lower and price > lower 
+                    live_open <= lower and price > lower
                     and (price - lower) >= 0.5 * width
                 )
-                
+
                 # Two candle condition
                 two_candle_condition = (
                     prev_close > prev_open and price > live_open
                     and prev_open >= lower and price <= upper
                     and (price - prev_open) >= 0.5 * width
                 )
-                
+
                 if single_condition or two_candle_condition:
                     return {
                         "action": (
@@ -4721,10 +4727,10 @@ class TradingEngine:
                             else "INSTANT_INNER_REENTRY_EXIT_SHORT_LOW_VOLUME"
                         ),
                     }
-                    
+
         except (ValueError, TypeError, KeyError):
             pass
-            
+
         return {"action": "WAIT"}
 
     @staticmethod
@@ -4757,10 +4763,8 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_INVALID"}
 
         side = str(current_side or "").upper()
-        width = upper - lower
         if side == "LONG":
-            # 上軌外追多後，紅 K 必須實際深入通道至少半寬才可平多；
-            # 仍在外軌或只淺回通道皆續抱。
+            # 上軌外追多後，只要即時紅 K 回到通道內就先平多。
             red_inside = (
                 lower <= price < upper and price < live_open
             )
@@ -4772,7 +4776,7 @@ class TradingEngine:
                     "kc_upper": upper, "kc_lower": lower,
                 }
         elif side == "SHORT":
-            # 多空鏡像：綠 K 必須自下軌外深入通道至少半寬，才可平空。
+            # 多空鏡像：下軌外追空後，綠 K 一回到通道內就先平空。
             green_inside = (
                 lower < price <= upper and price > live_open
             )
@@ -4785,50 +4789,6 @@ class TradingEngine:
                 }
         return {"action": "HOLD", "side": None, "reason": "WAIT_KC_REENTRY_EXIT"}
 
-    @staticmethod
-    def _channel_outer_reentry_reenter_action(
-        frame: pd.DataFrame, live_price: float, exited_side: str | None,
-    ) -> dict:
-        """Re-enter only if the same opposite candle recovers the original outer rail.
-
-        MA3 must remain at least 10% of the current KC width away from that rail,
-        leaving room for a renewed outer-run rather than a rail-touch whipsaw.
-        """
-        required = {"open", "ma3", "kc_upper", "kc_lower"}
-        if frame is None or frame.empty or not required.issubset(frame.columns):
-            return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_REENTER_DATA_UNAVAILABLE"}
-        try:
-            live = frame.iloc[-1]
-            price = float(live_price)
-            live_open = float(live["open"])
-            ma3 = float(live["ma3"])
-            upper = float(live["kc_upper"])
-            lower = float(live["kc_lower"])
-        except (TypeError, ValueError, IndexError, KeyError):
-            return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_REENTER_DATA_INVALID"}
-        if not all(math.isfinite(value) for value in (price, live_open, ma3, upper, lower)) or lower >= upper:
-            return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_REENTER_DATA_INVALID"}
-        width = upper - lower
-        side = str(exited_side or "").upper()
-        if (
-            side == "LONG" and price >= upper and price < live_open
-            and upper - ma3 >= width * 0.10
-        ):
-            return {
-                "action": "ENTER", "side": "LONG",
-                "reason": "KC_UPPER_RED_REENTRY_REENTER",
-                "kc_upper": upper, "kc_lower": lower,
-            }
-        if (
-            side == "SHORT" and price <= lower and price > live_open
-            and ma3 - lower >= width * 0.10
-        ):
-            return {
-                "action": "ENTER", "side": "SHORT",
-                "reason": "KC_LOWER_GREEN_REENTRY_REENTER",
-                "kc_upper": upper, "kc_lower": lower,
-            }
-        return {"action": "WAIT", "side": None, "reason": "WAIT_KC_REENTRY_REENTER"}
 
     @staticmethod
     def _channel_live_outer_entry_action(
@@ -5307,6 +5267,58 @@ class TradingEngine:
             return False
 
     @staticmethod
+    def _channel_three_candle_exit_action(
+        frame: pd.DataFrame, current_side: str | None,
+    ) -> dict:
+        """Flatten after three closed opposite candles continue against a position."""
+        required = {"open", "close"}
+        if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
+            return {"action": "HOLD", "side": None, "reason": "THREE_CANDLE_EXIT_DATA_UNAVAILABLE"}
+        side = str(current_side or "").upper()
+        if side not in ("LONG", "SHORT"):
+            return {"action": "HOLD", "side": None, "reason": "THREE_CANDLE_EXIT_NO_POSITION"}
+        try:
+            # The last row is live and must never count toward the three-candle exit.
+            closed = frame.iloc[-4:-1]
+            opens = [float(value) for value in closed["open"]]
+            closes = [float(value) for value in closed["close"]]
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "HOLD", "side": None, "reason": "THREE_CANDLE_EXIT_DATA_INVALID"}
+        if not all(math.isfinite(value) for value in (*opens, *closes)):
+            return {"action": "HOLD", "side": None, "reason": "THREE_CANDLE_EXIT_DATA_INVALID"}
+
+        if (
+            side == "LONG"
+            and all(close < open_ for open_, close in zip(opens, closes))
+            and closes[0] > closes[1] > closes[2]
+        ):
+            return {
+                "action": "EXIT", "side": None,
+                "reason": "THREE_RED_FALLING_CLOSE_EXIT_LONG",
+            }
+        if (
+            side == "SHORT"
+            and all(close > open_ for open_, close in zip(opens, closes))
+            and closes[0] < closes[1] < closes[2]
+        ):
+            return {
+                "action": "EXIT", "side": None,
+                "reason": "THREE_GREEN_RISING_CLOSE_EXIT_SHORT",
+            }
+        return {"action": "HOLD", "side": None, "reason": "WAIT_THREE_CANDLE_EXIT"}
+
+
+    @staticmethod
+    def _channel_exit_requests_rotation(reason: str | None) -> bool:
+        return str(reason or "") in {
+            "KC_UPPER_RED_REENTRY_EXIT",
+            "KC_LOWER_GREEN_REENTRY_EXIT",
+            "THREE_RED_FALLING_CLOSE_EXIT_LONG",
+            "THREE_GREEN_RISING_CLOSE_EXIT_SHORT",
+        }
+
+
+    @staticmethod
     def _channel_chop_gate(
         action: str, target_side: str | None, locked: bool,
         has_position: bool, reason: str | None = None,
@@ -5390,12 +5402,30 @@ class TradingEngine:
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
+        three_candle_exit = TradingEngine._channel_three_candle_exit_action(
+            frame, current_side,
+        )
+        if three_candle_exit.get("action") == "EXIT":
+            return three_candle_exit
+
         # 1. 優先檢查即時內軌回轉例外
         if hasattr(TradingEngine, "_channel_live_inner_reentry_action"):
             inner_action = TradingEngine._channel_live_inner_reentry_action(
                 frame, live_price, current_side
             )
             if inner_action.get("action") in ("ENTER", "EXIT", "REVERSE"):
+                held_side = str(current_side or "").upper()
+                if held_side in ("LONG", "SHORT") and inner_action.get("action") == "REVERSE":
+                    return {
+                        "action": "EXIT", "side": None,
+                        "reason": (
+                            "KC_UPPER_RED_REENTRY_EXIT"
+                            if held_side == "LONG"
+                            else "KC_LOWER_GREEN_REENTRY_EXIT"
+                        ),
+                        "kc_upper": inner_action.get("kc_upper"),
+                        "kc_lower": inner_action.get("kc_lower"),
+                    }
                 return inner_action
 
         outer_reentry_exit = TradingEngine._channel_outer_reentry_exit_action(
@@ -5465,19 +5495,6 @@ class TradingEngine:
             and confirmation_low < signal_low
             and peak_reentry_ready
         )
-        confirmation_middle = (confirmation_upper + confirmation_lower) / 2.0
-        strong_rebound_long = bool(
-            not closed_trough
-            and confirmation_close > confirmation_open
-            and confirmation_close > confirmation_middle
-            and (confirmation_close - confirmation_open) >= 0.5 * (confirmation_upper - confirmation_middle)
-        )
-        strong_rebound_short = bool(
-            not closed_peak
-            and confirmation_close < confirmation_open
-            and confirmation_close < confirmation_middle
-            and (confirmation_open - confirmation_close) >= 0.5 * (confirmation_middle - confirmation_lower)
-        )
         side = str(current_side or "").upper()
         opposite_outer_trend = TradingEngine._channel_opposite_outer_trend_action(
             frame, price, side,
@@ -5511,21 +5528,21 @@ class TradingEngine:
                     "WAIT_CLOSE_GREEN_IN_LOWER_MIDDLE"
                     if live_lower_touch else "WAIT_LOWER_GREEN_REENTRY"
                 )
-        elif trough_turn or strong_rebound_long:
-            if trough_turn and not strong_rebound_long and live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+        elif trough_turn:
+            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
                 action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
             else:
                 action, target_side, reason = (
                     "ENTER", "LONG",
-                    "STRONG_MIDDLE_REBOUND_LONG" if strong_rebound_long and not trough_turn else "OUTER_TROUGH_NEXT_BREAK_LONG"
+                    "OUTER_TROUGH_NEXT_BREAK_LONG"
                 )
-        elif peak_turn or strong_rebound_short:
-            if peak_turn and not strong_rebound_short and live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
+        elif peak_turn:
+            if live_width_pct < config.MIN_ENTRY_PROFIT_ROOM_PCT:
                 action, target_side, reason = "WAIT", None, "KC_WIDTH_TOO_NARROW"
             else:
                 action, target_side, reason = (
                     "ENTER", "SHORT",
-                    "STRONG_MIDDLE_REBOUND_SHORT" if strong_rebound_short and not peak_turn else "OUTER_PEAK_NEXT_BREAK_SHORT"
+                    "OUTER_PEAK_NEXT_BREAK_SHORT"
                 )
         else:
             action, target_side = "WAIT", None
@@ -5956,9 +5973,11 @@ class TradingEngine:
             direction_text = "雙向"
             coin = symbol.replace("/USDT", "")
 
-            # ====== 第一步：檢測強勢多單訊號（綠K衝外軌）=== 
+            # ====== 第一步：檢測強勢多單訊號（綠K衝外軌）===
             # 每5分鐘掃一次1m強勢多單，若檢測到則立即平掉空單並轉向
             try:
+                pass # 根據使用者要求已完全關閉非 Channel Swing 的強勢進場
+                """
                 from core.strategy import detect_strong_green_candle_burst
                 df_1m_signal = await self.fetch_klines(symbol, timeframe="1m", limit=30)
                 if not df_1m_signal.empty and len(df_1m_signal) >= 2:
@@ -6008,7 +6027,7 @@ class TradingEngine:
                                 )
                                 # 標記此幣種短期已平空單，等待新的多單開倉機會
                                 self.account.position_meta.setdefault(symbol, {})["strong_burst_short_closed_at"] = now_time
-                        
+
                         # 如果無持倉或剛平掉空單，標記為候選進場幣種（由主迴圈決定是否開多單）
                         if symbol not in self.account.positions:
                             detected_candidates.append({
@@ -6038,6 +6057,7 @@ class TradingEngine:
                             f"⏸️ {symbol} 已有波段持倉，STRONG_LONG_BURST 不再強制平倉轉多",
                             "DEBUG",
                         )
+                """
             except Exception as e:
                 self.account.log(f"⚠️ {symbol} 強勢多單檢測異常: {e}", "WARNING")
 
@@ -6054,7 +6074,7 @@ class TradingEngine:
                             df_check_outer = self.strategy.compute_indicators(df_check_outer)
                             curr_close = float(df_check_outer['close'].iloc[-1])
                             kc_upper = float(df_check_outer['kc_upper'].iloc[-1]) if 'kc_upper' in df_check_outer.columns else curr_close
-                            
+
                             is_in_outer_rail = curr_close > kc_upper
                             if is_in_outer_rail:
                                 # 多單在外軌，記錄最高價格用於追蹤
@@ -6210,27 +6230,6 @@ class TradingEngine:
                         channel_action = outer_chase_action
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
-                reentry_action = False
-                reentry_state = self._channel_outer_reentry_after_exit.get(symbol)
-                if not existing_pos and reentry_state:
-                    live_bar = channel_df.index[-1]
-                    source_bar = reentry_state.get("live_bar")
-                    next_bar = reentry_state.get("next_bar")
-                    if live_bar == source_bar or live_bar == next_bar:
-                        channel_action = self._channel_outer_reentry_reenter_action(
-                            channel_df, channel_price, reentry_state.get("side"),
-                        )
-                        reentry_action = channel_action.get("action") == "ENTER"
-                    elif next_bar is None:
-                        # Keep the re-entry window alive through the immediately
-                        # following live K; MA3 may need that one bar to widen.
-                        reentry_state["next_bar"] = live_bar
-                        channel_action = self._channel_outer_reentry_reenter_action(
-                            channel_df, channel_price, reentry_state.get("side"),
-                        )
-                        reentry_action = channel_action.get("action") == "ENTER"
-                    else:
-                        self._channel_outer_reentry_after_exit.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
                 # 上軌紅 K 建立的空單在通道內不反覆改開多：只有
@@ -6261,7 +6260,7 @@ class TradingEngine:
                 channel_closed_bar_id = (
                     channel_df.index[-2] if len(channel_df) >= 2 else None
                 )
-                if not reentry_action and self._channel_entry_reuses_exit_bar(
+                if self._channel_entry_reuses_exit_bar(
                     action, bool(existing_pos), channel_closed_bar_id,
                     getattr(self, "_channel_swing_last_exit_bar", {}).get(symbol),
                 ):
@@ -6319,10 +6318,26 @@ class TradingEngine:
                     if closed:
                         if channel_closed_bar_id is not None:
                             self._channel_swing_last_exit_bar[symbol] = channel_closed_bar_id
-                        self.account.log(
-                            f"⏹️ [Channel Swing] {symbol} 轉向失敗或抵達對側KC外軌，"
-                            "先平倉並等待下一個真正峰谷", "SUCCESS",
-                        )
+                        if self._channel_exit_requests_rotation(exit_reason):
+                            request_replacement = getattr(
+                                self.symbol_rotation, "request_replacement", None,
+                            )
+                            if callable(request_replacement):
+                                request_replacement(symbol)
+                            rotation_event = getattr(self, "rotation_event", None)
+                            if rotation_event is not None:
+                                rotation_event.set()
+                            self._channel_outer_trend_wait.pop(symbol, None)
+                            self.account.log(
+                                f"🔄 [Channel Swing] {symbol} KC外止盈完成；"
+                                "不再等待原幣回外軌，立即重新排名換幣",
+                                "SUCCESS",
+                            )
+                        else:
+                            self.account.log(
+                                f"⏹️ [Channel Swing] {symbol} 轉向失敗或抵達對側KC外軌，"
+                                "先平倉並等待下一個真正峰谷", "SUCCESS",
+                            )
                     return signal_progress, detected_candidates
 
                 if action == "REVERSE" and existing_pos:
@@ -6444,6 +6459,10 @@ class TradingEngine:
                                 "KC_LOWER_TREND_CONFIRMED_SHORT",
                                 "KC_LOWER_RETEST_BREAK_SHORT",
                             )
+                            else "Channel Swing instant inner reentry LONG"
+                            if channel_action.get("reason") == "INSTANT_INNER_REENTRY_LONG"
+                            else "Channel Swing instant inner reentry SHORT"
+                            if channel_action.get("reason") == "INSTANT_INNER_REENTRY_SHORT"
                             else "Channel Swing KC lower outer trough LONG"
                             if target_side == "LONG"
                             else "Channel Swing KC upper outer peak SHORT"
@@ -7043,20 +7062,20 @@ class TradingEngine:
                         recent_lower_hits = df_cr_entry['low'] <= kc_lower_series
                         last_upper_idx = df_cr_entry[recent_upper_hits].index[-1] if recent_upper_hits.any() else -1
                         last_lower_idx = df_cr_entry[recent_lower_hits].index[-1] if recent_lower_hits.any() else -1
-                        
+
                         if last_upper_idx > last_lower_idx:
                             dominant_wave = "SHORT" # 前一次摸到上軌，目前在下跌波段
                         elif last_lower_idx > last_upper_idx:
                             dominant_wave = "LONG"  # 前一次摸到下軌，目前在上漲波段
                         else:
                             dominant_wave = "NEUTRAL"
-                            
+
                         # 如果是猴市，但目前處於主導波段（前一個外軌觸發為同向），則允許順勢開倉
                         is_aligned_with_dominant_wave = (
                             (cr_entry_type == "TREND_LONG" and dominant_wave == "LONG") or
                             (cr_entry_type == "TREND_SHORT" and dominant_wave == "SHORT")
                         )
-                        
+
                         if not _resume_after_profitable_trailing_exit and not is_aligned_with_dominant_wave:
                             signal_progress.append(f"{coin} 猴市模式，等待谷峰反轉")
                             self.account.log(
@@ -7495,7 +7514,7 @@ class TradingEngine:
             df_1m = await self.fetch_klines(symbol, timeframe="1m", limit=30, keep_live=True)
             if df_1m.empty:
                 return signal_progress, detected_candidates
-                
+
             # 只讀已收盤 1m K，避免未收線 RSI、量能與 MA3 重繪。
             df_1m = drop_unclosed_candle(df_1m, "1m")
             if len(df_1m) < 20:
@@ -7505,9 +7524,9 @@ class TradingEngine:
             from core.indicators import detect_ma3_ma15_cross_and_turn
             pivot = detect_ma3_ma15_cross_and_turn(df_1m, allow_live_pivot=False)
             entry_type = pivot.get("entry_type")
-            if entry_type in ("TROUGH_TURN", "PEAK_TURN"):
+            if False: # 根據使用者要求已完全關閉非 Channel Swing 的強勢進場 (MA3/MA15 PIVOT_TURN)
                 direction = "LONG" if entry_type == "TROUGH_TURN" else "SHORT"
-                
+
                 passed_ema_filter = True
                 from core.config import ENABLE_1H_EMA50_FILTER, STRUCTURED_1H_EMA50_TOLERANCE_PCT
                 ema_50_1h = self.ema_50_1h_cache.get(symbol)
@@ -7612,7 +7631,7 @@ class TradingEngine:
                     detected_candidates = []
 
                     now_time = time.time()
-                    
+
                     # BTC 1m 只在強脈衝時守新倉方向；中性時不干預個幣峰谷。
                     btc_1m_turn = None
                     if BTC_1M_PULSE_FILTER_ENABLED:
@@ -7664,11 +7683,11 @@ class TradingEngine:
                             symbol = sig["symbol"]
                             coin = symbol.replace("/USDT", "")
                             direction_text = "多單" if sig["side"] == "LONG" else "空單"
-                            
+
                             if MAX_SLOTS > 0 and len(self.account.positions) >= MAX_SLOTS:
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,槽位已滿({MAX_SLOTS})")
                                 continue
-                                
+
                             await self._place_structured_entry(
                                 symbol,
                                 sig,

@@ -90,6 +90,17 @@ class SymbolRotation:
         self.last_reason = "尚未執行"
         self.volatility_stats: Dict[str, dict] = {}
         self.atr_history: Dict[str, List[float]] = {}
+        # 剛完成 KC 外止盈的幣只排除下一輪排名，輪替成功後解除。
+        self.next_rotation_exclusions: set[str] = set()
+
+    def request_replacement(self, symbol: str) -> None:
+        symbol = str(symbol or "").strip()
+        if not symbol:
+            return
+        self.next_rotation_exclusions.add(symbol)
+        self.last_rotation_at = 0.0
+
+
 
     @staticmethod
     def _closed_trade_stats(trades: Iterable[dict]) -> Dict[str, dict]:
@@ -703,6 +714,11 @@ class SymbolRotation:
             and market.get("info", {}).get("underlyingType") == "COIN"
         )
         candidates = self.market_candidates(tickers, exchange.markets, execution_symbols)
+        forced_exclusions = set(self.next_rotation_exclusions)
+        if forced_exclusions:
+            candidates = [
+                symbol for symbol in candidates if symbol not in forced_exclusions
+            ]
         try:
             funding_rates = await exchange.fetch_funding_rates()
             valid_candidates = []
@@ -770,6 +786,7 @@ class SymbolRotation:
             selected = [
                 symbol for symbol in self.fallback_symbols
                 if symbol not in ENTRY_DISABLED_SYMBOLS
+                and symbol not in forced_exclusions
             ][:SYMBOL_ROTATION_COUNT]
             directions = {symbol: "BOTH" for symbol in selected}
             changes = []
@@ -780,6 +797,7 @@ class SymbolRotation:
                 directions[held_symbol] = "BOTH"
         DEFAULT_SYMBOLS[:] = selected
         self.direction_map = directions
+        self.next_rotation_exclusions.difference_update(forced_exclusions)
         self.last_rotation_at = time.time()
         self.last_changes = changes
         selected_lookup = {(item["symbol"], item["direction"]): item for item in directional}
