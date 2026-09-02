@@ -98,6 +98,12 @@ def test_kc_outer_profit_exit_has_no_same_symbol_reentry_path():
     assert not hasattr(TradingEngine, '_channel_outer_reentry_reenter_action')
     assert '_channel_outer_reentry_after_exit' not in process_source
 
+def test_late_kc_outer_entry_window_requests_symbol_replacement():
+    assert TradingEngine._channel_entry_window_expired("KC_UPPER_EXTENSION_LATE")
+    assert TradingEngine._channel_entry_window_expired("KC_LOWER_EXTENSION_LATE")
+    assert not TradingEngine._channel_entry_window_expired("WAIT_CLOSE_RED")
+    assert not TradingEngine._channel_entry_window_expired("CHOP_WAIT_NO_ENTRY")
+
 def test_profit_exit_requests_immediate_symbol_replacement_with_cooldown():
     rotation = SymbolRotation.__new__(SymbolRotation)
     rotation.next_rotation_exclusions = set()

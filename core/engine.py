@@ -4337,6 +4337,14 @@ class TradingEngine:
         return has_capacity and seconds_since_refresh >= 15.0
 
     @staticmethod
+    def _channel_entry_window_expired(reason: str | None) -> bool:
+        """Whether a symbol has already missed its KC-outer entry window."""
+        return str(reason or "") in {
+            "KC_UPPER_EXTENSION_LATE",
+            "KC_LOWER_EXTENSION_LATE",
+        }
+
+    @staticmethod
     def _channel_entry_candidate_priority(reason: str | None) -> int:
         """Rank executable Channel Swing entries without changing their rules."""
         reason = str(reason or "")
@@ -6529,6 +6537,29 @@ class TradingEngine:
                     channel_action["reason"] = "REVERSE_ALREADY_USED_THIS_BAR"
                 kc_upper = float(channel_action.get("kc_upper") or 0.0)
                 kc_lower = float(channel_action.get("kc_lower") or 0.0)
+
+                if (
+                    not existing_pos
+                    and self._channel_entry_window_expired(
+                        channel_action.get("reason")
+                    )
+                ):
+                    request_replacement = getattr(
+                        self.symbol_rotation, "request_replacement", None,
+                    )
+                    if callable(request_replacement):
+                        request_replacement(symbol)
+                    rotation_event = getattr(self, "rotation_event", None)
+                    if rotation_event is not None:
+                        rotation_event.set()
+                    self.account.log(
+                        f"🔄 {symbol} KC 外軌進場時機已過，換成仍在等待的幣種",
+                        "INFO",
+                    )
+                    signal_progress.append(
+                        f"{coin} 已錯過 KC 外軌進場時機，請求換幣"
+                    )
+                    return signal_progress, detected_candidates
 
                 volume_ratio = self._channel_volume_ratio(channel_df)
                 volume_ok = volume_ratio >= KELTNER_MIN_VOLUME_RATIO
