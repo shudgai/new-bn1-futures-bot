@@ -921,7 +921,10 @@ def test_candidate_board_refreshes_after_fill_and_while_slot_remains():
     assert not TradingEngine._candidate_board_refresh_needed(False, position_count=1, pending_count=0, max_slots=1, seconds_since_refresh=60.0)
     assert not TradingEngine._candidate_board_refresh_needed(False, position_count=1, pending_count=0, max_slots=2, seconds_since_refresh=14.9)
 
-def test_single_slot_amount_uses_eighty_percent_wallet():
+def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
+    # CI does not load the developer's .env; keep this allocation contract
+    # independent from the configured per-trade cap.
+    monkeypatch.setattr("core.engine.TRADE_AMOUNT_USDT", 1_000.0)
     engine = TradingEngine.__new__(TradingEngine)
 
     class Account:
