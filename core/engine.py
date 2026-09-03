@@ -4539,6 +4539,46 @@ class TradingEngine:
         )
         return gross - costs
 
+    @staticmethod
+    def _channel_stalled_recovery_should_arm(
+        position: dict, mark_price: float,
+    ) -> bool:
+        """Arm only after a never-profitable trade moves 0.5 ATR adverse."""
+        entry = float(position.get("entry_price") or 0.0)
+        mark = float(mark_price or 0.0)
+        atr = float(position.get("atr") or 0.0)
+        side = str(position.get("side") or "").upper()
+        if (
+            entry <= 0.0 or mark <= 0.0 or atr <= 0.0
+            or side not in ("LONG", "SHORT")
+        ):
+            return False
+        break_even_pct = max(0.0, 2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT)
+        if float(position.get("peak_pnl_pct") or 0.0) > break_even_pct:
+            return False
+        adverse = entry - mark if side == "LONG" else mark - entry
+        return adverse >= atr * 0.5
+
+    @staticmethod
+    def _channel_stalled_recovery_is_near_entry(
+        position: dict, mark_price: float,
+    ) -> bool:
+        """After arming, accept a recovery to within 0.1 ATR of entry."""
+        if not position.get("channel_stalled_recovery_armed"):
+            return False
+        entry = float(position.get("entry_price") or 0.0)
+        mark = float(mark_price or 0.0)
+        atr = float(position.get("atr") or 0.0)
+        side = str(position.get("side") or "").upper()
+        if entry <= 0.0 or mark <= 0.0 or atr <= 0.0:
+            return False
+        tolerance = atr * 0.1
+        if side == "LONG":
+            return mark >= entry - tolerance
+        if side == "SHORT":
+            return mark <= entry + tolerance
+        return False
+
     async def _try_channel_stronger_symbol_takeover(
         self, candidate: dict, now_time: float, daily_halt: bool,
     ) -> tuple[bool, bool]:
@@ -4716,6 +4756,45 @@ class TradingEngine:
                 "未通過，維持空手等待", "WARNING",
             )
         return True, bool(opened)
+
+    async def _try_channel_stalled_recovery_exit(self) -> bool:
+        """Close an armed stalled trade near entry only when no takeover exists."""
+        if getattr(self.account, "pending_limit_orders", {}):
+            return False
+        for symbol, position in list(
+            getattr(self.account, "positions", {}).items()
+        ):
+            if str(position.get("entry_mode") or "").upper() != "CHANNEL_SWING":
+                continue
+            mark = float(
+                self.tickers.get(symbol)
+                or position.get("mark_price")
+                or 0.0
+            )
+            if not self._channel_stalled_recovery_is_near_entry(position, mark):
+                continue
+            closed = await self.account.close_position(
+                symbol, mark,
+                "Channel Swing stalled breakout recovered near entry",
+                is_manual=True,
+            )
+            if not closed:
+                return False
+            request_replacement = getattr(
+                self.symbol_rotation, "request_replacement", None,
+            )
+            if callable(request_replacement):
+                request_replacement(symbol)
+            rotation_event = getattr(self, "rotation_event", None)
+            if rotation_event is not None:
+                rotation_event.set()
+            self.account.log(
+                f"↩️ [卡倉回本退出] {symbol} 未能突破且曾反向走弱，"
+                "沒有可立即換入的強勢候選；價格回到開倉價附近後平倉",
+                "SUCCESS",
+            )
+            return True
+        return False
 
     @staticmethod
     def _entry_scan_symbol_snapshot(
@@ -6688,7 +6767,6 @@ class TradingEngine:
         market_mode: str | None = None,
         position_open_timestamp: float | None = None,
         exit_net_profitable: bool = True,
-        profit_protection_armed: bool = True,
     ) -> dict:
         import core.config as config
         """RANGE 空手可做 KC 外軌峰谷；非順勢持倉依峰谷平倉。"""
@@ -6768,16 +6846,6 @@ class TradingEngine:
             pre_signal_ma3 > signal_ma3 + 1e-12
             and previous_ma3 > signal_ma3 + 1e-12
         )
-        upper_reentry_after_turn = bool(
-            signal_close >= signal_upper
-            and confirmation_close < confirmation_upper
-            and previous_ma3 < signal_ma3 - 1e-12
-        )
-        lower_reentry_after_turn = bool(
-            signal_close <= signal_lower
-            and confirmation_close > confirmation_lower
-            and previous_ma3 > signal_ma3 + 1e-12
-        )
         exit_pivot_after_entry = True
         if held_side in ("LONG", "SHORT") and position_open_timestamp:
             exit_pivot_after_entry = False
@@ -6809,17 +6877,6 @@ class TradingEngine:
                     "kc_upper": upper, "kc_lower": lower,
                     "reason": "KC_UPPER_OUTER_PEAK_EXIT",
                 }
-            if (
-                exit_pivot_after_entry
-                and exit_net_profitable
-                and profit_protection_armed
-                and upper_reentry_after_turn
-            ):
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_UPPER_REENTRY_PROFIT_EXIT",
-                }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         if held_side == "SHORT":
             if (
@@ -6832,17 +6889,6 @@ class TradingEngine:
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
                     "reason": "KC_LOWER_OUTER_VALLEY_EXIT",
-                }
-            if (
-                exit_pivot_after_entry
-                and exit_net_profitable
-                and profit_protection_armed
-                and lower_reentry_after_turn
-            ):
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_LOWER_REENTRY_PROFIT_EXIT",
                 }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
@@ -7435,7 +7481,6 @@ class TradingEngine:
                     )
                 channel_market_mode = self._channel_macro_market_mode(symbol)
                 channel_exit_net_profitable = True
-                channel_profit_protection_armed = True
                 if existing_pos:
                     estimated_exit_net = self._channel_takeover_net_pnl(
                         existing_pos, channel_price,
@@ -7443,47 +7488,6 @@ class TradingEngine:
                     channel_exit_net_profitable = bool(
                         math.isfinite(estimated_exit_net)
                         and estimated_exit_net > 0.0
-                    )
-                    held_side_for_protection = str(
-                        existing_pos.get("side") or ""
-                    ).upper()
-                    latest_upper = float(channel_df["kc_upper"].iloc[-1])
-                    latest_lower = float(channel_df["kc_lower"].iloc[-1])
-                    reached_profitable_outer = bool(
-                        channel_exit_net_profitable
-                        and (
-                            (
-                                held_side_for_protection == "LONG"
-                                and channel_price >= latest_upper
-                            )
-                            or (
-                                held_side_for_protection == "SHORT"
-                                and channel_price <= latest_lower
-                            )
-                        )
-                    )
-                    if (
-                        reached_profitable_outer
-                        and not existing_pos.get("channel_profit_protection_armed")
-                    ):
-                        existing_pos["channel_profit_protection_armed"] = True
-                        position_meta_map = getattr(
-                            self.account, "position_meta", None,
-                        )
-                        if isinstance(position_meta_map, dict):
-                            position_meta_map.setdefault(symbol, {})[
-                                "channel_profit_protection_armed"
-                            ] = True
-                        self.account.log(
-                            f"🛡️ [回軌獲利保護] {symbol} 已在淨獲利狀態到達對側 KC 外軌，"
-                            "若峰谷未平倉，之後回軌且 MA3 反轉才允許保護性平倉",
-                            "INFO",
-                        )
-                        save_state = getattr(self.account, "save_state", None)
-                        if callable(save_state):
-                            save_state()
-                    channel_profit_protection_armed = bool(
-                        existing_pos.get("channel_profit_protection_armed")
                     )
                 channel_action = self._channel_swing_action(
                     channel_df, channel_price,
@@ -7493,7 +7497,6 @@ class TradingEngine:
                     channel_market_mode,
                     existing_pos.get("open_timestamp") if existing_pos else None,
                     exit_net_profitable=channel_exit_net_profitable,
-                    profit_protection_armed=channel_profit_protection_armed,
                 )
                 # 新倉不再使用 KC 通道內的 MA3 趨勢路徑。
                 self._channel_inner_trend_hold.pop(symbol, None)
@@ -7708,6 +7711,30 @@ class TradingEngine:
                             channel_df, held_side,
                         )
                     )
+                    if (
+                        held_momentum_declining
+                        and self._channel_stalled_recovery_should_arm(
+                            existing_pos, channel_price,
+                        )
+                        and not existing_pos.get("channel_stalled_recovery_armed")
+                    ):
+                        existing_pos["channel_stalled_recovery_armed"] = True
+                        position_meta_map = getattr(
+                            self.account, "position_meta", None,
+                        )
+                        if isinstance(position_meta_map, dict):
+                            position_meta_map.setdefault(symbol, {})[
+                                "channel_stalled_recovery_armed"
+                            ] = True
+                        self.account.log(
+                            f"⏳ [卡倉回本等待] {symbol} 從未形成淨獲利突破，"
+                            "已反向超過 0.5 ATR 且動能衰退；若沒有強勢幣可換，"
+                            "等待回到開倉價 0.1 ATR 內平倉",
+                            "INFO",
+                        )
+                        save_state = getattr(self.account, "save_state", None)
+                        if callable(save_state):
+                            save_state()
                     existing_pos["channel_trend_quality"] = held_quality
                     existing_pos["channel_volume_ratio"] = volume_ratio
                     existing_pos["channel_energy_score"] = held_energy
@@ -9201,6 +9228,7 @@ class TradingEngine:
                     if not candidate_scan_allowed:
                         detected_candidates = []
                     opened_any = False
+                    takeover_opportunity_seen = False
                     if detected_candidates:
                         score_map = {
                             m["symbol"]: float(m.get("final_score", 0.0))
@@ -9237,6 +9265,7 @@ class TradingEngine:
                                     )
                                 )
                                 if handled:
+                                    takeover_opportunity_seen = True
                                     opened_any = takeover_opened or opened_any
                                     continue
                                 signal_progress.append(
@@ -9259,6 +9288,7 @@ class TradingEngine:
                                     )
                                 )
                                 if handled:
+                                    takeover_opportunity_seen = True
                                     opened_any = takeover_opened or opened_any
                                     continue
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,有效槽位已滿({effective_slot_limit})")
@@ -9270,6 +9300,15 @@ class TradingEngine:
                                 sig["live_price"]
                             )
                             opened_any = bool(opened) or opened_any
+
+                    if not opened_any and not takeover_opportunity_seen:
+                        recovery_closed = (
+                            await self._try_channel_stalled_recovery_exit()
+                        )
+                        if recovery_closed:
+                            signal_progress.append(
+                                "卡倉已回到開倉價附近；無強勢候選可立即換入，已平倉"
+                            )
 
                     refresh_needed = self._candidate_board_refresh_needed(
                         opened_any,

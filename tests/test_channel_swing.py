@@ -326,7 +326,6 @@ def test_confirmed_outer_exit_requires_positive_estimated_net_pnl(side):
     result = TradingEngine._channel_swing_action(
         frame, price, side,
         exit_net_profitable=False,
-        profit_protection_armed=True,
     )
 
     assert (result["action"], result["reason"]) == ("HOLD", wait_reason)
@@ -828,43 +827,29 @@ def test_mature_downtrend_reentry_protects_profit_after_lower_break():
     )
 
 
-def test_upper_reentry_with_ma3_turn_is_profit_fallback_without_exact_peak():
+def test_upper_reentry_with_ma3_turn_does_not_exit_without_exact_peak():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-4], ["close", "ma3"]] = [101.4, 101.5]
     frame.loc[frame.index[-3], ["open", "close", "ma3"]] = [101.2, 101.3, 101.2]
     frame.loc[frame.index[-2], ["open", "close", "ma3"]] = [101.2, 100.8, 101.0]
 
-    waiting = TradingEngine._channel_swing_action(
-        frame, 100.8, "LONG", profit_protection_armed=False,
-    )
-    assert (waiting["action"], waiting["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
-    )
-
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
     assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_UPPER_REENTRY_PROFIT_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 
-def test_lower_reentry_with_ma3_turn_is_profit_fallback_without_exact_trough():
+def test_lower_reentry_with_ma3_turn_does_not_exit_without_exact_trough():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-4], ["close", "ma3"]] = [98.6, 98.5]
     frame.loc[frame.index[-3], ["open", "close", "ma3"]] = [98.8, 98.7, 98.8]
     frame.loc[frame.index[-2], ["open", "close", "ma3"]] = [98.8, 99.2, 99.0]
 
-    waiting = TradingEngine._channel_swing_action(
-        frame, 99.2, "SHORT", profit_protection_armed=False,
-    )
-    assert (waiting["action"], waiting["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
-    )
-
     result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_LOWER_REENTRY_PROFIT_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
     )
 
 
@@ -2761,6 +2746,83 @@ async def test_adverse_range_transition_without_energy_cannot_take_over(monkeypa
     ) == (False, False)
     assert events == []
     assert "OLD/USDT" in engine.account.positions
+
+
+@pytest.mark.parametrize(
+    ("side", "adverse_mark", "near_mark", "still_far_mark"),
+    [
+        ("LONG", 98.9, 99.85, 99.7),
+        ("SHORT", 101.1, 100.15, 100.3),
+    ],
+)
+def test_stalled_recovery_arms_after_adverse_move_and_waits_until_near_entry(
+    side, adverse_mark, near_mark, still_far_mark,
+):
+    position = {
+        "side": side, "entry_mode": "CHANNEL_SWING",
+        "entry_price": 100.0, "qty": 1.0, "atr": 2.0,
+        "peak_pnl_pct": 0.0,
+    }
+    assert TradingEngine._channel_stalled_recovery_should_arm(
+        position, adverse_mark,
+    ) is True
+    assert TradingEngine._channel_stalled_recovery_is_near_entry(
+        position, near_mark,
+    ) is False
+    position["channel_stalled_recovery_armed"] = True
+    assert TradingEngine._channel_stalled_recovery_is_near_entry(
+        position, still_far_mark,
+    ) is False
+    assert TradingEngine._channel_stalled_recovery_is_near_entry(
+        position, near_mark,
+    ) is True
+
+
+def test_profitable_breakout_never_arms_stalled_recovery():
+    position = {
+        "side": "LONG", "entry_mode": "CHANNEL_SWING",
+        "entry_price": 100.0, "qty": 1.0, "atr": 2.0,
+        "peak_pnl_pct": 0.01,
+    }
+    assert TradingEngine._channel_stalled_recovery_should_arm(
+        position, 98.5,
+    ) is False
+
+
+@pytest.mark.anyio
+async def test_stalled_recovery_exit_closes_near_entry_without_candidate():
+    events = []
+
+    class Account:
+        positions = {
+            "OLD/USDT": {
+                "side": "LONG", "entry_mode": "CHANNEL_SWING",
+                "entry_price": 100.0, "qty": 1.0, "atr": 2.0,
+                "channel_stalled_recovery_armed": True,
+            }
+        }
+        pending_limit_orders = {}
+
+        async def close_position(self, symbol, *_args, **_kwargs):
+            events.append(("close", symbol))
+            self.positions.pop(symbol)
+            return True
+
+        def log(self, *_args, **_kwargs):
+            pass
+
+    class Rotation:
+        def request_replacement(self, symbol):
+            events.append(("replace", symbol))
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = Account()
+    engine.symbol_rotation = Rotation()
+    engine.rotation_event = None
+    engine.tickers = {"OLD/USDT": 99.85}
+
+    assert await engine._try_channel_stalled_recovery_exit() is True
+    assert events == [("close", "OLD/USDT"), ("replace", "OLD/USDT")]
 
 
 def test_channel_entry_context_preserves_original_market_mode():
