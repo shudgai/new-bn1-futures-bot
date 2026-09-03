@@ -2735,15 +2735,7 @@ class TradingEngine:
                     continue
                 target_price = computed_target
                 pullback_distance_atr = computed_distance / max(float(sig.get("atr") or real_atr), 1e-12)
-            wallet_balance_fn = getattr(self.account, "get_wallet_balance", None)
-            if wallet_balance_fn is None:
-                wallet_balance_fn = self.account.get_available_balance
-            dynamic_trade_amount = (
-                wallet_balance_fn() / max(MAX_SLOTS, 1)
-                if MAX_SLOTS > 0
-                else TRADE_AMOUNT_USDT
-            )
-            amount = min(dynamic_trade_amount, TRADE_AMOUNT_USDT)
+            amount = self._continuous_entry_amount()
             btc_allocation_factor = float(sig.get("btc_allocation_factor", 1.0) or 1.0)
             pool[symbol] = {
                 "symbol": symbol,
@@ -3194,14 +3186,7 @@ class TradingEngine:
             )
             amount = min(self._continuous_entry_amount(), fee_safe_available)
         else:
-            wallet_balance_fn = getattr(self.account, "get_wallet_balance", None)
-            if wallet_balance_fn is None:
-                wallet_balance_fn = self.account.get_available_balance
-            amount = min(
-                wallet_balance_fn() / max(MAX_SLOTS, 1)
-                if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
-                TRADE_AMOUNT_USDT,
-            )
+            amount = self._continuous_entry_amount()
         amount, projected_risk = cap_margin_to_trade_risk(
             amount, leverage, planned_price,
             planned_price if channel_swing_no_stop else sl,
@@ -3314,15 +3299,7 @@ class TradingEngine:
         # if trend_breach["breached"]:
         #     return False
 
-        wallet_balance_fn = getattr(self.account, "get_wallet_balance", None)
-        if wallet_balance_fn is None:
-            wallet_balance_fn = self.account.get_available_balance
-        dynamic_trade_amount = (
-            wallet_balance_fn() / max(MAX_SLOTS, 1)
-            if MAX_SLOTS > 0
-            else TRADE_AMOUNT_USDT
-        )
-        amount_usdt = min(dynamic_trade_amount, TRADE_AMOUNT_USDT)
+        amount_usdt = self._continuous_entry_amount()
         if self.account.get_available_balance() < amount_usdt:
             return False
 
@@ -4531,6 +4508,8 @@ class TradingEngine:
             "KC_UPPER_RETEST_BREAK_LONG", "KC_LOWER_RETEST_BREAK_SHORT",
             "BULL_KC_LOWER_TROUGH_CONFIRMED_LONG",
             "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT",
+            "KC_LOWER_TROUGH_CONFIRMED_LONG",
+            "KC_UPPER_PEAK_CONFIRMED_SHORT",
         }:
             return 4
         if reason in {
@@ -6083,26 +6062,24 @@ class TradingEngine:
                     "WAIT_CLOSE_GREEN_IN_LOWER_MIDDLE"
                     if live_lower_touch else "WAIT_LOWER_GREEN_REENTRY"
                 )
-        elif (
-            trough_turn
-            and closed_ma3_trough
-            and str(market_mode or "").upper() in ("RANGE", "BULL")
-        ):
+        elif trough_turn and closed_ma3_trough:
+            mode = str(market_mode or "").upper()
             reason = (
                 "BULL_KC_LOWER_TROUGH_CONFIRMED_LONG"
-                if str(market_mode or "").upper() == "BULL"
+                if mode == "BULL"
                 else "RANGE_KC_LOWER_TROUGH_CONFIRMED_LONG"
+                if mode == "RANGE"
+                else "KC_LOWER_TROUGH_CONFIRMED_LONG"
             )
             action, target_side = "ENTER", "LONG"
-        elif (
-            peak_turn
-            and closed_ma3_peak
-            and str(market_mode or "").upper() in ("RANGE", "BEAR")
-        ):
+        elif peak_turn and closed_ma3_peak:
+            mode = str(market_mode or "").upper()
             reason = (
                 "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT"
-                if str(market_mode or "").upper() == "BEAR"
+                if mode == "BEAR"
                 else "RANGE_KC_UPPER_PEAK_CONFIRMED_SHORT"
+                if mode == "RANGE"
+                else "KC_UPPER_PEAK_CONFIRMED_SHORT"
             )
             action, target_side = "ENTER", "SHORT"
         elif trough_turn or peak_turn:
