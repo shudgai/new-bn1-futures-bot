@@ -6321,14 +6321,8 @@ class TradingEngine:
         effective_slots = get_effective_slot_count(wallet_balance)
         if effective_slots > 0 and committed >= effective_slots:
             return 0.0
-        if committed == 0:
-            fraction = (
-                CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
-                if effective_slots == 1 else 0.5
-            )
-            return max(0.0, min(available, wallet_balance * fraction, TRADE_AMOUNT_USDT))
-        # 多槽模式的補位只使用當下可用資金。
-        return max(0.0, min(available, TRADE_AMOUNT_USDT))
+        fraction = 1.0 / effective_slots if effective_slots > 0 else 1.0
+        return max(0.0, min(available, wallet_balance * fraction, TRADE_AMOUNT_USDT))
 
     @staticmethod
     def _continuous_entry_price_is_safe(
