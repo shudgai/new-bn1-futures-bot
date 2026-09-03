@@ -167,6 +167,7 @@ class PaperAccount:
         self.latest_prices: Dict[str, float] = {}
         self.trades: List[dict] = []
         self.logs: List[dict] = []
+        self.takeover_shadow_events: List[dict] = []
         self.closing_lock: set = set()
         self.last_closed_at: Dict[str, float] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
@@ -257,6 +258,7 @@ class PaperAccount:
         self.pending_limit_orders = data.get("pending_limit_orders", {})
         self.trades = data.get("trades", [])
         self.logs = data.get("logs", [])
+        self.takeover_shadow_events = data.get("takeover_shadow_events", [])
         self.last_closed_at = {
             str(k): float(v) for k, v in data.get("last_closed_at", {}).items()
         }
@@ -318,6 +320,7 @@ class PaperAccount:
             "pending_limit_orders": self.pending_limit_orders,
             "trades": self.trades[:500],
             "logs": self.logs[-200:],
+            "takeover_shadow_events": self.takeover_shadow_events[-2000:],
             "last_closed_at": self.last_closed_at,
             "daily_date": self.daily_date,
             "daily_start_balance": self.daily_start_balance,
@@ -361,6 +364,7 @@ class PaperAccount:
         self.entry_filter_last = {}
         self.shadow_parameter_stats = {}
         self.shadow_parameter_last = {}
+        self.takeover_shadow_events = []
         # 刪除持久化檔案，避免下次重啟時讀回舊資料
         try:
             if os.path.exists(STATE_FILE):

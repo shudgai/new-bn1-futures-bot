@@ -69,6 +69,7 @@ MEME_SCAN_RESERVE = max(0, int(os.getenv("MEME_SCAN_RESERVE", "10")))
 MEME_MIN_VOLUME_FACTOR = min(1.0, max(0.05, float(
     os.getenv("MEME_MIN_VOLUME_FACTOR", "0.25")
 )))
+TREND_SCAN_RESERVE = max(0, int(os.getenv("TREND_SCAN_RESERVE", "16")))
 MEME_BASES = frozenset({
     "DOGE", "1000SHIB", "SHIB", "1000PEPE", "PEPE", "WIF",
     "1000BONK", "BONK", "1000FLOKI", "FLOKI", "MEME", "DOGS",
@@ -105,6 +106,9 @@ class SymbolRotation:
         self.last_changes: List[dict] = []
         self.last_metrics: List[dict] = []
         self.direction_map: Dict[str, str] = {}
+        # The UI board stays compact, while the entry engine may scan every
+        # liquid/funding-safe contract considered by the latest deep rotation.
+        self.entry_scan_symbols: List[str] = []
         self.fallback_symbols = list(DEFAULT_SYMBOLS)
         self.last_reason = "尚未執行"
         self.volatility_stats: Dict[str, dict] = {}
@@ -385,6 +389,7 @@ class SymbolRotation:
         }
         normal_ranked = []
         meme_ranked = []
+        trend_ranked = []
         meme_min_volume = SYMBOL_MIN_QUOTE_VOLUME * MEME_MIN_VOLUME_FACTOR
         for symbol, ticker in normalized.items():
             if not symbol.endswith("/USDT") or symbol in ENTRY_DISABLED_SYMBOLS:
@@ -404,6 +409,7 @@ class SymbolRotation:
                 continue
             if quote_volume >= SYMBOL_MIN_QUOTE_VOLUME:
                 normal_ranked.append((quote_volume, symbol))
+                trend_ranked.append((change_pct, quote_volume, symbol))
             if (
                 SymbolRotation._is_meme_symbol(symbol)
                 and quote_volume >= meme_min_volume
@@ -412,14 +418,28 @@ class SymbolRotation:
 
         normal_ranked.sort(reverse=True)
         meme_ranked.sort(reverse=True)
-        reserve = min(MEME_SCAN_RESERVE, SYMBOL_MARKET_SCAN_LIMIT)
+        trend_ranked.sort(reverse=True)
+        meme_reserve = min(MEME_SCAN_RESERVE, SYMBOL_MARKET_SCAN_LIMIT)
+        trend_reserve = min(
+            TREND_SCAN_RESERVE,
+            max(0, SYMBOL_MARKET_SCAN_LIMIT - meme_reserve),
+        )
         selected = [
-            symbol for _, symbol in normal_ranked[:max(0, SYMBOL_MARKET_SCAN_LIMIT - reserve)]
+            symbol for _, symbol in normal_ranked[
+                :max(0, SYMBOL_MARKET_SCAN_LIMIT - meme_reserve - trend_reserve)
+            ]
         ]
+        trend_added = 0
+        for _, _, symbol in trend_ranked:
+            if symbol not in selected:
+                selected.append(symbol)
+                trend_added += 1
+            if trend_added >= trend_reserve:
+                break
         for _, symbol in meme_ranked:
             if symbol not in selected:
                 selected.append(symbol)
-            if sum(SymbolRotation._is_meme_symbol(item) for item in selected) >= reserve:
+            if sum(SymbolRotation._is_meme_symbol(item) for item in selected) >= meme_reserve:
                 break
         for _, symbol in normal_ranked:
             if len(selected) >= SYMBOL_MARKET_SCAN_LIMIT:
@@ -719,6 +739,7 @@ class SymbolRotation:
         held_positions: Dict[str, dict],
         metrics: List[dict],
         setup_protected_symbols: Iterable[str] = (),
+        force_fresh: bool = False,
     ) -> tuple[List[str], Dict[str, str], List[dict]]:
         qualified = [
             item for item in metrics
@@ -850,6 +871,26 @@ class SymbolRotation:
             used_symbols.add(protected["symbol"])
 
         desired_items = selected_items[:SYMBOL_ROTATION_COUNT]
+        if force_fresh:
+            selected = [item["symbol"] for item in desired_items]
+            directions = {item["symbol"]: item["direction"] for item in desired_items}
+            previous = [symbol for symbol in current if symbol not in held_positions]
+            removed = [symbol for symbol in previous if symbol not in selected]
+            incoming = [symbol for symbol in selected if symbol not in current]
+            changes = []
+            for index, outgoing in enumerate(removed):
+                replacement = incoming[index] if index < len(incoming) else ""
+                changes.append({
+                    "out": outgoing, "in": replacement,
+                    "direction": directions.get(replacement, ""),
+                })
+            for replacement in incoming[len(removed):]:
+                changes.append({
+                    "out": "", "in": replacement,
+                    "direction": directions.get(replacement, ""),
+                })
+            return selected, directions, changes
+
         desired_by_symbol = {item["symbol"]: item for item in desired_items}
         best_by_symbol = {}
         for item in metrics:
@@ -1002,7 +1043,9 @@ class SymbolRotation:
             self._save()
         return changes
 
-    async def rotate(self, exchange, execution_symbols: set = None) -> List[dict]:
+    async def rotate(
+        self, exchange, execution_symbols: set = None, force_fresh: bool = False,
+    ) -> List[dict]:
         await exchange.load_markets()
         tickers = await exchange.fetch_tickers()
         active_usdt_perpetuals = sum(
@@ -1013,7 +1056,13 @@ class SymbolRotation:
             and market.get("info", {}).get("contractType") == "PERPETUAL"
             and market.get("info", {}).get("underlyingType") == "COIN"
         )
-        candidates = self.market_candidates(tickers, exchange.markets, execution_symbols)
+        candidates = list(dict.fromkeys([
+            *self.market_candidates(tickers, exchange.markets, execution_symbols),
+            *(
+                symbol for symbol in DEFAULT_SYMBOLS
+                if execution_symbols is None or symbol in execution_symbols
+            ),
+        ]))
         forced_exclusions = self.replacement_exclusions()
         if forced_exclusions:
             candidates = [
@@ -1065,6 +1114,27 @@ class SymbolRotation:
             item["symbol"] for item in directional
             if item.get("eligible") and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
         }
+        entry_ranked = sorted(
+            [
+                item for item in directional
+                if (
+                    item.get("atr_eligible")
+                    and item.get("energy_eligible")
+                    and not item.get("volatility_excluded")
+                    and not item.get("history_quarantined")
+                    and int(item.get("entry_priority") or 0) > 0
+                    and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
+                )
+            ],
+            key=lambda item: (
+                int(item.get("entry_priority") or 0),
+                float(item.get("final_score") or 0.0),
+            ),
+            reverse=True,
+        )
+        self.entry_scan_symbols = list(dict.fromkeys(
+            item["symbol"] for item in entry_ranked
+        ))
         score_low_count = len(eligible_symbols - qualified_symbols)
         other_rejected_count = max(
             0, len(analyzed_by_symbol) - atr_low_count - atr_high_count - len(eligible_symbols)
@@ -1082,8 +1152,14 @@ class SymbolRotation:
             self.account.positions,
             directional,
             self.setup_protected_symbols,
+            force_fresh=force_fresh,
         )
-        if candidates and unavailable_count >= len(candidates) and not qualified_symbols:
+        if (
+            not force_fresh
+            and candidates
+            and unavailable_count >= len(candidates)
+            and not qualified_symbols
+        ):
             selected = [
                 symbol for symbol in self.fallback_symbols
                 if symbol not in ENTRY_DISABLED_SYMBOLS
@@ -1093,7 +1169,7 @@ class SymbolRotation:
             changes = []
 
         # 當沒有任何合格幣種時，放入指定的備用迷因幣
-        if not selected:
+        if not selected and not force_fresh:
             for meme in ["1000PEPE/USDT", "1000BONK/USDT", "1000SHIB/USDT"]:
                 if meme not in ENTRY_DISABLED_SYMBOLS and meme not in forced_exclusions:
                     selected.append(meme)
@@ -1144,6 +1220,7 @@ class SymbolRotation:
             "ai": self.ai.status(),
             "metrics": self.last_metrics,
             "direction_map": self.direction_map,
+            "entry_scan_symbols": self.entry_scan_symbols,
             "trade_ai_analysis": self.trade_analysis.status(),
             "volatility_stats": self.volatility_stats,
         }
@@ -1158,6 +1235,8 @@ class SymbolRotation:
             "ai": self.ai.status(),
             "top_metrics": self.last_metrics[:12],
             "direction_map": self.direction_map,
+            "entry_scan_symbols": self.entry_scan_symbols,
+            "entry_scan_count": len(self.entry_scan_symbols),
             "trade_ai_analysis": self.trade_analysis.status(),
             "volatility_stats": self.volatility_stats,
         }

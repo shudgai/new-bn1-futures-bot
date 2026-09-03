@@ -269,9 +269,12 @@
                         </div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">預估未實現淨利（扣費）</div>
-                        <div :class="['stat-val', bot.estimated_net_unrealized_pnl > 0 ? 'up' : bot.estimated_net_unrealized_pnl < 0 ? 'down' : '']">
-                            {{ bot.estimated_net_unrealized_pnl > 0 ? '+' : '' }}{{ bot.estimated_net_unrealized_pnl.toFixed(2) }}
+                        <div class="stat-label">未實現損益（即時）</div>
+                        <div :class="['stat-val', bot.unrealized_pnl > 0 ? 'up' : bot.unrealized_pnl < 0 ? 'down' : '']">
+                            {{ bot.unrealized_pnl > 0 ? '+' : '' }}{{ bot.unrealized_pnl.toFixed(2) }}
+                        </div>
+                        <div style="font-size:10px; color:var(--muted); margin-top:2px;">
+                            扣費後預估 {{ bot.estimated_net_unrealized_pnl > 0 ? '+' : '' }}{{ bot.estimated_net_unrealized_pnl.toFixed(2) }}
                         </div>
                     </div>
                     <div class="stat-box">
@@ -306,7 +309,7 @@
                                 <th>幣種</th>
                                 <th>入場價</th>
                                 <th>現價</th>
-                                <th>預估淨利（扣費，點擊平倉）</th>
+                                <th>即時浮盈／浮虧（點擊平倉）</th>
                                 <th>開/平倉策略</th>
                                 <th>觸發</th>
                                 <th>數量</th>
@@ -333,6 +336,9 @@
                                         </span>
                                         <span v-if="pos.profit_alert" style="font-size: 11px;">💰⚠️</span>
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
+                                        <span style="font-size: 10px; opacity: 0.78; font-weight: 600;">
+                                            扣費後約 {{ getPosEstimatedNetPnl(pos) > 0 ? '+' : '' }}{{ getPosEstimatedNetPnl(pos).toFixed(2) }}
+                                        </span>
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
                                 </td>
@@ -989,14 +995,16 @@
                         || null;
                 },
                 getPosUnrealizedPnl(pos) {
-                    if (pos.estimated_net_unrealized_pnl !== undefined) {
-                        return Number(pos.estimated_net_unrealized_pnl) || 0;
-                    }
-                    const curr = this.getCurrPrice(pos.symbol);
+                    const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
                     if (!curr) return 0;
-                    const raw = pos.side === 'LONG'
+                    return pos.side === 'LONG'
                         ? (curr - pos.entry_price) * pos.qty
                         : (pos.entry_price - curr) * pos.qty;
+                },
+                getPosEstimatedNetPnl(pos) {
+                    const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
+                    if (!curr) return 0;
+                    const raw = this.getPosUnrealizedPnl(pos);
                     const feeRate = this.bot.taker_fee_rate || 0.0005;
                     const slippage = this.bot.slippage_pct || 0.0001;
                     return raw - (pos.entry_price + curr) * pos.qty * feeRate

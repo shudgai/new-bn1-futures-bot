@@ -1939,6 +1939,30 @@ def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
     ) == []
 
 
+def test_market_candidates_reserve_space_for_liquid_trend_movers(monkeypatch):
+    monkeypatch.setattr("core.symbol_rotation.ENTRY_DISABLED_SYMBOLS", set())
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MIN_QUOTE_VOLUME", 50_000_000.0)
+    monkeypatch.setattr("core.symbol_rotation.SYMBOL_MARKET_SCAN_LIMIT", 3)
+    monkeypatch.setattr("core.symbol_rotation.MEME_SCAN_RESERVE", 0)
+    monkeypatch.setattr("core.symbol_rotation.TREND_SCAN_RESERVE", 1)
+    tickers = {
+        "HIGH1/USDT:USDT": {"quoteVolume": 300_000_000.0, "percentage": 0.5},
+        "HIGH2/USDT:USDT": {"quoteVolume": 250_000_000.0, "percentage": 0.4},
+        "LTC/USDT:USDT": {"quoteVolume": 60_000_000.0, "percentage": -4.2},
+    }
+    markets = {
+        raw: {
+            "symbol": raw, "active": True, "swap": True, "quote": "USDT",
+            "info": {"contractType": "PERPETUAL", "underlyingType": "COIN"},
+        }
+        for raw in tickers
+    }
+
+    selected = SymbolRotation.market_candidates(tickers, markets)
+
+    assert selected == ["HIGH1/USDT", "HIGH2/USDT", "LTC/USDT"]
+
+
 @pytest.mark.anyio
 async def test_execution_price_guard_accepts_close_market_and_rejects_deviation(monkeypatch):
     monkeypatch.setattr(engine_module, "PAPER_TRADING", False)

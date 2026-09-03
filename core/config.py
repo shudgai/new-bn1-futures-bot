@@ -62,10 +62,6 @@ MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
 CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
     1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
 )
-# 單槽卡倉至少持有此秒數後，才允許讓位給另一幣的 confirmed outer trend。
-CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC = max(
-    0.0, float(os.getenv("CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC", "900"))
-)
 MIN_TWO_SLOT_BALANCE_USDT = float(os.getenv("MIN_TWO_SLOT_BALANCE_USDT", "120"))
 TARGET_SLOT_BALANCE_USDT = float(os.getenv("TARGET_SLOT_BALANCE_USDT", "75"))
 
