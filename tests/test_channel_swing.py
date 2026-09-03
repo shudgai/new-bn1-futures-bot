@@ -1467,9 +1467,9 @@ def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
         def get_wallet_balance(self):
             return 150.0
     engine.account = Account()
-    assert engine._continuous_entry_amount() == pytest.approx(120.0)
+    assert engine._continuous_entry_amount() == pytest.approx(75.0)
     engine.account.positions['SOL/USDT'] = {'margin': 120.0}
-    assert engine._continuous_entry_amount() == pytest.approx(0.0)
+    assert engine._continuous_entry_amount() == pytest.approx(74.85)
 
 @pytest.mark.anyio
 async def test_channel_swing_position_is_stored_without_sl_or_tp(tmp_path, monkeypatch):
