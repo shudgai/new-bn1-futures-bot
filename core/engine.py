@@ -6687,6 +6687,8 @@ class TradingEngine:
         entry_turn_high: float | None = None,
         market_mode: str | None = None,
         position_open_timestamp: float | None = None,
+        exit_net_profitable: bool = True,
+        profit_protection_armed: bool = True,
     ) -> dict:
         import core.config as config
         """RANGE 空手可做 KC 外軌峰谷；非順勢持倉依峰谷平倉。"""
@@ -6798,6 +6800,7 @@ class TradingEngine:
         if held_side == "LONG":
             if (
                 exit_pivot_after_entry
+                and exit_net_profitable
                 and signal_ma3 >= signal_upper
                 and closed_ma3_peak
             ):
@@ -6806,7 +6809,12 @@ class TradingEngine:
                     "kc_upper": upper, "kc_lower": lower,
                     "reason": "KC_UPPER_OUTER_PEAK_EXIT",
                 }
-            if exit_pivot_after_entry and upper_reentry_after_turn:
+            if (
+                exit_pivot_after_entry
+                and exit_net_profitable
+                and profit_protection_armed
+                and upper_reentry_after_turn
+            ):
                 return {
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
@@ -6816,6 +6824,7 @@ class TradingEngine:
         if held_side == "SHORT":
             if (
                 exit_pivot_after_entry
+                and exit_net_profitable
                 and signal_ma3 <= signal_lower
                 and closed_ma3_trough
             ):
@@ -6824,7 +6833,12 @@ class TradingEngine:
                     "kc_upper": upper, "kc_lower": lower,
                     "reason": "KC_LOWER_OUTER_VALLEY_EXIT",
                 }
-            if exit_pivot_after_entry and lower_reentry_after_turn:
+            if (
+                exit_pivot_after_entry
+                and exit_net_profitable
+                and profit_protection_armed
+                and lower_reentry_after_turn
+            ):
                 return {
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
@@ -7420,6 +7434,57 @@ class TradingEngine:
                         symbol, channel_df, channel_price, chop_locked,
                     )
                 channel_market_mode = self._channel_macro_market_mode(symbol)
+                channel_exit_net_profitable = True
+                channel_profit_protection_armed = True
+                if existing_pos:
+                    estimated_exit_net = self._channel_takeover_net_pnl(
+                        existing_pos, channel_price,
+                    )
+                    channel_exit_net_profitable = bool(
+                        math.isfinite(estimated_exit_net)
+                        and estimated_exit_net > 0.0
+                    )
+                    held_side_for_protection = str(
+                        existing_pos.get("side") or ""
+                    ).upper()
+                    latest_upper = float(channel_df["kc_upper"].iloc[-1])
+                    latest_lower = float(channel_df["kc_lower"].iloc[-1])
+                    reached_profitable_outer = bool(
+                        channel_exit_net_profitable
+                        and (
+                            (
+                                held_side_for_protection == "LONG"
+                                and channel_price >= latest_upper
+                            )
+                            or (
+                                held_side_for_protection == "SHORT"
+                                and channel_price <= latest_lower
+                            )
+                        )
+                    )
+                    if (
+                        reached_profitable_outer
+                        and not existing_pos.get("channel_profit_protection_armed")
+                    ):
+                        existing_pos["channel_profit_protection_armed"] = True
+                        position_meta_map = getattr(
+                            self.account, "position_meta", None,
+                        )
+                        if isinstance(position_meta_map, dict):
+                            position_meta_map.setdefault(symbol, {})[
+                                "channel_profit_protection_armed"
+                            ] = True
+                        self.account.log(
+                            f"🛡️ [回軌獲利保護] {symbol} 已在淨獲利狀態到達對側 KC 外軌，"
+                            "若峰谷未平倉，之後回軌且 MA3 反轉才允許保護性平倉",
+                            "INFO",
+                        )
+                        save_state = getattr(self.account, "save_state", None)
+                        if callable(save_state):
+                            save_state()
+                    channel_profit_protection_armed = bool(
+                        existing_pos.get("channel_profit_protection_armed")
+                    )
                 channel_action = self._channel_swing_action(
                     channel_df, channel_price,
                     existing_pos.get("side") if existing_pos else None,
@@ -7427,6 +7492,8 @@ class TradingEngine:
                     existing_pos.get("channel_turn_high") if existing_pos else None,
                     channel_market_mode,
                     existing_pos.get("open_timestamp") if existing_pos else None,
+                    exit_net_profitable=channel_exit_net_profitable,
+                    profit_protection_armed=channel_profit_protection_armed,
                 )
                 # 新倉不再使用 KC 通道內的 MA3 趨勢路徑。
                 self._channel_inner_trend_hold.pop(symbol, None)

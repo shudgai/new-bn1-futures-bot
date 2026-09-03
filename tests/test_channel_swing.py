@@ -311,6 +311,27 @@ def test_confirmed_outer_ma3_turns_end_channel_positions_symmetrically():
     )
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_confirmed_outer_exit_requires_positive_estimated_net_pnl(side):
+    frame = _channel_frame()
+    if side == "LONG":
+        _closed_peak(frame)
+        wait_reason = "WAIT_OPPOSITE_KC_UPPER_PEAK"
+        price = 100.6
+    else:
+        _closed_trough(frame)
+        wait_reason = "WAIT_OPPOSITE_KC_LOWER_VALLEY"
+        price = 99.4
+
+    result = TradingEngine._channel_swing_action(
+        frame, price, side,
+        exit_net_profitable=False,
+        profit_protection_armed=True,
+    )
+
+    assert (result["action"], result["reason"]) == ("HOLD", wait_reason)
+
+
 def test_one_sided_ma3_move_is_not_mistaken_for_a_new_outer_extreme():
     long_frame = _channel_frame()
     _closed_peak(long_frame)
@@ -813,6 +834,13 @@ def test_upper_reentry_with_ma3_turn_is_profit_fallback_without_exact_peak():
     frame.loc[frame.index[-3], ["open", "close", "ma3"]] = [101.2, 101.3, 101.2]
     frame.loc[frame.index[-2], ["open", "close", "ma3"]] = [101.2, 100.8, 101.0]
 
+    waiting = TradingEngine._channel_swing_action(
+        frame, 100.8, "LONG", profit_protection_armed=False,
+    )
+    assert (waiting["action"], waiting["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+    )
+
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
     assert (result["action"], result["reason"]) == (
@@ -825,6 +853,13 @@ def test_lower_reentry_with_ma3_turn_is_profit_fallback_without_exact_trough():
     frame.loc[frame.index[-4], ["close", "ma3"]] = [98.6, 98.5]
     frame.loc[frame.index[-3], ["open", "close", "ma3"]] = [98.8, 98.7, 98.8]
     frame.loc[frame.index[-2], ["open", "close", "ma3"]] = [98.8, 99.2, 99.0]
+
+    waiting = TradingEngine._channel_swing_action(
+        frame, 99.2, "SHORT", profit_protection_armed=False,
+    )
+    assert (waiting["action"], waiting["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+    )
 
     result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
