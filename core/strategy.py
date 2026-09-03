@@ -2446,6 +2446,13 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
         is_valley = True
         valley_reason = f"MA3 大V括弧谷底 (附{greens}根綠K)"
+    # 4. 提早試單：K線出現反轉跡象 (突破MA3 或 吞噬上一根紅K)
+    elif MA5_EARLY_ENTRY_ENABLED and c1_is_green and (
+        (float(c1['close']) > ma3_curr and float(c2['close']) < ma3_prev) or 
+        (float(c2['close']) < float(c2['open']) and float(c1['close']) > float(c2['open']))
+    ):
+        is_valley = True
+        valley_reason = "K線提早反轉跡象(突破MA3或吞噬)"
 
     # 1. 尖端 (倒 V 型峰頂)
     if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
@@ -2459,6 +2466,13 @@ def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict
     elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
         is_peak = True
         peak_reason = f"MA3 大V括弧峰頂 (附{reds}根紅K)"
+    # 4. 提早試單：K線出現反轉跡象 (跌破MA3 或 吞噬上一根綠K)
+    elif MA5_EARLY_ENTRY_ENABLED and c1_is_red and (
+        (float(c1['close']) < ma3_curr and float(c2['close']) > ma3_prev) or
+        (float(c2['close']) > float(c2['open']) and float(c1['close']) < float(c2['open']))
+    ):
+        is_peak = True
+        peak_reason = "K線提早反轉跡象(跌破MA3或吞噬)"
 
     # 這裡的 signal_score 隨便給 100 即可，不用看 K 線實體比例
     signal_score = 100

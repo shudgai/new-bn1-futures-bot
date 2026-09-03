@@ -184,7 +184,7 @@ ENABLE_SOFT_WARNING_TIGHTEN = os.getenv("ENABLE_SOFT_WARNING_TIGHTEN", "false").
 # 盤中投影在 08/01~08/02 的 7 筆樣本中佔 4 筆，全部都在尚未收線時用極小
 # MA5 斜率搶跑，之後不是碰 SL 就是被 5m 反向防線關倉。預設只接受已收盤
 # 訊號；若日後影子測試重新開啟，投影也必須有較明顯的 ATR 幅度。
-MA5_EARLY_ENTRY_ENABLED = os.getenv("MA5_EARLY_ENTRY_ENABLED", "false").lower() == "true"
+MA5_EARLY_ENTRY_ENABLED = os.getenv("MA5_EARLY_ENTRY_ENABLED", "true").lower() == "true"
 MA5_EARLY_MIN_ATR_MULT = float(os.getenv("MA5_EARLY_MIN_ATR_MULT", "0.05"))
 MA5_EARLY_CONFIRM_SCANS = int(os.getenv("MA5_EARLY_CONFIRM_SCANS", "2"))
 # 已收盤 MA5 必須在峰谷後連續兩根同向，且峰谷到最新值至少移動此 ATR
