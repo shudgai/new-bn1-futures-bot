@@ -545,7 +545,7 @@ def test_steep_red_candle_exits_outer_long_even_before_reentering_channel():
     frame["atr"] = 1.0
     frame.loc[frame.index[-3], ["open", "close"]] = [101.0, 101.8]
     frame.loc[frame.index[-2], ["open", "high", "low", "close", "ma3"]] = [
-        102.0, 102.1, 101.1, 101.2, 101.4,
+        102.4, 102.5, 101.1, 101.2, 101.4,
     ]
 
     result = TradingEngine._channel_swing_action(frame, 101.2, "LONG")
@@ -573,7 +573,7 @@ def test_steep_green_candle_exits_outer_short_even_before_reentering_channel():
     frame["atr"] = 1.0
     frame.loc[frame.index[-3], ["open", "close"]] = [99.0, 98.2]
     frame.loc[frame.index[-2], ["open", "high", "low", "close", "ma3"]] = [
-        98.0, 98.9, 97.9, 98.8, 98.6,
+        97.6, 98.9, 97.5, 98.8, 98.6,
     ]
 
     result = TradingEngine._channel_swing_action(frame, 98.8, "SHORT")
@@ -604,7 +604,7 @@ def test_lower_trough_long_ignores_midtrend_reds_until_final_upper_reversal():
     ] = [
         [100.7, 101.3, 100.6, 101.2, 100.8],
         [101.2, 101.7, 101.1, 101.6, 101.2],
-        [101.6, 101.7, 100.7, 100.8, 101.1],
+        [102.0, 102.1, 100.7, 100.8, 101.1],
     ]
 
     final_result = TradingEngine._channel_swing_action(
@@ -652,10 +652,31 @@ def test_short_run_holds_midtrend_then_exits_and_turns_long_at_true_bottom():
     top.loc[top.index[-3], ["open", "close"]] = [101.0, 101.8]
     top.loc[
         top.index[-2], ["open", "high", "low", "close", "ma3"]
-    ] = [102.0, 102.1, 101.1, 101.2, 101.4]
+    ] = [102.4, 102.5, 101.1, 101.2, 101.4]
     close_long = TradingEngine._channel_swing_action(top, 101.2, "LONG")
     assert (close_long["action"], close_long["reason"]) == (
         "EXIT", "KC_UPPER_STEEP_RED_EXIT",
+    )
+
+
+def test_avax_wick_heavy_red_candle_is_not_a_vertical_reversal_exit():
+    frame = _channel_frame(lower=7.2717685, upper=7.2807685)
+    frame[["open", "close", "high", "low", "ma3"]] = [
+        7.276, 7.276, 7.277, 7.275, 7.276,
+    ]
+    frame["atr"] = 0.0045
+    frame.loc[
+        frame.index[-3:], ["open", "high", "low", "close", "ma3"]
+    ] = [
+        [7.274, 7.281, 7.274, 7.281, 7.276667],
+        [7.280, 7.283, 7.276, 7.276, 7.277],
+        [7.277, 7.277, 7.273, 7.274, 7.277],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 7.274, "LONG")
+
+    assert (result["action"], result["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 

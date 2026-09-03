@@ -5311,7 +5311,13 @@ class TradingEngine:
 
         side = str(current_side or "").upper()
         candle_body = abs(latest_close - latest_open)
-        steep_opposite = candle_body >= max(latest_atr, 1e-12) * 0.50
+        candle_range = max(latest_high - latest_low, 1e-12)
+        # 「近乎垂直」必須同時是大實體且影線短。只看 0.5 ATR 會把
+        # AVAX 這類上下影線明顯的普通回落誤判成急轉而提早平倉。
+        steep_opposite = bool(
+            candle_body >= max(latest_atr, 1e-12)
+            and candle_body / candle_range >= 0.75
+        )
         if side == "LONG":
             if (
                 was_above_upper
