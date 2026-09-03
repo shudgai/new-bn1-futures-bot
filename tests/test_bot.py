@@ -1088,6 +1088,96 @@ def test_paused_api_startup_still_starts_market_data():
     assert "engine.start_market_data()" in startup_source
 
 
+@pytest.mark.anyio
+async def test_bot_supervisor_restarts_unexpectedly_stopped_engine(
+    monkeypatch, tmp_path,
+):
+    import services.api as api
+
+    class Account:
+        def log(self, *_args, **_kwargs):
+            pass
+
+    class Engine:
+        is_running = False
+        task = None
+        account = Account()
+
+        def __init__(self):
+            self.starts = 0
+
+        async def start(self):
+            self.starts += 1
+            self.is_running = True
+
+    fake_engine = Engine()
+    monkeypatch.setattr(api, "engine", fake_engine)
+    monkeypatch.setattr(api, "BOT_PAUSED_FILE", str(tmp_path / "paused.flag"))
+
+    assert await api.recover_bot_if_needed() is True
+    assert fake_engine.starts == 1
+    assert fake_engine.is_running is True
+
+
+@pytest.mark.anyio
+async def test_bot_supervisor_respects_manual_pause(monkeypatch, tmp_path):
+    import services.api as api
+
+    paused_file = tmp_path / "paused.flag"
+    paused_file.write_text("paused\n", encoding="utf-8")
+
+    class Engine:
+        is_running = False
+        task = None
+
+        async def start(self):
+            raise AssertionError("manual pause must not auto-start")
+
+    monkeypatch.setattr(api, "engine", Engine())
+    monkeypatch.setattr(api, "BOT_PAUSED_FILE", str(paused_file))
+
+    assert await api.recover_bot_if_needed() is False
+
+
+@pytest.mark.anyio
+async def test_bot_supervisor_rebuilds_dead_main_task(monkeypatch, tmp_path):
+    import services.api as api
+
+    class DoneTask:
+        def done(self):
+            return True
+
+        def exception(self):
+            return RuntimeError("loop failed")
+
+    class Account:
+        def log(self, *_args, **_kwargs):
+            pass
+
+    class Engine:
+        is_running = True
+        task = DoneTask()
+        account = Account()
+
+        def __init__(self):
+            self.events = []
+
+        async def stop(self):
+            self.events.append("stop")
+            self.is_running = False
+
+        async def start(self):
+            self.events.append("start")
+            self.is_running = True
+
+    fake_engine = Engine()
+    monkeypatch.setattr(api, "engine", fake_engine)
+    monkeypatch.setattr(api, "BOT_PAUSED_FILE", str(tmp_path / "paused.flag"))
+
+    assert await api.recover_bot_if_needed() is True
+    assert fake_engine.events == ["stop", "start"]
+
+
 def test_configured_trade_amount_uses_50_usdt_per_slot():
     # TRADE_AMOUNT_USDT / MAX_SLOTS 這兩個值本身會隨實測調整，不斷言死
     # 具體金額；只驗證設定有正確載入（都是正數）。

@@ -97,6 +97,9 @@ def active_leverage_by_score():
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 BOT_PAUSED_FILE = os.path.join(os.path.dirname(WEB_DIR), "data", "bot_paused.flag")
+BOT_SUPERVISOR_INTERVAL_SECONDS = 5.0
+_bot_supervisor_task = None
+_bot_control_lock = asyncio.Lock()
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="web-static")
 
 # 圖表資料只供顯示，不能讓瀏覽器每秒的請求與交易循環爭用 Binance 額度。
@@ -113,17 +116,66 @@ class ManualOrderRequest(BaseModel):
 class ManualCloseRequest(BaseModel):
     symbol: str
 
+
+async def recover_bot_if_needed() -> bool:
+    """Restart trading tasks that stopped unexpectedly, unless the user paused them."""
+    if os.path.exists(BOT_PAUSED_FILE):
+        return False
+    async with _bot_control_lock:
+        if os.path.exists(BOT_PAUSED_FILE):
+            return False
+        main_task = getattr(engine, "task", None)
+        if engine.is_running and main_task is not None and not main_task.done():
+            return False
+
+        if engine.is_running:
+            failure = "主交易任務已結束"
+            if main_task is not None and main_task.done():
+                try:
+                    exc = main_task.exception()
+                except asyncio.CancelledError:
+                    exc = None
+                if exc:
+                    failure = f"主交易任務異常：{exc}"
+            engine.account.log(f"⚠️ [自動恢復] {failure}，正在重新啟動", "WARNING")
+            await engine.stop()
+        else:
+            engine.account.log("⚠️ [自動恢復] 偵測到機器人停止，正在重新啟動", "WARNING")
+        await engine.start()
+        engine.account.log("✅ [自動恢復] 機器人已重新啟動", "SUCCESS")
+        return True
+
+
+async def bot_supervisor_loop():
+    while True:
+        try:
+            await asyncio.sleep(BOT_SUPERVISOR_INTERVAL_SECONDS)
+            await recover_bot_if_needed()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            engine.account.log(f"⚠️ [自動恢復] 本次重啟失敗，稍後重試：{exc}", "WARNING")
+
+
 @app.on_event("startup")
 async def startup_event():
+    global _bot_supervisor_task
     if os.path.exists(BOT_PAUSED_FILE):
         await engine.account.initialize()
         engine.start_market_data()
         engine.account.log("⏸️ 機器人維持暫停；按下啟動後才接管持倉", "INFO")
-        return
-    await engine.start()
+    else:
+        await engine.start()
+    if _bot_supervisor_task is None or _bot_supervisor_task.done():
+        _bot_supervisor_task = asyncio.create_task(bot_supervisor_loop())
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    global _bot_supervisor_task
+    if _bot_supervisor_task is not None:
+        _bot_supervisor_task.cancel()
+        await asyncio.gather(_bot_supervisor_task, return_exceptions=True)
+        _bot_supervisor_task = None
     # 程序真正關閉時才釋放交易所連線；網頁暫停機器人仍需保留行情連線，
     # 否則再次啟動會重用已關閉的 ccxt instance。
     await engine.stop(close_exchanges=True)
@@ -301,15 +353,17 @@ async def run_ai_trade_analysis():
 
 @app.post("/api/toggle")
 async def toggle_bot():
-    if engine.is_running:
-        await engine.stop()
-        os.makedirs(os.path.dirname(BOT_PAUSED_FILE), exist_ok=True)
-        with open(BOT_PAUSED_FILE, "w", encoding="utf-8") as pause_file:
-            pause_file.write("paused\n")
-    else:
-        if os.path.exists(BOT_PAUSED_FILE):
-            os.remove(BOT_PAUSED_FILE)
-        await engine.start()
+    async with _bot_control_lock:
+        if engine.is_running:
+            # 先寫旗標，避免監督器在 stop() 與寫檔之間誤判為意外停止。
+            os.makedirs(os.path.dirname(BOT_PAUSED_FILE), exist_ok=True)
+            with open(BOT_PAUSED_FILE, "w", encoding="utf-8") as pause_file:
+                pause_file.write("paused\n")
+            await engine.stop()
+        else:
+            if os.path.exists(BOT_PAUSED_FILE):
+                os.remove(BOT_PAUSED_FILE)
+            await engine.start()
     return {"is_running": engine.is_running}
 
 @app.post("/api/manual_order")
