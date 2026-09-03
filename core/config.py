@@ -1010,7 +1010,7 @@ def get_position_multiplier(score: int) -> float:
 # --- 動態幣種輪替與本機 AI 輔助 ---
 # 單槽模式只監控當輪最強的一多一空，避免大名單中的次級訊號搶先進場。
 # 全市場掃描範圍不變，只縮小最終監控牌面。
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "2"))
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "15"))
 SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() == "true"
 ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
 SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "300"))
@@ -1022,7 +1022,7 @@ SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "30
 # 就立刻換掉。已經有持倉的幣種不受影響，維持只等SL/TP/24h時間過濾出場。
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
 # 兩檔觀察名單各保留 1 檔最強多勢／空勢候選。
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "1"))
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "8"))
 # 輪替候選池常因 ATR 與方向分數雙重過濾只剩個位數，監控分數降到40；真正進場仍需 MIN_OPEN_SIGNAL_SCORE，
 # 因此只會增加持續觀察的幣，不會讓40分訊號直接下單。
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "40"))
