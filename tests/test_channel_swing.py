@@ -51,52 +51,6 @@ def test_global_btc_direction_has_priority_for_new_entries():
     assert engine._channel_macro_market_mode("COIN/USDT") == "BULL"
 
 
-def test_trend_follow_long_exits_on_live_red_candle_inside_kc():
-    frame = _channel_frame()
-    frame.loc[frame.index[-1], ["open", "close"]] = [101.2, 100.8]
-    result = TradingEngine._channel_trend_follow_return_exit_action(
-        frame, 100.8, "LONG",
-    )
-    assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_TREND_LONG_RED_INSIDE_EXIT",
-    )
-
-
-def test_trend_follow_short_exits_on_live_green_candle_inside_kc():
-    frame = _channel_frame()
-    frame.loc[frame.index[-1], ["open", "close"]] = [98.8, 99.2]
-    result = TradingEngine._channel_trend_follow_return_exit_action(
-        frame, 99.2, "SHORT",
-    )
-    assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_TREND_SHORT_GREEN_INSIDE_EXIT",
-    )
-
-
-def test_trend_follow_exit_keeps_latest_closed_reentry_after_bar_rollover():
-    frame = _channel_frame()
-    frame["timestamp"] = [1_000_000 + index * 300_000 for index in range(len(frame))]
-    frame.loc[frame.index[-2], ["open", "close"]] = [101.2, 100.8]
-    frame.loc[frame.index[-1], ["open", "close"]] = [100.8, 100.9]
-    result = TradingEngine._channel_trend_follow_return_exit_action(
-        frame, 100.9, "LONG", open_timestamp=5_900.0,
-    )
-    assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_TREND_LONG_RED_INSIDE_EXIT",
-    )
-
-
-def test_trend_follow_exit_ignores_closed_reentry_from_before_entry():
-    frame = _channel_frame()
-    frame["timestamp"] = [1_000_000 + index * 300_000 for index in range(len(frame))]
-    frame.loc[frame.index[-2], ["open", "close"]] = [101.2, 100.8]
-    frame.loc[frame.index[-1], ["open", "close"]] = [100.8, 100.9]
-    result = TradingEngine._channel_trend_follow_return_exit_action(
-        frame, 100.9, "LONG", open_timestamp=6_800.0,
-    )
-    assert result["action"] == "HOLD"
-
-
 def test_nontrend_peak_and_valley_exit_after_price_has_returned_inside():
     long_frame = _channel_frame()
     _closed_peak(long_frame)
@@ -1639,28 +1593,6 @@ def test_single_strong_candle_unlocks_chop_wait():
 _OBSOLETE_CHANNEL_ENTRY_TESTS = ('test_second_closed_confirmation_candle_must_keep_direction_color', 'test_outer_ma3_route_accepts_two_closed_turn_bars_that_remain_outside', 'test_body_deep_eighty_percent_into_half_channel_bypasses_outer_depth', 'test_shallow_outer_v_turns_are_symmetric_without_ma3_depth', 'test_lower_outer_green_reentry_can_open_long_without_ma3_depth', 'test_latest_adjacent_two_closed_outer_v_bars_are_valid_on_both_sides', 'test_empty_slot_does_not_chase_kc_outer_trend_without_pivot_turn', 'test_empty_slot_does_not_chase_price_outside_without_ma3_trend', 'test_live_outer_break_does_not_require_ma3_slope', 'test_empty_slot_does_not_chase_when_only_close_breaks_outer_rail', 'test_closed_lower_trough_uses_confirmed_long_instead_of_live_outer_short', 'test_cancelled_outer_peak_cannot_fall_back_to_live_ma3_entry', 'test_flat_entry_uses_ma3_and_held_position_exits_on_confirmed_trough', 'test_confirmed_outer_pivot_opens_before_forty_percent_reentry', 'test_current_downtrend_after_outer_peak_opens_on_green_candle', 'test_ma3_turn_does_not_open_when_price_is_outside_kc', 'test_old_outer_pivot_does_not_chase_at_opposite_outer_rail', 'test_shallow_outer_reentry_still_reverses_held_short_on_confirmed_trough', 'test_channel_swing_reentry_boundary_is_80_percent_of_outer_half', 'test_live_ma3_turn_does_not_block_confirmed_trough_exit', 'test_adjacent_two_closed_green_bars_confirm_long_candidate', 'test_adjacent_two_closed_red_bars_confirm_short_candidate')
 for _test_name in _OBSOLETE_CHANNEL_ENTRY_TESTS:
     globals()[_test_name] = pytest.mark.skip(reason="obsolete: entry rule replaced")(globals()[_test_name])
-
-_UNIFIED_KC_EXIT_OBSOLETE_TESTS = (
-    "test_nontrend_peak_and_valley_exit_after_price_has_returned_inside",
-    "test_single_closed_outer_red_candidate_waits_for_second_closed_red_k",
-    "test_single_closed_outer_green_candidate_waits_for_second_closed_green_k",
-    "test_channel_swing_does_not_exit_before_actual_rail_touch",
-    "test_confirmed_outer_peak_exits_after_price_returns_inside_kc",
-    "test_confirmed_outer_peak_and_trough_exit_without_body_reentry",
-    "test_held_position_ignores_adverse_side_outer_pivot",
-    "test_bull_long_holds_when_red_candle_reenters_before_outer_peak",
-    "test_bull_long_holds_while_the_reversal_candle_is_still_outside_kc",
-    "test_bull_long_does_not_exit_on_the_upper_kc_boundary",
-    "test_bear_short_holds_when_green_candle_reenters_before_outer_valley",
-    "test_bear_short_holds_while_the_reversal_candle_is_still_outside_kc",
-    "test_bear_short_does_not_exit_on_the_lower_kc_boundary",
-    "test_range_positions_also_wait_for_opposite_outer_pivot",
-    "test_countertrend_channel_positions_keep_outer_pivot_exit",
-)
-for _test_name in _UNIFIED_KC_EXIT_OBSOLETE_TESTS:
-    globals()[_test_name] = pytest.mark.skip(
-        reason="obsolete: every Channel Swing position now exits on KC reentry",
-    )(globals()[_test_name])
 
 
 @pytest.mark.anyio

@@ -5214,85 +5214,6 @@ class TradingEngine:
         ).upper()
 
     @staticmethod
-    def _channel_trend_follow_return_exit_action(
-        frame: pd.DataFrame, live_price: float, current_side: str | None,
-        open_timestamp: float | None = None,
-    ) -> dict:
-        """Exit any Channel Swing position when an opposite candle returns into KC."""
-        required = {"open", "close", "kc_upper", "kc_lower"}
-        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
-            return {"action": "HOLD", "side": None, "reason": "KC_TREND_EXIT_DATA_UNAVAILABLE"}
-        try:
-            live = frame.iloc[-1]
-            closed = frame.iloc[-2]
-            price = float(live_price)
-            live_open = float(live["open"])
-            live_upper = float(live["kc_upper"])
-            live_lower = float(live["kc_lower"])
-            closed_open = float(closed["open"])
-            closed_close = float(closed["close"])
-            closed_upper = float(closed["kc_upper"])
-            closed_lower = float(closed["kc_lower"])
-        except (TypeError, ValueError, IndexError, KeyError):
-            return {"action": "HOLD", "side": None, "reason": "KC_TREND_EXIT_DATA_INVALID"}
-        values = (
-            price, live_open, live_upper, live_lower,
-            closed_open, closed_close, closed_upper, closed_lower,
-        )
-        if (
-            not all(math.isfinite(value) for value in values)
-            or live_lower >= live_upper or closed_lower >= closed_upper
-        ):
-            return {"action": "HOLD", "side": None, "reason": "KC_TREND_EXIT_DATA_INVALID"}
-
-        closed_after_entry = True
-        if open_timestamp:
-            try:
-                if "timestamp" in frame.columns:
-                    live_bar_ts = float(live["timestamp"]) / 1000.0
-                    closed_bar_ts = float(closed["timestamp"]) / 1000.0
-                else:
-                    live_bar_ts = pd.Timestamp(frame.index[-1]).timestamp()
-                    closed_bar_ts = pd.Timestamp(frame.index[-2]).timestamp()
-                interval = max(0.0, live_bar_ts - closed_bar_ts)
-                closed_after_entry = closed_bar_ts + interval >= float(open_timestamp)
-            except (TypeError, ValueError, OverflowError):
-                closed_after_entry = False
-
-        side = str(current_side or "").upper()
-        if side == "LONG":
-            live_red_inside = live_lower <= price < live_upper and price < live_open
-            closed_red_inside = (
-                closed_after_entry
-                and closed_lower <= closed_close < closed_upper
-                and closed_close < closed_open
-            )
-            if live_red_inside or closed_red_inside:
-                return {
-                    "action": "EXIT", "side": None,
-                    "reason": "KC_TREND_LONG_RED_INSIDE_EXIT",
-                    "kc_upper": live_upper, "kc_lower": live_lower,
-                }
-        elif side == "SHORT":
-            live_green_inside = live_lower < price <= live_upper and price > live_open
-            closed_green_inside = (
-                closed_after_entry
-                and closed_lower < closed_close <= closed_upper
-                and closed_close > closed_open
-            )
-            if live_green_inside or closed_green_inside:
-                return {
-                    "action": "EXIT", "side": None,
-                    "reason": "KC_TREND_SHORT_GREEN_INSIDE_EXIT",
-                    "kc_upper": live_upper, "kc_lower": live_lower,
-                }
-        return {
-            "action": "HOLD", "side": None,
-            "reason": "WAIT_TREND_OPPOSITE_CANDLE_INSIDE_KC",
-            "kc_upper": live_upper, "kc_lower": live_lower,
-        }
-
-    @staticmethod
     def _channel_strong_first_outer_touch_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
@@ -6072,14 +5993,18 @@ class TradingEngine:
         # 空手進場由主流程先判斷即時 KC 外側，再判斷通道內觸軌與其他方式。
 
         held_side = str(current_side or "").upper()
-        # 非順勢進場在兩根已收盤 K 證實峰谷後即平倉；確認完成時即時價格
-        # 可能已回到通道內，不再反過來要求現價仍停留在 KC 外軌。
+        # 只在對側外軌形成已確認 MA3 極值時平倉；通道內的反向 K
+        # 屬正常回撤，不得提前將 Channel Swing 持倉洗掉。
         closed_ma3_peak = previous_ma3 < signal_ma3 - 1e-12
         closed_ma3_trough = previous_ma3 > signal_ma3 + 1e-12
-        if held_side in ("LONG", "SHORT"):
-            return TradingEngine._channel_trend_follow_return_exit_action(
-                frame, price, held_side,
-            )
+        if held_side == "LONG":
+            if signal_ma3 >= signal_upper and closed_ma3_peak:
+                return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
+            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
+        if held_side == "SHORT":
+            if signal_ma3 <= signal_lower and closed_ma3_trough:
+                return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
+            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
         signal_width = signal_upper - signal_lower
 
@@ -6800,19 +6725,13 @@ class TradingEngine:
                         symbol, channel_df, channel_price, chop_locked,
                     )
                 channel_market_mode = self._channel_macro_market_mode(symbol)
-                if existing_pos:
-                    channel_action = self._channel_trend_follow_return_exit_action(
-                        channel_df, channel_price, existing_pos.get("side"),
-                        existing_pos.get("open_timestamp"),
-                    )
-                else:
-                    channel_action = self._channel_swing_action(
-                        channel_df, channel_price,
-                        existing_pos.get("side") if existing_pos else None,
-                        existing_pos.get("channel_turn_low") if existing_pos else None,
-                        existing_pos.get("channel_turn_high") if existing_pos else None,
-                        channel_market_mode,
-                    )
+                channel_action = self._channel_swing_action(
+                    channel_df, channel_price,
+                    existing_pos.get("side") if existing_pos else None,
+                    existing_pos.get("channel_turn_low") if existing_pos else None,
+                    existing_pos.get("channel_turn_high") if existing_pos else None,
+                    channel_market_mode,
+                )
                 inner_trend_action = (
                     self._channel_inner_trend_entry_action(
                         channel_df, channel_price,
