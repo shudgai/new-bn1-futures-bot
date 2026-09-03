@@ -66,6 +66,14 @@ def test_nontrend_peak_and_valley_exit_after_price_has_returned_inside():
     )
 
 
+def test_bear_market_lower_trough_opens_long_before_live_outer_short():
+    frame = _channel_frame()
+    _closed_trough(frame)
+    result = TradingEngine._channel_swing_action(frame, 98.9, market_mode="BEAR")
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", "LONG", "KC_LOWER_TROUGH_CONFIRMED_LONG",
+    )
+
 def test_same_bar_rechase_detector_sees_live_upper_kc_without_width_filter():
     frame = _channel_frame(lower=99.8, upper=100.2)
     frame.loc[frame.index[-13:-1], ['low', 'high']] = [99.9, 100.1]
@@ -864,7 +872,7 @@ def test_range_flat_confirmed_outer_peak_enters_short():
     )
 
 
-def test_bear_market_enters_short_at_confirmed_peak_but_not_long_at_trough():
+def test_bear_market_enters_short_at_confirmed_peak_and_long_at_trough():
     trough = _channel_frame()
     _closed_trough(trough)
     peak = _channel_frame()
@@ -875,15 +883,15 @@ def test_bear_market_enters_short_at_confirmed_peak_but_not_long_at_trough():
     short_result = TradingEngine._channel_swing_action(
         peak, 100.8, market_mode="BEAR",
     )
-    assert (long_result["action"], long_result["reason"]) == (
-        "WAIT", "OUTER_PIVOT_AGAINST_MARKET_TREND",
+    assert (long_result["action"], long_result["side"], long_result["reason"]) == (
+        "ENTER", "LONG", "KC_LOWER_TROUGH_CONFIRMED_LONG",
     )
     assert (short_result["action"], short_result["side"], short_result["reason"]) == (
         "ENTER", "SHORT", "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT",
     )
 
 
-def test_bull_market_enters_long_at_confirmed_trough_but_not_short_at_peak():
+def test_bull_market_enters_long_at_confirmed_trough_and_short_at_peak():
     trough = _channel_frame()
     _closed_trough(trough)
     peak = _channel_frame()
@@ -897,13 +905,13 @@ def test_bull_market_enters_long_at_confirmed_trough_but_not_short_at_peak():
     assert (long_result["action"], long_result["side"], long_result["reason"]) == (
         "ENTER", "LONG", "BULL_KC_LOWER_TROUGH_CONFIRMED_LONG",
     )
-    assert (short_result["action"], short_result["reason"]) == (
-        "WAIT", "OUTER_PIVOT_AGAINST_MARKET_TREND",
+    assert (short_result["action"], short_result["side"], short_result["reason"]) == (
+        "ENTER", "SHORT", "KC_UPPER_PEAK_CONFIRMED_SHORT",
     )
 
 
 @pytest.mark.parametrize("market_mode", [None, "TREND"])
-def test_directionless_market_does_not_use_outer_pivot_entry(market_mode):
+def test_directionless_market_uses_outer_pivot_entry(market_mode):
     trough = _channel_frame()
     _closed_trough(trough)
     peak = _channel_frame()
@@ -914,8 +922,8 @@ def test_directionless_market_does_not_use_outer_pivot_entry(market_mode):
     short_result = TradingEngine._channel_swing_action(
         peak, 100.8, market_mode=market_mode,
     )
-    assert (long_result["action"], long_result["side"]) == ("WAIT", None)
-    assert (short_result["action"], short_result["side"]) == ("WAIT", None)
+    assert (long_result["action"], long_result["side"]) == ("ENTER", "LONG")
+    assert (short_result["action"], short_result["side"]) == ("ENTER", "SHORT")
 
 
 def test_range_outer_pivot_requires_confirmed_ma3_turn():
