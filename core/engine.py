@@ -5460,23 +5460,25 @@ class TradingEngine:
             return {"action": "WAIT", "side": None, "reason": "KC_STRONG_TOUCH_DATA_INVALID"}
             
         kc_width = max(upper - lower, 1e-9)
-        body_size = abs(price - live_open)
-        has_sufficient_body = body_size >= (kc_width * 0.20)
             
-        if price >= upper and previous_close < previous_upper and has_sufficient_body:
-            return {
-                "action": "ENTER", "side": "LONG",
-                "reason": "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
-                "kc_upper": upper, "kc_lower": lower,
-                "turn_low": None, "turn_high": None,
-            }
-        if price <= lower and previous_close > previous_lower and has_sufficient_body:
-            return {
-                "action": "ENTER", "side": "SHORT",
-                "reason": "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
-                "kc_upper": upper, "kc_lower": lower,
-                "turn_low": None, "turn_high": None,
-            }
+        if price >= upper and previous_close < previous_upper:
+            body_size = price - live_open
+            if body_size >= (kc_width * 0.20):
+                return {
+                    "action": "ENTER", "side": "LONG",
+                    "reason": "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
+                    "kc_upper": upper, "kc_lower": lower,
+                    "turn_low": None, "turn_high": None,
+                }
+        if price <= lower and previous_close > previous_lower:
+            body_size = live_open - price
+            if body_size >= (kc_width * 0.20):
+                return {
+                    "action": "ENTER", "side": "SHORT",
+                    "reason": "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
+                    "kc_upper": upper, "kc_lower": lower,
+                    "turn_low": None, "turn_high": None,
+                }
         return {"action": "WAIT", "side": None, "reason": "WAIT_STRONG_FIRST_KC_TOUCH"}
 
     @staticmethod
