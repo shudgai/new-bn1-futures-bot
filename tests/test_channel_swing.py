@@ -42,73 +42,6 @@ def _closed_peak(frame: pd.DataFrame):
     frame.loc[frame.index[-2], ['open', 'close', 'low', 'high', 'ma3']] = [100.8, 100.0, 99.9, 101.2, 100.6]
     frame.loc[frame.index[-1], 'ma3'] = 100.0
 
-def test_channel_entry_profile_uses_the_whole_entry_route():
-    assert TradingEngine._channel_entry_is_trend_follow({
-        "reason": "Channel Swing live KC outer break LONG",
-    }) is True
-    assert TradingEngine._channel_entry_is_trend_follow({
-        "signal_code": "KC_INNER_DOWNTREND_SHORT",
-    }) is True
-    assert TradingEngine._channel_entry_is_trend_follow({
-        "reason": "Channel Swing KC lower outer trough LONG",
-    }) is False
-    assert TradingEngine._channel_entry_is_trend_follow({
-        "channel_entry_profile": "PIVOT",
-        "reason": "Channel Swing live KC outer break LONG",
-    }) is False
-
-
-def test_channel_entry_profile_uses_market_alignment_not_signal_route():
-    assert TradingEngine._channel_entry_profile_for_market(
-        "SHORT", "RANGE", -1,
-    ) == "TREND_FOLLOW"
-    assert TradingEngine._channel_entry_profile_for_market(
-        "LONG", "RANGE", -1,
-    ) == "COUNTER_TREND"
-    assert TradingEngine._channel_entry_profile_for_market(
-        "LONG", "BULL", 0,
-    ) == "TREND_FOLLOW"
-    assert TradingEngine._channel_entry_is_trend_follow({
-        "side": "LONG",
-        "btc_direction_1h_at_entry": -1,
-        "reason": "Channel Swing live KC outer break LONG",
-    }) is False
-
-
-def test_promoted_profile_stays_trend_follow_after_market_changes():
-    assert TradingEngine._channel_entry_is_trend_follow({
-        "side": "LONG",
-        "btc_direction_1h_at_entry": -1,
-        "channel_entry_profile": "TREND_FOLLOW",
-        "channel_entry_profile_basis": "MARKET_ALIGNMENT",
-    }) is True
-
-
-def test_held_position_upgrades_only_when_direction_strengthens_after_entry():
-    engine = TradingEngine.__new__(TradingEngine)
-    engine.btc_1h_st_direction = -1
-    engine._continuous_market_mode = {"COIN/USDT": "BULL"}
-    engine._market_mode_transition_at = {"COIN/USDT": 900.0}
-    position = {
-        "side": "LONG", "open_timestamp": 1_000.0,
-        "btc_direction_1h_at_entry": -1,
-    }
-    assert engine._channel_position_direction_is_strong(
-        "COIN/USDT", position,
-    ) is False
-
-    engine._market_mode_transition_at["COIN/USDT"] = 1_100.0
-    assert engine._channel_position_direction_is_strong(
-        "COIN/USDT", position,
-    ) is True
-
-    engine._continuous_market_mode["COIN/USDT"] = "RANGE"
-    engine.btc_1h_st_direction = 1
-    assert engine._channel_position_direction_is_strong(
-        "COIN/USDT", position,
-    ) is True
-
-
 def test_global_btc_direction_has_priority_for_new_entries():
     engine = TradingEngine.__new__(TradingEngine)
     engine.btc_1h_st_direction = -1
@@ -267,19 +200,21 @@ def test_live_outer_entry_allows_fresh_short_break_despite_prior_extension():
     result = TradingEngine._channel_live_outer_entry_action(frame, 98.9)
     assert (result['action'], result['side']) == ('ENTER', 'SHORT')
 
-def test_live_outer_entry_chases_extended_long_run_when_price_is_above_rail():
+def test_live_outer_entry_rejects_stale_long_extension_after_slot_frees():
     frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], "close"] = 101.2
     frame.loc[frame.index[-13:-1], ['low', 'high']] = [98.0, 101.1]
     frame.loc[frame.index[-1], ['open', 'low', 'high']] = [101.6, 101.2, 101.7]
     result = TradingEngine._channel_live_outer_entry_action(frame, 101.1)
-    assert (result['action'], result['side'], result['reason']) == ('ENTER', 'LONG', 'KC_LIVE_UPPER_BREAK_LONG')
+    assert (result["action"], result["side"], result["reason"]) == ("WAIT", None, "KC_UPPER_EXTENSION_LATE")
 
-def test_live_outer_entry_chases_extended_short_run_when_price_is_below_rail():
+def test_live_outer_entry_rejects_stale_short_extension_after_slot_frees():
     frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-2], "close"] = 98.8
     frame.loc[frame.index[-13:-1], ['low', 'high']] = [98.9, 102.0]
     frame.loc[frame.index[-1], ['open', 'low', 'high']] = [98.4, 98.3, 98.8]
     result = TradingEngine._channel_live_outer_entry_action(frame, 98.9)
-    assert (result['action'], result['side'], result['reason']) == ('ENTER', 'SHORT', 'KC_LIVE_LOWER_BREAK_SHORT')
+    assert (result["action"], result["side"], result["reason"]) == ("WAIT", None, "KC_LOWER_EXTENSION_LATE")
 
 def test_held_long_does_not_exit_on_upper_rail_touch_without_confirmed_peak():
     frame = _channel_frame(lower=99.0, upper=101.0)
@@ -1703,7 +1638,29 @@ def test_single_strong_candle_unlocks_chop_wait():
     assert chop_state['reason'] == 'DIRECTION_CLEAR'
 _OBSOLETE_CHANNEL_ENTRY_TESTS = ('test_second_closed_confirmation_candle_must_keep_direction_color', 'test_outer_ma3_route_accepts_two_closed_turn_bars_that_remain_outside', 'test_body_deep_eighty_percent_into_half_channel_bypasses_outer_depth', 'test_shallow_outer_v_turns_are_symmetric_without_ma3_depth', 'test_lower_outer_green_reentry_can_open_long_without_ma3_depth', 'test_latest_adjacent_two_closed_outer_v_bars_are_valid_on_both_sides', 'test_empty_slot_does_not_chase_kc_outer_trend_without_pivot_turn', 'test_empty_slot_does_not_chase_price_outside_without_ma3_trend', 'test_live_outer_break_does_not_require_ma3_slope', 'test_empty_slot_does_not_chase_when_only_close_breaks_outer_rail', 'test_closed_lower_trough_uses_confirmed_long_instead_of_live_outer_short', 'test_cancelled_outer_peak_cannot_fall_back_to_live_ma3_entry', 'test_flat_entry_uses_ma3_and_held_position_exits_on_confirmed_trough', 'test_confirmed_outer_pivot_opens_before_forty_percent_reentry', 'test_current_downtrend_after_outer_peak_opens_on_green_candle', 'test_ma3_turn_does_not_open_when_price_is_outside_kc', 'test_old_outer_pivot_does_not_chase_at_opposite_outer_rail', 'test_shallow_outer_reentry_still_reverses_held_short_on_confirmed_trough', 'test_channel_swing_reentry_boundary_is_80_percent_of_outer_half', 'test_live_ma3_turn_does_not_block_confirmed_trough_exit', 'test_adjacent_two_closed_green_bars_confirm_long_candidate', 'test_adjacent_two_closed_red_bars_confirm_short_candidate')
 for _test_name in _OBSOLETE_CHANNEL_ENTRY_TESTS:
-    globals()[_test_name] = pytest.mark.skip(reason='obsolete: only confirmed KC-outer trend entries are permitted')(globals()[_test_name])
+    globals()[_test_name] = pytest.mark.skip(reason="obsolete: entry rule replaced")(globals()[_test_name])
+
+_UNIFIED_KC_EXIT_OBSOLETE_TESTS = (
+    "test_nontrend_peak_and_valley_exit_after_price_has_returned_inside",
+    "test_single_closed_outer_red_candidate_waits_for_second_closed_red_k",
+    "test_single_closed_outer_green_candidate_waits_for_second_closed_green_k",
+    "test_channel_swing_does_not_exit_before_actual_rail_touch",
+    "test_confirmed_outer_peak_exits_after_price_returns_inside_kc",
+    "test_confirmed_outer_peak_and_trough_exit_without_body_reentry",
+    "test_held_position_ignores_adverse_side_outer_pivot",
+    "test_bull_long_holds_when_red_candle_reenters_before_outer_peak",
+    "test_bull_long_holds_while_the_reversal_candle_is_still_outside_kc",
+    "test_bull_long_does_not_exit_on_the_upper_kc_boundary",
+    "test_bear_short_holds_when_green_candle_reenters_before_outer_valley",
+    "test_bear_short_holds_while_the_reversal_candle_is_still_outside_kc",
+    "test_bear_short_does_not_exit_on_the_lower_kc_boundary",
+    "test_range_positions_also_wait_for_opposite_outer_pivot",
+    "test_countertrend_channel_positions_keep_outer_pivot_exit",
+)
+for _test_name in _UNIFIED_KC_EXIT_OBSOLETE_TESTS:
+    globals()[_test_name] = pytest.mark.skip(
+        reason="obsolete: every Channel Swing position now exits on KC reentry",
+    )(globals()[_test_name])
 
 
 @pytest.mark.anyio
