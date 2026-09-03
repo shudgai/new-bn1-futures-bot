@@ -12,7 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY, get_effective_slot_count
+    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY,
+    CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -27,15 +28,36 @@ def trade_date_str(trade: dict) -> str:
 
 app = FastAPI(title="Binance Futures Bot 2.0")
 
+def visible_symbols():
+    """輪替牌面加上所有未平倉幣種；持倉平掉前不得從介面消失。"""
+    return list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()]))
+
+
 def visible_tickers():
     """只回傳目前牌面與持倉，避免輪替後的舊價格快取留在介面。"""
-    symbols = list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()]))
     result = {}
-    for symbol in symbols:
+    for symbol in visible_symbols():
         price = engine.tickers.get(symbol) or engine.tickers.get(f"{symbol}:USDT")
+        if price is None:
+            position = engine.account.positions.get(symbol, {})
+            price = position.get("mark_price") or position.get("entry_price")
         if price is not None:
             result[symbol] = price
     return result
+
+
+def configured_trade_amount() -> float:
+    """Return the target size of one slot, independent of current occupancy."""
+    wallet_balance = engine.account.get_wallet_balance()
+    effective_slots = get_effective_slot_count(wallet_balance)
+    fraction = (
+        CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
+        if effective_slots == 1
+        else 1.0 / effective_slots
+        if effective_slots > 1
+        else 1.0
+    )
+    return min(TRADE_AMOUNT_USDT, wallet_balance * fraction)
 
 def estimated_net_unrealized_pnl() -> float:
     """估算全部持倉此刻市價平倉後，扣雙邊手續費與平倉滑價的淨利。"""
@@ -156,11 +178,7 @@ async def get_status(response: Response):
         },
         "max_slots": MAX_SLOTS,
         "effective_slots": get_effective_slot_count(engine.account.get_wallet_balance()),
-        "trade_amount": round(
-            engine.account.get_wallet_balance() / max(
-                get_effective_slot_count(engine.account.get_wallet_balance()), 1
-            ), 2
-        ) if MAX_SLOTS > 0 else TRADE_AMOUNT_USDT,
+        "trade_amount": round(configured_trade_amount(), 2),
         "pullback_outcome_stats": dict(engine.account.pullback_outcome_stats),
         "entry_filter_stats": dict(engine.account.entry_filter_stats),
         "entry_filter_last": dict(engine.account.entry_filter_last),
@@ -169,14 +187,14 @@ async def get_status(response: Response):
         "btc_lead_shadow": engine.btc_lead_shadow_status(),
         "taker_fee_rate": TAKER_FEE_RATE,
         "slippage_pct": SLIPPAGE_PCT,
-        "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
+        "symbols": visible_symbols(),
         "symbol_directions": {
             symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
             for symbol in DEFAULT_SYMBOLS
         },
         "market_modes": {
             symbol: engine._continuous_market_mode.get(symbol, "WAIT")
-            for symbol in dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])
+            for symbol in visible_symbols()
         },
         "symbol_rotation": engine.symbol_rotation.status(),
         "volatility_stats": {
@@ -208,14 +226,14 @@ async def get_prices(response: Response):
     response.headers["Pragma"] = "no-cache"
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
-        "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
+        "symbols": visible_symbols(),
         "symbol_directions": {
             symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
             for symbol in DEFAULT_SYMBOLS
         },
         "market_modes": {
             symbol: engine._continuous_market_mode.get(symbol, "WAIT")
-            for symbol in dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])
+            for symbol in visible_symbols()
         },
         "tickers": visible_tickers(),
         "ticker_updated_at": engine.last_ticker_success_ts,

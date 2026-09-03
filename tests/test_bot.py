@@ -1043,12 +1043,11 @@ def test_continuous_single_slot_uses_eighty_percent_then_blocks_second():
 
     engine = object.__new__(TradingEngine)
     engine.account = SlotAccount()
-    assert engine._continuous_entry_amount() == pytest.approx(100.0)
+    assert engine._continuous_entry_amount() == pytest.approx(160.0)
 
-    engine.account.positions["SOL/USDT"] = {"margin": 100.0}
-    engine.account.available = 100.0
-    # second slot is allowed, fraction is 1.0/2 = 0.5, wallet is 200, so it expects 100
-    assert engine._continuous_entry_amount() == pytest.approx(100.0)
+    engine.account.positions["SOL/USDT"] = {"margin": 160.0}
+    engine.account.available = 40.0
+    assert engine._continuous_entry_amount() == 0.0
 
 
 def test_configured_trade_amount_uses_50_usdt_per_slot():
@@ -4262,8 +4261,9 @@ def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
     assert opened[0]["sl"] == opened[0]["tp"] == 0.0
     assert opened[1]["sl"] == opened[1]["tp"] == 0.0
     for order in opened:
+        assert order["amount_usdt"] == pytest.approx(80.0)
         total_debit = order["amount_usdt"] * (1 + order["leverage"] * TAKER_FEE_RATE)
-        assert total_debit == pytest.approx(100.0)
+        assert total_debit < 100.0
     assert all(order["entry_context"]["entry_mode"] == "MA3_MA15_MARKET" for order in opened)
 
 

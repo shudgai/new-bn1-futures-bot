@@ -33,14 +33,107 @@ def test_new_entry_requires_directional_move_outside_kc(
 def _closed_trough(frame: pd.DataFrame):
     frame.loc[frame.index[-3], ['open', 'close', 'low', 'high']] = [98.8, 98.9, 98.7, 98.95]
     frame.loc[frame.index[-3], 'ma3'] = 98.7
-    frame.loc[frame.index[-2], ['open', 'close', 'low', 'high', 'ma3']] = [99.2, 100.0, 98.8, 100.1, 99.4]
+    frame.loc[frame.index[-2], ['open', 'close', 'low', 'high', 'ma3']] = [98.8, 99.0, 98.8, 99.1, 99.4]
     frame.loc[frame.index[-1], 'ma3'] = 100.0
 
 def _closed_peak(frame: pd.DataFrame):
     frame.loc[frame.index[-3], ['open', 'close', 'low', 'high']] = [101.2, 101.1, 101.05, 101.3]
     frame.loc[frame.index[-3], 'ma3'] = 101.3
-    frame.loc[frame.index[-2], ['open', 'close', 'low', 'high', 'ma3']] = [100.8, 100.0, 99.9, 101.2, 100.6]
+    frame.loc[frame.index[-2], ['open', 'close', 'low', 'high', 'ma3']] = [101.2, 101.0, 100.9, 101.2, 100.6]
     frame.loc[frame.index[-1], 'ma3'] = 100.0
+
+def test_channel_slope_gate_blocks_long_when_kc_and_ma15_fall():
+    frame = _channel_frame()
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [101.4, 99.4, 100.4]
+    frame.loc[frame.index[-2], ["kc_upper", "kc_lower", "ma15"]] = [101.0, 99.0, 100.0]
+    frame.loc[frame.index[-1], ["kc_upper", "kc_lower", "ma15"]] = [101.3, 99.3, 100.3]
+    result = TradingEngine._channel_slope_entry_gate(
+        frame, "ENTER", "LONG", has_position=False,
+    )
+    assert result == ("WAIT", None, "KC_MA15_FALLING_BLOCK_LONG")
+
+
+def test_channel_slope_gate_blocks_short_when_kc_and_ma15_rise():
+    frame = _channel_frame()
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [100.6, 98.6, 99.6]
+    frame.loc[frame.index[-2], ["kc_upper", "kc_lower", "ma15"]] = [101.0, 99.0, 100.0]
+    frame.loc[frame.index[-1], ["kc_upper", "kc_lower", "ma15"]] = [100.7, 98.7, 99.7]
+    result = TradingEngine._channel_slope_entry_gate(
+        frame, "ENTER", "SHORT", has_position=False,
+    )
+    assert result == ("WAIT", None, "KC_MA15_RISING_BLOCK_SHORT")
+
+
+def test_channel_slope_gate_requires_both_lines_against_entry():
+    frame = _channel_frame()
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [101.4, 99.4, 99.8]
+    frame.loc[frame.index[-2], ["kc_upper", "kc_lower", "ma15"]] = [101.0, 99.0, 100.0]
+    assert TradingEngine._channel_slope_entry_gate(
+        frame, "ENTER", "LONG", has_position=False,
+    ) == ("ENTER", "LONG", None)
+
+
+def test_blocked_reverse_can_exit_old_position_without_opening_new_side():
+    frame = _channel_frame()
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [101.4, 99.4, 100.4]
+    frame.loc[frame.index[-2], ["kc_upper", "kc_lower", "ma15"]] = [101.0, 99.0, 100.0]
+    frame.loc[frame.index[-1], ["kc_upper", "kc_lower", "ma15"]] = [101.3, 99.3, 100.3]
+    assert TradingEngine._channel_slope_entry_gate(
+        frame, "REVERSE", "LONG", has_position=True,
+    ) == ("EXIT", None, "KC_MA15_FALLING_BLOCK_LONG")
+
+
+def test_adverse_closed_slopes_allow_only_exceptionally_strong_outer_long():
+    frame = _channel_frame()
+    frame["atr"] = 1.0
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [102.0, 100.0, 101.0]
+    frame.loc[frame.index[-3], ["close", "ma3"]] = [100.0, 100.0]
+    frame.loc[frame.index[-2], ["close", "ma3", "volume", "vol_ma_20", "kc_upper", "kc_lower", "ma15"]] = [102.0, 101.0, 200.0, 100.0, 101.0, 99.0, 100.0]
+    frame.loc[frame.index[-1], ["close", "kc_upper", "kc_lower"]] = [102.0, 101.0, 99.0]
+    assert TradingEngine._channel_slope_entry_gate(
+        frame, "ENTER", "LONG", has_position=False,
+        signal_reason="KC_LIVE_UPPER_BREAK_LONG",
+    ) == ("ENTER", "LONG", None)
+
+
+def test_ena_rising_kc_ma15_blocks_upper_peak_short():
+    frame = _channel_frame()
+    frame["atr"] = 0.0002
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [
+        0.1507737028, 0.1502837028, 0.1504446667,
+    ]
+    frame.loc[frame.index[-2], ["close", "ma3", "kc_upper", "kc_lower", "ma15", "volume", "vol_ma_20"]] = [
+        0.15094, 0.15115, 0.1508983032, 0.1503583032, 0.1505573333, 300.0, 100.0,
+    ]
+    frame.loc[frame.index[-1], ["close", "kc_upper", "kc_lower"]] = [
+        0.1509749, 0.1509393696, 0.1504013696,
+    ]
+    assert TradingEngine._channel_slope_entry_gate(
+        frame, "ENTER", "SHORT", has_position=False,
+        signal_reason="KC_UPPER_PEAK_CONFIRMED_SHORT",
+    ) == ("WAIT", None, "KC_MA15_RISING_BLOCK_SHORT")
+
+
+def test_upper_peak_short_cannot_use_outer_continuation_energy_exception():
+    frame = _channel_frame()
+    frame["atr"] = 1.0
+    frame.loc[frame.index[-4], ["kc_upper", "kc_lower", "ma15"]] = [100.6, 98.6, 99.6]
+    frame.loc[frame.index[-3], ["close", "ma3"]] = [100.0, 100.0]
+    frame.loc[frame.index[-2], ["close", "ma3", "volume", "vol_ma_20", "kc_upper", "kc_lower", "ma15"]] = [98.0, 99.0, 200.0, 100.0, 101.0, 99.0, 100.0]
+    frame.loc[frame.index[-1], ["close", "kc_upper", "kc_lower"]] = [98.0, 101.0, 99.0]
+    assert TradingEngine._channel_slope_entry_gate(
+        frame, "ENTER", "SHORT", has_position=False,
+        signal_reason="KC_UPPER_PEAK_CONFIRMED_SHORT",
+    ) == ("WAIT", None, "KC_MA15_RISING_BLOCK_SHORT")
+
+
+def test_channel_same_side_committed_spans_positions_and_pending_orders():
+    positions = {"A/USDT": {"side": "LONG"}}
+    pending = {"B/USDT": {"side": "SHORT"}}
+    assert TradingEngine._channel_same_side_committed(positions, pending, "LONG")
+    assert TradingEngine._channel_same_side_committed(positions, pending, "SHORT")
+    assert not TradingEngine._channel_same_side_committed(positions, pending, "WAIT")
+
 
 def test_global_btc_direction_has_priority_for_new_entries():
     engine = TradingEngine.__new__(TradingEngine)
@@ -66,10 +159,78 @@ def test_nontrend_peak_and_valley_exit_after_price_has_returned_inside():
     )
 
 
+def test_pre_entry_outer_pivots_cannot_close_new_positions():
+    timestamps = [index * 60_000 for index in range(20)]
+
+    long_frame = _channel_frame()
+    long_frame["timestamp"] = timestamps
+    _closed_peak(long_frame)
+    opened_during_live_bar = timestamps[-1] / 1000.0 + 18.0
+    long_result = TradingEngine._channel_swing_action(
+        long_frame, 101.1, "LONG",
+        position_open_timestamp=opened_during_live_bar,
+    )
+
+    short_frame = _channel_frame()
+    short_frame["timestamp"] = timestamps
+    _closed_trough(short_frame)
+    short_result = TradingEngine._channel_swing_action(
+        short_frame, 98.9, "SHORT",
+        position_open_timestamp=opened_during_live_bar,
+    )
+
+    assert (long_result["action"], long_result["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+    )
+    assert (short_result["action"], short_result["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+    )
+
+
+def test_post_entry_outer_pivots_still_close_positions():
+    frame = _channel_frame()
+    frame["timestamp"] = [index * 60_000 for index in range(20)]
+    _closed_peak(frame)
+    opened_before_signal_closed = frame["timestamp"].iloc[-3] / 1000.0 - 1.0
+    result = TradingEngine._channel_swing_action(
+        frame, 101.1, "LONG",
+        position_open_timestamp=opened_before_signal_closed,
+    )
+    assert (result["action"], result["reason"]) == (
+        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+    )
+
+
+def test_trx_peak_enters_on_adjacent_live_break_and_cannot_reuse_later():
+    frame = _channel_frame(lower=0.3258, upper=0.3260)
+    frame.loc[frame.index[-2], [
+        "open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower",
+    ]] = [0.32597, 0.32598, 0.32576, 0.32577, 0.32591, 0.325935, 0.3259703, 0.3258703]
+    frame.loc[frame.index[-1], [
+        "open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower",
+    ]] = [0.32577, 0.32577, 0.32561, 0.32566, 0.325803, 0.325917, 0.3259525, 0.3258385]
+    early = TradingEngine._channel_swing_action(
+        frame, 0.32575, market_mode="BEAR",
+    )
+    assert (early["action"], early["side"], early["reason"]) == (
+        "ENTER", "SHORT", "BEAR_KC_UPPER_PEAK_CONFIRMED_SHORT",
+    )
+
+    later = frame.copy()
+    later.loc[later.index[-2]] = frame.loc[frame.index[-1]]
+    later.loc[later.index[-1], [
+        "open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower",
+    ]] = [0.32566, 0.32567, 0.32565, 0.32567, 0.32570, 0.325898, 0.325932, 0.325816]
+    stale = TradingEngine._channel_swing_action(
+        later, 0.32563, market_mode="BEAR",
+    )
+    assert (stale["action"], stale["side"]) == ("WAIT", None)
+
+
 def test_bear_market_lower_trough_opens_long_before_live_outer_short():
     frame = _channel_frame()
     _closed_trough(frame)
-    result = TradingEngine._channel_swing_action(frame, 98.9, market_mode="BEAR")
+    result = TradingEngine._channel_swing_action(frame,  99.2, market_mode="BEAR")
     assert (result["action"], result["side"], result["reason"]) == (
         "ENTER", "LONG", "KC_LOWER_TROUGH_CONFIRMED_LONG",
     )
@@ -162,6 +323,89 @@ def test_live_outer_entry_allows_fresh_short_break_despite_prior_extension():
     result = TradingEngine._channel_live_outer_entry_action(frame, 98.9)
     assert (result['action'], result['side']) == ('ENTER', 'SHORT')
 
+
+def test_live_upper_break_blocks_link_shape_after_closed_ma3_turns_below_ma15():
+    frame = _channel_frame(lower=11.2380, upper=11.2410)
+    frame.loc[frame.index[-3], "ma3"] = 11.24367
+    frame.loc[frame.index[-2], ["close", "ma3", "ma15"]] = [
+        11.2400, 11.24100, 11.24100,
+    ]
+
+    result = TradingEngine._channel_live_outer_entry_action(frame, 11.2421241)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "WAIT", None, "KC_UPPER_MA3_REVERSAL_BLOCK_LONG",
+    )
+
+
+def test_live_lower_break_blocks_mirror_after_closed_ma3_turns_above_ma15():
+    frame = _channel_frame(lower=98.9, upper=101.0)
+    frame.loc[frame.index[-3], "ma3"] = 99.7
+    frame.loc[frame.index[-2], ["close", "ma3", "ma15"]] = [
+        99.2, 100.0, 100.0,
+    ]
+
+    result = TradingEngine._channel_live_outer_entry_action(frame, 98.8)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "WAIT", None, "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT",
+    )
+
+
+def test_live_outer_ma3_reversal_filter_does_not_block_directional_momentum():
+    long_frame = _channel_frame(lower=99.0, upper=101.0)
+    long_frame.loc[long_frame.index[-3], "ma3"] = 99.8
+    long_frame.loc[long_frame.index[-2], ["ma3", "ma15"]] = [100.2, 100.0]
+    short_frame = _channel_frame(lower=99.0, upper=101.0)
+    short_frame.loc[short_frame.index[-3], "ma3"] = 100.2
+    short_frame.loc[short_frame.index[-2], ["ma3", "ma15"]] = [99.8, 100.0]
+
+    long_result = TradingEngine._channel_live_outer_entry_action(long_frame, 101.1)
+    short_result = TradingEngine._channel_live_outer_entry_action(short_frame, 98.9)
+
+    assert (long_result["action"], long_result["side"]) == ("ENTER", "LONG")
+    assert (short_result["action"], short_result["side"]) == ("ENTER", "SHORT")
+
+def _mature_outer_break_frame(side, strong=False):
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame["atr"] = 0.2
+    positions = list(frame.index[-5:-1])
+    for step, position in enumerate(positions):
+        middle = 99.6 + step * 0.1 if side == "LONG" else 100.4 - step * 0.1
+        upper = middle + 1.0
+        lower = middle - 1.0
+        ma3 = middle + 0.3 if side == "LONG" else middle - 0.3
+        close = upper - 0.1 if side == "LONG" else lower + 0.1
+        frame.loc[position, ["close", "ma3", "ma15", "kc_upper", "kc_lower", "volume", "vol_ma_20"]] = [
+            close, ma3, middle, upper, lower, 200.0 if strong and step == 3 else 50.0, 100.0,
+        ]
+    return frame
+
+
+@pytest.mark.parametrize(
+    ("side", "price", "reason"),
+    [
+        ("LONG", 101.1, "KC_UPPER_MATURE_TREND_WEAK"),
+        ("SHORT", 98.9, "KC_LOWER_MATURE_TREND_WEAK"),
+    ],
+)
+def test_live_outer_entry_rejects_weak_mature_trend_tail(side, price, reason):
+    frame = _mature_outer_break_frame(side, strong=False)
+    result = TradingEngine._channel_live_outer_entry_action(frame, price)
+    assert (result["action"], result["side"], result["reason"]) == (
+        "WAIT", None, reason,
+    )
+
+
+@pytest.mark.parametrize(
+    ("side", "price"), [("LONG", 101.1), ("SHORT", 98.9)],
+)
+def test_live_outer_entry_allows_exceptional_energy_after_mature_run(side, price):
+    frame = _mature_outer_break_frame(side, strong=True)
+    result = TradingEngine._channel_live_outer_entry_action(frame, price)
+    assert (result["action"], result["side"]) == ("ENTER", side)
+
+
 def test_live_outer_entry_rejects_stale_long_extension_after_slot_frees():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-2], "close"] = 101.2
@@ -187,6 +431,49 @@ def test_held_short_does_not_exit_on_lower_rail_touch_without_confirmed_trough()
     frame = _channel_frame(lower=99.0, upper=101.0)
     result = TradingEngine._channel_swing_action(frame, 99.0, 'SHORT')
     assert (result['action'], result['side']) == ('HOLD', None)
+
+
+def test_strong_opposite_outer_downtrend_reverses_wrong_long_to_short():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15"]] = [
+        [100.0, 99.5, 99.2, 100.0],
+        [99.4, 98.5, 98.8, 100.0],
+        [98.4, 97.5, 98.4, 100.0],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 97.5, "LONG")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "SHORT", "OPPOSITE_LOWER_OUTER_DOWNTREND",
+    )
+
+
+def test_strong_opposite_outer_uptrend_reverses_wrong_short_to_long():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15"]] = [
+        [100.0, 100.5, 100.8, 100.0],
+        [100.6, 101.5, 101.2, 100.0],
+        [101.6, 102.5, 101.6, 100.0],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 102.5, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "LONG", "OPPOSITE_UPPER_OUTER_UPTREND",
+    )
+
+
+def test_unconfirmed_opposite_move_keeps_channel_position():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15"]] = [
+        [100.0, 99.5, 99.2, 100.0],
+        [99.4, 98.5, 98.8, 100.0],
+        [98.4, 98.7, 98.6, 100.0],
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 98.7, "LONG")
+
+    assert (result["action"], result["side"]) == ("HOLD", None)
 
 def test_three_candle_exit_never_counts_the_live_candle():
     frame = _channel_frame(lower=99.0, upper=101.0)
@@ -525,6 +812,7 @@ def test_failed_lower_trough_does_not_fall_back_to_live_outer_short():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-2], 'low'] = 98.6
+    frame.loc[frame.index[-1], 'low'] = 98.5
     result = TradingEngine._channel_swing_action(frame, 98.6)
     assert (result['action'], result['side']) == ('WAIT', None)
     assert result['reason'] == 'CANCEL_LONG'
@@ -533,6 +821,7 @@ def test_cancelled_outer_trough_cannot_fall_back_to_live_ma3_entry():
     frame = _channel_frame()
     _closed_trough(frame)
     frame.loc[frame.index[-2], ['low', 'high']] = [98.6, 99.3]
+    frame.loc[frame.index[-1], 'low'] = 98.5
     result = TradingEngine._channel_swing_action(frame, 99.2)
     assert (result['action'], result['side'], result['reason']) == ('WAIT', None, 'CANCEL_LONG')
 
@@ -930,9 +1219,11 @@ def test_range_outer_pivot_requires_confirmed_ma3_turn():
     trough = _channel_frame()
     _closed_trough(trough)
     trough.loc[trough.index[-2], "ma3"] = trough.loc[trough.index[-3], "ma3"]
+    trough.loc[trough.index[-1], "ma3"] = trough.loc[trough.index[-2], "ma3"]
     peak = _channel_frame()
     _closed_peak(peak)
     peak.loc[peak.index[-2], "ma3"] = peak.loc[peak.index[-3], "ma3"]
+    peak.loc[peak.index[-1], "ma3"] = peak.loc[peak.index[-2], "ma3"]
     long_result = TradingEngine._channel_swing_action(
         trough, 99.2, market_mode="RANGE",
     )
@@ -1197,6 +1488,7 @@ async def test_stale_losing_channel_position_closes_before_stronger_confirmed_en
             "OLD/USDT": {
                 "side": "LONG", "entry_mode": "CHANNEL_SWING",
                 "entry_price": 100.0, "qty": 1.0, "open_timestamp": 1.0,
+                "channel_kc_upper": 102.0, "channel_kc_lower": 98.0,
             }
         }
         pending_limit_orders = {}
@@ -1233,7 +1525,8 @@ async def test_stale_losing_channel_position_closes_before_stronger_confirmed_en
     candidate = {
         "symbol": "NEW/USDT", "side": "SHORT", "entry_mode": "CHANNEL_SWING",
         "priority": 4, "reason": "KC_LOWER_TREND_CONFIRMED_SHORT",
-        "live_price": 50.0, "atr": 0.5,
+        "live_price": 50.0, "kc_upper": 55.0, "kc_lower": 51.0, "atr": 0.5,
+        "confirmed_trend_quality": 1.5, "confirmed_volume_ratio": 1.2,
     }
 
     handled, opened = await engine._try_channel_stronger_symbol_takeover(
@@ -1249,7 +1542,7 @@ async def test_stale_losing_channel_position_closes_before_stronger_confirmed_en
 
 
 @pytest.mark.anyio
-async def test_strong_first_touch_immediately_takes_over_recent_profitable_same_side(
+async def test_live_strong_first_touch_cannot_churn_recent_profitable_position(
     monkeypatch,
 ):
     monkeypatch.setattr("core.engine.MAX_SLOTS", 1)
@@ -1305,10 +1598,91 @@ async def test_strong_first_touch_immediately_takes_over_recent_profitable_same_
 
     assert await engine._try_channel_stronger_symbol_takeover(
         candidate, now_time=1000.0, daily_halt=False,
+    ) == (False, False)
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_recent_profitable_weakest_position_yields_to_stronger_energy(monkeypatch):
+    monkeypatch.setattr("core.engine.CHANNEL_SWING_TAKEOVER_MIN_HOLD_SEC", 180.0)
+    events = []
+
+    class Account:
+        positions = {
+            "WEAK/USDT": {
+                "side": "LONG", "entry_mode": "CHANNEL_SWING",
+                "entry_price": 100.0, "mark_price": 101.0, "qty": 1.0,
+                "open_timestamp": 700.0, "channel_energy_score": 0.10,
+                "channel_kc_upper": 102.0, "channel_kc_lower": 98.0,
+            },
+            "STRONG/USDT": {
+                "side": "LONG", "entry_mode": "CHANNEL_SWING",
+                "entry_price": 100.0, "mark_price": 101.0, "qty": 1.0,
+                "open_timestamp": 990.0, "channel_energy_score": 2.0,
+                "channel_kc_upper": 102.0, "channel_kc_lower": 98.0,
+            },
+        }
+        pending_limit_orders = {}
+
+        def log(self, *_args, **_kwargs):
+            pass
+
+        async def close_position(self, symbol, *_args, **_kwargs):
+            events.append(("close", symbol))
+            self.positions.pop(symbol)
+            return True
+
+    class Rotation:
+        def request_replacement(self, symbol):
+            events.append(("replace", symbol))
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = Account()
+    engine.symbol_rotation = Rotation()
+    engine.rotation_event = None
+    engine.tickers = {"WEAK/USDT": 101.0, "STRONG/USDT": 101.0}
+    engine._continuous_market_mode = {}
+
+    async def execution_safe(*_args):
+        return True
+
+    async def place(symbol, *_args):
+        events.append(("open", symbol))
+        return True
+
+    engine._execution_price_is_safe = execution_safe
+    engine._abnormal_market_entry_allowed = lambda *_args: True
+    engine._place_structured_entry = place
+    candidate = {
+        "symbol": "NEW/USDT", "side": "LONG",
+        "entry_mode": "CHANNEL_SWING", "priority": 4,
+        "signal_code": "KC_LOWER_TROUGH_CONFIRMED_LONG",
+        "reason": "Channel Swing KC lower outer trough LONG",
+        "live_price": 50.0, "kc_upper": 49.0, "kc_lower": 45.0, "atr": 0.5,
+        "trend_quality": 1.0, "volume_ratio": 1.0,
+        "confirmed_trend_quality": 1.5, "confirmed_volume_ratio": 1.2,
+    }
+
+    inside_candidate = dict(candidate, live_price=48.0)
+    assert await engine._try_channel_stronger_symbol_takeover(
+        inside_candidate, now_time=1000.0, daily_halt=False,
+    ) == (False, False)
+    assert events == []
+
+    engine.tickers["WEAK/USDT"] = 103.0
+    assert await engine._try_channel_stronger_symbol_takeover(
+        candidate, now_time=1000.0, daily_halt=False,
+    ) == (False, False)
+    assert events == []
+    engine.tickers["WEAK/USDT"] = 101.0
+
+    assert await engine._try_channel_stronger_symbol_takeover(
+        candidate, now_time=1000.0, daily_halt=False,
     ) == (True, True)
+    assert "STRONG/USDT" in engine.account.positions
     assert events == [
-        ("close", "OLD/USDT"),
-        ("replace", "OLD/USDT"),
+        ("close", "WEAK/USDT"),
+        ("replace", "WEAK/USDT"),
         ("open", "NEW/USDT"),
     ]
 
@@ -1323,6 +1697,7 @@ async def test_channel_takeover_keeps_old_position_when_new_execution_is_unsafe(
             "OLD/USDT": {
                 "side": "LONG", "entry_mode": "CHANNEL_SWING",
                 "entry_price": 100.0, "qty": 1.0, "open_timestamp": 1.0,
+                "channel_kc_upper": 102.0, "channel_kc_lower": 98.0,
             }
         }
         pending_limit_orders = {}
@@ -1341,7 +1716,8 @@ async def test_channel_takeover_keeps_old_position_when_new_execution_is_unsafe(
     candidate = {
         "symbol": "NEW/USDT", "side": "SHORT", "entry_mode": "CHANNEL_SWING",
         "priority": 4, "reason": "KC_LOWER_TREND_CONFIRMED_SHORT",
-        "live_price": 50.0, "atr": 0.5,
+        "live_price": 50.0, "kc_upper": 55.0, "kc_lower": 51.0, "atr": 0.5,
+        "confirmed_trend_quality": 1.5, "confirmed_volume_ratio": 1.2,
     }
 
     assert await engine._try_channel_stronger_symbol_takeover(
@@ -1388,11 +1764,11 @@ async def test_channel_takeover_rejects_recent_profitable_or_range_candidate(
     ) == (False, False)
 
 
-def test_kc_pivot_switch_candidate_has_priority_in_same_direction():
+def test_higher_energy_candidate_beats_route_priority_in_same_direction():
     candidates = [{'symbol': 'SOL/USDT', 'side': 'SHORT', 'score': 100, 'trend_quality': 99.0}, {'symbol': 'DOGE/USDT', 'side': 'SHORT', 'score': 100, 'trend_quality': 0.5, 'priority': 1}]
     selected, skipped = TradingEngine._select_strongest_same_side_candidates(candidates)
-    assert [item['symbol'] for item in selected] == ['DOGE/USDT']
-    assert [item['symbol'] for item in skipped] == ['SOL/USDT']
+    assert [item['symbol'] for item in selected] == ['SOL/USDT']
+    assert [item['symbol'] for item in skipped] == ['DOGE/USDT']
 
 def test_kc_outer_entry_has_priority_over_inside_touch_entry():
     outer = TradingEngine._channel_entry_candidate_priority("KC_LIVE_UPPER_BREAK_LONG")
@@ -1406,16 +1782,16 @@ def test_executable_channel_candidates_rank_confirmed_outer_trend_first():
     pivot = TradingEngine._channel_entry_candidate_priority('KC_LOWER_TROUGH_CONFIRMED')
     assert outer > inner_reentry > pivot
 
-def test_outer_momentum_candidate_beats_stronger_pivot_candidate():
+def test_stronger_energy_beats_outer_route_priority():
     candidates = [{'symbol': 'PIVOT/USDT', 'side': 'LONG', 'priority': 1, 'trend_quality': 9.0}, {'symbol': 'OUTER/USDT', 'side': 'LONG', 'priority': 3, 'trend_quality': 0.5}]
     selected, _ = TradingEngine._select_strongest_same_side_candidates(candidates)
-    assert [item['symbol'] for item in selected] == ['OUTER/USDT']
+    assert [item['symbol'] for item in selected] == ['PIVOT/USDT']
 
-def test_same_priority_candidate_with_more_profit_space_wins():
+def test_same_priority_candidate_with_more_energy_beats_profit_space():
     candidates = [{'symbol': 'FAST/USDT', 'side': 'LONG', 'priority': 3, 'profit_potential': 1.2, 'trend_quality': 9.0}, {'symbol': 'ROOM/USDT', 'side': 'LONG', 'priority': 3, 'profit_potential': 4.8, 'trend_quality': 0.5}]
     selected, skipped = TradingEngine._select_strongest_same_side_candidates(candidates)
-    assert [item['symbol'] for item in selected] == ['ROOM/USDT']
-    assert [item['symbol'] for item in skipped] == ['FAST/USDT']
+    assert [item['symbol'] for item in selected] == ['FAST/USDT']
+    assert [item['symbol'] for item in skipped] == ['ROOM/USDT']
 
 def test_current_channel_volume_ratio_uses_live_candle():
     frame = _channel_frame()
@@ -1467,9 +1843,9 @@ def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
         def get_wallet_balance(self):
             return 150.0
     engine.account = Account()
-    assert engine._continuous_entry_amount() == pytest.approx(75.0)
+    assert engine._continuous_entry_amount() == pytest.approx(120.0)
     engine.account.positions['SOL/USDT'] = {'margin': 120.0}
-    assert engine._continuous_entry_amount() == pytest.approx(74.85)
+    assert engine._continuous_entry_amount() == 0.0
 
 @pytest.mark.anyio
 async def test_channel_swing_position_is_stored_without_sl_or_tp(tmp_path, monkeypatch):
@@ -1615,6 +1991,7 @@ async def test_adverse_range_to_bull_transition_bypasses_takeover_age(monkeypatc
                 "side": "SHORT", "entry_mode": "CHANNEL_SWING",
                 "entry_market_mode": "RANGE", "market_mode": "BULL",
                 "entry_price": 100.0, "qty": 1.0, "open_timestamp": 990.0,
+                "channel_kc_upper": 102.0, "channel_kc_lower": 98.0,
             }
         }
         pending_limit_orders = {}
@@ -1651,9 +2028,9 @@ async def test_adverse_range_to_bull_transition_bypasses_takeover_age(monkeypatc
     candidate = {
         "symbol": "NEW/USDT", "side": "LONG",
         "entry_mode": "CHANNEL_SWING", "market_mode": "BULL",
-        "priority": 4, "signal_code": "KC_LIVE_UPPER_BREAK_LONG",
-        "reason": "Channel Swing live KC outer break LONG",
-        "live_price": 50.0, "atr": 0.5,
+        "priority": 4, "signal_code": "KC_UPPER_TREND_CONFIRMED_LONG",
+        "reason": "Channel Swing KC upper trend confirmed LONG",
+        "live_price": 50.0, "kc_upper": 49.0, "kc_lower": 45.0, "atr": 0.5,
     }
 
     assert await engine._try_channel_stronger_symbol_takeover(
@@ -1679,14 +2056,14 @@ def test_shallow_adjacent_outer_reversal_enters_without_half_channel_reentry():
     long_frame.loc[long_frame.index[-3], ["open", "close", "low", "high", "ma3"]] = [98.8, 98.9, 98.7, 98.95, 98.7]
     long_frame.loc[long_frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [99.0, 99.2, 98.8, 99.3, 99.2]
     long_result = TradingEngine._channel_swing_action(
-        long_frame, 99.2, market_mode="RANGE",
+        long_frame,  99.4, market_mode="RANGE",
     )
 
     short_frame = _channel_frame()
     short_frame.loc[short_frame.index[-3], ["open", "close", "low", "high", "ma3"]] = [101.2, 101.1, 101.05, 101.3, 101.3]
     short_frame.loc[short_frame.index[-2], ["open", "close", "low", "high", "ma3"]] = [101.0, 100.8, 100.7, 101.2, 100.8]
     short_result = TradingEngine._channel_swing_action(
-        short_frame, 100.8, market_mode="RANGE",
+        short_frame,  100.6, market_mode="RANGE",
     )
 
     assert (long_result["action"], long_result["side"]) == ("ENTER", "LONG")
