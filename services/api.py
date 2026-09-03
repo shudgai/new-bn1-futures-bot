@@ -117,6 +117,7 @@ class ManualCloseRequest(BaseModel):
 async def startup_event():
     if os.path.exists(BOT_PAUSED_FILE):
         await engine.account.initialize()
+        engine.start_market_data()
         engine.account.log("⏸️ 機器人維持暫停；按下啟動後才接管持倉", "INFO")
         return
     await engine.start()

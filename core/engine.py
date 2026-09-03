@@ -907,19 +907,26 @@ class TradingEngine:
         self.trend_follow_task = asyncio.create_task(self._run_structured_exits())
         # 舊移動停損任務保留但預設停用，避免與結構ATR追蹤衝突
         self.trailing_sl_task = asyncio.create_task(self._run_trailing_sl_loop())
-        # 獨立的即時價格更新任務
-        self.ticker_task = asyncio.create_task(self._ticker_loop())
+        # 行情任務獨立於交易開關；停止交易後仍供網頁與持倉估值使用。
+        self.start_market_data()
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
+
+    def start_market_data(self) -> None:
+        """Keep one ticker stream alive independently from trading tasks."""
+        if self.ticker_task is None or self.ticker_task.done():
+            self.ticker_task = asyncio.create_task(self._ticker_loop())
 
     async def stop(self, close_exchanges: bool = False):
         was_running = self.is_running
         self.is_running = False
-        task_names = (
+        task_names = [
             "task", "rotation_task", "analysis_task", "trend_cache_task",
             "trigger_task", "fixed_stop_task", "trend_follow_task",
-            "trailing_sl_task", "ticker_task",
-        )
+            "trailing_sl_task",
+        ]
+        if close_exchanges:
+            task_names.append("ticker_task")
         tasks = []
         for name in task_names:
             task = getattr(self, name, None)
@@ -2500,7 +2507,7 @@ class TradingEngine:
 
     async def _ticker_loop(self):
         """使用 WebSocket (ccxt.pro) 接收真正的毫秒級即時報價串流"""
-        while self.is_running:
+        while True:
             try:
                 monitored_symbols = list(dict.fromkeys([
                     *DEFAULT_SYMBOLS,
@@ -5233,56 +5240,137 @@ class TradingEngine:
     @staticmethod
     def _channel_outer_reentry_exit_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None,
+        position_open_timestamp: float | None = None,
     ) -> dict:
-        """Flatten a KC outer-run position when its opposite candle returns inside."""
-        required = {"open", "close", "ma3", "kc_upper", "kc_lower"}
-        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
+        """Ignore outer noise; exit on a steep reversal or a mature KC reentry."""
+        required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
             return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_UNAVAILABLE"}
         try:
-            live = frame.iloc[-1]
-            previous = frame.iloc[-2]
-            price = float(live_price)
-            live_open = float(live["open"])
-            upper = float(live["kc_upper"])
-            lower = float(live["kc_lower"])
-            previous_upper = float(previous["kc_upper"])
-            previous_lower = float(previous["kc_lower"])
-            previous_close = float(previous["close"])
-            ma3_now = float(live["ma3"])
-            ma3_previous = float(previous["ma3"])
+            closed = frame.iloc[:-1].copy()
+            if position_open_timestamp and "timestamp" in closed.columns:
+                timeframe_ms = 60_000.0
+                if len(frame) >= 2:
+                    inferred_ms = float(frame["timestamp"].iloc[-1]) - float(
+                        frame["timestamp"].iloc[-2]
+                    )
+                    if inferred_ms > 0.0:
+                        timeframe_ms = inferred_ms
+                opened_ms = float(position_open_timestamp) * 1000.0
+                closed = closed[
+                    closed["timestamp"].astype(float) + timeframe_ms > opened_ms
+                ]
+            if closed.empty:
+                return {
+                    "action": "HOLD", "side": None,
+                    "reason": "WAIT_KC_REENTRY_AFTER_ENTRY",
+                }
+            latest = closed.iloc[-1]
+            history = closed.iloc[:-1]
+            latest_open = float(latest["open"])
+            latest_high = float(latest["high"])
+            latest_low = float(latest["low"])
+            latest_close = float(latest["close"])
+            latest_ma3 = float(latest["ma3"])
+            latest_upper = float(latest["kc_upper"])
+            latest_lower = float(latest["kc_lower"])
+            latest_atr = (
+                float(latest["atr"])
+                if "atr" in closed.columns and pd.notna(latest["atr"])
+                else (latest_upper - latest_lower) / 2.0
+            )
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_INVALID"}
         values = (
-            price, live_open, upper, lower, previous_upper, previous_lower,
-            previous_close, ma3_now, ma3_previous,
+            latest_open, latest_high, latest_low, latest_close,
+            latest_ma3, latest_upper, latest_lower, latest_atr,
         )
-        if not all(math.isfinite(value) for value in values) or lower >= upper:
+        if (
+            not all(math.isfinite(value) for value in values)
+            or latest_lower >= latest_upper
+        ):
+            return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_INVALID"}
+
+        try:
+            upper_outer_bars = sum(
+                float(row["close"]) >= float(row["kc_upper"])
+                for _, row in history.iterrows()
+            )
+            lower_outer_bars = sum(
+                float(row["close"]) <= float(row["kc_lower"])
+                for _, row in history.iterrows()
+            )
+            was_above_upper = bool(latest_high >= latest_upper or upper_outer_bars)
+            was_below_lower = bool(latest_low <= latest_lower or lower_outer_bars)
+            prior_ma3 = (
+                float(history["ma3"].iloc[-1])
+                if not history.empty else latest_ma3
+            )
+        except (TypeError, ValueError, KeyError):
             return {"action": "HOLD", "side": None, "reason": "KC_REENTRY_EXIT_DATA_INVALID"}
 
         side = str(current_side or "").upper()
+        candle_body = abs(latest_close - latest_open)
+        steep_opposite = candle_body >= max(latest_atr, 1e-12) * 0.50
         if side == "LONG":
-            # 上軌外追多後，只要即時紅 K 回到通道內就先平多。
-            red_inside = (
-                lower <= price < upper and price < live_open
+            if (
+                was_above_upper
+                and latest_close < latest_open
+                and steep_opposite
+                and latest_close < latest_ma3
+            ):
+                return {
+                    "action": "EXIT", "side": None,
+                    "reason": "KC_UPPER_STEEP_RED_EXIT",
+                    "kc_upper": latest_upper, "kc_lower": latest_lower,
+                }
+            ma3_near_upper = abs(latest_ma3 - latest_upper) <= max(
+                latest_atr, 1e-12,
+            ) * 0.15
+            mature_upper_run = bool(
+                upper_outer_bars >= 3 and latest_ma3 <= prior_ma3
             )
-            came_from_upper_outer = live_open >= upper or previous_close >= previous_upper
-            if came_from_upper_outer and red_inside:
+            if (
+                was_above_upper
+                and latest_close < latest_open
+                and latest_lower <= latest_close < latest_upper
+                and ma3_near_upper
+                and mature_upper_run
+            ):
                 return {
                     "action": "EXIT", "side": None,
                     "reason": "KC_UPPER_RED_REENTRY_EXIT",
-                    "kc_upper": upper, "kc_lower": lower,
+                    "kc_upper": latest_upper, "kc_lower": latest_lower,
                 }
         elif side == "SHORT":
-            # 多空鏡像：下軌外追空後，綠 K 一回到通道內就先平空。
-            green_inside = (
-                lower < price <= upper and price > live_open
+            if (
+                was_below_lower
+                and latest_close > latest_open
+                and steep_opposite
+                and latest_close > latest_ma3
+            ):
+                return {
+                    "action": "EXIT", "side": None,
+                    "reason": "KC_LOWER_STEEP_GREEN_EXIT",
+                    "kc_upper": latest_upper, "kc_lower": latest_lower,
+                }
+            ma3_near_lower = abs(latest_ma3 - latest_lower) <= max(
+                latest_atr, 1e-12,
+            ) * 0.15
+            mature_lower_run = bool(
+                lower_outer_bars >= 3 and latest_ma3 >= prior_ma3
             )
-            came_from_lower_outer = live_open <= lower or previous_close <= previous_lower
-            if came_from_lower_outer and green_inside:
+            if (
+                was_below_lower
+                and latest_close > latest_open
+                and latest_lower < latest_close <= latest_upper
+                and ma3_near_lower
+                and mature_lower_run
+            ):
                 return {
                     "action": "EXIT", "side": None,
                     "reason": "KC_LOWER_GREEN_REENTRY_EXIT",
-                    "kc_upper": upper, "kc_lower": lower,
+                    "kc_upper": latest_upper, "kc_lower": latest_lower,
                 }
         return {"action": "HOLD", "side": None, "reason": "WAIT_KC_REENTRY_EXIT"}
 
@@ -6082,6 +6170,8 @@ class TradingEngine:
         return str(reason or "") in {
             "KC_UPPER_RED_REENTRY_EXIT",
             "KC_LOWER_GREEN_REENTRY_EXIT",
+            "KC_UPPER_STEEP_RED_EXIT",
+            "KC_LOWER_STEEP_GREEN_EXIT",
             "THREE_RED_FALLING_CLOSE_EXIT_LONG",
             "THREE_GREEN_RISING_CLOSE_EXIT_SHORT",
         }
@@ -6280,30 +6370,15 @@ class TradingEngine:
 
         # 空手進場由主流程先判斷即時 KC 外側，再判斷通道內觸軌與其他方式。
 
-        # 只在對側外軌形成已確認 MA3 極值時平倉；通道內的反向 K
-        # 屬正常回撤，不得提前將 Channel Swing 持倉洗掉。
+        # 已收盤 MA3 極值僅供空手峰谷進場確認；持倉出場統一交由
+        # 外軌急轉或成熟末端回通道判斷，避免趨勢中途的小彎誤平倉。
         closed_ma3_peak = previous_ma3 < signal_ma3 - 1e-12
         closed_ma3_trough = previous_ma3 > signal_ma3 + 1e-12
-        exit_pivot_after_entry = True
-        if held_side in ("LONG", "SHORT") and position_open_timestamp:
-            exit_pivot_after_entry = False
-            if "timestamp" in frame.columns:
-                try:
-                    signal_open_ms = float(signal_row["timestamp"])
-                    timeframe_ms = 60_000.0
-                    if signal_pos > 0:
-                        previous_signal_ms = float(frame.iloc[signal_pos - 1]["timestamp"])
-                        inferred_ms = signal_open_ms - previous_signal_ms
-                        if inferred_ms > 0:
-                            timeframe_ms = inferred_ms
-                    signal_close_ms = signal_open_ms + timeframe_ms
-                    exit_pivot_after_entry = bool(
-                        signal_close_ms > float(position_open_timestamp) * 1000.0
-                    )
-                except (TypeError, ValueError, IndexError, KeyError):
-                    exit_pivot_after_entry = False
         opposite_outer_trend = TradingEngine._channel_opposite_outer_trend_action(
             frame, price, held_side,
+        )
+        outer_reentry_exit = TradingEngine._channel_outer_reentry_exit_action(
+            frame, price, held_side, position_open_timestamp,
         )
         if held_side == "LONG":
             if opposite_outer_trend.get("action") == "REVERSE":
@@ -6313,12 +6388,8 @@ class TradingEngine:
                     "reason": "OPPOSITE_LOWER_OUTER_DOWNTREND",
                     "turn_low": None, "turn_high": None,
                 }
-            if (
-                exit_pivot_after_entry
-                and signal_ma3 >= signal_upper
-                and closed_ma3_peak
-            ):
-                return {"action": "EXIT", "side": None, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
+            if outer_reentry_exit.get("action") == "EXIT":
+                return outer_reentry_exit
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         if held_side == "SHORT":
             if opposite_outer_trend.get("action") == "REVERSE":
@@ -6328,12 +6399,8 @@ class TradingEngine:
                     "reason": "OPPOSITE_UPPER_OUTER_UPTREND",
                     "turn_low": None, "turn_high": None,
                 }
-            if (
-                exit_pivot_after_entry
-                and signal_ma3 <= signal_lower
-                and closed_ma3_trough
-            ):
-                return {"action": "EXIT", "side": None, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
+            if outer_reentry_exit.get("action") == "EXIT":
+                return outer_reentry_exit
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
         signal_width = signal_upper - signal_lower

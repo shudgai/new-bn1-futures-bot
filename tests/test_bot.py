@@ -1050,6 +1050,44 @@ def test_continuous_single_slot_uses_eighty_percent_then_blocks_second():
     assert engine._continuous_entry_amount() == 0.0
 
 
+def test_pausing_trading_keeps_market_data_task_alive():
+    async def scenario():
+        engine = object.__new__(TradingEngine)
+        engine.is_running = True
+        engine.ticker_task = asyncio.create_task(asyncio.Event().wait())
+        for name in (
+            "task", "rotation_task", "analysis_task", "trend_cache_task",
+            "trigger_task", "fixed_stop_task", "trend_follow_task",
+            "trailing_sl_task",
+        ):
+            setattr(engine, name, None)
+
+        class Account:
+            def log(self, *_args, **_kwargs):
+                pass
+
+        engine.account = Account()
+        ticker_task = engine.ticker_task
+        await engine.stop()
+
+        assert engine.is_running is False
+        assert engine.ticker_task is ticker_task
+        assert not ticker_task.done()
+
+        ticker_task.cancel()
+        await asyncio.gather(ticker_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_paused_api_startup_still_starts_market_data():
+    import inspect
+    from services.api import startup_event
+
+    startup_source = inspect.getsource(startup_event)
+    assert "engine.start_market_data()" in startup_source
+
+
 def test_configured_trade_amount_uses_50_usdt_per_slot():
     # TRADE_AMOUNT_USDT / MAX_SLOTS 這兩個值本身會隨實測調整，不斷言死
     # 具體金額；只驗證設定有正確載入（都是正數）。
