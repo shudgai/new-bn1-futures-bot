@@ -5444,7 +5444,7 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
         """Enter a directional run on its first live touch of a KC outer rail."""
-        required = {"close", "kc_upper", "kc_lower"}
+        required = {"open", "close", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
             return {"action": "WAIT", "side": None, "reason": "KC_STRONG_TOUCH_DATA_UNAVAILABLE"}
         
@@ -5454,18 +5454,23 @@ class TradingEngine:
             previous_upper = float(frame["kc_upper"].iloc[-2])
             previous_lower = float(frame["kc_lower"].iloc[-2])
             previous_close = float(frame["close"].iloc[-2])
+            live_open = float(frame["open"].iloc[-1])
             price = float(live_price)
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "side": None, "reason": "KC_STRONG_TOUCH_DATA_INVALID"}
             
-        if price >= upper and previous_close < previous_upper:
+        kc_width = max(upper - lower, 1e-9)
+        body_size = abs(price - live_open)
+        has_sufficient_body = body_size >= (kc_width * 0.20)
+            
+        if price >= upper and previous_close < previous_upper and has_sufficient_body:
             return {
                 "action": "ENTER", "side": "LONG",
                 "reason": "KC_STRONG_FIRST_UPPER_TOUCH_LONG",
                 "kc_upper": upper, "kc_lower": lower,
                 "turn_low": None, "turn_high": None,
             }
-        if price <= lower and previous_close > previous_lower:
+        if price <= lower and previous_close > previous_lower and has_sufficient_body:
             return {
                 "action": "ENTER", "side": "SHORT",
                 "reason": "KC_STRONG_FIRST_LOWER_TOUCH_SHORT",
