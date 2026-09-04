@@ -762,8 +762,8 @@ class SymbolRotation:
             side_ranked = sorted(
                 [item for item in qualified if item["direction"] == direction],
                 key=lambda item: (
+                    item.get("final_score", 0.0),
                     int(item.get("entry_priority") or 0),
-                    item["final_score"],
                 ),
                 reverse=True,
             )
@@ -783,8 +783,8 @@ class SymbolRotation:
             mixed_backfill = sorted(
                 [item for item in qualified if item["symbol"] not in used_symbols],
                 key=lambda item: (
+                    item.get("final_score", 0.0),
                     int(item.get("entry_priority") or 0),
-                    item["final_score"],
                 ),
                 reverse=True,
             )
@@ -810,8 +810,8 @@ class SymbolRotation:
                 removed = min(
                     replaceable,
                     key=lambda item: (
+                        item.get("final_score", 0.0),
                         int(item.get("entry_priority") or 0),
-                        item["final_score"],
                     ),
                 )
                 selected_items.remove(removed)
@@ -849,8 +849,8 @@ class SymbolRotation:
             )
         protected_items.sort(
             key=lambda item: (
-                int(item.get("entry_priority") or 0),
                 item.get("final_score", 0.0),
+                int(item.get("entry_priority") or 0),
             ),
             reverse=True,
         )
@@ -868,8 +868,8 @@ class SymbolRotation:
                 removed = min(
                     replaceable,
                     key=lambda item: (
-                        int(item.get("entry_priority") or 0),
                         item.get("final_score", 0.0),
+                        int(item.get("entry_priority") or 0),
                     ),
                 )
                 selected_items.remove(removed)
@@ -943,7 +943,7 @@ class SymbolRotation:
             item for item in desired_items
             if (
                 item["symbol"] not in current[:SYMBOL_ROTATION_COUNT]
-                and int(item.get("entry_priority") or 0) >= 3
+                and int(item.get("entry_priority") or 0) > 0
             )
         ]
 
@@ -968,8 +968,8 @@ class SymbolRotation:
         incoming_items = sorted(
             incoming_pool,
             key=lambda item: (
-                int(item.get("entry_priority") or 0),
                 item.get("final_score", 0.0),
+                int(item.get("entry_priority") or 0),
             ),
             reverse=True,
         )
@@ -984,8 +984,8 @@ class SymbolRotation:
                 outgoing = min(
                     replaceable,
                     key=lambda symbol: (
-                        int((best_by_symbol.get(symbol) or {}).get("entry_priority") or 0),
                         float((best_by_symbol.get(symbol) or {}).get("final_score") or 0.0),
+                        int((best_by_symbol.get(symbol) or {}).get("entry_priority") or 0),
                     ),
                 )
                 selected.remove(outgoing)
@@ -1134,8 +1134,8 @@ class SymbolRotation:
                 )
             ],
             key=lambda item: (
-                int(item.get("entry_priority") or 0),
                 float(item.get("final_score") or 0.0),
+                int(item.get("entry_priority") or 0),
             ),
             reverse=True,
         )
