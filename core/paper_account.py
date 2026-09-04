@@ -217,7 +217,13 @@ class PaperAccount:
                     pos.get("entry_mode") or meta.get("entry_mode") or ""
                 ).upper()
                 if entry_mode == "CHANNEL_SWING":
-                    if any(float(source.get(key) or 0.0) != 0.0 for source in (pos, meta) for key in (
+                    profit_lock_armed = any(
+                        source.get("profit_lock_usdt_armed")
+                        or source.get("fixed_profit_lock_pct_armed")
+                        or source.get("is_breakeven_moved")
+                        for source in (pos, meta)
+                    )
+                    if not profit_lock_armed and any(float(source.get(key) or 0.0) != 0.0 for source in (pos, meta) for key in (
                         "sl", "tp", "initial_sl", "initial_risk",
                     )):
                         for source in (pos, meta):

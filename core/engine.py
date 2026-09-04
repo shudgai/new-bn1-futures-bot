@@ -52,6 +52,7 @@ from core.config import (
     BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
     CONTINUOUS_REENTRY_COOLDOWN_SEC, MA5_STOP_LOSS_COOLDOWN_SEC,
     EXHAUSTION_SNIPER_STOP_LOSS_PCT, EXHAUSTION_SNIPER_GRACE_SEC,
+    MIN_ENTRY_PROFIT_ROOM_PCT,
     KELTNER_MIN_VOLUME_RATIO,
     SYMBOL_MIN_QUOTE_VOLUME, SYMBOL_MAX_24H_CHANGE_PCT, SYMBOL_MIN_LISTING_DAYS,
     FULL_MARKET_SURVEILLANCE_ENABLED, FULL_MARKET_SURVEILLANCE_SIDE_COUNT,
@@ -3486,6 +3487,17 @@ class TradingEngine:
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             getattr(self, "tickers", {})[symbol] = planned_price
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
+        if entry_mode == "CHANNEL_SWING" and signal.get("profit_potential") is not None:
+            projected_room_pct = max(0.0, float(signal.get("profit_potential") or 0.0)) / 100.0
+            round_trip_cost_pct = 2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
+            projected_net_room_pct = projected_room_pct - round_trip_cost_pct
+            if projected_net_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT:
+                self.account.log(
+                    f"🛑 {symbol} {side} 預估淨獲利空間 {projected_net_room_pct:.3%} "
+                    f"低於 {MIN_ENTRY_PROFIT_ROOM_PCT:.3%}，取消開倉",
+                    "WARNING",
+                )
+                return False
         if not self._abnormal_market_entry_allowed(
             symbol, side, planned_price, atr,
             float(signal.get("signal_candle_open") or planned_price),
@@ -7289,6 +7301,31 @@ class TradingEngine:
         return {"action": "HOLD"}
 
     @staticmethod
+    def _channel_first_ma3_bend_action(frame: pd.DataFrame, position: dict) -> dict:
+        if frame is None or len(frame) < 3 or "ma3" not in frame.columns:
+            return {"action": "HOLD"}
+        if any(
+            position.get(key)
+            for key in (
+                "profit_lock_usdt_armed",
+                "fixed_profit_lock_pct_armed",
+                "is_breakeven_moved",
+            )
+        ):
+            return {"action": "HOLD"}
+        try:
+            previous_slope = float(frame["ma3"].iloc[-2]) - float(frame["ma3"].iloc[-3])
+            current_slope = float(frame["ma3"].iloc[-1]) - float(frame["ma3"].iloc[-2])
+            side = str(position.get("side") or "").upper()
+        except (TypeError, ValueError, IndexError):
+            return {"action": "HOLD"}
+        if side == "LONG" and previous_slope > 0.0 and current_slope < 0.0:
+            return {"action": "EXIT", "reason": "CHANNEL_FIRST_MA3_BEND_EXIT_LONG"}
+        if side == "SHORT" and previous_slope < 0.0 and current_slope > 0.0:
+            return {"action": "EXIT", "reason": "CHANNEL_FIRST_MA3_BEND_EXIT_SHORT"}
+        return {"action": "HOLD"}
+
+    @staticmethod
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
         entry_turn_low: float | None = None,
@@ -8204,6 +8241,16 @@ class TradingEngine:
                             "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
                             "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
                         }
+                    bend_action = self._channel_first_ma3_bend_action(
+                        channel_df, existing_pos,
+                    )
+                    if bend_action.get("action") == "EXIT":
+                        channel_action = {
+                            "action": "EXIT", "side": None,
+                            "reason": bend_action["reason"],
+                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
+                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
+                        }
                     position_meta_map = getattr(self.account, "position_meta", None)
                     persisted_trailing = (
                         position_meta_map.get(symbol, {})
@@ -8274,16 +8321,11 @@ class TradingEngine:
                     and not chop_breakout_context
                     and not existing_pos
                 ):
-                    # 空手時優先處理即時 KC 外軌突破，避免等待收盤確認後
-                    # 才在延伸段追價。若未達外軌即時突破條件，才使用已收盤
-                    # 實體 K 的緊接突破作為備援進場。
-                    channel_action = self._channel_immediate_outer_break_action(
+                    # 空手時只接受已收盤外軌 K 的緊接突破，避免價格瞬間
+                    # 刺穿外軌就追入，讓下跌後反彈／上漲後回落的假突破先被淘汰。
+                    channel_action = self._channel_closed_body_break_entry_action(
                         channel_df, channel_price,
                     )
-                    if channel_action.get("action") != "ENTER":
-                        channel_action = self._channel_closed_body_break_entry_action(
-                            channel_df, channel_price,
-                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)

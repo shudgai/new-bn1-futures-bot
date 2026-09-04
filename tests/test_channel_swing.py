@@ -176,6 +176,31 @@ def test_channel_slope_gate_blocks_short_when_kc_and_ma15_rise():
     assert result == ("WAIT", None, "KC_MA15_RISING_BLOCK_SHORT")
 
 
+@pytest.mark.parametrize(
+    ("side", "ma3_values", "expected"),
+    [
+        ("LONG", [100.0, 100.2, 100.1], "CHANNEL_FIRST_MA3_BEND_EXIT_LONG"),
+        ("SHORT", [100.0, 99.8, 99.9], "CHANNEL_FIRST_MA3_BEND_EXIT_SHORT"),
+    ],
+)
+def test_channel_first_ma3_bend_exits_before_profit_lock(side, ma3_values, expected):
+    frame = _channel_frame()
+    frame.loc[frame.index[-3:], "ma3"] = ma3_values
+    result = TradingEngine._channel_first_ma3_bend_action(
+        frame, {"side": side},
+    )
+    assert result == {"action": "EXIT", "reason": expected}
+
+
+def test_channel_first_ma3_bend_does_not_override_locked_profit():
+    frame = _channel_frame()
+    frame.loc[frame.index[-3:], "ma3"] = [100.0, 100.2, 100.1]
+    result = TradingEngine._channel_first_ma3_bend_action(
+        frame, {"side": "LONG", "profit_lock_usdt_armed": True},
+    )
+    assert result == {"action": "HOLD"}
+
+
 def test_hype_style_broad_downtrend_blocks_lower_trough_long_after_local_bounce():
     frame = _channel_frame()
     frame.loc[frame.index[-8], ["kc_upper", "kc_lower", "ma15"]] = [103.0, 101.0, 102.0]
@@ -844,9 +869,7 @@ def _sustained_outer_trend_frame(side: str) -> pd.DataFrame:
 )
 def test_immediate_outer_break_enters_on_the_breakout_price(side, price, reason):
     result = TradingEngine._channel_immediate_outer_break_action(_channel_frame(), price)
-    assert (result["action"], result["side"], result["reason"]) == (
-        "ENTER", side, reason,
-    )
+    assert (result["action"], result["side"]) == ("WAIT", None)
 
 @pytest.mark.parametrize(
     ("side", "price", "expected_reason"),
@@ -1781,8 +1804,8 @@ def test_channel_swing_has_one_confirmation_rule_and_no_legacy_entry_paths():
     assert 'KC_INNER_TWO_RED_CROSS_DOWN' not in action_source
     assert 'inner_ma3_turn' not in action_source
     assert '_channel_closed_body_break_entry_action(' in process_source
-    assert '_channel_immediate_outer_break_action(' in process_source
-    assert process_source.index('_channel_immediate_outer_break_action(') < process_source.index('_channel_closed_body_break_entry_action(')
+    assert '_channel_immediate_outer_break_action(' not in process_source
+    assert '_channel_closed_body_break_entry_action(' in process_source
     reverse_start = process_source.index('if action == "REVERSE" and existing_pos:')
     reverse_end = process_source.index('if existing_pos:', reverse_start + 1)
     reverse_source = process_source[reverse_start:reverse_end]
@@ -2735,7 +2758,7 @@ def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
     assert engine._continuous_entry_amount() == 0.0
 
 @pytest.mark.anyio
-async def test_channel_swing_position_is_stored_without_sl_or_tp(tmp_path, monkeypatch):
+async def test_channel_swing_position_uses_profit_lock_without_initial_sl_or_tp(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, 'STATE_FILE', str(tmp_path / 'channel_swing.json'))
     account = PaperAccount()
     opened = await account.open_position('BTC/USDT', 'LONG', 100.0, 50.0, 95.0, 110.0, 'channel swing', leverage=1, signal_score=100, apply_slippage=False, entry_context={'entry_mode': 'CHANNEL_SWING', 'wave_regime': 'RANGE', 'initial_sl': 95.0, 'initial_risk': 5.0})
@@ -2751,14 +2774,14 @@ async def test_channel_swing_position_is_stored_without_sl_or_tp(tmp_path, monke
     await account.update_positions({'BTC/USDT': 102.0})
     await account.update_positions({'BTC/USDT': 100.5})
     assert 'BTC/USDT' in account.positions
-    assert account.positions['BTC/USDT']['sl'] == 0.0
-    assert not account.positions['BTC/USDT'].get('is_breakeven_moved')
+    assert account.positions['BTC/USDT']['sl'] > 100.0
+    assert account.positions['BTC/USDT'].get('is_breakeven_moved') is True
     topped_up = await account.open_position('BTC/USDT', 'LONG', 100.2, 25.0, 95.0, 110.0, 'channel swing top-up', leverage=1, signal_score=100, apply_slippage=False, entry_context={'entry_mode': 'CHANNEL_SWING'})
     assert topped_up is False
     assert account.positions['BTC/USDT']['margin'] == 50.0
     reloaded = PaperAccount()
     await reloaded.initialize()
-    assert reloaded.positions['BTC/USDT']['sl'] == 0.0
+    assert reloaded.positions['BTC/USDT']['sl'] > 100.0
     assert reloaded.positions['BTC/USDT']['tp'] == 0.0
     assert not any(('啟動保護遷移' in item.get('text', '') for item in reloaded.logs))
 
