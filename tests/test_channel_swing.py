@@ -282,6 +282,36 @@ def test_closed_body_continuation_respects_macro_direction(
 
 
 @pytest.mark.parametrize(
+    ("side", "reason"),
+    [
+        ("LONG", "KC_CLOSED_BODY_HIGH_BREAK_LONG"),
+        ("SHORT", "KC_CLOSED_BODY_LOW_BREAK_SHORT"),
+    ],
+)
+def test_closed_body_break_rejects_fil_style_low_volume_symmetrically(
+    monkeypatch, side, reason,
+):
+    monkeypatch.setattr("core.engine.KELTNER_MIN_VOLUME_RATIO", 1.2)
+
+    assert TradingEngine._channel_closed_body_volume_gate(
+        "ENTER", side, 0.10893375597244837, False, reason,
+    ) == ("WAIT", None, "KC_CLOSED_BODY_BREAK_LOW_VOLUME")
+    assert TradingEngine._channel_closed_body_volume_gate(
+        "ENTER", side, 1.2, False, reason,
+    ) == ("ENTER", side, None)
+
+
+def test_closed_body_volume_gate_does_not_change_live_outer_break_exception(
+    monkeypatch,
+):
+    monkeypatch.setattr("core.engine.KELTNER_MIN_VOLUME_RATIO", 1.2)
+
+    assert TradingEngine._channel_closed_body_volume_gate(
+        "ENTER", "LONG", 0.1, False, "KC_LIVE_UPPER_BREAK_LONG",
+    ) == ("ENTER", "LONG", None)
+
+
+@pytest.mark.parametrize(
     ("mode", "side", "reason"),
     [
         ("BULL", "SHORT", "KC_LIVE_LOWER_BREAK_SHORT"),
@@ -1098,7 +1128,7 @@ def test_opposite_outer_downtrend_exits_held_long_without_reversing():
     result = TradingEngine._channel_swing_action(frame, 97.5, "LONG")
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", None, "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
     )
 
 
@@ -1113,7 +1143,7 @@ def test_opposite_outer_uptrend_exits_held_short_without_reversing():
     result = TradingEngine._channel_swing_action(frame, 102.5, "SHORT")
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "HOLD", None, "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+        "EXIT", None, "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT",
     )
 
 
@@ -1128,7 +1158,7 @@ def test_live_opposite_outer_break_exits_without_candle_confirmation():
     result = TradingEngine._channel_swing_action(frame, 98.7, "LONG")
 
     assert (result["action"], result["side"], result["reason"]) == (
-        "HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", None, "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
     )
 
 def test_three_candle_exit_never_counts_the_live_candle():
@@ -1700,8 +1730,8 @@ def test_breaking_entry_side_outer_rail_exits_without_full_outer_body():
     frame = _channel_frame()
     held_long = TradingEngine._channel_swing_action(frame, 98.8, "LONG", entry_turn_low=98.9)
     held_short = TradingEngine._channel_swing_action(frame, 101.2, "SHORT", entry_turn_high=101.1)
-    assert (held_long["action"], held_long["side"], held_long["reason"]) == ("HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK")
-    assert (held_short["action"], held_short["side"], held_short["reason"]) == ("HOLD", None, "WAIT_OPPOSITE_KC_LOWER_VALLEY")
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == ("EXIT", None, "KC_LOWER_ADVERSE_BREAK_EXIT_LONG")
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == ("EXIT", None, "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT")
 
 
 def test_partial_body_crossing_entry_side_outer_rail_exits_position():
@@ -1711,8 +1741,8 @@ def test_partial_body_crossing_entry_side_outer_rail_exits_position():
     short_frame = _channel_frame()
     short_frame.loc[short_frame.index[-1], ["open", "close", "high"]] = [100.8, 101.2, 101.3]
     held_short = TradingEngine._channel_swing_action(short_frame, 101.2, "SHORT")
-    assert (held_long["action"], held_long["side"], held_long["reason"]) == ("HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK")
-    assert (held_short["action"], held_short["side"], held_short["reason"]) == ("HOLD", None, "WAIT_OPPOSITE_KC_LOWER_VALLEY")
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == ("EXIT", None, "KC_LOWER_ADVERSE_BREAK_EXIT_LONG")
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == ("EXIT", None, "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT")
 
 
 def test_confirmed_outer_peak_and_trough_exit_without_extra_end_stage_gate():
@@ -1732,8 +1762,8 @@ def test_held_position_exits_on_adverse_side_outer_pivot():
     short_frame = _channel_frame()
     _closed_peak(short_frame)
     held_short = TradingEngine._channel_swing_action(short_frame, 101.1, "SHORT")
-    assert (held_long["action"], held_long["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK")
-    assert (held_short["action"], held_short["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY")
+    assert (held_long["action"], held_long["reason"]) == ("EXIT", "KC_LOWER_ADVERSE_BREAK_EXIT_LONG")
+    assert (held_short["action"], held_short["reason"]) == ("EXIT", "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT")
 
 
 def test_channel_swing_background_trigger_loop_is_diagnostic_only():
@@ -2138,6 +2168,30 @@ def test_market_candidates_sorts_by_strongest():
     selected, skipped = TradingEngine._select_strongest_same_side_candidates(candidates)
     assert [item['symbol'] for item in selected] == ['XRP/USDT', 'SOL/USDT', 'DOGE/USDT']
 
+
+def test_live_confirmed_energy_beats_stale_rotation_score():
+    candidates = [
+        {
+            "symbol": "WEAK/USDT", "side": "LONG",
+            "trend_quality": 0.8, "volume_ratio": 1.2,
+            "confirmed_trend_quality": 0.8, "confirmed_volume_ratio": 1.2,
+        },
+        {
+            "symbol": "STRONG/USDT", "side": "LONG",
+            "trend_quality": 1.5, "volume_ratio": 1.5,
+            "confirmed_trend_quality": 1.5, "confirmed_volume_ratio": 1.5,
+        },
+    ]
+
+    selected, _ = TradingEngine._select_strongest_same_side_candidates(
+        candidates,
+        symbol_scores={"WEAK/USDT": 99.0, "STRONG/USDT": 50.0},
+    )
+
+    assert [item["symbol"] for item in selected] == [
+        "STRONG/USDT", "WEAK/USDT",
+    ]
+
 @pytest.mark.anyio
 async def test_channel_takeover_requires_confirmed_momentum_decline(monkeypatch):
     monkeypatch.setattr("core.engine.MAX_SLOTS", 1)
@@ -2524,7 +2578,7 @@ def test_full_single_slot_scans_held_symbol_and_active_takeover_board():
         ["LTC/USDT"], ["LTC/USDT", "SOL/USDT"],
         {"T/USDT": {"side": "LONG"}}, {}, True, 1,
     )
-    assert snapshot == ["T/USDT", "LTC/USDT"]
+    assert snapshot == ["T/USDT", "LTC/USDT", "SOL/USDT"]
 
 
 def test_candidate_board_refreshes_after_fill_and_while_slot_remains():
@@ -2562,11 +2616,11 @@ def test_market_surveillance_replaces_stale_momentum_scores():
     assert engine._market_surveillance_scores == {}
 
 
-def test_main_loop_never_replaces_or_recovery_closes_channel_swing():
+def test_main_loop_uses_confirmed_takeover_but_not_stalled_recovery_close():
     main_source = inspect.getsource(TradingEngine._main_loop)
     process_source = inspect.getsource(TradingEngine._process_single_symbol)
 
-    assert "_try_channel_stronger_symbol_takeover(" not in main_source
+    assert "_try_channel_stronger_symbol_takeover(" in main_source
     assert "_try_channel_stalled_recovery_exit(" not in main_source
     assert "_channel_stalled_recovery_should_arm(" not in process_source
 
@@ -2724,7 +2778,7 @@ def test_channel_short_exits_immediately_when_price_returns_above_upper_rail():
         frame, 101.0, current_side="SHORT",
     )
     assert (result["action"], result["side"], result["reason"]) == (
-        "HOLD", None, "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+        "EXIT", None, "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT",
     )
 
 
@@ -2734,7 +2788,7 @@ def test_channel_long_exits_immediately_when_price_returns_below_lower_rail():
         frame, 99.0, current_side="LONG",
     )
     assert (result["action"], result["side"], result["reason"]) == (
-        "HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", None, "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
     )
 
 

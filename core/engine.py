@@ -1147,8 +1147,9 @@ class TradingEngine:
                         else:
                             pnl_pct = (entry_price - live_price) / entry_price
 
-                        # Channel Swing 完全交由主循環的「獲利側 KC 外軌 MA3 峰/谷」管理。
-                        # 不執行同側 KC 破軌、固定停損、結構破壞或移動停利。
+                        # Channel Swing 完全交由主循環管理：逆向 KC 外軌立即
+                        # 平倉；獲利側則等待 KC 外軌 MA3 峰／谷。不使用固定
+                        # 停損、舊結構破壞或移動停利。
                         if entry_mode.upper() == "CHANNEL_SWING":
                             if any(float(position.get(key) or 0.0) != 0.0 for key in (
                                 "sl", "initial_sl", "initial_risk",
@@ -1290,7 +1291,7 @@ class TradingEngine:
                         is_profitable and not df.empty and has_volume_divergence(df, warn_dir)
                     )
                     self.position_triggers[symbol] = trigger
-                    # Channel Swing 的自動處置只由主循環的對側 KC 外軌峰谷負責。
+                    # Channel Swing 的逆向外軌與獲利側峰谷皆由主循環負責。
                     # 此背景迴圈保留 UI 診斷更新，但不執行任何中途平倉或反手。
                     if pos_entry_mode.upper() == "CHANNEL_SWING":
                         continue
@@ -3589,7 +3590,7 @@ class TradingEngine:
                     position["channel_energy_score"] = self._channel_candidate_energy(signal)
             order_type = "支撐限價" if is_limit else "市價"
             protection_text = (
-                "只等KC外MA3峰頂／谷底確認平倉"
+                "逆向KC外軌平倉／獲利側等待MA3峰谷"
                 if channel_swing_no_stop
                 else f"硬停損 {sl:.8g}｜風險 {initial_risk:.8g}"
             )
@@ -4682,10 +4683,10 @@ class TradingEngine:
         """Sort candidates by multiple signal quality dimensions.
 
         排序維度（由高到低優先）：
-        1. symbol_rotation final_score（含 AI 評分，深度輪替品質）
-        2. 全市場即時爆發力（_market_surveillance_scores，sub-second momentum）
-        3. KC 通道能量（trend_quality × volume_ratio）
-        4. 趨勢品質 / 量比
+        1. 已收盤 KC 通道能量（confirmed trend quality × volume ratio）
+        2. 即時 KC 通道能量（trend_quality × volume_ratio）
+        3. 全市場即時爆發力（_market_surveillance_scores，sub-second momentum）
+        4. symbol_rotation final_score（含 AI 評分，作較慢的背景品質參考）
         5. KC 進場優先級（priority）
         6. 預估獲利空間（profit_potential 或 ATR%）
         7. 訊號分（score）
@@ -4695,9 +4696,10 @@ class TradingEngine:
         ranked = sorted(
             candidates,
             key=lambda item: (
-                float(scores.get(item.get("symbol"), 0.0)),
-                float(surveillance_scores.get(item.get("symbol"), 0.0)),
+                TradingEngine._channel_confirmed_candidate_energy(item),
                 TradingEngine._channel_candidate_energy(item),
+                float(surveillance_scores.get(item.get("symbol"), 0.0)),
+                float(scores.get(item.get("symbol"), 0.0)),
                 float(item.get("trend_quality") or 0.0),
                 float(item.get("volume_ratio") or 0.0),
                 int(item.get("priority") or 0),
@@ -5037,10 +5039,12 @@ class TradingEngine:
         """Scan the safe pool with capacity, or the active board for takeover."""
         committed = len(positions) + len(pending_orders)
         has_capacity = max_slots <= 0 or committed < max_slots
-        if entry_scan_allowed and has_capacity:
+        if (
+            entry_scan_allowed
+            and not pending_orders
+            and (has_capacity or bool(positions))
+        ):
             entry_symbols = list(broad_symbols)
-        elif entry_scan_allowed and positions and not pending_orders:
-            entry_symbols = list(default_symbols)
         else:
             entry_symbols = []
         return list(dict.fromkeys([
@@ -6479,6 +6483,7 @@ class TradingEngine:
             "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT": "MA3 已轉升至 MA15 上方，不追下軌空單",
             "KC_UPPER_MATURE_TREND_WEAK": "漲勢已成熟且量能不足，不在末端追多",
             "KC_LOWER_MATURE_TREND_WEAK": "跌勢已成熟且量能不足，不在末端追空",
+            "KC_CLOSED_BODY_BREAK_LOW_VOLUME": "closed-body突破量能不足，繼續找其他幣",
             "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",
             "WAIT_DOWNTREND_BREAK": "下軌空方動能等待下一根破低",
             "WAIT_TREND_RETEST": "多方過熱，等待回踩上軌",
@@ -6818,6 +6823,8 @@ class TradingEngine:
     @staticmethod
     def _channel_exit_requests_rotation(reason: str | None) -> bool:
         return str(reason or "") in {
+            "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
+            "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT",
             "KC_UPPER_RED_REENTRY_EXIT",
             "KC_LOWER_GREEN_REENTRY_EXIT",
             "KC_UPPER_STEEP_RED_EXIT",
@@ -6963,6 +6970,25 @@ class TradingEngine:
         return action, target_side, None
 
     @staticmethod
+    def _channel_closed_body_volume_gate(
+        action: str, target_side: str | None, volume_ratio: float,
+        has_position: bool, signal_reason: str | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        """Reject weak closed-body continuation breaks symmetrically."""
+        if (
+            action == "ENTER"
+            and target_side in ("LONG", "SHORT")
+            and not has_position
+            and str(signal_reason or "") in {
+                "KC_CLOSED_BODY_HIGH_BREAK_LONG",
+                "KC_CLOSED_BODY_LOW_BREAK_SHORT",
+            }
+            and float(volume_ratio) < KELTNER_MIN_VOLUME_RATIO
+        ):
+            return "WAIT", None, "KC_CLOSED_BODY_BREAK_LOW_VOLUME"
+        return action, target_side, None
+
+    @staticmethod
     def _channel_near_chop_entry_gate(
         action: str, target_side: str | None, near_lock: bool,
         has_position: bool,
@@ -7001,7 +7027,7 @@ class TradingEngine:
         exit_net_profitable: bool = True,
     ) -> dict:
         import core.config as config
-        """RANGE 空手可做 KC 外軌峰谷；非順勢持倉依峰谷平倉。"""
+        """Channel Swing 空手等待確認；持倉依逆向外軌或獲利側峰谷平倉。"""
         required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
@@ -7065,7 +7091,8 @@ class TradingEngine:
 
         # 空手進場由主流程先判斷即時 KC 外側，再判斷通道內觸軌與其他方式。
 
-        # 持倉只在獲利方向的對側 KC 外軌形成已確認 MA3 峰／谷時平倉。
+        # 持倉先處理逆向 KC 外軌風險；未逆向破軌時，獲利側仍等待
+        # 對側 KC 外軌形成已確認 MA3 峰／谷才平倉。
         # 確認 K 可已回到通道內；否則 MA3 真正確認轉頭時，價格往往已
         # 離開外軌，會錯過峰／谷並把已取得的利潤還回去。
         # 峰／谷必須是完整三點局部極值。只檢查候選後一根會把已經
@@ -7172,6 +7199,12 @@ class TradingEngine:
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
         if held_side == "LONG":
+            if price <= lower:
+                return {
+                    "action": "EXIT", "side": None,
+                    "kc_upper": upper, "kc_lower": lower,
+                    "reason": "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
+                }
             if (
                 closed_ma3_peak
             ):
@@ -7182,6 +7215,12 @@ class TradingEngine:
                 }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         if held_side == "SHORT":
+            if price >= upper:
+                return {
+                    "action": "EXIT", "side": None,
+                    "kc_upper": upper, "kc_lower": lower,
+                    "reason": "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT",
+                }
             if (
                 closed_ma3_trough
             ):
@@ -7997,6 +8036,22 @@ class TradingEngine:
 
                 volume_ratio = self._channel_volume_ratio(channel_df)
                 volume_ok = volume_ratio >= KELTNER_MIN_VOLUME_RATIO
+                action, target_side, volume_gate_reason = (
+                    self._channel_closed_body_volume_gate(
+                        action, target_side, volume_ratio,
+                        bool(existing_pos), channel_action.get("reason"),
+                    )
+                )
+                if volume_gate_reason:
+                    channel_action["reason"] = volume_gate_reason
+                    self._record_channel_signal_event(
+                        symbol, volume_gate_reason, channel_df,
+                    )
+                    signal_progress.append(
+                        f"{coin} closed-body突破量能不足"
+                        f"({volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)，"
+                        "不開倉並繼續找其他幣"
+                    )
                 if existing_pos:
                     held_side = str(existing_pos.get("side") or "").upper()
                     held_quality = self._directional_trend_quality(
@@ -9457,7 +9512,14 @@ class TradingEngine:
                     and rotation_ready
                 )
                 manage_continuous_position = ENABLE_CONTINUOUS_REVERSE_MODE and bool(self.account.positions)
-                candidate_scan_allowed = entry_scan_allowed
+                candidate_scan_allowed = bool(
+                    not daily_halt
+                    and rotation_ready
+                    and (
+                        available_balance >= MIN_TRADE_USDT
+                        or bool(self.account.positions)
+                    )
+                )
                 if entry_scan_allowed or manage_continuous_position:
                     signal_progress = []
                     detected_candidates = []
@@ -9484,8 +9546,8 @@ class TradingEngine:
                         except Exception as e:
                             self.account.log(f"⚠️ 無法取得 BTC 1m 脈衝資料: {e}", "WARNING")
 
-                    # 只有空槽才掃描新候選；已有 Channel Swing 持倉時只管理
-                    # 原幣，最強新幣不得令舊倉在外軌峰谷確認前提前換倉。
+                    # 空槽掃描新候選；已有 Channel Swing 持倉時也保留全市場
+                    # shortlist，讓通過嚴格確認的強勢幣可接管衰退舊倉。
                     wallet_balance = float(self.account.get_wallet_balance())
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
                     # broad_symbols = 市場監控短名單 + DEFAULT_SYMBOLS（UI牌面，含
@@ -9543,6 +9605,17 @@ class TradingEngine:
                             coin = symbol.replace("/USDT", "")
                             direction_text = "多單" if sig["side"] == "LONG" else "空單"
 
+                            takeover_handled, takeover_opened = (
+                                await self._try_channel_stronger_symbol_takeover(
+                                    sig, now_time, daily_halt,
+                                )
+                            )
+                            if takeover_handled:
+                                opened_any = takeover_opened or opened_any
+                                if takeover_opened or not self.account.positions:
+                                    break
+                                continue
+
                             same_side_committed = self._channel_same_side_committed(
                                 self.account.positions,
                                 self.account.pending_limit_orders,
@@ -9551,7 +9624,7 @@ class TradingEngine:
                             if same_side_committed:
                                 signal_progress.append(
                                     f"{coin} {direction_text} 已有同向持倉；"
-                                    "舊倉只等對側 KC 外軌峰谷，不提前換倉"
+                                    "新候選尚未強到符合換倉門檻"
                                 )
                                 continue
 
