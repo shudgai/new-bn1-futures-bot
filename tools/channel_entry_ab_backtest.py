@@ -170,7 +170,12 @@ def strong_live_side(frame: pd.DataFrame, index: int) -> str | None:
 
 
 def run(
-    frame: pd.DataFrame, early_entry: bool = False, strong_live_entry: bool = False,
+    frame: pd.DataFrame,
+    early_entry: bool = False,
+    strong_live_entry: bool = False,
+    min_volume_ratio: float = 0.0,
+    breakout_atr_buffer: float = 0.0,
+    max_entry_extension_atr: float | None = None,
 ) -> list[tuple[str, float]]:
     """Return net percentage PnL per closed trade.
 
@@ -234,17 +239,36 @@ def run(
             continue
 
         # Signal candle is `previous`; `row` is its one-and-only adjacent confirmation.
+        atr = max(float(row.atr), 1e-12)
+        volume_ratio = float(row.volume) / max(float(row.vol_ma_20), 1e-12)
+        long_break_level = float(previous.high) + breakout_atr_buffer * atr
+        short_break_level = float(previous.low) - breakout_atr_buffer * atr
+        long_extension_atr = (next_open - float(previous.low)) / atr
+        short_extension_atr = (float(previous.high) - next_open) / atr
+        volume_ready = volume_ratio >= min_volume_ratio
+        long_not_overextended = (
+            max_entry_extension_atr is None
+            or long_extension_atr <= max_entry_extension_atr
+        )
+        short_not_overextended = (
+            max_entry_extension_atr is None
+            or short_extension_atr <= max_entry_extension_atr
+        )
         long_confirmed = (
             float(previous.low) <= float(previous.lower)
             and float(previous.close) > float(previous.open)
             and float(row.close) > float(row.open)
-            and float(row.high) > float(previous.high)
+            and float(row.high) >= long_break_level
+            and volume_ready
+            and long_not_overextended
         )
         short_confirmed = (
             float(previous.high) >= float(previous.upper)
             and float(previous.close) < float(previous.open)
             and float(row.close) < float(row.open)
-            and float(row.low) < float(previous.low)
+            and float(row.low) <= short_break_level
+            and volume_ready
+            and short_not_overextended
         )
         if long_confirmed:
             position = ("LONG", next_open, str(row.market_mode))
@@ -277,12 +301,17 @@ def main() -> None:
     for symbol in args.symbols:
         frame = add_market_modes(add_indicators(fetch_klines(symbol, args.days)))
         print(f"{symbol} ({len(frame)} 1m candles, {args.days}d)")
-        for label, early, strong_live in (
-            ("confirmed", False, False),
-            ("early", True, False),
-            ("strong_live", False, True),
+        for label, options in (
+            ("legacy_confirmed", {}),
+            ("current_vol_1.2", {"min_volume_ratio": 1.2}),
+            ("buffer_0.05_atr_max_1.5_atr", {"min_volume_ratio": 1.2, "breakout_atr_buffer": 0.05, "max_entry_extension_atr": 1.5}),
+            ("buffer_0.10_atr_max_1.5_atr", {"min_volume_ratio": 1.2, "breakout_atr_buffer": 0.10, "max_entry_extension_atr": 1.5}),
+            ("buffer_0.05_atr_max_1.2_atr", {"min_volume_ratio": 1.2, "breakout_atr_buffer": 0.05, "max_entry_extension_atr": 1.2}),
+            ("buffer_0.10_atr_max_1.2_atr", {"min_volume_ratio": 1.2, "breakout_atr_buffer": 0.10, "max_entry_extension_atr": 1.2}),
+            ("early", {"early_entry": True}),
+            ("strong_live", {"strong_live_entry": True}),
         ):
-            trades = run(frame, early_entry=early, strong_live_entry=strong_live)
+            trades = run(frame, **options)
             values = [pnl for _, pnl in trades]
             print(f"  {label}: {summary(values)}")
             for mode in ("RANGE", "BULL", "BEAR", "TREND_UNALIGNED"):

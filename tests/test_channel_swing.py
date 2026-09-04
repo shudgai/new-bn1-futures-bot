@@ -2600,6 +2600,30 @@ def test_market_surveillance_direction_is_applied_to_channel_entry_scan():
     assert "WAIT_MARKET_RANKED_DIRECTION" in source
 
 
+def test_channel_status_log_uses_chinese_label_without_internal_reason_code():
+    messages = []
+    engine = TradingEngine.__new__(TradingEngine)
+    engine._channel_signal_events = {}
+    engine.account = type(
+        "Account", (),
+        {"log": lambda _self, text, level: messages.append((text, level))},
+    )()
+    frame = _channel_frame()
+    frame["timestamp"] = range(len(frame))
+
+    engine._record_channel_signal_event(
+        "SOL/USDT", "WAIT_CLOSED_BODY_ADJACENT_BREAK", frame,
+    )
+
+    assert messages == [(
+        "🧭 [Channel Swing狀態] SOL/USDT 等待已收盤外軌K的下一根突破",
+        "INFO",
+    )]
+    assert engine._channel_signal_events["SOL/USDT"][-1]["reason"] == (
+        "WAIT_CLOSED_BODY_ADJACENT_BREAK"
+    )
+
+
 def test_market_surveillance_replaces_stale_momentum_scores():
     engine = TradingEngine.__new__(TradingEngine)
     engine.market_surveillance_contracts = set()

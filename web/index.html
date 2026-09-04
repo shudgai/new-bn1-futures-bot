@@ -527,7 +527,7 @@
                 <div class="card system-log-card">
                     <div class="card-title">💻 系統日誌 (System Logs)</div>
                     <div class="console">
-                        <template v-for="(log, i) in bot.logs" :key="i">
+                        <template v-for="(log, i) in newestLogs" :key="i">
                             <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': line.startsWith('⚡') }">
                                 <span class="log-time">[{{ log.time }}]</span>
                                 <span>{{ line }}</span>
@@ -624,6 +624,10 @@
                 }
             },
             computed: {
+                newestLogs() {
+                    if (!this.bot || !Array.isArray(this.bot.logs)) return [];
+                    return this.bot.logs.slice().reverse();
+                },
                 sortedTickers() {
                     if (!this.bot || !Array.isArray(this.bot.symbols)) return [];
                     return this.bot.symbols

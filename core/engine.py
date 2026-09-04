@@ -6462,6 +6462,7 @@ class TradingEngine:
             "KC data unavailable": "KC資料不足",
             "KC data invalid": "KC資料無效",
             "KC channel invalid": "KC通道無效",
+            "WAIT_CLOSED_BODY_ADJACENT_BREAK": "等待已收盤外軌K的下一根突破",
             "WAIT_ADJACENT_OUTER_CANDIDATE": "等待緊接的外軌候選K",
             "WAIT_CLOSE_GREEN": "觸下軌，等待綠K收盤",
             "WAIT_CLOSE_RED": "觸上軌，等待紅K收盤",
@@ -6483,7 +6484,7 @@ class TradingEngine:
             "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT": "MA3 已轉升至 MA15 上方，不追下軌空單",
             "KC_UPPER_MATURE_TREND_WEAK": "漲勢已成熟且量能不足，不在末端追多",
             "KC_LOWER_MATURE_TREND_WEAK": "跌勢已成熟且量能不足，不在末端追空",
-            "KC_CLOSED_BODY_BREAK_LOW_VOLUME": "closed-body突破量能不足，繼續找其他幣",
+            "KC_CLOSED_BODY_BREAK_LOW_VOLUME": "收盤實體突破量能不足，繼續找其他幣",
             "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",
             "WAIT_DOWNTREND_BREAK": "下軌空方動能等待下一根破低",
             "WAIT_TREND_RETEST": "多方過熱，等待回踩上軌",
@@ -6537,7 +6538,7 @@ class TradingEngine:
             del events[:-100]
         level = "WARNING" if action != "CHANNEL_WAIT" else "INFO"
         self.account.log(
-            f"🧭 [Channel Swing狀態] {symbol} {label} ({reason_name})",
+            f"🧭 [Channel Swing狀態] {symbol} {label}",
             level,
         )
 
