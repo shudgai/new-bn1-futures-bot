@@ -98,7 +98,7 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.5"))
 MIN_REWARD_RISK_RATIO = float(os.getenv("MIN_REWARD_RISK_RATIO", "1.5"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "false").lower() == "true"
 # 正數時，所有新倉使用固定的無槓桿 TP 百分比（0.002 = 0.2%）；0 維持 ATR 動態 TP。
-FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0")))
+FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0.002")))
 # 唯一獲利出場：峰值每跨一個階梯，鎖利線維持落後一階。
 ENABLE_FIXED_PROFIT_LOCK_LADDER = os.getenv("ENABLE_FIXED_PROFIT_LOCK_LADDER", "false").lower() == "true"
 FIXED_PROFIT_LOCK_LADDER_STEP_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_STEP_PCT", "0.002")))
@@ -356,6 +356,10 @@ CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
 # 急速突破才啟用 Channel Swing 外軌追蹤：水位回撤此 ATR 倍數即市價平倉。
 CHANNEL_SWING_TRAILING_ATR_MULT = max(
     0.1, float(os.getenv("CHANNEL_SWING_TRAILING_ATR_MULT", "1.0"))
+)
+# 曾取得至少一個 ATR 的順向空間後，價格回到含成本進場價即退出；0 可停用。
+CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT = max(
+    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT", "1.0"))
 )
 # Channel Swing 單筆淨損達帳戶權益此比例即強制撤退；0 可停用。
 CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT = min(
@@ -918,7 +922,10 @@ PROFIT_BANK_LOCK_PCT = min(
 # ---------------------------------------------------------------------------
 ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "true").lower() == "true"
 PROFIT_LOCK_FEE_MULTIPLIER = max(0.0, float(os.getenv("PROFIT_LOCK_FEE_MULTIPLIER", "2.0")))
-PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "0.5")))
+PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "1.0")))
+PROFIT_LOCK_TREND_LADDER_STEP_USDT = max(
+    0.01, float(os.getenv("PROFIT_LOCK_TREND_LADDER_STEP_USDT", "2.0"))
+)
 PROFIT_LOCK_GIVEBACK_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_GIVEBACK_USDT", "0.8")))
 PROFIT_LOCK_BASE_MARGIN_USDT = max(
     0.01, float(os.getenv("PROFIT_LOCK_BASE_MARGIN_USDT", "150.0"))
@@ -929,9 +936,8 @@ OUTER_RUN_NET_GIVEBACK_USDT = max(
 )
 # 觸發門檻：未實現利潤達到此值（USDT）時開始鎖利
 PROFIT_LOCK_TRIGGER_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_TRIGGER_USDT", "4.0")))
-# 鎖利地板：止損移動後保證至少保留此值（USDT）的利潤
-# 預設與觸發門檻相同：達到4元就把止損移到「至少還有4元利潤」的位置
-PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "4.0")))
+# 鎖利地板：止損移動後保證至少保留此值（USDT）的利潤；0 代表由手續費倍數決定。
+PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "0.0")))
 # 追蹤回撤：峰值利潤繼續擴大時，允許最多回撤峰值利潤的幾成（0~1）
 # 例如 0.25 = 峰值 10 USDT 時，止損在 10*(1-0.25)=7.5 USDT 利潤處
 # 但永不低於 PROFIT_LOCK_FLOOR_USDT

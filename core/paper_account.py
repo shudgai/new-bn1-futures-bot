@@ -69,6 +69,7 @@ from core.config import (
     ENABLE_PROFIT_LOCK_USDT,
     PROFIT_LOCK_FEE_MULTIPLIER,
     PROFIT_LOCK_LADDER_STEP_USDT,
+    PROFIT_LOCK_TREND_LADDER_STEP_USDT,
     PROFIT_LOCK_GIVEBACK_USDT,
     PROFIT_LOCK_BASE_MARGIN_USDT,
     OUTER_RUN_NET_GIVEBACK_USDT,
@@ -106,6 +107,18 @@ def get_profit_lock_scale(margin_usdt: float) -> float:
 
 def get_profit_lock_giveback_usdt(peak_usdt: float, margin_usdt: float = 0.0) -> float:
     return PROFIT_LOCK_GIVEBACK_USDT * get_profit_lock_scale(margin_usdt)
+
+
+def get_profit_lock_ladder_step_usdt(
+    profit_profile: str = "", wave_regime: str = ""
+) -> float:
+    is_trend = str(profit_profile or "").upper() == "TREND_EXTENSION" or (
+        str(wave_regime or "").upper() == "TREND"
+    )
+    return (
+        PROFIT_LOCK_TREND_LADDER_STEP_USDT
+        if is_trend else PROFIT_LOCK_LADDER_STEP_USDT
+    )
 
 
 def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
@@ -1209,7 +1222,7 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-            if entry_mode == "CHANNEL_SWING" or CONTINUOUS_PIVOT_ONLY:
+            if CONTINUOUS_PIVOT_ONLY:
                 pos["sl"] = meta["sl"] = 0.0
                 pos["tp"] = meta["tp"] = 0.0
                 pos["peak_pnl_pct"] = highest_pnl
@@ -1304,11 +1317,13 @@ class PaperAccount:
                     minimum_profit_floor + trailing_gap_usdt,
                 )
                 if (
-                    not is_structure_exit_mode
+                    (entry_mode == "CHANNEL_SWING" or not is_structure_exit_mode)
                     and peak_usdt + 1e-9 >= activation_peak_usdt
                     and qty > 0 and entry_p > 0
                 ):
-                    ladder_step = PROFIT_LOCK_LADDER_STEP_USDT * lock_scale
+                    ladder_step = get_profit_lock_ladder_step_usdt(
+                        profit_profile, wave_regime
+                    ) * lock_scale
                     completed_steps = math.floor(
                         max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
                     )
@@ -1504,7 +1519,9 @@ class PaperAccount:
                 if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
                     # 第一階鎖固定 U 地板；峰值每增加一個設定步距，
                     # 保護線同步增加同樣 U 數（目前為 1U、3U、5U……）。
-                    ladder_step = PROFIT_LOCK_LADDER_STEP_USDT * lock_scale
+                    ladder_step = get_profit_lock_ladder_step_usdt(
+                        profit_profile, wave_regime
+                    ) * lock_scale
                     completed_steps = math.floor(
                         max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
                     )

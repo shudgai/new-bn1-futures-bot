@@ -37,6 +37,7 @@ from core.config import (
     CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO,
     CHANNEL_SWING_TURN_LOOKBACK_BARS,
     CHANNEL_SWING_TRAILING_ATR_MULT,
+    CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT,
     CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT,
     BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
     BTC_1M_PULSE_MIN_ATR, BTC_FLASH_CRASH_WINDOW_SEC, BTC_FLASH_CRASH_DROP_PCT,
@@ -6279,13 +6280,18 @@ class TradingEngine:
             price = float(live_price)
             upper = float(frame.iloc[-1]["kc_upper"])
             lower = float(frame.iloc[-1]["kc_lower"])
+            prev_closed = frame.iloc[-2] if len(frame) > 1 else frame.iloc[-1]
+            prev_open = float(prev_closed["open"])
+            prev_close = float(prev_closed["close"])
+            prev_is_green = prev_close > prev_open
+            prev_is_red = prev_close < prev_open
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
-        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+        if not all(math.isfinite(value) for value in (price, upper, lower, prev_open, prev_close)) or lower >= upper:
             return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
-        if price >= upper:
+        if price >= upper and prev_is_green:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_LIVE_UPPER_BREAK_LONG", "kc_upper": upper, "kc_lower": lower}
-        if price <= lower:
+        if price <= lower and prev_is_red:
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LIVE_LOWER_BREAK_SHORT", "kc_upper": upper, "kc_lower": lower}
         return {"action": "WAIT", "side": None, "reason": "WAIT_LIVE_OUTER_BREAK", "kc_upper": upper, "kc_lower": lower}
 
@@ -7254,6 +7260,35 @@ class TradingEngine:
         return {"action": "HOLD", "updates": updates}
 
     @staticmethod
+    def _channel_profit_reclaim_action(
+        position: dict, mark_price: float, atr: float,
+        min_profit_atr_mult: float,
+    ) -> dict:
+        """Exit a profitable Channel Swing only if its reversal gives back to net cost."""
+        try:
+            entry = float(position.get("entry_price") or 0.0)
+            mark = float(mark_price or 0.0)
+            peak_pct = float(position.get("peak_pnl_pct") or 0.0)
+            side = str(position.get("side") or "").upper()
+            atr = float(atr or 0.0)
+            arm_atr = max(0.0, float(min_profit_atr_mult))
+        except (TypeError, ValueError):
+            return {"action": "HOLD"}
+        if (
+            arm_atr <= 0.0 or entry <= 0.0 or mark <= 0.0 or atr <= 0.0
+            or side not in ("LONG", "SHORT")
+            or peak_pct + 1e-12 < arm_atr * atr / entry
+        ):
+            return {"action": "HOLD"}
+        long_net_break_even = entry * (1.0 + 2.0 * TAKER_FEE_RATE) / max(1e-12, 1.0 - SLIPPAGE_PCT)
+        short_net_break_even = entry * max(0.0, 1.0 - 2.0 * TAKER_FEE_RATE) / (1.0 + SLIPPAGE_PCT)
+        if side == "LONG" and mark <= long_net_break_even:
+            return {"action": "EXIT", "reason": "CHANNEL_PROFIT_RECLAIM_EXIT_LONG"}
+        if side == "SHORT" and mark >= short_net_break_even:
+            return {"action": "EXIT", "reason": "CHANNEL_PROFIT_RECLAIM_EXIT_SHORT"}
+        return {"action": "HOLD"}
+
+    @staticmethod
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
         entry_turn_low: float | None = None,
@@ -7452,9 +7487,65 @@ class TradingEngine:
                         return True
             return False
 
+        def two_bar_outer_reversal(side: str) -> bool:
+            """Two closed opposite candles must confirm a break after an outer run."""
+            try:
+                first_reversal_pos = len(frame) - 3
+                second_reversal_pos = len(frame) - 2
+                first_reversal = frame.iloc[first_reversal_pos]
+                second_reversal = frame.iloc[second_reversal_pos]
+                impulse_end = first_reversal_pos - 1
+                if impulse_end < 0:
+                    return False
+                favorable = (
+                    (lambda item: float(item["close"]) > float(item["open"]))
+                    if side == "LONG"
+                    else (lambda item: float(item["close"]) < float(item["open"]))
+                )
+                opposite = (
+                    (lambda item: float(item["close"]) < float(item["open"]))
+                    if side == "LONG"
+                    else (lambda item: float(item["close"]) > float(item["open"]))
+                )
+                if not (favorable(frame.iloc[impulse_end]) and opposite(first_reversal) and opposite(second_reversal)):
+                    return False
+                run_start = impulse_end
+                while run_start > 0 and favorable(frame.iloc[run_start - 1]):
+                    run_start -= 1
+                if side == "LONG":
+                    extreme_pos = max(
+                        range(run_start, impulse_end + 1),
+                        key=lambda pos: float(frame.iloc[pos]["high"]),
+                    )
+                    extreme = float(frame.iloc[extreme_pos]["high"])
+                    is_outer = extreme >= float(frame.iloc[extreme_pos]["kc_upper"])
+                    confirmed_break = float(second_reversal["close"]) < float(first_reversal["low"])
+                    did_not_recover = max(confirmation_high, live_high) <= extreme
+                else:
+                    extreme_pos = min(
+                        range(run_start, impulse_end + 1),
+                        key=lambda pos: float(frame.iloc[pos]["low"]),
+                    )
+                    extreme = float(frame.iloc[extreme_pos]["low"])
+                    is_outer = extreme <= float(frame.iloc[extreme_pos]["kc_lower"])
+                    confirmed_break = float(second_reversal["close"]) > float(first_reversal["high"])
+                    did_not_recover = min(confirmation_low, live_low) >= extreme
+                return bool(
+                    is_outer and confirmed_break and did_not_recover
+                    and candidate_is_after_entry(extreme_pos)
+                )
+            except (TypeError, ValueError, IndexError, KeyError):
+                return False
+
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
         if held_side == "LONG":
+            if not closed_ma3_peak and two_bar_outer_reversal("LONG"):
+                return {
+                    "action": "EXIT", "side": None,
+                    "kc_upper": upper, "kc_lower": lower,
+                    "reason": "KC_UPPER_TWO_BAR_REVERSAL_EXIT",
+                }
             if closed_ma3_peak:
                 return {
                     "action": "EXIT", "side": None,
@@ -7463,6 +7554,12 @@ class TradingEngine:
                 }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         if held_side == "SHORT":
+            if not closed_ma3_trough and two_bar_outer_reversal("SHORT"):
+                return {
+                    "action": "EXIT", "side": None,
+                    "kc_upper": upper, "kc_lower": lower,
+                    "reason": "KC_LOWER_TWO_BAR_REVERSAL_EXIT",
+                }
             if closed_ma3_trough:
                 return {
                     "action": "EXIT", "side": None,
@@ -8095,6 +8192,18 @@ class TradingEngine:
                             "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
                         }
                 if existing_pos and hard_loss_action.get("action") != "EXIT":
+                    reclaim_action = self._channel_profit_reclaim_action(
+                        existing_pos, channel_price,
+                        float(channel_df["atr"].iloc[-1]),
+                        CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT,
+                    )
+                    if reclaim_action.get("action") == "EXIT":
+                        channel_action = {
+                            "action": "EXIT", "side": None,
+                            "reason": reclaim_action["reason"],
+                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
+                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
+                        }
                     position_meta_map = getattr(self.account, "position_meta", None)
                     persisted_trailing = (
                         position_meta_map.get(symbol, {})

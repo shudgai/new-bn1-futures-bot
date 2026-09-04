@@ -3412,3 +3412,59 @@ def test_channel_max_net_loss_allows_loss_below_hard_limit():
         99.5, wallet_balance=150.0, max_loss_wallet_pct=0.03,
     )
     assert result["action"] == "HOLD"
+
+
+@pytest.mark.parametrize(
+    ("side", "reason"),
+    [("LONG", "KC_UPPER_TWO_BAR_REVERSAL_EXIT"), ("SHORT", "KC_LOWER_TWO_BAR_REVERSAL_EXIT")],
+)
+def test_channel_exits_on_confirmed_two_bar_reversal_after_outer_impulse(side, reason):
+    frame = _channel_frame()
+    if side == "LONG":
+        frame.loc[frame.index[-4], ["open", "close", "high", "low"]] = [100.5, 102.0, 102.2, 100.4]
+        frame.loc[frame.index[-3], ["open", "close", "high", "low"]] = [102.0, 101.5, 102.1, 101.4]
+        frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [101.5, 101.2, 101.6, 101.1]
+        price = 101.2
+    else:
+        frame.loc[frame.index[-4], ["open", "close", "high", "low"]] = [99.5, 98.0, 99.6, 97.8]
+        frame.loc[frame.index[-3], ["open", "close", "high", "low"]] = [98.0, 98.5, 98.6, 97.9]
+        frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [98.5, 98.8, 98.9, 98.4]
+        price = 98.8
+    result = TradingEngine._channel_swing_action(frame, price, side)
+    assert (result["action"], result["reason"]) == ("EXIT", reason)
+
+
+def test_channel_does_not_exit_when_second_reversal_does_not_break_first_reversal_low():
+    frame = _channel_frame()
+    frame.loc[frame.index[-4], ["open", "close", "high", "low"]] = [100.5, 102.0, 102.2, 100.4]
+    frame.loc[frame.index[-3], ["open", "close", "high", "low"]] = [102.0, 101.5, 102.1, 101.4]
+    # ARB-like pullback: the second red candle has not closed below the first red low.
+    frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [101.5, 101.45, 101.6, 101.3]
+
+    result = TradingEngine._channel_swing_action(frame, 101.45, "LONG")
+
+    assert result["action"] == "HOLD"
+
+@pytest.mark.parametrize(
+    ("side", "mark_price", "reason"),
+    [
+        ("LONG", 100.10, "CHANNEL_PROFIT_RECLAIM_EXIT_LONG"),
+        ("SHORT", 99.90, "CHANNEL_PROFIT_RECLAIM_EXIT_SHORT"),
+    ],
+)
+def test_channel_profit_reclaim_exit_locks_cost_after_one_atr_profit(
+    side, mark_price, reason,
+):
+    result = TradingEngine._channel_profit_reclaim_action(
+        {"side": side, "entry_price": 100.0, "peak_pnl_pct": 0.02},
+        mark_price, atr=1.0, min_profit_atr_mult=1.0,
+    )
+    assert (result["action"], result["reason"]) == ("EXIT", reason)
+
+
+def test_channel_profit_reclaim_does_not_arm_before_one_atr_profit():
+    result = TradingEngine._channel_profit_reclaim_action(
+        {"side": "SHORT", "entry_price": 100.0, "peak_pnl_pct": 0.009},
+        99.90, atr=1.0, min_profit_atr_mult=1.0,
+    )
+    assert result == {"action": "HOLD"}
