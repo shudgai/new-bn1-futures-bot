@@ -667,6 +667,13 @@ class SymbolRotation:
                         {"trades": 0, "avg_pnl": 0.0, "win_rate": 0.5, "stop_rate": 0.0},
                     )
                     overheat_penalty = min(max((abs(change_pct) - 15.0) / 15.0, 0.0), 1.0) * 15.0
+                    
+                    # 趨勢成熟度扣分 (Maturity Discount)
+                    # 針對 PUMP 等 MEME 幣，如果短時間內過度延伸，給予額外懲罰。多空鏡像適用。
+                    maturity_discount = 0.0
+                    if is_meme and abs(recent_change_pct) > 8.0:
+                        maturity_discount = min((abs(recent_change_pct) - 8.0) / 8.0, 1.0) * 25.0
+
                     if stat["trades"] >= 3:
                         pnl_score = (math.tanh(stat["avg_pnl"] / 1.5) + 1.0) / 2.0
                         history_score = (
@@ -687,7 +694,7 @@ class SymbolRotation:
                         + movement_score * 5.0
                         + volatility_priority * VOLATILITY_ROTATION_WEIGHT
                         + (12.0 if meme_burst else 0.0)
-                    ) - overheat_penalty
+                    ) - overheat_penalty - maturity_discount
                     results.append({
                         "symbol": symbol,
                         "direction": direction,

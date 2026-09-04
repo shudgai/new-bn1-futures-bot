@@ -54,6 +54,11 @@ from core.config import (
     FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
     FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC,
     FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT,
+    FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT,
+    FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC,
+    FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT,
+    FULL_MARKET_SURVEILLANCE_STEADY_MIN_EFFICIENCY,
+    FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
@@ -155,6 +160,9 @@ class TradingEngine:
         self._market_ticker_snapshots: Dict[str, dict] = {}
         self.market_prebreakout_symbols: List[str] = []
         self.market_prebreakout_directions: Dict[str, str] = {}
+        self.market_prebreakout_profiles: Dict[str, str] = {}
+        # 穩定趨勢短名單短暫保留，避免一個無方向 tick 就讓 ADA 類候選消失。
+        self._market_steady_candidates: Dict[str, dict] = {}
         # 各幣種的即時爆發力分數（abs momentum score），供候選排序使用。
         self._market_surveillance_scores: Dict[str, float] = {}
         self.market_surveillance_updated_at: float = 0.0
@@ -2735,13 +2743,25 @@ class TradingEngine:
             }
             samples = self._market_price_samples.setdefault(
                 symbol,
-                deque(maxlen=max(30, int(FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC * 2) + 10)),
+                deque(maxlen=max(
+                    30,
+                    int(max(
+                        FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC,
+                        FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC,
+                    ) * 2) + 10,
+                )),
             )
             if not samples or now > samples[-1][0]:
                 samples.append((now, float(last)))
 
         ranked_long = []
         ranked_short = []
+        steady_ranked_long = []
+        steady_ranked_short = []
+        
+        btc_1h_dir = getattr(self, "st_direction_1h_cache", {}).get("BTC/USDT", 0)
+        steady_candidates = getattr(self, "_market_steady_candidates", {})
+
         for symbol, snapshot in self._market_ticker_snapshots.items():
             if now - float(snapshot.get("updated_at") or 0.0) > 5.0:
                 continue
@@ -2757,6 +2777,8 @@ class TradingEngine:
             if abs(float(snapshot.get("percentage") or 0.0)) > SYMBOL_MAX_24H_CHANGE_PCT:
                 continue
             samples = self._market_price_samples.get(symbol) or deque()
+            
+            # 短線爆發分數計算
             short_ref = self._sample_reference_price(
                 samples, now - FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
             )
@@ -2770,6 +2792,18 @@ class TradingEngine:
             long_move_pct = (
                 (last / long_ref - 1.0) * 100.0 if long_ref else short_move_pct
             )
+            
+            # 5分鐘穩定趨勢計算
+            steady_ref = self._sample_reference_price(
+                samples, now - FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC,
+            )
+            steady_move_pct = (last / steady_ref - 1.0) * 100.0 if steady_ref else 0.0
+            
+            if steady_move_pct >= FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT and btc_1h_dir >= 0:
+                steady_ranked_long.append((steady_move_pct, symbol))
+            elif steady_move_pct <= -FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT and btc_1h_dir <= 0:
+                steady_ranked_short.append((abs(steady_move_pct), symbol))
+            
             score = 0.75 * short_move_pct + 0.25 * long_move_pct
             if max(abs(short_move_pct), abs(long_move_pct)) < FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT:
                 continue
@@ -2781,15 +2815,40 @@ class TradingEngine:
 
         ranked_long.sort(reverse=True)
         ranked_short.sort(reverse=True)
+        steady_ranked_long.sort(reverse=True)
+        steady_ranked_short.sort(reverse=True)
+        
         selected_long = ranked_long[:FULL_MARKET_SURVEILLANCE_SIDE_COUNT]
         selected_short = ranked_short[:FULL_MARKET_SURVEILLANCE_SIDE_COUNT]
-        self.market_prebreakout_symbols = [
+        
+        # 穩定趨勢保留機制
+        for _, symbol in steady_ranked_long[:FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT]:
+            steady_candidates[symbol] = {
+                "direction": "LONG",
+                "retained_until": now + FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC
+            }
+        for _, symbol in steady_ranked_short[:FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT]:
+            steady_candidates[symbol] = {
+                "direction": "SHORT",
+                "retained_until": now + FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC
+            }
+            
+        # 清除過期的穩定趨勢候選
+        expired = [s for s, d in steady_candidates.items() if now > d.get("retained_until", 0)]
+        for s in expired:
+            del steady_candidates[s]
+            
+        # 合併爆發名單與穩定趨勢名單
+        self.market_prebreakout_symbols = list(dict.fromkeys([
             row[2] for row in [*selected_long, *selected_short]
-        ]
+        ] + list(steady_candidates.keys())))
+        
         self.market_prebreakout_directions = {
             **{row[2]: "LONG" for row in selected_long},
             **{row[2]: "SHORT" for row in selected_short},
+            **{s: d["direction"] for s, d in steady_candidates.items()}
         }
+        
         # 每輪整批替換，避免已離開即時雷達的舊幣仍帶著過期高分。
         self._market_surveillance_scores = {
             row[2]: float(row[0]) for row in [*ranked_long, *ranked_short]
