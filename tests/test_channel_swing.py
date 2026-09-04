@@ -2644,8 +2644,7 @@ def test_main_loop_uses_confirmed_takeover_but_not_stalled_recovery_close():
     main_source = inspect.getsource(TradingEngine._main_loop)
     process_source = inspect.getsource(TradingEngine._process_single_symbol)
 
-    # 強勢換倉條件已停用：確認主迴圈不再呼叫 takeover，也不呼叫 stalled_recovery
-    assert "_try_channel_stronger_symbol_takeover(" not in main_source
+    assert "_try_channel_stronger_symbol_takeover(" in main_source
     assert "_try_channel_stalled_recovery_exit(" not in main_source
     assert "_channel_stalled_recovery_should_arm(" not in process_source
 

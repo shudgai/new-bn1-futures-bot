@@ -9665,7 +9665,17 @@ class TradingEngine:
                             coin = symbol.replace("/USDT", "")
                             direction_text = "多單" if sig["side"] == "LONG" else "空單"
 
-                            # 強勢換倉條件已停用（保留函式定義供未來參考）
+
+                            takeover_handled, takeover_opened = (
+                                await self._try_channel_stronger_symbol_takeover(
+                                    sig, now_time, daily_halt,
+                                )
+                            )
+                            if takeover_handled:
+                                opened_any = takeover_opened or opened_any
+                                if takeover_opened or not self.account.positions:
+                                    break
+                                continue
 
                             same_side_committed = self._channel_same_side_committed(
                                 self.account.positions,
