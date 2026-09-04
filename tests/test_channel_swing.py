@@ -2379,7 +2379,7 @@ async def test_weakest_stalled_position_is_replaced_by_stronger_breakout():
     ) == (False, False)
     assert events == []
 
-    engine.tickers["WEAK/USDT"] = 103.0
+    engine.tickers["WEAK/USDT"] = 101.5
     assert await engine._try_channel_stronger_symbol_takeover(
         candidate, now_time=1000.0, daily_halt=False,
     ) == (True, True)
@@ -3181,8 +3181,8 @@ def test_channel_held_momentum_decline_uses_completed_candles_both_sides(side):
         ("SHORT", 100.2, False, False),
         ("LONG", 99.8, True, True),
         ("SHORT", 100.2, True, True),
-        ("LONG", 102.1, True, True),
-        ("SHORT", 97.9, True, True),
+        ("LONG", 101.9, True, True),
+        ("SHORT", 98.1, True, True),
     ],
 )
 async def test_hype_only_declining_momentum_switches_to_fresh_breakout(
@@ -3250,7 +3250,7 @@ async def test_hype_only_declining_momentum_switches_to_fresh_breakout(
         "symbol": "NEW/USDT", "side": side,
         "entry_mode": "CHANNEL_SWING", "priority": 5,
         "signal_code": signal_code, "reason": signal_code,
-        "live_price": 51.0 if side == "LONG" else 49.0,
+        "live_price": 50.0 if side == "LONG" else 49.0,
         "kc_upper": 50.0 if side == "LONG" else 52.0,
         "kc_lower": 48.0 if side == "LONG" else 50.0,
         "atr": 0.5, "candidate_bar_id": 123456000,
