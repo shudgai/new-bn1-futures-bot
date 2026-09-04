@@ -926,6 +926,10 @@ PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STE
 PROFIT_LOCK_TREND_LADDER_STEP_USDT = max(
     0.01, float(os.getenv("PROFIT_LOCK_TREND_LADDER_STEP_USDT", "2.0"))
 )
+# Channel Swing 鎖利線允許的 ATR 回撤緩衝，仍不低於手續費保護底線。
+PROFIT_LOCK_ATR_BUFFER_MULTIPLIER = max(
+    0.0, float(os.getenv("PROFIT_LOCK_ATR_BUFFER_MULTIPLIER", "0.2"))
+)
 PROFIT_LOCK_GIVEBACK_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_GIVEBACK_USDT", "0.8")))
 PROFIT_LOCK_BASE_MARGIN_USDT = max(
     0.01, float(os.getenv("PROFIT_LOCK_BASE_MARGIN_USDT", "150.0"))

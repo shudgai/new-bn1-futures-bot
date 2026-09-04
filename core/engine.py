@@ -3486,6 +3486,15 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             getattr(self, "tickers", {})[symbol] = planned_price
+            desired_direction = 1 if str(side).upper() == "LONG" else -1
+            signal_direction_5m = int(signal.get("st_direction_5m") or 0)
+            signal_direction_1h = int(signal.get("st_direction_1h") or 0)
+            if signal_direction_5m != desired_direction or signal_direction_1h != desired_direction:
+                self.account.log(
+                    f"🛑 {symbol} {side} 多週期方向不一致（3m={signal_direction_5m}, 1h={signal_direction_1h}），取消開倉",
+                    "WARNING",
+                )
+                return False
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         if entry_mode == "CHANNEL_SWING" and signal.get("profit_potential") is not None:
             projected_room_pct = max(0.0, float(signal.get("profit_potential") or 0.0)) / 100.0
@@ -8666,6 +8675,8 @@ class TradingEngine:
                         "trend_quality": self._directional_trend_quality(
                             channel_df, channel_price, target_side,
                         ),
+                        "st_direction_5m": int(channel_df["st_direction"].iloc[-2]) if "st_direction" in channel_df.columns else 0,
+                        "st_direction_1h": int(self.st_direction_1h_cache.get(symbol) or 0),
                     })
                     return signal_progress, detected_candidates
 
@@ -8731,6 +8742,8 @@ class TradingEngine:
                         "confirmed_volume_ratio": self._channel_volume_ratio(
                             confirmed_frame,
                         ),
+                        "st_direction_5m": int(channel_df["st_direction"].iloc[-2]) if "st_direction" in channel_df.columns else 0,
+                        "st_direction_1h": int(self.st_direction_1h_cache.get(symbol) or 0),
                         "reason": (
                             f"Channel Swing closed KC body adjacent break {target_side}"
                             if channel_action.get("reason") in (

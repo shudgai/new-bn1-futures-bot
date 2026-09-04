@@ -43,31 +43,28 @@ async def test_fee_floor_then_half_usdt_ladder(tmp_path, monkeypatch):
     )
 
     # Notional=750U, round-trip fee=0.75U, first protected floor=1.50U.
-    # Activation adds the 0.8U giveback, so the first threshold is 2.30U.
-    await account.update_positions({"BTC/USDT": 100.30})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(0.0)
-
-    await account.update_positions({"BTC/USDT": 100.3066666667})
+    # The first protection floor activates immediately at 1.50U.
+    await account.update_positions({"BTC/USDT": 100.20})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.20)
 
-    # Before the next 0.5U threshold, the first 1.50U floor stays fixed.
-    await account.update_positions({"BTC/USDT": 100.372})
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.20)
-
-    # At 2.80U peak, advance one 0.5U step: 1.50U -> 2.00U locked.
-    await account.update_positions({"BTC/USDT": 100.3733333334})
+    await account.update_positions({"BTC/USDT": 100.2666666667})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.2666666667)
 
-    # At 3.30U peak, advance the next 0.5U step: 2.00U -> 2.50U locked.
-    await account.update_positions({"BTC/USDT": 100.44})
+    # Before the next 0.5U threshold, the 2.00U floor stays fixed.
+    await account.update_positions({"BTC/USDT": 100.32})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.2666666667)
+
+    # At 2.50U peak, advance one 0.5U step: 2.00U -> 2.50U locked.
+    await account.update_positions({"BTC/USDT": 100.3333333334})
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.3333333333)
+
+    await account.update_positions({"BTC/USDT": 100.44})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(100.4)
     assert account.positions["BTC/USDT"]["profit_lock_mode"] == "0.5U_LADDER_0.8U_GAP"
     assert not account.position_meta["BTC/USDT"].get("fixed_profit_lock_pct_armed")
     assert not account.position_meta["BTC/USDT"].get("early_profit_guard_armed")
 
     await account.update_positions({"BTC/USDT": 100.34})
-    assert "BTC/USDT" in account.positions
-    await account.update_positions({"BTC/USDT": 100.32})
     assert "BTC/USDT" not in account.positions
 
 
@@ -176,12 +173,12 @@ async def test_one_usdt_floor_advances_every_two_usdt(tmp_path, monkeypatch):
         entry_context={"entry_mode": "MA_ALIGNMENT"},
     )
 
-    await account.update_positions({"BTC/USDT": 105.98})  # 2.99U
-    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(95.0)
-
-    await account.update_positions({"BTC/USDT": 106.0})   # 3U peak -> lock 1U
+    await account.update_positions({"BTC/USDT": 105.98})  # 2.99U, first 1U floor
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(102.0)
 
-    await account.update_positions({"BTC/USDT": 110.0})   # 5U peak -> lock 3U
+    await account.update_positions({"BTC/USDT": 106.0})   # 3U peak -> lock 3U
     assert account.positions["BTC/USDT"]["sl"] == pytest.approx(106.0)
+
+    await account.update_positions({"BTC/USDT": 110.0})   # 5U peak -> lock 5U
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(110.0)
     assert account.positions["BTC/USDT"]["profit_lock_mode"] == "2U_LADDER_2U_GAP"

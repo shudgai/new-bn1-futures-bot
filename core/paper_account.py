@@ -70,6 +70,7 @@ from core.config import (
     PROFIT_LOCK_FEE_MULTIPLIER,
     PROFIT_LOCK_LADDER_STEP_USDT,
     PROFIT_LOCK_TREND_LADDER_STEP_USDT,
+    PROFIT_LOCK_ATR_BUFFER_MULTIPLIER,
     PROFIT_LOCK_GIVEBACK_USDT,
     PROFIT_LOCK_BASE_MARGIN_USDT,
     OUTER_RUN_NET_GIVEBACK_USDT,
@@ -1320,7 +1321,7 @@ class PaperAccount:
                         continue
                 activation_peak_usdt = max(
                     PROFIT_LOCK_TRIGGER_USDT * lock_scale,
-                    minimum_profit_floor + trailing_gap_usdt,
+                    minimum_profit_floor,
                 )
                 if (
                     (entry_mode == "CHANNEL_SWING" or not is_structure_exit_mode)
@@ -1335,6 +1336,12 @@ class PaperAccount:
                     )
                     step_floor_usdt = minimum_profit_floor + completed_steps * ladder_step
                     floor_price_move = step_floor_usdt / max(qty, 1e-12)
+                    if entry_mode == "CHANNEL_SWING":
+                        fee_floor_move = minimum_profit_floor / max(qty, 1e-12)
+                        floor_price_move = max(
+                            fee_floor_move,
+                            floor_price_move - position_atr * PROFIT_LOCK_ATR_BUFFER_MULTIPLIER,
+                        )
                     floor_sl = (
                         entry_p + floor_price_move
                         if side == "LONG" else entry_p - floor_price_move
@@ -1517,7 +1524,7 @@ class PaperAccount:
                 )
                 activation_peak_usdt = max(
                     PROFIT_LOCK_TRIGGER_USDT * lock_scale,
-                    minimum_profit_floor + trailing_gap_usdt,
+                    minimum_profit_floor,
                 )
 
                 # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
@@ -1534,6 +1541,12 @@ class PaperAccount:
                     step_floor_usdt = minimum_profit_floor + completed_steps * ladder_step
                     notional_units = qty
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
+                    if entry_mode == "CHANNEL_SWING":
+                        fee_floor_move = minimum_profit_floor / max(notional_units, 1e-12)
+                        floor_price_move = max(
+                            fee_floor_move,
+                            floor_price_move - position_atr * PROFIT_LOCK_ATR_BUFFER_MULTIPLIER,
+                        )
                     if side == "LONG":
                         floor_sl = entry_p + floor_price_move
                     else:
