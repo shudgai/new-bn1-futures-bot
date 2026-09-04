@@ -8330,11 +8330,15 @@ class TradingEngine:
                     and not chop_breakout_context
                     and not existing_pos
                 ):
-                    # 空手時只接受已收盤外軌 K 的緊接突破，避免價格瞬間
-                    # 刺穿外軌就追入，讓下跌後反彈／上漲後回落的假突破先被淘汰。
-                    channel_action = self._channel_closed_body_break_entry_action(
+                    # 空手時先接受價格突破 KC 外側，沒有即時突破才回退到
+                    # 已收盤外軌 K 的緊接突破；下單前仍會檢查方向與淨獲利空間。
+                    channel_action = self._channel_immediate_outer_break_action(
                         channel_df, channel_price,
                     )
+                    if channel_action.get("action") != "ENTER":
+                        channel_action = self._channel_closed_body_break_entry_action(
+                            channel_df, channel_price,
+                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
