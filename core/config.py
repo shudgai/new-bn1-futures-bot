@@ -309,10 +309,9 @@ PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM = os.getenv(
 TREND_EXTENSION_MIN_ROOM_PCT = float(os.getenv("TREND_EXTENSION_MIN_ROOM_PCT", "0.012"))
 TREND_EXTENSION_MIN_VOLUME_RATIO = float(os.getenv("TREND_EXTENSION_MIN_VOLUME_RATIO", "0.60"))
 TREND_EXTENSION_MIN_BODY_ATR_MULT = float(os.getenv("TREND_EXTENSION_MIN_BODY_ATR_MULT", "0.20"))
-# 支撐/壓力回踩至少保留 0.5% 至前高/前低；避免只有交易成本等級空間仍開倉。
-MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0050"))
-# 低空間例外已關閉：若獲利空間不足設定門檻，直接拒絕進場，不再允許小倉嘗試。
-# 這樣能避免「看起來很強、但實際沒有足夠承接空間」的低價值交易被開倉。
+# 只要求扣除成本後仍有正的預估淨獲利空間；0 表示不再額外要求固定百分比。
+MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0"))
+# 淨空間為負仍直接拒絕，正的淨空間則交由其他方向與動能條件判斷。
 # 實驗模式可停用 BOUNCE 淨風報比攔截，保留門檻方便之後用實績重新啟用。
 STRUCTURED_NET_RR_FILTER_ENABLED = os.getenv(
     "STRUCTURED_NET_RR_FILTER_ENABLED", "true"
