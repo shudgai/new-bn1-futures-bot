@@ -6,6 +6,7 @@ import ccxt.async_support as ccxt
 import ccxt.pro as ccxtpro
 import pandas as pd
 import weakref
+from collections import deque
 from typing import Dict, List
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
@@ -36,7 +37,7 @@ from core.config import (
     CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO,
     CHANNEL_SWING_TURN_LOOKBACK_BARS,
     BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
-    BTC_1M_PULSE_MIN_ATR,
+    BTC_1M_PULSE_MIN_ATR, BTC_FLASH_CRASH_WINDOW_SEC, BTC_FLASH_CRASH_DROP_PCT,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -48,6 +49,11 @@ from core.config import (
     CONTINUOUS_REENTRY_COOLDOWN_SEC, MA5_STOP_LOSS_COOLDOWN_SEC,
     EXHAUSTION_SNIPER_STOP_LOSS_PCT, EXHAUSTION_SNIPER_GRACE_SEC,
     KELTNER_MIN_VOLUME_RATIO,
+    SYMBOL_MIN_QUOTE_VOLUME, SYMBOL_MAX_24H_CHANGE_PCT, SYMBOL_MIN_LISTING_DAYS,
+    FULL_MARKET_SURVEILLANCE_ENABLED, FULL_MARKET_SURVEILLANCE_SIDE_COUNT,
+    FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
+    FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC,
+    FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT,
 )
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
@@ -142,10 +148,24 @@ class TradingEngine:
         self.account.on_trade_closed = self._on_trade_closed
         self.tickers: Dict[str, float] = {}
         self.ticker_volumes: Dict[str, float] = {}  # 24小時成交量 (USDT)
+        # Binance 全合約 miniTicker 每秒雷達。UI 牌面只負責顯示，不再限制
+        # 真正被監看的市場；只有多空各自排名最前的少量標的進完整 K 線檢查。
+        self.market_surveillance_contracts = None
+        self._market_price_samples: Dict[str, deque] = {}
+        self._market_ticker_snapshots: Dict[str, dict] = {}
+        self.market_prebreakout_symbols: List[str] = []
+        self.market_prebreakout_directions: Dict[str, str] = {}
+        # 各幣種的即時爆發力分數（abs momentum score），供候選排序使用。
+        self._market_surveillance_scores: Dict[str, float] = {}
+        self.market_surveillance_updated_at: float = 0.0
         # 非紙上模式可下單合約集合；None代表紙上模式不需執行市場交集。
         self.execution_symbols = None
         self.last_ticker_success_ts: float = time.time()
         self._last_stale_ticker_log: float = 0.0
+        # BTC 插針偵測：保留最近幾秒的 BTC 即時報價樣本（timestamp, price）。
+        # 當窗口內跌幅 >= BTC_FLASH_CRASH_DROP_PCT 時觸發緊急平多。
+        self._btc_price_samples: deque = deque(maxlen=200)
+        self._btc_flash_crash_last_triggered_at: float = 0.0
         self.ema_50_1h_cache: Dict[str, float] = {}
         # 大週期（1h）本身動能是不是也在衰退，用同一批 update_1h_trend_
         # cache() 已經抓到的1h K線算 ADX，判斷「不只是5分K的小趨勢要提防，
@@ -764,10 +784,27 @@ class TradingEngine:
         真實主網，用它的市場資料當作真相來源，只警示不中斷啟動（單一
         幣種異常不該影響其他幣種正常交易）。"""
         try:
-            await self.exchange.load_markets()
+            markets = await self.exchange.load_markets()
         except Exception as exc:
             self.account.log(f"⚠️ [幣種名單核對] 無法載入市場資料，略過本次核對：{exc}", "WARNING")
             return
+        now_ms = time.time() * 1000
+        min_listing_ms = SYMBOL_MIN_LISTING_DAYS * 24 * 60 * 60 * 1000
+        self.market_surveillance_contracts = {
+            market["symbol"].replace(":USDT", "")
+            for market in markets.values()
+            if market.get("active")
+            and market.get("swap")
+            and market.get("quote") == "USDT"
+            and market.get("info", {}).get("contractType") == "PERPETUAL"
+            and market.get("info", {}).get("underlyingType") == "COIN"
+            and "monitoring" not in market.get("info", {}).get("tags", [])
+            and (
+                not (market.get("info", {}).get("onboardDate") or market.get("info", {}).get("deliveryDate"))
+                or now_ms - int(market.get("info", {}).get("onboardDate") or market.get("info", {}).get("deliveryDate"))
+                >= min_listing_ms
+            )
+        }
         invalid = []
         for sym in sorted(MAINSTREAM_SYMBOLS):
             try:
@@ -1594,7 +1631,7 @@ class TradingEngine:
                     first_reversal_pivot = False
                     rapid_impulse_pivot = False
                     rapid_reverse_side = None
-                    if is_cr_position and len(ma3_live) >= 4:
+                    if len(ma3_live) >= 4:
                         ma3_prev3 = float(ma3_live.iloc[-4])
                         ma3_prev2 = float(ma3_live.iloc[-3])
                         ma3_prev = float(ma3_live.iloc[-2])
@@ -1680,10 +1717,9 @@ class TradingEngine:
                     # 一般盤中轉折只作診斷；未收線 K 可能重繪，不再先平倉造成
                     # 「平空後沒有買多」的空窗。只有大實體突破 MA3 的急速反轉
                     # 才即時平倉並沿用下方既有邏輯同輪反手。
+                    # 放寬限制：急速反轉 (rapid_impulse_pivot) 可無視外軌死抱 (kc_outer_lock) 與波段限制強制平倉。
                     live_pivot_exit = bool(
                         not CONTINUOUS_PIVOT_ONLY
-                        and wave_regime != "TREND"
-                        and not kc_outer_lock.get("blocked")
                         and not same_bar_reversal
                         and rapid_impulse_pivot
                     )
@@ -1695,7 +1731,6 @@ class TradingEngine:
                         live_next_rail_flatten = False
                         trend_exhaustion_exit = False
                         two_bar_opposite_trend_exit = False
-                        live_pivot_exit = False
                         opposite_pivot = False
                         outer_rail_flatten = False
                         outer_run_return_exit = False
@@ -1713,13 +1748,14 @@ class TradingEngine:
                             else (
                                 (trigger.get("ma5_reversed") and ma5_exit_ready)
                                 or trigger.get("is_panic_reversal")
+                                or live_pivot_exit
                                 or pre_turn_exit
                             )
                         )
                     )
                     pivot_exit_ready = (
                         opposite_pivot or live_next_rail_flatten or trend_exhaustion_exit or two_bar_opposite_trend_exit or pre_turn_exit or live_pivot_exit or outer_run_return_exit or opposite_candle_exit
-                        if is_cr_position else bool(trigger.get("strong") or pre_turn_exit)
+                        if is_cr_position else bool(trigger.get("strong") or pre_turn_exit or live_pivot_exit)
                     )
                     bottom_grace, bottom_age = self._bottom_entry_grace(
                         position, time.time()
@@ -2546,46 +2582,229 @@ class TradingEngine:
                 )
 
     async def _ticker_loop(self):
-        """使用 WebSocket (ccxt.pro) 接收真正的毫秒級即時報價串流"""
+        """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""
         while True:
             try:
-                monitored_symbols = list(dict.fromkeys([
-                    *DEFAULT_SYMBOLS,
-                    *self.account.positions.keys(),
-                ]))
+                # symbols=None 對 Binance USD-M 會使用 !miniTicker@arr，一條
+                # WebSocket 即可接收所有合約，不會為 500 多個幣建立 REST 請求。
+                tickers = await self.ws_exchange.watch_tickers()
 
-                # 若無監控幣種，短暫等待
-                if not monitored_symbols:
-                    await asyncio.sleep(1)
-                    continue
-
-                # watch_tickers 會一直等待直到有新的 WebSocket 封包抵達
-                tickers = await self.ws_exchange.watch_tickers(monitored_symbols)
-
-                for sym, t in tickers.items():
-                    if 'last' in t and t['last'] is not None:
-                        price = float(t['last'])
-                        clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
+                for sym, ticker in tickers.items():
+                    if ticker.get("last") is not None:
+                        price = float(ticker["last"])
+                        clean_sym = sym.replace(":USDT", "") if sym.endswith(":USDT") else sym
                         self.tickers[clean_sym] = price
                         self.tickers[sym] = price
-                    if 'quoteVolume' in t and t['quoteVolume'] is not None:
-                        clean_sym = sym.replace(':USDT', '') if sym.endswith(':USDT') else sym
-                        self.ticker_volumes[clean_sym] = float(t['quoteVolume'])
-                        self.ticker_volumes[sym] = float(t['quoteVolume'])
+                    if ticker.get("quoteVolume") is not None:
+                        clean_sym = sym.replace(":USDT", "") if sym.endswith(":USDT") else sym
+                        self.ticker_volumes[clean_sym] = float(ticker["quoteVolume"])
+                        self.ticker_volumes[sym] = float(ticker["quoteVolume"])
 
-                self.last_ticker_success_ts = time.time()
+                now = time.time()
+                self._update_market_surveillance(tickers, now)
+                self.last_ticker_success_ts = now
+
+                # ── BTC 插針偵測 ─────────────────────────────────────
+                # 用 WebSocket 毫秒級報價做滑動視窗；比等到 1m K 收盤快太多。
+                if BTC_FLASH_CRASH_DROP_PCT > 0:
+                    btc_raw = (
+                        tickers.get("BTC/USDT:USDT")
+                        or tickers.get("BTC/USDT")
+                        or {}
+                    )
+                    btc_live = btc_raw.get("last")
+                    if btc_live is not None:
+                        btc_live = float(btc_live)
+                        self._btc_price_samples.append((now, btc_live))
+                        # 找到窗口起始參考價（BTC_FLASH_CRASH_WINDOW_SEC 秒前）
+                        cutoff = now - BTC_FLASH_CRASH_WINDOW_SEC
+                        ref_price: float | None = None
+                        for ts, px in self._btc_price_samples:
+                            if ts <= cutoff:
+                                ref_price = px
+                            else:
+                                break
+                        if ref_price and ref_price > 0:
+                            drop_pct = (ref_price - btc_live) / ref_price * 100.0
+                            # 冷卻：同一次插針事件最多觸發一次（60 秒內不重複）
+                            cooldown_ok = now - self._btc_flash_crash_last_triggered_at > 60.0
+                            if drop_pct >= BTC_FLASH_CRASH_DROP_PCT and cooldown_ok:
+                                self._btc_flash_crash_last_triggered_at = now
+                                long_positions = self._btc_flash_crash_close_symbols(
+                                    self.account.positions,
+                                    getattr(self.account, "position_meta", {}),
+                                )
+                                if long_positions:
+                                    self.account.log(
+                                        f"🚨 [BTC插針緊急平倉] BTC {BTC_FLASH_CRASH_WINDOW_SEC:.0f}秒內急跌 "
+                                        f"{drop_pct:.2f}% (≥{BTC_FLASH_CRASH_DROP_PCT}%)，"
+                                        f"立即市價平掉 {len(long_positions)} 個多單："
+                                        + ", ".join(long_positions),
+                                        "DANGER",
+                                    )
+                                    for sym in list(long_positions):
+                                        close_price = float(
+                                            self.tickers.get(sym)
+                                            or self.tickers.get(f"{sym}:USDT")
+                                            or 0.0
+                                        )
+                                        if close_price > 0:
+                                            asyncio.create_task(
+                                                self.account.close_position(
+                                                    sym,
+                                                    close_price,
+                                                    f"BTC插針緊急平倉 ({drop_pct:.2f}%↓/{BTC_FLASH_CRASH_WINDOW_SEC:.0f}s)",
+                                                    is_manual=True,
+                                                )
+                                            )
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                # 遇到錯誤時退回使用 REST polling (update_market_prices) 做為備援
-                # 並等待一下再重新嘗試連線 WS
-                self.account.log(f"⚠️ [WebSocket Ticker Loop] 錯誤: {e}，暫時退回 REST 抓取...", "WARNING")
+            except Exception as exc:
+                self.account.log(
+                    f"⚠️ [WebSocket Ticker Loop] 錯誤: {exc}，暫時退回 REST 抓取...",
+                    "WARNING",
+                )
                 try:
                     await self.update_market_prices()
-                except Exception as rest_e:
-                    self.account.log(f"⚠️ [REST Fallback] 錯誤: {rest_e}", "WARNING")
+                except Exception as rest_exc:
+                    self.account.log(f"⚠️ [REST Fallback] 錯誤: {rest_exc}", "WARNING")
                 await asyncio.sleep(2)
+
+    @staticmethod
+    def _sample_reference_price(samples: deque, cutoff: float) -> float | None:
+        for sample_at, price in reversed(samples):
+            if sample_at <= cutoff:
+                return float(price)
+        return None
+
+    @staticmethod
+    def _btc_flash_crash_close_symbols(
+        positions: dict, position_meta: dict | None = None,
+    ) -> list[str]:
+        """Return regular long positions; Channel Swing waits for its MA3 exit."""
+        position_meta = position_meta or {}
+        eligible = []
+        for symbol, position in positions.items():
+            meta = position_meta.get(symbol, {})
+            entry_mode = str(
+                position.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper()
+            reason = str(
+                position.get("reason") or meta.get("reason") or ""
+            ).upper()
+            is_channel_swing = bool(
+                entry_mode == "CHANNEL_SWING" or "CHANNEL SWING" in reason
+            )
+            if (
+                str(position.get("side") or "").upper() == "LONG"
+                and not is_channel_swing
+            ):
+                eligible.append(symbol)
+        return eligible
+
+    def _update_market_surveillance(self, tickers: dict, now: float | None = None) -> None:
+        """用全市場秒級價格速度選多空短名單；不在這一層產生交易訊號。"""
+        if not FULL_MARKET_SURVEILLANCE_ENABLED:
+            self.market_prebreakout_symbols = []
+            self.market_prebreakout_directions = {}
+            return
+        if self.market_surveillance_contracts is None:
+            return
+        now = float(now if now is not None else time.time())
+        excluded_bases = {
+            "BTC", "ETH", "BNB", "APT", "FET", "TAO",
+            "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
+            "USD1", "BUSD", "USTC",
+        }
+        for raw_symbol, ticker in tickers.items():
+            symbol = str(raw_symbol).replace(":USDT", "")
+            if symbol not in self.market_surveillance_contracts:
+                continue
+            last = ticker.get("last")
+            if last is None or float(last) <= 0:
+                continue
+            quote_volume = float(ticker.get("quoteVolume") or 0.0)
+            percentage = float(ticker.get("percentage") or 0.0)
+            self._market_ticker_snapshots[symbol] = {
+                "last": float(last),
+                "quote_volume": quote_volume,
+                "percentage": percentage,
+                "updated_at": now,
+            }
+            samples = self._market_price_samples.setdefault(
+                symbol,
+                deque(maxlen=max(30, int(FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC * 2) + 10)),
+            )
+            if not samples or now > samples[-1][0]:
+                samples.append((now, float(last)))
+
+        ranked_long = []
+        ranked_short = []
+        for symbol, snapshot in self._market_ticker_snapshots.items():
+            if now - float(snapshot.get("updated_at") or 0.0) > 5.0:
+                continue
+            if symbol in ENTRY_DISABLED_SYMBOLS:
+                continue
+            if self.execution_symbols is not None and symbol not in self.execution_symbols:
+                continue
+            base = symbol.split("/", 1)[0].upper()
+            if base in excluded_bases or base.endswith(("UP", "DOWN", "BULL", "BEAR")):
+                continue
+            if float(snapshot.get("quote_volume") or 0.0) < SYMBOL_MIN_QUOTE_VOLUME:
+                continue
+            if abs(float(snapshot.get("percentage") or 0.0)) > SYMBOL_MAX_24H_CHANGE_PCT:
+                continue
+            samples = self._market_price_samples.get(symbol) or deque()
+            short_ref = self._sample_reference_price(
+                samples, now - FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
+            )
+            if not short_ref:
+                continue
+            last = float(snapshot["last"])
+            short_move_pct = (last / short_ref - 1.0) * 100.0
+            long_ref = self._sample_reference_price(
+                samples, now - FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC,
+            )
+            long_move_pct = (
+                (last / long_ref - 1.0) * 100.0 if long_ref else short_move_pct
+            )
+            score = 0.75 * short_move_pct + 0.25 * long_move_pct
+            if max(abs(short_move_pct), abs(long_move_pct)) < FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT:
+                continue
+            row = (abs(score), abs(short_move_pct), symbol)
+            if score > 0:
+                ranked_long.append(row)
+            elif score < 0:
+                ranked_short.append(row)
+
+        ranked_long.sort(reverse=True)
+        ranked_short.sort(reverse=True)
+        selected_long = ranked_long[:FULL_MARKET_SURVEILLANCE_SIDE_COUNT]
+        selected_short = ranked_short[:FULL_MARKET_SURVEILLANCE_SIDE_COUNT]
+        self.market_prebreakout_symbols = [
+            row[2] for row in [*selected_long, *selected_short]
+        ]
+        self.market_prebreakout_directions = {
+            **{row[2]: "LONG" for row in selected_long},
+            **{row[2]: "SHORT" for row in selected_short},
+        }
+        # 每輪整批替換，避免已離開即時雷達的舊幣仍帶著過期高分。
+        self._market_surveillance_scores = {
+            row[2]: float(row[0]) for row in [*ranked_long, *ranked_short]
+        }
+        self.market_surveillance_updated_at = now
+
+    def market_surveillance_status(self) -> dict:
+        return {
+            "enabled": bool(FULL_MARKET_SURVEILLANCE_ENABLED),
+            "mode": "binance_all_contracts_websocket",
+            "tracked_contracts": len(self._market_ticker_snapshots),
+            "eligible_contracts": len(self.market_surveillance_contracts or ()),
+            "shortlist": list(self.market_prebreakout_symbols),
+            "directions": dict(self.market_prebreakout_directions),
+            "updated_at": self.market_surveillance_updated_at,
+        }
 
     async def update_1h_trend_cache(self):
         """10 分鐘才抓取一次 1h 大週期數據，避免頻繁調用 API Rate Limit"""
@@ -4458,13 +4677,26 @@ class TradingEngine:
     def _select_strongest_same_side_candidates(
         candidates: list[dict],
         symbol_scores: dict[str, float] = None,
+        surveillance_scores: dict[str, float] = None,
     ) -> tuple[list[dict], list[dict]]:
-        """Sort candidates by symbol score and energy, keeping all valid candidates."""
+        """Sort candidates by multiple signal quality dimensions.
+
+        排序維度（由高到低優先）：
+        1. symbol_rotation final_score（含 AI 評分，深度輪替品質）
+        2. 全市場即時爆發力（_market_surveillance_scores，sub-second momentum）
+        3. KC 通道能量（trend_quality × volume_ratio）
+        4. 趨勢品質 / 量比
+        5. KC 進場優先級（priority）
+        6. 預估獲利空間（profit_potential 或 ATR%）
+        7. 訊號分（score）
+        """
         scores = symbol_scores or {}
+        surveillance_scores = surveillance_scores or {}
         ranked = sorted(
             candidates,
             key=lambda item: (
                 float(scores.get(item.get("symbol"), 0.0)),
+                float(surveillance_scores.get(item.get("symbol"), 0.0)),
                 TradingEngine._channel_candidate_energy(item),
                 float(item.get("trend_quality") or 0.0),
                 float(item.get("volume_ratio") or 0.0),
@@ -6838,39 +7070,110 @@ class TradingEngine:
         # 離開外軌，會錯過峰／谷並把已取得的利潤還回去。
         # 峰／谷必須是完整三點局部極值。只檢查候選後一根會把已經
         # 連續下降／上升的 MA3 誤認為新峰頂／谷底，造成過早平倉。
-        closed_ma3_peak = bool(
-            pre_signal_ma3 < signal_ma3 - 1e-12
-            and previous_ma3 < signal_ma3 - 1e-12
+        # 不把單一最小跳動造成的 MA3 浮點微彎視為反向極值。PUMP 這筆
+        # 只有約 0.0078% 的 MA3 回落，下一根便續漲；舊的 1e-12 門檻仍會
+        # 誤判成完整峰頂。反轉幅度至少要達價格的 0.035%，或 KC 半寬的
+        # 5%，多空使用完全相同的鏡像門檻。
+        # 峰／谷初次轉彎若尚未達有效幅度，不能只檢查一次便永久遺失。
+        # 在設定的最近 K 棒範圍內持續追蹤該極值；後續 MA3 累積反轉達標
+        # 才平倉。若期間創出更高峰／更低谷，舊候選自動失效。
+        latest_closed_pos = len(frame) - 2
+        turn_lookback = max(
+            2, int(getattr(config, "CHANNEL_SWING_TURN_LOOKBACK_BARS", 12)),
         )
-        closed_ma3_trough = bool(
-            pre_signal_ma3 > signal_ma3 + 1e-12
-            and previous_ma3 > signal_ma3 + 1e-12
-        )
-        exit_pivot_after_entry = True
-        if held_side in ("LONG", "SHORT") and position_open_timestamp:
-            exit_pivot_after_entry = False
-            if "timestamp" in frame.columns:
-                try:
-                    signal_open_ms = float(signal_row["timestamp"])
-                    timeframe_ms = 60_000.0
-                    if signal_pos > 0:
-                        inferred_ms = signal_open_ms - float(
-                            frame.iloc[signal_pos - 1]["timestamp"]
-                        )
-                        if inferred_ms > 0.0:
-                            timeframe_ms = inferred_ms
-                    exit_pivot_after_entry = bool(
-                        signal_open_ms + timeframe_ms
-                        > float(position_open_timestamp) * 1000.0
+
+        def candidate_is_after_entry(candidate_pos: int) -> bool:
+            if not position_open_timestamp:
+                return True
+            if "timestamp" not in frame.columns:
+                return False
+            try:
+                candidate_open_ms = float(frame.iloc[candidate_pos]["timestamp"])
+                timeframe_ms = 60_000.0
+                if candidate_pos > 0:
+                    inferred_ms = candidate_open_ms - float(
+                        frame.iloc[candidate_pos - 1]["timestamp"]
                     )
+                    if inferred_ms > 0.0:
+                        timeframe_ms = inferred_ms
+                return bool(
+                    candidate_open_ms + timeframe_ms
+                    > float(position_open_timestamp) * 1000.0
+                )
+            except (TypeError, ValueError, IndexError, KeyError):
+                return False
+
+        def recent_confirmed_outer_turn(side: str) -> bool:
+            first_candidate = max(1, latest_closed_pos - turn_lookback)
+            for candidate_pos in range(
+                latest_closed_pos - 1, first_candidate - 1, -1,
+            ):
+                before = frame.iloc[candidate_pos - 1]
+                candidate = frame.iloc[candidate_pos]
+                after = frame.iloc[candidate_pos + 1]
+                try:
+                    before_ma3 = float(before["ma3"])
+                    candidate_ma3 = float(candidate["ma3"])
+                    after_ma3 = float(after["ma3"])
+                    candidate_upper = float(candidate["kc_upper"])
+                    candidate_lower = float(candidate["kc_lower"])
+                    candidate_high = max(
+                        float(candidate["open"]), float(candidate["high"]),
+                        float(candidate["close"]),
+                    )
+                    candidate_low = min(
+                        float(candidate["open"]), float(candidate["low"]),
+                        float(candidate["close"]),
+                    )
+                    latest_closed_ma3 = float(frame.iloc[latest_closed_pos]["ma3"])
+                    later_ma3 = pd.to_numeric(
+                        frame.iloc[candidate_pos + 1:latest_closed_pos + 1]["ma3"],
+                        errors="coerce",
+                    ).dropna()
                 except (TypeError, ValueError, IndexError, KeyError):
-                    exit_pivot_after_entry = False
+                    continue
+                if (
+                    later_ma3.empty
+                    or not all(math.isfinite(value) for value in (
+                        before_ma3, candidate_ma3, after_ma3,
+                        candidate_upper, candidate_lower, candidate_high,
+                        candidate_low, latest_closed_ma3,
+                    ))
+                    or candidate_lower >= candidate_upper
+                    or not candidate_is_after_entry(candidate_pos)
+                ):
+                    continue
+                turn_threshold = max(
+                    abs(candidate_ma3) * 0.00035,
+                    (candidate_upper - candidate_lower) / 2.0 * 0.05,
+                    1e-12,
+                )
+                if side == "LONG":
+                    if (
+                        candidate_ma3 >= candidate_upper
+                        and candidate_high >= candidate_upper
+                        and before_ma3 < candidate_ma3 - 1e-12
+                        and after_ma3 < candidate_ma3 - 1e-12
+                        and float(later_ma3.max()) <= candidate_ma3 + 1e-12
+                        and latest_closed_ma3 <= candidate_ma3 - turn_threshold
+                    ):
+                        return True
+                elif (
+                    candidate_ma3 <= candidate_lower
+                    and candidate_low <= candidate_lower
+                    and before_ma3 > candidate_ma3 + 1e-12
+                    and after_ma3 > candidate_ma3 + 1e-12
+                    and float(later_ma3.min()) >= candidate_ma3 - 1e-12
+                    and latest_closed_ma3 >= candidate_ma3 + turn_threshold
+                ):
+                    return True
+            return False
+
+        closed_ma3_peak = recent_confirmed_outer_turn("LONG")
+        closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
         if held_side == "LONG":
             if (
-                exit_pivot_after_entry
-                and exit_net_profitable
-                and signal_ma3 >= signal_upper
-                and closed_ma3_peak
+                closed_ma3_peak
             ):
                 return {
                     "action": "EXIT", "side": None,
@@ -6880,10 +7183,7 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         if held_side == "SHORT":
             if (
-                exit_pivot_after_entry
-                and exit_net_profitable
-                and signal_ma3 <= signal_lower
-                and closed_ma3_trough
+                closed_ma3_trough
             ):
                 return {
                     "action": "EXIT", "side": None,
@@ -7431,7 +7731,9 @@ class TradingEngine:
                 )
                 existing_pos = self.account.positions.get(symbol)
                 ranked_direction = str(
-                    self.symbol_rotation.direction_map.get(symbol) or ""
+                    self.market_prebreakout_directions.get(symbol)
+                    or self.symbol_rotation.direction_map.get(symbol)
+                    or ""
                 ).upper()
                 chop_info = self._channel_chop_state(channel_df)
                 prior_chop_info = (
@@ -7553,6 +7855,16 @@ class TradingEngine:
                     self._channel_inner_trend_hold.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
+                if (
+                    not existing_pos
+                    and action == "ENTER"
+                    and target_side
+                    and not self._entry_matches_ranked_direction(
+                        target_side, ranked_direction,
+                    )
+                ):
+                    action, target_side = "WAIT", None
+                    channel_action["reason"] = "WAIT_MARKET_RANKED_DIRECTION"
                 if (
                     action in ("ENTER", "REVERSE")
                     and target_side
@@ -7711,30 +8023,6 @@ class TradingEngine:
                             channel_df, held_side,
                         )
                     )
-                    if (
-                        held_momentum_declining
-                        and self._channel_stalled_recovery_should_arm(
-                            existing_pos, channel_price,
-                        )
-                        and not existing_pos.get("channel_stalled_recovery_armed")
-                    ):
-                        existing_pos["channel_stalled_recovery_armed"] = True
-                        position_meta_map = getattr(
-                            self.account, "position_meta", None,
-                        )
-                        if isinstance(position_meta_map, dict):
-                            position_meta_map.setdefault(symbol, {})[
-                                "channel_stalled_recovery_armed"
-                            ] = True
-                        self.account.log(
-                            f"⏳ [卡倉回本等待] {symbol} 從未形成淨獲利突破，"
-                            "已反向超過 0.5 ATR 且動能衰退；若沒有強勢幣可換，"
-                            "等待回到開倉價 0.1 ATR 內平倉",
-                            "INFO",
-                        )
-                        save_state = getattr(self.account, "save_state", None)
-                        if callable(save_state):
-                            save_state()
                     existing_pos["channel_trend_quality"] = held_quality
                     existing_pos["channel_volume_ratio"] = volume_ratio
                     existing_pos["channel_energy_score"] = held_energy
@@ -9169,12 +9457,7 @@ class TradingEngine:
                     and rotation_ready
                 )
                 manage_continuous_position = ENABLE_CONTINUOUS_REVERSE_MODE and bool(self.account.positions)
-                takeover_scan_allowed = bool(
-                    manage_continuous_position
-                    and not daily_halt
-                    and rotation_ready
-                )
-                candidate_scan_allowed = entry_scan_allowed or takeover_scan_allowed
+                candidate_scan_allowed = entry_scan_allowed
                 if entry_scan_allowed or manage_continuous_position:
                     signal_progress = []
                     detected_candidates = []
@@ -9201,13 +9484,20 @@ class TradingEngine:
                         except Exception as e:
                             self.account.log(f"⚠️ 無法取得 BTC 1m 脈衝資料: {e}", "WARNING")
 
-                    # 空槽時掃描輪替已完成流動性與資金費率檢查的完整深度池；
-                    # 槽位滿時掃描持倉與目前看板，供動能衰退的舊倉讓位給已突破強勢幣。
+                    # 只有空槽才掃描新候選；已有 Channel Swing 持倉時只管理
+                    # 原幣，最強新幣不得令舊倉在外軌峰谷確認前提前換倉。
                     wallet_balance = float(self.account.get_wallet_balance())
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
+                    # broad_symbols = 市場監控短名單 + DEFAULT_SYMBOLS（UI牌面，含
+                    # 持倉幣）。持倉幣必須在 symbols_snapshot 中，機器人才能觀察
+                    # 並決定是否讓位給更強勢的突破幣；UI 牌面靠 symbol_rotation
+                    # 的 rotate() 保證持倉幣永遠在 DEFAULT_SYMBOLS 裡。
                     symbols_snapshot = self._entry_scan_symbol_snapshot(
                         list(DEFAULT_SYMBOLS),
-                        list(getattr(self.symbol_rotation, "entry_scan_symbols", [])),
+                        list(dict.fromkeys([
+                            *self.market_prebreakout_symbols,
+                            *DEFAULT_SYMBOLS,
+                        ])),
                         self.account.positions,
                         self.account.pending_limit_orders,
                         candidate_scan_allowed,
@@ -9228,7 +9518,6 @@ class TradingEngine:
                     if not candidate_scan_allowed:
                         detected_candidates = []
                     opened_any = False
-                    takeover_opportunity_seen = False
                     if detected_candidates:
                         score_map = {
                             m["symbol"]: float(m.get("final_score", 0.0))
@@ -9236,7 +9525,8 @@ class TradingEngine:
                         }
                         detected_candidates, skipped_same_side = (
                             self._select_strongest_same_side_candidates(
-                                detected_candidates, score_map
+                                detected_candidates, score_map,
+                                self._market_surveillance_scores,
                             )
                         )
                         for skipped in skipped_same_side:
@@ -9259,18 +9549,9 @@ class TradingEngine:
                                 sig["side"],
                             )
                             if same_side_committed:
-                                handled, takeover_opened = (
-                                    await self._try_channel_stronger_symbol_takeover(
-                                        sig, now_time, daily_halt,
-                                    )
-                                )
-                                if handled:
-                                    takeover_opportunity_seen = True
-                                    opened_any = takeover_opened or opened_any
-                                    continue
                                 signal_progress.append(
                                     f"{coin} {direction_text} 已有同向持倉；"
-                                    "未達 KC 外側強勢換倉條件"
+                                    "舊倉只等對側 KC 外軌峰谷，不提前換倉"
                                 )
                                 continue
 
@@ -9282,15 +9563,6 @@ class TradingEngine:
                                 effective_slot_limit > 0
                                 and committed_slots >= effective_slot_limit
                             ):
-                                handled, takeover_opened = (
-                                    await self._try_channel_stronger_symbol_takeover(
-                                        sig, now_time, daily_halt,
-                                    )
-                                )
-                                if handled:
-                                    takeover_opportunity_seen = True
-                                    opened_any = takeover_opened or opened_any
-                                    continue
                                 signal_progress.append(f"{coin} {direction_text} 資格未通過,有效槽位已滿({effective_slot_limit})")
                                 continue
 
@@ -9300,15 +9572,6 @@ class TradingEngine:
                                 sig["live_price"]
                             )
                             opened_any = bool(opened) or opened_any
-
-                    if not opened_any and not takeover_opportunity_seen:
-                        recovery_closed = (
-                            await self._try_channel_stalled_recovery_exit()
-                        )
-                        if recovery_closed:
-                            signal_progress.append(
-                                "卡倉已回到開倉價附近；無強勢候選可立即換入，已平倉"
-                            )
 
                     refresh_needed = self._candidate_board_refresh_needed(
                         opened_any,

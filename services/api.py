@@ -250,6 +250,7 @@ async def get_status(response: Response):
             for symbol in visible_symbols()
         },
         "symbol_rotation": engine.symbol_rotation.status(),
+        "market_surveillance": engine.market_surveillance_status(),
         "volatility_stats": {
             symbol: engine.symbol_rotation.volatility_stats[symbol]
             for symbol in DEFAULT_SYMBOLS

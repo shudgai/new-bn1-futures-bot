@@ -556,6 +556,19 @@ BTC_1M_PULSE_LOOKBACK_BARS = max(2, int(
 BTC_1M_PULSE_MIN_ATR = max(0.0, float(
     os.getenv("BTC_1M_PULSE_MIN_ATR", "0.50")
 ))
+# BTC 插針緊急平倉：在 BTC_FLASH_CRASH_WINDOW_SEC 秒內急跌幅度 >=
+# BTC_FLASH_CRASH_DROP_PCT (%) 時，視為插針事件，立即市價平掉所有多單；
+# 空單則不受影響（BTC 急跌對空單有利）。
+# 設定原則：
+#   WINDOW_SEC 建議 3~8 秒（比一根 1m K 短很多，避免誤判正常回落）
+#   DROP_PCT 建議 0.35~0.8（Testnet 幣價低，可以設低一些）
+# 設 0 可停用（BTC_FLASH_CRASH_DROP_PCT=0）。
+BTC_FLASH_CRASH_WINDOW_SEC = max(1.0, float(
+    os.getenv("BTC_FLASH_CRASH_WINDOW_SEC", "5.0")
+))
+BTC_FLASH_CRASH_DROP_PCT = max(0.0, float(
+    os.getenv("BTC_FLASH_CRASH_DROP_PCT", "0.5")
+))
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
@@ -1024,6 +1037,24 @@ DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "8"))
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "40"))
 SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "40"))
 SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "50000000"))
+# 全市場 WebSocket 只做低成本速度雷達；每個方向只有少量候選進入完整
+# K 線/KC 驗證，避免掃描 Binance 全部合約時放大 REST 請求量。
+FULL_MARKET_SURVEILLANCE_ENABLED = os.getenv(
+    "FULL_MARKET_SURVEILLANCE_ENABLED", "true"
+).lower() == "true"
+FULL_MARKET_SURVEILLANCE_SIDE_COUNT = max(
+    1, int(os.getenv("FULL_MARKET_SURVEILLANCE_SIDE_COUNT", "3"))
+)
+FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC = max(
+    5, float(os.getenv("FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC", "10"))
+)
+FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC = max(
+    FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
+    float(os.getenv("FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC", "45")),
+)
+FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT = max(
+    0.0, float(os.getenv("FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT", "0.08"))
+)
 SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "5.0"))
 SYMBOL_ROTATION_MAX_CHANGES = int(os.getenv("SYMBOL_ROTATION_MAX_CHANGES", "3"))
 SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "14"))

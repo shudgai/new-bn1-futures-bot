@@ -312,7 +312,7 @@ def test_confirmed_outer_ma3_turns_end_channel_positions_symmetrically():
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_outer_exit_requires_positive_estimated_net_pnl(side):
+def test_confirmed_outer_exit_does_not_require_positive_estimated_net_pnl(side):
     frame = _channel_frame()
     if side == "LONG":
         _closed_peak(frame)
@@ -328,7 +328,11 @@ def test_confirmed_outer_exit_requires_positive_estimated_net_pnl(side):
         exit_net_profitable=False,
     )
 
-    assert (result["action"], result["reason"]) == ("HOLD", wait_reason)
+    expected_reason = (
+        "KC_UPPER_OUTER_PEAK_EXIT" if side == "LONG"
+        else "KC_LOWER_OUTER_VALLEY_EXIT"
+    )
+    assert (result["action"], result["reason"]) == ("EXIT", expected_reason)
 
 
 def test_one_sided_ma3_move_is_not_mistaken_for_a_new_outer_extreme():
@@ -394,6 +398,82 @@ def test_post_entry_confirmed_outer_peak_exits_position():
     assert (result["action"], result["reason"]) == (
         "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
     )
+
+
+def test_pump_one_tick_ma3_dip_is_not_a_confirmed_outer_peak():
+    frame = _channel_frame(lower=0.00423, upper=0.00425)
+    frame.loc[frame.index[-4], "ma3"] = 0.004259
+    frame.loc[frame.index[-3], ["ma3", "kc_upper", "kc_lower"]] = [
+        0.004262, 0.00424986, 0.00423126,
+    ]
+    frame.loc[frame.index[-2], ["ma3", "kc_upper", "kc_lower"]] = [
+        0.004261666666666667, 0.004251797849169696, 0.004233597849169697,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 0.004260, "LONG")
+
+    assert (result["action"], result["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+    )
+
+
+def test_mirrored_one_tick_ma3_rise_is_not_a_confirmed_outer_trough():
+    frame = _channel_frame(lower=0.00423, upper=0.00425)
+    frame.loc[frame.index[-4], "ma3"] = 0.004241
+    frame.loc[frame.index[-3], ["ma3", "kc_upper", "kc_lower"]] = [
+        0.004238, 0.00424874, 0.00423014,
+    ]
+    frame.loc[frame.index[-2], ["ma3", "kc_upper", "kc_lower"]] = [
+        0.004238333333333333, 0.004246402150830304, 0.004228202150830303,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 0.004240, "SHORT")
+
+    assert (result["action"], result["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+    )
+
+
+def test_near_outer_peak_keeps_confirming_until_cumulative_turn_is_large_enough():
+    frame = _channel_frame(lower=1.952, upper=1.959)
+    frame.loc[frame.index[-6], "ma3"] = 1.9606666666666666
+    frame.loc[frame.index[-5], ["ma3", "kc_upper", "kc_lower"]] = [
+        1.9616666666666667, 1.959189696704553, 1.9523896967045529,
+    ]
+    frame.loc[frame.index[-4], "ma3"] = 1.961
+    frame.loc[frame.index[-3], "ma3"] = 1.959
+    frame.loc[frame.index[-2], "ma3"] = 1.9576666666666667
+    frame.loc[frame.index[-1], "ma3"] = 1.9566666666666668
+
+    result = TradingEngine._channel_swing_action(
+        frame, 1.957, "LONG", exit_net_profitable=False,
+    )
+
+    assert (result["action"], result["reason"]) == (
+        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+    )
+
+
+def test_btc_flash_crash_does_not_close_channel_swing_positions():
+    positions = {
+        "CHANNEL-LONG/USDT": {"side": "LONG", "entry_mode": "CHANNEL_SWING"},
+        "LEGACY-CHANNEL/USDT": {"side": "LONG", "reason": "Channel Swing entry"},
+        "REGULAR-LONG/USDT": {"side": "LONG", "entry_mode": "MA3_MA15_MARKET"},
+        "REGULAR-SHORT/USDT": {"side": "SHORT", "entry_mode": "MA3_MA15_MARKET"},
+    }
+
+    selected = TradingEngine._btc_flash_crash_close_symbols(positions)
+
+    assert selected == ["REGULAR-LONG/USDT"]
+
+
+def test_btc_flash_crash_uses_restored_channel_swing_metadata():
+    positions = {"RESTORED/USDT": {"side": "LONG"}}
+    metadata = {"RESTORED/USDT": {"entry_mode": "CHANNEL_SWING"}}
+
+    selected = TradingEngine._btc_flash_crash_close_symbols(positions, metadata)
+
+    assert selected == []
 
 
 def test_wld_confirmed_upper_outer_ma3_peak_exits_before_late_steep_red():
@@ -827,7 +907,7 @@ def test_mature_downtrend_reentry_protects_profit_after_lower_break():
     )
 
 
-def test_upper_reentry_with_ma3_turn_does_not_exit_without_exact_peak():
+def test_upper_reentry_keeps_tracking_the_earlier_exact_peak():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-4], ["close", "ma3"]] = [101.4, 101.5]
     frame.loc[frame.index[-3], ["open", "close", "ma3"]] = [101.2, 101.3, 101.2]
@@ -836,11 +916,11 @@ def test_upper_reentry_with_ma3_turn_does_not_exit_without_exact_peak():
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
     )
 
 
-def test_lower_reentry_with_ma3_turn_does_not_exit_without_exact_trough():
+def test_lower_reentry_keeps_tracking_the_earlier_exact_trough():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-4], ["close", "ma3"]] = [98.6, 98.5]
     frame.loc[frame.index[-3], ["open", "close", "ma3"]] = [98.8, 98.7, 98.8]
@@ -849,7 +929,7 @@ def test_lower_reentry_with_ma3_turn_does_not_exit_without_exact_trough():
     result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+        "EXIT", "KC_LOWER_OUTER_VALLEY_EXIT",
     )
 
 
@@ -2457,6 +2537,39 @@ def test_candidate_board_refreshes_after_fill_and_while_slot_remains():
 def test_ranked_direction_both_allows_long_and_short_channel_scan():
     assert TradingEngine._entry_matches_ranked_direction("LONG", "BOTH")
     assert TradingEngine._entry_matches_ranked_direction("SHORT", "BOTH")
+
+
+def test_market_surveillance_direction_is_applied_to_channel_entry_scan():
+    source = inspect.getsource(TradingEngine._process_single_symbol)
+
+    assert "self.market_prebreakout_directions.get(symbol)" in source
+    assert "WAIT_MARKET_RANKED_DIRECTION" in source
+
+
+def test_market_surveillance_replaces_stale_momentum_scores():
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.market_surveillance_contracts = set()
+    engine.execution_symbols = None
+    engine._market_ticker_snapshots = {}
+    engine._market_price_samples = {}
+    engine.market_prebreakout_symbols = []
+    engine.market_prebreakout_directions = {}
+    engine._market_surveillance_scores = {"STALE/USDT": 99.0}
+    engine.market_surveillance_updated_at = 0.0
+
+    engine._update_market_surveillance({}, now=100.0)
+
+    assert engine._market_surveillance_scores == {}
+
+
+def test_main_loop_never_replaces_or_recovery_closes_channel_swing():
+    main_source = inspect.getsource(TradingEngine._main_loop)
+    process_source = inspect.getsource(TradingEngine._process_single_symbol)
+
+    assert "_try_channel_stronger_symbol_takeover(" not in main_source
+    assert "_try_channel_stalled_recovery_exit(" not in main_source
+    assert "_channel_stalled_recovery_should_arm(" not in process_source
+
 
 def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
     # CI does not load the developer's .env; keep this allocation contract
