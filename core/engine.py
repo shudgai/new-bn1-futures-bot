@@ -8172,6 +8172,72 @@ class TradingEngine:
                             held_momentum_declining
                         )
 
+                # ─── KC 外側移動止損（追蹤高水位線 / 低水位線）───────────────
+                # 多單：價格在 KC 上軌外時，追蹤持倉期間的最高現價（高水位線），
+                # 從高水位線回落超過 1 ATR 即觸發平倉，鎖住大部分利潤。
+                # 空單：價格在 KC 下軌外時，追蹤最低現價（低水位線），鎖住利潤。
+                # 多空鏡像，僅在還沒被其他條件（EXIT/REVERSE）觸發時才檢查。
+                if (
+                    existing_pos
+                    and action not in ("EXIT", "REVERSE")
+                    and held_side in ("LONG", "SHORT")
+                ):
+                    _pos_atr = float(
+                        channel_df["atr"].iloc[-1]
+                        if "atr" in channel_df.columns else 0.0
+                    )
+                    _outer_atr = max(_pos_atr, channel_price * 1e-6)
+                    _kc_upper_now = float(channel_df["kc_upper"].iloc[-1])
+                    _kc_lower_now = float(channel_df["kc_lower"].iloc[-1])
+                    _trailing_atr_mult = float(
+                        os.getenv("CHANNEL_SWING_TRAILING_ATR_MULT", "1.0")
+                    )
+                    if held_side == "LONG" and channel_price >= _kc_upper_now:
+                        # 更新多單高水位線（只升不降）
+                        _prev_hwm = float(
+                            existing_pos.get("channel_high_water_mark") or 0.0
+                        )
+                        _new_hwm = max(_prev_hwm, channel_price)
+                        existing_pos["channel_high_water_mark"] = _new_hwm
+                        # 追蹤止損：從高水位回落超過 N ATR 就平倉
+                        if (
+                            _new_hwm > _kc_upper_now
+                            and channel_price <= _new_hwm - _trailing_atr_mult * _outer_atr
+                        ):
+                            action = "EXIT"
+                            target_side = None
+                            channel_action["reason"] = "KC_OUTER_TRAILING_STOP_LONG"
+                            self.account.log(
+                                f"🔒 [移動止損] {symbol} 多單高水位 {_new_hwm:.6g}，"
+                                f"現價 {channel_price:.6g} 回落 "
+                                f"{(_new_hwm - channel_price) / _outer_atr:.2f} ATR，觸發追蹤止損",
+                                "WARNING",
+                            )
+                    elif held_side == "SHORT" and channel_price <= _kc_lower_now:
+                        # 更新空單低水位線（只降不升）
+                        _prev_lwm = float(
+                            existing_pos.get("channel_low_water_mark") or float("inf")
+                        )
+                        if _prev_lwm == float("inf"):
+                            _prev_lwm = channel_price
+                        _new_lwm = min(_prev_lwm, channel_price)
+                        existing_pos["channel_low_water_mark"] = _new_lwm
+                        # 追蹤止損：從低水位反彈超過 N ATR 就平倉
+                        if (
+                            _new_lwm < _kc_lower_now
+                            and channel_price >= _new_lwm + _trailing_atr_mult * _outer_atr
+                        ):
+                            action = "EXIT"
+                            target_side = None
+                            channel_action["reason"] = "KC_OUTER_TRAILING_STOP_SHORT"
+                            self.account.log(
+                                f"🔒 [移動止損] {symbol} 空單低水位 {_new_lwm:.6g}，"
+                                f"現價 {channel_price:.6g} 反彈 "
+                                f"{(channel_price - _new_lwm) / _outer_atr:.2f} ATR，觸發追蹤止損",
+                                "WARNING",
+                            )
+                # ─────────────────────────────────────────────────────────────
+
                 if action == "REVERSE" and target_side and not volume_ok:
                     action = "EXIT"
                     target_side = None
