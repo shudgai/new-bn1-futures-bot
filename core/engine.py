@@ -4958,6 +4958,20 @@ class TradingEngine:
         held_momentum_declining = bool(
             held_position.get("channel_momentum_declining")
         )
+        
+        held_side = str(held_position.get("side") or "").upper()
+        held_kc_upper = float(held_position.get("channel_kc_upper") or float("inf"))
+        held_kc_lower = float(held_position.get("channel_kc_lower") or 0.0)
+        held_outside = False
+        if held_side == "LONG" and held_mark >= held_kc_upper:
+            held_outside = True
+        elif held_side == "SHORT" and held_mark <= held_kc_lower:
+            held_outside = True
+
+        if held_outside:
+            # 如果目前持倉幣種還在 KC 外側（代表趨勢還很強），不允許被強勢換倉
+            return False, False
+
         if not candidate_outside or not held_momentum_declining:
             return False, False
         energy_takeover = bool(
@@ -9665,18 +9679,16 @@ class TradingEngine:
                             coin = symbol.replace("/USDT", "")
                             direction_text = "多單" if sig["side"] == "LONG" else "空單"
 
-                            # 強勢換倉條件已停用（保留函式定義供未來參考）
-                            if False:
-                                takeover_handled, takeover_opened = (
-                                    await self._try_channel_stronger_symbol_takeover(
-                                        sig, now_time, daily_halt,
-                                    )
+                            takeover_handled, takeover_opened = (
+                                await self._try_channel_stronger_symbol_takeover(
+                                    sig, now_time, daily_halt,
                                 )
-                                if takeover_handled:
-                                    opened_any = takeover_opened or opened_any
-                                    if takeover_opened or not self.account.positions:
-                                        break
-                                    continue
+                            )
+                            if takeover_handled:
+                                opened_any = takeover_opened or opened_any
+                                if takeover_opened or not self.account.positions:
+                                    break
+                                continue
 
                             same_side_committed = self._channel_same_side_committed(
                                 self.account.positions,
