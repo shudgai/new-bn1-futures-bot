@@ -353,6 +353,14 @@ CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
 CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
     os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "12")
 ))
+# 急速突破才啟用 Channel Swing 外軌追蹤：水位回撤此 ATR 倍數即市價平倉。
+CHANNEL_SWING_TRAILING_ATR_MULT = max(
+    0.1, float(os.getenv("CHANNEL_SWING_TRAILING_ATR_MULT", "1.0"))
+)
+# Channel Swing 單筆淨損達帳戶權益此比例即強制撤退；0 可停用。
+CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT = min(
+    1.0, max(0.0, float(os.getenv("CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT", "0.03")))
+)
 # 強反轉收盤 K 若已深入下一個 KC 區間，可直接解除 MA15／KC 中軌附近的
 # 盤旋等待，不必再多等一根 K。三個門檻分別是：收盤深入下一區間比例、
 # K 棒實體位於下一區間的比例，以及實體相對 ATR 的最小倍數。
@@ -568,6 +576,14 @@ BTC_FLASH_CRASH_WINDOW_SEC = max(1.0, float(
 ))
 BTC_FLASH_CRASH_DROP_PCT = max(0.0, float(
     os.getenv("BTC_FLASH_CRASH_DROP_PCT", "0.5")
+))
+# BTC 同幅度急拉時，鏡像平掉所有空單；0 代表停用。
+BTC_FLASH_CRASH_PUMP_PCT = max(0.0, float(
+    os.getenv("BTC_FLASH_CRASH_PUMP_PCT", "0.5")
+))
+# 全市場閃崩／急拉後，暫停任何新倉與既有掛單成交的秒數。
+MARKET_CRASH_ENTRY_COOLDOWN_SEC = max(0.0, float(
+    os.getenv("MARKET_CRASH_ENTRY_COOLDOWN_SEC", "600")
 ))
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。

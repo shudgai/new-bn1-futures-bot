@@ -36,8 +36,11 @@ from core.config import (
     ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT, ABNORMAL_MARKET_ADVERSE_MOVE_PCT,
     CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO,
     CHANNEL_SWING_TURN_LOOKBACK_BARS,
+    CHANNEL_SWING_TRAILING_ATR_MULT,
+    CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT,
     BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
     BTC_1M_PULSE_MIN_ATR, BTC_FLASH_CRASH_WINDOW_SEC, BTC_FLASH_CRASH_DROP_PCT,
+    BTC_FLASH_CRASH_PUMP_PCT, MARKET_CRASH_ENTRY_COOLDOWN_SEC,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -174,6 +177,7 @@ class TradingEngine:
         # 當窗口內跌幅 >= BTC_FLASH_CRASH_DROP_PCT 時觸發緊急平多。
         self._btc_price_samples: deque = deque(maxlen=200)
         self._btc_flash_crash_last_triggered_at: float = 0.0
+        self._market_crash_entry_cooldown_until: float = 0.0
         self.ema_50_1h_cache: Dict[str, float] = {}
         # 大週期（1h）本身動能是不是也在衰退，用同一批 update_1h_trend_
         # cache() 已經抓到的1h K線算 ADX，判斷「不只是5分K的小趨勢要提防，
@@ -2615,7 +2619,7 @@ class TradingEngine:
 
                 # ── BTC 插針偵測 ─────────────────────────────────────
                 # 用 WebSocket 毫秒級報價做滑動視窗；比等到 1m K 收盤快太多。
-                if BTC_FLASH_CRASH_DROP_PCT > 0:
+                if BTC_FLASH_CRASH_DROP_PCT > 0 or BTC_FLASH_CRASH_PUMP_PCT > 0:
                     btc_raw = (
                         tickers.get("BTC/USDT:USDT")
                         or tickers.get("BTC/USDT")
@@ -2637,35 +2641,47 @@ class TradingEngine:
                             drop_pct = (ref_price - btc_live) / ref_price * 100.0
                             # 冷卻：同一次插針事件最多觸發一次（60 秒內不重複）
                             cooldown_ok = now - self._btc_flash_crash_last_triggered_at > 60.0
-                            if drop_pct >= BTC_FLASH_CRASH_DROP_PCT and cooldown_ok:
+                            pump_pct = -drop_pct
+                            crash_down = drop_pct >= BTC_FLASH_CRASH_DROP_PCT
+                            crash_up = pump_pct >= BTC_FLASH_CRASH_PUMP_PCT
+                            if cooldown_ok and (crash_down or crash_up):
                                 self._btc_flash_crash_last_triggered_at = now
-                                long_positions = self._btc_flash_crash_close_symbols(
+                                close_side = "LONG" if crash_down else "SHORT"
+                                side_label = "多" if close_side == "LONG" else "空"
+                                event_label = "急跌" if crash_down else "急拉"
+                                event_move = drop_pct if crash_down else pump_pct
+                                self._market_crash_entry_cooldown_until = max(
+                                    float(getattr(self, "_market_crash_entry_cooldown_until", 0.0)),
+                                    now + MARKET_CRASH_ENTRY_COOLDOWN_SEC,
+                                )
+                                positions_to_close = self._btc_flash_crash_close_symbols(
                                     self.account.positions,
                                     getattr(self.account, "position_meta", {}),
+                                    close_side,
                                 )
-                                if long_positions:
-                                    self.account.log(
-                                        f"🚨 [BTC插針緊急平倉] BTC {BTC_FLASH_CRASH_WINDOW_SEC:.0f}秒內急跌 "
-                                        f"{drop_pct:.2f}% (≥{BTC_FLASH_CRASH_DROP_PCT}%)，"
-                                        f"立即市價平掉 {len(long_positions)} 個多單："
-                                        + ", ".join(long_positions),
-                                        "DANGER",
+                                self.account.log(
+                                    f"🚨 [全市場熔斷] BTC {BTC_FLASH_CRASH_WINDOW_SEC:.0f}秒內{event_label} "
+                                    f"{event_move:.2f}%；立即平掉所有{side_label}單，"
+                                    f"停止新倉 {MARKET_CRASH_ENTRY_COOLDOWN_SEC:.0f} 秒"
+                                    + ("：" + ", ".join(positions_to_close) if positions_to_close else ""),
+                                    "DANGER",
+                                )
+                                for sym in list(getattr(self.account, "pending_limit_orders", {})):
+                                    asyncio.create_task(self.account.cancel_pending_limit(
+                                        sym, "全市場熔斷，取消等待開倉掛單",
+                                    ))
+                                for sym in positions_to_close:
+                                    close_price = float(
+                                        self.tickers.get(sym)
+                                        or self.tickers.get(f"{sym}:USDT")
+                                        or 0.0
                                     )
-                                    for sym in list(long_positions):
-                                        close_price = float(
-                                            self.tickers.get(sym)
-                                            or self.tickers.get(f"{sym}:USDT")
-                                            or 0.0
-                                        )
-                                        if close_price > 0:
-                                            asyncio.create_task(
-                                                self.account.close_position(
-                                                    sym,
-                                                    close_price,
-                                                    f"BTC插針緊急平倉 ({drop_pct:.2f}%↓/{BTC_FLASH_CRASH_WINDOW_SEC:.0f}s)",
-                                                    is_manual=True,
-                                                )
-                                            )
+                                    if close_price > 0:
+                                        asyncio.create_task(self.account.close_position(
+                                            sym, close_price,
+                                            f"全市場熔斷 BTC{event_label} ({event_move:.2f}%/{BTC_FLASH_CRASH_WINDOW_SEC:.0f}s)",
+                                            is_manual=True,
+                                        ))
 
             except asyncio.CancelledError:
                 break
@@ -2687,30 +2703,22 @@ class TradingEngine:
                 return float(price)
         return None
 
+    def _market_crash_entries_paused(self, now: float | None = None) -> bool:
+        return float(now if now is not None else time.time()) < float(
+            getattr(self, "_market_crash_entry_cooldown_until", 0.0)
+        )
+
     @staticmethod
     def _btc_flash_crash_close_symbols(
-        positions: dict, position_meta: dict | None = None,
+        positions: dict, position_meta: dict | None = None, side: str = "LONG",
     ) -> list[str]:
-        """Return regular long positions; Channel Swing waits for its MA3 exit."""
-        position_meta = position_meta or {}
-        eligible = []
-        for symbol, position in positions.items():
-            meta = position_meta.get(symbol, {})
-            entry_mode = str(
-                position.get("entry_mode") or meta.get("entry_mode") or ""
-            ).upper()
-            reason = str(
-                position.get("reason") or meta.get("reason") or ""
-            ).upper()
-            is_channel_swing = bool(
-                entry_mode == "CHANNEL_SWING" or "CHANNEL SWING" in reason
-            )
-            if (
-                str(position.get("side") or "").upper() == "LONG"
-                and not is_channel_swing
-            ):
-                eligible.append(symbol)
-        return eligible
+        """All positions on the threatened side, including Channel Swing."""
+        del position_meta
+        threatened_side = str(side or "").upper()
+        return [
+            symbol for symbol, position in positions.items()
+            if str(position.get("side") or "").upper() == threatened_side
+        ]
 
     def _update_market_surveillance(self, tickers: dict, now: float | None = None) -> None:
         """用全市場秒級價格速度選多空短名單；不在這一層產生交易訊號。"""
@@ -3829,6 +3837,7 @@ class TradingEngine:
 
     async def _monitor_pullback_candidates(self, now: float) -> None:
         daily_halt, _ = self.account.daily_loss_limit_hit()
+        daily_halt = daily_halt or self._market_crash_entries_paused(now)
         if daily_halt:
             for symbol in list(self.pending_pullback_candidates):
                 self._drop_pullback_candidate(symbol, "每日虧損熔斷，停止新倉", now)
@@ -4005,6 +4014,7 @@ class TradingEngine:
     async def _validate_pending_limit_orders(self, now: float) -> None:
         """先驗證再查成交；最大限度縮小失效訊號被舊掛單接住的時間窗。"""
         daily_halt, _ = self.account.daily_loss_limit_hit()
+        daily_halt = daily_halt or self._market_crash_entries_paused(now)
         if daily_halt:
             for symbol in list(self.account.pending_limit_orders):
                 await self.account.cancel_pending_limit(symbol, "每日虧損熔斷，停止新倉")
@@ -4833,6 +4843,18 @@ class TradingEngine:
         return gross - costs
 
     @staticmethod
+    def _channel_max_net_loss_action(
+        position: dict, mark_price: float, wallet_balance: float,
+        max_loss_wallet_pct: float,
+    ) -> dict:
+        """Force an exit before one Channel Swing loss can damage the account."""
+        limit = max(0.0, float(wallet_balance)) * max(0.0, float(max_loss_wallet_pct))
+        net_pnl = TradingEngine._channel_takeover_net_pnl(position, mark_price)
+        if limit > 0.0 and math.isfinite(net_pnl) and net_pnl <= -limit:
+            return {"action": "EXIT", "reason": "CHANNEL_MAX_NET_LOSS_EXIT", "net_pnl": net_pnl, "limit": limit}
+        return {"action": "HOLD", "net_pnl": net_pnl, "limit": limit}
+
+    @staticmethod
     def _channel_stalled_recovery_should_arm(
         position: dict, mark_price: float,
     ) -> bool:
@@ -5265,6 +5287,33 @@ class TradingEngine:
         return False
 
     @staticmethod
+    def _channel_closed_body_break_has_outer_ma3_reversal(
+        frame: pd.DataFrame, target_side: str | None,
+    ) -> bool:
+        """Reject a fresh body break after MA3 has already reversed outside KC."""
+        if frame is None or len(frame) < 3 or "ma3" not in frame.columns:
+            return False
+        try:
+            candidate = frame.iloc[-2]
+            prior = frame.iloc[-3]
+            candidate_ma3 = float(candidate["ma3"])
+            prior_ma3 = float(prior["ma3"])
+            prior_upper = float(prior["kc_upper"])
+            prior_lower = float(prior["kc_lower"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return False
+        if not all(math.isfinite(value) for value in (
+            candidate_ma3, prior_ma3, prior_upper, prior_lower,
+        )) or prior_lower >= prior_upper:
+            return False
+        side = str(target_side or "").upper()
+        if side == "LONG":
+            return prior_ma3 >= prior_upper and candidate_ma3 < prior_ma3
+        if side == "SHORT":
+            return prior_ma3 <= prior_lower and candidate_ma3 > prior_ma3
+        return False
+
+    @staticmethod
     def _channel_candidate_bar_id(frame: pd.DataFrame) -> object:
         """Return a stable ID for the latest fully closed Channel Swing candle."""
         if frame is None or len(frame) < 2:
@@ -5290,6 +5339,22 @@ class TradingEngine:
             lower = float(frame.iloc[-1]["kc_lower"])
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "side": None, "reason": "KC_BODY_BREAK_DATA_INVALID"}
+        if TradingEngine._channel_closed_body_break_has_outer_ma3_reversal(
+            frame, "LONG",
+        ):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_UPPER_MA3_REVERSAL_BLOCK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+        if TradingEngine._channel_closed_body_break_has_outer_ma3_reversal(
+            frame, "SHORT",
+        ):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+            }
         if TradingEngine._channel_closed_body_break_entry_allowed(frame, live_price, "LONG"):
             return {
                 "action": "ENTER", "side": "LONG",
@@ -6204,6 +6269,27 @@ class TradingEngine:
         return not exceptional_energy
 
     @staticmethod
+    def _channel_immediate_outer_break_action(
+        frame: pd.DataFrame, live_price: float,
+    ) -> dict:
+        """Enter on the live candle as soon as price reaches a KC outer rail."""
+        if frame is None or frame.empty or not {"kc_upper", "kc_lower"}.issubset(frame.columns):
+            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_UNAVAILABLE"}
+        try:
+            price = float(live_price)
+            upper = float(frame.iloc[-1]["kc_upper"])
+            lower = float(frame.iloc[-1]["kc_lower"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
+        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
+            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
+        if price >= upper:
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_LIVE_UPPER_BREAK_LONG", "kc_upper": upper, "kc_lower": lower}
+        if price <= lower:
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_LIVE_LOWER_BREAK_SHORT", "kc_upper": upper, "kc_lower": lower}
+        return {"action": "WAIT", "side": None, "reason": "WAIT_LIVE_OUTER_BREAK", "kc_upper": upper, "kc_lower": lower}
+
+    @staticmethod
     def _channel_live_outer_entry_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
@@ -6897,8 +6983,6 @@ class TradingEngine:
     @staticmethod
     def _channel_exit_requests_rotation(reason: str | None) -> bool:
         return str(reason or "") in {
-            "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
-            "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT",
             "KC_UPPER_RED_REENTRY_EXIT",
             "KC_LOWER_GREEN_REENTRY_EXIT",
             "KC_UPPER_STEEP_RED_EXIT",
@@ -7092,6 +7176,84 @@ class TradingEngine:
         return action, target_side, None
 
     @staticmethod
+    def _channel_outer_trailing_action(frame: pd.DataFrame, live_price: float, position: dict) -> dict:
+        """Use a 1.0 ATR trail only for a three-candle vertical KC outer burst."""
+        required = {"open", "close", "kc_upper", "kc_lower", "atr"}
+        if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
+            return {"action": "HOLD", "updates": {}}
+        try:
+            live = frame.iloc[-1]
+            price, live_open = float(live_price), float(live["open"])
+            upper, lower, atr = float(live["kc_upper"]), float(live["kc_lower"]), float(live["atr"])
+            side = str(position.get("side") or "").upper()
+            entry_price = float(position.get("entry_price") or 0.0)
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "HOLD", "updates": {}}
+        if not (all(math.isfinite(value) for value in (price, live_open, upper, lower, atr, entry_price)) and upper > lower and atr > 0 and entry_price > 0 and side in ("LONG", "SHORT")):
+            return {"action": "HOLD", "updates": {}}
+        multiplier = max(0.1, float(CHANNEL_SWING_TRAILING_ATR_MULT))
+        armed = bool(position.get("channel_outer_trailing_armed"))
+        long_net_break_even = entry_price * (1.0 + 2.0 * TAKER_FEE_RATE) / max(1e-12, 1.0 - SLIPPAGE_PCT)
+        short_net_break_even = entry_price * max(0.0, 1.0 - 2.0 * TAKER_FEE_RATE) / (1.0 + SLIPPAGE_PCT)
+        recent = frame.iloc[-3:]
+        try:
+            closed_bodies = [
+                float(recent.iloc[0]["close"]) - float(recent.iloc[0]["open"]),
+                float(recent.iloc[1]["close"]) - float(recent.iloc[1]["open"]),
+            ]
+            live_body = price - live_open
+            vertical_long = (
+                price >= upper
+                and all(body > 0.0 for body in [*closed_bodies, live_body])
+                and sum(body >= 0.75 * atr for body in [*closed_bodies, live_body]) >= 2
+                and price - float(recent.iloc[0]["open"]) >= 3.0 * atr
+            )
+            vertical_short = (
+                price <= lower
+                and all(body < 0.0 for body in [*closed_bodies, live_body])
+                and sum(abs(body) >= 0.75 * atr for body in [*closed_bodies, live_body]) >= 2
+                and float(recent.iloc[0]["open"]) - price >= 3.0 * atr
+            )
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "HOLD", "updates": {}}
+        updates = {}
+        if side == "LONG":
+            if (
+                not armed and vertical_long
+                and price - multiplier * atr >= long_net_break_even
+            ):
+                armed = True
+                updates["channel_outer_trailing_armed"] = True
+                updates["channel_outer_trailing_high"] = price
+            high_water = max(float(position.get("channel_outer_trailing_high") or price), price) if armed else 0.0
+            prior_high = float(position.get("channel_outer_trailing_high") or 0.0)
+            if armed and (price >= upper or high_water != prior_high):
+                updates["channel_outer_trailing_high"] = high_water
+            stop = max(high_water - multiplier * atr, long_net_break_even) if armed else 0.0
+            if armed:
+                updates["channel_outer_trailing_stop"] = stop
+            if armed and price <= stop:
+                return {"action": "EXIT", "reason": "KC_OUTER_TRAILING_STOP_LONG", "updates": updates}
+        else:
+            if (
+                not armed and vertical_short
+                and price + multiplier * atr <= short_net_break_even
+            ):
+                armed = True
+                updates["channel_outer_trailing_armed"] = True
+                updates["channel_outer_trailing_low"] = price
+            low_water = min(float(position.get("channel_outer_trailing_low") or price), price) if armed else 0.0
+            prior_low = float(position.get("channel_outer_trailing_low") or 0.0)
+            if armed and (price <= lower or low_water != prior_low):
+                updates["channel_outer_trailing_low"] = low_water
+            stop = min(low_water + multiplier * atr, short_net_break_even) if armed else 0.0
+            if armed:
+                updates["channel_outer_trailing_stop"] = stop
+            if armed and price >= stop:
+                return {"action": "EXIT", "reason": "KC_OUTER_TRAILING_STOP_SHORT", "updates": updates}
+        return {"action": "HOLD", "updates": updates}
+
+    @staticmethod
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
         entry_turn_low: float | None = None,
@@ -7248,20 +7410,13 @@ class TradingEngine:
                 is_outside_lower = candidate_ma3 <= candidate_lower and candidate_low <= candidate_lower
 
                 import os
-                import sys
 
-                # 依據峰谷位置決定門檻：KC外側用「急折線」(大門檻)，KC內側用「一般平緩」(小門檻)
+                # 外軌 MA3 峰／谷採極低確認門檻，讓第一根已收盤反向 K 即可平倉，僅排除浮點雜訊。
                 if is_outside_upper or is_outside_lower:
-                    _min_price_pct = float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_PRICE_PCT", "0.0015"))
-                    _min_kc_pct = float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_KC_WIDTH_PCT", "0.20"))
+                    _min_price_pct = float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_PRICE_PCT", "0.0001"))
+                    _min_kc_pct = float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_KC_WIDTH_PCT", "0.01"))
                 else:
-                    _min_price_pct = 0.00035
-                    _min_kc_pct = 0.05
-                
-                # 若為 pytest 環境，強制使用小門檻避免單元測試失敗
-                if 'pytest' in sys.modules:
-                    _min_price_pct = 0.00035
-                    _min_kc_pct = 0.05
+                    continue
 
                 turn_threshold = max(
                     abs(candidate_ma3) * _min_price_pct,
@@ -7270,7 +7425,10 @@ class TradingEngine:
                 )
 
                 if side == "LONG":
-                    is_valid_peak = (candidate_ma3 >= candidate_upper and candidate_high >= candidate_upper) or (candidate_ma3 < candidate_upper)
+                    is_valid_peak = (
+                        candidate_ma3 >= candidate_upper
+                        and candidate_high >= candidate_upper
+                    )
                     if (
                         is_valid_peak
                         and before_ma3 < candidate_ma3 - 1e-12
@@ -7280,7 +7438,10 @@ class TradingEngine:
                     ):
                         return True
                 elif side == "SHORT":
-                    is_valid_trough = (candidate_ma3 <= candidate_lower and candidate_low <= candidate_lower) or (candidate_ma3 > candidate_lower)
+                    is_valid_trough = (
+                        candidate_ma3 <= candidate_lower
+                        and candidate_low <= candidate_lower
+                    )
                     if (
                         is_valid_trough
                         and before_ma3 > candidate_ma3 + 1e-12
@@ -7294,15 +7455,7 @@ class TradingEngine:
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
         if held_side == "LONG":
-            if price <= lower:
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_LOWER_ADVERSE_BREAK_EXIT_LONG",
-                }
-            if (
-                closed_ma3_peak
-            ):
+            if closed_ma3_peak:
                 return {
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
@@ -7310,15 +7463,7 @@ class TradingEngine:
                 }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
         if held_side == "SHORT":
-            if price >= upper:
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_UPPER_ADVERSE_BREAK_EXIT_SHORT",
-                }
-            if (
-                closed_ma3_trough
-            ):
+            if closed_ma3_trough:
                 return {
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
@@ -7934,6 +8079,48 @@ class TradingEngine:
                     existing_pos.get("open_timestamp") if existing_pos else None,
                     exit_net_profitable=channel_exit_net_profitable,
                 )
+                hard_loss_action = {"action": "HOLD"}
+                if existing_pos:
+                    wallet_fn = getattr(self.account, "get_wallet_balance", None)
+                    wallet_balance = float(wallet_fn()) if callable(wallet_fn) else float(self.account.get_available_balance())
+                    hard_loss_action = self._channel_max_net_loss_action(
+                        existing_pos, channel_price, wallet_balance,
+                        CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT,
+                    )
+                    if hard_loss_action.get("action") == "EXIT":
+                        channel_action = {
+                            "action": "EXIT", "side": None,
+                            "reason": hard_loss_action["reason"],
+                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
+                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
+                        }
+                if existing_pos and hard_loss_action.get("action") != "EXIT":
+                    position_meta_map = getattr(self.account, "position_meta", None)
+                    persisted_trailing = (
+                        position_meta_map.get(symbol, {})
+                        if isinstance(position_meta_map, dict) else {}
+                    )
+                    for key in ("channel_outer_trailing_armed", "channel_outer_trailing_high", "channel_outer_trailing_low", "channel_outer_trailing_stop"):
+                        if key not in existing_pos and key in persisted_trailing:
+                            existing_pos[key] = persisted_trailing[key]
+                    trailing_action = self._channel_outer_trailing_action(
+                        channel_df, channel_price, existing_pos,
+                    )
+                    trailing_updates = trailing_action.get("updates") or {}
+                    if trailing_updates:
+                        existing_pos.update(trailing_updates)
+                        if isinstance(position_meta_map, dict):
+                            position_meta_map.setdefault(symbol, {}).update(trailing_updates)
+                        save_state = getattr(self.account, "save_state", None)
+                        if callable(save_state):
+                            save_state()
+                    if trailing_action.get("action") == "EXIT":
+                        channel_action = {
+                            "action": "EXIT", "side": None,
+                            "reason": trailing_action["reason"],
+                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
+                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
+                        }
                 # 新倉不再使用 KC 通道內的 MA3 趨勢路徑。
                 self._channel_inner_trend_hold.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
@@ -7978,11 +8165,16 @@ class TradingEngine:
                     and not chop_breakout_context
                     and not existing_pos
                 ):
-                    # 影線碰軌不進場。候選 K 必須已收盤為上軌外綠 K／
-                    # 下軌外紅 K，且只准緊接的即時 K 順勢突破其高／低點。
-                    channel_action = self._channel_closed_body_break_entry_action(
+                    # 空手時優先處理即時 KC 外軌突破，避免等待收盤確認後
+                    # 才在延伸段追價。若未達外軌即時突破條件，才使用已收盤
+                    # 實體 K 的緊接突破作為備援進場。
+                    channel_action = self._channel_immediate_outer_break_action(
                         channel_df, channel_price,
                     )
+                    if channel_action.get("action") != "ENTER":
+                        channel_action = self._channel_closed_body_break_entry_action(
+                            channel_df, channel_price,
+                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
@@ -8002,6 +8194,9 @@ class TradingEngine:
                 if (
                     action in ("ENTER", "REVERSE")
                     and target_side
+                    and channel_action.get("reason") not in {
+                        "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                    }
                     and not self._channel_outer_directional_entry_allowed(
                         channel_df, channel_price, target_side,
                     )
@@ -9589,6 +9784,7 @@ class TradingEngine:
                 # 每日虧損熔斷：觸發時只跳過本段（不開新倉），上面的持倉管理
                 # （止損/止利/移動止利/分批止盈）完全不受影響。
                 daily_halt, _daily_loss_pct = self.account.daily_loss_limit_hit()
+                daily_halt = daily_halt or self._market_crash_entries_paused(now_time)
                 available_balance = self.account.get_available_balance()
                 if TEST_BUDGET_CAP_USDT > 0:
                     available_balance = min(available_balance, TEST_BUDGET_CAP_USDT)

@@ -309,7 +309,7 @@
                                 <th>幣種</th>
                                 <th>入場價</th>
                                 <th>現價</th>
-                                <th>即時浮盈／浮虧（點擊平倉）</th>
+                                <th>淨損益（點擊平倉）</th>
                                 <th>開/平倉策略</th>
                                 <th>觸發</th>
                                 <th>數量</th>
@@ -325,20 +325,17 @@
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td style="padding: 6px;">
                                     <div
-                                        :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']"
+                                        :class="['btn', getPosEstimatedNetPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']"
                                         style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: pointer; white-space: nowrap;"
                                         title="點擊即可手動平倉此持倉"
                                         @click="closePos(pos.symbol)"
                                     >
-                                        <span>{{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT</span>
+                                        <span>{{ getPosEstimatedNetPnl(pos) > 0 ? '+' : '' }}{{ getPosEstimatedNetPnl(pos).toFixed(2) }} USDT</span>
                                         <span style="font-size: 10px; opacity: 0.95; font-weight: 600;">
                                             ({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}% / {{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)
                                         </span>
                                         <span v-if="pos.profit_alert" style="font-size: 11px;">💰⚠️</span>
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
-                                        <span style="font-size: 10px; opacity: 0.78; font-weight: 600;">
-                                            扣費後約 {{ getPosEstimatedNetPnl(pos) > 0 ? '+' : '' }}{{ getPosEstimatedNetPnl(pos).toFixed(2) }}
-                                        </span>
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
                                 </td>
@@ -626,7 +623,11 @@
             computed: {
                 newestLogs() {
                     if (!this.bot || !Array.isArray(this.bot.logs)) return [];
-                    return this.bot.logs.slice().reverse();
+                    // Persisted logs may not retain insertion order after a restart.
+                    // Always render the newest timestamp first.
+                    return this.bot.logs.slice().sort((a, b) => (
+                        Number(b.timestamp || 0) - Number(a.timestamp || 0)
+                    ));
                 },
                 sortedTickers() {
                     if (!this.bot || !Array.isArray(this.bot.symbols)) return [];
@@ -1015,16 +1016,16 @@
                         - curr * pos.qty * slippage;
                 },
                 getPosRoePct(pos) {
-                    const pnl = this.getPosUnrealizedPnl(pos);
+                    const pnl = this.getPosEstimatedNetPnl(pos);
                     if (!pos.margin || pos.margin === 0) return 0;
-                    // ROE% = 未實現損益 / 保證金 (已含槓桿效果)
+                    // 淨 ROE% = 扣費後淨損益 / 保證金 (已含槓桿效果)
                     return (pnl / pos.margin) * 100;
                 },
                 getPosRoePctNoLeverage(pos) {
-                    const pnl = this.getPosUnrealizedPnl(pos);
+                    const pnl = this.getPosEstimatedNetPnl(pos);
                     const leverage = pos.leverage || this.getLeverage(pos.symbol) || 1;
                     if (!pos.margin || pos.margin === 0) return 0;
-                    // 現貨% = 未實現損益 / (保證金 x 槓桿)，等同去除槓桿效果的實際價格漲跌幅
+                    // 淨現貨% = 扣費後淨損益 / (保證金 x 槓桿)
                     return (pnl / (pos.margin * leverage)) * 100;
                 },
                 // 開倉時就設好的固定 SL/TP，反推「如果打到止利/止損」的預估

@@ -1872,7 +1872,7 @@ def test_kc_entry_setup_prioritizes_fresh_outer_moves_and_rejects_runaways(
     assert setup["priority"] == expected_priority
 
 
-def test_directional_rotation_prefers_higher_score_over_kc_outer_setup(monkeypatch):
+def test_directional_rotation_prefers_kc_outer_setup_over_higher_score(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 40.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 1)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 1)
@@ -1891,8 +1891,8 @@ def test_directional_rotation_prefers_higher_score_over_kc_outer_setup(monkeypat
         [], {}, metrics,
     )
 
-    assert selected == ["INSIDE/USDT"]
-    assert directions == {"INSIDE/USDT": "LONG"}
+    assert selected == ["OUTER/USDT"]
+    assert directions == {"OUTER/USDT": "LONG"}
 
 
 def test_market_candidates_only_keeps_liquid_crypto_perpetuals(monkeypatch):
@@ -2128,7 +2128,7 @@ def test_directional_rotation_keeps_old_symbols_when_no_replacement_is_ready(mon
     assert changes == []
 
 
-def test_directional_rotation_replaces_for_higher_score_regardless_of_distance(monkeypatch):
+def test_directional_rotation_replaces_only_for_immediately_tradeable_symbol(monkeypatch):
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_MIN_SCORE", 60.0)
     monkeypatch.setattr("core.symbol_rotation.DIRECTIONAL_SIDE_COUNT", 6)
     monkeypatch.setattr("core.symbol_rotation.SYMBOL_ROTATION_COUNT", 3)
@@ -2149,11 +2149,9 @@ def test_directional_rotation_replaces_for_higher_score_regardless_of_distance(m
     )
 
     assert "READY/USDT" in selected
-    assert "WAITING/USDT" in selected
+    assert "WAITING/USDT" not in selected
     assert len(selected) == len(current)
-    assert len(changes) == 2
-    assert {"out": "OLD1/USDT", "in": "WAITING/USDT", "direction": "LONG"} in changes
-    assert {"out": "OLD2/USDT", "in": "READY/USDT", "direction": "SHORT"} in changes
+    assert changes == [{"out": "OLD1/USDT", "in": "READY/USDT", "direction": "SHORT"}]
     assert directions["READY/USDT"] == "SHORT"
 
 
