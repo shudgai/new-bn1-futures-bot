@@ -7839,7 +7839,7 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
             # 順勢多單只在上方 KC 外軌形成真正峰谷時平倉。
             # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
-            if (closed_ma3_peak or live_confirmed_outer_turn("LONG")) and not trend_resuming("LONG"):
+            if price >= upper and (closed_ma3_peak or live_confirmed_outer_turn("LONG")) and not trend_resuming("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
@@ -7849,7 +7849,7 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
             if chop_timeout_exit("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
-            if (closed_ma3_trough or live_confirmed_outer_turn("SHORT")) and not trend_resuming("SHORT"):
+            if price <= lower and (closed_ma3_trough or live_confirmed_outer_turn("SHORT")) and not trend_resuming("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
@@ -8544,9 +8544,29 @@ class TradingEngine:
                         channel_df, channel_price,
                     )
                     if channel_action.get("action") != "ENTER":
-                        channel_action = self._channel_closed_body_break_entry_action(
+                        closed_body_action = self._channel_closed_body_break_entry_action(
                             channel_df, channel_price,
                         )
+                        # 收盤實體突破若仍在 KC 中間，不准直接開倉；
+                        # 必須等即時外側突破或四根K延續追單確認。
+                        if closed_body_action.get("action") == "ENTER":
+                            latest_upper = float(channel_df["kc_upper"].iloc[-1])
+                            latest_lower = float(channel_df["kc_lower"].iloc[-1])
+                            target = str(closed_body_action.get("side") or "").upper()
+                            outside_now = (
+                                target == "LONG" and channel_price >= latest_upper
+                            ) or (
+                                target == "SHORT" and channel_price <= latest_lower
+                            )
+                            channel_action = (
+                                closed_body_action
+                                if outside_now
+                                else {"action": "WAIT", "side": None,
+                                      "reason": "WAIT_OUTER_CONFIRMATION",
+                                      "kc_upper": latest_upper, "kc_lower": latest_lower}
+                            )
+                        else:
+                            channel_action = closed_body_action
                     if channel_action.get("action") != "ENTER":
                         channel_action = self._channel_outer_continuation_entry_action(
                             channel_df, channel_price, max_bars=4,
@@ -8560,6 +8580,7 @@ class TradingEngine:
                 channel_spec_entry = channel_action.get("reason") in {
                     "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                     "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
+                    "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
                 }
                 if (
                     not existing_pos
