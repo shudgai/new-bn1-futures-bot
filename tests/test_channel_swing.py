@@ -1795,7 +1795,8 @@ def test_channel_swing_has_one_confirmation_rule_and_no_legacy_entry_paths():
     assert 'KC_INNER_TWO_RED_CROSS_DOWN' not in action_source
     assert 'inner_ma3_turn' not in action_source
     assert '_channel_closed_body_break_entry_action(' in process_source
-    assert '_channel_immediate_outer_break_action(' in process_source
+    assert '_channel_immediate_outer_break_action(' not in process_source
+    assert '_channel_closed_body_break_entry_action(' in process_source
     assert '_channel_closed_body_break_entry_action(' in process_source
     reverse_start = process_source.index('if action == "REVERSE" and existing_pos:')
     reverse_end = process_source.index('if existing_pos:', reverse_start + 1)

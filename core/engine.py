@@ -8348,15 +8348,11 @@ class TradingEngine:
                     and not chop_breakout_context
                     and not existing_pos
                 ):
-                    # 空手時即時外軌突破優先；否則只接受倒數第二根
-                    # 候選 K 觸軌後，由緊接 live K 突破順向極值。
-                    channel_action = self._channel_immediate_outer_break_action(
+                    # 空手時不再因單純即時碰到外軌就追價；必須由倒數第二根
+                    # 候選 K 觸軌，並由緊接的 live K 突破順向極值確認。
+                    channel_action = self._channel_closed_body_break_entry_action(
                         channel_df, channel_price,
                     )
-                    if channel_action.get("action") != "ENTER":
-                        channel_action = self._channel_closed_body_break_entry_action(
-                            channel_df, channel_price,
-                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
