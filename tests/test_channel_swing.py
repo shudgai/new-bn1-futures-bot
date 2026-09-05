@@ -2707,11 +2707,11 @@ def test_market_surveillance_replaces_stale_momentum_scores():
     assert engine._market_surveillance_scores == {}
 
 
-def test_main_loop_no_longer_uses_stronger_symbol_takeover_or_stalled_recovery_close():
+def test_main_loop_uses_confirmed_takeover_but_not_stalled_recovery_close():
     main_source = inspect.getsource(TradingEngine._main_loop)
     process_source = inspect.getsource(TradingEngine._process_single_symbol)
 
-    assert "_try_channel_stronger_symbol_takeover(" not in main_source
+    assert "_try_channel_stronger_symbol_takeover(" in main_source
     assert "_try_channel_stalled_recovery_exit(" not in main_source
     assert "_channel_stalled_recovery_should_arm(" not in process_source
 

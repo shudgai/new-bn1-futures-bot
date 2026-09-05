@@ -8154,30 +8154,12 @@ class TradingEngine:
 
             from core.config import ENABLE_CONTINUOUS_REVERSE_MODE
 
-            # BTC 1m 強脈衝是全市場早期瀑布/急拉訊號。先處理反向的
-            # Channel Swing 持倉，避免等個幣自己的峰谷確認才把虧損拖大。
+            # Channel Swing 持倉不再因為 BTC 1m 瞬間反向脈衝就強制平倉——
+            # 這是未確認的提前反手，會在剛進場、連對側 KC 外軌都還沒碰到
+            # 時就把倉位砍掉。BTC 反向脈衝仍用於擋新開倉與 BTC 領先候選，
+            # 但既有持倉一律回歸唯一出場規則（對側 KC 外軌峰谷確認、
+            # KC 破軌停損、帳戶最大淨虧損）。
             btc_pulse = str(btc_1m_turn or "").upper()
-            existing_position = self.account.positions.get(symbol)
-            if (
-                btc_pulse in ("LONG", "SHORT")
-                and existing_position
-                and str(existing_position.get("entry_mode") or "").upper() == "CHANNEL_SWING"
-                and str(existing_position.get("side") or "").upper() != btc_pulse
-            ):
-                pulse_price = float(
-                    self.tickers.get(symbol)
-                    or existing_position.get("mark_price")
-                    or existing_position.get("entry_price")
-                    or 0.0
-                )
-                if pulse_price > 0.0:
-                    await self.account.close_position(
-                        symbol,
-                        pulse_price,
-                        f"BTC 1m 強脈衝反向，平 Channel Swing {existing_position.get('side')}",
-                        is_manual=True,
-                    )
-                return signal_progress, detected_candidates
 
             # ====== 第二步：如果多單在外軌，不要提早出場（延後平倉邏輯）======
             # Channel Swing 要在碰到對面軌道時立即平倉，不能被這個舊外軌延伸收掉。
@@ -10115,6 +10097,17 @@ class TradingEngine:
                                 signal_progress.append(
                                     f"{coin} {direction_text} BTC 1m {btc_1m_turn} 強脈衝期間拒絕逆向開倉"
                                 )
+                                continue
+
+                            takeover_handled, takeover_opened = (
+                                await self._try_channel_stronger_symbol_takeover(
+                                    sig, now_time, daily_halt,
+                                )
+                            )
+                            if takeover_handled:
+                                opened_any = takeover_opened or opened_any
+                                if takeover_opened or not self.account.positions:
+                                    break
                                 continue
 
                             same_side_committed = self._channel_same_side_committed(
