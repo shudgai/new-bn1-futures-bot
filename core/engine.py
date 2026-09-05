@@ -7672,12 +7672,30 @@ class TradingEngine:
             )
 
         def outer_chase_channel_reentry(side: str) -> bool:
-            """外軌追單回到通道內即離場，避免在通道內無限等待。"""
+            """外軌追單回到通道後，須有反向K與MA3反轉才離場。"""
             if not entry_outer_chase:
                 return False
+            try:
+                live_open = float(row["open"])
+                live_close = float(row["close"])
+                previous_ma3 = float(confirmation_row["ma3"])
+                current_ma3 = float(row["ma3"])
+                body_threshold = max((upper - lower) * 0.02, abs(current_ma3) * 0.0001)
+            except (TypeError, ValueError, KeyError):
+                return False
             if side == "LONG":
-                return bool(price < upper and price > lower)
-            return bool(price > lower and price < upper)
+                return bool(
+                    lower < price < upper
+                    and live_close < live_open
+                    and live_open - live_close >= body_threshold
+                    and current_ma3 < previous_ma3
+                )
+            return bool(
+                lower < price < upper
+                and live_close > live_open
+                and live_close - live_open >= body_threshold
+                and current_ma3 > previous_ma3
+            )
 
         def entry_outer_invalidation(side: str) -> bool:
             """Close a losing position when it returns to its original entry rail."""
