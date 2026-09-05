@@ -3429,14 +3429,19 @@ class TradingEngine:
         side = signal["side"]
         entry_mode = signal["entry_mode"]
         signal_volume_ratio = signal.get("volume_ratio")
+        import core.config as runtime_config
+        min_entry_volume_ratio = (
+            runtime_config.CHANNEL_SWING_ENTRY_MIN_VOLUME_RATIO
+            if entry_mode == "CHANNEL_SWING"
+            else KELTNER_MIN_VOLUME_RATIO
+        )
         if (
-            entry_mode != "CHANNEL_SWING"
-            and signal_volume_ratio is not None
-            and float(signal_volume_ratio) < KELTNER_MIN_VOLUME_RATIO
+            signal_volume_ratio is not None
+            and float(signal_volume_ratio) < min_entry_volume_ratio
         ):
             self.account.log(
                 f"🛑 {symbol} {side} 當下量能 {float(signal_volume_ratio):.2f}x "
-                f"低於 {KELTNER_MIN_VOLUME_RATIO:.2f}x，取消結構化開倉",
+                f"低於 {min_entry_volume_ratio:.2f}x，取消結構化開倉",
                 "WARNING",
             )
             return False

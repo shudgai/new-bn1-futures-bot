@@ -3227,7 +3227,7 @@ def test_channel_swing_allows_lower_timeframe_signal_against_higher_timeframe_di
 def test_channel_swing_simple_trend_entry_bypasses_old_signal_filters():
     place_source = inspect.getsource(TradingEngine._place_structured_entry)
     process_source = inspect.getsource(TradingEngine._process_single_symbol)
-    assert "entry_mode != \"CHANNEL_SWING\"" in place_source
+    assert "CHANNEL_SWING_ENTRY_MIN_VOLUME_RATIO" in place_source
     assert "排名候選但當下量能不足" not in process_source
     assert "blocked: ranked direction" not in process_source
     assert "訊號遭 BTC 1m" not in process_source

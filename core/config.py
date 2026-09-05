@@ -669,6 +669,8 @@ KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
 KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.5"))  # 放寬量能門檻
+# Channel Swing 新倉需有至少 1 倍均量，避免外軌弱量 K 直接反手追價。
+CHANNEL_SWING_ENTRY_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("CHANNEL_SWING_ENTRY_MIN_VOLUME_RATIO", "1.0")))
 # BREAKOUT_CONFIRM_BARS：KC 突破需要「收盤確認」的防假突破機制。
 BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 # POST_BREAKOUT_VOL_SUSTAIN_RATIO：突破後量能持續性確認，用於 confirm_pullback_entry()。
