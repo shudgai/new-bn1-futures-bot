@@ -10104,14 +10104,15 @@ class TradingEngine:
                     wallet_balance = float(self.account.get_wallet_balance())
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
                     # broad_symbols = 市場監控短名單 + DEFAULT_SYMBOLS（UI牌面，含
-                    # 持倉幣）。持倉幣必須在 symbols_snapshot 中，機器人才能觀察
-                    # 並決定是否讓位給更強勢的突破幣；UI 牌面靠 symbol_rotation
-                    # 的 rotate() 保證持倉幣永遠在 DEFAULT_SYMBOLS 裡。
+                    # 持倉幣）+ entry_scan_symbols（輪替量化/AI排名已達標，但尚未
+                    # 擠進 DEFAULT_SYMBOLS 的候選）。避免像 PENGU/DOGE 這類已通過
+                    # ATR、評分、方向資格的幣，只因沒排進前 N 名就完全掃不到。
                     symbols_snapshot = self._entry_scan_symbol_snapshot(
                         list(DEFAULT_SYMBOLS),
                         list(dict.fromkeys([
                             *self.market_prebreakout_symbols,
                             *DEFAULT_SYMBOLS,
+                            *getattr(self.symbol_rotation, "entry_scan_symbols", []),
                         ])),
                         self.account.positions,
                         self.account.pending_limit_orders,
