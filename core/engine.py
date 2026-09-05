@@ -3378,6 +3378,7 @@ class TradingEngine:
 
     async def _fresh_channel_entry_snapshot(
         self, symbol: str, side: str, candidate_bar_id: object = None,
+        allow_live_outer: bool = False,
     ) -> dict | None:
         """Fetch the live candle again and validate the current KC outer trend."""
         import core.config as config
@@ -3403,8 +3404,10 @@ class TradingEngine:
                 candidate_bar_id is not None
                 and fresh_candidate_bar_id != candidate_bar_id
             )
-            or not self._channel_closed_body_break_entry_allowed(
-                frame, price, side,
+            or not (
+                self._channel_immediate_outer_break_action(frame, price).get("action") == "ENTER"
+                if allow_live_outer
+                else self._channel_closed_body_break_entry_allowed(frame, price, side)
             )
         ):
             return None
@@ -3482,6 +3485,13 @@ class TradingEngine:
             if fresh_snapshot is None:
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
                     symbol, side, candidate_bar_id,
+                    allow_live_outer=(
+                        str(signal.get("signal_code") or "") in {
+                            "KC_LIVE_UPPER_BREAK_LONG",
+                            "KC_LIVE_LOWER_BREAK_SHORT",
+                        }
+                        or "live KC outer break" in str(signal.get("reason") or "")
+                    ),
                 )
             if fresh_snapshot is None:
                 if invalid_candidate_key is not None:
@@ -8374,11 +8384,15 @@ class TradingEngine:
                     and not chop_breakout_context
                     and not existing_pos
                 ):
-                    # 空手時不再因單純即時碰到外軌就追價；必須由倒數第二根
-                    # 候選 K 觸軌，並由緊接的 live K 突破順向極值確認。
-                    channel_action = self._channel_closed_body_break_entry_action(
+                    # 使用者明確要求追蹤 KC 外側趨勢：即時價格碰到外軌即先追，
+                    # 若不在外軌，再退回已收盤 K 的順向突破確認。
+                    channel_action = self._channel_immediate_outer_break_action(
                         channel_df, channel_price,
                     )
+                    if channel_action.get("action") != "ENTER":
+                        channel_action = self._channel_closed_body_break_entry_action(
+                            channel_df, channel_price,
+                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
