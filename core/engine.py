@@ -7719,24 +7719,13 @@ class TradingEngine:
             return bool(rail > 0.0 and price >= rail and live_close > live_open and current_ma3 > previous_ma3)
 
         if held_side == "LONG":
-            if outer_chase_channel_reentry("LONG"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_OUTER_CHASE_CHANNEL_REENTRY_EXIT"}
-            if entry_outer_invalidation("LONG"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_ENTRY_OUTER_INVALIDATION_EXIT"}
+            # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
             if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
-                if not exit_net_profitable:
-                    return {"action": "HOLD", "side": None, "reason": "WAIT_NET_PROFIT_KC_UPPER_PEAK"}
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            if outer_chase_channel_reentry("SHORT"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_OUTER_CHASE_CHANNEL_REENTRY_EXIT"}
-            if entry_outer_invalidation("SHORT"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_ENTRY_OUTER_INVALIDATION_EXIT"}
             if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
-                if not exit_net_profitable:
-                    return {"action": "HOLD", "side": None, "reason": "WAIT_NET_PROFIT_KC_LOWER_VALLEY"}
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 

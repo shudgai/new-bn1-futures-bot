@@ -375,15 +375,15 @@ def test_confirmed_outer_ma3_turns_end_channel_positions_symmetrically():
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_outer_exit_waits_for_positive_estimated_net_pnl(side):
+def test_confirmed_outer_exit_does_not_require_positive_estimated_net_pnl(side):
     frame = _channel_frame()
     if side == "LONG":
         _closed_peak(frame)
-        wait_reason = "WAIT_OPPOSITE_KC_UPPER_PEAK"
+        expected = ("EXIT", "KC_UPPER_OUTER_PEAK_EXIT")
         price = 100.6
     else:
         _closed_trough(frame)
-        wait_reason = "WAIT_OPPOSITE_KC_LOWER_VALLEY"
+        expected = ("EXIT", "KC_LOWER_OUTER_VALLEY_EXIT")
         price = 99.4
 
     result = TradingEngine._channel_swing_action(
@@ -391,11 +391,7 @@ def test_confirmed_outer_exit_waits_for_positive_estimated_net_pnl(side):
         exit_net_profitable=False,
     )
 
-    expected_reason = (
-        "WAIT_NET_PROFIT_KC_UPPER_PEAK" if side == "LONG"
-        else "WAIT_NET_PROFIT_KC_LOWER_VALLEY"
-    )
-    assert (result["action"], result["reason"]) == ("HOLD", expected_reason)
+    assert (result["action"], result["reason"]) == expected
 
 
 def test_one_sided_ma3_move_is_not_mistaken_for_a_new_outer_extreme():
