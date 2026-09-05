@@ -3461,13 +3461,18 @@ class TradingEngine:
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         if entry_mode == "CHANNEL_SWING":
             candidate_bar_id = signal.get("candidate_bar_id")
+            live_outer_entry = str(signal.get("signal_code") or signal.get("reason") or "") in {
+                "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                "KC_UPPER_TOUCH_LONG", "KC_LOWER_TOUCH_SHORT",
+            } or "live KC outer break" in str(signal.get("reason") or "")
+            validation_bar_id = None if live_outer_entry else candidate_bar_id
             invalid_candidate_key = (
-                symbol, str(side).upper(), candidate_bar_id,
-            ) if candidate_bar_id is not None else None
+                symbol, str(side).upper(), validation_bar_id,
+            ) if validation_bar_id is not None else None
             invalid_candidates = getattr(
                 self, "_channel_invalid_entry_candidates", set(),
             )
-            if invalid_candidate_key in invalid_candidates:
+            if not live_outer_entry and invalid_candidate_key in invalid_candidates:
                 self.account.log(
                     f"🛑 {symbol} {side} 候選K {candidate_bar_id} 已通過失效鎖拒絕，不再重試",
                     "WARNING",
@@ -3476,7 +3481,7 @@ class TradingEngine:
             fresh_snapshot = channel_snapshot
             if fresh_snapshot is None:
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
-                    symbol, side, candidate_bar_id,
+                    symbol, side, validation_bar_id,
                     allow_live_outer=(
                         str(signal.get("signal_code") or "") in {
                             "KC_LIVE_UPPER_BREAK_LONG",
@@ -3486,7 +3491,7 @@ class TradingEngine:
                     ),
                 )
             if fresh_snapshot is None:
-                if invalid_candidate_key is not None:
+                if invalid_candidate_key is not None and not live_outer_entry:
                     if not hasattr(self, "_channel_invalid_entry_candidates"):
                         self._channel_invalid_entry_candidates = set()
                     self._channel_invalid_entry_candidates.add(invalid_candidate_key)
@@ -3500,17 +3505,6 @@ class TradingEngine:
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             getattr(self, "tickers", {})[symbol] = planned_price
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
-        if entry_mode == "CHANNEL_SWING" and signal.get("profit_potential") is not None:
-            projected_room_pct = max(0.0, float(signal.get("profit_potential") or 0.0)) / 100.0
-            round_trip_cost_pct = 2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
-            projected_net_room_pct = projected_room_pct - round_trip_cost_pct
-            if projected_net_room_pct < MIN_ENTRY_PROFIT_ROOM_PCT:
-                self.account.log(
-                    f"🛑 {symbol} {side} 預估淨獲利空間 {projected_net_room_pct:.3%} "
-                    f"低於 {MIN_ENTRY_PROFIT_ROOM_PCT:.3%}，取消開倉",
-                    "WARNING",
-                )
-                return False
         if not self._abnormal_market_entry_allowed(
             symbol, side, planned_price, atr,
             float(signal.get("signal_candle_open") or planned_price),
