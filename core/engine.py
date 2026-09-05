@@ -7517,8 +7517,7 @@ class TradingEngine:
         # 誤判成完整峰頂。反轉幅度至少要達價格的 0.035%，或 KC 半寬的
         # 5%，多空使用完全相同的鏡像門檻。
         # 峰／谷初次轉彎若尚未達有效幅度，不能只檢查一次便永久遺失。
-        # 在設定的最近 K 棒範圍內持續追蹤該極值；後續 MA3 累積反轉達標
-        # 才平倉。若期間創出更高峰／更低谷，舊候選自動失效。
+        # 只確認候選峰／谷後的第一根已收盤反向K；不等待後續轉彎。
         latest_closed_pos = len(frame) - 2
         turn_lookback = max(
             2, int(getattr(config, "CHANNEL_SWING_TURN_LOOKBACK_BARS", 12)),
@@ -7571,23 +7570,13 @@ class TradingEngine:
                         float(candidate["open"]), float(candidate["low"]),
                         float(candidate["close"]),
                     )
-                    latest_closed_open = float(frame.iloc[latest_closed_pos]["open"])
-                    latest_closed_close = float(frame.iloc[latest_closed_pos]["close"])
-                    latest_closed_ma3 = float(frame.iloc[latest_closed_pos]["ma3"])
-                    latest_closed_upper = float(frame.iloc[latest_closed_pos]["kc_upper"])
-                    latest_closed_lower = float(frame.iloc[latest_closed_pos]["kc_lower"])
-                    later_ma3 = pd.to_numeric(
-                        frame.iloc[candidate_pos + 1:latest_closed_pos + 1]["ma3"],
-                        errors="coerce",
-                    ).dropna()
                 except (TypeError, ValueError, IndexError, KeyError):
                     continue
                 if (
-                    later_ma3.empty
-                    or not all(math.isfinite(value) for value in (
+not all(math.isfinite(value) for value in (
                         before_ma3, candidate_ma3, after_ma3,
                         candidate_upper, candidate_lower, candidate_high,
-                        candidate_low, latest_closed_open, latest_closed_close, latest_closed_ma3, latest_closed_upper, latest_closed_lower,
+                        candidate_low,
                     ))
                     or candidate_lower >= candidate_upper
                     or not candidate_is_after_entry(candidate_pos)
