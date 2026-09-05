@@ -7718,10 +7718,49 @@ class TradingEngine:
             rail = float(entry_kc_upper or 0.0)
             return bool(rail > 0.0 and price >= rail and live_close > live_open and current_ma3 > previous_ma3)
 
+        def chop_timeout_exit(side: str) -> bool:
+            """長時間窄幅盤整才退出；有方向趨勢時絕不因計時器平倉。"""
+            if not position_open_timestamp or len(frame) < 18:
+                return False
+            try:
+                age_sec = time.time() - float(position_open_timestamp)
+                if age_sec < 20.0 * 60.0:
+                    return False
+                closed = frame.iloc[-16:-1]
+                inside = ((closed["close"] > closed["kc_lower"]) & (closed["close"] < closed["kc_upper"])).mean()
+                width_pct = (upper - lower) / max(abs((upper + lower) / 2.0), 1e-12)
+                atr_now = float(row.get("atr") or 0.0)
+                if atr_now <= 0.0:
+                    atr_now = max((upper - lower) / 2.0, abs(price) * 1e-6)
+                middle = (upper + lower) / 2.0
+                ma3_values = pd.to_numeric(closed["ma3"], errors="coerce").dropna()
+                close_values = pd.to_numeric(closed["close"], errors="coerce").dropna()
+                if len(ma3_values) < 5 or len(close_values) < 5:
+                    return False
+                ma3_delta = float(ma3_values.iloc[-1] - ma3_values.iloc[-5])
+                close_delta = float(close_values.iloc[-1] - close_values.iloc[-5])
+                directional = (
+                    side == "LONG" and ma3_delta > atr_now * 0.08 and close_delta > atr_now * 0.08
+                ) or (
+                    side == "SHORT" and ma3_delta < -atr_now * 0.08 and close_delta < -atr_now * 0.08
+                )
+                near_middle = abs(price - middle) <= max(atr_now * 0.75, abs(middle) * 0.001)
+                return bool(
+                    inside >= 0.80
+                    and width_pct <= 0.008
+                    and not directional
+                    and near_middle
+                    and lower < price < upper
+                )
+            except (TypeError, ValueError, KeyError, IndexError):
+                return False
+
         if held_side == "LONG":
             # 多單反向跌回下方 KC 外側先平倉；下一輪確認下跌外側趨勢後再追空。
             if price <= lower:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_ADVERSE_EXIT"}
+            if chop_timeout_exit("LONG"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
             # 順勢多單只在上方 KC 外軌形成真正峰谷時平倉。
             # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
             if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
@@ -7732,6 +7771,8 @@ class TradingEngine:
             # 空單若反向漲回上方 KC 外側，先平倉；下一輪若仍有上漲外側趨勢再追多。
             if price >= upper:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
+            if chop_timeout_exit("SHORT"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
             if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}

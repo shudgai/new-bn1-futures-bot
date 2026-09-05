@@ -1,4 +1,5 @@
 import inspect
+import time
 import types
 import pytest
 import pandas as pd
@@ -407,6 +408,29 @@ def test_adverse_outer_rail_closes_position_before_opposite_trend_chase():
         "EXIT", "KC_UPPER_OUTER_ADVERSE_EXIT",
     )
 
+
+def test_long_chop_timeout_exits_near_channel_middle_after_twenty_minutes():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+    result = TradingEngine._channel_swing_action(
+        frame, 100.0, "LONG",
+        position_open_timestamp=time.time() - 21 * 60,
+    )
+    assert (result["action"], result["reason"]) == (
+        "EXIT", "KC_CHOP_TIMEOUT_EXIT_LONG",
+    )
+
+
+def test_long_chop_timeout_does_not_exit_when_uptrend_is_emerging():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+    frame.loc[frame.index[-5:], "ma3"] = [100.00, 100.03, 100.06, 100.09, 100.12]
+    frame.loc[frame.index[-5:], "close"] = [100.00, 100.03, 100.06, 100.09, 100.12]
+    result = TradingEngine._channel_swing_action(
+        frame, 100.12, "LONG",
+        position_open_timestamp=time.time() - 21 * 60,
+    )
+    assert (result["action"], result["reason"]) == (
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+    )
 
 def test_one_sided_ma3_move_is_not_mistaken_for_a_new_outer_extreme():
     long_frame = _channel_frame()
