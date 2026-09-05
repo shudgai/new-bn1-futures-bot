@@ -3470,3 +3470,19 @@ def test_channel_profit_reclaim_does_not_arm_before_one_atr_profit():
         99.90, atr=1.0, min_profit_atr_mult=1.0,
     )
     assert result == {"action": "HOLD"}
+
+
+def test_recent_candles_whipsawing_blocks_alternating_colors():
+    frame = _channel_frame()
+    colors = [100.2, 99.8, 100.2, 99.8, 100.2, 99.8]
+    for offset, close in enumerate(colors, start=1):
+        frame.loc[frame.index[-1 - offset], ["open", "close"]] = [100.0, close]
+    assert TradingEngine._channel_recent_candles_whipsawing(frame) is True
+
+
+def test_recent_candles_whipsawing_allows_directional_run():
+    frame = _channel_frame()
+    closes = [100.1, 100.2, 100.3, 100.4, 100.5, 100.6]
+    for offset, close in enumerate(closes, start=1):
+        frame.loc[frame.index[-1 - offset], ["open", "close"]] = [100.0, close]
+    assert TradingEngine._channel_recent_candles_whipsawing(frame) is False

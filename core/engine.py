@@ -4800,8 +4800,28 @@ class TradingEngine:
         price = float(price or 0.0)
         if not math.isfinite(atr) or atr <= 0.0 or price <= 0.0:
             return False
+        if TradingEngine._channel_recent_candles_whipsawing(frame):
+            return False
         profit_potential_pct = self._candidate_profit_potential(symbol, side, atr, price)
         return profit_potential_pct >= NET_PROFIT_GUARANTEE_BUFFER * 100.0
+
+    @staticmethod
+    def _channel_recent_candles_whipsawing(
+        frame: pd.DataFrame, lookback: int = 6, min_flip_ratio: float = 0.8,
+    ) -> bool:
+        """Reject touch entries when recent closed candles keep flipping red/green with no net progress."""
+        if frame is None or len(frame) < lookback + 1 or not {"open", "close"}.issubset(frame.columns):
+            return False
+        closed = frame.iloc[:-1].tail(lookback)
+        if len(closed) < lookback:
+            return False
+        colors = [
+            1 if float(row["close"]) >= float(row["open"]) else -1
+            for _, row in closed.iterrows()
+        ]
+        flips = sum(1 for a, b in zip(colors, colors[1:]) if a != b)
+        max_flips = len(colors) - 1
+        return max_flips > 0 and (flips / max_flips) >= min_flip_ratio
 
     @staticmethod
     def _channel_candidate_energy(candidate: dict) -> float:
@@ -4828,7 +4848,8 @@ class TradingEngine:
         3. 全市場即時爆發力（_market_surveillance_scores，sub-second momentum）
         4. symbol_rotation final_score（含 AI 評分，作較慢的背景品質參考）
         5. KC 進場優先級（priority）
-        6. 預估獲利空間（profit_potential 或 ATR%）
+        6. 預估獲利空間（profit_potential 或 ATR%）——前面維度打平時，同時間
+           同條件的候選改由獲利空間最大者勝出
         7. 訊號分（score）
         """
         scores = symbol_scores or {}
