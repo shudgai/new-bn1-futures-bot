@@ -7667,20 +7667,16 @@ class TradingEngine:
 
         if held_side == "LONG":
             if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_UPPER_OUTER_PEAK_EXIT",
-                }
+                if not exit_net_profitable:
+                    return {"action": "HOLD", "side": None, "reason": "WAIT_NET_PROFIT_KC_UPPER_PEAK"}
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
             if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_LOWER_OUTER_VALLEY_EXIT",
-                }
+                if not exit_net_profitable:
+                    return {"action": "HOLD", "side": None, "reason": "WAIT_NET_PROFIT_KC_LOWER_VALLEY"}
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
         return {

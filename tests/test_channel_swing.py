@@ -375,7 +375,7 @@ def test_confirmed_outer_ma3_turns_end_channel_positions_symmetrically():
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_confirmed_outer_exit_does_not_require_positive_estimated_net_pnl(side):
+def test_confirmed_outer_exit_waits_for_positive_estimated_net_pnl(side):
     frame = _channel_frame()
     if side == "LONG":
         _closed_peak(frame)
@@ -392,10 +392,10 @@ def test_confirmed_outer_exit_does_not_require_positive_estimated_net_pnl(side):
     )
 
     expected_reason = (
-        "KC_UPPER_OUTER_PEAK_EXIT" if side == "LONG"
-        else "KC_LOWER_OUTER_VALLEY_EXIT"
+        "WAIT_NET_PROFIT_KC_UPPER_PEAK" if side == "LONG"
+        else "WAIT_NET_PROFIT_KC_LOWER_VALLEY"
     )
-    assert (result["action"], result["reason"]) == ("EXIT", expected_reason)
+    assert (result["action"], result["reason"]) == ("HOLD", expected_reason)
 
 
 def test_one_sided_ma3_move_is_not_mistaken_for_a_new_outer_extreme():
@@ -528,7 +528,7 @@ def test_near_outer_peak_keeps_confirming_until_cumulative_turn_is_large_enough(
     )
 
     assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+        "HOLD", "WAIT_NET_PROFIT_KC_UPPER_PEAK",
     )
 
 
