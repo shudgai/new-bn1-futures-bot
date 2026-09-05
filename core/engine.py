@@ -7631,37 +7631,44 @@ class TradingEngine:
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
         
+        ema_20 = float(frame["ema_20"].iloc[-1])
+        prev_close = float(frame["close"].iloc[-2])
+        prev_ema20 = float(frame["ema_20"].iloc[-2])
+        
+        cross_down = prev_close >= prev_ema20 and live_price < ema_20
+        cross_up = prev_close <= prev_ema20 and live_price > ema_20
+        
         if held_side == "LONG":
-            if closed_ma3_peak:
+            if (closed_ma3_peak and live_price < ema_20) or cross_down:
                 return {
                     "action": "REVERSE", "side": "SHORT",
                     "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_UPPER_OUTER_PEAK_REVERSE",
+                    "reason": "KC_UPPER_PEAK_OR_MOMENTUM_REVERSE",
                 }
-            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
+            return {"action": "HOLD", "side": None, "reason": "WAIT_RETURN_TO_CHANNEL_OR_OPPOSITE_PEAK"}
             
         if held_side == "SHORT":
-            if closed_ma3_trough:
+            if (closed_ma3_trough and live_price > ema_20) or cross_up:
                 return {
                     "action": "REVERSE", "side": "LONG",
                     "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_LOWER_OUTER_VALLEY_REVERSE",
+                    "reason": "KC_LOWER_VALLEY_OR_MOMENTUM_REVERSE",
                 }
-            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
+            return {"action": "HOLD", "side": None, "reason": "WAIT_RETURN_TO_CHANNEL_OR_OPPOSITE_VALLEY"}
 
-        if closed_ma3_peak:
+        if (closed_ma3_peak and live_price < ema_20) or cross_down:
             return {
                 "action": "ENTER", "side": "SHORT",
                 "kc_upper": upper, "kc_lower": lower,
-                "reason": "KC_UPPER_OUTER_PEAK_ENTRY",
+                "reason": "MOMENTUM_DOWN_ENTRY",
                 "turn_high": float(frame["high"].iloc[-2]) if len(frame) >= 2 else None,
             }
             
-        if closed_ma3_trough:
+        if (closed_ma3_trough and live_price > ema_20) or cross_up:
             return {
                 "action": "ENTER", "side": "LONG",
                 "kc_upper": upper, "kc_lower": lower,
-                "reason": "KC_LOWER_OUTER_VALLEY_ENTRY",
+                "reason": "MOMENTUM_UP_ENTRY",
                 "turn_low": float(frame["low"].iloc[-2]) if len(frame) >= 2 else None,
             }
 
