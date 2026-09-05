@@ -435,6 +435,17 @@ def test_long_chop_timeout_exits_near_channel_middle_after_twenty_minutes():
         position_open_timestamp=time.time() - 21 * 60,
     )
     assert (result["action"], result["reason"]) == (
+        "EXIT", "KC_CHOP_TIMEOUT_EXIT_LONG",
+    )
+
+
+def test_long_chop_timeout_does_not_exit_before_twenty_minutes():
+    frame = _channel_frame(lower=99.8, upper=100.2)
+    result = TradingEngine._channel_swing_action(
+        frame, 100.0, "LONG",
+        position_open_timestamp=time.time() - 19 * 60,
+    )
+    assert (result["action"], result["reason"]) == (
         "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
