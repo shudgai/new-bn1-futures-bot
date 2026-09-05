@@ -7502,6 +7502,8 @@ class TradingEngine:
                         float(candidate["open"]), float(candidate["low"]),
                         float(candidate["close"]),
                     )
+                    latest_closed_open = float(frame.iloc[latest_closed_pos]["open"])
+                    latest_closed_close = float(frame.iloc[latest_closed_pos]["close"])
                     latest_closed_ma3 = float(frame.iloc[latest_closed_pos]["ma3"])
                     later_ma3 = pd.to_numeric(
                         frame.iloc[candidate_pos + 1:latest_closed_pos + 1]["ma3"],
@@ -7514,7 +7516,7 @@ class TradingEngine:
                     or not all(math.isfinite(value) for value in (
                         before_ma3, candidate_ma3, after_ma3,
                         candidate_upper, candidate_lower, candidate_high,
-                        candidate_low, latest_closed_ma3,
+                        candidate_low, latest_closed_open, latest_closed_close, latest_closed_ma3,
                     ))
                     or candidate_lower >= candidate_upper
                     or not candidate_is_after_entry(candidate_pos)
@@ -7525,10 +7527,10 @@ class TradingEngine:
 
                 import os
 
-                # 外軌 MA3 峰／谷採極低確認門檻，讓第一根已收盤反向 K 即可平倉，僅排除浮點雜訊。
+                # 外軌 MA3 峰／谷必須有明確反向實體K與足夠反轉幅度，避免小紅K或小綠K誤平倉。
                 if is_outside_upper or is_outside_lower:
-                    _min_price_pct = float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_PRICE_PCT", "0.0001"))
-                    _min_kc_pct = float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_KC_WIDTH_PCT", "0.01"))
+                    _min_price_pct = max(float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_PRICE_PCT", "0.0003")), 0.0003)
+                    _min_kc_pct = max(float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_KC_WIDTH_PCT", "0.05")), 0.05)
                 else:
                     continue
 
@@ -7546,6 +7548,8 @@ class TradingEngine:
                         and after_ma3 < candidate_ma3 - 1e-12
                         and float(later_ma3.max()) <= candidate_ma3 + 1e-12
                         and latest_closed_ma3 <= candidate_ma3 - turn_threshold
+                        and latest_closed_close < latest_closed_open
+                        and latest_closed_open - latest_closed_close >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
                         return True
                 elif side == "SHORT":
@@ -7556,6 +7560,8 @@ class TradingEngine:
                         and after_ma3 > candidate_ma3 + 1e-12
                         and float(later_ma3.min()) >= candidate_ma3 - 1e-12
                         and latest_closed_ma3 >= candidate_ma3 + turn_threshold
+                        and latest_closed_close > latest_closed_open
+                        and latest_closed_close - latest_closed_open >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
                         return True
             return False

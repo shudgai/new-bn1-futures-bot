@@ -528,7 +528,7 @@ def test_near_outer_peak_keeps_confirming_until_cumulative_turn_is_large_enough(
     )
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_NET_PROFIT_KC_UPPER_PEAK",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 
