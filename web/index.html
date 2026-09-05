@@ -467,7 +467,7 @@
                 </div>
 
                 <!-- MANUAL ORDER PANEL -->
-                <div v-if="bot.symbols.length === 1" class="card">
+                <div v-if="bot.symbols && bot.symbols.length > 0" class="card">
                     <div class="card-title">⚡ 手動開倉（交由機器人依 KC 收盤反手管理）</div>
                     <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
                         <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
@@ -479,7 +479,7 @@
                 </div>
 
                 <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
-                <div v-if="bot.symbols.length === 1" class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
+                <div v-if="bot.symbols && bot.symbols.length > 0" class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
                     <div v-for="symbol in bot.symbols" :key="'mobile-manual-' + symbol" style="width:100%;">
                         <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ symbol }}</div>
                         <div style="display:flex; gap:10px;">

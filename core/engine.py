@@ -7630,34 +7630,40 @@ class TradingEngine:
 
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
+        
         if held_side == "LONG":
-            if not closed_ma3_peak and two_bar_outer_reversal("LONG"):
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_UPPER_TWO_BAR_REVERSAL_EXIT",
-                }
             if closed_ma3_peak:
                 return {
-                    "action": "EXIT", "side": None,
+                    "action": "REVERSE", "side": "SHORT",
                     "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_UPPER_OUTER_PEAK_EXIT",
+                    "reason": "KC_UPPER_OUTER_PEAK_REVERSE",
                 }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
+            
         if held_side == "SHORT":
-            if not closed_ma3_trough and two_bar_outer_reversal("SHORT"):
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_LOWER_TWO_BAR_REVERSAL_EXIT",
-                }
             if closed_ma3_trough:
                 return {
-                    "action": "EXIT", "side": None,
+                    "action": "REVERSE", "side": "LONG",
                     "kc_upper": upper, "kc_lower": lower,
-                    "reason": "KC_LOWER_OUTER_VALLEY_EXIT",
+                    "reason": "KC_LOWER_OUTER_VALLEY_REVERSE",
                 }
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
+
+        if closed_ma3_peak:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+                "reason": "KC_UPPER_OUTER_PEAK_ENTRY",
+                "turn_high": float(frame["high"].iloc[-2]) if len(frame) >= 2 else None,
+            }
+            
+        if closed_ma3_trough:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "kc_upper": upper, "kc_lower": lower,
+                "reason": "KC_LOWER_OUTER_VALLEY_ENTRY",
+                "turn_low": float(frame["low"].iloc[-2]) if len(frame) >= 2 else None,
+            }
 
         return {
             "action": "WAIT", "side": None,
@@ -8331,32 +8337,12 @@ class TradingEngine:
                     ):
                         channel_action = chop_breakout_action
 
-                if (
-                    not chop_locked
-                    and not chop_breakout_context
-                    and not existing_pos
-                ):
-                    # 空手時先接受價格突破 KC 外側，沒有即時突破才回退到
-                    # 已收盤外軌 K 的緊接突破；下單前仍會檢查方向與淨獲利空間。
-                    channel_action = self._channel_immediate_outer_break_action(
-                        channel_df, channel_price,
-                    )
-                    if channel_action.get("action") == "ENTER" and not self._touch_entry_math_favorable(
-                        symbol, channel_action.get("side"), channel_df, channel_price,
-                    ):
-                        channel_action = {
-                            "action": "WAIT", "side": None,
-                            "reason": "WAIT_TOUCH_ENTRY_INSUFFICIENT_PROFIT_SPACE",
-                            "kc_upper": channel_action.get("kc_upper"),
-                            "kc_lower": channel_action.get("kc_lower"),
-                        }
-                    if channel_action.get("action") != "ENTER":
-                        channel_action = self._channel_closed_body_break_entry_action(
-                            channel_df, channel_price,
-                        )
-                    self._channel_outer_trend_wait.pop(symbol, None)
-                elif existing_pos:
-                    self._channel_outer_trend_wait.pop(symbol, None)
+                # Channel Swing 新倉僅保留已確認的 KC 外側趨勢（沿用
+                # _channel_swing_action 本身的判斷）；即時觸軌／收盤實體
+                # 突破緊接進場已停用，避免搶在真正峰谷確認之前追進，
+                # 一直被打回的假突破（KC_LIVE_*_BREAK_*／KC_CLOSED_BODY_*）。
+                self._channel_outer_trend_wait.pop(symbol, None)
+                if existing_pos:
                     self._channel_inner_trend_hold.pop(symbol, None)
                 action = channel_action.get("action")
                 target_side = channel_action.get("side")
@@ -8407,6 +8393,8 @@ class TradingEngine:
                 confirmed_outer_reversal_reasons = {
                     "OPPOSITE_UPPER_OUTER_UPTREND",
                     "OPPOSITE_LOWER_OUTER_DOWNTREND",
+                    "KC_UPPER_OUTER_PEAK_REVERSE",
+                    "KC_LOWER_OUTER_VALLEY_REVERSE",
                 }
                 if (
                     existing_pos
