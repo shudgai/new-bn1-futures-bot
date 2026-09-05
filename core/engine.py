@@ -7719,12 +7719,19 @@ class TradingEngine:
             return bool(rail > 0.0 and price >= rail and live_close > live_open and current_ma3 > previous_ma3)
 
         if held_side == "LONG":
+            # 多單反向跌回下方 KC 外側先平倉；下一輪確認下跌外側趨勢後再追空。
+            if price <= lower:
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_ADVERSE_EXIT"}
+            # 順勢多單只在上方 KC 外軌形成真正峰谷時平倉。
             # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
             if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
+            # 空單若反向漲回上方 KC 外側，先平倉；下一輪若仍有上漲外側趨勢再追多。
+            if price >= upper:
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
             if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
