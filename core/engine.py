@@ -7359,31 +7359,6 @@ class TradingEngine:
         return {"action": "HOLD"}
 
     @staticmethod
-    def _channel_first_ma3_bend_action(frame: pd.DataFrame, position: dict) -> dict:
-        if frame is None or len(frame) < 3 or "ma3" not in frame.columns:
-            return {"action": "HOLD"}
-        if any(
-            position.get(key)
-            for key in (
-                "profit_lock_usdt_armed",
-                "fixed_profit_lock_pct_armed",
-                "is_breakeven_moved",
-            )
-        ):
-            return {"action": "HOLD"}
-        try:
-            previous_slope = float(frame["ma3"].iloc[-2]) - float(frame["ma3"].iloc[-3])
-            current_slope = float(frame["ma3"].iloc[-1]) - float(frame["ma3"].iloc[-2])
-            side = str(position.get("side") or "").upper()
-        except (TypeError, ValueError, IndexError):
-            return {"action": "HOLD"}
-        if side == "LONG" and previous_slope > 0.0 and current_slope < 0.0:
-            return {"action": "EXIT", "reason": "CHANNEL_FIRST_MA3_BEND_EXIT_LONG"}
-        if side == "SHORT" and previous_slope < 0.0 and current_slope > 0.0:
-            return {"action": "EXIT", "reason": "CHANNEL_FIRST_MA3_BEND_EXIT_SHORT"}
-        return {"action": "HOLD"}
-
-    @staticmethod
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
         entry_turn_low: float | None = None,
@@ -8322,16 +8297,6 @@ class TradingEngine:
                         channel_action = {
                             "action": "EXIT", "side": None,
                             "reason": reclaim_action["reason"],
-                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
-                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
-                        }
-                    bend_action = self._channel_first_ma3_bend_action(
-                        channel_df, existing_pos,
-                    )
-                    if bend_action.get("action") == "EXIT":
-                        channel_action = {
-                            "action": "EXIT", "side": None,
-                            "reason": bend_action["reason"],
                             "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
                             "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
                         }

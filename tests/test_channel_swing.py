@@ -177,31 +177,6 @@ def test_channel_slope_gate_blocks_short_when_kc_and_ma15_rise():
     assert result == ("WAIT", None, "KC_MA15_RISING_BLOCK_SHORT")
 
 
-@pytest.mark.parametrize(
-    ("side", "ma3_values", "expected"),
-    [
-        ("LONG", [100.0, 100.2, 100.1], "CHANNEL_FIRST_MA3_BEND_EXIT_LONG"),
-        ("SHORT", [100.0, 99.8, 99.9], "CHANNEL_FIRST_MA3_BEND_EXIT_SHORT"),
-    ],
-)
-def test_channel_first_ma3_bend_exits_before_profit_lock(side, ma3_values, expected):
-    frame = _channel_frame()
-    frame.loc[frame.index[-3:], "ma3"] = ma3_values
-    result = TradingEngine._channel_first_ma3_bend_action(
-        frame, {"side": side},
-    )
-    assert result == {"action": "EXIT", "reason": expected}
-
-
-def test_channel_first_ma3_bend_does_not_override_locked_profit():
-    frame = _channel_frame()
-    frame.loc[frame.index[-3:], "ma3"] = [100.0, 100.2, 100.1]
-    result = TradingEngine._channel_first_ma3_bend_action(
-        frame, {"side": "LONG", "profit_lock_usdt_armed": True},
-    )
-    assert result == {"action": "HOLD"}
-
-
 def test_hype_style_broad_downtrend_blocks_lower_trough_long_after_local_bounce():
     frame = _channel_frame()
     frame.loc[frame.index[-8], ["kc_upper", "kc_lower", "ma15"]] = [103.0, 101.0, 102.0]
