@@ -3438,9 +3438,17 @@ class TradingEngine:
             if entry_mode == "CHANNEL_SWING"
             else KELTNER_MIN_VOLUME_RATIO
         )
+        live_outer_entry = (
+            entry_mode == "CHANNEL_SWING"
+            and str(signal.get("signal_code") or signal.get("reason") or "") in {
+                "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                "KC_UPPER_TOUCH_LONG", "KC_LOWER_TOUCH_SHORT",
+            }
+        )
         if (
             signal_volume_ratio is not None
             and float(signal_volume_ratio) < min_entry_volume_ratio
+            and not live_outer_entry
         ):
             self.account.log(
                 f"🛑 {symbol} {side} 當下量能 {float(signal_volume_ratio):.2f}x "
