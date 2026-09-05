@@ -7795,6 +7795,10 @@ class TradingEngine:
                 if atr_now <= 0.0:
                     atr_now = max((upper - lower) / 2.0, abs(price) * 1e-6)
                 middle = (upper + lower) / 2.0
+                # Require two consecutive closed bars to remain near the middle.
+                recent = closed.iloc[-2:]
+                recent_inside = ((recent["close"] > recent["kc_lower"]) & (recent["close"] < recent["kc_upper"])).all()
+                recent_middle = ((recent["close"] - ((recent["kc_upper"] + recent["kc_lower"]) / 2.0)).abs() <= (recent["kc_upper"] - recent["kc_lower"]).abs() * 0.35).all()
                 ma3_values = pd.to_numeric(closed["ma3"], errors="coerce").dropna()
                 close_values = pd.to_numeric(closed["close"], errors="coerce").dropna()
                 if len(ma3_values) < 5 or len(close_values) < 5:
@@ -7812,6 +7816,8 @@ class TradingEngine:
                     and width_pct <= 0.008
                     and not directional
                     and near_middle
+                    and recent_inside
+                    and recent_middle
                     and lower < price < upper
                 )
             except (TypeError, ValueError, KeyError, IndexError):
