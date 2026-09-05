@@ -3438,24 +3438,8 @@ class TradingEngine:
             if entry_mode == "CHANNEL_SWING"
             else KELTNER_MIN_VOLUME_RATIO
         )
-        live_outer_entry = (
-            entry_mode == "CHANNEL_SWING"
-            and str(signal.get("signal_code") or signal.get("reason") or "") in {
-                "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
-                "KC_UPPER_TOUCH_LONG", "KC_LOWER_TOUCH_SHORT",
-            }
-        )
-        if (
-            signal_volume_ratio is not None
-            and float(signal_volume_ratio) < min_entry_volume_ratio
-            and not live_outer_entry
-        ):
-            self.account.log(
-                f"🛑 {symbol} {side} 當下量能 {float(signal_volume_ratio):.2f}x "
-                f"低於 {min_entry_volume_ratio:.2f}x，取消結構化開倉",
-                "WARNING",
-            )
-            return False
+        # Channel Swing 不再設置 1 倍量能門檻；依使用者要求，外軌與一般峰谷
+        # 訊號都允許進場，僅保留異常行情與預估淨成本安全檢查。
         if not self._same_side_entry_allowed(symbol, side):
             return False
         stop_cooldown_fn = getattr(
