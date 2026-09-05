@@ -5317,9 +5317,15 @@ class TradingEngine:
             return False
         try:
             live = frame.iloc[-1]
+            candidate = frame.iloc[-2]
             price = float(live_price)
             live_open = float(live["open"])
-            previous_close = float(frame.iloc[-2]["close"])
+            candidate_close = float(candidate["close"])
+            candidate_open = float(candidate["open"])
+            candidate_upper = float(candidate["kc_upper"])
+            candidate_lower = float(candidate["kc_lower"])
+            previous_close = candidate_close
+            prev_prev_close = float(frame.iloc[-3]["close"]) if len(frame) >= 3 else candidate_open
             upper = float(live["kc_upper"])
             lower = float(live["kc_lower"])
         except (TypeError, ValueError, IndexError, KeyError):
@@ -5329,17 +5335,34 @@ class TradingEngine:
         )) or lower >= upper:
             return False
         side = str(target_side or "").upper()
+        
         if side == "LONG":
-            return price >= upper and price > live_open and price > previous_close
+            live_break = price >= upper and price > live_open and price > previous_close
+            retro_break = (
+                candidate_close > candidate_open
+                and candidate_close >= candidate_upper
+                and price > candidate_open
+                and price > prev_prev_close
+            )
+            return live_break or retro_break
+            
         if side == "SHORT":
-            return price <= lower and price < live_open and price < previous_close
+            live_break = price <= lower and price < live_open and price < previous_close
+            retro_break = (
+                candidate_close < candidate_open
+                and candidate_close <= candidate_lower
+                and price < candidate_open
+                and price < prev_prev_close
+            )
+            return live_break or retro_break
+            
         return False
 
     @staticmethod
     def _channel_closed_body_break_entry_allowed(
         frame: pd.DataFrame, live_price: float, target_side: str | None,
     ) -> bool:
-        """Confirm an adjacent reversal candle after it touches a KC outer rail."""
+        """Confirm a live adjacent break or recover one missed at the bar boundary."""
         required = {"open", "high", "low", "close", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
             return False
@@ -5347,11 +5370,8 @@ class TradingEngine:
             live = frame.iloc[-1]
             candidate = frame.iloc[-2]
             price = float(live_price)
-            live_open = float(live["open"])
             live_high = float(live["high"])
             live_low = float(live["low"])
-            upper = float(live["kc_upper"])
-            lower = float(live["kc_lower"])
             candidate_open = float(candidate["open"])
             candidate_high = float(candidate["high"])
             candidate_low = float(candidate["low"])
@@ -5361,27 +5381,69 @@ class TradingEngine:
         except (TypeError, ValueError, IndexError, KeyError):
             return False
         if not all(math.isfinite(value) for value in (
-            price, live_high, live_low,
-            candidate_open, candidate_high, candidate_low, candidate_close,
-            candidate_upper, candidate_lower,
+            price, live_high, live_low, candidate_open, candidate_high,
+            candidate_low, candidate_close, candidate_upper, candidate_lower,
         )) or candidate_lower >= candidate_upper:
             return False
         side = str(target_side or "").upper()
         if side == "LONG":
-            return bool(
+            live_break = bool(
                 candidate_close > candidate_open
                 and candidate_low <= candidate_lower
                 and live_low >= candidate_low
                 and price > candidate_high
             )
-        if side == "SHORT":
-            return bool(
+        elif side == "SHORT":
+            live_break = bool(
                 candidate_close < candidate_open
                 and candidate_high >= candidate_upper
                 and live_high <= candidate_high
                 and price < candidate_low
             )
-        return False
+        else:
+            return False
+        if live_break:
+            return True
+
+        # The scan can finish after a 1m boundary. Recover that adjacent break
+        # only while the new live bar still preserves its invalidation level.
+        if len(frame) < 4:
+            return False
+        try:
+            prior_candidate = frame.iloc[-3]
+            confirmation = frame.iloc[-2]
+            prior_open = float(prior_candidate["open"])
+            prior_close = float(prior_candidate["close"])
+            prior_high = float(prior_candidate["high"])
+            prior_low = float(prior_candidate["low"])
+            prior_upper = float(prior_candidate["kc_upper"])
+            prior_lower = float(prior_candidate["kc_lower"])
+            confirmation_high = float(confirmation["high"])
+            confirmation_low = float(confirmation["low"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return False
+        if not all(math.isfinite(value) for value in (
+            prior_open, prior_close, prior_high, prior_low, prior_upper,
+            prior_lower, confirmation_high, confirmation_low,
+        )) or prior_lower >= prior_upper:
+            return False
+        if side == "LONG":
+            return bool(
+                prior_close > prior_open
+                and prior_low <= prior_lower
+                and confirmation_low >= prior_low
+                and confirmation_high > prior_high
+                and live_low >= prior_low
+                and price > prior_high
+            )
+        return bool(
+            prior_close < prior_open
+            and prior_high >= prior_upper
+            and confirmation_high <= prior_high
+            and confirmation_low < prior_low
+            and live_high <= prior_high
+            and price < prior_low
+        )
 
     @staticmethod
     def _channel_closed_body_break_has_outer_ma3_reversal(
@@ -6416,20 +6478,44 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
         """Enter immediately when a flat symbol reaches either live KC outer rail."""
-        if frame is None or frame.empty or not {"kc_upper", "kc_lower"}.issubset(frame.columns):
+        if frame is None or len(frame) < 2 or not {"kc_upper", "kc_lower", "open", "close"}.issubset(frame.columns):
             return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_UNAVAILABLE"}
         try:
             price = float(live_price)
-            upper = float(frame.iloc[-1]["kc_upper"])
-            lower = float(frame.iloc[-1]["kc_lower"])
+            live = frame.iloc[-1]
+            candidate = frame.iloc[-2]
+            upper = float(live["kc_upper"])
+            lower = float(live["kc_lower"])
+            candidate_close = float(candidate["close"])
+            candidate_open = float(candidate["open"])
+            candidate_upper = float(candidate["kc_upper"])
+            candidate_lower = float(candidate["kc_lower"])
+            prev_prev_close = float(frame.iloc[-3]["close"]) if len(frame) >= 3 else candidate_open
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
         if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
             return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
-        if price >= upper:
+            
+        live_long = price >= upper
+        retro_long = (
+            candidate_close > candidate_open
+            and candidate_close >= candidate_upper
+            and price > candidate_open
+            and price > prev_prev_close
+        )
+        if live_long or retro_long:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_LIVE_UPPER_BREAK_LONG", "kc_upper": upper, "kc_lower": lower}
-        if price <= lower:
+            
+        live_short = price <= lower
+        retro_short = (
+            candidate_close < candidate_open
+            and candidate_close <= candidate_lower
+            and price < candidate_open
+            and price < prev_prev_close
+        )
+        if live_short or retro_short:
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LIVE_LOWER_BREAK_SHORT", "kc_upper": upper, "kc_lower": lower}
+            
         return {"action": "WAIT", "side": None, "reason": "WAIT_LIVE_OUTER_BREAK", "kc_upper": upper, "kc_lower": lower}
 
     @staticmethod
@@ -7332,6 +7418,8 @@ class TradingEngine:
     ) -> tuple[str, str | None, str | None]:
         """Block chop exposure except an immediate same-bar outer rechase."""
         if str(reason or "") in {
+            "KC_LIVE_UPPER_BREAK_LONG",
+            "KC_LIVE_LOWER_BREAK_SHORT",
             "KC_CLOSED_BODY_HIGH_BREAK_LONG",
             "KC_CLOSED_BODY_LOW_BREAK_SHORT",
         }:
@@ -7632,6 +7720,16 @@ not all(math.isfinite(value) for value in (
                     (candidate_upper - candidate_lower) / 2.0 * _min_kc_pct,
                     1e-12,
                 )
+                candidate_atr = float(candidate.get("atr") or 0.0)
+                if candidate_atr <= 0.0:
+                    candidate_atr = max(
+                        (candidate_upper - candidate_lower) / 2.0,
+                        abs(candidate_ma3) * 1e-6,
+                    )
+                retrace_threshold = max(
+                    candidate_atr * 0.30,
+                    (candidate_upper - candidate_lower) * 0.20,
+                )
 
                 if side == "LONG":
                     is_valid_peak = (candidate_high >= candidate_upper)
@@ -7640,6 +7738,8 @@ not all(math.isfinite(value) for value in (
                         and before_ma3 < candidate_ma3 - 1e-12
                         and after_ma3 < candidate_ma3 - 1e-12
                         and after_ma3 <= candidate_ma3 - turn_threshold
+                        and candidate_high - price >= retrace_threshold
+                        and price >= upper
                     ):
                         return True
                 elif side == "SHORT":
@@ -7649,6 +7749,8 @@ not all(math.isfinite(value) for value in (
                         and before_ma3 > candidate_ma3 + 1e-12
                         and after_ma3 > candidate_ma3 + 1e-12
                         and after_ma3 >= candidate_ma3 + turn_threshold
+                        and price - candidate_low >= retrace_threshold
+                        and price <= lower
                     ):
                         return True
             return False
@@ -8512,6 +8614,15 @@ not all(math.isfinite(value) for value in (
                     )
                     if adjacent_break_action.get("action") == "ENTER":
                         channel_action = adjacent_break_action
+                    else:
+                        live_outer_action = self._channel_immediate_outer_break_action(
+                            channel_df, channel_price,
+                        )
+                        # A confirmed live outer-rail break is the explicit
+                        # CHOP_WAIT exception; do not reapply the directional
+                        # gate and turn it back into WAIT.
+                        if live_outer_action.get("action") == "ENTER":
+                            channel_action = live_outer_action
                 if False:  # Channel Swing 新倉僅保留已確認的 KC 外側趨勢
 
                     chop_breakout_action = self._channel_chop_breakout_action(
@@ -8545,7 +8656,6 @@ not all(math.isfinite(value) for value in (
 
                 if (
                     not chop_locked
-                    and not chop_breakout_context
                     and not existing_pos
                 ):
                     # 優先使用外側峰谷後的順勢延續訊號，避免等到谷底才追空。
@@ -8579,6 +8689,23 @@ not all(math.isfinite(value) for value in (
                     "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
                     "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
                 }
+                if not existing_pos and action == "ENTER" and target_side:
+                    current_upper = float(channel_df["kc_upper"].iloc[-1])
+                    current_lower = float(channel_df["kc_lower"].iloc[-1])
+                    at_current_outer = (
+                        target_side == "LONG" and channel_price >= current_upper
+                    ) or (
+                        target_side == "SHORT" and channel_price <= current_lower
+                    )
+                    if not at_current_outer:
+                        action, target_side = "WAIT", None
+                        channel_action["reason"] = "WAIT_CURRENT_KC_OUTER_ENTRY"
+                        self._record_channel_signal_event(
+                            symbol, "WAIT_CURRENT_KC_OUTER_ENTRY", channel_df,
+                        )
+                        signal_progress.append(
+                            f"{coin} 尚未位於 KC 外側，不開倉"
+                        )
                 if (
                     not existing_pos
                     and action == "ENTER"
@@ -8750,6 +8877,25 @@ not all(math.isfinite(value) for value in (
                         f"({volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)，"
                         "不開倉並繼續找其他幣"
                     )
+                if action in ("ENTER", "REVERSE") and target_side:
+                    entry_atr = float(channel_df["atr"].iloc[-1] or 0.0)
+                    entry_profit_pct = self._candidate_profit_potential(
+                        symbol, target_side, entry_atr, channel_price,
+                    )
+                    profit_floor_pct = NET_PROFIT_GUARANTEE_BUFFER * 100.0
+                    if not self._touch_entry_math_favorable(
+                        symbol, target_side, channel_df, channel_price,
+                    ):
+                        action = "WAIT"
+                        target_side = None
+                        channel_action["reason"] = "ENTRY_NO_NET_PROFIT_ROOM"
+                        self._record_channel_signal_event(
+                            symbol, "ENTRY_NO_NET_PROFIT_ROOM", channel_df,
+                        )
+                        signal_progress.append(
+                            f"{coin} 預估淨利空間不足"
+                            f"({entry_profit_pct:.2f}%<{profit_floor_pct:.2f}%)，不開倉"
+                        )
                 if existing_pos:
                     held_side = str(existing_pos.get("side") or "").upper()
                     held_quality = self._directional_trend_quality(
