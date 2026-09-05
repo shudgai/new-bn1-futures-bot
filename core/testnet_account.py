@@ -81,6 +81,7 @@ from core.config import (
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
     ENABLE_PROFIT_LOCK_USDT,
     OUTER_RUN_NET_GIVEBACK_USDT,
+    compute_channel_swing_profit_lock_usdt,
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
@@ -105,6 +106,7 @@ ENTRY_CONTEXT_KEYS = (
     "low_room_allocation_factor",
     "dca_stage", "dca_base_price", "dca_original_amount", "wave_regime",
     "channel_entry_profile", "channel_entry_profile_basis",
+    "profit_lock_usdt_v2",
 )
 
 
@@ -751,8 +753,91 @@ class BinanceTestnetAccount:
                 # 交易所的 1.2% STOP_MARKET 繼續有效；前三分鐘不移動保護線，
                 # 也不執行任何獲利／技術型出場。
                 continue
-            # RANGE 峰谷與 TREND 結構衰退出場交由主引擎處理；交易所硬停損單照常保留。
-            if is_structure_exit_mode:
+            # RANGE／TREND 結構出場交由主引擎；Channel Swing 額外只保留大瀑布防護。
+            is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
+            if is_structure_exit_mode or is_channel_swing:
+                channel_profit_lock_v2 = bool(
+                    is_channel_swing
+                    and ENABLE_PROFIT_LOCK_USDT
+                    and (pos.get("profit_lock_usdt_v2") or meta.get("profit_lock_usdt_v2"))
+                )
+                if channel_profit_lock_v2:
+                    qty = float(pos.get("qty") or 0.0)
+                    notional_value = qty * entry_p
+                    gross_usdt = pnl_pct * notional_value
+                    estimated_cost_usdt = notional_value * (
+                        2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
+                    )
+                    peak_key = "profit_lock_v2_peak_gross_usdt"
+                    peak_gross_usdt = max(
+                        float(meta.get(peak_key) or gross_usdt), gross_usdt,
+                    )
+                    meta[peak_key] = peak_gross_usdt
+                    momentum_declining = bool(
+                        pos.get("channel_momentum_declining")
+                        or meta.get("channel_momentum_declining")
+                    )
+                    plan = compute_channel_swing_profit_lock_usdt(
+                        peak_gross_usdt, estimated_cost_usdt, momentum_declining,
+                    )
+                    if plan is not None and qty > 0.0:
+                        floor_usdt, _activation_usdt, completed_steps = plan
+                        floor_move = floor_usdt / qty
+                        floor_sl = (
+                            entry_p + floor_move
+                            if side == "LONG" else entry_p - floor_move
+                        )
+                        floor_already_breached = (
+                            mark_p <= floor_sl if side == "LONG" else mark_p >= floor_sl
+                        )
+                        if floor_already_breached:
+                            await self.close_position(
+                                symbol, mark_p, "Channel Swing U階梯應鎖利潤已回吐",
+                            )
+                            continue
+                        current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                        improves = (
+                            floor_sl > current_sl + entry_p * 1e-12
+                            if side == "LONG"
+                            else current_sl <= 0.0 or floor_sl < current_sl - entry_p * 1e-12
+                        )
+                        if improves and await self.trail_stop_loss(
+                            symbol, floor_sl, mark_profit_locked=True,
+                        ):
+                            meta["profit_lock_usdt_armed"] = True
+                            pos["profit_lock_usdt_armed"] = True
+                            meta["profit_lock_mode"] = "CHANNEL_V2_2U"
+                            pos["profit_lock_mode"] = "CHANNEL_V2_2U"
+                            self.log(
+                                f"🔐 [Channel U階梯鎖利] {symbol} 峰值毛利 {peak_gross_usdt:.2f}U "
+                                f"→ 鎖毛利 {floor_usdt:.2f}U（估計成本 {estimated_cost_usdt:.2f}U，"
+                                f"淨利至少 {floor_usdt - estimated_cost_usdt:.2f}U，"
+                                f"趨勢衰退階梯 {completed_steps}），保護線 {floor_sl:.6g}",
+                                "SUCCESS",
+                            )
+                # Channel Swing 不使用固定或移動停利，也不使用一般停損；
+                # 新版標記倉位另使用 U 階梯；所有倉位保留逆向大瀑布保護。
+                if is_channel_swing and ENABLE_RAPID_ADVERSE_DROP:
+                    prev_p = self._last_ticker_prices.get(symbol)
+                    last_cd = self._rapid_drop_cooldown.get(symbol, 0.0)
+                    if prev_p and prev_p > 0 and (now_ts - last_cd) > RAPID_DROP_COOLDOWN_SEC:
+                        adverse_move = (
+                            (prev_p - mark_p) / prev_p
+                            if side == "LONG" else (mark_p - prev_p) / prev_p
+                        )
+                        if adverse_move >= RAPID_ADVERSE_DROP_PCT:
+                            self.log(
+                                f"⚡ [Channel Swing 大瀑布保護] {symbol} {side} "
+                                f"單次 ticker 急速逆向 {adverse_move:.3%}，立即平倉",
+                                "DANGER",
+                            )
+                            self._rapid_drop_cooldown[symbol] = now_ts
+                            self._last_ticker_prices[symbol] = mark_p
+                            await self.close_position(
+                                symbol, mark_p, "Channel Swing 急速逆向大瀑布保護平倉"
+                            )
+                            continue
+                    self._last_ticker_prices[symbol] = mark_p
                 continue
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")

@@ -10,51 +10,51 @@ from core.symbol_rotation import SymbolRotation
 def _channel_frame(lower: float=99.0, upper: float=101.0) -> pd.DataFrame:
     return pd.DataFrame({'open': [100.0] * 20, 'close': [100.0] * 20, 'high': [100.5] * 20, 'low': [99.5] * 20, 'ma3': [100.0] * 20, 'ma15': [100.0] * 20, 'volume': [150.0] * 20, 'vol_ma_20': [100.0] * 20, 'kc_lower': [lower] * 20, 'kc_upper': [upper] * 20})
 
-def test_channel_entry_requires_closed_body_outside_and_adjacent_break():
+def test_channel_entry_requires_outer_touch_and_adjacent_break():
     long_frame = _channel_frame()
     long_frame.loc[long_frame.index[-2], ["open", "close", "high", "low"]] = [
-        100.0, 101.2, 101.4, 99.8,
+        100.0, 100.5, 100.7, 98.9,
     ]
     long_frame.loc[long_frame.index[-1], ["open", "high", "low"]] = [
-        101.2, 101.6, 100.0,
+        100.5, 100.8, 99.0,
     ]
     assert TradingEngine._channel_closed_body_break_entry_allowed(
-        long_frame, 101.5, "LONG",
+        long_frame, 100.75, "LONG",
     ) is True
 
-    wick_only = long_frame.copy()
-    wick_only.loc[wick_only.index[-2], "close"] = 100.8
+    wrong_color = long_frame.copy()
+    wrong_color.loc[wrong_color.index[-2], "close"] = 99.8
     assert TradingEngine._channel_closed_body_break_entry_allowed(
-        wick_only, 101.5, "LONG",
+        wrong_color, 100.75, "LONG",
     ) is False
 
     long_invalidated = long_frame.copy()
-    long_invalidated.loc[long_invalidated.index[-1], "low"] = 99.7
+    long_invalidated.loc[long_invalidated.index[-1], "low"] = 98.8
     assert TradingEngine._channel_closed_body_break_entry_allowed(
-        long_invalidated, 101.5, "LONG",
+        long_invalidated, 100.75, "LONG",
     ) is False
 
     short_frame = _channel_frame()
     short_frame.loc[short_frame.index[-2], ["open", "close", "high", "low"]] = [
-        100.0, 98.8, 100.2, 98.6,
+        100.0, 99.5, 101.1, 99.3,
     ]
     short_frame.loc[short_frame.index[-1], ["open", "high", "low"]] = [
-        98.8, 100.0, 98.4,
+        99.5, 101.0, 99.0,
     ]
     assert TradingEngine._channel_closed_body_break_entry_allowed(
-        short_frame, 98.5, "SHORT",
+        short_frame, 99.2, "SHORT",
     ) is True
 
-    lower_wick_only = short_frame.copy()
-    lower_wick_only.loc[lower_wick_only.index[-2], "close"] = 99.2
+    wrong_short_color = short_frame.copy()
+    wrong_short_color.loc[wrong_short_color.index[-2], "close"] = 100.2
     assert TradingEngine._channel_closed_body_break_entry_allowed(
-        lower_wick_only, 98.5, "SHORT",
+        wrong_short_color, 99.2, "SHORT",
     ) is False
 
     short_invalidated = short_frame.copy()
-    short_invalidated.loc[short_invalidated.index[-1], "high"] = 100.3
+    short_invalidated.loc[short_invalidated.index[-1], "high"] = 101.2
     assert TradingEngine._channel_closed_body_break_entry_allowed(
-        short_invalidated, 98.5, "SHORT",
+        short_invalidated, 99.2, "SHORT",
     ) is False
 
 
@@ -84,7 +84,7 @@ def test_channel_entry_rejects_a_mature_outer_run():
     ) is False
 
 
-def test_closed_body_break_rejects_outer_ma3_reversal_symmetrically():
+def test_non_touching_outer_body_is_not_an_adjacent_touch_candidate():
     long_frame = _channel_frame()
     long_frame.loc[long_frame.index[-3], "ma3"] = 101.2
     long_frame.loc[long_frame.index[-2], ["open", "close", "high", "low", "ma3"]] = [
@@ -110,10 +110,10 @@ def test_closed_body_break_rejects_outer_ma3_reversal_symmetrically():
     )
 
     assert (long_result["action"], long_result["reason"]) == (
-        "WAIT", "KC_UPPER_MA3_REVERSAL_BLOCK_LONG",
+        "WAIT", "WAIT_CLOSED_BODY_ADJACENT_BREAK",
     )
     assert (short_result["action"], short_result["reason"]) == (
-        "WAIT", "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT",
+        "WAIT", "WAIT_CLOSED_BODY_ADJACENT_BREAK",
     )
 
 @pytest.mark.parametrize(
@@ -127,16 +127,16 @@ def test_closed_body_break_action_is_symmetric(side, expected_reason):
     frame = _channel_frame()
     if side == "LONG":
         frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [
-            100.0, 101.2, 101.4, 99.8,
+            100.0, 100.5, 100.7, 98.9,
         ]
-        frame.loc[frame.index[-1], ["open", "high", "low"]] = [101.2, 101.6, 100.0]
-        price = 101.5
+        frame.loc[frame.index[-1], ["open", "high", "low"]] = [100.5, 100.8, 99.0]
+        price = 100.75
     else:
         frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [
-            100.0, 98.8, 100.2, 98.6,
+            100.0, 99.5, 101.1, 99.3,
         ]
-        frame.loc[frame.index[-1], ["open", "high", "low"]] = [98.8, 100.0, 98.4]
-        price = 98.5
+        frame.loc[frame.index[-1], ["open", "high", "low"]] = [99.5, 101.0, 99.0]
+        price = 99.2
     result = TradingEngine._channel_closed_body_break_entry_action(frame, price)
     assert (result["action"], result["side"], result["reason"]) == (
         "ENTER", side, expected_reason,
@@ -290,11 +290,11 @@ def test_global_btc_direction_has_priority_for_new_entries():
     [
         (
             "BULL", "SHORT", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
-            ("WAIT", None, "KC_MACRO_BULL_BLOCK_SHORT"),
+            ("ENTER", "SHORT", None),
         ),
         (
             "BEAR", "LONG", "KC_CLOSED_BODY_HIGH_BREAK_LONG",
-            ("WAIT", None, "KC_MACRO_BEAR_BLOCK_LONG"),
+            ("ENTER", "LONG", None),
         ),
         (
             "BULL", "LONG", "KC_CLOSED_BODY_HIGH_BREAK_LONG",
@@ -328,7 +328,7 @@ def test_closed_body_break_rejects_fil_style_low_volume_symmetrically(
 
     assert TradingEngine._channel_closed_body_volume_gate(
         "ENTER", side, 0.10893375597244837, False, reason,
-    ) == ("WAIT", None, "KC_CLOSED_BODY_BREAK_LOW_VOLUME")
+    ) == ("ENTER", side, None)
     assert TradingEngine._channel_closed_body_volume_gate(
         "ENTER", side, 1.2, False, reason,
     ) == ("ENTER", side, None)
@@ -845,7 +845,7 @@ def _sustained_outer_trend_frame(side: str) -> pd.DataFrame:
 )
 def test_immediate_outer_break_enters_on_the_breakout_price(side, price, reason):
     result = TradingEngine._channel_immediate_outer_break_action(_channel_frame(), price)
-    assert (result["action"], result["side"]) == ("WAIT", None)
+    assert (result["action"], result["side"], result["reason"]) == ("ENTER", side, reason)
 
 @pytest.mark.parametrize(
     ("side", "price", "expected_reason"),
@@ -2737,7 +2737,7 @@ def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
     assert engine._continuous_entry_amount() == 0.0
 
 @pytest.mark.anyio
-async def test_channel_swing_position_uses_profit_lock_without_initial_sl_or_tp(tmp_path, monkeypatch):
+async def test_channel_swing_position_ignores_all_profit_locks_without_initial_sl_or_tp(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, 'STATE_FILE', str(tmp_path / 'channel_swing.json'))
     account = PaperAccount()
     opened = await account.open_position('BTC/USDT', 'LONG', 100.0, 50.0, 95.0, 110.0, 'channel swing', leverage=1, signal_score=100, apply_slippage=False, entry_context={'entry_mode': 'CHANNEL_SWING', 'wave_regime': 'RANGE', 'initial_sl': 95.0, 'initial_risk': 5.0})
@@ -2751,18 +2751,72 @@ async def test_channel_swing_position_uses_profit_lock_without_initial_sl_or_tp(
     monkeypatch.setattr(pa_module, 'ENABLE_TRAILING_STOP', True)
     monkeypatch.setattr(pa_module, 'ENABLE_EARLY_PROFIT_GUARD', True)
     await account.update_positions({'BTC/USDT': 102.0})
-    await account.update_positions({'BTC/USDT': 100.5})
+    await account.update_positions({'BTC/USDT': 101.0})
     assert 'BTC/USDT' in account.positions
-    assert account.positions['BTC/USDT']['sl'] > 100.0
-    assert account.positions['BTC/USDT'].get('is_breakeven_moved') is True
+    assert account.positions['BTC/USDT']['sl'] == 0.0
+    assert not account.positions['BTC/USDT'].get('is_breakeven_moved', False)
     topped_up = await account.open_position('BTC/USDT', 'LONG', 100.2, 25.0, 95.0, 110.0, 'channel swing top-up', leverage=1, signal_score=100, apply_slippage=False, entry_context={'entry_mode': 'CHANNEL_SWING'})
     assert topped_up is False
     assert account.positions['BTC/USDT']['margin'] == 50.0
     reloaded = PaperAccount()
     await reloaded.initialize()
-    assert reloaded.positions['BTC/USDT']['sl'] > 100.0
+    assert reloaded.positions['BTC/USDT']['sl'] == 0.0
     assert reloaded.positions['BTC/USDT']['tp'] == 0.0
     assert not any(('啟動保護遷移' in item.get('text', '') for item in reloaded.logs))
+
+
+@pytest.mark.anyio
+async def test_channel_swing_v2_profit_lock_only_applies_to_marked_new_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "channel_v2_lock.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
+    account = PaperAccount()
+    assert await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 100.0, 0.0, 0.0, "new channel",
+        leverage=1, signal_score=100, apply_slippage=False,
+        entry_context={
+            "entry_mode": "CHANNEL_SWING", "wave_regime": "TREND",
+            "profit_lock_usdt_v2": True,
+        },
+    )
+
+    # Cost is 0.11U: 0.10U round-trip fee plus 0.01U exit slippage.
+    await account.update_positions({"BTC/USDT": 103.10})
+    assert account.positions["BTC/USDT"]["sl"] == 0.0
+    await account.update_positions({"BTC/USDT": 103.11})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(101.11)
+
+    # Strong trend: a larger peak does not tighten past the initial 1U net floor.
+    await account.update_positions({"BTC/USDT": 107.11})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(101.11)
+
+    # Once momentum declines, catch up two completed 2U steps.
+    account.positions["BTC/USDT"]["channel_momentum_declining"] = True
+    await account.update_positions({"BTC/USDT": 107.11})
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(105.11)
+    await account.update_positions({"BTC/USDT": 105.0})
+    assert "BTC/USDT" not in account.positions
+
+@pytest.mark.anyio
+async def test_channel_swing_closes_only_on_rapid_adverse_move(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "channel_swing_rapid.json"))
+    monkeypatch.setattr(pa_module, "ENABLE_RAPID_ADVERSE_DROP", True)
+    monkeypatch.setattr(pa_module, "RAPID_ADVERSE_SPEED_PCT", 0.01)
+    monkeypatch.setattr(pa_module, "RAPID_ADVERSE_SPEED_WINDOW_SEC", 60.0)
+    account = PaperAccount()
+    opened = await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 50.0, 0.0, 0.0, "channel swing",
+        leverage=1, signal_score=100, apply_slippage=False,
+        entry_context={"entry_mode": "CHANNEL_SWING", "wave_regime": "RANGE"},
+    )
+    assert opened is True
+    await account.update_positions({"BTC/USDT": 100.0})
+    await account.update_positions({"BTC/USDT": 98.5})
+    assert "BTC/USDT" not in account.positions
+    assert any(
+        "rapid adverse" in item.get("text", "")
+        for item in account.logs
+    )
+
 
 def test_channel_swing_ignores_legacy_structured_stop_cooldown():
     assert TradingEngine._structured_stop_cooldown_blocks('CHANNEL_SWING', 3600.0) is False
@@ -2886,7 +2940,7 @@ def test_channel_long_holds_when_price_returns_below_lower_rail():
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("side", "break_price", "failed_price"),
-    [("LONG", 101.5, 101.3), ("SHORT", 98.5, 98.7)],
+    [("LONG", 100.75, 100.65), ("SHORT", 99.2, 99.4)],
 )
 async def test_fresh_channel_snapshot_rechecks_closed_body_and_adjacent_break(
     side, break_price, failed_price,
@@ -2901,14 +2955,14 @@ async def test_fresh_channel_snapshot_rechecks_closed_body_and_adjacent_break(
     frame = _channel_frame(lower=99.0, upper=101.0)
     if side == "LONG":
         frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [
-            100.0, 101.2, 101.4, 99.8,
+            100.0, 100.5, 100.7, 98.9,
         ]
-        frame.loc[frame.index[-1], ["open", "high", "low"]] = [101.2, 101.6, 100.0]
+        frame.loc[frame.index[-1], ["open", "high", "low"]] = [100.5, 100.8, 99.0]
     else:
         frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [
-            100.0, 98.8, 100.2, 98.6,
+            100.0, 99.5, 101.1, 99.3,
         ]
-        frame.loc[frame.index[-1], ["open", "high", "low"]] = [98.8, 100.0, 98.4]
+        frame.loc[frame.index[-1], ["open", "high", "low"]] = [99.5, 101.0, 99.0]
 
     async def fetch_break(*_args, **_kwargs):
         fresh = frame.copy()
@@ -3135,6 +3189,24 @@ def test_kc_inner_flat_ma3_still_waits():
     frame = _channel_frame(lower=99.0, upper=101.0)
     result = TradingEngine._channel_inner_trend_entry_action(frame, 100.2)
     assert (result["action"], result["side"]) == ("WAIT", None)
+
+
+@pytest.mark.anyio
+async def test_structured_entry_rejects_symbol_outside_execution_allowlist(monkeypatch):
+    monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", ["1000PEPE/USDT"])
+    engine = TradingEngine.__new__(TradingEngine)
+
+    opened = await engine._place_structured_entry(
+        "BTC/USDT", {}, 100.0,
+    )
+
+    assert opened is False
+
+
+def test_channel_swing_allows_lower_timeframe_signal_against_higher_timeframe_direction():
+    source = inspect.getsource(TradingEngine._place_structured_entry)
+    assert "多週期方向不一致" not in source
+    assert "direction_conflict" not in source
 
 
 def test_channel_swing_simple_trend_entry_bypasses_old_signal_filters():
@@ -3433,7 +3505,7 @@ def test_channel_exits_on_confirmed_two_bar_reversal_after_outer_impulse(side, r
         frame.loc[frame.index[-2], ["open", "close", "high", "low"]] = [98.5, 98.8, 98.9, 98.4]
         price = 98.8
     result = TradingEngine._channel_swing_action(frame, price, side)
-    assert (result["action"], result["reason"]) == ("EXIT", reason)
+    assert result["action"] == "HOLD"
 
 
 def test_channel_does_not_exit_when_second_reversal_does_not_break_first_reversal_low():

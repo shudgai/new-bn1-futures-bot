@@ -1,11 +1,23 @@
 import pytest
 
 import core.paper_account as pa_module
+import core.config as config_module
 from core.paper_account import (
     PaperAccount,
     get_outer_run_net_giveback_usdt,
     get_profit_lock_giveback_usdt,
 )
+
+
+def test_channel_v2_lock_arms_at_cost_plus_three_and_steps_only_on_decline(monkeypatch):
+    monkeypatch.setattr(config_module, "CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT", 3.0)
+    monkeypatch.setattr(config_module, "CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT", 1.0)
+    monkeypatch.setattr(config_module, "CHANNEL_SWING_PROFIT_LOCK_STEP_USDT", 2.0)
+
+    assert config_module.compute_channel_swing_profit_lock_usdt(3.59, 0.60, False) is None
+    assert config_module.compute_channel_swing_profit_lock_usdt(3.60, 0.60, False) == pytest.approx((1.60, 3.60, 0))
+    assert config_module.compute_channel_swing_profit_lock_usdt(7.60, 0.60, False) == pytest.approx((1.60, 3.60, 0))
+    assert config_module.compute_channel_swing_profit_lock_usdt(7.60, 0.60, True) == pytest.approx((5.60, 3.60, 2))
 
 def test_profit_lock_giveback_scales_with_peak_ratio():
     # Below the ratio break-even point, the fixed 1.0U floor applies.

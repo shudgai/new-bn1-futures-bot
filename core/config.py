@@ -1,3 +1,4 @@
+import math
 import os
 from dotenv import load_dotenv, find_dotenv
 
@@ -350,7 +351,7 @@ CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
     0.0, float(os.getenv("CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO", "0.10"))
 )
 CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
-    os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "12")
+    os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "60")
 ))
 # 急速突破才啟用 Channel Swing 外軌追蹤：水位回撤此 ATR 倍數即市價平倉。
 CHANNEL_SWING_TRAILING_ATR_MULT = max(
@@ -947,6 +948,43 @@ PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "0.0
 PROFIT_LOCK_TRAIL_RATIO = max(0.0, float(os.getenv("PROFIT_LOCK_TRAIL_RATIO", "0.25")))
 # 最小推進步距（USDT），避免止損每次報價波動都重算重掛
 PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT", "0.5")))
+
+# Channel Swing 新版淨利階梯：先讓趨勢運行，毛利覆蓋預估交易成本後
+# 再多出 3U 才啟動；初始保留淨利 1U。後續只有動能衰退時才按 2U 推進。
+CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT = max(
+    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT", "3.0"))
+)
+CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT = max(
+    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT", "1.0"))
+)
+CHANNEL_SWING_PROFIT_LOCK_STEP_USDT = max(
+    0.01, float(os.getenv("CHANNEL_SWING_PROFIT_LOCK_STEP_USDT", "2.0"))
+)
+
+
+def compute_channel_swing_profit_lock_usdt(
+    peak_gross_usdt: float,
+    estimated_cost_usdt: float,
+    momentum_declining: bool,
+) -> tuple[float, float, int] | None:
+    """Return (gross floor, activation gross, completed steps) once armed."""
+    peak = max(0.0, float(peak_gross_usdt or 0.0))
+    cost = max(0.0, float(estimated_cost_usdt or 0.0))
+    activation = cost + CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT
+    if peak + 1e-9 < activation:
+        return None
+    completed_steps = 0
+    if momentum_declining:
+        completed_steps = math.floor(
+            max(0.0, peak - activation)
+            / CHANNEL_SWING_PROFIT_LOCK_STEP_USDT + 1e-9
+        )
+    floor = (
+        cost
+        + CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT
+        + completed_steps * CHANNEL_SWING_PROFIT_LOCK_STEP_USDT
+    )
+    return floor, activation, completed_steps
 
 # ---------------------------------------------------------------------------
 # 固定百分比鎖利（Fixed Profit Lock by Unlevered %)
