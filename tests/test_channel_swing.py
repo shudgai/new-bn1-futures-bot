@@ -416,13 +416,13 @@ def test_adverse_outer_rail_closes_position_before_opposite_trend_chase():
     long_frame = _channel_frame()
     long_result = TradingEngine._channel_swing_action(long_frame, 98.8, "LONG")
     assert (long_result["action"], long_result["reason"]) == (
-        "EXIT", "KC_LOWER_OUTER_ADVERSE_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
     short_frame = _channel_frame()
     short_result = TradingEngine._channel_swing_action(short_frame, 101.2, "SHORT")
     assert (short_result["action"], short_result["reason"]) == (
-        "EXIT", "KC_UPPER_OUTER_ADVERSE_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
     )
 
 
@@ -1861,8 +1861,8 @@ def test_breaking_entry_side_outer_rail_closes_position():
     frame = _channel_frame()
     held_long = TradingEngine._channel_swing_action(frame, 98.8, "LONG", entry_turn_low=98.9)
     held_short = TradingEngine._channel_swing_action(frame, 101.2, "SHORT", entry_turn_high=101.1)
-    assert (held_long["action"], held_long["side"], held_long["reason"]) == ("EXIT", None, "KC_LOWER_OUTER_ADVERSE_EXIT")
-    assert (held_short["action"], held_short["side"], held_short["reason"]) == ("EXIT", None, "KC_UPPER_OUTER_ADVERSE_EXIT")
+    assert (held_long["action"], held_long["side"], held_long["reason"]) == ("HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK")
+    assert (held_short["action"], held_short["side"], held_short["reason"]) == ("HOLD", None, "WAIT_OPPOSITE_KC_LOWER_VALLEY")
 
 
 def test_partial_body_crossing_entry_side_outer_rail_closes_position():
@@ -1893,8 +1893,8 @@ def test_held_position_closes_on_adverse_side_outer_pivot():
     short_frame = _channel_frame()
     _closed_peak(short_frame)
     held_short = TradingEngine._channel_swing_action(short_frame, 101.1, "SHORT")
-    assert (held_long["action"], held_long["reason"]) == ("EXIT", "KC_LOWER_OUTER_ADVERSE_EXIT")
-    assert (held_short["action"], held_short["reason"]) == ("EXIT", "KC_UPPER_OUTER_ADVERSE_EXIT")
+    assert (held_long["action"], held_long["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK")
+    assert (held_short["action"], held_short["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY")
 
 
 def test_channel_swing_background_trigger_loop_is_diagnostic_only():
@@ -2991,7 +2991,7 @@ def test_channel_short_exits_when_price_returns_above_upper_rail():
         frame, 101.0, current_side="SHORT",
     )
     assert (result["action"], result["side"], result["reason"]) == (
-        "EXIT", None, "KC_UPPER_OUTER_ADVERSE_EXIT",
+        "HOLD", None, "WAIT_OPPOSITE_KC_LOWER_VALLEY",
     )
 
 
@@ -3001,7 +3001,7 @@ def test_channel_long_exits_when_price_returns_below_lower_rail():
         frame, 99.0, current_side="LONG",
     )
     assert (result["action"], result["side"], result["reason"]) == (
-        "EXIT", None, "KC_LOWER_OUTER_ADVERSE_EXIT",
+        "HOLD", None, "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 
