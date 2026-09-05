@@ -7547,15 +7547,19 @@ class TradingEngine:
 
         def recent_confirmed_outer_turn(side: str) -> bool:
             first_candidate = max(1, latest_closed_pos - turn_lookback)
-            for candidate_pos in range(
-                latest_closed_pos - 1, first_candidate - 1, -1,
-            ):
+            # 只確認候選峰／谷後的第一根已收盤K，避免延後到第二個轉彎。
+            candidate_pos = latest_closed_pos - 1
+            if candidate_pos < first_candidate:
+                return False
+            for candidate_pos in (candidate_pos,):
                 before = frame.iloc[candidate_pos - 1]
                 candidate = frame.iloc[candidate_pos]
                 after = frame.iloc[candidate_pos + 1]
                 try:
                     before_ma3 = float(before["ma3"])
                     candidate_ma3 = float(candidate["ma3"])
+                    after_open = float(after["open"])
+                    after_close = float(after["close"])
                     after_ma3 = float(after["ma3"])
                     candidate_upper = float(candidate["kc_upper"])
                     candidate_lower = float(candidate["kc_lower"])
@@ -7613,11 +7617,10 @@ class TradingEngine:
                         is_valid_peak
                         and before_ma3 < candidate_ma3 - 1e-12
                         and after_ma3 < candidate_ma3 - 1e-12
-                        and float(later_ma3.max()) <= candidate_ma3 + 1e-12
-                        and latest_closed_ma3 <= candidate_ma3 - turn_threshold
-                        and latest_closed_close < latest_closed_open
-                        and latest_closed_ma3 < latest_closed_upper
-                        and latest_closed_open - latest_closed_close >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
+                        and after_ma3 <= candidate_ma3 - turn_threshold
+                        and after_close < after_open
+                        and after_ma3 < float(after["kc_upper"])
+                        and after_open - after_close >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
                         return True
                 elif side == "SHORT":
@@ -7626,11 +7629,10 @@ class TradingEngine:
                         is_valid_trough
                         and before_ma3 > candidate_ma3 + 1e-12
                         and after_ma3 > candidate_ma3 + 1e-12
-                        and float(later_ma3.min()) >= candidate_ma3 - 1e-12
-                        and latest_closed_ma3 >= candidate_ma3 + turn_threshold
-                        and latest_closed_close > latest_closed_open
-                        and latest_closed_ma3 > latest_closed_lower
-                        and latest_closed_close - latest_closed_open >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
+                        and after_ma3 >= candidate_ma3 + turn_threshold
+                        and after_close > after_open
+                        and after_ma3 > float(after["kc_lower"])
+                        and after_close - after_open >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
                         return True
             return False
