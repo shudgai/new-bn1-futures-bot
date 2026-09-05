@@ -1026,23 +1026,40 @@ def test_effective_slots_remain_at_configured_cap_as_balance_changes():
     assert engine_module.get_effective_slot_count(225.0, configured_max=3) == 3
 
 
-def test_continuous_single_slot_uses_eighty_percent_then_blocks_second():
+def test_two_slots_reopen_independently_and_compound_realized_balance(monkeypatch):
+    monkeypatch.setattr("core.engine.get_effective_slot_count", lambda _balance: 2)
+
     class SlotAccount:
         pending_limit_orders = {}
 
         def __init__(self):
             self.positions = {}
-            self.available = 200.0
+            self.available = 120.0
+            self.wallet = 120.0
 
         def get_available_balance(self):
             return self.available
 
+        def get_wallet_balance(self):
+            return self.wallet
+
     engine = object.__new__(TradingEngine)
     engine.account = SlotAccount()
-    assert engine._continuous_entry_amount() == pytest.approx(160.0)
+    assert engine._continuous_entry_amount() == pytest.approx(60.0)
 
-    engine.account.positions["SOL/USDT"] = {"margin": 160.0}
-    engine.account.available = 40.0
+    # First slot closed; second remains. Reopening uses free balance, but
+    # never consumes the second slot's reserved margin.
+    engine.account.positions["SOL/USDT"] = {"margin": 60.0}
+    engine.account.available = 60.0
+    assert engine._continuous_entry_amount() == pytest.approx(60.0)
+
+    # Realized profit compounds the next entry amount.
+    engine.account.wallet = 130.0
+    engine.account.available = 70.0
+    assert engine._continuous_entry_amount() == pytest.approx(65.0)
+
+    engine.account.positions["PEPE/USDT"] = {"margin": 60.0}
+    engine.account.available = 10.0
     assert engine._continuous_entry_amount() == 0.0
 
 

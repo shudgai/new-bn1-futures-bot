@@ -2732,7 +2732,7 @@ def test_main_loop_uses_confirmed_takeover_but_not_stalled_recovery_close():
     assert "_channel_stalled_recovery_should_arm(" not in process_source
 
 
-def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
+def test_two_slot_amount_splits_wallet_and_respects_open_margin(monkeypatch):
     # CI does not load the developer's .env; keep this allocation contract
     # independent from the configured per-trade cap.
     monkeypatch.setattr("core.engine.TRADE_AMOUNT_USDT", 1_000.0)
@@ -2748,9 +2748,10 @@ def test_single_slot_amount_uses_eighty_percent_wallet(monkeypatch):
         def get_wallet_balance(self):
             return 150.0
     engine.account = Account()
-    assert engine._continuous_entry_amount() == pytest.approx(120.0)
-    engine.account.positions['SOL/USDT'] = {'margin': 120.0}
-    assert engine._continuous_entry_amount() == 0.0
+    monkeypatch.setattr("core.engine.get_effective_slot_count", lambda _balance: 2)
+    assert engine._continuous_entry_amount() == pytest.approx(75.0)
+    engine.account.positions['SOL/USDT'] = {'margin': 75.0}
+    assert engine._continuous_entry_amount() == pytest.approx(74.85)
 
 @pytest.mark.anyio
 async def test_channel_swing_position_ignores_all_profit_locks_without_initial_sl_or_tp(tmp_path, monkeypatch):
