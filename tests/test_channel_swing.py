@@ -463,6 +463,21 @@ def test_post_entry_confirmed_outer_peak_exits_position():
     )
 
 
+def test_live_reversal_after_outer_peak_exits_before_middle_reentry():
+    frame = _channel_frame(lower=99.0, upper=101.0)
+    frame.loc[frame.index[-3], "ma3"] = 100.5
+    frame.loc[frame.index[-2], ["open", "close", "high", "ma3"]] = [
+        101.2, 101.3, 101.4, 101.5,
+    ]
+    frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [
+        101.3, 101.0, 101.0,
+    ]
+    result = TradingEngine._channel_swing_action(frame, 101.0, "LONG")
+    assert (result["action"], result["reason"]) == (
+        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+    )
+
+
 def test_pump_one_tick_ma3_dip_is_not_a_confirmed_outer_peak():
     frame = _channel_frame(lower=0.00423, upper=0.00425)
     frame.loc[frame.index[-4], "ma3"] = 0.004259

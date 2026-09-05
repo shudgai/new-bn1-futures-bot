@@ -7602,8 +7602,66 @@ class TradingEngine:
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
 
+        # 快速峰谷確認：最近一根已收盤 K 已在對側外軌形成候選峰／谷，
+        # 且目前 live K 的 MA3 已出現足夠幅度的反向變化時，不再多等一根
+        # 完整 K。門檻取價格比例與 KC 半寬的較大值，避免單一跳動誤平倉。
+        def live_confirmed_outer_turn(side: str) -> bool:
+            candidate_pos = latest_closed_pos
+            before_pos = candidate_pos - 1
+            if before_pos < 0 or not candidate_is_after_entry(candidate_pos):
+                return False
+            try:
+                before = frame.iloc[before_pos]
+                candidate = frame.iloc[candidate_pos]
+                live = frame.iloc[-1]
+                before_ma3 = float(before["ma3"])
+                candidate_ma3 = float(candidate["ma3"])
+                live_ma3 = float(live["ma3"])
+                live_open = float(live["open"])
+                live_close = float(live["close"])
+                candidate_upper = float(candidate["kc_upper"])
+                candidate_lower = float(candidate["kc_lower"])
+                candidate_high = max(
+                    float(candidate["open"]), float(candidate["high"]),
+                    float(candidate["close"]),
+                )
+                candidate_low = min(
+                    float(candidate["open"]), float(candidate["low"]),
+                    float(candidate["close"]),
+                )
+                kc_half_width = (candidate_upper - candidate_lower) / 2.0
+                turn_threshold = max(
+                    abs(candidate_ma3) * 0.0003,
+                    kc_half_width * 0.05,
+                    1e-12,
+                )
+            except (TypeError, ValueError, IndexError, KeyError):
+                return False
+            if not all(math.isfinite(value) for value in (
+                before_ma3, candidate_ma3, live_ma3,
+                live_open, live_close, candidate_upper, candidate_lower, candidate_high,
+                candidate_low, kc_half_width, turn_threshold,
+            )) or candidate_lower >= candidate_upper:
+                return False
+            live_body_threshold = max(abs(candidate_ma3) * 0.0001, kc_half_width * 0.02)
+            if side == "LONG":
+                return bool(
+                    candidate_high >= candidate_upper
+                    and before_ma3 < candidate_ma3
+                    and live_close < live_open
+                    and live_open - live_close >= live_body_threshold
+                    and live_ma3 <= candidate_ma3 - turn_threshold
+                )
+            return bool(
+                candidate_low <= candidate_lower
+                and before_ma3 > candidate_ma3
+                and live_close > live_open
+                and live_close - live_open >= live_body_threshold
+                and live_ma3 >= candidate_ma3 + turn_threshold
+            )
+
         if held_side == "LONG":
-            if closed_ma3_peak:
+            if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
                 return {
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
@@ -7612,7 +7670,7 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            if closed_ma3_trough:
+            if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
                 return {
                     "action": "EXIT", "side": None,
                     "kc_upper": upper, "kc_lower": lower,
