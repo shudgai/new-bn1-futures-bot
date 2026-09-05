@@ -3666,6 +3666,11 @@ class TradingEngine:
             "channel_entry_profile_basis": signal.get("channel_entry_profile_basis"),
             "entry_kc_upper": float(signal.get("kc_upper") or 0.0),
             "entry_kc_lower": float(signal.get("kc_lower") or 0.0),
+            "entry_signal_code": str(signal.get("signal_code") or signal.get("reason") or ""),
+            "outer_chase_entry": str(signal.get("signal_code") or signal.get("reason") or "") in {
+                "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                "KC_UPPER_TOUCH_LONG", "KC_LOWER_TOUCH_SHORT",
+            },
             # Only positions opened after the new ladder was enabled receive
             # this marker; persisted positions keep their original exit rules.
             "profit_lock_usdt_v2": bool(ENABLE_PROFIT_LOCK_USDT),
@@ -7383,6 +7388,7 @@ class TradingEngine:
         exit_net_profitable: bool = True,
         entry_kc_upper: float | None = None,
         entry_kc_lower: float | None = None,
+        entry_outer_chase: bool = False,
     ) -> dict:
         import core.config as config
         """Channel Swing 空手等待確認；持倉依逆向外軌或獲利側峰谷平倉。"""
@@ -7679,6 +7685,14 @@ class TradingEngine:
                 and live_ma3 >= candidate_ma3 + turn_threshold
             )
 
+        def outer_chase_channel_reentry(side: str) -> bool:
+            """外軌追單回到通道內即離場，避免在通道內無限等待。"""
+            if not entry_outer_chase:
+                return False
+            if side == "LONG":
+                return bool(price < upper and price > lower)
+            return bool(price > lower and price < upper)
+
         def entry_outer_invalidation(side: str) -> bool:
             """Close a losing position when it returns to its original entry rail."""
             try:
@@ -7700,6 +7714,8 @@ class TradingEngine:
             return bool(rail > 0.0 and price >= rail and live_close > live_open and current_ma3 > previous_ma3)
 
         if held_side == "LONG":
+            if outer_chase_channel_reentry("LONG"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_OUTER_CHASE_CHANNEL_REENTRY_EXIT"}
             if entry_outer_invalidation("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_ENTRY_OUTER_INVALIDATION_EXIT"}
             if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
@@ -7709,6 +7725,8 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
+            if outer_chase_channel_reentry("SHORT"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_OUTER_CHASE_CHANNEL_REENTRY_EXIT"}
             if entry_outer_invalidation("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_ENTRY_OUTER_INVALIDATION_EXIT"}
             if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
@@ -8334,6 +8352,7 @@ class TradingEngine:
                     exit_net_profitable=channel_exit_net_profitable,
                     entry_kc_upper=existing_pos.get("entry_kc_upper") if existing_pos else None,
                     entry_kc_lower=existing_pos.get("entry_kc_lower") if existing_pos else None,
+                    entry_outer_chase=bool(existing_pos.get("outer_chase_entry")) if existing_pos else False,
                 )
                 # Channel Swing 正常持倉不套用固定金額或比例停損；
                 # 急速逆向大瀑布保護由帳戶層負責。
