@@ -8101,13 +8101,10 @@ not all(math.isfinite(value) for value in (
         now = time.time()
         cooldowns = getattr(self.account, "_rapid_drop_cooldown", {})
         cooldown_at = float(cooldowns.get(symbol) or 0.0) if isinstance(cooldowns, dict) else 0.0
-        if cooldown_at > 0.0 and now - cooldown_at < RAPID_DROP_COOLDOWN_SEC:
-            remaining = RAPID_DROP_COOLDOWN_SEC - (now - cooldown_at)
-            self.account.log(
-                f"🧊 {symbol} 大瀑布後冷卻中，暫停開{str(side).upper()} {remaining:.0f}秒",
-                "WARNING",
-            )
-            return False
+        cooldown_active = bool(
+            cooldown_at > 0.0
+            and now - cooldown_at < RAPID_DROP_COOLDOWN_SEC
+        )
         if not ABNORMAL_MARKET_GUARD_ENABLED:
             return True
         values = (price, atr, candle_open, candle_high, candle_low, candle_close)
@@ -8131,13 +8128,26 @@ not all(math.isfinite(value) for value in (
             (requested == "LONG" and signed_move_pct <= -ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
             or (requested == "SHORT" and signed_move_pct >= ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
         )
-        # 空手遇到長實體 K 時不追漲、不追空，也不接反向刀；先沿用個幣
-        # 大瀑布冷卻，結束後必須以最新 K 線重新產生進場訊號。
+        # A large body aligned with a qualified entry is momentum, not a reason
+        # to force a late entry. Opposite-side large bodies remain protected.
+        direction_aligned_impulse = bool(
+            (requested == "LONG" and signed_move_pct > 0.0)
+            or (requested == "SHORT" and signed_move_pct < 0.0)
+        )
         strong_live_candle = (
             PIVOT_STRONG_BODY_ATR_MULT > 0
             and body_atr >= PIVOT_STRONG_BODY_ATR_MULT
+            and not direction_aligned_impulse
         )
         if not excessive_range and not adverse_impulse and not strong_live_candle:
+            # A fresh qualified signal is evaluated against the current candle.
+            # A prior 300-second cooldown must not blindly lock a now-calm entry.
+            if cooldown_active and isinstance(cooldowns, dict):
+                cooldowns.pop(symbol, None)
+                self.account.log(
+                    f"[Crash cooldown released] {symbol} current candle is calm; allow {str(side).upper()} entry",
+                    "SUCCESS",
+                )
             return True
 
         reasons = []

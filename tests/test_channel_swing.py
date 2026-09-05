@@ -684,16 +684,16 @@ def test_market_crash_cooldown_blocks_entries_only_until_expiry():
 
 
 @pytest.mark.parametrize(
-    ("candle_close", "entry_side"),
+    ("candle_close", "entry_side", "expected_allowed"),
     [
-        (99.1, "LONG"),
-        (99.1, "SHORT"),
-        (100.9, "LONG"),
-        (100.9, "SHORT"),
+        (99.1, "LONG", False),
+        (99.1, "SHORT", True),
+        (100.9, "LONG", True),
+        (100.9, "SHORT", False),
     ],
 )
-def test_flat_strong_live_candle_blocks_both_entry_sides_and_starts_cooldown(
-    monkeypatch, candle_close, entry_side,
+def test_flat_strong_live_candle_allows_only_direction_aligned_entries(
+    monkeypatch, candle_close, entry_side, expected_allowed,
 ):
     logs = []
 
@@ -714,13 +714,18 @@ def test_flat_strong_live_candle_blocks_both_entry_sides_and_starts_cooldown(
         100.0, max(100.1, candle_close), min(99.9, candle_close), candle_close,
     )
 
-    assert allowed is False
-    assert engine.account._rapid_drop_cooldown["LOBSTER/USDT"] == 1000.0
-    assert any("長實體K" in text and "300秒冷卻" in text for text, _ in logs)
+    assert allowed is expected_allowed
+    if expected_allowed:
+        assert "LOBSTER/USDT" not in engine.account._rapid_drop_cooldown
+        assert not logs
+    else:
+        assert engine.account._rapid_drop_cooldown["LOBSTER/USDT"] == 1000.0
+        assert any("長實體K" in text and "300秒冷卻" in text for text, _ in logs)
 
 
-def test_strong_live_candle_cooldown_requires_a_fresh_calm_market_after_expiry(
-    monkeypatch,
+@pytest.mark.parametrize("entry_side", ["LONG", "SHORT"])
+def test_strong_live_candle_cooldown_releases_on_a_fresh_calm_entry_signal(
+    monkeypatch, entry_side,
 ):
     now = [1000.0]
 
@@ -736,20 +741,38 @@ def test_strong_live_candle_cooldown_requires_a_fresh_calm_market_after_expiry(
     monkeypatch.setattr("core.engine.PIVOT_STRONG_BODY_ATR_MULT", 0.8)
     monkeypatch.setattr("core.engine.RAPID_DROP_COOLDOWN_SEC", 300.0)
 
+    abnormal_close = 99.1 if entry_side == "LONG" else 100.9
     assert engine._abnormal_market_entry_allowed(
-        "LOBSTER/USDT", "LONG", 99.1, 1.0,
-        100.0, 100.1, 99.0, 99.1,
+        "LOBSTER/USDT", entry_side, abnormal_close, 1.0,
+        100.0, max(100.1, abnormal_close), min(99.9, abnormal_close),
+        abnormal_close,
     ) is False
     now[0] = 1299.9
     assert engine._abnormal_market_entry_allowed(
-        "LOBSTER/USDT", "SHORT", 100.1, 1.0,
-        100.0, 100.2, 99.9, 100.1,
-    ) is False
-    now[0] = 1300.0
-    assert engine._abnormal_market_entry_allowed(
-        "LOBSTER/USDT", "SHORT", 100.1, 1.0,
+        "LOBSTER/USDT", entry_side, 100.1, 1.0,
         100.0, 100.2, 99.9, 100.1,
     ) is True
+    assert "LOBSTER/USDT" not in engine.account._rapid_drop_cooldown
+
+
+def test_active_cooldown_still_blocks_when_new_entry_candle_is_abnormal(monkeypatch):
+    class Account:
+        _rapid_drop_cooldown = {"LOBSTER/USDT": 1000.0}
+
+        def log(self, *_args):
+            pass
+
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = Account()
+    monkeypatch.setattr("core.engine.time.time", lambda: 1100.0)
+    monkeypatch.setattr("core.engine.PIVOT_STRONG_BODY_ATR_MULT", 0.8)
+    monkeypatch.setattr("core.engine.RAPID_DROP_COOLDOWN_SEC", 300.0)
+
+    assert engine._abnormal_market_entry_allowed(
+        "LOBSTER/USDT", "SHORT", 101.0, 1.0,
+        100.0, 101.1, 99.9, 101.0,
+    ) is False
+    assert engine.account._rapid_drop_cooldown["LOBSTER/USDT"] == 1100.0
 
 
 def test_wld_confirmed_outer_turn_exits_without_requiring_current_outer_price():
