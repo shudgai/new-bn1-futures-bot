@@ -107,7 +107,10 @@ def get_profit_lock_scale(margin_usdt: float) -> float:
 
 
 def get_profit_lock_giveback_usdt(peak_usdt: float, margin_usdt: float = 0.0) -> float:
-    return PROFIT_LOCK_GIVEBACK_USDT * get_profit_lock_scale(margin_usdt)
+    """回吐額取「固定地板」與「峰值 x TRAIL_RATIO」兩者較大值，獲利越大容忍度越寬。"""
+    fixed_giveback = PROFIT_LOCK_GIVEBACK_USDT * get_profit_lock_scale(margin_usdt)
+    ratio_giveback = max(0.0, float(peak_usdt or 0.0)) * PROFIT_LOCK_TRAIL_RATIO
+    return max(fixed_giveback, ratio_giveback)
 
 
 def get_profit_lock_ladder_step_usdt(

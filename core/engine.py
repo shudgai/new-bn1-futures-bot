@@ -25,7 +25,7 @@ from core.config import (
     MA5_EXIT_MIN_HOLD_SEC, MA5_EXIT_MIN_ADVERSE_PCT, MA5_EXIT_MIN_ADVERSE_ATR_MULT, MA5_EXIT_TIMEFRAME,
     SL_ONLY_AFTER_PEAK_PCT,
     ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP, DISABLE_STOP_LOSS,
-    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
+    TAKER_FEE_RATE, SLIPPAGE_PCT, NET_PROFIT_GUARANTEE_BUFFER, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
     CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA5_EARLY_CONFIRM_SCANS,
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
@@ -4564,11 +4564,11 @@ class TradingEngine:
     def _record_btc_lead_shadow_candidate(
         self, symbol: str, frame: pd.DataFrame, live_price: float,
         chop_locked: bool,
-    ) -> None:
-        """Record, but never trade, a coin's first aligned outer reaction to BTC."""
+    ) -> dict | None:
+        """Record and return a trade candidate for a confirmed BTC-led reaction."""
         active = getattr(self, "_btc_lead_shadow_active", {})
         if not active or frame is None or frame.empty:
-            return
+            return None
         try:
             row = frame.iloc[-1]
             price = float(live_price)
@@ -4580,7 +4580,7 @@ class TradingEngine:
                 float(row.get("vol_ma_20") or 0.0), 1e-12,
             )
         except (KeyError, TypeError, ValueError, IndexError):
-            return
+            return None
         side = str(active.get("side") or "")
         aligned_outer = (
             side == "LONG" and price >= upper and ma3 > ma15
@@ -4588,20 +4588,45 @@ class TradingEngine:
             side == "SHORT" and price <= lower and ma3 < ma15
         )
         if not aligned_outer or volume_ratio < 1.0:
-            return
+            return None
+        atr = float(row.get("atr") or 0.0)
+        if not math.isfinite(atr) or atr <= 0.0:
+            return None
         events = getattr(self, "_btc_lead_shadow_events", [])
         pulse_key = active.get("key")
         if any(event.get("pulse_key") == pulse_key and event.get("symbol") == symbol for event in events):
-            return
-        events.append({
+            return None
+        event = {
             "timestamp": time.time(), "pulse_key": pulse_key,
             "symbol": symbol, "side": side,
             "delay_sec": round(max(0.0, time.time() - float(active["started_at"])), 3),
             "price": price, "kc_upper": upper, "kc_lower": lower,
             "volume_ratio": round(volume_ratio, 3), "chop_locked": bool(chop_locked),
-        })
+        }
+        events.append(event)
         del events[:-200]
         self._btc_lead_shadow_events = events
+        if chop_locked:
+            return None
+        return {
+            "symbol": symbol, "side": side, "score": 100, "priority": 4,
+            "price": price, "live_price": price,
+            "kc_upper": upper, "kc_lower": lower, "atr": atr,
+            "volume_ratio": volume_ratio,
+            "profit_potential": self._candidate_profit_potential(
+                symbol, side, atr, price,
+            ),
+            "entry_mode": "CHANNEL_SWING", "profit_profile": "TREND_EXTENSION",
+            "action": "ENTER_MARKET",
+            "signal_candle_low": float(row.get("low") or price),
+            "signal_candle_high": float(row.get("high") or price),
+            "candidate_bar_id": self._channel_candidate_bar_id(frame),
+            "signal_code": f"BTC_LEAD_KC_OUTER_{side}",
+            "market_mode": self._channel_macro_market_mode(symbol),
+            "wave_regime": "TREND",
+            "trend_quality": self._directional_trend_quality(frame, price, side),
+            "reason": f"BTC 1m {side} 強脈衝，{symbol} 同向 KC 外軌跟隨",
+        }
 
     def btc_lead_shadow_status(self) -> dict:
         events = list(getattr(self, "_btc_lead_shadow_events", []))
@@ -4753,6 +4778,22 @@ class TradingEngine:
         daily_space = float(stats.get(daily_key) or 0.0)
         atr_space = float(atr) / float(price) * 100.0 if price else 0.0
         return round(max(daily_space, atr_space), 6)
+
+    def _touch_entry_math_favorable(
+        self, symbol: str, side: str | None, frame: pd.DataFrame, price: float,
+    ) -> bool:
+        """KC 觸軌即時進場前，估算延伸空間須先蓋過雙邊手續費/滑價緩衝，多空鏡像判定。"""
+        if side not in ("LONG", "SHORT") or frame is None or frame.empty or "atr" not in frame.columns:
+            return False
+        try:
+            atr = float(frame.iloc[-1]["atr"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return False
+        price = float(price or 0.0)
+        if not math.isfinite(atr) or atr <= 0.0 or price <= 0.0:
+            return False
+        profit_potential_pct = self._candidate_profit_potential(symbol, side, atr, price)
+        return profit_potential_pct >= NET_PROFIT_GUARANTEE_BUFFER * 100.0
 
     @staticmethod
     def _channel_candidate_energy(candidate: dict) -> float:
@@ -8109,6 +8150,31 @@ class TradingEngine:
 
             from core.config import ENABLE_CONTINUOUS_REVERSE_MODE
 
+            # BTC 1m 強脈衝是全市場早期瀑布/急拉訊號。先處理反向的
+            # Channel Swing 持倉，避免等個幣自己的峰谷確認才把虧損拖大。
+            btc_pulse = str(btc_1m_turn or "").upper()
+            existing_position = self.account.positions.get(symbol)
+            if (
+                btc_pulse in ("LONG", "SHORT")
+                and existing_position
+                and str(existing_position.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+                and str(existing_position.get("side") or "").upper() != btc_pulse
+            ):
+                pulse_price = float(
+                    self.tickers.get(symbol)
+                    or existing_position.get("mark_price")
+                    or existing_position.get("entry_price")
+                    or 0.0
+                )
+                if pulse_price > 0.0:
+                    await self.account.close_position(
+                        symbol,
+                        pulse_price,
+                        f"BTC 1m 強脈衝反向，平 Channel Swing {existing_position.get('side')}",
+                        is_manual=True,
+                    )
+                return signal_progress, detected_candidates
+
             # ====== 第二步：如果多單在外軌，不要提早出場（延後平倉邏輯）======
             # Channel Swing 要在碰到對面軌道時立即平倉，不能被這個舊外軌延伸收掉。
             if symbol in self.account.positions and not ENABLE_CONTINUOUS_REVERSE_MODE:
@@ -8199,8 +8265,9 @@ class TradingEngine:
                             f"確認 {chop_info.get('clear_direction')} 方向",
                             "INFO",
                         )
-                if not existing_pos:
-                    self._record_btc_lead_shadow_candidate(
+                btc_lead_candidate = None
+                if not existing_pos and btc_pulse in ("LONG", "SHORT"):
+                    btc_lead_candidate = self._record_btc_lead_shadow_candidate(
                         symbol, channel_df, channel_price, chop_locked,
                     )
                 channel_market_mode = self._channel_macro_market_mode(symbol)
@@ -8335,6 +8402,15 @@ class TradingEngine:
                     channel_action = self._channel_immediate_outer_break_action(
                         channel_df, channel_price,
                     )
+                    if channel_action.get("action") == "ENTER" and not self._touch_entry_math_favorable(
+                        symbol, channel_action.get("side"), channel_df, channel_price,
+                    ):
+                        channel_action = {
+                            "action": "WAIT", "side": None,
+                            "reason": "WAIT_TOUCH_ENTRY_INSUFFICIENT_PROFIT_SPACE",
+                            "kc_upper": channel_action.get("kc_upper"),
+                            "kc_lower": channel_action.get("kc_lower"),
+                        }
                     if channel_action.get("action") != "ENTER":
                         channel_action = self._channel_closed_body_break_entry_action(
                             channel_df, channel_price,
@@ -8574,6 +8650,16 @@ class TradingEngine:
                     )
                     signal_progress.append(
                         f"{coin} 反手訊號量能不足({volume_ratio:.2f}x)，只平舊倉不開反向倉"
+                    )
+
+                if (
+                    btc_lead_candidate
+                    and not existing_pos
+                    and action != "ENTER"
+                ):
+                    detected_candidates.append(btc_lead_candidate)
+                    signal_progress.append(
+                        f"{coin} 跟隨 BTC {btc_pulse} 強脈衝，已加入同向開倉候選"
                     )
 
                 if action == "EXIT" and existing_pos:
@@ -10063,6 +10149,15 @@ class TradingEngine:
                             symbol = sig["symbol"]
                             coin = symbol.replace("/USDT", "")
                             direction_text = "多單" if sig["side"] == "LONG" else "空單"
+
+                            if (
+                                btc_1m_turn in ("LONG", "SHORT")
+                                and str(sig.get("side") or "").upper() != btc_1m_turn
+                            ):
+                                signal_progress.append(
+                                    f"{coin} {direction_text} BTC 1m {btc_1m_turn} 強脈衝期間拒絕逆向開倉"
+                                )
+                                continue
 
                             takeover_handled, takeover_opened = (
                                 await self._try_channel_stronger_symbol_takeover(
