@@ -994,7 +994,7 @@ def test_two_closed_red_reentry_candles_hold_without_outer_peak():
 
     result = TradingEngine._channel_swing_action(frame, 100.5, "LONG")
 
-    assert (result["action"], result["reason"]) == ("EXIT", "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT")
+    assert (result["action"], result["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK")
 
 
 def test_red_candle_outside_lower_kc_does_not_exit_short():
@@ -1018,7 +1018,7 @@ def test_two_closed_green_reentry_candles_hold_without_outer_trough():
 
     result = TradingEngine._channel_swing_action(frame, 99.5, "SHORT")
 
-    assert (result["action"], result["reason"]) == ("EXIT", "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT")
+    assert (result["action"], result["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY")
 
 
 def test_mature_uptrend_reentry_protects_profit_after_upper_break():

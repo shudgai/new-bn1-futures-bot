@@ -7613,6 +7613,7 @@ class TradingEngine:
                         and float(later_ma3.max()) <= candidate_ma3 + 1e-12
                         and latest_closed_ma3 <= candidate_ma3 - turn_threshold
                         and latest_closed_close < latest_closed_open
+                        and latest_closed_open >= latest_closed_upper
                         and latest_closed_close < latest_closed_upper
                         and latest_closed_open - latest_closed_close >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
@@ -7626,6 +7627,7 @@ class TradingEngine:
                         and float(later_ma3.min()) >= candidate_ma3 - 1e-12
                         and latest_closed_ma3 >= candidate_ma3 + turn_threshold
                         and latest_closed_close > latest_closed_open
+                        and latest_closed_open <= latest_closed_lower
                         and latest_closed_close > latest_closed_lower
                         and latest_closed_close - latest_closed_open >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
