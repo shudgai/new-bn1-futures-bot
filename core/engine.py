@@ -8308,45 +8308,8 @@ class TradingEngine:
                             "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
                             "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
                         }
-                if existing_pos and hard_loss_action.get("action") != "EXIT":
-                    reclaim_action = self._channel_profit_reclaim_action(
-                        existing_pos, channel_price,
-                        float(channel_df["atr"].iloc[-1]),
-                        CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT,
-                    )
-                    if reclaim_action.get("action") == "EXIT":
-                        channel_action = {
-                            "action": "EXIT", "side": None,
-                            "reason": reclaim_action["reason"],
-                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
-                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
-                        }
-                    position_meta_map = getattr(self.account, "position_meta", None)
-                    persisted_trailing = (
-                        position_meta_map.get(symbol, {})
-                        if isinstance(position_meta_map, dict) else {}
-                    )
-                    for key in ("channel_outer_trailing_armed", "channel_outer_trailing_high", "channel_outer_trailing_low", "channel_outer_trailing_stop"):
-                        if key not in existing_pos and key in persisted_trailing:
-                            existing_pos[key] = persisted_trailing[key]
-                    trailing_action = self._channel_outer_trailing_action(
-                        channel_df, channel_price, existing_pos,
-                    )
-                    trailing_updates = trailing_action.get("updates") or {}
-                    if trailing_updates:
-                        existing_pos.update(trailing_updates)
-                        if isinstance(position_meta_map, dict):
-                            position_meta_map.setdefault(symbol, {}).update(trailing_updates)
-                        save_state = getattr(self.account, "save_state", None)
-                        if callable(save_state):
-                            save_state()
-                    if trailing_action.get("action") == "EXIT":
-                        channel_action = {
-                            "action": "EXIT", "side": None,
-                            "reason": trailing_action["reason"],
-                            "kc_upper": float(channel_df["kc_upper"].iloc[-1]),
-                            "kc_lower": float(channel_df["kc_lower"].iloc[-1]),
-                        }
+                # Channel Swing 只保留對側 KC 外軌峰谷確認、KC 破軌停損與帳戶
+                # 硬虧損上限；移除所有移動停利／固定鎖利式的提前平倉。
                 # 新倉不再使用 KC 通道內的 MA3 趨勢路徑。
                 self._channel_inner_trend_hold.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
@@ -10152,17 +10115,6 @@ class TradingEngine:
                                 signal_progress.append(
                                     f"{coin} {direction_text} BTC 1m {btc_1m_turn} 強脈衝期間拒絕逆向開倉"
                                 )
-                                continue
-
-                            takeover_handled, takeover_opened = (
-                                await self._try_channel_stronger_symbol_takeover(
-                                    sig, now_time, daily_halt,
-                                )
-                            )
-                            if takeover_handled:
-                                opened_any = takeover_opened or opened_any
-                                if takeover_opened or not self.account.positions:
-                                    break
                                 continue
 
                             same_side_committed = self._channel_same_side_committed(
