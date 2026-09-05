@@ -3654,6 +3654,8 @@ class TradingEngine:
             "entry_market_mode": signal.get("market_mode"),
             "channel_entry_profile": signal.get("channel_entry_profile"),
             "channel_entry_profile_basis": signal.get("channel_entry_profile_basis"),
+            "entry_kc_upper": float(signal.get("kc_upper") or 0.0),
+            "entry_kc_lower": float(signal.get("kc_lower") or 0.0),
             # Only positions opened after the new ladder was enabled receive
             # this marker; persisted positions keep their original exit rules.
             "profit_lock_usdt_v2": bool(ENABLE_PROFIT_LOCK_USDT),
@@ -7369,6 +7371,8 @@ class TradingEngine:
         market_mode: str | None = None,
         position_open_timestamp: float | None = None,
         exit_net_profitable: bool = True,
+        entry_kc_upper: float | None = None,
+        entry_kc_lower: float | None = None,
     ) -> dict:
         import core.config as config
         """Channel Swing 空手等待確認；持倉依逆向外軌或獲利側峰谷平倉。"""
@@ -7665,7 +7669,29 @@ class TradingEngine:
                 and live_ma3 >= candidate_ma3 + turn_threshold
             )
 
+        def entry_outer_invalidation(side: str) -> bool:
+            """Close a losing position when it returns to its original entry rail."""
+            try:
+                live_open = float(row["open"])
+                live_close = float(row["close"])
+                live_volume = float(row.get("volume") or 0.0)
+                live_volume_ma = float(row.get("vol_ma_20") or 0.0)
+                volume_ratio = live_volume / live_volume_ma if live_volume_ma > 0 else 0.0
+                previous_ma3 = float(confirmation_row["ma3"])
+                current_ma3 = float(row["ma3"])
+            except (TypeError, ValueError, KeyError):
+                return False
+            if volume_ratio < 1.0:
+                return False
+            if side == "LONG":
+                rail = float(entry_kc_lower or 0.0)
+                return bool(rail > 0.0 and price <= rail and live_close < live_open and current_ma3 < previous_ma3)
+            rail = float(entry_kc_upper or 0.0)
+            return bool(rail > 0.0 and price >= rail and live_close > live_open and current_ma3 > previous_ma3)
+
         if held_side == "LONG":
+            if entry_outer_invalidation("LONG"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_ENTRY_OUTER_INVALIDATION_EXIT"}
             if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
                 if not exit_net_profitable:
                     return {"action": "HOLD", "side": None, "reason": "WAIT_NET_PROFIT_KC_UPPER_PEAK"}
@@ -7673,6 +7699,8 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
+            if entry_outer_invalidation("SHORT"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_ENTRY_OUTER_INVALIDATION_EXIT"}
             if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
                 if not exit_net_profitable:
                     return {"action": "HOLD", "side": None, "reason": "WAIT_NET_PROFIT_KC_LOWER_VALLEY"}
@@ -8294,6 +8322,8 @@ class TradingEngine:
                     channel_market_mode,
                     existing_pos.get("open_timestamp") if existing_pos else None,
                     exit_net_profitable=channel_exit_net_profitable,
+                    entry_kc_upper=existing_pos.get("entry_kc_upper") if existing_pos else None,
+                    entry_kc_lower=existing_pos.get("entry_kc_lower") if existing_pos else None,
                 )
                 # Channel Swing 正常持倉不套用固定金額或比例停損；
                 # 急速逆向大瀑布保護由帳戶層負責。
