@@ -7684,14 +7684,9 @@ class TradingEngine:
             try:
                 live_open = float(row["open"])
                 live_close = float(row["close"])
-                live_volume = float(row.get("volume") or 0.0)
-                live_volume_ma = float(row.get("vol_ma_20") or 0.0)
-                volume_ratio = live_volume / live_volume_ma if live_volume_ma > 0 else 0.0
                 previous_ma3 = float(confirmation_row["ma3"])
                 current_ma3 = float(row["ma3"])
             except (TypeError, ValueError, KeyError):
-                return False
-            if volume_ratio < 1.0:
                 return False
             if side == "LONG":
                 rail = float(entry_kc_lower or 0.0)
