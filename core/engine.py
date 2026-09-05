@@ -7685,49 +7685,6 @@ class TradingEngine:
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
 
-        def chop_timeout_exit(side: str) -> bool:
-            """長時間窄幅盤整才退出；有方向趨勢時絕不因計時器平倉。"""
-            if not position_open_timestamp or len(frame) < 18:
-                return False
-            try:
-                age_sec = time.time() - float(position_open_timestamp)
-                if age_sec < 20.0 * 60.0:
-                    return False
-                closed = frame.iloc[-16:-1]
-                inside = ((closed["close"] > closed["kc_lower"]) & (closed["close"] < closed["kc_upper"])).mean()
-                width_pct = (upper - lower) / max(abs((upper + lower) / 2.0), 1e-12)
-                atr_now = float(row.get("atr") or 0.0)
-                if atr_now <= 0.0:
-                    atr_now = max((upper - lower) / 2.0, abs(price) * 1e-6)
-                middle = (upper + lower) / 2.0
-                # Require two consecutive closed bars to remain near the middle.
-                recent = closed.iloc[-2:]
-                recent_inside = ((recent["close"] > recent["kc_lower"]) & (recent["close"] < recent["kc_upper"])).all()
-                recent_middle = ((recent["close"] - ((recent["kc_upper"] + recent["kc_lower"]) / 2.0)).abs() <= (recent["kc_upper"] - recent["kc_lower"]).abs() * 0.35).all()
-                ma3_values = pd.to_numeric(closed["ma3"], errors="coerce").dropna()
-                close_values = pd.to_numeric(closed["close"], errors="coerce").dropna()
-                if len(ma3_values) < 5 or len(close_values) < 5:
-                    return False
-                ma3_delta = float(ma3_values.iloc[-1] - ma3_values.iloc[-5])
-                close_delta = float(close_values.iloc[-1] - close_values.iloc[-5])
-                directional = (
-                    side == "LONG" and ma3_delta > atr_now * 0.08 and close_delta > atr_now * 0.08
-                ) or (
-                    side == "SHORT" and ma3_delta < -atr_now * 0.08 and close_delta < -atr_now * 0.08
-                )
-                near_middle = abs(price - middle) <= max(atr_now * 0.75, abs(middle) * 0.001)
-                return bool(
-                    inside >= 0.80
-                    and width_pct <= 0.008
-                    and not directional
-                    and near_middle
-                    and recent_inside
-                    and recent_middle
-                    and lower < price < upper
-                )
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
         def trend_resuming(side: str) -> bool:
             """峰谷候選後若原方向重新恢復，不要提前下車。"""
             try:
@@ -7796,11 +7753,9 @@ class TradingEngine:
             # 多單反向跌回下方 KC 外側，需實體突破確認後才平倉。
             if confirmed_adverse_outer_break("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_ADVERSE_EXIT"}
-            if chop_timeout_exit("LONG"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
             # 順勢多單只在上方 KC 外軌形成真正峰谷時平倉。
             # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
-            if closed_ma3_peak and not trend_resuming("LONG"):
+            if price >= upper and closed_ma3_peak and not trend_resuming("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
@@ -7808,9 +7763,7 @@ class TradingEngine:
             # 空單若反向漲回上方 KC 外側，先平倉；下一輪若仍有上漲外側趨勢再追多。
             if confirmed_adverse_outer_break("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
-            if chop_timeout_exit("SHORT"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
-            if closed_ma3_trough and not trend_resuming("SHORT"):
+            if price <= lower and closed_ma3_trough and not trend_resuming("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
@@ -8499,11 +8452,15 @@ class TradingEngine:
                     and not chop_breakout_context
                     and not existing_pos
                 ):
-                    # 使用者明確要求追蹤 KC 外側趨勢：即時價格碰到外軌即先追，
-                    # 若不在外軌，再退回已收盤 K 的順向突破確認。
-                    channel_action = self._channel_immediate_outer_break_action(
-                        channel_df, channel_price,
+                    # 優先使用外側峰谷後的順勢延續訊號，避免等到谷底才追空。
+                    # 沒有較早延續確認時，才使用即時外軌突破作最後入口。
+                    channel_action = self._channel_outer_continuation_entry_action(
+                        channel_df, channel_price, max_bars=4,
                     )
+                    if channel_action.get("action") != "ENTER":
+                        channel_action = self._channel_immediate_outer_break_action(
+                            channel_df, channel_price,
+                        )
                     if channel_action.get("action") != "ENTER":
                         closed_body_action = self._channel_closed_body_break_entry_action(
                             channel_df, channel_price,
