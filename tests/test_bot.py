@@ -1018,16 +1018,12 @@ def test_market_rotation_starts_with_seed_symbols_and_has_configured_slots():
     assert engine_module.MAX_SLOTS > 0
 
 
-def test_effective_slots_reduce_to_one_below_minimum_two_slot_balance(monkeypatch):
-    monkeypatch.setitem(
-        engine_module.get_effective_slot_count.__globals__,
-        "MIN_TWO_SLOT_BALANCE_USDT", 120.0,
-    )
-    assert engine_module.get_effective_slot_count(99.99, configured_max=2) == 1
-    assert engine_module.get_effective_slot_count(119.99, configured_max=5) == 1
-    assert engine_module.get_effective_slot_count(120.0, configured_max=5) == 2
-    assert engine_module.get_effective_slot_count(224.99, configured_max=5) == 2
-    assert engine_module.get_effective_slot_count(225.0, configured_max=5) == 3
+def test_effective_slots_remain_at_configured_cap_as_balance_changes():
+    import core.engine as engine_module
+    assert engine_module.get_effective_slot_count(99.99, configured_max=3) == 3
+    assert engine_module.get_effective_slot_count(120.0, configured_max=3) == 3
+    assert engine_module.get_effective_slot_count(224.99, configured_max=3) == 3
+    assert engine_module.get_effective_slot_count(225.0, configured_max=3) == 3
 
 
 def test_continuous_single_slot_uses_eighty_percent_then_blocks_second():

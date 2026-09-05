@@ -67,15 +67,16 @@ MIN_TWO_SLOT_BALANCE_USDT = float(os.getenv("MIN_TWO_SLOT_BALANCE_USDT", "120"))
 TARGET_SLOT_BALANCE_USDT = float(os.getenv("TARGET_SLOT_BALANCE_USDT", "75"))
 
 def get_effective_slot_count(wallet_balance: float, configured_max: int = None) -> int:
-    """依合約錢包餘額限制自動交易可用槽數。"""
+    """Return the configured slot cap; each new slot scales its margin instead.
+
+    槽位數不再因損益低於門檻而突然縮減；當餘額不足時，
+    _continuous_entry_amount 會把資金平均分配到固定槽數，低於最低下單額
+    就拒絕新倉，但不會讓已設定的三幣獨立模式退回單槽。
+    """
     slot_cap = MAX_SLOTS if configured_max is None else int(configured_max)
     if slot_cap <= 0:
         return 0
-    balance = max(0.0, float(wallet_balance or 0.0))
-    if slot_cap == 1 or balance < MIN_TWO_SLOT_BALANCE_USDT:
-        return 1
-    balance_slots = max(2, int(balance / max(TARGET_SLOT_BALANCE_USDT, 1.0)))
-    return min(slot_cap, balance_slots)
+    return slot_cap
 
 # 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
 # 大盤行情中全部同向進場，反轉時同時承受損失。
