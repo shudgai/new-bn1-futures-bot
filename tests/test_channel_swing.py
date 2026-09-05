@@ -502,7 +502,7 @@ def test_pre_entry_outer_pivots_cannot_close_new_positions():
     )
 
 
-def test_post_entry_confirmed_outer_peak_exits_position():
+def test_post_entry_outer_peak_holds_until_channel_reentry():
     frame = _channel_frame()
     frame["timestamp"] = [index * 60_000 for index in range(20)]
     _closed_peak(frame)
@@ -512,22 +512,22 @@ def test_post_entry_confirmed_outer_peak_exits_position():
         position_open_timestamp=opened_before_signal_closed,
     )
     assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 
-def test_live_reversal_after_outer_peak_exits_before_middle_reentry():
+def test_live_reversal_after_outer_peak_exits_on_channel_reentry():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-3], "ma3"] = 100.5
     frame.loc[frame.index[-2], ["open", "close", "high", "ma3"]] = [
         101.2, 101.3, 101.4, 101.5,
     ]
     frame.loc[frame.index[-1], ["open", "close", "ma3"]] = [
-        101.3, 101.0, 101.0,
+        101.3, 100.9, 101.0,
     ]
     result = TradingEngine._channel_swing_action(frame, 101.0, "LONG")
     assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 
@@ -625,7 +625,7 @@ def test_market_crash_cooldown_blocks_entries_only_until_expiry():
     assert engine._market_crash_entries_paused(700.0) is False
 
 
-def test_wld_small_outer_turn_exits_on_confirmed_peak():
+def test_wld_small_outer_turn_holds_outside_channel():
     frame = _channel_frame(lower=0.3750, upper=0.3780)
     frame["timestamp"] = [index * 60_000 for index in range(20)]
     frame.loc[frame.index[-3], [
@@ -645,7 +645,7 @@ def test_wld_small_outer_turn_exits_on_confirmed_peak():
     )
 
     assert (result["action"], result["reason"]) == (
-        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
 
 
@@ -994,7 +994,7 @@ def test_two_closed_red_reentry_candles_hold_without_outer_peak():
 
     result = TradingEngine._channel_swing_action(frame, 100.5, "LONG")
 
-    assert (result["action"], result["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK")
+    assert (result["action"], result["reason"]) == ("EXIT", "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT")
 
 
 def test_red_candle_outside_lower_kc_does_not_exit_short():
@@ -1018,7 +1018,7 @@ def test_two_closed_green_reentry_candles_hold_without_outer_trough():
 
     result = TradingEngine._channel_swing_action(frame, 99.5, "SHORT")
 
-    assert (result["action"], result["reason"]) == ("HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY")
+    assert (result["action"], result["reason"]) == ("EXIT", "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT")
 
 
 def test_mature_uptrend_reentry_protects_profit_after_upper_break():
@@ -1033,7 +1033,7 @@ def test_mature_uptrend_reentry_protects_profit_after_upper_break():
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT",
     )
 
 
@@ -1063,7 +1063,7 @@ def test_mature_downtrend_reentry_protects_profit_after_lower_break():
     result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+        "EXIT", "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT",
     )
 
 
@@ -1076,7 +1076,7 @@ def test_upper_reentry_keeps_tracking_the_earlier_exact_peak():
     result = TradingEngine._channel_swing_action(frame, 100.8, "LONG")
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT",
     )
 
 
@@ -1089,7 +1089,7 @@ def test_lower_reentry_keeps_tracking_the_earlier_exact_trough():
     result = TradingEngine._channel_swing_action(frame, 99.2, "SHORT")
 
     assert (result["action"], result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+        "EXIT", "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT",
     )
 
 
@@ -1178,7 +1178,7 @@ def test_long_holds_when_peak_has_already_returned_inside_upper():
         final_reversal, 100.8, "LONG",
     )
     assert (final_result["action"], final_result["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "EXIT", "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT",
     )
 
 
@@ -1208,7 +1208,7 @@ def test_short_exits_only_at_confirmed_outer_trough():
     open_long = TradingEngine._channel_swing_action(bottom, 99.6)
 
     assert (close_short["action"], close_short["reason"]) == (
-        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+        "EXIT", "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT",
     )
     assert (open_long["action"], open_long["side"], open_long["reason"]) == (
         "WAIT", None, "WAIT_KC_OUTER_TREND_ENTRY",
@@ -1885,8 +1885,8 @@ def test_confirmed_outer_peak_and_trough_exit_without_extra_end_stage_gate():
     short_frame = _channel_frame()
     _closed_trough(short_frame)
     held_short = TradingEngine._channel_swing_action(short_frame, 98.9, 'SHORT', market_mode='BULL')
-    assert (held_long['action'], held_long['side'], held_long['reason']) == ('EXIT', None, 'KC_UPPER_OUTER_PEAK_EXIT')
-    assert (held_short['action'], held_short['side'], held_short['reason']) == ('EXIT', None, 'KC_LOWER_OUTER_VALLEY_EXIT')
+    assert (held_long['action'], held_long['side'], held_long['reason']) == ('HOLD', None, 'WAIT_OPPOSITE_KC_UPPER_PEAK')
+    assert (held_short['action'], held_short['side'], held_short['reason']) == ('HOLD', None, 'WAIT_OPPOSITE_KC_LOWER_VALLEY')
 
 def test_held_position_closes_on_adverse_side_outer_pivot():
     long_frame = _channel_frame()
@@ -2080,10 +2080,10 @@ def test_market_mode_does_not_block_required_outer_pivot_exit():
     _closed_trough(short_frame)
     bull_short = TradingEngine._channel_swing_action(short_frame, 98.9, "SHORT", market_mode="BULL")
     assert (bear_long["action"], bear_long["reason"]) == (
-        "EXIT", "KC_UPPER_OUTER_PEAK_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_UPPER_PEAK",
     )
     assert (bull_short["action"], bull_short["reason"]) == (
-        "EXIT", "KC_LOWER_OUTER_VALLEY_EXIT",
+        "HOLD", "WAIT_OPPOSITE_KC_LOWER_VALLEY",
     )
 
 def test_btc_1m_pulse_requires_atr_move_and_ma3_alignment(monkeypatch):

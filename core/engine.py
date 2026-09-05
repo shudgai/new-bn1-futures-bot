@@ -7567,6 +7567,8 @@ class TradingEngine:
                     latest_closed_open = float(frame.iloc[latest_closed_pos]["open"])
                     latest_closed_close = float(frame.iloc[latest_closed_pos]["close"])
                     latest_closed_ma3 = float(frame.iloc[latest_closed_pos]["ma3"])
+                    latest_closed_upper = float(frame.iloc[latest_closed_pos]["kc_upper"])
+                    latest_closed_lower = float(frame.iloc[latest_closed_pos]["kc_lower"])
                     later_ma3 = pd.to_numeric(
                         frame.iloc[candidate_pos + 1:latest_closed_pos + 1]["ma3"],
                         errors="coerce",
@@ -7578,7 +7580,7 @@ class TradingEngine:
                     or not all(math.isfinite(value) for value in (
                         before_ma3, candidate_ma3, after_ma3,
                         candidate_upper, candidate_lower, candidate_high,
-                        candidate_low, latest_closed_open, latest_closed_close, latest_closed_ma3,
+                        candidate_low, latest_closed_open, latest_closed_close, latest_closed_ma3, latest_closed_upper, latest_closed_lower,
                     ))
                     or candidate_lower >= candidate_upper
                     or not candidate_is_after_entry(candidate_pos)
@@ -7611,6 +7613,7 @@ class TradingEngine:
                         and float(later_ma3.max()) <= candidate_ma3 + 1e-12
                         and latest_closed_ma3 <= candidate_ma3 - turn_threshold
                         and latest_closed_close < latest_closed_open
+                        and latest_closed_close < latest_closed_upper
                         and latest_closed_open - latest_closed_close >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
                         return True
@@ -7623,6 +7626,7 @@ class TradingEngine:
                         and float(later_ma3.min()) >= candidate_ma3 - 1e-12
                         and latest_closed_ma3 >= candidate_ma3 + turn_threshold
                         and latest_closed_close > latest_closed_open
+                        and latest_closed_close > latest_closed_lower
                         and latest_closed_close - latest_closed_open >= max(abs(candidate_ma3) * 0.0003, (candidate_upper - candidate_lower) * 0.025)
                     ):
                         return True
@@ -7895,8 +7899,8 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
             # 順勢多單只在上方 KC 外軌形成真正峰谷時平倉。
             # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
-            if price >= upper and (closed_ma3_peak or live_confirmed_outer_turn("LONG")) and not trend_resuming("LONG"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
+            if closed_ma3_peak and not trend_resuming("LONG"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
@@ -7905,8 +7909,8 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
             if chop_timeout_exit("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
-            if price <= lower and (closed_ma3_trough or live_confirmed_outer_turn("SHORT")) and not trend_resuming("SHORT"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
+            if closed_ma3_trough and not trend_resuming("SHORT"):
+                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
         return {
