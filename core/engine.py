@@ -42,7 +42,7 @@ from core.config import (
     CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT,
     BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
     BTC_1M_PULSE_MIN_ATR, BTC_FLASH_CRASH_WINDOW_SEC, BTC_FLASH_CRASH_DROP_PCT,
-    BTC_FLASH_CRASH_PUMP_PCT, MARKET_CRASH_ENTRY_COOLDOWN_SEC,
+    BTC_FLASH_CRASH_PUMP_PCT, MARKET_CRASH_ENTRY_COOLDOWN_SEC, RAPID_DROP_COOLDOWN_SEC,
     MA5_BOTTOM_MIN_HOLD_SEC,
     EXECUTION_PRICE_MAX_DEVIATION_PCT,
     STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
@@ -8065,6 +8065,16 @@ class TradingEngine:
         candle_close: float,
     ) -> bool:
         """阻止異常拉砸期間的新倉；絕不觸發既有持倉的平倉。"""
+        now = time.time()
+        cooldowns = getattr(self.account, "_rapid_drop_cooldown", {})
+        cooldown_at = float(cooldowns.get(symbol) or 0.0) if isinstance(cooldowns, dict) else 0.0
+        if cooldown_at > 0.0 and now - cooldown_at < RAPID_DROP_COOLDOWN_SEC:
+            remaining = RAPID_DROP_COOLDOWN_SEC - (now - cooldown_at)
+            self.account.log(
+                f"🧊 {symbol} 大瀑布後冷卻中，暫停開{str(side).upper()} {remaining:.0f}秒",
+                "WARNING",
+            )
+            return False
         if not ABNORMAL_MARKET_GUARD_ENABLED:
             return True
         values = (price, atr, candle_open, candle_high, candle_low, candle_close)
@@ -8095,9 +8105,13 @@ class TradingEngine:
             reasons.append(f"K線振幅 {range_atr:.1f} ATR / {range_pct:.2%}")
         if adverse_impulse:
             reasons.append(f"逆向單根變動 {signed_move_pct:.2%}")
+        cooldowns = getattr(self.account, "_rapid_drop_cooldown", None)
+        if isinstance(cooldowns, dict):
+            cooldowns[symbol] = time.time()
         self.account.log(
             f"🛡️ {symbol} 異常拉砸／流動性風險，暫停新開{requested}："
-            + "；".join(reasons),
+            + "；".join(reasons)
+            + f"；進入{RAPID_DROP_COOLDOWN_SEC:.0f}秒冷卻",
             "WARNING",
         )
         return False
