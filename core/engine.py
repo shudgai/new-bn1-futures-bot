@@ -7755,6 +7755,31 @@ class TradingEngine:
             except (TypeError, ValueError, KeyError, IndexError):
                 return False
 
+        def trend_resuming(side: str) -> bool:
+            """峰谷候選後若原方向重新恢復，不要提前下車。"""
+            try:
+                closed = frame.iloc[-5:-1]
+                ma3_values = pd.to_numeric(closed["ma3"], errors="coerce").dropna()
+                close_values = pd.to_numeric(closed["close"], errors="coerce").dropna()
+                middle = (upper + lower) / 2.0
+                if len(ma3_values) < 4 or len(close_values) < 4:
+                    return False
+                ma3_recent = ma3_values.iloc[-3:]
+                close_recent = close_values.iloc[-3:]
+                if side == "LONG":
+                    return bool(
+                        ma3_recent.iloc[0] < ma3_recent.iloc[1] < ma3_recent.iloc[2]
+                        and close_recent.iloc[0] < close_recent.iloc[1] < close_recent.iloc[2]
+                        and price >= middle
+                    )
+                return bool(
+                    ma3_recent.iloc[0] > ma3_recent.iloc[1] > ma3_recent.iloc[2]
+                    and close_recent.iloc[0] > close_recent.iloc[1] > close_recent.iloc[2]
+                    and price <= middle
+                )
+            except (TypeError, ValueError, KeyError, IndexError):
+                return False
+
         if held_side == "LONG":
             # 多單反向跌回下方 KC 外側先平倉；下一輪確認下跌外側趨勢後再追空。
             if price <= lower:
@@ -7763,7 +7788,7 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
             # 順勢多單只在上方 KC 外軌形成真正峰谷時平倉。
             # 持倉只在對側KC外軌形成真正峰谷時平倉；不因回到通道或原外軌失效提前退出。
-            if closed_ma3_peak or live_confirmed_outer_turn("LONG"):
+            if (closed_ma3_peak or live_confirmed_outer_turn("LONG")) and not trend_resuming("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_PEAK_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
@@ -7773,7 +7798,7 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
             if chop_timeout_exit("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
-            if closed_ma3_trough or live_confirmed_outer_turn("SHORT"):
+            if (closed_ma3_trough or live_confirmed_outer_turn("SHORT")) and not trend_resuming("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_VALLEY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
