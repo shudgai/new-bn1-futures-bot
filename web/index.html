@@ -173,7 +173,7 @@
             display: flex; justify-content: center; align-items: center;
         }
         .chart-modal {
-            background: #fff; width: 90%; max-width: 1000px; border-radius: 12px;
+            background: #fff; width: 96%; max-width: 1800px; border-radius: 12px;
             box-shadow: 0 10px 25px rgba(0,0,0,0.2); overflow: hidden;
             display: flex; flex-direction: column;
         }
@@ -189,8 +189,11 @@
         .market-mode-trend { background:#dbeafe; color:#1d4ed8; }
         .market-mode-wait { background:#e2e8f0; color:#475569; }
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
-        .chart-modal-body { padding: 16px; height: 500px; width: 100%; position: relative; }
-        .chart-container { width: 100%; height: 100%; }
+        .chart-modal-body { padding: 16px; height: 560px; width: 100%; position: relative; }
+        .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+        .chart-pane-header { height: 38px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 800; }
+        .chart-container { width: 100%; height: calc(100% - 38px); }
         .chart-status-overlay {
             position: absolute; inset: 0; z-index: 2;
             display: flex; justify-content: center; align-items: center;
@@ -215,6 +218,7 @@
             .chart-modal-header { padding: 12px 14px; }
             .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
             .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
+            .chart-grid { grid-template-columns: 1fr; }
         }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
@@ -534,13 +538,12 @@
                 </div>
             </div>
         </div>
-    <!-- K 線圖：僅在點選幣種時開啟，不占用右側欄位 -->
+    <!-- K 線圖：桌面顯示兩幣並排，手機維持點選幣種單圖 -->
     <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
-        <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" :aria-label="chartModal.symbol + ' K線圖'">
+        <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" aria-label="K線圖">
             <div class="chart-modal-header">
                 <div class="chart-modal-title">
-                    📈 {{ chartModal.symbol }} K線圖
-                    <span class="market-mode-badge" :class="'market-mode-' + chartMarketMode.toLowerCase()">市場：{{ chartMarketLabel }}</span>
+                    📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
                     <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
@@ -550,10 +553,16 @@
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
             </div>
-            <div class="chart-modal-body">
-                <div id="tv-chart" class="chart-container"></div>
-                <div v-if="chartModal.loading" class="chart-status-overlay" style="color:var(--muted)">載入中...</div>
-                <div v-else-if="chartModal.error" class="chart-status-overlay" style="color:var(--down)">{{ chartModal.error }}</div>
+            <div class="chart-modal-body chart-grid">
+                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane">
+                    <div class="chart-pane-header">
+                        <span>{{ symbol }}</span>
+                        <span class="market-mode-badge" :class="'market-mode-' + getChartMarketMode(symbol).toLowerCase()">市場：{{ getChartMarketLabel(symbol) }}</span>
+                    </div>
+                    <div :id="'tv-chart-' + index" class="chart-container"></div>
+                    <div v-if="chartModal.states[symbol] && chartModal.states[symbol].loading" class="chart-status-overlay" style="color:var(--muted)">載入中...</div>
+                    <div v-else-if="chartModal.states[symbol] && chartModal.states[symbol].error" class="chart-status-overlay" style="color:var(--down)">{{ chartModal.states[symbol].error }}</div>
+                </section>
             </div>
         </div>
     </div>
@@ -569,8 +578,8 @@
                 chartModal: {
                     show: false,
                     symbol: "",
-                    loading: false,
-                    error: "",
+                    symbols: [],
+                    states: {},
                 },
                 isProcessing: false,
                 isTogglingBot: false,
@@ -698,54 +707,51 @@
             methods: {
 
             openChartModal(symbol) {
-                if (this._chart && this.chartModal.symbol === symbol) {
-                    this.fetchChartData(symbol);
-                    return;
-                }
+                this.destroyCharts();
+                const desktop = window.matchMedia('(min-width: 861px)').matches;
+                const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
+                const symbols = [symbol, ...available.filter(item => item !== symbol)]
+                    .filter(Boolean)
+                    .slice(0, desktop ? 2 : 1);
                 this.chartModal.symbol = symbol;
+                this.chartModal.symbols = symbols;
+                this.chartModal.states = Object.fromEntries(
+                    symbols.map(item => [item, { loading: true, error: '' }])
+                );
                 this.chartModal.show = true;
-                this.chartModal.loading = true;
-                this.chartModal.error = "";
-                
+
                 // Wait for DOM to render the modal container
                 this.$nextTick(() => {
-                    try {
-                        this.initChart();
-                        this.fetchChartData(symbol);
-                    } catch (e) {
-                        this.chartModal.error = "圖表初始化失敗: " + e.message;
-                        this.chartModal.loading = false;
-                    }
+                    symbols.forEach((item, index) => {
+                        try {
+                            this.initChart(item, index);
+                            this.fetchChartData(item);
+                        } catch (e) {
+                            this.chartModal.states[item].error = "圖表初始化失敗: " + e.message;
+                            this.chartModal.states[item].loading = false;
+                        }
+                    });
                 });
             },
+            destroyCharts() {
+                Object.values(this._charts || {}).forEach(ctx => {
+                    if (ctx.abortController) ctx.abortController.abort();
+                    if (ctx.resizeObserver) ctx.resizeObserver.disconnect();
+                    try { if (ctx.chart) ctx.chart.remove(); } catch (e) {}
+                });
+                this._charts = {};
+            },
             closeChartModal() {
-                if (this._chartAbortController) {
-                    this._chartAbortController.abort();
-                    this._chartAbortController = null;
-                }
                 try {
                     if (document.fullscreenElement && this.$refs.chartCard && document.fullscreenElement === this.$refs.chartCard) {
                         document.exitFullscreen().catch(() => {});
                     }
                 } catch(e) {}
+                this.destroyCharts();
                 this.chartModal.show = false;
+                this.chartModal.symbols = [];
+                this.chartModal.states = {};
                 this.chartFullscreen = false;
-                if (this._chartResizeObserver) {
-                    this._chartResizeObserver.disconnect();
-                    this._chartResizeObserver = null;
-                }
-                if (this._chart) {
-                    try {
-                        this._chart.remove();
-                    } catch(e) {}
-                    this._chart = null;
-                }
-                this._candlestickSeries = null;
-                this._lastCandle = null;
-                this._chartHistorySignature = null;
-                this._chartMarkerSignature = null;
-                this._chartFailureCount = 0;
-                this._chartNextRetryAt = 0;
             },
             async toggleChartFullscreen() {
                 const card = this.$refs.chartCard;
@@ -757,20 +763,16 @@
                         await document.exitFullscreen();
                     }
                 } catch (e) {
-                    this.chartModal.error = "無法切換全螢幕: " + e.message;
+                    const state = this.chartModal.states[this.chartModal.symbol];
+                    if (state) state.error = "無法切換全螢幕: " + e.message;
                 }
             },
-            initChart() {
-                const container = document.getElementById('tv-chart');
+            initChart(symbol, index) {
+                const container = document.getElementById('tv-chart-' + index);
                 if (!container) return;
                 if (!window.LightweightCharts) {
                     throw new Error('本機圖表元件未載入；交易功能不受影響，請重新整理頁面');
                 }
-                
-                if (this._chart) {
-                    this._chart.remove();
-                }
-                this._chartRequestHasFit = false;
 
                 const chartTimeToDate = (time) => {
                     if (typeof time === "number") return new Date(time * 1000);
@@ -795,7 +797,7 @@
                     hour: "2-digit", minute: "2-digit", hourCycle: "h23",
                 });
                 
-                this._chart = LightweightCharts.createChart(container, {
+                const chart = LightweightCharts.createChart(container, {
                     layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
                     grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -818,36 +820,51 @@
                     },
                 });
                 
-                this._candlestickSeries = this._chart.addCandlestickSeries({
+                const ctx = {
+                    chart,
+                    requestHasFit: false,
+                    fetchInFlight: false,
+                    abortController: null,
+                    resizeObserver: null,
+                    lastCandle: null,
+                    historySignature: null,
+                    markerSignature: null,
+                    failureCount: 0,
+                    nextRetryAt: 0,
+                };
+                ctx.candlestickSeries = chart.addCandlestickSeries({
                     upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
                     wickUpColor: '#10b981', wickDownColor: '#ef4444',
                     lastValueVisible: false, priceLineVisible: false
                 });
-                this._ma3Series = this._chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
-                this._ma15Series = this._chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
-                this._ma99Series = this._chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
-                this._kcUpperSeries = this._chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
-                this._kcMiddleSeries = this._chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
-                this._kcLowerSeries = this._chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
+                ctx.ma3Series = chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
+                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
+                ctx.ma99Series = chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
+                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
+                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
+                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
+                this._charts = this._charts || {};
+                this._charts[symbol] = ctx;
 
-                if (this._chartResizeObserver) this._chartResizeObserver.disconnect();
                 if (window.ResizeObserver) {
-                    this._chartResizeObserver = new ResizeObserver(entries => {
+                    ctx.resizeObserver = new ResizeObserver(entries => {
                         const rect = entries[0]?.contentRect;
-                        if (rect && this._chart && rect.width > 0 && rect.height > 0) {
-                            this._chart.applyOptions({ width: rect.width, height: rect.height });
+                        if (rect && ctx.chart && rect.width > 0 && rect.height > 0) {
+                            ctx.chart.applyOptions({ width: rect.width, height: rect.height });
                         }
                     });
-                    this._chartResizeObserver.observe(container);
+                    ctx.resizeObserver.observe(container);
                 }
             },
             async fetchChartData(symbol) {
-                if (!symbol || !this._chart || symbol !== this.chartModal.symbol) return;
-                if (this._chartFetchInFlight) return;
-                if (Date.now() < (this._chartNextRetryAt || 0)) return;
-                this._chartFetchInFlight = true;
+                const ctx = (this._charts || {})[symbol];
+                const state = this.chartModal.states[symbol];
+                if (!symbol || !ctx || !state || !this.chartModal.symbols.includes(symbol)) return;
+                if (ctx.fetchInFlight) return;
+                if (Date.now() < (ctx.nextRetryAt || 0)) return;
+                ctx.fetchInFlight = true;
                 const controller = new AbortController();
-                this._chartAbortController = controller;
+                ctx.abortController = controller;
                 const timeoutId = setTimeout(() => controller.abort(), 8000);
                 try {
                     const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, {
@@ -857,7 +874,7 @@
                     const json = await res.json();
                     if (!Array.isArray(json.data) || json.data.length === 0) throw new Error('K 線資料為空');
                     // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
-                    if (!this._chart || symbol !== this.chartModal.symbol) return;
+                    if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
                     const candles = [];
                     const ma3 = [];
@@ -899,67 +916,84 @@
                     const referencePrice = Number(candles[candles.length - 1]?.close || 0);
                     const precision = referencePrice < 0.01 ? 8 : referencePrice < 1 ? 6 : referencePrice < 100 ? 4 : 2;
                     const priceFormat = { type: 'price', precision, minMove: 10 ** -precision };
-                    [this._candlestickSeries, this._ma3Series, this._ma15Series, this._ma99Series,
-                     this._kcUpperSeries, this._kcMiddleSeries, this._kcLowerSeries]
+                    [ctx.candlestickSeries, ctx.ma3Series, ctx.ma15Series, ctx.ma99Series,
+                     ctx.kcUpperSeries, ctx.kcMiddleSeries, ctx.kcLowerSeries]
                         .forEach(series => series.applyOptions({ priceFormat }));
 
                     // 只有歷史 K 棒真的前進時才整批重畫；同一根即時 K 棒只做
                     // update，避免每次輪詢造成整張圖閃爍與視窗位置跳動。
                     const previousBarTime = candles.length > 1 ? candles[candles.length - 2].time : 0;
                     const historySignature = `${symbol}:${candles.length}:${previousBarTime}`;
-                    const fullRefresh = this._chartHistorySignature !== historySignature;
+                    const fullRefresh = ctx.historySignature !== historySignature;
                     if (fullRefresh) {
-                        this._candlestickSeries.setData(candles);
-                        this._ma3Series.setData(ma3);
-                        this._ma15Series.setData(ma15);
-                        this._ma99Series.setData(ma99);
-                        this._kcUpperSeries.setData(kcUpper);
-                        this._kcMiddleSeries.setData(kcMiddle);
-                        this._kcLowerSeries.setData(kcLower);
-                        this._chartHistorySignature = historySignature;
+                        ctx.candlestickSeries.setData(candles);
+                        ctx.ma3Series.setData(ma3);
+                        ctx.ma15Series.setData(ma15);
+                        ctx.ma99Series.setData(ma99);
+                        ctx.kcUpperSeries.setData(kcUpper);
+                        ctx.kcMiddleSeries.setData(kcMiddle);
+                        ctx.kcLowerSeries.setData(kcLower);
+                        ctx.historySignature = historySignature;
                     } else {
-                        this._candlestickSeries.update(candles[candles.length - 1]);
+                        ctx.candlestickSeries.update(candles[candles.length - 1]);
                         [
-                            [this._ma3Series, ma3], [this._ma15Series, ma15],
-                            [this._ma99Series, ma99], [this._kcUpperSeries, kcUpper],
-                            [this._kcMiddleSeries, kcMiddle], [this._kcLowerSeries, kcLower],
+                            [ctx.ma3Series, ma3], [ctx.ma15Series, ma15],
+                            [ctx.ma99Series, ma99], [ctx.kcUpperSeries, kcUpper],
+                            [ctx.kcMiddleSeries, kcMiddle], [ctx.kcLowerSeries, kcLower],
                         ].forEach(([series, values]) => {
                             if (values.length > 0) series.update(values[values.length - 1]);
                         });
                     }
-                    if (candles.length > 0) this._lastCandle = candles[candles.length - 1];
+                    if (candles.length > 0) ctx.lastCandle = candles[candles.length - 1];
                     const chartMarkers = tradeMarkers.sort((a, b) => a.time - b.time);
                     const markerSignature = JSON.stringify(chartMarkers);
-                    if (this._chartMarkerSignature !== markerSignature) {
-                        this._candlestickSeries.setMarkers(chartMarkers);
-                        this._chartMarkerSignature = markerSignature;
+                    if (ctx.markerSignature !== markerSignature) {
+                        ctx.candlestickSeries.setMarkers(chartMarkers);
+                        ctx.markerSignature = markerSignature;
                     }
                     
-                    if (!this._chartRequestHasFit) {
-                        this._chart.timeScale().fitContent();
-                        this._chartRequestHasFit = true;
+                    if (!ctx.requestHasFit) {
+                        ctx.chart.timeScale().fitContent();
+                        ctx.requestHasFit = true;
                     }
-                    this._chartFailureCount = 0;
-                    this._chartNextRetryAt = 0;
-                    this.chartModal.error = "";
-                    this.chartModal.loading = false;
+                    ctx.failureCount = 0;
+                    ctx.nextRetryAt = 0;
+                    state.error = "";
+                    state.loading = false;
                 } catch (e) {
-                    if (symbol === this.chartModal.symbol) {
-                        this._chartFailureCount = (this._chartFailureCount || 0) + 1;
-                        const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(this._chartFailureCount, 5)));
-                        this._chartNextRetryAt = Date.now() + retryDelay;
+                    if (this.chartModal.symbols.includes(symbol)) {
+                        ctx.failureCount = (ctx.failureCount || 0) + 1;
+                        const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(ctx.failureCount, 5)));
+                        ctx.nextRetryAt = Date.now() + retryDelay;
                         const message = e.name === 'AbortError' ? 'K 線請求逾時，正在自動重試' : e.message;
-                        if (!this._lastCandle) this.chartModal.error = message;
+                        if (!ctx.lastCandle) state.error = message;
                         console.warn('Chart refresh failed; trading UI remains active:', message);
-                        this.chartModal.loading = false;
+                        state.loading = false;
                     }
                 } finally {
                     clearTimeout(timeoutId);
-                    if (this._chartAbortController === controller) this._chartAbortController = null;
-                    this._chartFetchInFlight = false;
+                    if (ctx.abortController === controller) ctx.abortController = null;
+                    ctx.fetchInFlight = false;
                 }
             },
 
+                getChartMarketMode(symbol) {
+                    const rawMode = String(
+                        ((this.bot.market_modes || {})[symbol]) || 'WAIT'
+                    ).toUpperCase();
+                    return ['BULL', 'BEAR', 'RANGE', 'TREND'].includes(rawMode)
+                        ? rawMode
+                        : 'WAIT';
+                },
+                getChartMarketLabel(symbol) {
+                    return {
+                        BULL: '牛市',
+                        BEAR: '熊市',
+                        RANGE: '盤整市',
+                        TREND: '趨勢確認中',
+                        WAIT: '等待判定',
+                    }[this.getChartMarketMode(symbol)];
+                },
                 getLeverage(symbol) {
                     return (this.bot.leverage_map && this.bot.leverage_map[symbol]) || this.bot.leverage;
                 },
@@ -1076,21 +1110,6 @@
                         if (data.market_modes) this.bot.market_modes = data.market_modes;
                         if (data.tickers) {
                             this.bot.tickers = data.tickers;
-                            // ticker 只更新價格與持倉；K 線由 5 秒增量請求更新，避免 500ms 重畫閃爍
-                            if (false && this.chartModal.show && this.chartModal.symbol && this._candlestickSeries && this._lastCandle) {
-                                const currentPrice = this.getCurrPrice(this.chartModal.symbol);
-                                if (currentPrice !== null && currentPrice !== undefined) {
-                                    this._lastCandle.close = currentPrice;
-                                    if (currentPrice > this._lastCandle.high) this._lastCandle.high = currentPrice;
-                                    if (currentPrice < this._lastCandle.low) this._lastCandle.low = currentPrice;
-                                    try {
-                                        this._candlestickSeries.update(this._lastCandle);
-                                    } catch (chartError) {
-                                        // 圖表繪製失敗只能影響圖表，不得中斷持倉、損益與交易狀態更新。
-                                        console.warn('Chart tick update failed; live trading data continues:', chartError);
-                                    }
-                                }
-                            }
                         }
                         if (data.positions) this.bot.positions = data.positions;
                         if (data.balance !== undefined) this.bot.balance = data.balance;
@@ -1194,19 +1213,20 @@
                 document.addEventListener('fullscreenchange', () => {
                     this.chartFullscreen = document.fullscreenElement === this.$refs.chartCard;
                     this.$nextTick(() => {
-                        const container = document.getElementById('tv-chart');
-                        if (container && this._chart) {
-                            this._chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
-                        }
+                        this.chartModal.symbols.forEach((symbol, index) => {
+                            const container = document.getElementById('tv-chart-' + index);
+                            const ctx = (this._charts || {})[symbol];
+                            if (container && ctx?.chart) {
+                                ctx.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+                            }
+                        });
                     });
                 });
                 this.fetchStatus();
                 setInterval(this.fetchStatus, 3000);  // 完整狀態（logs/trades）每 3 秒
                 setInterval(this.fetchPrices, 500);   // 現價與持倉每 0.5 秒，提升即時反應感
                 setInterval(() => {
-                    if (this.chartModal.symbol && this._chart) {
-                        this.fetchChartData(this.chartModal.symbol);
-                    }
+                    this.chartModal.symbols.forEach(symbol => this.fetchChartData(symbol));
                 }, 5000); // 後端 K 線快取為 5 秒；現價仍由 0.5 秒輪詢增量更新
             }
         }).mount('#app');
