@@ -8333,7 +8333,10 @@ class TradingEngine:
                     exit_net_profitable=channel_exit_net_profitable,
                     entry_kc_upper=existing_pos.get("entry_kc_upper") if existing_pos else None,
                     entry_kc_lower=existing_pos.get("entry_kc_lower") if existing_pos else None,
-                    entry_outer_chase=bool(existing_pos.get("outer_chase_entry")) if existing_pos else False,
+                    entry_outer_chase=bool(
+                        existing_pos.get("outer_chase_entry")
+                        or "live KC outer break" in str(existing_pos.get("reason") or "")
+                    ) if existing_pos else False,
                 )
                 # Channel Swing 正常持倉不套用固定金額或比例停損；
                 # 急速逆向大瀑布保護由帳戶層負責。
