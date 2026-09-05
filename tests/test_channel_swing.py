@@ -2985,8 +2985,8 @@ def test_instant_inner_reentry_long_first_candle_opens_outside():
     assert action_data['side'] == 'LONG'
     assert action_data['reason'] == 'LIVE_INNER_REENTRY_LONG'
 
-def test_single_strong_candle_unlocks_chop_wait():
-    """Test that a single strong candle crossing the middle band unlocks CHOP_WAIT early."""
+def test_single_strong_candle_does_not_unlock_chop_wait():
+    """單根強K仍不足以解除盤整鎖定，避免空手追入錯向。"""
     import pandas as pd
     from core.engine import TradingEngine
     data = []
@@ -2996,8 +2996,8 @@ def test_single_strong_candle_unlocks_chop_wait():
     data.append({'open': 102, 'close': 102, 'high': 103, 'low': 101, 'ma3': 101, 'ma15': 100, 'kc_upper': 105, 'kc_lower': 95, 'volume': 100, 'vol_ma_20': 100})
     df = pd.DataFrame(data)
     chop_state = TradingEngine._channel_chop_state(df)
-    assert chop_state['clear_direction'] == 'LONG'
-    assert chop_state['reason'] == 'DIRECTION_CLEAR'
+    assert chop_state['clear_direction'] is None
+    assert chop_state['reason'] == 'CHOP_WAIT'
 def test_channel_short_exits_when_price_returns_above_upper_rail():
     frame = _channel_frame(lower=99.0, upper=101.0)
     result = TradingEngine._channel_swing_action(

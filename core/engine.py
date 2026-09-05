@@ -6921,9 +6921,12 @@ class TradingEngine:
             and latest_body >= latest_width * 0.25
             and float(latest["ma3"]) < float(latest["ma15"])
         )
+        # 盤整票達兩票以上時，單根強K不算局勢明朗；
+        # 必須等連續三根方向與效率確認，空手才可重新開倉。
         clear_direction = (
-            "LONG" if clear_long or strong_long
-            else "SHORT" if clear_short or strong_short else None
+            "LONG" if clear_long
+            else "SHORT" if clear_short
+            else None
         )
         near_chop_votes = sum((
             ma_crosses >= 2,
