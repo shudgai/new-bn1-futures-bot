@@ -5444,6 +5444,57 @@ class TradingEngine:
         }
 
     @staticmethod
+    def _channel_outer_continuation_entry_action(
+        frame: pd.DataFrame, live_price: float, max_bars: int = 4,
+    ) -> dict:
+        """Allow a delayed chase within four bars after a confirmed outer trough/peak."""
+        required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
+        if frame is None or len(frame) < 7 or not required.issubset(frame.columns):
+            return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
+        try:
+            closed = frame.iloc[:-1].dropna(subset=list(required)).copy()
+            price = float(live_price)
+            upper = float(frame.iloc[-1]["kc_upper"])
+            lower = float(frame.iloc[-1]["kc_lower"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
+        if len(closed) < 6 or not all(math.isfinite(v) for v in (price, upper, lower)):
+            return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
+        start = max(1, len(closed) - max(2, int(max_bars)) - 1)
+        for pos in range(start, len(closed) - 2):
+            candidate = closed.iloc[pos]
+            follow = closed.iloc[pos + 1:]
+            if len(follow) < 2 or len(follow) > max_bars:
+                continue
+            closes = follow["close"].astype(float).tolist()
+            ma3 = follow["ma3"].astype(float).tolist()
+            if (
+                float(candidate["low"]) <= float(candidate["kc_lower"])
+                and all(closes[i] > closes[i - 1] for i in range(1, len(closes)))
+                and all(ma3[i] > ma3[i - 1] for i in range(1, len(ma3)))
+                and price > float(candidate["high"])
+            ):
+                return {
+                    "action": "ENTER", "side": "LONG",
+                    "reason": "KC_OUTER_CONTINUATION_LONG_4BAR",
+                    "kc_upper": upper, "kc_lower": lower,
+                    "turn_low": float(candidate["low"]), "turn_high": None,
+                }
+            if (
+                float(candidate["high"]) >= float(candidate["kc_upper"])
+                and all(closes[i] < closes[i - 1] for i in range(1, len(closes)))
+                and all(ma3[i] < ma3[i - 1] for i in range(1, len(ma3)))
+                and price < float(candidate["low"])
+            ):
+                return {
+                    "action": "ENTER", "side": "SHORT",
+                    "reason": "KC_OUTER_CONTINUATION_SHORT_4BAR",
+                    "kc_upper": upper, "kc_lower": lower,
+                    "turn_low": None, "turn_high": float(candidate["high"]),
+                }
+        return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
+
+    @staticmethod
     def _channel_outer_uptrend_entry_action(
         frame: pd.DataFrame, live_price: float, pending: dict | None = None,
     ) -> dict:
@@ -8495,6 +8546,10 @@ class TradingEngine:
                     if channel_action.get("action") != "ENTER":
                         channel_action = self._channel_closed_body_break_entry_action(
                             channel_df, channel_price,
+                        )
+                    if channel_action.get("action") != "ENTER":
+                        channel_action = self._channel_outer_continuation_entry_action(
+                            channel_df, channel_price, max_bars=4,
                         )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:

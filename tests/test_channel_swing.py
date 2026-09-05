@@ -11,6 +11,23 @@ from core.symbol_rotation import SymbolRotation
 def _channel_frame(lower: float=99.0, upper: float=101.0) -> pd.DataFrame:
     return pd.DataFrame({'open': [100.0] * 20, 'close': [100.0] * 20, 'high': [100.5] * 20, 'low': [99.5] * 20, 'ma3': [100.0] * 20, 'ma15': [100.0] * 20, 'volume': [150.0] * 20, 'vol_ma_20': [100.0] * 20, 'kc_lower': [lower] * 20, 'kc_upper': [upper] * 20})
 
+def test_outer_continuation_entry_chases_four_bars_after_trough_or_peak():
+    long_frame = _channel_frame()
+    long_frame.loc[long_frame.index[-5], ["low", "high", "close", "ma3"]] = [98.8, 99.5, 99.0, 99.0]
+    long_frame.loc[long_frame.index[-4:-1], ["close", "ma3"]] = [
+        [99.4, 99.2], [99.9, 99.5], [100.4, 99.9],
+    ]
+    long_result = TradingEngine._channel_outer_continuation_entry_action(long_frame, 100.8)
+    assert (long_result["action"], long_result["side"]) == ("ENTER", "LONG")
+
+    short_frame = _channel_frame()
+    short_frame.loc[short_frame.index[-5], ["low", "high", "close", "ma3"]] = [100.5, 101.2, 101.0, 101.0]
+    short_frame.loc[short_frame.index[-4:-1], ["close", "ma3"]] = [
+        [100.6, 100.8], [100.1, 100.5], [99.6, 100.0],
+    ]
+    short_result = TradingEngine._channel_outer_continuation_entry_action(short_frame, 99.2)
+    assert (short_result["action"], short_result["side"]) == ("ENTER", "SHORT")
+
 def test_channel_entry_requires_outer_touch_and_adjacent_break():
     long_frame = _channel_frame()
     long_frame.loc[long_frame.index[-2], ["open", "close", "high", "low"]] = [
