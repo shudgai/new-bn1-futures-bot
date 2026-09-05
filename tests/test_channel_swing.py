@@ -17,6 +17,7 @@ def test_outer_continuation_entry_chases_four_bars_after_trough_or_peak():
     long_frame.loc[long_frame.index[-4:-1], ["close", "ma3"]] = [
         [99.4, 99.2], [99.9, 99.5], [100.4, 99.9],
     ]
+    long_frame.loc[long_frame.index[-1], ["open", "close"]] = [100.4, 100.8]
     long_result = TradingEngine._channel_outer_continuation_entry_action(long_frame, 100.8)
     assert (long_result["action"], long_result["side"]) == ("ENTER", "LONG")
 
@@ -25,6 +26,7 @@ def test_outer_continuation_entry_chases_four_bars_after_trough_or_peak():
     short_frame.loc[short_frame.index[-4:-1], ["close", "ma3"]] = [
         [100.6, 100.8], [100.1, 100.5], [99.6, 100.0],
     ]
+    short_frame.loc[short_frame.index[-1], ["open", "close"]] = [99.6, 99.2]
     short_result = TradingEngine._channel_outer_continuation_entry_action(short_frame, 99.2)
     assert (short_result["action"], short_result["side"]) == ("ENTER", "SHORT")
 

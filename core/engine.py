@@ -5460,6 +5460,15 @@ class TradingEngine:
             return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
         if len(closed) < 6 or not all(math.isfinite(v) for v in (price, upper, lower)):
             return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
+        live = frame.iloc[-1]
+        try:
+            live_open = float(live["open"])
+            live_close = float(live["close"])
+            latest_closed_close = float(closed["close"].iloc[-1])
+        except (TypeError, ValueError, KeyError, IndexError):
+            return {"action": "WAIT", "side": None, "reason": "WAIT_OUTER_CONTINUATION"}
+        live_long_confirm = live_close > live_open and live_close >= latest_closed_close
+        live_short_confirm = live_close < live_open and live_close <= latest_closed_close
         start = max(1, len(closed) - max(2, int(max_bars)) - 1)
         for pos in range(start, len(closed) - 2):
             candidate = closed.iloc[pos]
@@ -5473,6 +5482,7 @@ class TradingEngine:
                 and all(closes[i] > closes[i - 1] for i in range(1, len(closes)))
                 and all(ma3[i] > ma3[i - 1] for i in range(1, len(ma3)))
                 and price > float(candidate["high"])
+                and live_long_confirm
             ):
                 return {
                     "action": "ENTER", "side": "LONG",
@@ -5485,6 +5495,7 @@ class TradingEngine:
                 and all(closes[i] < closes[i - 1] for i in range(1, len(closes)))
                 and all(ma3[i] < ma3[i - 1] for i in range(1, len(ma3)))
                 and price < float(candidate["low"])
+                and live_short_confirm
             ):
                 return {
                     "action": "ENTER", "side": "SHORT",
