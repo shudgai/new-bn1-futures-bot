@@ -19,6 +19,7 @@ from core.config import (
     AI_ADVISOR_WEIGHT,
     DEFAULT_SYMBOLS,
     MIN_SCORE_THRESHOLD,
+    DIRECTIONAL_MIN_SCORE,
     DIRECTIONAL_SIDE_COUNT,
     SYMBOL_CANDIDATE_POOL,
     SYMBOL_MARKET_SCAN_LIMIT,
@@ -255,11 +256,11 @@ class SymbolRotation:
         trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
         volatility_excluded: bool, history_quarantined: bool,
     ) -> bool:
-        # 輪替名單必須先確認 5m／1h 同向，避免只因成交量或24h漲跌幅把
-        # 短線反彈中的弱勢幣列為可交易候選。
+        # 輪替只建立監控池：只需先確認 1h 同向與 ATR 落在可交易區間；
+        # 5m ST、趨勢對齊與歷史績效留給進場與倉位層決定，避免監控池
+        # 因為過嚴的多週期條件把還沒轉向的候選提早排除。
         return (
-            st_5m_aligned
-            and st_1h_aligned
+            st_1h_aligned
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
             and not volatility_excluded
         )
@@ -753,7 +754,7 @@ class SymbolRotation:
             item for item in metrics
             if (
                 item.get("eligible")
-                and item.get("final_score", 0.0) >= MIN_SCORE_THRESHOLD
+                and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
                 and item.get("symbol") not in ENTRY_DISABLED_SYMBOLS
             )
         ]

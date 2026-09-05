@@ -3489,7 +3489,13 @@ class TradingEngine:
             desired_direction = 1 if str(side).upper() == "LONG" else -1
             signal_direction_5m = int(signal.get("st_direction_5m") or 0)
             signal_direction_1h = int(signal.get("st_direction_1h") or 0)
-            if signal_direction_5m != desired_direction or signal_direction_1h != desired_direction:
+            # 中性/尚未載入(0)不視為衝突；只有明確相反方向才取消開倉，
+            # 避免候選缺少該欄位（如 BTC 領先候選）時被誤判永遠擋下。
+            direction_conflict = (
+                (signal_direction_5m != 0 and signal_direction_5m != desired_direction)
+                or (signal_direction_1h != 0 and signal_direction_1h != desired_direction)
+            )
+            if direction_conflict:
                 self.account.log(
                     f"🛑 {symbol} {side} 多週期方向不一致（3m={signal_direction_5m}, 1h={signal_direction_1h}），取消開倉",
                     "WARNING",
@@ -4625,6 +4631,8 @@ class TradingEngine:
             "market_mode": self._channel_macro_market_mode(symbol),
             "wave_regime": "TREND",
             "trend_quality": self._directional_trend_quality(frame, price, side),
+            "st_direction_5m": int(row["st_direction"]) if "st_direction" in frame.columns else 0,
+            "st_direction_1h": int(getattr(self, "st_direction_1h_cache", {}).get(symbol) or 0),
             "reason": f"BTC 1m {side} 強脈衝，{symbol} 同向 KC 外軌跟隨",
         }
 
