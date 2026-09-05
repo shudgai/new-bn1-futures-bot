@@ -7755,49 +7755,7 @@ class TradingEngine:
             except (TypeError, ValueError, KeyError, IndexError):
                 return False
 
-        def confirmed_adverse_outer_break(side: str) -> bool:
-            """外側影線不平倉；需實體突破或已收盤外側且現價仍在外側。"""
-            try:
-                live_open = float(row["open"])
-                live_close = float(row["close"])
-                atr_now = float(row.get("atr") or 0.0)
-                body = abs(live_close - live_open)
-                threshold = max(
-                    atr_now * 0.15,
-                    (upper - lower) * 0.10,
-                    abs(price) * 0.0003,
-                )
-                prev = frame.iloc[-2]
-                prev_open = float(prev["open"])
-                prev_close = float(prev["close"])
-                prev_upper = float(prev["kc_upper"])
-                prev_lower = float(prev["kc_lower"])
-                if side == "LONG":
-                    live_confirmed = (
-                        price <= lower and live_close < live_open
-                        and live_close <= lower and body >= threshold
-                    )
-                    closed_confirmed = (
-                        prev_close <= prev_lower and prev_close < prev_open
-                        and price <= lower
-                    )
-                    return bool(live_confirmed or closed_confirmed)
-                live_confirmed = (
-                    price >= upper and live_close > live_open
-                    and live_close >= upper and body >= threshold
-                )
-                closed_confirmed = (
-                    prev_close >= prev_upper and prev_close > prev_open
-                    and price >= upper
-                )
-                return bool(live_confirmed or closed_confirmed)
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
         if held_side == "LONG":
-            # 多單反向跌回下方 KC 外側，需實體突破確認後才平倉。
-            if confirmed_adverse_outer_break("LONG"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_OUTER_ADVERSE_EXIT"}
             # 僅在持倉超過20分鐘且確定窄幅盤整時，才啟用保護性逾時平倉。
             if chop_timeout_exit("LONG"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
@@ -7808,9 +7766,6 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            # 空單若反向漲回上方 KC 外側，先平倉；下一輪若仍有上漲外側趨勢再追多。
-            if confirmed_adverse_outer_break("SHORT"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_OUTER_ADVERSE_EXIT"}
             # 僅在持倉超過20分鐘且確定窄幅盤整時，才啟用保護性逾時平倉。
             if chop_timeout_exit("SHORT"):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
