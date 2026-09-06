@@ -1456,7 +1456,11 @@ def test_tiny_live_adverse_candle_outside_rail_still_exits(side, live_open, pric
 
     result = TradingEngine._channel_swing_action(frame, price, side)
 
-    assert result["action"] == "HOLD"
+    assert result["action"] == "EXIT"
+    assert result["reason"] == (
+        "ADVERSE_KC_OUTER_EXIT_LONG"
+        if side == "LONG" else "ADVERSE_KC_OUTER_EXIT_SHORT"
+    )
 
 
 @pytest.mark.parametrize(

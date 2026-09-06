@@ -8213,7 +8213,7 @@ not all(math.isfinite(value) for value in (
                         "kc_upper": upper, "kc_lower": lower,
                         "reason": "TREND_FAILED_REVERSE_SHORT" + ("_ABNORMAL" if abnormal else ""),
                     }
-                return {"action": "HOLD", "side": None, "reason": "IGNORE_ADVERSE_FLUCTUATION_LONG"}
+                return {"action": "EXIT", "side": None, "reason": "ADVERSE_KC_OUTER_EXIT_LONG"}
             # ② 有利側峰頂三點平倉（原有邏輯）
             if (
                 exit_net_profitable
@@ -8234,7 +8234,7 @@ not all(math.isfinite(value) for value in (
                         "kc_upper": upper, "kc_lower": lower,
                         "reason": "TREND_FAILED_REVERSE_LONG" + ("_ABNORMAL" if abnormal else ""),
                     }
-                return {"action": "HOLD", "side": None, "reason": "IGNORE_ADVERSE_FLUCTUATION_SHORT"}
+                return {"action": "EXIT", "side": None, "reason": "ADVERSE_KC_OUTER_EXIT_SHORT"}
             # ② 有利側谷底三點平倉（原有邏輯）
             if (
                 exit_net_profitable
@@ -9281,9 +9281,13 @@ not all(math.isfinite(value) for value in (
                     if not self._touch_entry_math_favorable(
                         symbol, target_side, channel_df, channel_price,
                     ):
-                        action = "WAIT"
+                        action = "EXIT" if existing_pos and action == "REVERSE" else "WAIT"
                         target_side = None
-                        channel_action["reason"] = "ENTRY_NO_NET_PROFIT_ROOM"
+                        channel_action["reason"] = (
+                            "REVERSE_NO_NET_PROFIT_ROOM"
+                            if existing_pos and action == "EXIT"
+                            else "ENTRY_NO_NET_PROFIT_ROOM"
+                        )
                         self._record_channel_signal_event(
                             symbol, "ENTRY_NO_NET_PROFIT_ROOM", channel_df,
                         )
