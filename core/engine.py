@@ -7839,9 +7839,11 @@ class TradingEngine:
         price = float(live_price)
 
         try:
-            # Evaluate KC Macro Trend (Look back 4 candles to confirm direction)
+            # Evaluate KC Macro Trend (Look back further to confirm a long-term direction)
+            # The user noted that KC direction is a "very long line", so we increase the lookback.
+            macro_lookback = min(len(frame) - 2, 20)
             current = frame.iloc[-2]
-            anchor = frame.iloc[-6]
+            anchor = frame.iloc[-2 - macro_lookback]
             
             curr_upper = float(current["kc_upper"])
             curr_lower = float(current["kc_lower"])
