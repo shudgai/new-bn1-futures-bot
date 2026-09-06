@@ -7853,13 +7853,20 @@ class TradingEngine:
             mid_ma15 = float(midpoint["ma15"])
             anchor_ma15 = float(anchor["ma15"])
             
-            # Early Exit Data
-            if len(frame) > 22:
+            # Early Exit & Inflection Entry Data
+            if len(frame) > 32:
                 ma15_15_ago = float(frame.iloc[-2 - 15]["ma15"])
+                ma15_30_ago = float(frame.iloc[-2 - 30]["ma15"])
+                highest_high_20 = float(frame.iloc[-22:-2]["high"].max())
+                lowest_low_20 = float(frame.iloc[-22:-2]["low"].min())
+            elif len(frame) > 22:
+                ma15_15_ago = float(frame.iloc[-2 - 15]["ma15"])
+                ma15_30_ago = ma15_15_ago # Fallback
                 highest_high_20 = float(frame.iloc[-22:-2]["high"].max())
                 lowest_low_20 = float(frame.iloc[-22:-2]["low"].min())
             else:
                 ma15_15_ago = curr_ma15
+                ma15_30_ago = curr_ma15
                 highest_high_20 = float(current["high"])
                 lowest_low_20 = float(current["low"])
                 
@@ -7937,6 +7944,19 @@ class TradingEngine:
         has_peak = find_recent_turn(is_peak=True)
         has_trough = find_recent_turn(is_peak=False)
 
+        # Inflection Point Reversal Entry (抓拐點逆勢進場)
+        if len(frame) > 32:
+            # U-shape bottom -> LONG
+            if ma15_15_ago < ma15_30_ago and curr_ma15 > ma15_15_ago:
+                if curr_close > curr_ma3 > curr_ma15:
+                    return {"action": "ENTER", "side": "LONG", "reason": "KC_U_SHAPE_BOTTOM_INFLECTION"}
+            
+            # Inverted U-shape top -> SHORT
+            if ma15_15_ago > ma15_30_ago and curr_ma15 < ma15_15_ago:
+                if curr_close < curr_ma3 < curr_ma15:
+                    return {"action": "ENTER", "side": "SHORT", "reason": "KC_INVERTED_U_TOP_INFLECTION"}
+
+        # Macro Trend Pullback Entry (抓反彈順勢進場)
         # KC is pointing DOWN -> find a HIGH point (peak) to SHORT
         if kc_trend_down and has_peak:
             # Strict alignment filter to avoid deep V-shape reversals

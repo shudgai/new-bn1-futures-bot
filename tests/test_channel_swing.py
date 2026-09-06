@@ -104,3 +104,37 @@ def test_early_exit_structure_break():
     res = TradingEngine._channel_swing_action(df, spike_price, "SHORT")
     assert res["action"] == "EXIT"
     assert "STRUCTURE_BREAK_HIGH" in res["reason"]
+
+def test_inflection_point_entry_long():
+    df = _generate_macro_frame("DOWN", 70) # Was going down
+    # Force a U-shape bottom
+    # 30 ago (index 38) -> 15 ago (index 53) -> current (index 68)
+    df.loc[38, "ma15"] = 96.2
+    df.loc[53, "ma15"] = 94.7 # dropped
+    df.loc[68, "ma15"] = 95.0 # started curling up (95.0 > 94.7)
+    
+    # Ensure alignment filter passes (close > ma3 > ma15)
+    df.loc[68, "close"] = 95.5
+    df.loc[68, "ma3"] = 95.2
+    
+    res = TradingEngine._channel_swing_action(df, 95.5, None)
+    assert res["action"] == "ENTER"
+    assert res["side"] == "LONG"
+    assert "U_SHAPE" in res["reason"]
+
+def test_inflection_point_entry_short():
+    df = _generate_macro_frame("UP", 70) # Was going up
+    # Force an inverted U-shape top
+    # 30 ago (index 38) -> 15 ago (index 53) -> current (index 68)
+    df.loc[38, "ma15"] = 103.8
+    df.loc[53, "ma15"] = 105.3 # rose
+    df.loc[68, "ma15"] = 105.0 # started curving down (105.0 < 105.3)
+    
+    # Ensure alignment filter passes (close < ma3 < ma15)
+    df.loc[68, "close"] = 104.5
+    df.loc[68, "ma3"] = 104.8
+    
+    res = TradingEngine._channel_swing_action(df, 104.5, None)
+    assert res["action"] == "ENTER"
+    assert res["side"] == "SHORT"
+    assert "INVERTED_U_TOP" in res["reason"]
