@@ -7360,7 +7360,20 @@ class TradingEngine:
             and isinstance(peak_exit_info, dict)
         ):
             return action, entry_side, None
-        if str(peak_exit_info.get("side") or "").upper() != str(entry_side).upper():
+        exited_side = str(peak_exit_info.get("side") or "").upper()
+        if exited_side != str(entry_side).upper():
+            # 平倉後反向開倉必須由異常大幅反向 K 觸發；通道內普通反彈不反手。
+            try:
+                last_closed = frame.iloc[-2]
+                body = abs(float(last_closed["close"]) - float(last_closed["open"]))
+                kc_width = max(
+                    float(last_closed["kc_upper"]) - float(last_closed["kc_lower"]),
+                    1e-12,
+                )
+                if body < kc_width * 0.30:
+                    return "HOLD", None, "PEAK_EXIT_WAIT_ABNORMAL_REVERSE"
+            except (TypeError, ValueError, KeyError, IndexError):
+                return "HOLD", None, "PEAK_EXIT_WAIT_ABNORMAL_REVERSE"
             return action, entry_side, None
 
         strong_break_reasons = {

@@ -2130,6 +2130,23 @@ def test_peak_exit_reentry_requires_strong_outer_break_and_profit_space():
     ) == ("ENTER", "LONG", None)
 
 
+def test_peak_exit_reverse_requires_abnormal_candle_inside_channel():
+    frame = _channel_frame()
+    frame["atr"] = 1.0
+    peak_exit = {"side": "LONG", "bar_count": 4}
+
+    assert TradingEngine._channel_peak_exit_entry_gate(
+        "ENTER", False, "SHORT", "KC_OUTER_CONTINUATION_SHORT_4BAR",
+        frame, peak_exit,
+    ) == ("HOLD", None, "PEAK_EXIT_WAIT_ABNORMAL_REVERSE")
+
+    frame.loc[frame.index[-2], ["open", "close"]] = [100.0, 101.0]
+    assert TradingEngine._channel_peak_exit_entry_gate(
+        "ENTER", False, "SHORT", "KC_OUTER_CONTINUATION_SHORT_4BAR",
+        frame, peak_exit,
+    ) == ("ENTER", "SHORT", None)
+
+
 def test_channel_chop_gate_blocks_entry_and_turns_reverse_into_close_only():
     assert TradingEngine._channel_chop_gate('ENTER', 'LONG', True, False) == ('WAIT', None, 'CHOP_WAIT_NO_ENTRY')
     assert TradingEngine._channel_chop_gate('REVERSE', 'SHORT', True, True) == ('EXIT', None, 'CHOP_WAIT_CLOSE_ONLY')
