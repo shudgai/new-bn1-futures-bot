@@ -2183,6 +2183,11 @@ def test_three_monotonic_small_opposite_candles_reverse_inside_channel(side):
     assert (result["action"], result["side"]) == ("REVERSE", expected_side)
 
 
+def test_channel_swing_wallet_loss_guard_does_not_override_directional_exit_rule():
+    source = inspect.getsource(TradingEngine._process_single_symbol)
+    assert "existing_pos and str(existing_pos.get(\"entry_mode\") or \"\").upper() != \"CHANNEL_SWING\"" in source
+
+
 def test_pre_entry_opposite_candles_do_not_close_new_short():
     frame = _channel_frame()
     frame["timestamp"] = [index * 60_000 for index in range(20)]

@@ -8907,7 +8907,7 @@ not all(math.isfinite(value) for value in (
                 # 例外：當淨虧損超過錢包上限（CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT）時，
                 # 強制平倉以保護帳戶，防止持倉被鎖死於對側外軌趨勢中。
                 hard_loss_action = {"action": "HOLD"}
-                if existing_pos:
+                if existing_pos and str(existing_pos.get("entry_mode") or "").upper() != "CHANNEL_SWING":
                     _wallet_bal = float(getattr(self.account, "balance", 0.0))
                     hard_loss_action = self._channel_max_net_loss_action(
                         existing_pos, channel_price, _wallet_bal,
