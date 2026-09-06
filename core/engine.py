@@ -4826,11 +4826,8 @@ class TradingEngine:
 
     @staticmethod
     def _channel_entry_requires_profit_room(reason: str | None) -> bool:
-        """Live KC outer breaks are immediate; other entries need net room."""
-        return str(reason or "") not in {
-            "KC_LIVE_UPPER_BREAK_LONG",
-            "KC_LIVE_LOWER_BREAK_SHORT",
-        }
+        """All Channel Swing entries must have enough projected profit room."""
+        return True
 
     @staticmethod
     def _channel_recent_candles_whipsawing(
@@ -6542,6 +6539,15 @@ class TradingEngine:
         live_green = price > live_open
         c2_green = c2_close > c2_open
         c3_green = c3_close > c3_open
+
+        # 突破後只要目前仍站在上軌外且有利潤空間即可評估開多，
+        # 不再要求突破後第二根必須同色；利潤閘門由主流程統一檢查。
+        if price >= upper and live_green:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+            }
         
         # 1. 第一根就開：現價破軌，且破軌前(c2)也是同色K (若更前面c3也是同色，代表趨勢已成形)
         if price >= upper and c2_green and c3_green:
@@ -6579,6 +6585,15 @@ class TradingEngine:
         live_red = price < live_open
         c2_red = c2_close < c2_open
         c3_red = c3_close < c3_open
+
+        # 突破後只要目前仍站在下軌外且有利潤空間即可評估開空，
+        # 不再要求突破後第二根必須同色；利潤閘門由主流程統一檢查。
+        if price <= lower and live_red:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+            }
         
         # 1. 第一根就開：現價破軌，且破軌前(c2)也是同色K
         if price <= lower and c2_red and c3_red:
@@ -7854,7 +7869,14 @@ class TradingEngine:
         # 持倉時若反向強勢破軌，優先觸發立即反手，等同於空手時的破軌開倉
         if held_side in ("LONG", "SHORT"):
             breakout_action = TradingEngine._channel_immediate_outer_break_action(frame, price)
-            if breakout_action.get("action") == "ENTER" and breakout_action.get("side") != held_side:
+            live_body = abs(price - float(row["open"]))
+            live_kc_width = max(upper - lower, 1e-12)
+            strong_reverse_break = live_body >= live_kc_width * 0.30
+            if (
+                breakout_action.get("action") == "ENTER"
+                and breakout_action.get("side") != held_side
+                and strong_reverse_break
+            ):
                 breakout_action["action"] = "REVERSE"
                 return breakout_action
 

@@ -2079,6 +2079,22 @@ def test_entry_profit_room_gate_rejects_insufficient_atr_space():
     ) is True
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_outer_break_does_not_require_second_same_color_when_profit_is_checked(side):
+    frame = _channel_frame()
+    if side == "LONG":
+        frame.loc[frame.index[-1], ["open", "close"]] = [100.0, 101.2]
+        price = 101.2
+    else:
+        frame.loc[frame.index[-1], ["open", "close"]] = [100.0, 98.8]
+        price = 98.8
+
+    result = TradingEngine._channel_immediate_outer_break_action(frame, price)
+
+    assert (result["action"], result["side"]) == ("ENTER", side)
+    assert TradingEngine._channel_entry_requires_profit_room(result["reason"])
+
+
 def test_peak_exit_reentry_requires_strong_outer_break_and_profit_space():
     frame = _channel_frame()
     frame["atr"] = 0.01
