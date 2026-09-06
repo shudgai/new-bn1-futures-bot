@@ -2094,7 +2094,7 @@ def test_breakout_entries_use_atr_profit_gate():
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_outer_break_does_not_require_second_same_color_when_profit_is_checked(side):
+def test_outer_break_does_not_require_second_same_color_or_profit_room(side):
     frame = _channel_frame()
     if side == "LONG":
         frame.loc[frame.index[-1], ["open", "close"]] = [100.0, 101.2]
@@ -2106,7 +2106,7 @@ def test_outer_break_does_not_require_second_same_color_when_profit_is_checked(s
     result = TradingEngine._channel_immediate_outer_break_action(frame, price)
 
     assert (result["action"], result["side"]) == ("ENTER", side)
-    assert TradingEngine._channel_entry_requires_profit_room(result["reason"])
+    assert not TradingEngine._channel_entry_requires_profit_room(result["reason"])
 
 
 def test_peak_exit_reentry_requires_strong_outer_break_and_profit_space():

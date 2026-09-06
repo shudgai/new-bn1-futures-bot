@@ -4828,8 +4828,11 @@ class TradingEngine:
 
     @staticmethod
     def _channel_entry_requires_profit_room(reason: str | None) -> bool:
-        """All Channel Swing entries must have enough projected profit room."""
-        return True
+        """Immediate outer breaks are the explicit no-delay entry exception."""
+        return str(reason or "") not in {
+            "KC_LIVE_UPPER_BREAK_LONG",
+            "KC_LIVE_LOWER_BREAK_SHORT",
+        }
 
     @staticmethod
     def _channel_recent_candles_whipsawing(
@@ -7362,8 +7365,7 @@ class TradingEngine:
             return action, entry_side, None
         exited_side = str(peak_exit_info.get("side") or "").upper()
         if exited_side != str(entry_side).upper():
-            # 平倉後若已重新突破對應外軌，外軌突破本身就是強勢確認，
-            # 不需要再額外等待大 K；避免空方到下軌外後延遲到第三根才開空。
+            # 平倉後反向即時外軌突破仍可立即反手；獲利空間門檻只限制同向重開。
             if str(signal_reason or "") in {
                 "KC_LIVE_UPPER_BREAK_LONG",
                 "KC_LIVE_LOWER_BREAK_SHORT",
@@ -9157,11 +9159,17 @@ not all(math.isfinite(value) for value in (
                     "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
                 }
                 _profit_ok = True
-                if action == "ENTER" and _is_breakout_entry:
+                if (
+                    action == "ENTER"
+                    and _is_breakout_entry
+                    and self._channel_entry_requires_profit_room(
+                        channel_action.get("reason")
+                    )
+                ):
                     _profit_ok = self._touch_entry_math_favorable(
                         symbol, target_side, channel_df, channel_price,
                     )
-                elif action == "ENTER":
+                elif action == "ENTER" and not _is_breakout_entry:
                     _profit_ok = self._channel_entry_min_profit_ok(
                         action, bool(existing_pos), target_side, channel_price, channel_df,
                     )
