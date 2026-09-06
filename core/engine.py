@@ -4828,11 +4828,8 @@ class TradingEngine:
 
     @staticmethod
     def _channel_entry_requires_profit_room(reason: str | None) -> bool:
-        """Immediate outer breaks are the explicit no-delay entry exception."""
-        return str(reason or "") not in {
-            "KC_LIVE_UPPER_BREAK_LONG",
-            "KC_LIVE_LOWER_BREAK_SHORT",
-        }
+        """All KC outer entries must have enough projected profit room."""
+        return True
 
     @staticmethod
     def _channel_recent_candles_whipsawing(
