@@ -7840,21 +7840,23 @@ class TradingEngine:
 
         try:
             # Evaluate KC Macro Trend (Look back further to confirm a long-term direction)
-            # The user noted that KC direction is a "very long line", so we increase the lookback.
-            macro_lookback = min(len(frame) - 2, 20)
+            # Use a 60-candle window (1 hour on 1m chart) to confirm a "very long line" trend.
+            macro_lookback = min(len(frame) - 2, 60)
+            if macro_lookback < 10:
+                return {"action": "WAIT", "reason": "KC data insufficient for macro trend"}
+                
             current = frame.iloc[-2]
+            midpoint = frame.iloc[-2 - (macro_lookback // 2)]
             anchor = frame.iloc[-2 - macro_lookback]
             
-            curr_upper = float(current["kc_upper"])
-            curr_lower = float(current["kc_lower"])
             curr_ma15 = float(current["ma15"])
-            
-            anchor_upper = float(anchor["kc_upper"])
-            anchor_lower = float(anchor["kc_lower"])
+            mid_ma15 = float(midpoint["ma15"])
             anchor_ma15 = float(anchor["ma15"])
             
-            kc_trend_down = curr_upper < anchor_upper and curr_lower < anchor_lower and curr_ma15 < anchor_ma15
-            kc_trend_up = curr_upper > anchor_upper and curr_lower > anchor_lower and curr_ma15 > anchor_ma15
+            # A consistent long-term downward slope
+            kc_trend_down = curr_ma15 < mid_ma15 < anchor_ma15
+            # A consistent long-term upward slope
+            kc_trend_up = curr_ma15 > mid_ma15 > anchor_ma15
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
