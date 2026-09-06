@@ -2147,6 +2147,17 @@ def test_peak_exit_reverse_requires_abnormal_candle_inside_channel():
     ) == ("ENTER", "SHORT", None)
 
 
+def test_peak_exit_reversal_allows_fresh_lower_outer_break_without_large_candle():
+    frame = _channel_frame()
+    frame.loc[frame.index[-1], ["open", "close"]] = [99.2, 98.9]
+    peak_exit = {"side": "LONG", "bar_count": 1}
+
+    assert TradingEngine._channel_peak_exit_entry_gate(
+        "ENTER", False, "SHORT", "KC_LIVE_LOWER_BREAK_SHORT",
+        frame, peak_exit,
+    ) == ("ENTER", "SHORT", None)
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_three_monotonic_small_opposite_candles_reverse_inside_channel(side):
     frame = _channel_frame()
@@ -2170,6 +2181,22 @@ def test_three_monotonic_small_opposite_candles_reverse_inside_channel(side):
     result = TradingEngine._channel_swing_action(frame, price, side)
 
     assert (result["action"], result["side"]) == ("REVERSE", expected_side)
+
+
+def test_pre_entry_opposite_candles_do_not_close_new_short():
+    frame = _channel_frame()
+    frame["timestamp"] = [index * 60_000 for index in range(20)]
+    frame.loc[frame.index[-4:-1], ["open", "close", "ma3"]] = [
+        [99.0, 99.2, 99.0],
+        [99.2, 99.5, 99.2],
+        [99.5, 100.2, 99.5],
+    ]
+    result = TradingEngine._channel_swing_action(
+        frame, 100.2, "SHORT",
+        position_open_timestamp=frame["timestamp"].iloc[-2] / 1000.0 + 1.0,
+    )
+
+    assert result["action"] == "HOLD"
 
 
 def test_channel_chop_gate_blocks_entry_and_turns_reverse_into_close_only():

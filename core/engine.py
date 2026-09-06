@@ -7362,6 +7362,13 @@ class TradingEngine:
             return action, entry_side, None
         exited_side = str(peak_exit_info.get("side") or "").upper()
         if exited_side != str(entry_side).upper():
+            # 平倉後若已重新突破對應外軌，外軌突破本身就是強勢確認，
+            # 不需要再額外等待大 K；避免空方到下軌外後延遲到第三根才開空。
+            if str(signal_reason or "") in {
+                "KC_LIVE_UPPER_BREAK_LONG",
+                "KC_LIVE_LOWER_BREAK_SHORT",
+            }:
+                return action, entry_side, None
             # 平倉後反向開倉必須由異常大幅反向 K 觸發；通道內普通反彈不反手。
             try:
                 last_closed = frame.iloc[-2]
@@ -8122,6 +8129,10 @@ not all(math.isfinite(value) for value in (
                 last_3 = frame.iloc[-4:-1]
                 if len(last_3) < 3:
                     return False
+                if position_open_timestamp and "timestamp" in frame.columns:
+                    first_timestamp = float(last_3["timestamp"].iloc[0])
+                    if first_timestamp + 60_000.0 <= float(position_open_timestamp) * 1000.0:
+                        return False
                 last = last_3.iloc[-1]
                 middle = (float(last["kc_upper"]) + float(last["kc_lower"])) / 2.0
                 if side == "LONG":
@@ -8168,6 +8179,10 @@ not all(math.isfinite(value) for value in (
                 recent = frame.iloc[-4:-1]
                 if len(recent) < 3 or "ma3" not in recent.columns:
                     return False
+                if position_open_timestamp and "timestamp" in frame.columns:
+                    first_timestamp = float(recent["timestamp"].iloc[0])
+                    if first_timestamp + 60_000.0 <= float(position_open_timestamp) * 1000.0:
+                        return False
                 closes = [float(value) for value in recent["close"]]
                 ma3_values = [float(value) for value in recent["ma3"]]
                 middle = (float(recent["kc_upper"].iloc[-1]) + float(recent["kc_lower"].iloc[-1])) / 2.0
