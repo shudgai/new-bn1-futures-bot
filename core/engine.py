@@ -234,6 +234,8 @@ class TradingEngine:
         # KC 外軌趨勢追單採多空對稱：先確認既有趨勢品質，再由下一根
         # 突破候選極值；過熱時等待回踩／回抽外軌後重新突破。
         self._channel_outer_trend_wait: Dict[str, dict] = {}
+        # 突破初次出現但利潤空間不足時保留候選，後續達標再開倉。
+        self._channel_profit_wait_candidates: Dict[str, str] = {}
         # KC 內已形成短線趨勢的介面幣保留在牌面，直到趨勢失效或成交。
         self._channel_inner_trend_hold: Dict[str, str] = {}
         # ADX + MA3/MA15 距離的雙門檻狀態；預設 RANGE，需連續 3 根確認才進 TREND。
@@ -8143,21 +8145,17 @@ not all(math.isfinite(value) for value in (
                 return False
 
         if held_side == "LONG":
-            # ① 不利側觸及 或 趨勢明確失敗：提早平倉或反手
+            # ① 持倉中的逆向波動不作反應；只有異常強勢反向 K 才反手。
             if adverse_kc_outer_hit("LONG") or trend_failed("LONG"):
                 abnormal = is_abnormal_candle("LONG")
-                if strong_opposite_signal("LONG"):
+                if abnormal and strong_opposite_signal("LONG"):
                     # 空單已強勢 → 平多並反手開空
                     return {
                         "action": "REVERSE", "side": "SHORT",
                         "kc_upper": upper, "kc_lower": lower,
                         "reason": "TREND_FAILED_REVERSE_SHORT" + ("_ABNORMAL" if abnormal else ""),
                     }
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "TREND_FAILED_EXIT_LONG" + ("_ABNORMAL" if abnormal else ""),
-                }
+                return {"action": "HOLD", "side": None, "reason": "IGNORE_ADVERSE_FLUCTUATION_LONG"}
             # ② 有利側峰頂三點平倉（原有邏輯）
             if (
                 exit_net_profitable
@@ -8168,21 +8166,17 @@ not all(math.isfinite(value) for value in (
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            # ① 不利側觸及 或 趨勢明確失敗：提早平倉或反手
+            # ① 持倉中的逆向波動不作反應；只有異常強勢反向 K 才反手。
             if adverse_kc_outer_hit("SHORT") or trend_failed("SHORT"):
                 abnormal = is_abnormal_candle("SHORT")
-                if strong_opposite_signal("SHORT"):
+                if abnormal and strong_opposite_signal("SHORT"):
                     # 多單已強勢 → 平空並反手開多
                     return {
                         "action": "REVERSE", "side": "LONG",
                         "kc_upper": upper, "kc_lower": lower,
                         "reason": "TREND_FAILED_REVERSE_LONG" + ("_ABNORMAL" if abnormal else ""),
                     }
-                return {
-                    "action": "EXIT", "side": None,
-                    "kc_upper": upper, "kc_lower": lower,
-                    "reason": "TREND_FAILED_EXIT_SHORT" + ("_ABNORMAL" if abnormal else ""),
-                }
+                return {"action": "HOLD", "side": None, "reason": "IGNORE_ADVERSE_FLUCTUATION_SHORT"}
             # ② 有利側谷底三點平倉（原有邏輯）
             if (
                 exit_net_profitable
@@ -9092,24 +9086,49 @@ not all(math.isfinite(value) for value in (
                 )
                 if peak_entry_gate_reason:
                     channel_action["reason"] = peak_entry_gate_reason
-                # 進場前預估利潤門檻：現價到 KC 中軌的預估空間必須套得住雙邊手續費+滑點。
-                # 但注意：即時外軌突破（破軌追單）的目標不是中軌而是順勢發展，
-                # 若套用此公式會算出負利潤而被擋下。因此排除突破類訊號。
+                # 進場前預估利潤門檻：突破使用 ATR 延伸空間，其他入口使用
+                # 到 KC 中軌的保守空間；兩者都必須足以覆蓋交易成本。
                 _is_breakout_entry = channel_action.get("reason") in {
                     "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                     "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
                     "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
                 }
-                if (
-                    action == "ENTER"
-                    and not _is_breakout_entry
-                    and not self._channel_entry_min_profit_ok(
+                _profit_ok = True
+                if action == "ENTER" and _is_breakout_entry:
+                    _profit_ok = self._touch_entry_math_favorable(
+                        symbol, target_side, channel_df, channel_price,
+                    )
+                elif action == "ENTER":
+                    _profit_ok = self._channel_entry_min_profit_ok(
                         action, bool(existing_pos), target_side, channel_price, channel_df,
                     )
-                ):
+                if action == "ENTER" and not _profit_ok:
+                    if not existing_pos and target_side in ("LONG", "SHORT"):
+                        self._channel_profit_wait_candidates[symbol] = target_side
                     action = "HOLD"
                     target_side = None
                     channel_action["reason"] = "ENTRY_PROFIT_SPACE_TOO_SMALL"
+                elif not existing_pos:
+                    pending_side = self._channel_profit_wait_candidates.get(symbol)
+                    if pending_side in ("LONG", "SHORT") and action != "ENTER":
+                        current_upper = float(channel_df["kc_upper"].iloc[-1])
+                        current_lower = float(channel_df["kc_lower"].iloc[-1])
+                        still_outer = (
+                            pending_side == "LONG" and channel_price >= current_upper
+                        ) or (
+                            pending_side == "SHORT" and channel_price <= current_lower
+                        )
+                        if still_outer and self._touch_entry_math_favorable(
+                            symbol, pending_side, channel_df, channel_price,
+                        ):
+                            action = "ENTER"
+                            target_side = pending_side
+                            channel_action["reason"] = (
+                                "KC_LIVE_UPPER_BREAK_LONG"
+                                if pending_side == "LONG"
+                                else "KC_LIVE_LOWER_BREAK_SHORT"
+                            )
+                            self._channel_profit_wait_candidates.pop(symbol, None)
                 if (
                     action == "REVERSE"
                     and not self._channel_is_immediate_outer_rechase(

@@ -1437,7 +1437,7 @@ def test_tiny_live_adverse_candle_outside_rail_still_exits(side, live_open, pric
 
     result = TradingEngine._channel_swing_action(frame, price, side)
 
-    assert result["action"] == "EXIT"
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize(
@@ -2076,6 +2076,20 @@ def test_entry_profit_room_gate_rejects_insufficient_atr_space():
     frame["atr"] = max(0.0002, required_pct * 100.0 * 2.0)
     assert engine._touch_entry_math_favorable(
         "TEST/USDT", "LONG", frame, 100.0,
+    ) is True
+
+
+def test_breakout_entries_use_atr_profit_gate():
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.symbol_rotation = types.SimpleNamespace(volatility_stats={})
+    frame = _channel_frame()
+    frame["atr"] = 0.00001
+    assert engine._touch_entry_math_favorable(
+        "TEST/USDT", "LONG", frame, 101.0,
+    ) is False
+    frame["atr"] = 1.0
+    assert engine._touch_entry_math_favorable(
+        "TEST/USDT", "LONG", frame, 101.0,
     ) is True
 
 

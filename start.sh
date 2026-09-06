@@ -2,6 +2,14 @@
 # start.sh — Launch Binance Futures Bot 2.0 on Port 8006
 BIN="$(pwd)/.venv/bin"
 
+# Prevent a second supervisor/manual launch from creating a competing Uvicorn
+# process that repeatedly fights for the same API port.
+exec 9>"/tmp/binance-futures-bot.lock"
+if ! flock -n 9; then
+  echo "⚠️ Binance bot is already running; refusing duplicate start."
+  exit 0
+fi
+
 if [ -f .env ]; then
   set -o allexport
   source .env
