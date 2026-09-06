@@ -45,6 +45,8 @@ def test_macro_trend_entry_short_on_pullback():
     df.loc[66, "ma3"] = 93.0
     df.loc[67, "ma3"] = 93.5
     df.loc[68, "ma3"] = 93.1
+    df.loc[68, "close"] = 93.0
+    df.loc[68, "ma15"] = 93.2
     
     res = TradingEngine._channel_swing_action(df, 93.0, None)
     assert res["action"] == "ENTER"
@@ -57,6 +59,8 @@ def test_macro_trend_entry_long_on_pullback():
     df.loc[66, "ma3"] = 107.0
     df.loc[67, "ma3"] = 106.5
     df.loc[68, "ma3"] = 106.9
+    df.loc[68, "close"] = 107.0
+    df.loc[68, "ma15"] = 106.8
     
     res = TradingEngine._channel_swing_action(df, 107.0, None)
     assert res["action"] == "ENTER"

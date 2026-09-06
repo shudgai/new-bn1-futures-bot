@@ -7864,6 +7864,7 @@ class TradingEngine:
                 lowest_low_20 = float(current["low"])
                 
             curr_close = float(current["close"])
+            curr_ma3 = float(current["ma3"])
             curr_upper = float(current["kc_upper"])
             curr_lower = float(current["kc_lower"])
             
@@ -7938,11 +7939,14 @@ class TradingEngine:
 
         # KC is pointing DOWN -> find a HIGH point (peak) to SHORT
         if kc_trend_down and has_peak:
-            return {"action": "ENTER", "side": "SHORT", "reason": "KC_DOWN_TREND_PULLBACK_PEAK"}
+            # Strict alignment filter to avoid deep V-shape reversals
+            if curr_close < curr_ma3 < curr_ma15:
+                return {"action": "ENTER", "side": "SHORT", "reason": "KC_DOWN_TREND_PULLBACK_PEAK"}
             
         # KC is pointing UP -> find a LOW point (trough) to LONG
         if kc_trend_up and has_trough:
-            return {"action": "ENTER", "side": "LONG", "reason": "KC_UP_TREND_PULLBACK_TROUGH"}
+            if curr_close > curr_ma3 > curr_ma15:
+                return {"action": "ENTER", "side": "LONG", "reason": "KC_UP_TREND_PULLBACK_TROUGH"}
 
         return {
             "action": "WAIT", "side": None,
