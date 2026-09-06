@@ -680,6 +680,25 @@ def test_second_same_color_breakout_confirms_without_third_candle_color(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_live_outer_break_ignores_live_candle_color(side):
+    frame = _channel_frame()
+    if side == "LONG":
+        frame.loc[frame.index[-1], ["open", "close"]] = [101.0, 100.0]
+        price = 101.1
+        expected_reason = "KC_LIVE_UPPER_BREAK_LONG"
+    else:
+        frame.loc[frame.index[-1], ["open", "close"]] = [99.0, 100.0]
+        price = 98.9
+        expected_reason = "KC_LIVE_LOWER_BREAK_SHORT"
+
+    result = TradingEngine._channel_immediate_outer_break_action(frame, price)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", side, expected_reason,
+    )
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_third_candle_recovery_can_enter_after_first_breakout(side):
     frame = _channel_frame()
     if side == "LONG":

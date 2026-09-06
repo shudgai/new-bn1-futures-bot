@@ -6547,7 +6547,7 @@ class TradingEngine:
 
         # 突破後只要目前仍站在上軌外且有利潤空間即可評估開多，
         # 不再要求突破後第二根必須同色；利潤閘門由主流程統一檢查。
-        if price >= upper and live_green:
+        if price >= upper:
             return {
                 "action": "ENTER", "side": "LONG",
                 "reason": "KC_LIVE_UPPER_BREAK_LONG",
@@ -6593,7 +6593,7 @@ class TradingEngine:
 
         # 突破後只要目前仍站在下軌外且有利潤空間即可評估開空，
         # 不再要求突破後第二根必須同色；利潤閘門由主流程統一檢查。
-        if price <= lower and live_red:
+        if price <= lower:
             return {
                 "action": "ENTER", "side": "SHORT",
                 "reason": "KC_LIVE_LOWER_BREAK_SHORT",
