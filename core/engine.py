@@ -4829,6 +4829,8 @@ class TradingEngine:
     @staticmethod
     def _channel_entry_requires_profit_room(reason: str | None) -> bool:
         """All KC outer entries must have enough projected profit room."""
+        if reason in {"KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT"}:
+            return False
         return True
 
     @staticmethod
@@ -7828,404 +7830,94 @@ class TradingEngine:
         entry_outer_chase: bool = False,
     ) -> dict:
         import core.config as config
-        """Channel Swing 空手等待確認；持倉依逆向外軌或獲利側峰谷平倉。"""
-        required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
+        """KC Macro Trend Following Strategy"""
+        required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
-        row = frame.iloc[-1]
+        
         held_side = str(current_side or "").upper()
-        # 空手進場：-2 是已收盤候選 K，-1 是緊接的即時確認 K；盤中一破
-        # 候選高/低就立即進場，下一根若先破反方向極值則取消。
-        # 持倉出場仍使用 -3 候選與 -2 已收盤確認，避免未收盤雜訊提早平倉。
-        signal_pos = len(frame) - (3 if held_side in ("LONG", "SHORT") else 2)
-        confirmation_pos = -2 if held_side in ("LONG", "SHORT") else -1
-        try:
-            signal_row = frame.iloc[signal_pos]
-            confirmation_row = frame.iloc[confirmation_pos]
+        price = float(live_price)
 
-            price = float(live_price)
-            upper = float(row["kc_upper"])
-            lower = float(row["kc_lower"])
-            signal_upper = float(signal_row["kc_upper"])
-            signal_lower = float(signal_row["kc_lower"])
-            continuation_rows = frame.iloc[-1:]
-            live_low = min(
-                float(pd.to_numeric(continuation_rows["low"], errors="coerce").min()),
-                price,
-            )
-            live_high = max(
-                float(pd.to_numeric(continuation_rows["high"], errors="coerce").max()),
-                price,
-            )
-            live_close = float(row["close"])
-            signal_open = float(signal_row["open"])
-            signal_close = float(signal_row["close"])
-            signal_low = float(signal_row["low"])
-            signal_high = float(signal_row["high"])
-            confirmation_open = float(confirmation_row["open"])
-            confirmation_close = float(confirmation_row["close"])
-            confirmation_low = float(confirmation_row["low"])
-            confirmation_high = float(confirmation_row["high"])
-            confirmation_upper = float(confirmation_row["kc_upper"])
-            confirmation_lower = float(confirmation_row["kc_lower"])
-            live_ma3 = float(row["ma3"])
-            pre_signal_ma3 = float(frame.iloc[signal_pos - 1]["ma3"])
-            signal_ma3 = float(signal_row["ma3"])
-            previous_ma3 = float(confirmation_row["ma3"])
-        except (TypeError, ValueError):
-            return {"action": "WAIT", "reason": "KC data invalid"}
-        if (
-            not all(math.isfinite(value) for value in (
-                price, upper, lower, signal_upper, signal_lower,
-                live_low, live_high, live_close, signal_open, signal_close,
-                signal_low, signal_high, live_ma3, pre_signal_ma3,
-                signal_ma3, previous_ma3,
-                confirmation_open, confirmation_close,
-                confirmation_low, confirmation_high,
-                confirmation_upper, confirmation_lower,
-            ))
-            or lower >= upper or signal_lower >= signal_upper
-            or confirmation_lower >= confirmation_upper
-            or signal_low > signal_high
-        ):
+        try:
+            # Evaluate KC Macro Trend (Look back 4 candles to confirm direction)
+            current = frame.iloc[-2]
+            anchor = frame.iloc[-6]
+            
+            curr_upper = float(current["kc_upper"])
+            curr_lower = float(current["kc_lower"])
+            curr_ma15 = float(current["ma15"])
+            
+            anchor_upper = float(anchor["kc_upper"])
+            anchor_lower = float(anchor["kc_lower"])
+            anchor_ma15 = float(anchor["ma15"])
+            
+            kc_trend_down = curr_upper < anchor_upper and curr_lower < anchor_lower and curr_ma15 < anchor_ma15
+            kc_trend_up = curr_upper > anchor_upper and curr_lower > anchor_lower and curr_ma15 > anchor_ma15
+        except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        # 空手進場由主流程先判斷即時 KC 外側，再判斷通道內觸軌與其他方式。
-        
-        # 持倉時若反向強勢破軌，優先觸發立即反手，等同於空手時的破軌開倉
-        if held_side in ("LONG", "SHORT"):
-            breakout_action = TradingEngine._channel_immediate_outer_break_action(frame, price)
-            live_body = abs(price - float(row["open"]))
-            live_kc_width = max(upper - lower, 1e-12)
-            strong_reverse_break = live_body >= live_kc_width * 0.30
-            if (
-                breakout_action.get("action") == "ENTER"
-                and breakout_action.get("side") != held_side
-                and strong_reverse_break
-            ):
-                breakout_action["action"] = "REVERSE"
-                return breakout_action
+        # Exit Logic: Only exit when KC trend reverses
+        if held_side == "LONG":
+            if kc_trend_down:
+                return {"action": "EXIT", "side": None, "reason": "KC_TREND_REVERSED_DOWN"}
+            return {"action": "HOLD", "side": None, "reason": "HOLDING_MACRO_LONG"}
+            
+        if held_side == "SHORT":
+            if kc_trend_up:
+                return {"action": "EXIT", "side": None, "reason": "KC_TREND_REVERSED_UP"}
+            return {"action": "HOLD", "side": None, "reason": "HOLDING_MACRO_SHORT"}
 
-        # 持倉只等待有利側 KC 外軌形成已確認 MA3 峰／谷；確認時
-        # 現價必須仍在該外軌，且扣除進出成本後為正淨利。
-        # 峰／谷必須是完整三點局部極值。只檢查候選後一根會把已經
-        # 連續下降／上升的 MA3 誤認為新峰頂／谷底，造成過早平倉。
-        # 不把單一最小跳動造成的 MA3 浮點微彎視為反向極值。PUMP 這筆
-        # 只有約 0.0078% 的 MA3 回落，下一根便續漲；舊的 1e-12 門檻仍會
-        # 誤判成完整峰頂。反轉幅度至少要達價格的 0.035%，或 KC 半寬的
-        # 5%，多空使用完全相同的鏡像門檻。
-        # 峰／谷初次轉彎若尚未達有效幅度，不能只檢查一次便永久遺失。
-        # 只確認候選峰／谷後的第一根已收盤反向K；不等待後續轉彎。
+        # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
         latest_closed_pos = len(frame) - 2
-        turn_lookback = max(
-            2, int(getattr(config, "CHANNEL_SWING_TURN_LOOKBACK_BARS", 12)),
-        )
-
-        def candidate_is_after_entry(candidate_pos: int) -> bool:
-            if not position_open_timestamp:
-                return True
-            if "timestamp" not in frame.columns:
-                return False
-            try:
-                candidate_open_ms = float(frame.iloc[candidate_pos]["timestamp"])
-                timeframe_ms = 60_000.0
-                if candidate_pos > 0:
-                    inferred_ms = candidate_open_ms - float(
-                        frame.iloc[candidate_pos - 1]["timestamp"]
-                    )
-                    if inferred_ms > 0.0:
-                        timeframe_ms = inferred_ms
-                return bool(
-                    candidate_open_ms + timeframe_ms
-                    > float(position_open_timestamp) * 1000.0
-                )
-            except (TypeError, ValueError, IndexError, KeyError):
-                return False
-
-        def recent_confirmed_outer_turn(side: str) -> bool:
+        turn_lookback = max(2, int(getattr(config, "CHANNEL_SWING_TURN_LOOKBACK_BARS", 12)))
+        
+        def find_recent_turn(is_peak: bool) -> bool:
             first_candidate = max(1, latest_closed_pos - turn_lookback)
-            # 只確認候選峰／谷後的第一根已收盤K，避免延後到第二個轉彎。
             candidate_pos = latest_closed_pos - 1
             if candidate_pos < first_candidate:
                 return False
-            for candidate_pos in (candidate_pos,):
-                before = frame.iloc[candidate_pos - 1]
-                candidate = frame.iloc[candidate_pos]
-                after = frame.iloc[candidate_pos + 1]
+                
+            for pos in (candidate_pos,):
+                before = frame.iloc[pos - 1]
+                candidate = frame.iloc[pos]
+                after = frame.iloc[pos + 1]
+                
                 try:
                     before_ma3 = float(before["ma3"])
                     candidate_ma3 = float(candidate["ma3"])
                     after_ma3 = float(after["ma3"])
-                    candidate_upper = float(candidate["kc_upper"])
-                    candidate_lower = float(candidate["kc_lower"])
-                    candidate_high = max(
-                        float(candidate["open"]), float(candidate["high"]),
-                        float(candidate["close"]),
-                    )
-                    candidate_low = min(
-                        float(candidate["open"]), float(candidate["low"]),
-                        float(candidate["close"]),
-                    )
-                except (TypeError, ValueError, IndexError, KeyError):
+                except Exception:
                     continue
-                if (
-not all(math.isfinite(value) for value in (
-                        before_ma3, candidate_ma3, after_ma3,
-                        candidate_upper, candidate_lower, candidate_high,
-                        candidate_low,
-                    ))
-                    or candidate_lower >= candidate_upper
-                    or not candidate_is_after_entry(candidate_pos)
-                ):
-                    continue
-                is_outside_upper = candidate_high >= candidate_upper
-                is_outside_lower = candidate_low <= candidate_lower
-
-                import os
-
-                # 外軌 MA3 峰／谷保留最小反轉幅度，避免單一 tick
-                # 浮點微彎誤平倉；確認 K 顏色與是否已回軌不再阻擋三點峰谷。
-                if is_outside_upper or is_outside_lower:
-                    _min_price_pct = max(float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_PRICE_PCT", "0.0003")), 0.0003)
-                    _min_kc_pct = max(float(os.getenv("CHANNEL_SWING_PEAK_TURN_MIN_KC_WIDTH_PCT", "0.05")), 0.05)
-                else:
-                    continue
-
-                turn_threshold = max(
-                    abs(candidate_ma3) * _min_price_pct,
-                    (candidate_upper - candidate_lower) / 2.0 * _min_kc_pct,
-                    1e-12,
-                )
-                candidate_atr = float(candidate.get("atr") or 0.0)
-                if candidate_atr <= 0.0:
-                    candidate_atr = max(
-                        (candidate_upper - candidate_lower) / 2.0,
-                        abs(candidate_ma3) * 1e-6,
-                    )
-                retrace_threshold = max(
-                    candidate_atr * 0.30,
-                    (candidate_upper - candidate_lower) * 0.20,
-                )
-
-                if side == "LONG":
-                    is_valid_peak = (candidate_high >= candidate_upper)
-                    if (
-                        is_valid_peak
-                        and before_ma3 < candidate_ma3 - 1e-12
-                        and after_ma3 < candidate_ma3 - 1e-12
-                        and after_ma3 <= candidate_ma3 - turn_threshold
-                        and candidate_high - price >= retrace_threshold
-                    ):
+                    
+                turn_threshold = max(abs(candidate_ma3) * 0.0003, 1e-12)
+                
+                if is_peak:
+                    if (before_ma3 < candidate_ma3 - 1e-12 
+                        and after_ma3 < candidate_ma3 - 1e-12 
+                        and after_ma3 <= candidate_ma3 - turn_threshold):
                         return True
-                elif side == "SHORT":
-                    is_valid_trough = (candidate_low <= candidate_lower)
-                    if (
-                        is_valid_trough
-                        and before_ma3 > candidate_ma3 + 1e-12
-                        and after_ma3 > candidate_ma3 + 1e-12
-                        and after_ma3 >= candidate_ma3 + turn_threshold
-                        and price - candidate_low >= retrace_threshold
-                    ):
+                else:
+                    if (before_ma3 > candidate_ma3 + 1e-12 
+                        and after_ma3 > candidate_ma3 + 1e-12 
+                        and after_ma3 >= candidate_ma3 + turn_threshold):
                         return True
             return False
 
-        def two_bar_outer_reversal(side: str) -> bool:
-            """Two closed opposite candles must confirm a break after an outer run."""
-            try:
-                first_reversal_pos = len(frame) - 3
-                second_reversal_pos = len(frame) - 2
-                first_reversal = frame.iloc[first_reversal_pos]
-                second_reversal = frame.iloc[second_reversal_pos]
-                impulse_end = first_reversal_pos - 1
-                if impulse_end < 0:
-                    return False
-                favorable = (
-                    (lambda item: float(item["close"]) > float(item["open"]))
-                    if side == "LONG"
-                    else (lambda item: float(item["close"]) < float(item["open"]))
-                )
-                opposite = (
-                    (lambda item: float(item["close"]) < float(item["open"]))
-                    if side == "LONG"
-                    else (lambda item: float(item["close"]) > float(item["open"]))
-                )
-                if not (favorable(frame.iloc[impulse_end]) and opposite(first_reversal) and opposite(second_reversal)):
-                    return False
-                run_start = impulse_end
-                while run_start > 0 and favorable(frame.iloc[run_start - 1]):
-                    run_start -= 1
-                if side == "LONG":
-                    extreme_pos = max(
-                        range(run_start, impulse_end + 1),
-                        key=lambda pos: float(frame.iloc[pos]["high"]),
-                    )
-                    extreme = float(frame.iloc[extreme_pos]["high"])
-                    is_outer = extreme >= float(frame.iloc[extreme_pos]["kc_upper"])
-                    confirmed_break = float(second_reversal["close"]) < float(first_reversal["low"])
-                    did_not_recover = max(confirmation_high, live_high) <= extreme
-                else:
-                    extreme_pos = min(
-                        range(run_start, impulse_end + 1),
-                        key=lambda pos: float(frame.iloc[pos]["low"]),
-                    )
-                    extreme = float(frame.iloc[extreme_pos]["low"])
-                    is_outer = extreme <= float(frame.iloc[extreme_pos]["kc_lower"])
-                    confirmed_break = float(second_reversal["close"]) > float(first_reversal["high"])
-                    did_not_recover = min(confirmation_low, live_low) >= extreme
-                return bool(
-                    is_outer and confirmed_break and did_not_recover
-                    and candidate_is_after_entry(extreme_pos)
-                )
-            except (TypeError, ValueError, IndexError, KeyError):
-                return False
+        has_peak = find_recent_turn(is_peak=True)
+        has_trough = find_recent_turn(is_peak=False)
 
-        closed_ma3_peak = recent_confirmed_outer_turn("LONG")
-        closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
-
-        def trend_resuming(side: str) -> bool:
-            """峰谷候選後若原方向重新恢復，不要提前下車。"""
-            try:
-                closed = frame.iloc[-5:-1]
-                ma3_values = pd.to_numeric(closed["ma3"], errors="coerce").dropna()
-                close_values = pd.to_numeric(closed["close"], errors="coerce").dropna()
-                middle = (upper + lower) / 2.0
-                if len(ma3_values) < 4 or len(close_values) < 4:
-                    return False
-                ma3_recent = ma3_values.iloc[-3:]
-                close_recent = close_values.iloc[-3:]
-                if side == "LONG":
-                    return bool(
-                        ma3_recent.iloc[0] < ma3_recent.iloc[1] < ma3_recent.iloc[2]
-                        and close_recent.iloc[0] < close_recent.iloc[1] < close_recent.iloc[2]
-                        and price >= middle
-                    )
-                return bool(
-                    ma3_recent.iloc[0] > ma3_recent.iloc[1] > ma3_recent.iloc[2]
-                    and close_recent.iloc[0] > close_recent.iloc[1] > close_recent.iloc[2]
-                    and price <= middle
-                )
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
-        # ──────────────────────────────────────────────────────────────
-        # 不利側 KC 外軌觸及：立即平倉（用戶明確指示：觸及下軌馬上出多單；
-        # 異常大紅 K 更不能拖；若空單訊號強勢則同時反手。多空鏡像。）
-        # ──────────────────────────────────────────────────────────────
-        def is_abnormal_candle(side: str) -> bool:
-            """判斷最近一根已收盤 K 是否為異常大 K（相對 KC 寬度）。"""
-            try:
-                last = frame.iloc[-2]
-                body = abs(float(last["close"]) - float(last["open"]))
-                kc_width = max(float(last["kc_upper"]) - float(last["kc_lower"]), 1e-12)
-                # 實體 >= KC 寬度 30% 視為異常大 K
-                return body >= kc_width * 0.30
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
-        def trend_failed(side: str) -> bool:
-            """趨勢明確失敗：連續三根收反向 K，或實體收盤明確越過 KC 中軌。"""
-            try:
-                last_3 = frame.iloc[-4:-1]
-                if len(last_3) < 3:
-                    return False
-                if position_open_timestamp and "timestamp" in frame.columns:
-                    first_timestamp = float(last_3["timestamp"].iloc[0])
-                    if first_timestamp + 60_000.0 <= float(position_open_timestamp) * 1000.0:
-                        return False
-                last = last_3.iloc[-1]
-                middle = (float(last["kc_upper"]) + float(last["kc_lower"])) / 2.0
-                if side == "LONG":
-                    consecutive_red = all(float(r["close"]) < float(r["open"]) for _, r in last_3.iterrows())
-                    below_middle = float(last["close"]) < middle
-                    return consecutive_red or below_middle
-                else:
-                    consecutive_green = all(float(r["close"]) > float(r["open"]) for _, r in last_3.iterrows())
-                    above_middle = float(last["close"]) > middle
-                    return consecutive_green or above_middle
-            except Exception:
-                return False
-
-        def adverse_kc_outer_hit(side: str) -> bool:
-            """現價或已收盤 K 的最低（多單）/ 最高（空單）是否觸及對側 KC 外軌。"""
-            try:
-                last = frame.iloc[-2]
-                if side == "LONG":
-                    adverse_low = min(float(last["low"]), live_low)
-                    return adverse_low <= lower
-                else:
-                    adverse_high = max(float(last["high"]), live_high)
-                    return adverse_high >= upper
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
-        def strong_opposite_signal(held: str) -> bool:
-            """判斷是否已經有強勢反手訊號（例如：破中軌且動能強，或破對側外軌）。"""
-            try:
-                last = frame.iloc[-2]
-                middle = (float(last["kc_upper"]) + float(last["kc_lower"])) / 2.0
-                if held == "LONG":
-                    # 空單強勢：已收盤 K 收盤低於下軌，或強勢收低於中軌
-                    return float(last["close"]) < float(last["kc_lower"]) or (float(last["close"]) < middle and float(last["open"]) > middle)
-                else:
-                    # 多單強勢：已收盤 K 收盤高於上軌，或強勢收高於中軌
-                    return float(last["close"]) > float(last["kc_upper"]) or (float(last["close"]) > middle and float(last["open"]) < middle)
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
-        def sustained_opposite_signal(held: str) -> bool:
-            """Detect a clear wrong-way drift made of several small candles."""
-            try:
-                recent = frame.iloc[-4:-1]
-                if len(recent) < 3 or "ma3" not in recent.columns:
-                    return False
-                if position_open_timestamp and "timestamp" in frame.columns:
-                    first_timestamp = float(recent["timestamp"].iloc[0])
-                    if first_timestamp + 60_000.0 <= float(position_open_timestamp) * 1000.0:
-                        return False
-                closes = [float(value) for value in recent["close"]]
-                ma3_values = [float(value) for value in recent["ma3"]]
-                middle = (float(recent["kc_upper"].iloc[-1]) + float(recent["kc_lower"].iloc[-1])) / 2.0
-                same_color = (
-                    all(float(row["close"]) < float(row["open"]) for _, row in recent.iterrows())
-                    if held == "LONG"
-                    else all(float(row["close"]) > float(row["open"]) for _, row in recent.iterrows())
-                )
-                monotonic = (
-                    closes[0] > closes[1] > closes[2] and ma3_values[0] > ma3_values[1] > ma3_values[2]
-                    if held == "LONG"
-                    else closes[0] < closes[1] < closes[2] and ma3_values[0] < ma3_values[1] < ma3_values[2]
-                )
-                crossed_middle = (
-                    closes[-1] < middle if held == "LONG" else closes[-1] > middle
-                )
-                return bool(same_color and monotonic and crossed_middle)
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
-        if held_side == "LONG":
-            # 持倉只依有利側上軌峰頂確認平倉；逆向波動不提前平倉或反手。
-            if (
-                exit_net_profitable
-                and closed_ma3_peak
-                and not trend_resuming("LONG")
-            ):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT"}
-            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
-
-        if held_side == "SHORT":
-            # 持倉只依有利側下軌谷底確認平倉；逆向波動不提前平倉或反手。
-            if (
-                exit_net_profitable
-                and closed_ma3_trough
-                and not trend_resuming("SHORT")
-            ):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT"}
-            return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
+        # KC is pointing DOWN -> find a HIGH point (peak) to SHORT
+        if kc_trend_down and has_peak:
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_DOWN_TREND_PULLBACK_PEAK"}
+            
+        # KC is pointing UP -> find a LOW point (trough) to LONG
+        if kc_trend_up and has_trough:
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_UP_TREND_PULLBACK_TROUGH"}
 
         return {
             "action": "WAIT", "side": None,
-            "kc_upper": upper, "kc_lower": lower,
-            "reason": "WAIT_KC_OUTER_TREND_ENTRY",
+            "kc_upper": curr_upper, "kc_lower": curr_lower,
+            "reason": "WAIT_KC_MACRO_TREND_PULLBACK",
             "turn_low": None, "turn_high": None,
         }
 
@@ -8910,15 +8602,6 @@ not all(math.isfinite(value) for value in (
                     )
                     if adjacent_break_action.get("action") == "ENTER":
                         channel_action = adjacent_break_action
-                    else:
-                        live_outer_action = self._channel_immediate_outer_break_action(
-                            channel_df, channel_price,
-                        )
-                        # A confirmed live outer-rail break is the explicit
-                        # CHOP_WAIT exception; do not reapply the directional
-                        # gate and turn it back into WAIT.
-                        if live_outer_action.get("action") == "ENTER":
-                            channel_action = live_outer_action
                 if False:  # Channel Swing 新倉僅保留已確認的 KC 外側趨勢
 
                     chop_breakout_action = self._channel_chop_breakout_action(
@@ -8954,11 +8637,17 @@ not all(math.isfinite(value) for value in (
                     not chop_locked
                     and not existing_pos
                 ):
-                    # 外軌候選 K 只做記錄；必須由緊接下一根 K 突破候選極值
-                    # 才進場，避免候選 K 自己突破外軌時過早追單。
-                    channel_action = self._channel_closed_body_break_entry_action(
+                    live_outer_action = self._channel_immediate_outer_break_action(
                         channel_df, channel_price,
                     )
+                    if live_outer_action.get("action") == "ENTER":
+                        channel_action = live_outer_action
+                    else:
+                        # 外軌候選 K 只做記錄；必須由緊接下一根 K 突破候選極值
+                        # 才進場，避免候選 K 自己突破外軌時過早追單。
+                        channel_action = self._channel_closed_body_break_entry_action(
+                            channel_df, channel_price,
+                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
