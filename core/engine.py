@@ -7853,6 +7853,20 @@ class TradingEngine:
             mid_ma15 = float(midpoint["ma15"])
             anchor_ma15 = float(anchor["ma15"])
             
+            # Early Exit Data
+            if len(frame) > 22:
+                ma15_15_ago = float(frame.iloc[-2 - 15]["ma15"])
+                highest_high_20 = float(frame.iloc[-22:-2]["high"].max())
+                lowest_low_20 = float(frame.iloc[-22:-2]["low"].min())
+            else:
+                ma15_15_ago = curr_ma15
+                highest_high_20 = float(current["high"])
+                lowest_low_20 = float(current["low"])
+                
+            curr_close = float(current["close"])
+            curr_upper = float(current["kc_upper"])
+            curr_lower = float(current["kc_lower"])
+            
             # A consistent long-term downward slope
             kc_trend_down = curr_ma15 < mid_ma15 < anchor_ma15
             # A consistent long-term upward slope
@@ -7860,15 +7874,27 @@ class TradingEngine:
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        # Exit Logic: Only exit when KC trend reverses
+        # Exit Logic: Triple Safety Net + Macro Trend
         if held_side == "LONG":
             if kc_trend_down:
                 return {"action": "EXIT", "side": None, "reason": "KC_TREND_REVERSED_DOWN"}
+            if curr_ma15 < ma15_15_ago:
+                return {"action": "EXIT", "side": None, "reason": "MA15_SHORT_TERM_REVERSAL_DOWN"}
+            if curr_close < curr_lower:
+                return {"action": "EXIT", "side": None, "reason": "KC_LOWER_BREAKOUT_DOWN"}
+            if price < lowest_low_20:
+                return {"action": "EXIT", "side": None, "reason": "STRUCTURE_BREAK_LOW"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_MACRO_LONG"}
             
         if held_side == "SHORT":
             if kc_trend_up:
                 return {"action": "EXIT", "side": None, "reason": "KC_TREND_REVERSED_UP"}
+            if curr_ma15 > ma15_15_ago:
+                return {"action": "EXIT", "side": None, "reason": "MA15_SHORT_TERM_REVERSAL_UP"}
+            if curr_close > curr_upper:
+                return {"action": "EXIT", "side": None, "reason": "KC_UPPER_BREAKOUT_UP"}
+            if price > highest_high_20:
+                return {"action": "EXIT", "side": None, "reason": "STRUCTURE_BREAK_HIGH"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_MACRO_SHORT"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
