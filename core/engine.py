@@ -7498,6 +7498,7 @@ class TradingEngine:
         if str(signal_reason or "") in {
             "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
             "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
+            "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
         }:
             return action, target_side, None
         required = {"close", "ma15", "kc_upper", "kc_lower"}
@@ -7688,6 +7689,10 @@ class TradingEngine:
             action == "REVERSE"
             and TradingEngine._channel_is_immediate_outer_rechase(reason)
         ):
+            return action, target_side, None
+        if action == "REVERSE" and str(reason or "") in {
+            "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
+        }:
             return action, target_side, None
         if not locked:
             return action, target_side, None
@@ -8157,11 +8162,37 @@ not all(math.isfinite(value) for value in (
             except (TypeError, ValueError, KeyError, IndexError):
                 return False
 
+        def sustained_opposite_signal(held: str) -> bool:
+            """Detect a clear wrong-way drift made of several small candles."""
+            try:
+                recent = frame.iloc[-4:-1]
+                if len(recent) < 3 or "ma3" not in recent.columns:
+                    return False
+                closes = [float(value) for value in recent["close"]]
+                ma3_values = [float(value) for value in recent["ma3"]]
+                middle = (float(recent["kc_upper"].iloc[-1]) + float(recent["kc_lower"].iloc[-1])) / 2.0
+                same_color = (
+                    all(float(row["close"]) < float(row["open"]) for _, row in recent.iterrows())
+                    if held == "LONG"
+                    else all(float(row["close"]) > float(row["open"]) for _, row in recent.iterrows())
+                )
+                monotonic = (
+                    closes[0] > closes[1] > closes[2] and ma3_values[0] > ma3_values[1] > ma3_values[2]
+                    if held == "LONG"
+                    else closes[0] < closes[1] < closes[2] and ma3_values[0] < ma3_values[1] < ma3_values[2]
+                )
+                crossed_middle = (
+                    closes[-1] < middle if held == "LONG" else closes[-1] > middle
+                )
+                return bool(same_color and monotonic and crossed_middle)
+            except (TypeError, ValueError, KeyError, IndexError):
+                return False
+
         if held_side == "LONG":
-            # ① 持倉中的逆向波動不作反應；只有異常強勢反向 K 才反手。
+            # ① 單一小 K 忽略；連續小紅 K 已明確轉空時平多反手。
             if adverse_kc_outer_hit("LONG") or trend_failed("LONG"):
                 abnormal = is_abnormal_candle("LONG")
-                if abnormal and strong_opposite_signal("LONG"):
+                if sustained_opposite_signal("LONG") or (abnormal and strong_opposite_signal("LONG")):
                     # 空單已強勢 → 平多並反手開空
                     return {
                         "action": "REVERSE", "side": "SHORT",
@@ -8179,10 +8210,10 @@ not all(math.isfinite(value) for value in (
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            # ① 持倉中的逆向波動不作反應；只有異常強勢反向 K 才反手。
+            # ① 單一小 K 忽略；連續小綠 K 已明確轉多時平空反手。
             if adverse_kc_outer_hit("SHORT") or trend_failed("SHORT"):
                 abnormal = is_abnormal_candle("SHORT")
-                if abnormal and strong_opposite_signal("SHORT"):
+                if sustained_opposite_signal("SHORT") or (abnormal and strong_opposite_signal("SHORT")):
                     # 多單已強勢 → 平空並反手開多
                     return {
                         "action": "REVERSE", "side": "LONG",
@@ -8979,6 +9010,7 @@ not all(math.isfinite(value) for value in (
                     and not channel_spec_entry
                     and channel_action.get("reason") not in {
                         "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                        "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
                     }
                     and not self._channel_outer_directional_entry_allowed(
                         channel_df, channel_price, target_side,
@@ -9035,6 +9067,9 @@ not all(math.isfinite(value) for value in (
                     and target_side == "LONG"
                     and self._channel_is_upper_red_peak_short(existing_pos or {})
                     and channel_action.get("reason") != "KC_LIVE_UPPER_BREAK_LONG"
+                    and channel_action.get("reason") not in {
+                        "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
+                    }
                     and not self._channel_upper_red_short_reversal_allowed(
                         channel_df, channel_price,
                     )

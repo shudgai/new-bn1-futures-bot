@@ -2147,10 +2147,48 @@ def test_peak_exit_reverse_requires_abnormal_candle_inside_channel():
     ) == ("ENTER", "SHORT", None)
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_three_monotonic_small_opposite_candles_reverse_inside_channel(side):
+    frame = _channel_frame()
+    if side == "LONG":
+        frame.loc[frame.index[-4:-1], ["open", "close", "ma3"]] = [
+            [101.0, 100.8, 101.0],
+            [100.8, 100.5, 100.8],
+            [100.5, 99.8, 100.5],
+        ]
+        price = 99.8
+        expected_side = "SHORT"
+    else:
+        frame.loc[frame.index[-4:-1], ["open", "close", "ma3"]] = [
+            [99.0, 99.2, 99.0],
+            [99.2, 99.5, 99.2],
+            [99.5, 100.2, 99.5],
+        ]
+        price = 100.2
+        expected_side = "LONG"
+
+    result = TradingEngine._channel_swing_action(frame, price, side)
+
+    assert (result["action"], result["side"]) == ("REVERSE", expected_side)
+
+
 def test_channel_chop_gate_blocks_entry_and_turns_reverse_into_close_only():
     assert TradingEngine._channel_chop_gate('ENTER', 'LONG', True, False) == ('WAIT', None, 'CHOP_WAIT_NO_ENTRY')
     assert TradingEngine._channel_chop_gate('REVERSE', 'SHORT', True, True) == ('EXIT', None, 'CHOP_WAIT_CLOSE_ONLY')
     assert TradingEngine._channel_chop_gate('ENTER', 'LONG', False, False) == ('ENTER', 'LONG', None)
+
+
+@pytest.mark.parametrize("reason", [
+    "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
+])
+def test_abnormal_inside_kc_reverse_bypasses_directional_gates(reason):
+    side = "LONG" if reason.endswith("LONG") else "SHORT"
+    assert TradingEngine._channel_chop_gate(
+        "REVERSE", side, True, True, reason,
+    ) == ("REVERSE", side, None)
+    assert TradingEngine._channel_slope_entry_gate(
+        _channel_frame(), "REVERSE", side, True, reason,
+    )[:2] == ("REVERSE", side)
 
 @pytest.mark.skip(reason="Obsolete per user request")
 def test_confirmed_outer_peak_still_requires_current_outer_price():
