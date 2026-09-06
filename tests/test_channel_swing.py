@@ -1457,10 +1457,10 @@ def test_tiny_live_adverse_candle_outside_rail_still_exits(side, live_open, pric
     result = TradingEngine._channel_swing_action(frame, price, side)
 
     assert result["action"] == "HOLD"
-    assert result["reason"] == (
-        "IGNORE_ADVERSE_FLUCTUATION_LONG"
-        if side == "LONG" else "IGNORE_ADVERSE_FLUCTUATION_SHORT"
-    )
+    assert result["reason"] in {
+        "WAIT_OPPOSITE_KC_UPPER_PEAK",
+        "WAIT_OPPOSITE_KC_LOWER_VALLEY",
+    }
 
 
 @pytest.mark.parametrize(
@@ -2182,7 +2182,7 @@ def test_peak_exit_reversal_allows_fresh_lower_outer_break_without_large_candle(
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_three_monotonic_small_opposite_candles_reverse_inside_channel(side):
+def test_three_monotonic_small_opposite_candles_hold_inside_channel(side):
     frame = _channel_frame()
     if side == "LONG":
         frame.loc[frame.index[-4:-1], ["open", "close", "ma3"]] = [
@@ -2203,7 +2203,7 @@ def test_three_monotonic_small_opposite_candles_reverse_inside_channel(side):
 
     result = TradingEngine._channel_swing_action(frame, price, side)
 
-    assert (result["action"], result["side"]) == ("REVERSE", expected_side)
+    assert (result["action"], result["side"]) == ("HOLD", None)
 
 
 def test_channel_swing_wallet_loss_guard_does_not_override_directional_exit_rule():

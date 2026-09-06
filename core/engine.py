@@ -8203,18 +8203,7 @@ not all(math.isfinite(value) for value in (
                 return False
 
         if held_side == "LONG":
-            # ① 單一小 K 忽略；連續小紅 K 已明確轉空時平多反手。
-            if adverse_kc_outer_hit("LONG") or trend_failed("LONG"):
-                abnormal = is_abnormal_candle("LONG")
-                if sustained_opposite_signal("LONG") or (abnormal and strong_opposite_signal("LONG")):
-                    # 空單已強勢 → 平多並反手開空
-                    return {
-                        "action": "REVERSE", "side": "SHORT",
-                        "kc_upper": upper, "kc_lower": lower,
-                        "reason": "TREND_FAILED_REVERSE_SHORT" + ("_ABNORMAL" if abnormal else ""),
-                    }
-                return {"action": "HOLD", "side": None, "reason": "IGNORE_ADVERSE_FLUCTUATION_LONG"}
-            # ② 有利側峰頂三點平倉（原有邏輯）
+            # 持倉只依有利側上軌峰頂確認平倉；逆向波動不提前平倉或反手。
             if (
                 exit_net_profitable
                 and closed_ma3_peak
@@ -8224,18 +8213,7 @@ not all(math.isfinite(value) for value in (
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            # ① 單一小 K 忽略；連續小綠 K 已明確轉多時平空反手。
-            if adverse_kc_outer_hit("SHORT") or trend_failed("SHORT"):
-                abnormal = is_abnormal_candle("SHORT")
-                if sustained_opposite_signal("SHORT") or (abnormal and strong_opposite_signal("SHORT")):
-                    # 多單已強勢 → 平空並反手開多
-                    return {
-                        "action": "REVERSE", "side": "LONG",
-                        "kc_upper": upper, "kc_lower": lower,
-                        "reason": "TREND_FAILED_REVERSE_LONG" + ("_ABNORMAL" if abnormal else ""),
-                    }
-                return {"action": "HOLD", "side": None, "reason": "IGNORE_ADVERSE_FLUCTUATION_SHORT"}
-            # ② 有利側谷底三點平倉（原有邏輯）
+            # 持倉只依有利側下軌谷底確認平倉；逆向波動不提前平倉或反手。
             if (
                 exit_net_profitable
                 and closed_ma3_trough
@@ -8976,26 +8954,11 @@ not all(math.isfinite(value) for value in (
                     not chop_locked
                     and not existing_pos
                 ):
-                    # 優先使用外側峰谷後的順勢延續訊號，避免等到谷底才追空。
-                    # 沒有較早延續確認時，才使用即時外軌突破作最後入口。
-                    channel_action = self._channel_outer_continuation_entry_action(
-                        channel_df, channel_price, max_bars=4,
+                    # 外軌候選 K 只做記錄；必須由緊接下一根 K 突破候選極值
+                    # 才進場，避免候選 K 自己突破外軌時過早追單。
+                    channel_action = self._channel_closed_body_break_entry_action(
+                        channel_df, channel_price,
                     )
-                    if channel_action.get("action") != "ENTER":
-                        channel_action = self._channel_immediate_outer_break_action(
-                            channel_df, channel_price,
-                        )
-                    if channel_action.get("action") != "ENTER":
-                        closed_body_action = self._channel_closed_body_break_entry_action(
-                            channel_df, channel_price,
-                        )
-                        # 候選 K 已觸及外軌後，緊接的 live K 一旦突破候選
-                        # 順向極值就確認；不得再要求現價同時位於 KC 外軌。
-                        channel_action = closed_body_action
-                    if channel_action.get("action") != "ENTER":
-                        channel_action = self._channel_outer_continuation_entry_action(
-                            channel_df, channel_price, max_bars=4,
-                        )
                     self._channel_outer_trend_wait.pop(symbol, None)
                 elif existing_pos:
                     self._channel_outer_trend_wait.pop(symbol, None)
