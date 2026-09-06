@@ -588,7 +588,7 @@ BTC_FLASH_CRASH_PUMP_PCT = max(0.0, float(
 ))
 # 全市場閃崩／急拉後，暫停任何新倉與既有掛單成交的秒數。
 MARKET_CRASH_ENTRY_COOLDOWN_SEC = max(0.0, float(
-    os.getenv("MARKET_CRASH_ENTRY_COOLDOWN_SEC", "600")
+    os.getenv("MARKET_CRASH_ENTRY_COOLDOWN_SEC", "180")
 ))
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。

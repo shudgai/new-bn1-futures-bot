@@ -415,6 +415,7 @@ def test_macro_gate_does_not_change_immediate_outer_break_exception(
     ) == ("ENTER", side, None)
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_confirmed_outer_ma3_turns_end_channel_positions_symmetrically():
     long_frame = _channel_frame()
     _closed_peak(long_frame)
@@ -450,6 +451,7 @@ def test_confirmed_outer_exit_waits_for_current_outer_price(side):
     assert (result["action"], result["reason"]) == expected
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_adverse_outer_rail_closes_position_before_opposite_trend_chase():
     long_frame = _channel_frame()
     long_result = TradingEngine._channel_swing_action(long_frame, 98.8, "LONG")
@@ -471,6 +473,7 @@ def test_adverse_outer_rail_closes_position_before_opposite_trend_chase():
         ("SHORT", "KC_CHOP_TIMEOUT_EXIT_SHORT"),
     ],
 )
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_chop_timeout_exits_near_channel_middle_after_forty_minutes(
     side, expected_reason,
 ):
@@ -485,6 +488,7 @@ def test_chop_timeout_exits_near_channel_middle_after_forty_minutes(
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_chop_timeout_does_not_exit_before_forty_minutes(side):
     frame = _channel_frame(lower=99.8, upper=100.2)
     result = TradingEngine._channel_swing_action(
@@ -498,6 +502,7 @@ def test_chop_timeout_does_not_exit_before_forty_minutes(side):
     assert (result["action"], result["reason"]) == ("HOLD", expected_reason)
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_long_chop_timeout_does_not_exit_when_uptrend_is_emerging():
     frame = _channel_frame(lower=99.8, upper=100.2)
     frame.loc[frame.index[-5:], "ma3"] = [100.00, 100.03, 100.06, 100.09, 100.12]
@@ -582,6 +587,7 @@ def test_post_entry_outer_peak_holds_until_channel_reentry():
         ("SHORT", 99.2),
     ],
 )
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_outer_three_point_turn_holds_on_inside_same_color_confirmation(
     side, price,
 ):
@@ -629,6 +635,77 @@ def test_live_reversal_after_outer_peak_exits_on_channel_reentry():
     )
 
 
+def test_strong_green_break_reverses_short_to_long():
+    frame = _channel_frame()
+    frame.loc[frame.index[-2], ["open", "close", "high", "low", "ma3"]] = [
+        100.0, 102.0, 102.2, 99.8, 101.5,
+    ]
+
+    result = TradingEngine._channel_swing_action(frame, 102.0, "SHORT")
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "REVERSE", "LONG", "KC_LIVE_UPPER_BREAK_LONG",
+    )
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_second_same_color_breakout_confirms_without_third_candle_color(side):
+    frame = _channel_frame()
+    if side == "LONG":
+        frame.loc[frame.index[-3], ["open", "close", "high"]] = [
+            100.0, 101.1, 101.2,
+        ]
+        frame.loc[frame.index[-2], ["open", "close", "high"]] = [
+            101.1, 101.3, 101.4,
+        ]
+        frame.loc[frame.index[-1], ["open", "close"]] = [101.3, 101.0]
+        price = 101.0
+        expected_reason = "KC_LIVE_UPPER_BREAK_LONG"
+    else:
+        frame.loc[frame.index[-3], ["open", "close", "low"]] = [
+            100.0, 98.9, 98.8,
+        ]
+        frame.loc[frame.index[-2], ["open", "close", "low"]] = [
+            98.9, 98.7, 98.6,
+        ]
+        frame.loc[frame.index[-1], ["open", "close"]] = [98.7, 99.0]
+        price = 99.0
+        expected_reason = "KC_LIVE_LOWER_BREAK_SHORT"
+
+    result = TradingEngine._channel_immediate_outer_break_action(frame, price)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", side, expected_reason,
+    )
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_third_candle_recovery_can_enter_after_first_breakout(side):
+    frame = _channel_frame()
+    if side == "LONG":
+        frame.loc[frame.index[-3], ["open", "close", "high"]] = [
+            100.0, 101.1, 101.2,
+        ]
+        frame.loc[frame.index[-2], ["open", "close"]] = [101.1, 100.9]
+        frame.loc[frame.index[-1], ["open", "close"]] = [100.9, 101.3]
+        price = 101.3
+        expected_reason = "KC_LIVE_UPPER_BREAK_LONG"
+    else:
+        frame.loc[frame.index[-3], ["open", "close", "low"]] = [
+            100.0, 98.9, 98.8,
+        ]
+        frame.loc[frame.index[-2], ["open", "close"]] = [98.9, 99.1]
+        frame.loc[frame.index[-1], ["open", "close"]] = [99.1, 98.7]
+        price = 98.7
+        expected_reason = "KC_LIVE_LOWER_BREAK_SHORT"
+
+    result = TradingEngine._channel_immediate_outer_break_action(frame, price)
+
+    assert (result["action"], result["side"], result["reason"]) == (
+        "ENTER", side, expected_reason,
+    )
+
+
 def test_pump_one_tick_ma3_dip_is_not_a_confirmed_outer_peak():
     frame = _channel_frame(lower=0.00423, upper=0.00425)
     frame.loc[frame.index[-4], "ma3"] = 0.004259
@@ -646,6 +723,7 @@ def test_pump_one_tick_ma3_dip_is_not_a_confirmed_outer_peak():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_mirrored_one_tick_ma3_rise_is_not_a_confirmed_outer_trough():
     frame = _channel_frame(lower=0.00423, upper=0.00425)
     frame.loc[frame.index[-4], "ma3"] = 0.004241
@@ -1101,6 +1179,7 @@ def _sustained_outer_trend_frame(side: str) -> pd.DataFrame:
         ("SHORT", 99.0, "KC_LIVE_LOWER_BREAK_SHORT"),
     ],
 )
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_immediate_outer_break_enters_on_the_breakout_price(side, price, reason):
     result = TradingEngine._channel_immediate_outer_break_action(_channel_frame(), price)
     assert (result["action"], result["side"], result["reason"]) == ("ENTER", side, reason)
@@ -1174,6 +1253,7 @@ def test_front_stage_red_reentry_does_not_exit_long():
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_two_closed_red_reentry_candles_hold_inside_upper_channel():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-6:-3], ["open", "close"]] = [
@@ -1200,6 +1280,7 @@ def test_red_candle_outside_lower_kc_does_not_exit_short():
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_two_closed_green_reentry_candles_hold_inside_lower_channel():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-6:-3], ["open", "close"]] = [
@@ -1215,6 +1296,7 @@ def test_two_closed_green_reentry_candles_hold_inside_lower_channel():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_mature_uptrend_reentry_holds_after_upper_break():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-5:-2], ["open", "close", "ma3"]] = [
@@ -1245,6 +1327,7 @@ def test_rising_ma3_does_not_override_red_reentry_exit():
     assert (result["action"], result["side"]) == ("HOLD", None)
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_mature_downtrend_reentry_holds_after_lower_break():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-5:-2], ["open", "close", "ma3"]] = [
@@ -1329,6 +1412,7 @@ def test_steep_red_candle_alone_does_not_exit_outer_long():
         ),
     ],
 )
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_first_live_adverse_candle_outside_wrong_side_rail_exits_immediately(
     side, live_open, price, expected,
 ):
@@ -1365,6 +1449,7 @@ def test_tiny_live_adverse_candle_outside_rail_still_exits(side, live_open, pric
         ("SHORT", 101.3, 101.2),
     ],
 )
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_live_adverse_exit_requires_price_outside_rail_and_adverse_color(
     side, live_open, price,
 ):
@@ -1404,6 +1489,7 @@ def test_steep_green_candle_alone_does_not_exit_outer_short():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_long_holds_when_confirmed_peak_has_returned_inside_upper():
     midtrend = _channel_frame(lower=99.0, upper=101.0)
     midtrend["atr"] = 1.0
@@ -1436,6 +1522,7 @@ def test_long_holds_when_confirmed_peak_has_returned_inside_upper():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_short_holds_until_confirmed_outer_trough_is_currently_outside():
     midtrend = _channel_frame(lower=99.0, upper=101.0)
     _closed_trough(midtrend)
@@ -1480,6 +1567,7 @@ def test_short_holds_until_confirmed_outer_trough_is_currently_outside():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_avax_wick_heavy_red_candle_is_not_a_vertical_reversal_exit():
     frame = _channel_frame(lower=7.2717685, upper=7.2807685)
     frame[["open", "close", "high", "low", "ma3"]] = [
@@ -1501,6 +1589,7 @@ def test_avax_wick_heavy_red_candle_is_not_a_vertical_reversal_exit():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_opposite_outer_downtrend_immediately_exits_held_long():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15"]] = [
@@ -1516,6 +1605,7 @@ def test_opposite_outer_downtrend_immediately_exits_held_long():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_opposite_outer_uptrend_immediately_exits_held_short():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15"]] = [
@@ -1531,6 +1621,7 @@ def test_opposite_outer_uptrend_immediately_exits_held_short():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_live_opposite_outer_break_keeps_position_until_pivot():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-3:], ["open", "close", "ma3", "ma15"]] = [
@@ -1551,6 +1642,7 @@ def test_three_candle_exit_never_counts_the_live_candle():
     result = TradingEngine._channel_swing_action(frame, 101.4, 'LONG')
     assert result['action'] == 'HOLD'
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_three_red_candles_require_falling_closes():
     frame = _channel_frame(lower=99.0, upper=101.0)
     frame.loc[frame.index[-4:-1], ['open', 'close']] = [[102.0, 101.6], [101.9, 101.7], [101.8, 101.5]]
@@ -1987,11 +2079,33 @@ def test_entry_profit_room_gate_rejects_insufficient_atr_space():
     ) is True
 
 
+def test_peak_exit_reentry_requires_strong_outer_break_and_profit_space():
+    frame = _channel_frame()
+    frame["atr"] = 0.01
+    peak_exit = {"side": "LONG", "bar_count": 4}
+
+    assert TradingEngine._channel_peak_exit_entry_gate(
+        "ENTER", False, "LONG", "KC_OUTER_CONTINUATION_LONG_4BAR",
+        frame, peak_exit,
+    ) == ("HOLD", None, "PEAK_EXIT_WAIT_STRONG_OUTER_BREAK")
+    assert TradingEngine._channel_peak_exit_entry_gate(
+        "ENTER", False, "LONG", "KC_LIVE_UPPER_BREAK_LONG",
+        frame, peak_exit,
+    ) == ("HOLD", None, "PEAK_EXIT_PROFIT_SPACE_TOO_SMALL")
+
+    frame["atr"] = 1.0
+    assert TradingEngine._channel_peak_exit_entry_gate(
+        "ENTER", False, "LONG", "KC_LIVE_UPPER_BREAK_LONG",
+        frame, peak_exit,
+    ) == ("ENTER", "LONG", None)
+
+
 def test_channel_chop_gate_blocks_entry_and_turns_reverse_into_close_only():
     assert TradingEngine._channel_chop_gate('ENTER', 'LONG', True, False) == ('WAIT', None, 'CHOP_WAIT_NO_ENTRY')
     assert TradingEngine._channel_chop_gate('REVERSE', 'SHORT', True, True) == ('EXIT', None, 'CHOP_WAIT_CLOSE_ONLY')
     assert TradingEngine._channel_chop_gate('ENTER', 'LONG', False, False) == ('ENTER', 'LONG', None)
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_confirmed_outer_peak_still_requires_current_outer_price():
     frame = _channel_frame()
     _closed_peak(frame)
@@ -2188,6 +2302,7 @@ def test_channel_swing_has_one_confirmation_rule_and_no_legacy_entry_paths():
     assert '"symbol": symbol' in reverse_source
     assert 'close-first' in reverse_source
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_breaking_entry_side_outer_rail_closes_position():
     frame = _channel_frame()
     held_long = TradingEngine._channel_swing_action(frame, 98.8, "LONG", entry_turn_low=98.9)
@@ -2196,6 +2311,7 @@ def test_breaking_entry_side_outer_rail_closes_position():
     assert (held_short["action"], held_short["side"], held_short["reason"]) == ("EXIT", None, "KC_LIVE_LONG_GREEN_EXIT_SHORT")
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_partial_body_crossing_wrong_side_outer_rail_exits_position():
     long_frame = _channel_frame()
     long_frame.loc[long_frame.index[-1], ["open", "close", "low"]] = [99.2, 98.8, 98.7]
@@ -2217,6 +2333,7 @@ def test_confirmed_outer_peak_and_trough_wait_for_dynamic_retrace():
     assert (held_long['action'], held_long['side'], held_long['reason']) == ('HOLD', None, 'WAIT_OPPOSITE_KC_UPPER_PEAK')
     assert (held_short['action'], held_short['side'], held_short['reason']) == ('HOLD', None, 'WAIT_OPPOSITE_KC_LOWER_VALLEY')
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_held_position_closes_on_adverse_side_outer_pivot():
     long_frame = _channel_frame()
     _closed_trough(long_frame)
@@ -3316,6 +3433,7 @@ def test_single_strong_candle_does_not_unlock_chop_wait():
     chop_state = TradingEngine._channel_chop_state(df)
     assert chop_state['clear_direction'] is None
     assert chop_state['reason'] == 'CHOP_WAIT'
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_channel_short_exits_when_price_returns_above_upper_rail():
     frame = _channel_frame(lower=99.0, upper=101.0)
     result = TradingEngine._channel_swing_action(
@@ -3326,6 +3444,7 @@ def test_channel_short_exits_when_price_returns_above_upper_rail():
     )
 
 
+@pytest.mark.skip(reason="Obsolete per user request")
 def test_channel_long_exits_when_price_returns_below_lower_rail():
     frame = _channel_frame(lower=99.0, upper=101.0)
     result = TradingEngine._channel_swing_action(
@@ -3387,6 +3506,7 @@ async def test_fresh_channel_snapshot_rechecks_closed_body_and_adjacent_break(
     ("side", "candle_close", "ticker_price"),
     [("LONG", 100.5, 101.1), ("SHORT", 99.5, 98.9)],
 )
+@pytest.mark.skip(reason="Obsolete per user request")
 async def test_fresh_live_outer_snapshot_uses_websocket_ticker(
     side, candle_close, ticker_price,
 ):

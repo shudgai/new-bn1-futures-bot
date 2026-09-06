@@ -216,6 +216,10 @@ class TradingEngine:
         # Channel Swing 平倉後，同一根 live K 不得再次用任何入口重開。
         # 下一根已收盤 K 出現後自動解鎖；即時同 K 反手規格不受影響。
         self._channel_swing_last_exit_bar: Dict[str, object] = {}
+        # 三點峰谷平倉後，記錄幣種、被平倉方向（同向重開倉在通道外應被封鎖）
+        # 以及平倉時的 closed_bar_id，用於後續重開倉冷卻判斷。
+        # 格式：{symbol: {"side": "LONG"|"SHORT", "bar_id": ..., "bar_count": int}}
+        self._channel_swing_peak_exit_info: Dict[str, dict] = {}
         # 盤整鎖：均線與 KC 中軌反覆交叉時，外軌 V 只可作為持倉離場
         # 確認，不得開新倉或平倉後立即反手。需三根已收盤 K 明確同向才解鎖。
         self._channel_chop_locked: Dict[str, bool] = {}
@@ -1163,9 +1167,9 @@ class TradingEngine:
                         else:
                             pnl_pct = (entry_price - live_price) / entry_price
 
-                        # Channel Swing 完全交由主循環管理：逆向 KC 外軌立即
-                        # 平倉；獲利側則等待 KC 外軌 MA3 峰／谷。不使用固定
-                        # 停損、舊結構破壞或移動停利。
+                        # Channel Swing 完全交由主循環管理：只等待有利側 KC 外軌
+                        # MA3 峰／谷且淨利為正時平倉；不使用固定停損、
+                        # 舊結構破壞或移動停利。
                         if entry_mode.upper() == "CHANNEL_SWING":
                             if any(float(position.get(key) or 0.0) != 0.0 for key in (
                                 "sl", "initial_sl", "initial_risk",
@@ -3700,7 +3704,7 @@ class TradingEngine:
                     position["channel_energy_score"] = self._channel_candidate_energy(signal)
             order_type = "支撐限價" if is_limit else "市價"
             protection_text = (
-                "逆向KC外軌平倉／獲利側等待MA3峰谷"
+                "有利側KC外軌MA3峰谷確認且淨利為正才平倉"
                 if channel_swing_no_stop
                 else f"硬停損 {sl:.8g}｜風險 {initial_risk:.8g}"
             )
@@ -4819,6 +4823,14 @@ class TradingEngine:
             return False
         profit_potential_pct = self._candidate_profit_potential(symbol, side, atr, price)
         return profit_potential_pct >= NET_PROFIT_GUARANTEE_BUFFER * 100.0
+
+    @staticmethod
+    def _channel_entry_requires_profit_room(reason: str | None) -> bool:
+        """Live KC outer breaks are immediate; other entries need net room."""
+        return str(reason or "") not in {
+            "KC_LIVE_UPPER_BREAK_LONG",
+            "KC_LIVE_LOWER_BREAK_SHORT",
+        }
 
     @staticmethod
     def _channel_recent_candles_whipsawing(
@@ -6477,46 +6489,134 @@ class TradingEngine:
     def _channel_immediate_outer_break_action(
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
-        """Enter immediately when a flat symbol reaches either live KC outer rail."""
-        if frame is None or len(frame) < 2 or not {"kc_upper", "kc_lower", "open", "close"}.issubset(frame.columns):
-            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_UNAVAILABLE"}
+        """Enter immediately according to new breakout entry rules."""
+        required = {"open", "high", "low", "close", "kc_upper", "kc_lower"}
+        if (
+            frame is None
+            or len(frame) < 4
+            or not required.issubset(frame.columns)
+        ):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_UNAVAILABLE",
+            }
         try:
             price = float(live_price)
             live = frame.iloc[-1]
-            candidate = frame.iloc[-2]
+            c2 = frame.iloc[-2]
+            c3 = frame.iloc[-3]
+            
             upper = float(live["kc_upper"])
             lower = float(live["kc_lower"])
-            candidate_close = float(candidate["close"])
-            candidate_open = float(candidate["open"])
-            candidate_upper = float(candidate["kc_upper"])
-            candidate_lower = float(candidate["kc_lower"])
-            prev_prev_close = float(frame.iloc[-3]["close"]) if len(frame) >= 3 else candidate_open
+            live_open = float(live["open"])
+            
+            c2_open = float(c2["open"])
+            c2_close = float(c2["close"])
+            c2_high = float(c2["high"])
+            c2_low = float(c2["low"])
+            c2_upper = float(c2["kc_upper"])
+            c2_lower = float(c2["kc_lower"])
+            
+            c3_open = float(c3["open"])
+            c3_close = float(c3["close"])
+            c3_high = float(c3["high"])
+            c3_low = float(c3["low"])
+            c3_upper = float(c3["kc_upper"])
+            c3_lower = float(c3["kc_lower"])
         except (TypeError, ValueError, IndexError, KeyError):
-            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
-        if not all(math.isfinite(value) for value in (price, upper, lower)) or lower >= upper:
-            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_OUTER_DATA_INVALID"}
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_INVALID",
+            }
+        if (
+            not all(math.isfinite(value) for value in (price, upper, lower))
+            or price <= 0.0
+            or lower >= upper
+        ):
+            return {
+                "action": "WAIT", "side": None,
+                "reason": "KC_LIVE_OUTER_DATA_INVALID",
+            }
+
+        # --- LONG Logic ---
+        live_green = price > live_open
+        c2_green = c2_close > c2_open
+        c3_green = c3_close > c3_open
+        
+        # 1. 第一根就開：現價破軌，且破軌前(c2)也是同色K (若更前面c3也是同色，代表趨勢已成形)
+        if price >= upper and c2_green and c3_green:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+
+        # 突破 K 後的緊接第二根已收盤綠 K 確認進場；第三根顏色不再影響訊號。
+        if c3_high >= c3_upper and c2_green:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+            }
             
-        live_long = price >= upper
-        retro_long = (
-            candidate_close > candidate_open
-            and candidate_close >= candidate_upper
-            and price > candidate_open
-            and price > prev_prev_close
-        )
-        if live_long or retro_long:
-            return {"action": "ENTER", "side": "LONG", "reason": "KC_LIVE_UPPER_BREAK_LONG", "kc_upper": upper, "kc_lower": lower}
+        # 2. 第二根同色開倉：前一根(c2)破軌，且當前(live)是同色K (綠K)
+        if c2_high >= c2_upper and live_green:
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+            }
             
-        live_short = price <= lower
-        retro_short = (
-            candidate_close < candidate_open
-            and candidate_close <= candidate_lower
-            and price < candidate_open
-            and price < prev_prev_close
-        )
-        if live_short or retro_short:
-            return {"action": "ENTER", "side": "SHORT", "reason": "KC_LIVE_LOWER_BREAK_SHORT", "kc_upper": upper, "kc_lower": lower}
+        # 3. 第一根綠色突破後，第三根重新強綠才評估開倉；第二根顏色不限制。
+        if c3_high >= c3_upper and c3_green and live_green and (price >= upper or price >= c3_high):
+            return {
+                "action": "ENTER", "side": "LONG",
+                "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+
+        # --- SHORT Logic ---
+        live_red = price < live_open
+        c2_red = c2_close < c2_open
+        c3_red = c3_close < c3_open
+        
+        # 1. 第一根就開：現價破軌，且破軌前(c2)也是同色K
+        if price <= lower and c2_red and c3_red:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+
+        # 突破 K 後的緊接第二根已收盤紅 K 確認進場；第三根顏色不再影響訊號。
+        if c3_low <= c3_lower and c2_red:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+            }
             
-        return {"action": "WAIT", "side": None, "reason": "WAIT_LIVE_OUTER_BREAK", "kc_upper": upper, "kc_lower": lower}
+        # 2. 第二根同色開倉：前一根(c2)破軌，且當前(live)是同色K (紅K)
+        if c2_low <= c2_lower and live_red:
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+            
+        # 3. 第一根紅色突破後，第三根重新強紅才評估開倉；第二根顏色不限制。
+        if c3_low <= c3_lower and c3_red and live_red and (price <= lower or price <= c3_low):
+            return {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                "kc_upper": upper, "kc_lower": lower,
+            }
+
+        return {
+            "action": "WAIT", "side": None,
+            "reason": "WAIT_LIVE_OUTER_BREAK",
+            "kc_upper": upper, "kc_lower": lower,
+        }
 
     @staticmethod
     def _channel_live_outer_entry_action(
@@ -7139,7 +7239,139 @@ class TradingEngine:
             and closed_bar_id == last_exit_bar
         )
 
+    @staticmethod
+    def _channel_peak_exit_reentry_blocked(
+        action: str,
+        has_position: bool,
+        entry_side: str | None,
+        frame: "pd.DataFrame",
+        peak_exit_info: dict | None,
+        symbol: str,
+        max_bars: int = 3,
+    ) -> bool:
+        """三點峰谷平倉後，在價格仍位於外軌一側時封鎖同方向重開倉。
 
+        解鎖條件（滿足任一即可）：
+        1. 至少有一根已收盤 K 的收盤價回到 KC 通道內（確認轉折）。
+        2. 自峰谷平倉後，已過了 max_bars 根已收盤 K。
+        """
+        if not (
+            action == "ENTER"
+            and not has_position
+            and entry_side
+            and isinstance(peak_exit_info, dict)
+        ):
+            return False
+        exited_side = str(peak_exit_info.get("side") or "").upper()
+        if exited_side != str(entry_side or "").upper():
+            # 反向開倉不受峰谷冷卻限制
+            return False
+        bar_count = int(peak_exit_info.get("bar_count") or 0)
+        if bar_count >= max_bars:
+            return False
+        # 若最近一根已收盤 K 已回到 KC 通道內，解除封鎖
+        try:
+            required = {"close", "kc_upper", "kc_lower"}
+            if frame is not None and len(frame) >= 2 and required.issubset(frame.columns):
+                last_closed = frame.iloc[-2]
+                close_val = float(last_closed["close"])
+                upper_val = float(last_closed["kc_upper"])
+                lower_val = float(last_closed["kc_lower"])
+                if lower_val < close_val < upper_val:
+                    # 已收盤 K 回到通道內，解除封鎖
+                    return False
+        except (TypeError, ValueError, KeyError, IndexError):
+            pass
+        return True
+
+
+
+
+    @staticmethod
+    def _channel_entry_min_profit_ok(
+        action: str,
+        has_position: bool,
+        entry_side: str | None,
+        live_price: float,
+        frame: "pd.DataFrame",
+    ) -> bool:
+        """進場前預估最大利潤空間：從現價到 KC 對側軌的百分比距離，
+        剖掉雙算手續費和滑點後必須 >= 0（至少不虍本）才准進場。"""
+        if not (action == "ENTER" and not has_position and entry_side and live_price > 0):
+            return True  # 不適用則直接放行
+        side = str(entry_side or "").upper()
+        if side not in ("LONG", "SHORT"):
+            return True
+        try:
+            from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT  # type: ignore
+            required = {"kc_upper", "kc_lower"}
+            if frame is None or frame.empty or not required.issubset(frame.columns):
+                return True
+            live_row = frame.iloc[-1]
+            upper = float(live_row["kc_upper"])
+            lower = float(live_row["kc_lower"])
+            price = float(live_price)
+            if price <= 0 or upper <= 0 or lower <= 0 or upper <= lower:
+                return True
+            # 目標軌取對側軌中軌（保守估算：對側軌間 50% 處）
+            if side == "LONG":
+                # 多單：目標為 KC 上軌外，至少需多於手續費+滑點的空間
+                target = (upper + lower) / 2.0  # 中軌作為保守目標
+                gross_pct = (target - price) / price
+            else:
+                target = (upper + lower) / 2.0
+                gross_pct = (price - target) / price
+            round_trip_cost_pct = 2.0 * max(float(TAKER_FEE_RATE), 0.0) + max(float(SLIPPAGE_PCT), 0.0)
+            return gross_pct >= round_trip_cost_pct
+        except Exception:
+            return True  # 計算失敗則不阻擋
+
+    @staticmethod
+    def _channel_peak_exit_entry_gate(
+        action: str,
+        has_position: bool,
+        entry_side: str | None,
+        signal_reason: str | None,
+        frame: "pd.DataFrame",
+        peak_exit_info: dict | None,
+    ) -> tuple[str, str | None, str | None]:
+        """峰谷獲利平倉後，只允許有足夠延伸空間的再次外軌突破。"""
+        if not (
+            action == "ENTER"
+            and not has_position
+            and entry_side
+            and isinstance(peak_exit_info, dict)
+        ):
+            return action, entry_side, None
+        if str(peak_exit_info.get("side") or "").upper() != str(entry_side).upper():
+            return action, entry_side, None
+
+        strong_break_reasons = {
+            "KC_LIVE_UPPER_BREAK_LONG",
+            "KC_LIVE_LOWER_BREAK_SHORT",
+        }
+        if str(signal_reason or "") not in strong_break_reasons:
+            return "HOLD", None, "PEAK_EXIT_WAIT_STRONG_OUTER_BREAK"
+
+        try:
+            from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
+            row = frame.iloc[-1]
+            price = float(row["close"])
+            atr = float(row.get("atr") or 0.0)
+            upper = float(row["kc_upper"])
+            lower = float(row["kc_lower"])
+            if price <= 0.0 or atr <= 0.0 or upper <= lower:
+                return "HOLD", None, "PEAK_EXIT_PROFIT_SPACE_TOO_SMALL"
+            required_pct = (
+                2.0 * max(float(TAKER_FEE_RATE), 0.0)
+                + max(float(SLIPPAGE_PCT), 0.0)
+            )
+            projected_move_pct = atr / price
+            if projected_move_pct < required_pct:
+                return "HOLD", None, "PEAK_EXIT_PROFIT_SPACE_TOO_SMALL"
+        except (TypeError, ValueError, KeyError, IndexError):
+            return "HOLD", None, "PEAK_EXIT_PROFIT_SPACE_TOO_SMALL"
+        return action, entry_side, None
 
     @staticmethod
     def _channel_upper_red_short_reversal_allowed(
@@ -7221,8 +7453,6 @@ class TradingEngine:
             "KC_LOWER_STEEP_GREEN_EXIT",
             "THREE_RED_FALLING_CLOSE_EXIT_LONG",
             "THREE_GREEN_RISING_CLOSE_EXIT_SHORT",
-            "KC_LIVE_LONG_RED_EXIT_LONG",
-            "KC_LIVE_LONG_GREEN_EXIT_SHORT",
         }
 
 
@@ -7619,19 +7849,17 @@ class TradingEngine:
         ):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        if held_side in ("LONG", "SHORT"):
-            live_adverse_action = TradingEngine._channel_live_adverse_candle_action(
-                frame, price, held_side,
-            )
-            if live_adverse_action.get("action") in ("EXIT", "REVERSE"):
-                return live_adverse_action
-
         # 空手進場由主流程先判斷即時 KC 外側，再判斷通道內觸軌與其他方式。
+        
+        # 持倉時若反向強勢破軌，優先觸發立即反手，等同於空手時的破軌開倉
+        if held_side in ("LONG", "SHORT"):
+            breakout_action = TradingEngine._channel_immediate_outer_break_action(frame, price)
+            if breakout_action.get("action") == "ENTER" and breakout_action.get("side") != held_side:
+                breakout_action["action"] = "REVERSE"
+                return breakout_action
 
-        # 持倉先處理逆向 KC 外軌風險；未逆向破軌時，獲利側仍等待
-        # 對側 KC 外軌形成已確認 MA3 峰／谷才平倉。
-        # 確認 K 可已回到通道內；否則 MA3 真正確認轉頭時，價格往往已
-        # 離開外軌，會錯過峰／谷並把已取得的利潤還回去。
+        # 持倉只等待有利側 KC 外軌形成已確認 MA3 峰／谷；確認時
+        # 現價必須仍在該外軌，且扣除進出成本後為正淨利。
         # 峰／谷必須是完整三點局部極值。只檢查候選後一根會把已經
         # 連續下降／上升的 MA3 誤認為新峰頂／谷底，造成過早平倉。
         # 不把單一最小跳動造成的 MA3 浮點微彎視為反向極值。PUMP 這筆
@@ -7739,7 +7967,6 @@ not all(math.isfinite(value) for value in (
                         and after_ma3 < candidate_ma3 - 1e-12
                         and after_ma3 <= candidate_ma3 - turn_threshold
                         and candidate_high - price >= retrace_threshold
-                        and price >= upper
                     ):
                         return True
                 elif side == "SHORT":
@@ -7750,7 +7977,6 @@ not all(math.isfinite(value) for value in (
                         and after_ma3 > candidate_ma3 + 1e-12
                         and after_ma3 >= candidate_ma3 + turn_threshold
                         and price - candidate_low >= retrace_threshold
-                        and price <= lower
                     ):
                         return True
             return False
@@ -7808,48 +8034,6 @@ not all(math.isfinite(value) for value in (
         closed_ma3_peak = recent_confirmed_outer_turn("LONG")
         closed_ma3_trough = recent_confirmed_outer_turn("SHORT")
 
-        def chop_timeout_exit(side: str) -> bool:
-            """長時間窄幅盤整才退出；有方向趨勢時絕不因計時器平倉。"""
-            if not position_open_timestamp or len(frame) < 18:
-                return False
-            try:
-                age_sec = time.time() - float(position_open_timestamp)
-                if age_sec < 40.0 * 60.0:
-                    return False
-                closed = frame.iloc[-16:-1]
-                inside = ((closed["close"] > closed["kc_lower"]) & (closed["close"] < closed["kc_upper"])).mean()
-                width_pct = (upper - lower) / max(abs((upper + lower) / 2.0), 1e-12)
-                atr_now = float(row.get("atr") or 0.0)
-                if atr_now <= 0.0:
-                    atr_now = max((upper - lower) / 2.0, abs(price) * 1e-6)
-                middle = (upper + lower) / 2.0
-                recent = closed.iloc[-2:]
-                recent_inside = ((recent["close"] > recent["kc_lower"]) & (recent["close"] < recent["kc_upper"])).all()
-                recent_middle = ((recent["close"] - ((recent["kc_upper"] + recent["kc_lower"]) / 2.0)).abs() <= (recent["kc_upper"] - recent["kc_lower"]).abs() * 0.35).all()
-                ma3_values = pd.to_numeric(closed["ma3"], errors="coerce").dropna()
-                close_values = pd.to_numeric(closed["close"], errors="coerce").dropna()
-                if len(ma3_values) < 5 or len(close_values) < 5:
-                    return False
-                ma3_delta = float(ma3_values.iloc[-1] - ma3_values.iloc[-5])
-                close_delta = float(close_values.iloc[-1] - close_values.iloc[-5])
-                directional = (
-                    side == "LONG" and ma3_delta > atr_now * 0.08 and close_delta > atr_now * 0.08
-                ) or (
-                    side == "SHORT" and ma3_delta < -atr_now * 0.08 and close_delta < -atr_now * 0.08
-                )
-                near_middle = abs(price - middle) <= max(atr_now * 0.75, abs(middle) * 0.001)
-                return bool(
-                    inside >= 0.80
-                    and width_pct <= 0.008
-                    and not directional
-                    and near_middle
-                    and recent_inside
-                    and recent_middle
-                    and lower < price < upper
-                )
-            except (TypeError, ValueError, KeyError, IndexError):
-                return False
-
         def trend_resuming(side: str) -> bool:
             """峰谷候選後若原方向重新恢復，不要提前下車。"""
             try:
@@ -7875,24 +8059,114 @@ not all(math.isfinite(value) for value in (
             except (TypeError, ValueError, KeyError, IndexError):
                 return False
 
+        # ──────────────────────────────────────────────────────────────
+        # 不利側 KC 外軌觸及：立即平倉（用戶明確指示：觸及下軌馬上出多單；
+        # 異常大紅 K 更不能拖；若空單訊號強勢則同時反手。多空鏡像。）
+        # ──────────────────────────────────────────────────────────────
+        def is_abnormal_candle(side: str) -> bool:
+            """判斷最近一根已收盤 K 是否為異常大 K（相對 KC 寬度）。"""
+            try:
+                last = frame.iloc[-2]
+                body = abs(float(last["close"]) - float(last["open"]))
+                kc_width = max(float(last["kc_upper"]) - float(last["kc_lower"]), 1e-12)
+                # 實體 >= KC 寬度 30% 視為異常大 K
+                return body >= kc_width * 0.30
+            except (TypeError, ValueError, KeyError, IndexError):
+                return False
+
+        def trend_failed(side: str) -> bool:
+            """趨勢明確失敗：連續三根收反向 K，或實體收盤明確越過 KC 中軌。"""
+            try:
+                last_3 = frame.iloc[-4:-1]
+                if len(last_3) < 3:
+                    return False
+                last = last_3.iloc[-1]
+                middle = (float(last["kc_upper"]) + float(last["kc_lower"])) / 2.0
+                if side == "LONG":
+                    consecutive_red = all(float(r["close"]) < float(r["open"]) for _, r in last_3.iterrows())
+                    below_middle = float(last["close"]) < middle
+                    return consecutive_red or below_middle
+                else:
+                    consecutive_green = all(float(r["close"]) > float(r["open"]) for _, r in last_3.iterrows())
+                    above_middle = float(last["close"]) > middle
+                    return consecutive_green or above_middle
+            except Exception:
+                return False
+
+        def adverse_kc_outer_hit(side: str) -> bool:
+            """現價或已收盤 K 的最低（多單）/ 最高（空單）是否觸及對側 KC 外軌。"""
+            try:
+                last = frame.iloc[-2]
+                if side == "LONG":
+                    adverse_low = min(float(last["low"]), live_low)
+                    return adverse_low <= lower
+                else:
+                    adverse_high = max(float(last["high"]), live_high)
+                    return adverse_high >= upper
+            except (TypeError, ValueError, KeyError, IndexError):
+                return False
+
+        def strong_opposite_signal(held: str) -> bool:
+            """判斷是否已經有強勢反手訊號（例如：破中軌且動能強，或破對側外軌）。"""
+            try:
+                last = frame.iloc[-2]
+                middle = (float(last["kc_upper"]) + float(last["kc_lower"])) / 2.0
+                if held == "LONG":
+                    # 空單強勢：已收盤 K 收盤低於下軌，或強勢收低於中軌
+                    return float(last["close"]) < float(last["kc_lower"]) or (float(last["close"]) < middle and float(last["open"]) > middle)
+                else:
+                    # 多單強勢：已收盤 K 收盤高於上軌，或強勢收高於中軌
+                    return float(last["close"]) > float(last["kc_upper"]) or (float(last["close"]) > middle and float(last["open"]) < middle)
+            except (TypeError, ValueError, KeyError, IndexError):
+                return False
+
         if held_side == "LONG":
-            # 僅在持倉超過40分鐘且確定窄幅盤整時，才啟用保護性逾時平倉。
-            if chop_timeout_exit("LONG"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_LONG"}
-            # 候選 K 在上軌外形成 MA3 三點峰頂後，確認 K 可以是已回到
-            # 通道內的綠 K；不得再次要求現價仍在上軌外，否則峰頂確認
-            # 時會因價格已回軌而錯過正確出口。
-            if closed_ma3_peak and not trend_resuming("LONG"):
+            # ① 不利側觸及 或 趨勢明確失敗：提早平倉或反手
+            if adverse_kc_outer_hit("LONG") or trend_failed("LONG"):
+                abnormal = is_abnormal_candle("LONG")
+                if strong_opposite_signal("LONG"):
+                    # 空單已強勢 → 平多並反手開空
+                    return {
+                        "action": "REVERSE", "side": "SHORT",
+                        "kc_upper": upper, "kc_lower": lower,
+                        "reason": "TREND_FAILED_REVERSE_SHORT" + ("_ABNORMAL" if abnormal else ""),
+                    }
+                return {
+                    "action": "EXIT", "side": None,
+                    "kc_upper": upper, "kc_lower": lower,
+                    "reason": "TREND_FAILED_EXIT_LONG" + ("_ABNORMAL" if abnormal else ""),
+                }
+            # ② 有利側峰頂三點平倉（原有邏輯）
+            if (
+                exit_net_profitable
+                and closed_ma3_peak
+                and not trend_resuming("LONG")
+            ):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_UPPER_PEAK"}
 
         if held_side == "SHORT":
-            # 僅在持倉超過40分鐘且確定窄幅盤整時，才啟用保護性逾時平倉。
-            if chop_timeout_exit("SHORT"):
-                return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_CHOP_TIMEOUT_EXIT_SHORT"}
-            # SHORT 完全鏡像：下軌外三點谷底確認後，通道內紅 K 也能
-            # 完成平倉，不要求確認當下仍位於下軌外。
-            if closed_ma3_trough and not trend_resuming("SHORT"):
+            # ① 不利側觸及 或 趨勢明確失敗：提早平倉或反手
+            if adverse_kc_outer_hit("SHORT") or trend_failed("SHORT"):
+                abnormal = is_abnormal_candle("SHORT")
+                if strong_opposite_signal("SHORT"):
+                    # 多單已強勢 → 平空並反手開多
+                    return {
+                        "action": "REVERSE", "side": "LONG",
+                        "kc_upper": upper, "kc_lower": lower,
+                        "reason": "TREND_FAILED_REVERSE_LONG" + ("_ABNORMAL" if abnormal else ""),
+                    }
+                return {
+                    "action": "EXIT", "side": None,
+                    "kc_upper": upper, "kc_lower": lower,
+                    "reason": "TREND_FAILED_EXIT_SHORT" + ("_ABNORMAL" if abnormal else ""),
+                }
+            # ② 有利側谷底三點平倉（原有邏輯）
+            if (
+                exit_net_profitable
+                and closed_ma3_trough
+                and not trend_resuming("SHORT")
+            ):
                 return {"action": "EXIT", "side": None, "kc_upper": upper, "kc_lower": lower, "reason": "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "WAIT_OPPOSITE_KC_LOWER_VALLEY"}
 
@@ -7902,6 +8176,7 @@ not all(math.isfinite(value) for value in (
             "reason": "WAIT_KC_OUTER_TREND_ENTRY",
             "turn_low": None, "turn_high": None,
         }
+
 
     @staticmethod
     def _is_continuous_wave_position(position: dict, meta: dict | None = None) -> bool:
@@ -7972,47 +8247,6 @@ not all(math.isfinite(value) for value in (
             (side == "LONG" and kc_lower > 0 and live_price < kc_lower)
             or (side == "SHORT" and kc_upper > 0 and live_price > kc_upper)
         )
-
-    @staticmethod
-    def _channel_live_adverse_candle_action(
-        frame: pd.DataFrame, live_price: float, position_side: str,
-    ) -> dict:
-        """Exit immediately when a live adverse candle moves beyond the wrong-side KC rail."""
-        required = {"open", "kc_upper", "kc_lower"}
-        if frame is None or frame.empty or not required.issubset(frame.columns):
-            return {"action": "HOLD", "side": None, "reason": "WAIT_LIVE_ADVERSE_CANDLE"}
-        try:
-            live = frame.iloc[-1]
-            side = str(position_side or "").upper()
-            price = float(live_price)
-            live_open = float(live["open"])
-            upper = float(live["kc_upper"])
-            lower = float(live["kc_lower"])
-        except (TypeError, ValueError, IndexError, KeyError):
-            return {"action": "HOLD", "side": None, "reason": "WAIT_LIVE_ADVERSE_CANDLE"}
-        if (
-            side not in ("LONG", "SHORT")
-            or not all(math.isfinite(value) for value in (
-                price, live_open, upper, lower,
-            ))
-            or lower >= upper
-        ):
-            return {"action": "HOLD", "side": None, "reason": "WAIT_LIVE_ADVERSE_CANDLE"}
-
-        adverse = bool(
-            side == "LONG" and price < lower and price < live_open
-            or side == "SHORT" and price > upper and price > live_open
-        )
-        if not adverse:
-            return {"action": "HOLD", "side": None, "reason": "WAIT_LIVE_ADVERSE_CANDLE"}
-        return {
-            "action": "EXIT", "side": None,
-            "reason": (
-                "KC_LIVE_LONG_RED_EXIT_LONG"
-                if side == "LONG" else "KC_LIVE_LONG_GREEN_EXIT_SHORT"
-            ),
-            "kc_upper": upper, "kc_lower": lower,
-        }
 
     @staticmethod
     def _confirmed_outer_reversal(
@@ -8594,10 +8828,20 @@ not all(math.isfinite(value) for value in (
                     ) if existing_pos else False,
                 )
                 # Channel Swing 正常持倉不套用固定金額或比例停損；
-                # 急速逆向大瀑布保護由帳戶層負責。
+                # 主流程只採用有利側 KC 外軌 MA3 峰／谷淨利出口。
+                # 例外：當淨虧損超過錢包上限（CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT）時，
+                # 強制平倉以保護帳戶，防止持倉被鎖死於對側外軌趨勢中。
                 hard_loss_action = {"action": "HOLD"}
-                # Channel Swing 只保留對側 KC 外軌峰谷確認；帳戶層另保留
-                # 急速逆向大瀑布防護，不使用固定或移動停利。
+                if existing_pos:
+                    _wallet_bal = float(getattr(self.account, "balance", 0.0))
+                    hard_loss_action = self._channel_max_net_loss_action(
+                        existing_pos, channel_price, _wallet_bal,
+                        CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT,
+                    )
+                    if hard_loss_action.get("action") == "EXIT":
+                        channel_action = hard_loss_action
+                # 新倉不使用 KC 通道內的 MA3 趨勢路徑，也不因持倉時間、
+                # 不利 K 顏色或不利側 KC 外軌提早平倉。
                 # 新倉不再使用 KC 通道內的 MA3 趨勢路徑。
                 self._channel_inner_trend_hold.pop(symbol, None)
                 # 盤整突破資格取自目前 K 線狀態，不依賴程序記憶中的鎖定旗標。
@@ -8689,23 +8933,6 @@ not all(math.isfinite(value) for value in (
                     "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
                     "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
                 }
-                if not existing_pos and action == "ENTER" and target_side:
-                    current_upper = float(channel_df["kc_upper"].iloc[-1])
-                    current_lower = float(channel_df["kc_lower"].iloc[-1])
-                    at_current_outer = (
-                        target_side == "LONG" and channel_price >= current_upper
-                    ) or (
-                        target_side == "SHORT" and channel_price <= current_lower
-                    )
-                    if not at_current_outer:
-                        action, target_side = "WAIT", None
-                        channel_action["reason"] = "WAIT_CURRENT_KC_OUTER_ENTRY"
-                        self._record_channel_signal_event(
-                            symbol, "WAIT_CURRENT_KC_OUTER_ENTRY", channel_df,
-                        )
-                        signal_progress.append(
-                            f"{coin} 尚未位於 KC 外側，不開倉"
-                        )
                 if (
                     not existing_pos
                     and action == "ENTER"
@@ -8757,6 +8984,10 @@ not all(math.isfinite(value) for value in (
                     "OPPOSITE_LOWER_OUTER_DOWNTREND",
                     "KC_UPPER_OUTER_PEAK_REVERSE",
                     "KC_LOWER_OUTER_VALLEY_REVERSE",
+                    "TREND_FAILED_REVERSE_LONG",
+                    "TREND_FAILED_REVERSE_SHORT",
+                    "KC_LIVE_UPPER_BREAK_LONG",
+                    "KC_LIVE_LOWER_BREAK_SHORT",
                 }
                 if (
                     existing_pos
@@ -8774,6 +9005,7 @@ not all(math.isfinite(value) for value in (
                     action == "REVERSE"
                     and target_side == "LONG"
                     and self._channel_is_upper_red_peak_short(existing_pos or {})
+                    and channel_action.get("reason") != "KC_LIVE_UPPER_BREAK_LONG"
                     and not self._channel_upper_red_short_reversal_allowed(
                         channel_df, channel_price,
                     )
@@ -8801,6 +9033,16 @@ not all(math.isfinite(value) for value in (
                 channel_closed_bar_id = (
                     channel_df.index[-2] if len(channel_df) >= 2 else None
                 )
+                # 三點峰谷冷卻計數：每當出現新的已收盤 K，bar_count +1
+                _pei = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
+                if (
+                    _pei is not None
+                    and channel_closed_bar_id is not None
+                    and channel_closed_bar_id != _pei.get("bar_id")
+                ):
+                    _pei["bar_count"] = int(_pei.get("bar_count") or 0) + 1
+                    _pei["bar_id"] = channel_closed_bar_id
+
                 if self._channel_entry_reuses_exit_bar(
                     action, bool(existing_pos), channel_closed_bar_id,
                     getattr(self, "_channel_swing_last_exit_bar", {}).get(symbol),
@@ -8808,6 +9050,44 @@ not all(math.isfinite(value) for value in (
                     action = "HOLD"
                     target_side = None
                     channel_action["reason"] = "EXIT_BAR_ALREADY_USED"
+                # 三點峰谷平倉後，同方向重開倉冷卻保護：
+                # 價格仍在外軌且尚未有已收盤 K 回到通道內時，封鎖同方向重開。
+                _peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
+                if action == "ENTER" and self._channel_peak_exit_reentry_blocked(
+                    action, bool(existing_pos), target_side,
+                    channel_df, _peak_exit_info, symbol,
+                ):
+                    action = "HOLD"
+                    target_side = None
+                    _blk_count = int(_peak_exit_info.get("bar_count") or 0) if _peak_exit_info else 0
+                    channel_action["reason"] = f"PEAK_EXIT_REENTRY_COOLDOWN_BAR{_blk_count}"
+                action, target_side, peak_entry_gate_reason = (
+                    self._channel_peak_exit_entry_gate(
+                        action, bool(existing_pos), target_side,
+                        channel_action.get("reason"), channel_df,
+                        _peak_exit_info,
+                    )
+                )
+                if peak_entry_gate_reason:
+                    channel_action["reason"] = peak_entry_gate_reason
+                # 進場前預估利潤門檻：現價到 KC 中軌的預估空間必須套得住雙邊手續費+滑點。
+                # 但注意：即時外軌突破（破軌追單）的目標不是中軌而是順勢發展，
+                # 若套用此公式會算出負利潤而被擋下。因此排除突破類訊號。
+                _is_breakout_entry = channel_action.get("reason") in {
+                    "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                    "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
+                    "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
+                }
+                if (
+                    action == "ENTER"
+                    and not _is_breakout_entry
+                    and not self._channel_entry_min_profit_ok(
+                        action, bool(existing_pos), target_side, channel_price, channel_df,
+                    )
+                ):
+                    action = "HOLD"
+                    target_side = None
+                    channel_action["reason"] = "ENTRY_PROFIT_SPACE_TOO_SMALL"
                 if (
                     action == "REVERSE"
                     and not self._channel_is_immediate_outer_rechase(
@@ -8877,7 +9157,13 @@ not all(math.isfinite(value) for value in (
                         f"({volume_ratio:.2f}x<{KELTNER_MIN_VOLUME_RATIO:.2f}x)，"
                         "不開倉並繼續找其他幣"
                     )
-                if action in ("ENTER", "REVERSE") and target_side:
+                if (
+                    action in ("ENTER", "REVERSE")
+                    and target_side
+                    and self._channel_entry_requires_profit_room(
+                        channel_action.get("reason")
+                    )
+                ):
                     entry_atr = float(channel_df["atr"].iloc[-1] or 0.0)
                     entry_profit_pct = self._candidate_profit_potential(
                         symbol, target_side, entry_atr, channel_price,
@@ -8985,6 +9271,20 @@ not all(math.isfinite(value) for value in (
                     if closed:
                         if channel_closed_bar_id is not None:
                             self._channel_swing_last_exit_bar[symbol] = channel_closed_bar_id
+                        # 三點峰谷平倉時，記錄冷卻資訊；其他平倉（趨勢斷、LOW_VOLUME）清除記錄
+                        _peak_exit_reasons = {
+                            "KC_UPPER_PEAK_CHANNEL_REENTRY_EXIT",
+                            "KC_LOWER_VALLEY_CHANNEL_REENTRY_EXIT",
+                        }
+                        if exit_reason in _peak_exit_reasons:
+                            _exited_side = str(existing_pos.get("side") or "").upper()
+                            self._channel_swing_peak_exit_info[symbol] = {
+                                "side": _exited_side,
+                                "bar_id": channel_closed_bar_id,
+                                "bar_count": 0,
+                            }
+                        else:
+                            self._channel_swing_peak_exit_info.pop(symbol, None)
                         if self._channel_exit_requests_rotation(exit_reason) or "LOW_VOLUME" in exit_reason:
                             request_replacement = getattr(
                                 self.symbol_rotation, "request_replacement", None,
@@ -9001,13 +9301,10 @@ not all(math.isfinite(value) for value in (
                             )
                         else:
                             close_text = (
-                                f"⏹️ [Channel Swing] {symbol} 不利顏色盤中K突破KC外軌，已立即平倉"
-                                if exit_reason.startswith("KC_LIVE_LONG_")
-                                else
                                 f"⏹️ [Channel Swing] {symbol} 順勢動能結束，"
                                 "反向K回到KC通道，已平倉"
                                 if exit_reason.startswith("KC_TREND_")
-                                else f"⏹️ [Channel Swing] {symbol} 峰谷確認，已平倉"
+                                else f"⏹️ [Channel Swing] {symbol} 外軌峰谷確認且淨利為正，已平倉"
                             )
                             self.account.log(close_text, "SUCCESS")
                     return signal_progress, detected_candidates
