@@ -8777,6 +8777,7 @@ class TradingEngine:
                     "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                     "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
                     "KC_OUTER_CONTINUATION_LONG_4BAR", "KC_OUTER_CONTINUATION_SHORT_4BAR",
+                    "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 }
                 if (
                     not existing_pos
@@ -8799,6 +8800,7 @@ class TradingEngine:
                         "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                         "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
                         "KC_UPPER_GREEN_REVERSE_LONG", "KC_LOWER_RED_REVERSE_SHORT",
+                        "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                     }
                     and not self._channel_outer_directional_entry_allowed(
                         channel_df, channel_price, target_side,
