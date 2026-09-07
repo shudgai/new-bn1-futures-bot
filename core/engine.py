@@ -1394,7 +1394,14 @@ class TradingEngine:
                         )
                         self.account.log(f"⚠️ [急速反向鎖利] {symbol} {close_reason}", "WARNING")
                         
-                        lock_price = curr_p * (1.0 - SLIPPAGE_PCT if side == "LONG" else 1.0 + SLIPPAGE_PCT)
+                        _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
+                        _entry_p = float(position.get("entry_price") or 0.0)
+                        if side == "LONG":
+                            _safe_lock = max(_entry_p, curr_p - _atr_buffer) if _entry_p > 0 else curr_p - _atr_buffer
+                            lock_price = min(curr_p * (1.0 - SLIPPAGE_PCT), _safe_lock)
+                        else:
+                            _safe_lock = min(_entry_p, curr_p + _atr_buffer) if _entry_p > 0 else curr_p + _atr_buffer
+                            lock_price = max(curr_p * (1.0 + SLIPPAGE_PCT), _safe_lock)
                         if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
                             position_meta = self.account.position_meta.setdefault(symbol, {})
                             position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
@@ -1429,7 +1436,14 @@ class TradingEngine:
                         close_reason = "EMERGENCY_EXIT_WATERFALL: 連續3根反向K急拉/跌>=2.5ATR"
                         self.account.log(f"🚨 [瀑布鎖利] {symbol} {close_reason}", "WARNING")
                         
-                        lock_price = curr_p * (1.0 - SLIPPAGE_PCT if side == "LONG" else 1.0 + SLIPPAGE_PCT)
+                        _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
+                        _entry_p = float(position.get("entry_price") or 0.0)
+                        if side == "LONG":
+                            _safe_lock = max(_entry_p, curr_p - _atr_buffer) if _entry_p > 0 else curr_p - _atr_buffer
+                            lock_price = min(curr_p * (1.0 - SLIPPAGE_PCT), _safe_lock)
+                        else:
+                            _safe_lock = min(_entry_p, curr_p + _atr_buffer) if _entry_p > 0 else curr_p + _atr_buffer
+                            lock_price = max(curr_p * (1.0 + SLIPPAGE_PCT), _safe_lock)
                         if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
                             position_meta = self.account.position_meta.setdefault(symbol, {})
                             position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
@@ -1466,7 +1480,14 @@ class TradingEngine:
                         close_reason = f"EMERGENCY_EXIT_2_CANDLE_CRASH: 連續兩根異常反向K>={RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f}ATR"
                         self.account.log(f"🚨 [連續異常K鎖利] {symbol} {close_reason}", "WARNING")
                         
-                        lock_price = curr_p * (1.0 - SLIPPAGE_PCT if side == "LONG" else 1.0 + SLIPPAGE_PCT)
+                        _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
+                        _entry_p = float(position.get("entry_price") or 0.0)
+                        if side == "LONG":
+                            _safe_lock = max(_entry_p, curr_p - _atr_buffer) if _entry_p > 0 else curr_p - _atr_buffer
+                            lock_price = min(curr_p * (1.0 - SLIPPAGE_PCT), _safe_lock)
+                        else:
+                            _safe_lock = min(_entry_p, curr_p + _atr_buffer) if _entry_p > 0 else curr_p + _atr_buffer
+                            lock_price = max(curr_p * (1.0 + SLIPPAGE_PCT), _safe_lock)
                         if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
                             position_meta = self.account.position_meta.setdefault(symbol, {})
                             position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
@@ -8855,11 +8876,14 @@ class TradingEngine:
                     entry_price = float(existing_pos.get("entry_price") or 0.0)
                     if entry_price > 0.0:
                         if channel_action.get("lock_to_market"):
-                            lock_price = channel_price * (
-                                1.0 - SLIPPAGE_PCT
-                                if existing_pos.get("side") == "LONG"
-                                else 1.0 + SLIPPAGE_PCT
-                            )
+                            _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
+                            _entry_p = float(existing_pos.get("entry_price") or 0.0)
+                            if existing_pos.get("side") == "LONG":
+                                _safe_lock = max(_entry_p, channel_price - _atr_buffer) if _entry_p > 0 else channel_price - _atr_buffer
+                                lock_price = min(channel_price * (1.0 - SLIPPAGE_PCT), _safe_lock)
+                            else:
+                                _safe_lock = min(_entry_p, channel_price + _atr_buffer) if _entry_p > 0 else channel_price + _atr_buffer
+                                lock_price = max(channel_price * (1.0 + SLIPPAGE_PCT), _safe_lock)
                         elif existing_pos.get("side") == "LONG":
                             lock_price = entry_price * (1.0 + 2.0 * TAKER_FEE_RATE) / max(1e-12, 1.0 - SLIPPAGE_PCT)
                         else:
