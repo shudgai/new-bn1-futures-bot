@@ -149,8 +149,10 @@ async def recover_bot_if_needed() -> bool:
 async def bot_supervisor_loop():
     while True:
         try:
-            await asyncio.sleep(BOT_SUPERVISOR_INTERVAL_SECONDS)
+            # Check immediately after startup so an unexpectedly stopped bot
+            # is not left inactive for the first supervisor interval.
             await recover_bot_if_needed()
+            await asyncio.sleep(BOT_SUPERVISOR_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -416,6 +418,8 @@ async def manual_order(req: ManualOrderRequest):
             "entry_mode": "CHANNEL_SWING",
             "wave_regime": "RANGE",
             "market_mode": "RANGE",
+            "manual_entry": True,
+            "managed_by_bot": True,
         },
     )
     if not success:
@@ -480,6 +484,11 @@ async def manual_close(req: ManualCloseRequest):
         
     success = await account.close_position(symbol, price, "手動平倉", is_manual=True)
     if success:
+        engine.release_manual_close_state(symbol)
+        account.log(
+            f"🤖 [手動平倉交棒] {symbol} 後續由機器人重新判斷趨勢與進場",
+            "INFO",
+        )
         return {"status": "success", "message": f"手動平倉 {symbol}"}
     if symbol in account.closing_lock or symbol not in account.positions:
         return {"status": "closing", "message": f"{symbol} 平倉處理中"}

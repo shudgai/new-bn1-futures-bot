@@ -8221,6 +8221,67 @@ class TradingEngine:
             ))
         )
 
+    def _take_over_manual_position(self, symbol: str, position: dict) -> bool:
+        """Adopt a manually opened position into the Channel Swing manager."""
+        meta = self.account.position_meta.setdefault(symbol, {})
+        entry_mode = str(
+            position.get("entry_mode") or meta.get("entry_mode") or ""
+        ).upper()
+        reason = str(position.get("reason") or meta.get("reason") or "")
+        is_manual = (
+            entry_mode == "MANUAL"
+            or "手動開倉" in reason
+            or "MANUAL" in reason.upper()
+        )
+        if not is_manual:
+            return False
+        if entry_mode == "CHANNEL_SWING":
+            changed = not (
+                position.get("managed_by_bot") is True
+                and meta.get("managed_by_bot") is True
+            )
+            if changed:
+                position["manual_entry"] = True
+                position["managed_by_bot"] = True
+                meta["manual_entry"] = True
+                meta["managed_by_bot"] = True
+                self.account.save_state()
+            return changed
+        position["entry_mode"] = "CHANNEL_SWING"
+        position["manual_entry"] = True
+        position["managed_by_bot"] = True
+        meta["entry_mode"] = "CHANNEL_SWING"
+        meta["manual_entry"] = True
+        meta["managed_by_bot"] = True
+        self.account.save_state()
+        self.account.log(
+            f"🤖 [手動倉接管] {symbol} {position.get('side')} 已交由 Channel Swing 管理",
+            "INFO",
+        )
+        return True
+
+    def release_manual_close_state(self, symbol: str) -> None:
+        """Let the strategy fully re-evaluate a symbol after a manual close."""
+        for state_name in (
+            "_channel_swing_last_exit_bar",
+            "_channel_swing_last_exit_at",
+            "_channel_swing_last_exit_side",
+            "_channel_emergency_reentry_wait",
+            "_channel_outer_reentry_after_exit",
+            "_channel_swing_peak_exit_info",
+        ):
+            state = getattr(self, state_name, None)
+            if isinstance(state, dict):
+                state.pop(symbol, None)
+        self._channel_outer_trend_wait.pop(symbol, None)
+        self._channel_inner_trend_hold.pop(symbol, None)
+        self._channel_invalid_entry_candidates = {
+            candidate for candidate in getattr(
+                self, "_channel_invalid_entry_candidates", set(),
+            ) if candidate[0] != symbol
+        }
+        self.rotation_event.set()
+
     @staticmethod
     def _two_bar_structure_failure_exit(
         frame: pd.DataFrame, position_side: str,
@@ -8776,6 +8837,8 @@ class TradingEngine:
                     or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)
                 )
                 existing_pos = self.account.positions.get(symbol)
+                if existing_pos:
+                    self._take_over_manual_position(symbol, existing_pos)
                 ranked_direction = str(
                     self.market_prebreakout_directions.get(symbol)
                     or self.symbol_rotation.direction_map.get(symbol)
