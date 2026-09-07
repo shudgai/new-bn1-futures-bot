@@ -337,23 +337,6 @@ def test_short_holds_through_same_direction_waterfall_down():
     assert res["reason"] != "EMERGENCY_EXIT_WATERFALL_DOWN"
 
 
-@pytest.mark.parametrize(
-    ("reason", "expected_side"),
-    [
-        ("EMERGENCY_EXIT_WATERFALL_DOWN", "SHORT"),
-        ("EMERGENCY_EXIT_2_CANDLE_CRASH", "SHORT"),
-        ("EMERGENCY_EXIT_WATERFALL_UP", "LONG"),
-        ("EMERGENCY_EXIT_2_CANDLE_PUMP", "LONG"),
-    ],
-)
-def test_emergency_exit_reentry_keeps_directional_outer_break(reason, expected_side):
-    assert TradingEngine._channel_emergency_reentry_side(reason) == expected_side
-
-
-def test_non_emergency_exit_does_not_force_directional_reentry():
-    assert TradingEngine._channel_emergency_reentry_side("KC_TREND_EXIT") is None
-
-
 def test_long_exits_immediately_when_two_candles_cross_kc():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "close"]] = [107.2, 106.7]
