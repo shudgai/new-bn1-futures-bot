@@ -10655,24 +10655,24 @@ class TradingEngine:
                     wallet_balance = float(self.account.get_wallet_balance())
                     
                     if wallet_balance < 300.0:
-                        DEFAULT_SYMBOLS[:] = ["龙虾/USDT"]
+                        active_trade_symbols = ["龙虾/USDT"]
                     else:
-                        DEFAULT_SYMBOLS[:] = ["龙虾/USDT", "1000PEPE/USDT"]
+                        active_trade_symbols = ["龙虾/USDT", "1000PEPE/USDT"]
                         
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
-                    # 輪替模式使用市場短名單 + DEFAULT_SYMBOLS + 已達標候選；
-                    # 固定模式則嚴格以 DEFAULT_SYMBOLS 作為新倉掃描白名單。
+                    # 輪替模式使用市場短名單 + active_trade_symbols + 已達標候選；
+                    # 固定模式則嚴格以 active_trade_symbols 作為新倉掃描白名單。
                     broad_entry_symbols = (
-                        list(DEFAULT_SYMBOLS)
+                        list(active_trade_symbols)
                         if not SYMBOL_ROTATION_ENABLED
                         else list(dict.fromkeys([
                             *self.market_prebreakout_symbols,
-                            *DEFAULT_SYMBOLS,
+                            *active_trade_symbols,
                             *getattr(self.symbol_rotation, "entry_scan_symbols", []),
                         ]))
                     )
                     symbols_snapshot = self._entry_scan_symbol_snapshot(
-                        list(DEFAULT_SYMBOLS),
+                        list(active_trade_symbols),
                         broad_entry_symbols,
                         self.account.positions,
                         self.account.pending_limit_orders,
