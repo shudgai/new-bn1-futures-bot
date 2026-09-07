@@ -70,7 +70,7 @@ def test_macro_trend_entry_short_on_lower_kc_structure_break():
 
     assert res["action"] == "ENTER"
     assert res["side"] == "SHORT"
-    assert res["reason"] == "KC_DOWN_TREND_LOWER_BREAKOUT"
+    assert res["reason"] == "KC_LOWER_BREAKOUT"
 
 
 def test_macro_trend_entry_long_on_pullback():
@@ -104,7 +104,7 @@ def test_macro_trend_entry_long_on_upper_kc_structure_break():
 
     assert res["action"] == "ENTER"
     assert res["side"] == "LONG"
-    assert res["reason"] == "KC_UP_TREND_UPPER_BREAKOUT"
+    assert res["reason"] == "KC_UPPER_BREAKOUT"
 
 
 def test_macro_trend_hold_position():
@@ -429,9 +429,10 @@ def test_inflection_alone_does_not_open_long():
     df.loc[53, "ma15"] = 94.7 # dropped
     df.loc[68, "ma15"] = 95.0 # started curling up (95.0 > 94.7)
     
-    # Ensure alignment filter passes (close > ma3 > ma15)
+    # Ensure alignment filter passes (close > ma3 > ma15) without triggering breakout
     df.loc[68, "close"] = 95.5
     df.loc[68, "ma3"] = 95.2
+    df.loc[68, "kc_upper"] = 96.0  # Prevent accidental upper_break
     
     res = TradingEngine._channel_swing_action(df, 95.5, None)
     assert res["action"] == "WAIT"
@@ -444,9 +445,10 @@ def test_inflection_alone_does_not_open_short():
     df.loc[53, "ma15"] = 105.3 # rose
     df.loc[68, "ma15"] = 105.0 # started curving down (105.0 < 105.3)
     
-    # Ensure alignment filter passes (close < ma3 < ma15)
+    # Ensure alignment filter passes (close < ma3 < ma15) without triggering breakout
     df.loc[68, "close"] = 104.5
     df.loc[68, "ma3"] = 104.8
+    df.loc[68, "kc_lower"] = 103.0  # Prevent accidental lower_break
     
     res = TradingEngine._channel_swing_action(df, 104.5, None)
     assert res["action"] == "WAIT"

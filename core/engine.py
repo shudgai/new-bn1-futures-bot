@@ -7968,10 +7968,10 @@ class TradingEngine:
         has_peak = find_recent_turn(is_peak=True)
         has_trough = find_recent_turn(is_peak=False)
 
-        if kc_trend_down and lower_break and curr_close < curr_ma3 < curr_ma15:
-            return {"action": "ENTER", "side": "SHORT", "reason": "KC_DOWN_TREND_LOWER_BREAKOUT"}
-        if kc_trend_up and upper_break and curr_close > curr_ma3 > curr_ma15:
-            return {"action": "ENTER", "side": "LONG", "reason": "KC_UP_TREND_UPPER_BREAKOUT"}
+        if lower_break:
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
+        if upper_break:
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
 
         # Macro Trend Pullback Entry (抓反彈順勢進場)
         # KC is pointing DOWN -> find a HIGH point (peak) to SHORT
