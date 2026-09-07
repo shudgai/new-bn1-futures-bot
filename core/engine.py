@@ -8735,17 +8735,10 @@ class TradingEngine:
                         }
                 # Channel Swing 正常持倉不套用固定金額或比例停損；
                 # 主流程只採用有利側 KC 外軌 MA3 峰／谷淨利出口。
-                # 例外：當淨虧損超過錢包上限（CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT）時，
-                # 強制平倉以保護帳戶，防止持倉被鎖死於對側外軌趨勢中。
+                # 例外：不再使用金額或比例停損，完全遵守對側外軌平倉邏輯
                 hard_loss_action = {"action": "HOLD"}
                 if existing_pos:
-                    _wallet_bal = float(getattr(self.account, "balance", 0.0))
-                    hard_loss_action = self._channel_max_net_loss_action(
-                        existing_pos, channel_price, _wallet_bal,
-                        CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT,
-                    )
-                    if hard_loss_action.get("action") == "EXIT":
-                        channel_action = hard_loss_action
+                    pass
                 # 新倉不使用 KC 通道內的 MA3 趨勢路徑，也不因持倉時間、
                 # 不利 K 顏色或不利側 KC 外軌提早平倉。
                 # 新倉不再使用 KC 通道內的 MA3 趨勢路徑。
