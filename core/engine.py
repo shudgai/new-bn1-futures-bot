@@ -7902,31 +7902,14 @@ class TradingEngine:
         bearish_cross = float(previous["ma3"]) >= float(previous["ma15"]) and curr_ma3 < curr_ma15
         bullish_cross = float(previous["ma3"]) <= float(previous["ma15"]) and curr_ma3 > curr_ma15
 
-        # Emergency risk exits take precedence over locks and reversals.
         if held_side == "LONG":
-            if price < curr_lower and (curr_open - price) > 1.5 * atr:
-                return {"action": "EXIT", "side": None, "reason": "EMERGENCY_EXIT_WATERFALL_DOWN"}
-            if prev_open > curr_middle and prev_close < curr_middle and curr_open < curr_middle and curr_close < curr_lower:
-                return {"action": "EXIT", "side": None, "reason": "EMERGENCY_EXIT_2_CANDLE_CRASH"}
             if lower_break:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
-            if curr_ma3 > curr_ma15 and curr_close > max(curr_ma15, curr_middle) and (profit_locked or bullish_cross):
-                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_LONG"}
-            if bearish_cross:
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG", "lock_to_market": True}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
-            # A single abnormal/live pump is not an exit. Lock on the MA cross;
-            # only a confirmed body break or the two-candle emergency exits here.
-            if prev_open < curr_middle and prev_close > curr_middle and curr_open > curr_middle and curr_close > curr_upper:
-                return {"action": "EXIT", "side": None, "reason": "EMERGENCY_EXIT_2_CANDLE_PUMP"}
             if upper_break:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
-            if curr_ma3 < curr_ma15 and curr_close < curr_ma15 and (profit_locked or bearish_cross):
-                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
-            if bullish_cross:
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
