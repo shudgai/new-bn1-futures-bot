@@ -242,6 +242,30 @@ def test_short_locks_profit_on_strong_ma3_ma15_bullish_cross():
     assert res["reason"] == "LOCK_PROFIT_SHORT"
 
 
+def test_long_locks_profit_before_opposite_abnormal_candle_exit():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["ma3", "ma15", "close", "open", "kc_lower"]] = [106.5, 106.0, 106.0, 106.5, 104.0]
+    df.loc[68, ["ma3", "ma15", "close", "open", "low", "kc_lower"]] = [105.5, 106.0, 103.0, 106.0, 102.8, 104.0]
+
+    res = TradingEngine._channel_swing_action(df, 103.0, "LONG")
+
+    assert res["action"] == "HOLD"
+    assert res["reason"] == "LOCK_PROFIT_LONG"
+    assert res["lock_to_market"] is True
+
+
+def test_short_locks_profit_before_opposite_abnormal_candle_exit():
+    df = _generate_macro_frame("DOWN", 70)
+    df.loc[67, ["ma3", "ma15", "close", "open", "kc_upper"]] = [92.5, 93.0, 93.0, 92.5, 95.0]
+    df.loc[68, ["ma3", "ma15", "close", "open", "high", "kc_upper"]] = [94.5, 94.0, 95.2, 93.0, 95.4, 94.0]
+
+    res = TradingEngine._channel_swing_action(df, 95.2, "SHORT")
+
+    assert res["action"] == "HOLD"
+    assert res["reason"] == "LOCK_PROFIT_SHORT"
+    assert res["lock_to_market"] is True
+
+
 def test_macro_trend_requires_30_and_60_bar_staircase():
     df = _generate_macro_frame("DOWN", 70)
     # Break the 30-bar step while keeping the short-term slope downward.

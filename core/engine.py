@@ -7929,6 +7929,21 @@ class TradingEngine:
 
         # Emergency Exit Logic: Big Waterfall or Two Abnormal Candles
         if held_side == "LONG":
+            if (
+                float(previous["ma3"]) >= float(previous["ma15"])
+                and curr_ma3 < curr_ma15
+                and (
+                    (price < curr_lower and (curr_open - price) > 1.5 * atr)
+                    or (
+                        prev_open > curr_middle and prev_close < curr_middle
+                        and curr_open < curr_middle and curr_close < curr_lower
+                    )
+                )
+            ):
+                return {
+                    "action": "HOLD", "side": None,
+                    "reason": "LOCK_PROFIT_LONG", "lock_to_market": True,
+                }
             if price < curr_lower and (curr_open - price) > 1.5 * atr:
                 return {"action": "EXIT", "side": None, "reason": "EMERGENCY_EXIT_WATERFALL_DOWN"}
             if (prev_open > curr_middle and prev_close < curr_middle and
@@ -7946,6 +7961,21 @@ class TradingEngine:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
 
         if held_side == "SHORT":
+            if (
+                float(previous["ma3"]) <= float(previous["ma15"])
+                and curr_ma3 > curr_ma15
+                and (
+                    (price > curr_upper and (price - curr_open) > 1.5 * atr)
+                    or (
+                        prev_open < curr_middle and prev_close > curr_middle
+                        and curr_open > curr_middle and curr_close > curr_upper
+                    )
+                )
+            ):
+                return {
+                    "action": "HOLD", "side": None,
+                    "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True,
+                }
             if price > curr_upper and (price - curr_open) > 1.5 * atr:
                 return {"action": "EXIT", "side": None, "reason": "EMERGENCY_EXIT_WATERFALL_UP"}
             if (prev_open < curr_middle and prev_close > curr_middle and
