@@ -1380,90 +1380,100 @@ class TradingEngine:
                         adverse_body = abs(adverse_close - adverse_open)
                         rapid_adverse_exit = bool(
                             adverse_body >= adverse_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-                            and False  # 規格：多空單皆不直接平倉，統一由MA交叉鎖損益保護
-                            and adverse_close < adverse_open    # 紅K
-                            and adverse_close < adverse_ma3     # 跌破MA3
+                            and (
+                                (side == "LONG" and adverse_close < adverse_open and adverse_close < adverse_ma3)
+                                or (side == "SHORT" and adverse_close > adverse_open and adverse_close > adverse_ma3)
+                            )
                         )
                     trigger["rapid_adverse_exit"] = rapid_adverse_exit
                     if rapid_adverse_exit and not entry_grace and not is_cr_position:
                         curr_p = self.tickers.get(symbol) or adverse_close
                         close_reason = (
-                            f"{exit_tf} 多單單根急速反向：實體 >= "
-                            f"{RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f} ATR 且跌破MA3"
+                            f"{exit_tf} {side}單單根急速反向：實體 >= "
+                            f"{RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f} ATR 且突破MA3"
                         )
-                        self.account.log(
-                            f"[急速反向出場] {symbol} {close_reason}", "WARNING"
-                        )
-                        await self.account.close_position(
-                            symbol, curr_p, close_reason, is_manual=True
-                        )
+                        self.account.log(f"⚠️ [急速反向鎖利] {symbol} {close_reason}", "WARNING")
+                        
+                        lock_price = curr_p * (1.0 - SLIPPAGE_PCT if side == "LONG" else 1.0 + SLIPPAGE_PCT)
+                        if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
+                            position_meta = self.account.position_meta.setdefault(symbol, {})
+                            position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
+                            position_meta["channel_cross_lock"] = True
+                            position["channel_cross_lock"] = True
+                            self.account.save_state()
+                            self.account.log(f"�� [異常K鎖利] {symbol} 已提早鎖定 SL={lock_price:.8g}", "SUCCESS")
                         self._soft_warning_since.pop(symbol, None)
                         continue
 
-                    # 多單大瀑布緊急出場（LONG only）：連續3根已收盤紅K且累計跌幅>=2.5ATR。
-                    # 規格：多單瀑布可直接平倉；空單豁免。
+                    # 瀑布/連噴 鎖利
                     waterfall_exit = False
-                    if (
-                        False   # 規格：多空單皆不因瀑布直接平倉，交由MA交叉鎖損益保護
-                        and not entry_grace
-                        and not rapid_adverse_exit
-                        and len(df) >= 5
-                    ):
+                    if not entry_grace and not rapid_adverse_exit and len(df) >= 5:
                         _wf_atr = max(float(trigger.get("atr") or 0.0), 1e-12)
                         try:
-                            _wf_bars = df.iloc[-4:-1]   # 最近3根已收盤K（-4,-3,-2）
-                            _all_red = all(
-                                float(r["close"]) < float(r["open"])
-                                for _, r in _wf_bars.iterrows()
-                            )
-                            _total_drop = float(df.iloc[-4]["open"]) - float(df.iloc[-2]["close"])
-                            if _all_red and _total_drop >= _wf_atr * 2.5:
-                                waterfall_exit = True
+                            _wf_bars = df.iloc[-4:-1]
+                            if side == "LONG":
+                                _all_adverse = all(float(r["close"]) < float(r["open"]) for _, r in _wf_bars.iterrows())
+                                _total_drop = float(df.iloc[-4]["open"]) - float(df.iloc[-2]["close"])
+                                if _all_adverse and _total_drop >= _wf_atr * 2.5:
+                                    waterfall_exit = True
+                            else:
+                                _all_adverse = all(float(r["close"]) > float(r["open"]) for _, r in _wf_bars.iterrows())
+                                _total_rise = float(df.iloc[-2]["close"]) - float(df.iloc[-4]["open"])
+                                if _all_adverse and _total_rise >= _wf_atr * 2.5:
+                                    waterfall_exit = True
                         except (IndexError, KeyError, TypeError, ValueError):
                             pass
                     trigger["waterfall_exit"] = waterfall_exit
                     if waterfall_exit:
                         curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
-                        close_reason = "EMERGENCY_EXIT_WATERFALL_DOWN: 連續3根紅K急跌>=2.5ATR"
-                        self.account.log(f"🚨 [瀑布出場] {symbol} {close_reason}", "WARNING")
-                        await self.account.close_position(
-                            symbol, curr_p, close_reason, is_manual=True
-                        )
+                        close_reason = "EMERGENCY_EXIT_WATERFALL: 連續3根反向K急拉/跌>=2.5ATR"
+                        self.account.log(f"🚨 [瀑布鎖利] {symbol} {close_reason}", "WARNING")
+                        
+                        lock_price = curr_p * (1.0 - SLIPPAGE_PCT if side == "LONG" else 1.0 + SLIPPAGE_PCT)
+                        if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
+                            position_meta = self.account.position_meta.setdefault(symbol, {})
+                            position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
+                            position_meta["channel_cross_lock"] = True
+                            position["channel_cross_lock"] = True
+                            self.account.save_state()
+                            self.account.log(f"🔒 [異常K鎖利] {symbol} 已提早鎖定 SL={lock_price:.8g}", "SUCCESS")
                         self._channel_emergency_reentry_wait[symbol] = True
                         self._soft_warning_since.pop(symbol, None)
                         continue
 
-                    # 多單連續兩根異常K緊急出場（LONG only）：連續2根已收盤紅K實體均>=N ATR。
-                    # 規格：多單連續異常K可直接平倉；空單豁免。
+                    # 連續兩根異常K鎖利
                     two_candle_crash = False
-                    if (
-                        False   # 規格：多空單皆不因瀑布直接平倉，交由MA交叉鎖損益保護
-                        and not entry_grace
-                        and not rapid_adverse_exit
-                        and not waterfall_exit
-                        and len(df) >= 4
-                    ):
+                    if not entry_grace and not rapid_adverse_exit and not waterfall_exit and len(df) >= 4:
                         _tc_atr = max(float(trigger.get("atr") or 0.0), 1e-12)
                         try:
-                            _c1 = df.iloc[-3]   # 倒數第二根已收盤K
-                            _c2 = df.iloc[-2]   # 最新已收盤K
-                            _body1 = float(_c1["open"]) - float(_c1["close"])   # 正數=紅K
-                            _body2 = float(_c2["open"]) - float(_c2["close"])   # 正數=紅K
-                            if (
-                                _body1 >= _tc_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-                                and _body2 >= _tc_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-                            ):
+                            _c1 = df.iloc[-3]
+                            _c2 = df.iloc[-2]
+                            if side == "LONG":
+                                _body1 = float(_c1["open"]) - float(_c1["close"])
+                                _body2 = float(_c2["open"]) - float(_c2["close"])
+                            else:
+                                _body1 = float(_c1["close"]) - float(_c1["open"])
+                                _body2 = float(_c2["close"]) - float(_c2["open"])
+                            
+                            if (_body1 >= _tc_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR 
+                                and _body2 >= _tc_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR):
                                 two_candle_crash = True
                         except (IndexError, KeyError, TypeError, ValueError):
                             pass
                     trigger["two_candle_crash"] = two_candle_crash
                     if two_candle_crash:
                         curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
-                        close_reason = f"EMERGENCY_EXIT_2_CANDLE_CRASH: 連續兩根異常紅K>={RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f}ATR"
-                        self.account.log(f"🚨 [連續異常K出場] {symbol} {close_reason}", "WARNING")
-                        await self.account.close_position(
-                            symbol, curr_p, close_reason, is_manual=True
-                        )
+                        close_reason = f"EMERGENCY_EXIT_2_CANDLE_CRASH: 連續兩根異常反向K>={RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f}ATR"
+                        self.account.log(f"🚨 [連續異常K鎖利] {symbol} {close_reason}", "WARNING")
+                        
+                        lock_price = curr_p * (1.0 - SLIPPAGE_PCT if side == "LONG" else 1.0 + SLIPPAGE_PCT)
+                        if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
+                            position_meta = self.account.position_meta.setdefault(symbol, {})
+                            position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
+                            position_meta["channel_cross_lock"] = True
+                            position["channel_cross_lock"] = True
+                            self.account.save_state()
+                            self.account.log(f"🔒 [異常K鎖利] {symbol} 已提早鎖定 SL={lock_price:.8g}", "SUCCESS")
                         self._channel_emergency_reentry_wait[symbol] = True
                         self._soft_warning_since.pop(symbol, None)
                         continue
