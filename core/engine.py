@@ -10653,6 +10653,12 @@ class TradingEngine:
                     # 空槽掃描新候選；輪替開啟時才併入全市場 shortlist。
                     # 固定幣種模式只掃 DEFAULT_SYMBOLS 與既有持倉。
                     wallet_balance = float(self.account.get_wallet_balance())
+                    
+                    if wallet_balance < 300.0:
+                        DEFAULT_SYMBOLS[:] = ["龙虾/USDT"]
+                    else:
+                        DEFAULT_SYMBOLS[:] = ["龙虾/USDT", "1000PEPE/USDT"]
+                        
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
                     # 輪替模式使用市場短名單 + DEFAULT_SYMBOLS + 已達標候選；
                     # 固定模式則嚴格以 DEFAULT_SYMBOLS 作為新倉掃描白名單。
