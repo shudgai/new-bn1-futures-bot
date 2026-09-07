@@ -73,9 +73,10 @@ def get_effective_slot_count(wallet_balance: float, configured_max: int = None) 
     _continuous_entry_amount 會把資金平均分配到固定槽數，低於最低下單額
     就拒絕新倉，但不會讓已設定的三幣獨立模式退回單槽。
     """
-    if wallet_balance < 300.0:
-        return 1
-    return 2
+    slot_cap = MAX_SLOTS if configured_max is None else int(configured_max)
+    if slot_cap <= 0:
+        return 0
+    return slot_cap
 
 # 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
 # 大盤行情中全部同向進場，反轉時同時承受損失。
