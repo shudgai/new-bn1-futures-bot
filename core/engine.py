@@ -1380,7 +1380,7 @@ class TradingEngine:
                         adverse_body = abs(adverse_close - adverse_open)
                         rapid_adverse_exit = bool(
                             adverse_body >= adverse_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-                            and position.get("side") == "LONG"  # 規格：空單單根異常K不直接平倉
+                            and False  # 規格：多空單皆不直接平倉，統一由MA交叉鎖損益保護
                             and adverse_close < adverse_open    # 紅K
                             and adverse_close < adverse_ma3     # 跌破MA3
                         )
@@ -1404,7 +1404,7 @@ class TradingEngine:
                     # 規格：多單瀑布可直接平倉；空單豁免。
                     waterfall_exit = False
                     if (
-                        position.get("side") == "LONG"   # 只對多單；同向（綠K上漲）不觸發
+                        False   # 規格：多空單皆不因瀑布直接平倉，交由MA交叉鎖損益保護
                         and not entry_grace
                         and not rapid_adverse_exit
                         and len(df) >= 5
@@ -1437,7 +1437,7 @@ class TradingEngine:
                     # 規格：多單連續異常K可直接平倉；空單豁免。
                     two_candle_crash = False
                     if (
-                        position.get("side") == "LONG"   # 只對多單；同向（綠K上漲）不觸發
+                        False   # 規格：多空單皆不因瀑布直接平倉，交由MA交叉鎖損益保護
                         and not entry_grace
                         and not rapid_adverse_exit
                         and not waterfall_exit
