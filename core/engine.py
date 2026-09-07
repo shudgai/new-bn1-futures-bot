@@ -1289,11 +1289,16 @@ class TradingEngine:
                     pos_reason = str(position.get("reason") or "")
                     pos_entry_mode = str(position.get("entry_mode") or "")
                     is_cr_position = bool(
-                        pos_entry_mode in ("MA3_MA15_MARKET", "STRONG_LONG_BURST")
+                        pos_entry_mode in ("MA3_MA15_MARKET", "STRONG_LONG_BURST", "CHANNEL_SWING")
                         or any(k in pos_reason for k in (
                             "TROUGH_TURN", "PEAK_TURN", "RANGE_SWING_REVERSE",
                             "KC_MIDDLE_PEAK_REVERSE", "KC_MIDDLE_TROUGH_REVERSE",
                             "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT",
+                            # Channel Swing entry reasons
+                            "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
+                            "KC_UPPER_GREEN_REVERSE_LONG", "KC_LOWER_RED_REVERSE_SHORT",
+                            "KC_UP_TREND_PULLBACK_TROUGH", "KC_DOWN_TREND_PULLBACK_PEAK",
+                            "KC_UP_TREND_UPPER_BREAKOUT", "KC_DOWN_TREND_LOWER_BREAKOUT",
                         ))
                     )
                     from core.config import CONTINUOUS_REVERSE_TIMEFRAME
@@ -1390,30 +1395,94 @@ class TradingEngine:
                         adverse_body = abs(adverse_close - adverse_open)
                         rapid_adverse_exit = bool(
                             adverse_body >= adverse_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-                            and (
-                                (position.get("side") == "LONG"
-                                 and adverse_close < adverse_open
-                                 and adverse_close < adverse_ma3)
-                                or (position.get("side") == "SHORT"
-                                    and adverse_close > adverse_open
-                                    and adverse_close > adverse_ma3)
-                            )
+                            and position.get("side") == "LONG"  # 規格：空單單根異常K不直接平倉
+                            and adverse_close < adverse_open    # 紅K
+                            and adverse_close < adverse_ma3     # 跌破MA3
                         )
                     trigger["rapid_adverse_exit"] = rapid_adverse_exit
                     if rapid_adverse_exit and not entry_grace and not is_cr_position:
                         curr_p = self.tickers.get(symbol) or adverse_close
                         close_reason = (
-                            f"{exit_tf} adverse rapid reversal: body >= "
-                            f"{RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f} ATR and crossed MA3"
+                            f"{exit_tf} 多單單根急速反向：實體 >= "
+                            f"{RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f} ATR 且跌破MA3"
                         )
                         self.account.log(
-                            f"[Rapid adverse exit] {symbol} {close_reason}", "WARNING"
+                            f"[急速反向出場] {symbol} {close_reason}", "WARNING"
                         )
                         await self.account.close_position(
                             symbol, curr_p, close_reason, is_manual=True
                         )
                         self._soft_warning_since.pop(symbol, None)
                         continue
+
+                    # 多單大瀑布緊急出場（LONG only）：連續3根已收盤紅K且累計跌幅>=2.5ATR。
+                    # 規格：多單瀑布可直接平倉；空單豁免。
+                    waterfall_exit = False
+                    if (
+                        position.get("side") == "LONG"   # 只對多單；同向（綠K上漲）不觸發
+                        and not entry_grace
+                        and not rapid_adverse_exit
+                        and len(df) >= 5
+                    ):
+                        _wf_atr = max(float(trigger.get("atr") or 0.0), 1e-12)
+                        try:
+                            _wf_bars = df.iloc[-4:-1]   # 最近3根已收盤K（-4,-3,-2）
+                            _all_red = all(
+                                float(r["close"]) < float(r["open"])
+                                for _, r in _wf_bars.iterrows()
+                            )
+                            _total_drop = float(df.iloc[-4]["open"]) - float(df.iloc[-2]["close"])
+                            if _all_red and _total_drop >= _wf_atr * 2.5:
+                                waterfall_exit = True
+                        except (IndexError, KeyError, TypeError, ValueError):
+                            pass
+                    trigger["waterfall_exit"] = waterfall_exit
+                    if waterfall_exit:
+                        curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
+                        close_reason = "EMERGENCY_EXIT_WATERFALL_DOWN: 連續3根紅K急跌>=2.5ATR"
+                        self.account.log(f"🚨 [瀑布出場] {symbol} {close_reason}", "WARNING")
+                        await self.account.close_position(
+                            symbol, curr_p, close_reason, is_manual=True
+                        )
+                        self._channel_emergency_reentry_wait[symbol] = True
+                        self._soft_warning_since.pop(symbol, None)
+                        continue
+
+                    # 多單連續兩根異常K緊急出場（LONG only）：連續2根已收盤紅K實體均>=N ATR。
+                    # 規格：多單連續異常K可直接平倉；空單豁免。
+                    two_candle_crash = False
+                    if (
+                        position.get("side") == "LONG"   # 只對多單；同向（綠K上漲）不觸發
+                        and not entry_grace
+                        and not rapid_adverse_exit
+                        and not waterfall_exit
+                        and len(df) >= 4
+                    ):
+                        _tc_atr = max(float(trigger.get("atr") or 0.0), 1e-12)
+                        try:
+                            _c1 = df.iloc[-3]   # 倒數第二根已收盤K
+                            _c2 = df.iloc[-2]   # 最新已收盤K
+                            _body1 = float(_c1["open"]) - float(_c1["close"])   # 正數=紅K
+                            _body2 = float(_c2["open"]) - float(_c2["close"])   # 正數=紅K
+                            if (
+                                _body1 >= _tc_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+                                and _body2 >= _tc_atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+                            ):
+                                two_candle_crash = True
+                        except (IndexError, KeyError, TypeError, ValueError):
+                            pass
+                    trigger["two_candle_crash"] = two_candle_crash
+                    if two_candle_crash:
+                        curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
+                        close_reason = f"EMERGENCY_EXIT_2_CANDLE_CRASH: 連續兩根異常紅K>={RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f}ATR"
+                        self.account.log(f"🚨 [連續異常K出場] {symbol} {close_reason}", "WARNING")
+                        await self.account.close_position(
+                            symbol, curr_p, close_reason, is_manual=True
+                        )
+                        self._channel_emergency_reentry_wait[symbol] = True
+                        self._soft_warning_since.pop(symbol, None)
+                        continue
+
                     exit_frame = self.strategy.compute_indicators(df_closed.copy())
                     exit_frame["ma15"] = exit_frame["close"].rolling(15).mean()
                     structure_exit_frame = exit_frame
@@ -7897,25 +7966,47 @@ class TradingEngine:
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
         # Only closed candle bodies crossing from inside qualify as new breaks.
-        # 規則：前根收盤在通道內，本根實體由軌內開盤、收盤穿出
-        before_prev = frame.iloc[-3]
-        bp_close = float(before_prev["close"])
-        bp_upper = float(before_prev["kc_upper"])
-        bp_lower = float(before_prev["kc_lower"])
-        
-        curr_open = float(previous["open"])
-        
-        upper_break = (
-            bp_close <= bp_upper 
-            and curr_open <= curr_upper 
-            and curr_close > curr_upper
-        )
-        lower_break = (
-            bp_close >= bp_lower 
-            and curr_open >= curr_lower 
-            and curr_close < curr_lower
-        )
-        
+        # 規則（波段）：往前掃最多 SWING_BREAKOUT_LOOKBACK 根已收盤K，
+        # 找到任意一根「前根收在通道內、本根實體由軌內開盤並收盤穿出」，
+        # 且當前 live 價格仍在外軌同側，即視為有效突破（波段補進場）。
+        # before_prev = frame.iloc[-3]（前一根已收盤K）
+        # current = frame.iloc[-2]（本根已收盤K，curr_open/curr_close/curr_upper/curr_lower 均屬此根）
+        SWING_BREAKOUT_LOOKBACK = int(getattr(config, "CHANNEL_SWING_BREAKOUT_LOOKBACK", 4))
+        live_ku = float(frame.iloc[-2]["kc_upper"])  # 最新已收盤K的外軌（供 live 側確認）
+        live_kl = float(frame.iloc[-2]["kc_lower"])
+        upper_break = False
+        lower_break = False
+        for _k in range(1, SWING_BREAKOUT_LOOKBACK + 1):
+            # _k=1 → 最新已收盤K做「本根」；_k=2 → 次新做「本根」，依此類推。
+            try:
+                _b_prev = frame.iloc[-2 - _k]    # 前根（需在通道內）
+                _b_curr = frame.iloc[-1 - _k]    # 本根（需實體穿出）
+                _bp_c   = float(_b_prev["close"])
+                _bc_o   = float(_b_curr["open"])
+                _bc_c   = float(_b_curr["close"])
+                _bc_ku  = float(_b_curr["kc_upper"])
+                _bc_kl  = float(_b_curr["kc_lower"])
+                _bp_ku  = float(_b_prev["kc_upper"])
+                _bp_kl  = float(_b_prev["kc_lower"])
+            except (IndexError, KeyError, TypeError, ValueError):
+                break
+            if (
+                _bp_c <= _bp_ku       # 前根收在上軌內
+                and _bc_o <= _bc_ku   # 本根開在上軌內
+                and _bc_c > _bc_ku    # 本根收在上軌外
+                and price > live_ku   # live 價格仍在外軌上方（波段仍有效）
+            ):
+                upper_break = True
+                break
+            if (
+                _bp_c >= _bp_kl       # 前根收在下軌內
+                and _bc_o >= _bc_kl   # 本根開在下軌內
+                and _bc_c < _bc_kl    # 本根收在下軌外
+                and price < live_kl   # live 價格仍在外軌下方（波段仍有效）
+            ):
+                lower_break = True
+                break
+
         bearish_cross = float(previous["ma3"]) >= float(previous["ma15"]) and curr_ma3 < curr_ma15
         bullish_cross = float(previous["ma3"]) <= float(previous["ma15"]) and curr_ma3 > curr_ma15
 
@@ -7926,8 +8017,14 @@ class TradingEngine:
         live_bearish_cross = curr_ma3 >= curr_ma15 and live_ma3 < live_ma15
         live_bullish_cross = curr_ma3 <= curr_ma15 and live_ma3 > live_ma15
 
+        # 持倉反手使用較寬鬆的實體突破條件：
+        # 規格：空倹遇綠K實體上破上軌平空開多；多倹遇紅K實體下破下軌平多開空。
+        # 只看本根實體方向與收盤位置，不需前根必須在通道內。
+        held_upper_break = curr_close > curr_upper and curr_close > curr_open  # 綠K收盤在上軌外
+        held_lower_break = curr_close < curr_lower and curr_close < curr_open  # 紅K收盤在下軌外
+
         if held_side == "LONG":
-            if lower_break:
+            if held_lower_break:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             if live_bearish_cross or (bearish_cross and live_ma3 < live_ma15):
                 return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG", "lock_to_market": True}
@@ -7936,7 +8033,7 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
-            if upper_break:
+            if held_upper_break:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             if live_bullish_cross or (bullish_cross and live_ma3 > live_ma15):
                 return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True}
