@@ -7851,6 +7851,7 @@ class TradingEngine:
         entry_kc_upper: float | None = None,
         entry_kc_lower: float | None = None,
         entry_outer_chase: bool = False,
+        profit_locked: bool = False,
     ) -> dict:
         import core.config as config
         """KC Macro Trend Following Strategy"""
@@ -7930,6 +7931,22 @@ class TradingEngine:
         # Emergency Exit Logic: Big Waterfall or Two Abnormal Candles
         if held_side == "LONG":
             if (
+                profit_locked
+                and curr_open > curr_close
+                and prev_close >= prev_lower
+                and curr_close < curr_lower
+                and TradingEngine._channel_outer_directional_entry_allowed(
+                    frame, price, "SHORT",
+                )
+                and (kc_trend_down or short_term_trend_down)
+            ):
+                return {
+                    "action": "REVERSE", "side": "SHORT",
+                    "reason": "LOCKED_LONG_LOWER_BREAK_REVERSE_SHORT",
+                }
+            if profit_locked and (kc_trend_up or short_term_trend_up):
+                return {"action": "HOLD", "side": None, "reason": "LOCKED_LONG_ORIGINAL_TREND_HOLD"}
+            if (
                 float(previous["ma3"]) >= float(previous["ma15"])
                 and curr_ma3 < curr_ma15
                 and (
@@ -7961,6 +7978,22 @@ class TradingEngine:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
 
         if held_side == "SHORT":
+            if (
+                profit_locked
+                and curr_open < curr_close
+                and prev_close <= prev_upper
+                and curr_close > curr_upper
+                and TradingEngine._channel_outer_directional_entry_allowed(
+                    frame, price, "LONG",
+                )
+                and (kc_trend_up or short_term_trend_up)
+            ):
+                return {
+                    "action": "REVERSE", "side": "LONG",
+                    "reason": "LOCKED_SHORT_UPPER_BREAK_REVERSE_LONG",
+                }
+            if profit_locked and (kc_trend_down or short_term_trend_down):
+                return {"action": "HOLD", "side": None, "reason": "LOCKED_SHORT_ORIGINAL_TREND_HOLD"}
             if (
                 float(previous["ma3"]) <= float(previous["ma15"])
                 and curr_ma3 > curr_ma15
@@ -8818,6 +8851,10 @@ class TradingEngine:
                     entry_outer_chase=bool(
                         existing_pos.get("outer_chase_entry")
                         or "live KC outer break" in str(existing_pos.get("reason") or "")
+                    ) if existing_pos else False,
+                    profit_locked=bool(
+                        existing_pos.get("is_breakeven_moved")
+                        or self.account.position_meta.get(symbol, {}).get("is_breakeven_moved")
                     ) if existing_pos else False,
                 )
                 if not existing_pos:

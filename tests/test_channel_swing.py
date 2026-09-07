@@ -266,6 +266,58 @@ def test_short_locks_profit_before_opposite_abnormal_candle_exit():
     assert res["lock_to_market"] is True
 
 
+def test_locked_long_reverses_after_confirmed_lower_break():
+    df = _generate_macro_frame("DOWN", 70)
+    df.loc[67, ["close", "kc_lower"]] = [93.5, 93.0]
+    df.loc[68, ["open", "close", "low", "kc_lower"]] = [93.5, 92.5, 92.4, 93.0]
+
+    res = TradingEngine._channel_swing_action(
+        df, 92.5, "LONG", profit_locked=True,
+    )
+
+    assert res["action"] == "REVERSE"
+    assert res["side"] == "SHORT"
+    assert res["reason"] == "LOCKED_LONG_LOWER_BREAK_REVERSE_SHORT"
+
+
+def test_locked_short_reverses_after_confirmed_upper_break():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["close", "kc_upper"]] = [106.5, 107.0]
+    df.loc[68, ["open", "close", "high", "kc_upper"]] = [106.5, 107.5, 107.6, 107.0]
+
+    res = TradingEngine._channel_swing_action(
+        df, 107.5, "SHORT", profit_locked=True,
+    )
+
+    assert res["action"] == "REVERSE"
+    assert res["side"] == "LONG"
+    assert res["reason"] == "LOCKED_SHORT_UPPER_BREAK_REVERSE_LONG"
+
+
+def test_locked_long_holds_when_original_uptrend_returns():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[68, ["open", "close", "low", "kc_lower"]] = [106.0, 103.0, 102.8, 104.0]
+
+    res = TradingEngine._channel_swing_action(
+        df, 103.0, "LONG", profit_locked=True,
+    )
+
+    assert res["action"] == "HOLD"
+    assert res["reason"] == "LOCKED_LONG_ORIGINAL_TREND_HOLD"
+
+
+def test_locked_short_holds_when_original_downtrend_returns():
+    df = _generate_macro_frame("DOWN", 70)
+    df.loc[68, ["open", "close", "high", "kc_upper"]] = [93.0, 95.0, 95.2, 94.0]
+
+    res = TradingEngine._channel_swing_action(
+        df, 95.0, "SHORT", profit_locked=True,
+    )
+
+    assert res["action"] == "HOLD"
+    assert res["reason"] == "LOCKED_SHORT_ORIGINAL_TREND_HOLD"
+
+
 def test_macro_trend_requires_30_and_60_bar_staircase():
     df = _generate_macro_frame("DOWN", 70)
     # Break the 30-bar step while keeping the short-term slope downward.
