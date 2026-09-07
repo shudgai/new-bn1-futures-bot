@@ -7543,9 +7543,9 @@ class TradingEngine:
         if held_side == "SHORT":
             if held_upper_break:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
-            # Shorts hold through MA crosses; only the confirmed upper rail
-            # exit or existing fixed/account risk stops may close the position.
-            if profit_locked:
+            if live_bullish_cross or (bullish_cross and live_ma3 > live_ma15):
+                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True}
+            if profit_locked and live_ma3 < live_ma15 and price < live_ma15:
                 return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
@@ -8840,7 +8840,7 @@ class TradingEngine:
                     )
 
                 if existing_pos and channel_action.get("reason") in {
-                    "LOCK_PROFIT_LONG",
+                    "LOCK_PROFIT_LONG", "LOCK_PROFIT_SHORT",
                 }:
                     entry_price = float(existing_pos.get("entry_price") or 0.0)
                     if entry_price > 0.0:
