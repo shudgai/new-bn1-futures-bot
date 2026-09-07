@@ -128,6 +128,7 @@ def test_long_waits_for_net_profit_before_outer_reversal():
 def test_long_does_not_lock_without_ma_cross():
     df = _generate_macro_frame('UP', 70)
     df.loc[68, ['open', 'close', 'ma3', 'ma15', 'kc_middle', 'kc_lower']] = [107.0, 106.5, 106.8, 106.7, 106.8, 105.5]
+    df.loc[69, ['ma3', 'ma15']] = [107.0, 106.7]  # No live cross either.
     res = TradingEngine._channel_swing_action(df, 106.5, 'LONG')
     assert res['action'] == 'HOLD'
     assert res['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
@@ -225,7 +226,8 @@ def test_long_holds_on_live_only_break_without_crash():
     df.loc[68, 'close'] = 106.5
     res = TradingEngine._channel_swing_action(df, 105.5, 'LONG')
     assert res['action'] == 'HOLD'
-    assert res['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
+    assert res['reason'] == 'LOCK_PROFIT_LONG'  # Live MA cross locks; no confirmed exit.
+    assert res['lock_to_market'] is True
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)

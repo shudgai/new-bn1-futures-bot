@@ -130,6 +130,7 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "manual_entry", "managed_by_bot", "bot_last_managed_at",
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
@@ -1191,11 +1192,17 @@ class PaperAccount:
             is_channel_swing = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper() == "CHANNEL_SWING"
-            # Channel Swing 的平倉由引擎確認反向 KC 外軌；不能被帳戶層
-            # 的秒級急跌保護提前平掉。一般策略仍保留原本的急跌防線。
+            # Long waterfall protection acts on ticker speed, without waiting
+            # for a candle close or MA cross. Shorts retain the MA-cross rule.
+            tick_adverse_pct = (
+                (previous_price - curr_p) / previous_price
+                if previous_price and previous_price > 0 else 0.0
+            )
             rapid_adverse_triggered = bool(
-                not is_channel_swing
-                and (
+                (side == "LONG" and (
+                    tick_adverse_pct >= RAPID_ADVERSE_DROP_PCT
+                    or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
+                )) if is_channel_swing else (
                     structure_failed
                     or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
                     or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT
@@ -1209,7 +1216,7 @@ class PaperAccount:
             ):
                 self._rapid_drop_cooldown[symbol] = now_ts
                 stop_kind = (
-                    f"rapid adverse {speed_adverse_pct:.2%} in {RAPID_ADVERSE_SPEED_WINDOW_SEC:.0f}s"
+                    f"waterfall tick {tick_adverse_pct:.2%}, window {speed_adverse_pct:.2%} in {RAPID_ADVERSE_SPEED_WINDOW_SEC:.0f}s"
                     if is_channel_swing
                     else "pivot structure failed"
                     if structure_failed

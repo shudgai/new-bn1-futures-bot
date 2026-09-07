@@ -424,6 +424,8 @@ async def manual_order(req: ManualOrderRequest):
     )
     if not success:
         raise HTTPException(status_code=400, detail="已有該幣種持倉或系統異常")
+    engine.release_manual_close_state(symbol)
+    engine._take_over_manual_position(symbol, engine.account.positions[symbol])
     return {"status": "success", "message": f"手動開倉 {side} {symbol}"}
 
 @app.get("/api/export_trades")
