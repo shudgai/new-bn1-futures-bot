@@ -220,7 +220,7 @@ class TradingEngine:
         self._channel_swing_last_exit_side: Dict[str, str] = {}
         # Emergency waterfall exits wait for the next confirmed KC outer
         # breakout before allowing a directional re-entry.
-        self._channel_emergency_reentry_wait: Dict[str, bool] = {}
+        self._channel_emergency_reentry_wait: Dict[str, str] = {}
         self._channel_outer_reentry_after_exit: Dict[str, str] = {}
         # 三點峰谷平倉後，記錄幣種、被平倉方向（同向重開倉在通道外應被封鎖）
         # 以及平倉時的 closed_bar_id，用於後續重開倉冷卻判斷。
@@ -2723,6 +2723,16 @@ class TradingEngine:
         return float(now if now is not None else time.time()) < float(
             getattr(self, "_market_crash_entry_cooldown_until", 0.0)
         )
+
+    @staticmethod
+    def _channel_emergency_reentry_side(reason: str) -> str | None:
+        """Map an emergency exit to the only valid outer-break re-entry side."""
+        return {
+            "EMERGENCY_EXIT_WATERFALL_DOWN": "SHORT",
+            "EMERGENCY_EXIT_2_CANDLE_CRASH": "SHORT",
+            "EMERGENCY_EXIT_WATERFALL_UP": "LONG",
+            "EMERGENCY_EXIT_2_CANDLE_PUMP": "LONG",
+        }.get(str(reason or ""))
 
     @staticmethod
     def _btc_flash_crash_close_symbols(
@@ -8791,15 +8801,18 @@ class TradingEngine:
                     ) if existing_pos else False,
                 )
                 if not existing_pos:
-                    emergency_reentry_wait = bool(
+                    emergency_reentry_side = str(
                         getattr(self, "_channel_emergency_reentry_wait", {})
-                        .get(symbol)
-                    )
-                    if emergency_reentry_wait:
+                        .get(symbol) or ""
+                    ).upper()
+                    if emergency_reentry_side in ("LONG", "SHORT"):
                         confirmed_outer_action = self._channel_live_outer_entry_action(
                             channel_df, channel_price,
                         )
-                        if confirmed_outer_action.get("action") == "ENTER":
+                        if (
+                            confirmed_outer_action.get("action") == "ENTER"
+                            and confirmed_outer_action.get("side") == emergency_reentry_side
+                        ):
                             channel_action = confirmed_outer_action
                     last_exit_at = float(
                         getattr(self, "_channel_swing_last_exit_at", {})
@@ -9399,7 +9412,10 @@ class TradingEngine:
                             "EMERGENCY_EXIT_2_CANDLE_CRASH",
                             "EMERGENCY_EXIT_2_CANDLE_PUMP",
                         }:
-                            self._channel_emergency_reentry_wait[symbol] = True
+                            self._channel_emergency_reentry_wait[symbol] = (
+                                self._channel_emergency_reentry_side(exit_reason)
+                                or ""
+                            )
                         if channel_closed_bar_id is not None:
                             self._channel_swing_last_exit_bar[symbol] = channel_closed_bar_id
                         # 三點峰谷平倉時，記錄冷卻資訊；其他平倉（趨勢斷、LOW_VOLUME）清除記錄
