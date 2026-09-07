@@ -2425,7 +2425,7 @@ class BinanceTestnetAccount:
         if not order_id:
             self.log(f"⚠️ {symbol} 鎖損益單缺少交易所 ID，保留 SL 等待核對", "WARNING")
             return False
-        restored = float(meta.get("channel_pre_lock_sl") or 0.0)
+        restored = float(meta.get("channel_pre_lock_sl") or pos.get("initial_sl") or meta.get("initial_sl") or 0.0)
         try:
             # Restore the original protection before removing the temporary lock.
             if restored > 0 and not meta.get("channel_restored_stop_id"):

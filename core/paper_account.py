@@ -224,7 +224,25 @@ class PaperAccount:
                     pos.get("entry_mode") or meta.get("entry_mode") or ""
                 ).upper()
                 if entry_mode == "CHANNEL_SWING":
-                    continue  # Preserve supplied fixed and cross-lock stops.
+                    # Repair only from this position's original entry record.
+                    initial_sl = float(pos.get("initial_sl") or meta.get("initial_sl") or 0.0)
+                    opened_ms = int(float(pos.get("open_timestamp") or 0.0) * 1000)
+                    entry_trade = next((t for t in self.trades
+                        if t.get("symbol") == symbol
+                        and t.get("action") == f"OPEN_{pos.get('side')}"
+                        and opened_ms > 0 and abs(int(t.get("id") or 0) - opened_ms) <= 1), {})
+                    initial_sl = initial_sl or float(entry_trade.get("initial_sl") or entry_trade.get("sl") or 0.0)
+                    if initial_sl > 0:
+                        for source in (pos, meta):
+                            source["initial_sl"] = initial_sl
+                            source["initial_risk"] = abs(float(pos["entry_price"]) - initial_sl)
+                            if not float(source.get("sl") or 0.0):
+                                source["sl"] = initial_sl
+                            if source.get("channel_cross_lock") and not source.get("channel_pre_lock_sl"):
+                                source["channel_pre_lock_sl"] = initial_sl
+                        restored = True
+
+                    continue
                 if float(pos.get("sl") or 0.0) > 0:
                     continue
                 entry_price = float(pos.get("entry_price") or 0.0)
@@ -1097,7 +1115,7 @@ class PaperAccount:
         meta = self.position_meta.setdefault(symbol, {})
         if not meta.get("channel_cross_lock"):
             return False
-        restored = float(meta.get("channel_pre_lock_sl") or 0.0)
+        restored = float(meta.get("channel_pre_lock_sl") or pos.get("initial_sl") or meta.get("initial_sl") or 0.0)
         for source in (pos, meta):
             source["sl"] = restored
             source["is_breakeven_moved"] = False
