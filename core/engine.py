@@ -7522,6 +7522,7 @@ class TradingEngine:
             "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
             "TREND_FAILED_REVERSE_LONG", "TREND_FAILED_REVERSE_SHORT",
             "KC_UPPER_GREEN_REVERSE_LONG", "KC_LOWER_RED_REVERSE_SHORT",
+            "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
         }:
             return action, target_side, None
         required = {"close", "ma15", "kc_upper", "kc_lower"}
@@ -7638,6 +7639,7 @@ class TradingEngine:
         if reason in {
             "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
             "KC_CLOSED_BODY_HIGH_BREAK_LONG", "KC_CLOSED_BODY_LOW_BREAK_SHORT",
+            "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
         }:
             return action, target_side, None
         if (
