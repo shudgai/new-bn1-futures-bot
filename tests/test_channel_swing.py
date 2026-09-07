@@ -336,15 +336,15 @@ def test_short_body_reversal_does_not_wait_for_macro_trend():
     assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
-def test_short_does_not_reverse_when_green_candle_is_already_outside_upper_kc():
+def test_short_reverses_when_green_candle_is_outside_upper_kc_regardless_of_previous():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[67, ["close", "kc_upper"]] = [95.0, 94.0]
     df.loc[68, ["open", "close", "kc_upper"]] = [95.0, 95.5, 94.0]
 
     res = TradingEngine._channel_swing_action(df, 95.5, "SHORT")
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] != "KC_UPPER_GREEN_REVERSE_LONG"
+    assert res["action"] == "REVERSE"
+    assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
 def test_long_does_not_reverse_on_red_wick_without_lower_kc_close():

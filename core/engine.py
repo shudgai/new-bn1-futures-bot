@@ -7895,10 +7895,8 @@ class TradingEngine:
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
         # Only closed candle bodies crossing from inside qualify as new breaks.
-        upper_break = (prev_lower <= prev_close <= prev_upper
-                       and curr_open <= curr_upper < curr_close)
-        lower_break = (prev_lower <= prev_close <= prev_upper
-                       and curr_open >= curr_lower > curr_close)
+        upper_break = (curr_close > curr_upper)
+        lower_break = (curr_close < curr_lower)
         bearish_cross = float(previous["ma3"]) >= float(previous["ma15"]) and curr_ma3 < curr_ma15
         bullish_cross = float(previous["ma3"]) <= float(previous["ma15"]) and curr_ma3 > curr_ma15
 
