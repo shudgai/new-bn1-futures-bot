@@ -756,68 +756,14 @@ class BinanceTestnetAccount:
             # RANGE／TREND 結構出場交由主引擎；Channel Swing 額外只保留大瀑布防護。
             is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
             if is_structure_exit_mode or is_channel_swing:
-                channel_profit_lock_v2 = bool(
-                    is_channel_swing
-                    and ENABLE_PROFIT_LOCK_USDT
-                    and (pos.get("profit_lock_usdt_v2") or meta.get("profit_lock_usdt_v2"))
-                )
-                if channel_profit_lock_v2:
-                    qty = float(pos.get("qty") or 0.0)
-                    notional_value = qty * entry_p
-                    gross_usdt = pnl_pct * notional_value
-                    estimated_cost_usdt = notional_value * (
-                        2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
-                    )
-                    peak_key = "profit_lock_v2_peak_gross_usdt"
-                    peak_gross_usdt = max(
-                        float(meta.get(peak_key) or gross_usdt), gross_usdt,
-                    )
-                    meta[peak_key] = peak_gross_usdt
-                    momentum_declining = bool(
-                        pos.get("channel_momentum_declining")
-                        or meta.get("channel_momentum_declining")
-                    )
-                    plan = compute_channel_swing_profit_lock_usdt(
-                        peak_gross_usdt, estimated_cost_usdt, momentum_declining,
-                    )
-                    if plan is not None and qty > 0.0:
-                        floor_usdt, _activation_usdt, completed_steps = plan
-                        floor_move = floor_usdt / qty
-                        floor_sl = (
-                            entry_p + floor_move
-                            if side == "LONG" else entry_p - floor_move
-                        )
-                        floor_already_breached = (
-                            mark_p <= floor_sl if side == "LONG" else mark_p >= floor_sl
-                        )
-                        if floor_already_breached:
-                            await self.close_position(
-                                symbol, mark_p, "Channel Swing U階梯應鎖利潤已回吐",
-                            )
-                            continue
-                        current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                        improves = (
-                            floor_sl > current_sl + entry_p * 1e-12
-                            if side == "LONG"
-                            else current_sl <= 0.0 or floor_sl < current_sl - entry_p * 1e-12
-                        )
-                        if improves and await self.trail_stop_loss(
-                            symbol, floor_sl, mark_profit_locked=True,
-                        ):
-                            meta["profit_lock_usdt_armed"] = True
-                            pos["profit_lock_usdt_armed"] = True
-                            meta["profit_lock_mode"] = "CHANNEL_V2_2U"
-                            pos["profit_lock_mode"] = "CHANNEL_V2_2U"
-                            self.log(
-                                f"🔐 [Channel U階梯鎖利] {symbol} 峰值毛利 {peak_gross_usdt:.2f}U "
-                                f"→ 鎖毛利 {floor_usdt:.2f}U（估計成本 {estimated_cost_usdt:.2f}U，"
-                                f"淨利至少 {floor_usdt - estimated_cost_usdt:.2f}U，"
-                                f"趨勢衰退階梯 {completed_steps}），保護線 {floor_sl:.6g}",
-                                "SUCCESS",
-                            )
-                # Channel Swing 不使用固定或移動停利，也不使用一般停損；
-                # 新版標記倉位另使用 U 階梯；所有倉位保留逆向大瀑布保護。
-                if is_channel_swing and ENABLE_RAPID_ADVERSE_DROP:
+                current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                if is_channel_swing and current_sl > 0 and (mark_p <= current_sl if side == "LONG" else mark_p >= current_sl):
+                    await self.close_position(symbol, mark_p, "Channel Swing SL", is_manual=True)
+                    continue
+                # Channel Swing shorts wait for confirmed candle/MA signals;
+                # a single ticker spike must not bypass the cross-lock rule.
+                # Existing fixed/cross-lock stops above still execute normally.
+                if ENABLE_RAPID_ADVERSE_DROP and not (is_channel_swing and side == "SHORT"):
                     prev_p = self._last_ticker_prices.get(symbol)
                     last_cd = self._rapid_drop_cooldown.get(symbol, 0.0)
                     if prev_p and prev_p > 0 and (now_ts - last_cd) > RAPID_DROP_COOLDOWN_SEC:
@@ -1488,17 +1434,6 @@ class BinanceTestnetAccount:
             entry_mode = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper()
-            if entry_mode == "CHANNEL_SWING":
-                if any(float(source.get(key) or 0.0) != 0.0 for source in (pos, meta) for key in (
-                    "sl", "tp", "initial_sl", "initial_risk",
-                )):
-                    for source in (pos, meta):
-                        source["sl"] = 0.0
-                        source["tp"] = 0.0
-                        source["initial_sl"] = 0.0
-                        source["initial_risk"] = 0.0
-                    channel_swing_cleared = True
-                continue
             sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
                 continue
@@ -1509,9 +1444,12 @@ class BinanceTestnetAccount:
             sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
             try:
                 await self._cancel_all_orders(symbol)
-                await self._create_protection_order(
+                order = await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 )
+                if meta.get("channel_cross_lock"):
+                    meta["channel_lock_algo_id"] = order.get("algoId") or order.get("id")
+                    self.save_state()
                 tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
                 if tp_price > 0 and not DISABLE_TAKE_PROFIT:
                     await self._create_protection_order(
@@ -1697,7 +1635,6 @@ class BinanceTestnetAccount:
             return False
         entry_mode = str(dict(entry_context or {}).get("entry_mode") or "").upper()
         if entry_mode == "CHANNEL_SWING":
-            sl = 0.0
             tp = 0.0
         else:
             try:
@@ -1790,7 +1727,6 @@ class BinanceTestnetAccount:
             }
             is_channel_swing = str(entry_context.get("entry_mode") or "").upper() == "CHANNEL_SWING"
             if is_channel_swing:
-                sl = 0.0
                 tp = 0.0
             else:
                 try:
@@ -1816,7 +1752,7 @@ class BinanceTestnetAccount:
                     else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
                 )
             # Ensure SL sits on correct side and respect a minimum distance
-            if is_channel_swing:
+            if is_channel_swing and (DISABLE_STOP_LOSS or sl <= 0):
                 sl_price = 0.0
             elif not DISABLE_STOP_LOSS or is_exhaustion_sniper:
                 atr_value = atr if atr > 0 else execution_price * 0.015
@@ -2251,6 +2187,8 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        position = self.positions[symbol]
+        meta = self.position_meta.get(symbol, {})
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
         if DISABLE_STOP_LOSS and not is_manual:
             reject_key = (symbol, close_reason)
@@ -2475,6 +2413,39 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
 
+    async def clear_channel_profit_lock(self, symbol: str) -> bool:
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        pos = self.positions[symbol]
+        meta = self.position_meta.setdefault(symbol, {})
+        if not meta.get("channel_cross_lock"):
+            return False
+        order_id = meta.get("channel_lock_algo_id")
+        if not order_id:
+            self.log(f"⚠️ {symbol} 鎖損益單缺少交易所 ID，保留 SL 等待核對", "WARNING")
+            return False
+        restored = float(meta.get("channel_pre_lock_sl") or 0.0)
+        try:
+            # Restore the original protection before removing the temporary lock.
+            if restored > 0 and not meta.get("channel_restored_stop_id"):
+                order = await self._create_protection_order(
+                    symbol, "sell" if pos["side"] == "LONG" else "buy",
+                    "STOP_MARKET", pos["qty"], restored,
+                )
+                meta["channel_restored_stop_id"] = order.get("algoId") or order.get("id")
+                self.save_state()
+            await self.exchange.request("algoOrder", "fapiPrivate", "DELETE", {"algoId": order_id})
+        except Exception as exc:
+            self.log(f"⚠️ {symbol} 解除鎖損益失敗，保留 SL 待重試：{exc}", "WARNING")
+            return False
+        for source in (pos, meta):
+            source["sl"] = restored
+            source["is_breakeven_moved"] = False
+            for key in ("channel_cross_lock", "channel_pre_lock_sl", "channel_lock_algo_id", "channel_restored_stop_id"):
+                source.pop(key, None)
+        self.save_state()
+        return True
+
     async def trail_stop_loss(
         self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
     ) -> bool:
@@ -2489,6 +2460,12 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
+        if not math.isfinite(new_sl_price) or new_sl_price <= 0:
+            return False
+        if current_sl > 0 and ((position["side"] == "LONG" and new_sl_price <= current_sl)
+                               or (position["side"] == "SHORT" and new_sl_price >= current_sl)):
+            return False
         tp_price = float(meta.get("tp") or position.get("tp") or 0.0)
         entry_price = float(position.get("entry_price") or meta.get("entry_price") or 0.0)
         if tp_price > 0 and entry_price > 0:
@@ -2510,9 +2487,10 @@ class BinanceTestnetAccount:
             # 取消所有現有保護單
             await self._cancel_all_orders(symbol)
             # 重新掛新止損單
-            await self._create_protection_order(
+            stop_order = await self._create_protection_order(
                 symbol, close_side, "STOP_MARKET", qty, new_sl_price,
             )
+            meta["channel_lock_algo_id"] = stop_order.get("algoId") or stop_order.get("id")
             # 如果止利仍啟用，同步重建止利單
             if tp_price > 0 and not DISABLE_TAKE_PROFIT:
                 await self._create_protection_order(

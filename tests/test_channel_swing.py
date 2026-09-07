@@ -125,14 +125,14 @@ def test_long_reverses_short_on_red_candle_below_lower_kc_with_downtrend():
     assert res["reason"] == "KC_LOWER_RED_REVERSE_SHORT"
 
 
-def test_long_holds_on_red_candle_below_lower_kc_without_downtrend():
+def test_long_reverses_on_body_break_even_without_downtrend():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["open", "close", "kc_lower"]] = [107.0, 105.5, 106.0]
 
     res = TradingEngine._channel_swing_action(df, 105.5, "LONG")
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] != "KC_LOWER_RED_REVERSE_SHORT"
+    assert res["action"] == "REVERSE"
+    assert res["reason"] == "KC_LOWER_RED_REVERSE_SHORT"
 
 
 def test_short_reverses_long_on_green_candle_above_upper_kc_with_uptrend():
@@ -146,14 +146,14 @@ def test_short_reverses_long_on_green_candle_above_upper_kc_with_uptrend():
     assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
-def test_short_holds_on_green_candle_above_upper_kc_without_uptrend():
+def test_short_reverses_on_body_break_even_without_uptrend():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[68, ["open", "close", "kc_upper"]] = [93.0, 95.0, 94.0]
 
     res = TradingEngine._channel_swing_action(df, 95.0, "SHORT")
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] != "KC_UPPER_GREEN_REVERSE_LONG"
+    assert res["action"] == "REVERSE"
+    assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
 def test_long_waits_for_net_profit_before_outer_reversal():
@@ -169,20 +169,20 @@ def test_long_waits_for_net_profit_before_outer_reversal():
     assert res["reason"] == "KC_LOWER_RED_REVERSE_SHORT"
 
 
-def test_long_locks_profit_when_red_candle_returns_inside_lower_rail():
+def test_long_does_not_lock_without_ma_cross():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["open", "close", "ma3", "ma15", "kc_middle", "kc_lower"]] = [107.0, 106.5, 106.8, 106.7, 106.8, 105.5]
     res = TradingEngine._channel_swing_action(df, 106.5, "LONG")
     assert res["action"] == "HOLD"
-    assert res["reason"] == "LOCK_PROFIT_LONG"
+    assert res["reason"] == "HOLDING_LONG_RUN_TO_HIGH"
 
 
-def test_short_locks_profit_when_green_candle_returns_inside_upper_rail():
+def test_short_does_not_lock_without_ma_cross():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[68, ["open", "close", "ma3", "ma15", "kc_middle", "kc_upper"]] = [93.0, 93.5, 93.2, 93.3, 93.2, 94.5]
     res = TradingEngine._channel_swing_action(df, 93.5, "SHORT")
     assert res["action"] == "HOLD"
-    assert res["reason"] == "LOCK_PROFIT_SHORT"
+    assert res["reason"] == "HOLDING_SHORT_RUN_TO_LOW"
 
 
 def test_long_unlocks_profit_only_after_bullish_ma_cross_above_middle():
@@ -242,28 +242,26 @@ def test_short_locks_profit_on_strong_ma3_ma15_bullish_cross():
     assert res["reason"] == "LOCK_PROFIT_SHORT"
 
 
-def test_long_locks_profit_before_opposite_abnormal_candle_exit():
+def test_long_emergency_exit_precedes_cross_lock():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["ma3", "ma15", "close", "open", "kc_lower"]] = [106.5, 106.0, 106.0, 106.5, 104.0]
     df.loc[68, ["ma3", "ma15", "close", "open", "low", "kc_lower"]] = [105.5, 106.0, 103.0, 106.0, 102.8, 104.0]
 
     res = TradingEngine._channel_swing_action(df, 103.0, "LONG")
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] == "LOCK_PROFIT_LONG"
-    assert res["lock_to_market"] is True
+    assert res["action"] == "EXIT"
+    assert res["reason"] == "EMERGENCY_EXIT_WATERFALL_DOWN"
 
 
-def test_short_locks_profit_before_opposite_abnormal_candle_exit():
+def test_short_confirmed_upper_body_break_takes_precedence_over_cross_lock():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[67, ["ma3", "ma15", "close", "open", "kc_upper"]] = [92.5, 93.0, 93.0, 92.5, 95.0]
     df.loc[68, ["ma3", "ma15", "close", "open", "high", "kc_upper"]] = [94.5, 94.0, 95.2, 93.0, 95.4, 94.0]
 
     res = TradingEngine._channel_swing_action(df, 95.2, "SHORT")
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] == "LOCK_PROFIT_SHORT"
-    assert res["lock_to_market"] is True
+    assert res["action"] == "REVERSE"
+    assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
 def test_locked_long_reverses_after_confirmed_lower_break():
@@ -277,7 +275,7 @@ def test_locked_long_reverses_after_confirmed_lower_break():
 
     assert res["action"] == "REVERSE"
     assert res["side"] == "SHORT"
-    assert res["reason"] == "LOCKED_LONG_LOWER_BREAK_REVERSE_SHORT"
+    assert res["reason"] == "KC_LOWER_RED_REVERSE_SHORT"
 
 
 def test_locked_short_reverses_after_confirmed_upper_break():
@@ -291,10 +289,10 @@ def test_locked_short_reverses_after_confirmed_upper_break():
 
     assert res["action"] == "REVERSE"
     assert res["side"] == "LONG"
-    assert res["reason"] == "LOCKED_SHORT_UPPER_BREAK_REVERSE_LONG"
+    assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
-def test_locked_long_holds_when_original_uptrend_returns():
+def test_locked_long_does_not_suppress_waterfall():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["open", "close", "low", "kc_lower"]] = [106.0, 103.0, 102.8, 104.0]
 
@@ -302,11 +300,11 @@ def test_locked_long_holds_when_original_uptrend_returns():
         df, 103.0, "LONG", profit_locked=True,
     )
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] == "LOCKED_LONG_ORIGINAL_TREND_HOLD"
+    assert res["action"] == "EXIT"
+    assert res["reason"] == "EMERGENCY_EXIT_WATERFALL_DOWN"
 
 
-def test_locked_short_holds_when_original_downtrend_returns():
+def test_locked_short_does_not_suppress_body_reversal():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[68, ["open", "close", "high", "kc_upper"]] = [93.0, 95.0, 95.2, 94.0]
 
@@ -314,8 +312,8 @@ def test_locked_short_holds_when_original_downtrend_returns():
         df, 95.0, "SHORT", profit_locked=True,
     )
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] == "LOCKED_SHORT_ORIGINAL_TREND_HOLD"
+    assert res["action"] == "REVERSE"
+    assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
 def test_macro_trend_requires_30_and_60_bar_staircase():
@@ -328,14 +326,14 @@ def test_macro_trend_requires_30_and_60_bar_staircase():
     assert res["action"] == "WAIT"
 
 
-def test_short_holds_on_green_candle_breaking_upper_kc_against_downtrend():
+def test_short_body_reversal_does_not_wait_for_macro_trend():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[68, "close"] = 94.2
 
     res = TradingEngine._channel_swing_action(df, 94.2, "SHORT")
 
-    assert res["action"] == "HOLD"
-    assert res["reason"] != "KC_UPPER_GREEN_REVERSE_LONG"
+    assert res["action"] == "REVERSE"
+    assert res["reason"] == "KC_UPPER_GREEN_REVERSE_LONG"
 
 
 def test_short_does_not_reverse_when_green_candle_is_already_outside_upper_kc():
@@ -374,14 +372,14 @@ def test_live_outer_entry_follows_directional_short_continuation():
     assert res["reason"] == "KC_LIVE_LOWER_BREAK_SHORT"
 
 
-def test_long_exits_when_price_breaks_lower_kc_without_crash():
+def test_long_holds_on_live_only_break_without_crash():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, "close"] = 106.5
 
     res = TradingEngine._channel_swing_action(df, 105.5, "LONG")
 
     assert res["action"] == "HOLD"
-    assert res["reason"] == "WAIT_RED_CANDLE_BELOW_LOWER_KC"
+    assert res["reason"] == "HOLDING_LONG_RUN_TO_HIGH"
 
 
 def test_long_exits_immediately_on_waterfall():
@@ -423,7 +421,7 @@ def test_long_exits_immediately_when_two_candles_cross_kc():
     assert res["action"] == "EXIT"
     assert res["reason"] == "EMERGENCY_EXIT_2_CANDLE_CRASH"
 
-def test_inflection_point_entry_long():
+def test_inflection_alone_does_not_open_long():
     df = _generate_macro_frame("DOWN", 70) # Was going down
     # Force a U-shape bottom
     # 30 ago (index 38) -> 15 ago (index 53) -> current (index 68)
@@ -436,11 +434,9 @@ def test_inflection_point_entry_long():
     df.loc[68, "ma3"] = 95.2
     
     res = TradingEngine._channel_swing_action(df, 95.5, None)
-    assert res["action"] == "ENTER"
-    assert res["side"] == "LONG"
-    assert "U_SHAPE" in res["reason"]
+    assert res["action"] == "WAIT"
 
-def test_inflection_point_entry_short():
+def test_inflection_alone_does_not_open_short():
     df = _generate_macro_frame("UP", 70) # Was going up
     # Force an inverted U-shape top
     # 30 ago (index 38) -> 15 ago (index 53) -> current (index 68)
@@ -453,6 +449,4 @@ def test_inflection_point_entry_short():
     df.loc[68, "ma3"] = 104.8
     
     res = TradingEngine._channel_swing_action(df, 104.5, None)
-    assert res["action"] == "ENTER"
-    assert res["side"] == "SHORT"
-    assert "INVERTED_U_TOP" in res["reason"]
+    assert res["action"] == "WAIT"

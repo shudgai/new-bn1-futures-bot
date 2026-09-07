@@ -223,22 +223,7 @@ class PaperAccount:
                     pos.get("entry_mode") or meta.get("entry_mode") or ""
                 ).upper()
                 if entry_mode == "CHANNEL_SWING":
-                    profit_lock_armed = any(
-                        source.get("profit_lock_usdt_armed")
-                        or source.get("fixed_profit_lock_pct_armed")
-                        or source.get("is_breakeven_moved")
-                        for source in (pos, meta)
-                    )
-                    if not profit_lock_armed and any(float(source.get(key) or 0.0) != 0.0 for source in (pos, meta) for key in (
-                        "sl", "tp", "initial_sl", "initial_risk",
-                    )):
-                        for source in (pos, meta):
-                            source["sl"] = 0.0
-                            source["tp"] = 0.0
-                            source["initial_sl"] = 0.0
-                            source["initial_risk"] = 0.0
-                        restored = True
-                    continue
+                    continue  # Preserve supplied fixed and cross-lock stops.
                 if float(pos.get("sl") or 0.0) > 0:
                     continue
                 entry_price = float(pos.get("entry_price") or 0.0)
@@ -505,7 +490,6 @@ class PaperAccount:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
         if entry_mode == "CHANNEL_SWING":
-            sl = 0.0
             tp = 0.0
         else:
             try:
@@ -536,7 +520,10 @@ class PaperAccount:
                 if side == "LONG"
                 else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
             )
-        if entry_mode == "CHANNEL_SWING" or CONTINUOUS_PIVOT_ONLY:
+        if entry_mode == "CHANNEL_SWING":
+            sl = 0.0 if DISABLE_STOP_LOSS else sl
+            tp = 0.0
+        elif CONTINUOUS_PIVOT_ONLY:
             sl = 0.0
             tp = 0.0
         elif DISABLE_STOP_LOSS and entry_mode not in ("EXHAUSTION_SNIPER", "PIVOT_TURN"):
@@ -1102,6 +1089,22 @@ class PaperAccount:
         finally:
             self.closing_lock.discard(symbol)
 
+    async def clear_channel_profit_lock(self, symbol: str) -> bool:
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        pos = self.positions[symbol]
+        meta = self.position_meta.setdefault(symbol, {})
+        if not meta.get("channel_cross_lock"):
+            return False
+        restored = float(meta.get("channel_pre_lock_sl") or 0.0)
+        for source in (pos, meta):
+            source["sl"] = restored
+            source["is_breakeven_moved"] = False
+            source.pop("channel_cross_lock", None)
+            source.pop("channel_pre_lock_sl", None)
+        self.save_state()
+        return True
+
     async def trail_stop_loss(
         self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
     ) -> bool:
@@ -1115,6 +1118,12 @@ class PaperAccount:
             return False
         pos = self.positions[symbol]
         meta = self.position_meta.setdefault(symbol, {})
+        current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+        if not math.isfinite(new_sl_price) or new_sl_price <= 0:
+            return False
+        if current_sl > 0 and ((pos["side"] == "LONG" and new_sl_price <= current_sl)
+                               or (pos["side"] == "SHORT" and new_sl_price >= current_sl)):
+            return False
         tp_price = float(pos.get("tp") or meta.get("tp") or 0.0)
         if tp_price > 0:
             try:
@@ -1182,10 +1191,11 @@ class PaperAccount:
             is_channel_swing = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper() == "CHANNEL_SWING"
-            rapid_adverse_triggered = (
-                speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
-                if is_channel_swing
-                else (
+            # Channel Swing 的平倉由引擎確認反向 KC 外軌；不能被帳戶層
+            # 的秒級急跌保護提前平掉。一般策略仍保留原本的急跌防線。
+            rapid_adverse_triggered = bool(
+                not is_channel_swing
+                and (
                     structure_failed
                     or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
                     or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT
@@ -1248,81 +1258,18 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
-            channel_profit_lock_v2 = bool(
-                is_channel_swing
-                and ENABLE_PROFIT_LOCK_USDT
-                and (pos.get("profit_lock_usdt_v2") or meta.get("profit_lock_usdt_v2"))
-            )
-            if is_channel_swing or CONTINUOUS_PIVOT_ONLY:
+            if is_channel_swing:
+                # Preserve both fixed and MA-cross stops across ticker updates.
+                current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                if current_sl > 0 and (curr_p <= current_sl if side == "LONG" else curr_p >= current_sl):
+                    await self.close_position(symbol, curr_p, "Channel Swing SL", is_manual=True)
+                    continue
+                pos["peak_pnl_pct"] = highest_pnl
+                total_unrealized += unrealized
+                continue
+            if CONTINUOUS_PIVOT_ONLY:
+                pos["sl"] = meta["sl"] = 0.0
                 pos["tp"] = meta["tp"] = 0.0
-                lock_updated = False
-                if channel_profit_lock_v2:
-                    qty = float(pos.get("qty") or meta.get("qty") or 0.0)
-                    notional_value = qty * entry_p
-                    gross_usdt = pnl_pct * notional_value
-                    estimated_cost_usdt = notional_value * (
-                        2.0 * TAKER_FEE_RATE + SLIPPAGE_PCT
-                    )
-                    peak_key = "profit_lock_v2_peak_gross_usdt"
-                    peak_gross_usdt = max(
-                        float(meta.get(peak_key) or gross_usdt), gross_usdt,
-                    )
-                    meta[peak_key] = peak_gross_usdt
-                    momentum_declining = bool(
-                        pos.get("channel_momentum_declining")
-                        or meta.get("channel_momentum_declining")
-                    )
-                    plan = compute_channel_swing_profit_lock_usdt(
-                        peak_gross_usdt, estimated_cost_usdt, momentum_declining,
-                    )
-                    if plan is not None and qty > 0.0:
-                        floor_usdt, _activation_usdt, completed_steps = plan
-                        floor_move = floor_usdt / qty
-                        floor_sl = (
-                            entry_p + floor_move
-                            if side == "LONG" else entry_p - floor_move
-                        )
-                        floor_already_breached = (
-                            curr_p <= floor_sl if side == "LONG" else curr_p >= floor_sl
-                        )
-                        if floor_already_breached:
-                            await self.close_position(
-                                symbol, curr_p,
-                                "Channel Swing U階梯應鎖利潤已回吐",
-                                is_manual=True,
-                            )
-                            continue
-                        current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                        improves = (
-                            floor_sl > current_sl + entry_p * 1e-12
-                            if side == "LONG"
-                            else current_sl <= 0.0 or floor_sl < current_sl - entry_p * 1e-12
-                        )
-                        if improves:
-                            pos["sl"] = meta["sl"] = floor_sl
-                            pos["is_breakeven_moved"] = meta["is_breakeven_moved"] = True
-                            pos["profit_lock_usdt_armed"] = meta["profit_lock_usdt_armed"] = True
-                            pos["profit_lock_mode"] = meta["profit_lock_mode"] = "CHANNEL_V2_2U"
-                            lock_updated = True
-                            self.log(
-                                f"🔐 [Channel U階梯鎖利] {symbol} 峰值毛利 {peak_gross_usdt:.2f}U "
-                                f"→ 鎖毛利 {floor_usdt:.2f}U（估計成本 {estimated_cost_usdt:.2f}U，"
-                                f"淨利至少 {floor_usdt - estimated_cost_usdt:.2f}U，"
-                                f"趨勢衰退階梯 {completed_steps}），保護線 {floor_sl:.6g}",
-                                "SUCCESS",
-                            )
-                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                    sl_hit = current_sl > 0.0 and (
-                        curr_p <= current_sl if side == "LONG" else curr_p >= current_sl
-                    )
-                    if sl_hit and not lock_updated:
-                        await self.close_position(
-                            symbol, curr_p, "Channel Swing U階梯鎖利平倉",
-                            is_manual=True,
-                        )
-                        continue
-                else:
-                    pos["sl"] = meta["sl"] = 0.0
                 pos["peak_pnl_pct"] = highest_pnl
                 total_unrealized += unrealized
                 continue
