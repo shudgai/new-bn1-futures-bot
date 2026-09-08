@@ -129,6 +129,7 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "channel_confirmation_bar_id",
     "manual_entry", "managed_by_bot", "bot_last_managed_at",
     "channel_favorable_rail_reached",
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
@@ -563,6 +564,14 @@ class PaperAccount:
             sl = cap_stop_loss_to_margin_risk(execution_price, side, sl, leverage)
         qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
         fee = qty * execution_price * TAKER_FEE_RATE
+        required_balance = amount_usdt + fee
+        if self.get_available_balance() + 1e-12 < required_balance:
+            self.log(
+                f"🛑 {symbol} 可用餘額不足以支付保證金及開倉費："
+                f"需要 {required_balance:.8f} USDT，可用 {self.get_available_balance():.8f} USDT",
+                "WARNING",
+            )
+            return False
         self.balance -= (amount_usdt + fee)
 
         entry_context = {
@@ -752,6 +761,15 @@ class PaperAccount:
             get_signal_leverage(symbol, signal_score)
             if signal_score is not None else get_leverage(symbol)
         )
+        estimated_fee = amount_usdt * leverage * TAKER_FEE_RATE
+        required_balance = amount_usdt + estimated_fee
+        if self.get_available_balance() + 1e-12 < required_balance:
+            self.log(
+                f"🛑 {symbol} 可用餘額不足以支付掛單保證金及開倉費："
+                f"需要 {required_balance:.8f} USDT，可用 {self.get_available_balance():.8f} USDT",
+                "WARNING",
+            )
+            return False
         self.pending_limit_orders[symbol] = {
             "side": side,
             "target_price": float(target_price),
@@ -1183,7 +1201,6 @@ class PaperAccount:
                 continue
             curr_p = float(curr_p)
             side = pos["side"]
-            previous_price = self._rapid_drop_last_price.get(symbol)
             self._rapid_drop_last_price[symbol] = curr_p
             entry_p = float(pos["entry_price"])
             meta = self.position_meta.setdefault(symbol, {})
@@ -1210,24 +1227,15 @@ class PaperAccount:
             is_channel_swing = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper() == "CHANNEL_SWING"
-            tick_adverse_pct = (
-                (previous_price - curr_p) / previous_price
-                if previous_price and previous_price > 0 else 0.0
-            )
-            # Channel Swing normally ignores ordinary pullbacks, but an actual
-            # adverse waterfall must still market-close immediately.
+            # Channel Swing ignores ticker-only exits; retain the emergency
+            # guard for the other pivot modes with their original thresholds.
             rapid_adverse_triggered = bool(
-                (
-                    speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT * 0.5
-                    or tick_adverse_pct >= RAPID_ADVERSE_DROP_PCT
-                ) if is_channel_swing else (
-                    structure_failed
-                    or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
-                    or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT
-                )
+                structure_failed
+                or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
+                or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT
             )
             if (
-                (CONTINUOUS_PIVOT_ONLY or is_channel_swing)
+                CONTINUOUS_PIVOT_ONLY and not is_channel_swing
                 and ENABLE_RAPID_ADVERSE_DROP
                 and side in ("LONG", "SHORT")
                 and rapid_adverse_triggered

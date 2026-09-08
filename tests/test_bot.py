@@ -397,6 +397,24 @@ async def test_paper_account_open_close(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_paper_entry_rejects_margin_that_cannot_cover_entry_fee(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "insufficient_fee_balance.json"))
+    account = PaperAccount()
+    account.balance = 75.0
+
+    success = await account.open_position(
+        "BTC/USDT", "LONG", 100.0, 75.0, 90.0, 0.0,
+        "Insufficient fee balance", leverage=5, signal_score=100,
+        apply_slippage=False,
+    )
+
+    assert success is False
+    assert account.balance == pytest.approx(75.0)
+    assert "BTC/USDT" not in account.positions
+    assert not account.trades
+
+
+@pytest.mark.anyio
 async def test_paper_account_repeated_close_creates_one_trade(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "STATE_FILE", str(tmp_path / "repeat_close.json"))
     account = PaperAccount()

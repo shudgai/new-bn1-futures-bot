@@ -26,6 +26,12 @@ def trade_date_str(trade: dict) -> str:
     """交易 id 是毫秒級 unix timestamp，trade['time'] 沒有年份無法拿來篩選日期，故用 id 換算台北時區日期"""
     return datetime.fromtimestamp(trade.get("id", 0) / 1000, TAIPEI_TZ).strftime("%Y-%m-%d")
 
+
+def excel_text(value) -> str:
+    """避免 Excel 將交易 ID/時間自動轉成科學記號或日期數值。"""
+    return "" if value is None else f"'{value}"
+
+
 app = FastAPI(title="Binance Futures Bot 2.0")
 
 def visible_symbols():
@@ -453,7 +459,10 @@ async def export_trades(date: str = None):
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for t in selected_trades:
-        writer.writerow({k: t.get(k, "") for k in fieldnames})
+        row = {k: t.get(k, "") for k in fieldnames}
+        row["id"] = excel_text(t.get("id"))
+        row["time"] = excel_text(t.get("time"))
+        writer.writerow(row)
 
     label = date if date else "all"
     filename = f"trade_history_{label}_{get_taipei_now_str('%Y%m%d_%H%M%S')}.csv"

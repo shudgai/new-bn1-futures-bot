@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import pytest
 from core.engine import TradingEngine
@@ -22,6 +24,14 @@ def _generate_macro_frame(trend_dir='DOWN', num_candles=70):
         df.loc[i, 'high'] = base_price + 0.2
         df.loc[i, 'low'] = base_price - 0.2
     return df
+
+
+def _set_gradual_convergence(df, rail, gaps):
+    for index, gap in zip(range(64, 69), gaps):
+        if rail == 'kc_upper':
+            df.loc[index, 'ma15'] = float(df.loc[index, rail]) - gap
+        else:
+            df.loc[index, 'ma15'] = float(df.loc[index, rail]) + gap
 
 def _add_closed_confirmation(df):
     """Move the tested break one bar back and close its immediate confirmation."""
@@ -130,30 +140,98 @@ def test_macro_trend_hold_position():
     res = TradingEngine._channel_swing_action(df, 93.0, 'SHORT')
     assert res['action'] == 'HOLD'
 
-def test_confirmed_ma3_peak_with_first_red_candle_exits_without_waiting_for_ma15():
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_outer_rail_ma15_convergence_exits_without_continuation(side):
+    df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
+    df['atr'] = 0.5
+    if side == 'LONG':
+        df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 100.5, 100.0, 98.0, 99.8]
+        df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 100.2, 100.0, 98.0, 99.9]
+        _set_gradual_convergence(df, 'kc_upper', [0.9, 0.75, 0.55, 0.35, 0.1])
+        result = TradingEngine._channel_swing_action(df, 100.2, 'LONG')
+    else:
+        df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 99.5, 102.0, 100.0, 100.2]
+        df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 99.8, 102.0, 100.0, 100.1]
+        _set_gradual_convergence(df, 'kc_lower', [0.9, 0.75, 0.55, 0.35, 0.1])
+        result = TradingEngine._channel_swing_action(df, 99.8, 'SHORT')
+    assert result == {
+        'action': 'EXIT',
+        'side': None,
+        'reason': f'{"UPPER" if side == "LONG" else "LOWER"}_MA15_NO_CONTINUATION',
+    }
+
+
+def test_outer_rail_ma15_convergence_holds_when_long_continues():
+    df = _generate_macro_frame('UP', 70)
+    df['atr'] = 0.5
+    df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 100.5, 100.0, 98.0, 99.8]
+    df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 101.0, 100.1, 98.0, 100.0]
+    _set_gradual_convergence(df, 'kc_upper', [0.9, 0.75, 0.55, 0.35, 0.1])
+    result = TradingEngine._channel_swing_action(df, 101.0, 'LONG')
+    assert result == {
+        'action': 'HOLD',
+        'side': None,
+        'reason': 'UPPER_MA15_CONTINUATION',
+    }
+
+
+def test_outer_rail_ma15_convergence_forecast_does_not_exit_long_early():
+    df = _generate_macro_frame('UP', 70)
+    df['atr'] = 0.5
+    df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 100.5, 101.0, 98.0, 99.5]
+    df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 100.6, 100.8, 98.0, 100.0]
+    _set_gradual_convergence(df, 'kc_upper', [1.2, 1.1, 1.0, 0.9, 0.8])
+    result = TradingEngine._channel_swing_action(df, 100.6, 'LONG')
+    assert result == {
+        'action': 'HOLD',
+        'side': None,
+        'reason': 'UPPER_MA15_CONVERGENCE_FORECAST',
+    }
+
+
+def test_sudden_ma15_upper_rail_jump_is_not_convergence():
+    df = _generate_macro_frame('UP', 70)
+    df['atr'] = 0.5
+    df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 100.5, 100.0, 98.0, 99.8]
+    df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 100.2, 100.0, 98.0, 99.9]
+    result = TradingEngine._channel_swing_action(
+        df, 100.2, 'LONG', position_open_timestamp=time.time(),
+    )
+    assert result['action'] == 'HOLD'
+    assert result['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
+
+    later_result = TradingEngine._channel_swing_action(
+        df, 100.2, 'LONG', position_open_timestamp=time.time() - 3600,
+    )
+    assert later_result['action'] == 'HOLD'
+    assert later_result['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
+
+
+def test_local_ma3_peak_inside_channel_holds_long():
     df = _generate_macro_frame("UP", 70)
     df.loc[66:68, "ma3"] = [100.0, 102.0, 101.0]
     df.loc[68, ["open", "close"]] = [102.0, 101.0]
     res = TradingEngine._channel_swing_action(df, 101.0, "LONG")
-    assert res == {"action": "EXIT", "side": None, "reason": "MA3_PEAK_OPPOSITE_CANDLE_EXIT"}
+    assert res["action"] == "HOLD"
 
 
-def test_confirmed_ma3_valley_with_first_green_candle_exits_without_waiting_for_ma15():
+def test_confirmed_ma3_valley_without_outer_break_holds_short():
     df = _generate_macro_frame("DOWN", 70)
     df.loc[66:68, "ma3"] = [100.0, 98.0, 99.0]
     df.loc[68, ["open", "close"]] = [98.0, 99.0]
     res = TradingEngine._channel_swing_action(df, 99.0, "SHORT")
-    assert res == {"action": "EXIT", "side": None, "reason": "MA3_TROUGH_OPPOSITE_CANDLE_EXIT"}
+    assert res["action"] == "HOLD"
 
 
 
 
-def test_ma3_touching_ma15_on_opposite_candle_exits_early():
+def test_ma3_touching_ma15_without_upper_cross_holds_long():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "close", "ma3", "ma15"]] = [102.0, 101.0, 101.0, 100.0]
     df.loc[68, ["open", "close", "ma3", "ma15"]] = [101.0, 99.0, 100.0, 100.0]
     res = TradingEngine._channel_swing_action(df, 99.0, "LONG")
-    assert res == {"action": "REVERSE", "side": "SHORT", "reason": "MA3_MA15_BEARISH_CROSS_REVERSE_SHORT"}
+    assert res["action"] == "HOLD"
 
 
 def test_ma3_touching_ma15_on_same_colour_candle_holds():
@@ -252,3 +330,28 @@ def test_inflection_alone_does_not_open_short():
     df.loc[69, ['kc_lower', 'kc_upper', 'open']] = [1., 200., 100.]
     res = TradingEngine._channel_swing_action(df, 104.5, None)
     assert res['action'] == 'WAIT'
+
+@pytest.mark.parametrize("previous,current,upper_before,upper_now,expected", [
+    (109.0, 108.0, 108.5, 108.2, "HOLD"),
+    (109.0, 108.2, 108.5, 108.2, "HOLD"),
+    (109.0, 108.8, 108.5, 108.2, "HOLD"),
+    (108.0, 107.5, 108.5, 108.2, "HOLD"),
+    (109.0, 109.1, 108.5, 109.2, "HOLD"),
+    (float("nan"), 108.0, 108.5, 108.2, "HOLD"),
+    (109.0, float("inf"), 108.5, 108.2, "HOLD"),
+])
+@pytest.mark.parametrize("green", [True, False])
+def test_long_holds_through_ma3_upper_cross(previous, current, upper_before, upper_now, expected, green):
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67:68, "ma3"] = [previous, current]
+    df.loc[67:68, "kc_upper"] = [upper_before, upper_now]
+    df.loc[68, ["open", "close"]] = [107.0, 108.0] if green else [108.0, 107.0]
+    result = TradingEngine._channel_swing_action(df, 107.0, "LONG")
+    assert result["action"] == expected
+
+
+def test_live_ma3_upper_cross_waits_for_close():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67:69, "ma3"] = [109.0, 108.8, 107.0]
+    df.loc[67:69, "kc_upper"] = [108.5, 108.5, 108.5]
+    assert TradingEngine._channel_swing_action(df, 107.0, "LONG")["action"] == "HOLD"
