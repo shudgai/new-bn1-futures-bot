@@ -63,8 +63,7 @@ MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
 CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
     1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
 )
-MIN_TWO_SLOT_BALANCE_USDT = float(os.getenv("MIN_TWO_SLOT_BALANCE_USDT", "120"))
-TARGET_SLOT_BALANCE_USDT = float(os.getenv("TARGET_SLOT_BALANCE_USDT", "75"))
+MAX_SLOT_TRADE_USDT = 1000.0
 
 def get_effective_slot_count(wallet_balance: float, configured_max: int = None) -> int:
     """Return the configured slot cap; each new slot scales its margin instead.

@@ -1062,6 +1062,11 @@ def test_two_slots_reopen_independently_and_compound_realized_balance(monkeypatc
     engine.account.available = 10.0
     assert engine._continuous_entry_amount() == 0.0
 
+    engine.account.positions.clear()
+    engine.account.available = 4000.0
+    engine.account.wallet = 4000.0
+    assert engine._continuous_entry_amount() == pytest.approx(1000.0)
+
 
 def test_pausing_trading_keeps_market_data_task_alive():
     async def scenario():

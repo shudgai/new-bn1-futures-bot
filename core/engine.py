@@ -9,7 +9,7 @@ import weakref
 from collections import deque
 from typing import Dict, List
 from core.config import (
-    DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
+    DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, MAX_SLOT_TRADE_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION,
     PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
     PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
@@ -8027,7 +8027,10 @@ class TradingEngine:
             if effective_slots > 1
             else 1.0
         )
-        return max(0.0, min(available, wallet_balance * fraction, TRADE_AMOUNT_USDT))
+        return max(
+            0.0,
+            min(available, wallet_balance * fraction, TRADE_AMOUNT_USDT, MAX_SLOT_TRADE_USDT),
+        )
 
     @staticmethod
     def _continuous_entry_price_is_safe(
