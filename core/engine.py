@@ -7631,15 +7631,13 @@ class TradingEngine:
         if held_side == "LONG":
             if is_breakout_short and is_confirmed_short:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
-            if bearish_cross or live_bearish_cross:
-                return {"action": "EXIT", "side": "LONG", "reason": "MA_BEARISH_CROSS_EXIT_LONG"}
+            # 依照用戶最新指示：異常紅K/均線死叉不直接平倉，必須死抱到對方CK外側(下軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
             if is_breakout_long and is_confirmed_long:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
-            if bullish_cross or live_bullish_cross:
-                return {"action": "EXIT", "side": "SHORT", "reason": "MA_BULLISH_CROSS_EXIT_SHORT"}
+            # 依照用戶最新指示：異常綠K/均線金叉不直接平倉，必須死抱到對方CK外側(上軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
