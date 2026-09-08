@@ -7681,17 +7681,6 @@ class TradingEngine:
         if fresh_break or curr_close > curr_upper or curr_close < curr_lower:
             return {"action": "WAIT", "side": None, "reason": "WAIT_FRESH_BREAK_CONFIRMATION"}
 
-        # 綜合策略：保留轉折進場 (Pivot Entry)，但放寬大趨勢限制
-        # 只要形成峰頂 (Peak)，且價格與 MA3 跌破 MA15，就果斷進空單
-        if has_peak:
-            if curr_close < curr_ma3 < curr_ma15:
-                return {"action": "ENTER", "side": "SHORT", "reason": "PIVOT_PEAK_CROSS_DOWN"}
-            
-        # 只要形成谷底 (Trough)，且價格與 MA3 突破 MA15，就果斷進多單
-        if has_trough:
-            if curr_close > curr_ma3 > curr_ma15:
-                return {"action": "ENTER", "side": "LONG", "reason": "PIVOT_TROUGH_CROSS_UP"}
-
         return {
             "action": "WAIT", "side": None,
             "kc_upper": curr_upper, "kc_lower": curr_lower,
