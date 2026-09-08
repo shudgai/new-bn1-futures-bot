@@ -7590,11 +7590,18 @@ class TradingEngine:
         live_ma3 = float(live["ma3"])
         live_ma15 = float(live["ma15"])
         
-        # Upper breakout: Live price > KC Upper, MA3 > MA15, and previous candle closed inside
-        upper_entry_break = prev_closed_inside and price > curr_upper and live_ma3 > live_ma15
+        # 過濾假突破：要求即時實體必須具有一定強度 (例如 >= 0.8 ATR) 才能觸發即時進場
+        live_open = float(live["open"])
+        live_body = abs(price - live_open)
+        live_atr = max(float(live.get("atr", 0.0)), 1e-12)
+        # 這裡設定 0.8 倍 ATR 為強勢實體的門檻
+        strong_live_body = live_body >= (live_atr * 0.8)
         
-        # Lower breakout: Live price < KC Lower, MA3 < MA15, and previous candle closed inside
-        lower_entry_break = prev_closed_inside and price < curr_lower and live_ma3 < live_ma15
+        # Upper breakout: Live price > KC Upper, MA3 > MA15, prev closed inside, AND strong body
+        upper_entry_break = prev_closed_inside and price > curr_upper and live_ma3 > live_ma15 and strong_live_body
+        
+        # Lower breakout: Live price < KC Lower, MA3 < MA15, prev closed inside, AND strong body
+        lower_entry_break = prev_closed_inside and price < curr_lower and live_ma3 < live_ma15 and strong_live_body
         
         fresh_break = False # Obsolete with live breakout
 
