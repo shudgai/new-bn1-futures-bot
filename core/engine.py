@@ -7480,6 +7480,7 @@ class TradingEngine:
         entry_kc_lower: float | None = None,
         entry_outer_chase: bool = False,
         profit_locked: bool = False,
+        cross_timer_start: float = 0.0,
     ) -> dict:
         import core.config as config
         """KC Macro Trend Following Strategy"""
