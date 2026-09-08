@@ -6287,6 +6287,7 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
         """Enter immediately according to new breakout entry rules."""
+        return TradingEngine._channel_swing_action(frame, live_price)
         required = {"open", "high", "low", "close", "kc_upper", "kc_lower"}
         if (
             frame is None
@@ -8305,11 +8306,6 @@ class TradingEngine:
                 break_reasons = {"KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT"}
                 pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
                 direct_side = channel_action.get("side") if channel_action.get("reason") in break_reasons else None
-                if chop_locked and not existing_pos and direct_side not in ("LONG", "SHORT"):
-                    self._channel_outer_reentry_after_exit.pop(symbol, None)
-                    getattr(self, "_channel_pending_reverse_bar", {}).pop(symbol, None)
-                    self._record_channel_signal_event(symbol, "CHOP_LOCKED_ENTRY_BLOCK", channel_df)
-                    return signal_progress, detected_candidates
                 if not existing_pos and pending_side in ("LONG", "SHORT"):
                     retry_bar = getattr(self, "_channel_pending_reverse_bar", {}).get(symbol)
                     if retry_bar == (pending_side, self._channel_candidate_bar_id(channel_df)):

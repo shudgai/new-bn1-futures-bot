@@ -134,6 +134,19 @@ def test_spike_breakout_is_not_traded():
     assert res["reason"] == "KC_SPIKE_BREAKOUT_WAIT"
 
 
+def test_spike_reversal_waits_for_confirmed_direction():
+    """An impulse candle followed by a red rejection must not open long."""
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["open", "high", "low", "close", "kc_upper"]] = [
+        106.0, 112.0, 105.8, 111.5, 107.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper"]] = [
+        111.5, 111.8, 107.2, 108.0, 107.1,
+    ]
+    result = TradingEngine._channel_immediate_outer_break_action(df, 108.0)
+    assert result["action"] == "WAIT"
+
+
 def test_macro_trend_hold_position():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
