@@ -52,9 +52,9 @@ async def test_restart_repairs_exact_entry_and_unlock_restores_fixed(tmp_path, m
     await a.initialize()
     assert a.positions[SYMBOL]['initial_sl'] == fixed
     assert a.positions[SYMBOL]['sl'] == fixed
-    if side == 'LONG':
-        assert await a.trail_stop_loss(SYMBOL,99.)
-        assert await a.clear_channel_profit_lock(SYMBOL)
+    lock_price = 99. if side == 'LONG' else 101.
+    assert await a.trail_stop_loss(SYMBOL, lock_price)
+    assert await a.clear_channel_profit_lock(SYMBOL)
     assert a.positions[SYMBOL]['sl'] == fixed
     assert not a.position_meta[SYMBOL].get('channel_cross_lock')
     restored = PaperAccount()
@@ -74,16 +74,16 @@ async def test_short_cross_inside_channel_never_closes_or_reopens(setup_engine):
         await e._process_single_symbol(SYMBOL,float(i),None,False)
         await e.account.update_positions({SYMBOL:100.1})
     assert e.account.positions[SYMBOL] is p
-    assert p['sl']==105.
-    assert not e.account.position_meta[SYMBOL].get('channel_cross_lock')
+    assert p['sl'] == pytest.approx(100.01)
+    assert e.account.position_meta[SYMBOL].get('channel_cross_lock') is True
     assert not e.account.trades
 
 @pytest.mark.anyio
-async def test_legacy_short_cross_lock_clears_inside_channel(setup_engine):
+async def test_short_cross_lock_clears_after_direction_recovery(setup_engine):
     e, f=setup_engine('LONG','SHORT')
     f['kc_upper']=110.; f['kc_lower']=90.; f['ma15']=100.
     f.loc[67:69,['open','close']]=100.
-    f.loc[67:69,'ma3']=101.
+    f.loc[67:69,'ma3']=99.
     p=e.account.positions[SYMBOL]
     p.update(sl=100.01, initial_sl=105., channel_cross_lock=True)
     e.account.position_meta[SYMBOL].update(channel_cross_lock=True,channel_pre_lock_sl=105.)

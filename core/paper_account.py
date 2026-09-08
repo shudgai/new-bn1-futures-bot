@@ -1283,17 +1283,8 @@ class PaperAccount:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
             if is_channel_swing:
-                # Preserve both fixed and MA-cross stops across ticker updates.
-                current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                cross_lock_active = bool(
-                    pos.get("channel_cross_lock")
-                    or meta.get("channel_cross_lock")
-                )
-                if cross_lock_active and current_sl > 0 and (
-                    curr_p <= current_sl if side == "LONG" else curr_p >= current_sl
-                ):
-                    await self.close_position(symbol, curr_p, "Channel Swing SL", is_manual=True)
-                    continue
+                # Cross-lock is a reference price only; Channel Swing exits
+                # exclusively through the confirmed opposite KC breakout.
                 pos["peak_pnl_pct"] = highest_pnl
                 total_unrealized += unrealized
                 continue

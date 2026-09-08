@@ -250,5 +250,4 @@ async def test_testnet_channel_short_ticker_spike_does_not_force_close(tmp_path,
     a.positions[SYMBOL]['channel_cross_lock'] = True
     a.position_meta[SYMBOL]['channel_cross_lock'] = True
     await a.update_positions({SYMBOL:105.})
-    assert len(calls) == 1
-    assert calls[0][2] == 'Channel Swing SL'
+    assert calls == []

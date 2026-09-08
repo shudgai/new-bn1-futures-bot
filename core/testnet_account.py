@@ -758,19 +758,8 @@ class BinanceTestnetAccount:
                 continue
             # RANGE／TREND 結構出場交由主引擎；Channel Swing 額外只保留大瀑布防護。
             if is_structure_exit_mode or is_channel_swing:
-                current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                cross_lock_active = bool(
-                    pos.get("channel_cross_lock")
-                    or meta.get("channel_cross_lock")
-                )
-                if is_channel_swing and cross_lock_active and current_sl > 0 and (
-                    mark_p <= current_sl if side == "LONG" else mark_p >= current_sl
-                ):
-                    await self.close_position(symbol, mark_p, "Channel Swing SL", is_manual=True)
-                    continue
-                # Channel Swing shorts wait for confirmed candle/MA signals;
-                # a single ticker spike must not bypass the cross-lock rule.
-                # Existing fixed/cross-lock stops above still execute normally.
+                # Channel Swing exits exclusively through confirmed opposite
+                # KC body break plus next closed-candle confirmation.
                 if ENABLE_RAPID_ADVERSE_DROP and not (is_channel_swing and side == "SHORT"):
                     prev_p = self._last_ticker_prices.get(symbol)
                     last_cd = self._rapid_drop_cooldown.get(symbol, 0.0)
@@ -2429,20 +2418,18 @@ class BinanceTestnetAccount:
         if not meta.get("channel_cross_lock"):
             return False
         order_id = meta.get("channel_lock_algo_id")
-        if not order_id:
-            self.log(f"⚠️ {symbol} 鎖損益單缺少交易所 ID，保留 SL 等待核對", "WARNING")
-            return False
         restored = float(meta.get("channel_pre_lock_sl") or pos.get("initial_sl") or meta.get("initial_sl") or 0.0)
         try:
             # Restore the original protection before removing the temporary lock.
-            if restored > 0 and not meta.get("channel_restored_stop_id"):
+            if order_id and restored > 0 and not meta.get("channel_restored_stop_id"):
                 order = await self._create_protection_order(
                     symbol, "sell" if pos["side"] == "LONG" else "buy",
                     "STOP_MARKET", pos["qty"], restored,
                 )
                 meta["channel_restored_stop_id"] = order.get("algoId") or order.get("id")
                 self.save_state()
-            await self.exchange.request("algoOrder", "fapiPrivate", "DELETE", {"algoId": order_id})
+            if order_id:
+                await self.exchange.request("algoOrder", "fapiPrivate", "DELETE", {"algoId": order_id})
         except Exception as exc:
             self.log(f"⚠️ {symbol} 解除鎖損益失敗，保留 SL 待重試：{exc}", "WARNING")
             return False
@@ -2492,6 +2479,18 @@ class BinanceTestnetAccount:
         qty = position["qty"]
         try:
             new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl_price))
+            is_channel_swing = str(
+                position.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper() == "CHANNEL_SWING"
+            if is_channel_swing and mark_profit_locked:
+                meta["sl"] = new_sl_price
+                meta["is_breakeven_moved"] = True
+                position["sl"] = new_sl_price
+                position["is_breakeven_moved"] = True
+                self.position_meta[symbol] = meta
+                self.positions[symbol] = position
+                self.save_state()
+                return True
             # 取消所有現有保護單
             await self._cancel_all_orders(symbol)
             # 重新掛新止損單

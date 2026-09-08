@@ -9044,18 +9044,8 @@ class TradingEngine:
                         )
                     # 單幣模式：確認 KC 外側峰／谷後先立即平掉原倉；只有平倉
                     # 成功才建立同幣反向候選，禁止先掃描或等待其他幣種。
-                    position_meta = self.account.position_meta.get(symbol, {})
-                    locked_close_price = float(
-                        existing_pos.get("sl")
-                        or position_meta.get("sl")
-                        or 0.0
-                    ) if (
-                        existing_pos.get("channel_cross_lock")
-                        or position_meta.get("channel_cross_lock")
-                    ) else 0.0
-                    close_price = locked_close_price if locked_close_price > 0 else channel_price
                     closed = await self.account.close_position(
-                        symbol, close_price,
+                        symbol, channel_price,
                         f"Channel Swing {close_label} close-first", is_manual=True,
                     )
                     if not closed:
