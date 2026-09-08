@@ -7510,7 +7510,11 @@ class TradingEngine:
 
         # A fresh body breakout must be followed immediately by one closed
         # candle holding outside. Older breaks never qualify as catch-up entries.
+        # C1: before_break (iloc[-4]), C2: breakout_candle (iloc[-3]), C3: confirmation_candle (iloc[-2])
         before_break = frame.iloc[-4]
+        breakout_candle = frame.iloc[-3]
+        confirmation_candle = frame.iloc[-2]
+        
         def body_break(before, bar, side):
             o, c = float(bar["open"]), float(bar["close"])
             lower, upper = float(bar["kc_lower"]), float(bar["kc_upper"])
@@ -7520,11 +7524,15 @@ class TradingEngine:
                 c > upper and c > o if side == "LONG" else c < lower and c < o
             )
 
-        upper_break = bool(body_break(before_break, previous, "LONG")
-                           and curr_close > curr_upper and price > curr_upper)
-        lower_break = bool(body_break(before_break, previous, "SHORT")
-                           and curr_close < curr_lower and price < curr_lower)
-        fresh_break = body_break(previous, current, "LONG") or body_break(previous, current, "SHORT")
+        is_breakout_long = body_break(before_break, breakout_candle, "LONG")
+        is_confirmed_long = float(confirmation_candle["close"]) > float(confirmation_candle["kc_upper"])
+        upper_break = bool(is_breakout_long and is_confirmed_long and curr_close > curr_upper and price > curr_upper)
+
+        is_breakout_short = body_break(before_break, breakout_candle, "SHORT")
+        is_confirmed_short = float(confirmation_candle["close"]) < float(confirmation_candle["kc_lower"])
+        lower_break = bool(is_breakout_short and is_confirmed_short and curr_close < curr_lower and price < curr_lower)
+
+        fresh_break = body_break(confirmation_candle, current, "LONG") or body_break(confirmation_candle, current, "SHORT")
 
         bearish_cross = float(previous["ma3"]) >= float(previous["ma15"]) and curr_ma3 < curr_ma15
         bullish_cross = float(previous["ma3"]) <= float(previous["ma15"]) and curr_ma3 > curr_ma15
@@ -7543,19 +7551,11 @@ class TradingEngine:
         if held_side == "LONG":
             if held_lower_break:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
-            if live_bearish_cross or (bearish_cross and live_ma3 < live_ma15):
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG", "lock_to_market": True}
-            if profit_locked and live_ma3 > live_ma15 and price > live_ma15:
-                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_LONG"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
             if held_upper_break:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
-            if live_bullish_cross or (bullish_cross and live_ma3 > live_ma15):
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True}
-            if profit_locked and live_ma3 < live_ma15 and price < live_ma15:
-                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
