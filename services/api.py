@@ -420,6 +420,8 @@ async def manual_order(req: ManualOrderRequest):
             "market_mode": "RANGE",
             "manual_entry": True,
             "managed_by_bot": True,
+            "manual_favorable_rail_reached": False,
+            "channel_favorable_rail_reached": False,
         },
     )
     if not success:

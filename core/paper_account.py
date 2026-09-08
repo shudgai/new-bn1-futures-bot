@@ -130,6 +130,7 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
     "manual_entry", "managed_by_bot", "bot_last_managed_at",
+    "channel_favorable_rail_reached",
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
@@ -1213,15 +1214,20 @@ class PaperAccount:
                 (previous_price - curr_p) / previous_price
                 if previous_price and previous_price > 0 else 0.0
             )
+            # Channel Swing normally ignores ordinary pullbacks, but an actual
+            # adverse waterfall must still market-close immediately.
             rapid_adverse_triggered = bool(
                 (
+                    speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT * 0.5
+                    or tick_adverse_pct >= RAPID_ADVERSE_DROP_PCT
+                ) if is_channel_swing else (
                     structure_failed
                     or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
                     or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT
-                ) if not is_channel_swing else False
+                )
             )
             if (
-                CONTINUOUS_PIVOT_ONLY
+                (CONTINUOUS_PIVOT_ONLY or is_channel_swing)
                 and ENABLE_RAPID_ADVERSE_DROP
                 and side in ("LONG", "SHORT")
                 and rapid_adverse_triggered

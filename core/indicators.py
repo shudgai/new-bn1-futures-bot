@@ -576,6 +576,26 @@ def evaluate_minimum_kc_wave(
     }
 
 
+def strict_pivot_type(values, index):
+    """Use adjacent closed samples; reject ties, missing neighbours and broken pivots.
+
+    Callers supply closed bars only. Confirmation is available at index + 1.
+    """
+    values = np.asarray(values, dtype=float)
+    if index < 0:
+        index += len(values)
+    if index < 1 or index + 1 >= len(values):
+        return None
+    if not np.isfinite(values[index - 1:]).all():
+        return None
+    left, center, right = values[index - 1:index + 2]
+    if center > left and center > right and np.all(values[index + 1:] < center):
+        return "PEAK_TURN"
+    if center < left and center < right and np.all(values[index + 1:] > center):
+        return "TROUGH_TURN"
+    return None
+
+
 def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     """
     1m MA3 / MA15 連續轉向邏輯：
@@ -669,6 +689,9 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     recent_pivot = None
     search_start = max(1, len(df) - 6)
     for pivot_index in range(len(df) - 2, search_start - 1, -1):
+        shape = strict_pivot_type(ma3_values, pivot_index)
+        if shape is None:
+            continue
         left = float(ma3_values.iloc[pivot_index] - ma3_values.iloc[pivot_index - 1])
         left_two_bar = left
         if pivot_index >= 2:
@@ -685,14 +708,16 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
                 ma3_values.iloc[pivot_index + 2] - ma3_values.iloc[pivot_index]
             )
         if (
-            max(left, left_two_bar) >= min_pivot_slope
+            shape == "PEAK_TURN"
+            and max(left, left_two_bar) >= min_pivot_slope
             and right <= 0.0
             and min(right, right_two_bar) <= -min_pivot_slope
         ):
             recent_pivot = ("PEAK_TURN", pivot_index - len(df))
             break
         if (
-            min(left, left_two_bar) <= -min_pivot_slope
+            shape == "TROUGH_TURN"
+            and min(left, left_two_bar) <= -min_pivot_slope
             and right >= 0.0
             and max(right, right_two_bar) >= min_pivot_slope
         ):
