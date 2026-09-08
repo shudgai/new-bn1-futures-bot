@@ -7701,17 +7701,22 @@ class TradingEngine:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
 
         # 內部順勢進場邏輯 (Internal Trend Entry)
-        # 用戶指示：當 MA15 與 KC 上軌向下，且 MA3 形成山峰時，直接在通道內開空單
+        # 用戶指示：當 MA15 與 KC 上下軌有明確趨勢，且在通道內發生 MA3/MA15 交叉時，直接開倉
         inside_kc = curr_lower <= curr_close <= curr_upper
+        
+        # SHORT: MA15與上軌向下 + MA3死叉MA15
         ma15_trend_down = curr_ma15 < float(frame.iloc[-4]["ma15"])
         kc_upper_trend_down = curr_upper < float(frame.iloc[-4]["kc_upper"])
-        if ma15_trend_down and kc_upper_trend_down and inside_kc and has_peak:
-            return {"action": "ENTER", "side": "SHORT", "reason": "INTERNAL_TREND_PEAK_SHORT"}
+        ma3_cross_down = curr_ma3 < curr_ma15 and float(previous["ma3"]) >= float(previous["ma15"])
+        if ma15_trend_down and kc_upper_trend_down and inside_kc and ma3_cross_down:
+            return {"action": "ENTER", "side": "SHORT", "reason": "INTERNAL_TREND_CROSS_DOWN_SHORT"}
             
+        # LONG: MA15與下軌向上 + MA3金叉MA15
         ma15_trend_up = curr_ma15 > float(frame.iloc[-4]["ma15"])
         kc_lower_trend_up = curr_lower > float(frame.iloc[-4]["kc_lower"])
-        if ma15_trend_up and kc_lower_trend_up and inside_kc and has_trough:
-            return {"action": "ENTER", "side": "LONG", "reason": "INTERNAL_TREND_TROUGH_LONG"}
+        ma3_cross_up = curr_ma3 > curr_ma15 and float(previous["ma3"]) <= float(previous["ma15"])
+        if ma15_trend_up and kc_lower_trend_up and inside_kc and ma3_cross_up:
+            return {"action": "ENTER", "side": "LONG", "reason": "INTERNAL_TREND_CROSS_UP_LONG"}
 
         if fresh_break or curr_close > curr_upper or curr_close < curr_lower:
             return {"action": "WAIT", "side": None, "reason": "WAIT_FRESH_BREAK_CONFIRMATION"}
