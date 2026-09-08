@@ -1358,6 +1358,29 @@ class TradingEngine:
                     entry_grace, entry_grace_age = self._bottom_entry_grace(position, time.time())
                     trigger["bottom_entry_grace"] = entry_grace
                     trigger["bottom_entry_age_sec"] = entry_grace_age
+
+                    # 即時對側外軌觸發立馬平倉
+                    live_opposite_kc_touch = False
+                    if not df.empty and len(df) >= 1:
+                        adverse_live = df.iloc[-1]
+                        _curr_kc_upper = float(adverse_live.get("kc_upper", 0.0))
+                        _curr_kc_lower = float(adverse_live.get("kc_lower", 0.0))
+                        
+                        if side == "LONG" and mark_p <= _curr_kc_lower and _curr_kc_lower > 0:
+                            live_opposite_kc_touch = True
+                        elif side == "SHORT" and mark_p >= _curr_kc_upper and _curr_kc_upper > 0:
+                            live_opposite_kc_touch = True
+                            
+                    trigger["live_opposite_kc_touch"] = live_opposite_kc_touch
+                    if live_opposite_kc_touch and not entry_grace and not is_cr_position:
+                        close_reason = f"EMERGENCY_EXIT_OPPOSITE_KC: 即時價格觸及對側外軌"
+                        self.account.log(f"🚨 [對側軌道出場] {symbol} {close_reason}", "WARNING")
+                        await self.account.close_position(
+                            symbol, mark_p, close_reason, is_manual=True
+                        )
+                        self._soft_warning_since.pop(symbol, None)
+                        continue
+
                     # A sharp adverse live candle is an emergency exit: it must have a
                     # meaningful body and cross MA3, so ordinary pullbacks are ignored.
                     rapid_adverse_exit = False
