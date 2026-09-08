@@ -7629,14 +7629,14 @@ class TradingEngine:
         # Removed 3-minute timer logic as per user request (instant exit on MA cross)
 
         if held_side == "LONG":
-            if lower_entry_break:
+            if is_breakout_short and is_confirmed_short:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             if bearish_cross or live_bearish_cross:
                 return {"action": "EXIT", "side": "LONG", "reason": "MA_BEARISH_CROSS_EXIT_LONG"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
-            if upper_entry_break:
+            if is_breakout_long and is_confirmed_long:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             if bullish_cross or live_bullish_cross:
                 return {"action": "EXIT", "side": "SHORT", "reason": "MA_BULLISH_CROSS_EXIT_SHORT"}
@@ -7681,9 +7681,9 @@ class TradingEngine:
         has_peak = find_recent_turn(is_peak=True)
         has_trough = find_recent_turn(is_peak=False)
 
-        if lower_entry_break:
+        if is_breakout_short and is_confirmed_short:
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
-        if upper_entry_break:
+        if is_breakout_long and is_confirmed_long:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
 
         if fresh_break or curr_close > curr_upper or curr_close < curr_lower:
