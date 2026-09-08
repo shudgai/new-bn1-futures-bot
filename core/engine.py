@@ -7579,30 +7579,24 @@ class TradingEngine:
         )
         latest_closed_pos = len(frame) - 2
 
-        def pending_strong_entry(side):
-            if latest_closed_pos < 2:
-                return False
-            first = max(1, latest_closed_pos - 8)
-            for breakout_pos in range(first, latest_closed_pos):
-                breakout = frame.iloc[breakout_pos]
-                if not body_break(frame.iloc[breakout_pos - 1], breakout, side):
-                    continue
-                outside = True
-                for pos in range(breakout_pos + 1, latest_closed_pos + 1):
-                    bar = frame.iloc[pos]
-                    rail = float(bar["kc_upper"] if side == "LONG" else bar["kc_lower"])
-                    close = float(bar["close"])
-                    if (side == "LONG" and close <= rail) or (side == "SHORT" and close >= rail):
-                        outside = False
-                        break
-                if outside and directional_body(frame.iloc[latest_closed_pos], side):
-                    return True
-            return False
-
-        upper_entry_break = pending_strong_entry("LONG") and curr_close > curr_upper and price > curr_upper
-        lower_entry_break = pending_strong_entry("SHORT") and curr_close < curr_lower and price < curr_lower
-
-        fresh_break = body_break(confirmation_candle, current, "LONG") or body_break(confirmation_candle, current, "SHORT")
+        # --- LIVE BREAKOUT ENTRY LOGIC ---
+        # User requested instant entry when live price pierces KC outer band and MA crosses.
+        # Ensure previous candle closed inside the channel to confirm it's a fresh breakout.
+        prev_closed_candle = frame.iloc[-2]
+        prev_closed_inside = float(prev_closed_candle["kc_lower"]) <= float(prev_closed_candle["close"]) <= float(prev_closed_candle["kc_upper"])
+        
+        # Live MA cross validation
+        live = frame.iloc[-1]
+        live_ma3 = float(live["ma3"])
+        live_ma15 = float(live["ma15"])
+        
+        # Upper breakout: Live price > KC Upper, MA3 > MA15, and previous candle closed inside
+        upper_entry_break = prev_closed_inside and price > curr_upper and live_ma3 > live_ma15
+        
+        # Lower breakout: Live price < KC Lower, MA3 < MA15, and previous candle closed inside
+        lower_entry_break = prev_closed_inside and price < curr_lower and live_ma3 < live_ma15
+        
+        fresh_break = False # Obsolete with live breakout
 
         bearish_cross = float(previous["ma3"]) >= float(previous["ma15"]) and curr_ma3 < curr_ma15
         bullish_cross = float(previous["ma3"]) <= float(previous["ma15"]) and curr_ma3 > curr_ma15
@@ -7627,6 +7621,8 @@ class TradingEngine:
         )
 
         if held_side == "LONG":
+            if lower_entry_break:
+                return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             if recovered_long:
                 return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_LONG"}
             if cross_timer_start == 0 and current_inside_channel and (bearish_cross or live_bearish_cross):
@@ -7636,6 +7632,8 @@ class TradingEngine:
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
+            if upper_entry_break:
+                return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             if recovered_short:
                 return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
             if cross_timer_start == 0 and current_inside_channel and (bullish_cross or live_bullish_cross):

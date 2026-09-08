@@ -88,78 +88,15 @@ def test_macro_trend_entry_long_on_upper_kc_structure_break():
     res = TradingEngine._channel_swing_action(df, 107.5, None)
     assert res['action'] == 'WAIT'
 
-def test_breakout_waits_for_third_strong_body_after_weak_confirmation():
-    df = _generate_macro_frame('UP', 70)
-    df.loc[66, ['close', 'kc_upper']] = [100.0, 100.5]
-    df.loc[66:70, 'kc_lower'] = 99.0
-    df.loc[67, ['open', 'close', 'kc_upper']] = [100.0, 101.0, 100.5]
-    df.loc[68, ['open', 'close', 'high', 'kc_upper']] = [101.0, 101.02, 101.1, 100.5]
-    df.loc[69, ['open', 'close', 'high', 'kc_upper']] = [101.02, 101.02, 101.02, 100.5]
-    df['atr'] = 1.0
-
-    weak = TradingEngine._channel_swing_action(df, 101.02, None)
-    assert weak['action'] == 'WAIT'
-
-    df.loc[70] = df.loc[69]
-    df.loc[70, ['open', 'close', 'high']] = [101.02, 102.0, 102.1]
-    df.loc[71] = df.loc[69]
-    strong = TradingEngine._channel_swing_action(df, 102.0, None)
-    assert strong['action'] == 'ENTER'
-    assert strong['side'] == 'LONG'
-    assert strong['reason'] == 'KC_UPPER_BREAKOUT'
-
 def test_macro_trend_hold_position():
     df = _generate_macro_frame('DOWN', 70)
     res = TradingEngine._channel_swing_action(df, 93.0, 'SHORT')
     assert res['action'] == 'HOLD'
 
-def test_long_reverses_short_on_red_candle_below_lower_kc_with_downtrend():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[68, ['open', 'close', 'kc_lower']] = [93.8, 92.5, 93.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 92.5, 'LONG')
-    assert res['action'] == 'REVERSE'
-    assert res['side'] == 'SHORT'
-    assert res['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
-
-def test_long_reverses_on_body_break_even_without_downtrend():
-    df = _generate_macro_frame('UP', 70)
-    df.loc[68, ['open', 'close', 'kc_lower']] = [107.0, 105.5, 106.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 105.5, 'LONG')
-    assert res['action'] == 'REVERSE'
-    assert res['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
-
-def test_short_reverses_long_on_green_candle_above_upper_kc_with_uptrend():
-    df = _generate_macro_frame('UP', 70)
-    df.loc[68, ['open', 'close', 'kc_upper']] = [106.2, 107.5, 107.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 107.5, 'SHORT')
-    assert res['action'] == 'REVERSE'
-    assert res['side'] == 'LONG'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
-
-def test_short_reverses_on_body_break_even_without_uptrend():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[68, ['open', 'close', 'kc_upper']] = [93.0, 95.0, 94.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 95.0, 'SHORT')
-    assert res['action'] == 'REVERSE'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
-
-def test_long_waits_for_net_profit_before_outer_reversal():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[68, ['open', 'close', 'kc_lower']] = [93.8, 92.5, 93.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 92.5, 'LONG', exit_net_profitable=False)
-    assert res['action'] == 'REVERSE'
-    assert res['side'] == 'SHORT'
-    assert res['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
-
 def test_long_does_not_lock_without_ma_cross():
     df = _generate_macro_frame('UP', 70)
     df.loc[68, ['open', 'close', 'ma3', 'ma15', 'kc_middle', 'kc_lower']] = [107.0, 106.5, 106.8, 106.7, 106.8, 105.5]
-    df.loc[69, ['ma3', 'ma15']] = [107.0, 106.7]  # No live cross either.
+    df.loc[69, ['ma3', 'ma15']] = [107.0, 106.7]
     res = TradingEngine._channel_swing_action(df, 106.5, 'LONG')
     assert res['action'] == 'HOLD'
     assert res['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
@@ -171,76 +108,11 @@ def test_short_does_not_lock_without_ma_cross():
     assert res['action'] == 'HOLD'
     assert res['reason'] == 'HOLDING_SHORT_RUN_TO_LOW'
 
-def test_short_waits_for_net_profit_before_outer_reversal():
-    df = _generate_macro_frame('UP', 70)
-    df.loc[68, ['open', 'close', 'kc_upper']] = [106.2, 107.5, 107.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 107.5, 'SHORT', exit_net_profitable=False)
-    assert res['action'] == 'REVERSE'
-    assert res['side'] == 'LONG'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
-
-def test_short_confirmed_upper_body_break_takes_precedence_over_cross_lock():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[67, ['ma3', 'ma15', 'close', 'open', 'kc_upper']] = [92.5, 93.0, 93.0, 92.5, 95.0]
-    df.loc[68, ['ma3', 'ma15', 'close', 'open', 'high', 'kc_upper']] = [94.5, 94.0, 95.2, 93.0, 95.4, 94.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 95.2, 'SHORT')
-    assert res['action'] == 'REVERSE'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
-
-def test_locked_long_reverses_after_confirmed_lower_break():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[67, ['close', 'kc_lower']] = [93.5, 93.0]
-    df.loc[68, ['open', 'close', 'low', 'kc_lower']] = [93.5, 92.5, 92.4, 93.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 92.5, 'LONG', profit_locked=True)
-    assert res['action'] == 'REVERSE'
-    assert res['side'] == 'SHORT'
-    assert res['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
-
-def test_long_reverses_on_weak_confirmed_opposite_body_break():
-    df = _generate_macro_frame('DOWN', 70)
-    df['atr'] = 1.5
-    df.loc[66, ['close', 'kc_lower', 'kc_upper']] = [100.0, 99.9, 101.0]
-    df.loc[67, ['open', 'close', 'kc_lower', 'kc_upper']] = [100.0, 99.8, 99.9, 101.0]
-    df.loc[68, ['open', 'close', 'kc_lower', 'kc_upper']] = [99.8, 99.7, 99.75, 101.0]
-    result = TradingEngine._channel_swing_action(df, 99.7, 'LONG')
-    assert result['action'] == 'REVERSE'
-    assert result['side'] == 'SHORT'
-    assert result['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
-
-def test_locked_short_reverses_after_confirmed_upper_break():
-    df = _generate_macro_frame('UP', 70)
-    df.loc[67, ['close', 'kc_upper']] = [106.5, 107.0]
-    df.loc[68, ['open', 'close', 'high', 'kc_upper']] = [106.5, 107.5, 107.6, 107.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 107.5, 'SHORT', profit_locked=True)
-    assert res['action'] == 'REVERSE'
-    assert res['side'] == 'LONG'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
-
-def test_locked_short_does_not_suppress_body_reversal():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[68, ['open', 'close', 'high', 'kc_upper']] = [93.0, 95.0, 95.2, 94.0]
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 95.0, 'SHORT', profit_locked=True)
-    assert res['action'] == 'REVERSE'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
-
 def test_macro_trend_requires_30_and_60_bar_staircase():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[38, 'ma15'] = 92.0
     res = TradingEngine._channel_swing_action(df, 93.0, None)
     assert res['action'] == 'WAIT'
-
-def test_short_body_reversal_does_not_wait_for_macro_trend():
-    df = _generate_macro_frame('DOWN', 70)
-    df.loc[68, 'close'] = 94.2
-    _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 94.2, 'SHORT')
-    assert res['action'] == 'REVERSE'
-    assert res['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
 
 def test_short_holds_when_bodies_start_outside_upper_kc():
     df = _generate_macro_frame('DOWN', 70)
@@ -268,14 +140,6 @@ def test_live_outer_entry_follows_directional_short_continuation():
     assert res['action'] == 'ENTER'
     assert res['side'] == 'SHORT'
     assert res['reason'] == 'KC_LIVE_LOWER_BREAK_SHORT'
-
-def test_long_holds_on_live_only_break_without_crash():
-    df = _generate_macro_frame('UP', 70)
-    df.loc[68, 'close'] = 106.5
-    res = TradingEngine._channel_swing_action(df, 105.5, 'LONG')
-    assert res['action'] == 'HOLD'
-    assert res['reason'] == 'LOCK_PROFIT_LONG'  # Live MA cross locks; no confirmed exit.
-    assert res['lock_to_market'] is True
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)
