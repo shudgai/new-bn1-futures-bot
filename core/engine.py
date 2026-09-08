@@ -7631,7 +7631,7 @@ class TradingEngine:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             
             # 用戶指示：真正的峰谷 MA3 會和上軌交叉 (用 MA3 的頂點判斷，過濾假峰谷)
-            ma3_peak = curr_ma3 < float(previous["ma3"]) and float(previous["ma3"]) >= float(frame.iloc[-4]["ma3"])
+            ma3_peak = curr_ma3 < float(previous["ma3"]) and float(previous["ma3"]) >= float(frame.iloc[-3]["ma3"])
             if float(previous["ma3"]) >= float(previous["kc_upper"]) and ma3_peak:
                 return {"action": "EXIT", "side": "LONG", "reason": "OUTER_PEAK_EXIT_LONG"}
                 
@@ -7647,7 +7647,7 @@ class TradingEngine:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             
             # 用戶指示：真正的峰谷 MA3 會和下軌交叉 (用 MA3 的谷底判斷，過濾假峰谷)
-            ma3_trough = curr_ma3 > float(previous["ma3"]) and float(previous["ma3"]) <= float(frame.iloc[-4]["ma3"])
+            ma3_trough = curr_ma3 > float(previous["ma3"]) and float(previous["ma3"]) <= float(frame.iloc[-3]["ma3"])
             if float(previous["ma3"]) <= float(previous["kc_lower"]) and ma3_trough:
                 return {"action": "EXIT", "side": "SHORT", "reason": "OUTER_TROUGH_EXIT_SHORT"}
                 
