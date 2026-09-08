@@ -7597,11 +7597,11 @@ class TradingEngine:
         # 這裡設定 0.8 倍 ATR 為強勢實體的門檻
         strong_live_body = live_body >= (live_atr * 0.8)
         
-        # Upper breakout: Live price > KC Upper, MA3 > MA15, prev closed inside, AND strong body
-        upper_entry_break = prev_closed_inside and price > curr_upper and live_ma3 > live_ma15 and strong_live_body
+        # Upper breakout: Live price > KC Upper, prev closed inside, AND strong body (MA3/MA15 check removed to prioritize violent breakouts)
+        upper_entry_break = prev_closed_inside and price > curr_upper and strong_live_body
         
-        # Lower breakout: Live price < KC Lower, MA3 < MA15, prev closed inside, AND strong body
-        lower_entry_break = prev_closed_inside and price < curr_lower and live_ma3 < live_ma15 and strong_live_body
+        # Lower breakout: Live price < KC Lower, prev closed inside, AND strong body (MA3/MA15 check removed to prioritize violent breakouts)
+        lower_entry_break = prev_closed_inside and price < curr_lower and strong_live_body
         
         fresh_break = False # Obsolete with live breakout
 
