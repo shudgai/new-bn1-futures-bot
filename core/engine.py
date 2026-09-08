@@ -7488,51 +7488,7 @@ class TradingEngine:
             return {"action": "WAIT", "reason": "KC data unavailable"}
         held_side = str(current_side or "").upper()
 
-        if len(frame) < 20 and held_side:
-            previous_live = frame.iloc[-2]
-            live = frame.iloc[-1]
-            live_bearish_cross = (
-                float(previous_live["ma3"]) >= float(previous_live["ma15"])
-                and float(live["ma3"]) < float(live["ma15"])
-            )
-            live_bullish_cross = (
-                float(previous_live["ma3"]) <= float(previous_live["ma15"])
-                and float(live["ma3"]) > float(live["ma15"])
-            )
-            live_close = float(live["close"])
-            live_inside_channel = (
-                float(live["kc_lower"]) <= live_close <= float(live["kc_upper"])
-            )
-            live_direction_recovered = (
-                (held_side == "LONG" and float(live["ma3"]) >= float(live["ma15"]))
-                or (held_side == "SHORT" and float(live["ma3"]) <= float(live["ma15"]))
-            )
-            if (
-                profit_locked
-                and live_inside_channel
-                and live_direction_recovered
-            ):
-                return {
-                    "action": "HOLD", "side": None,
-                    "reason": f"UNLOCK_PROFIT_{held_side}",
-                }
-            if not profit_locked and (
-                (held_side == "LONG" and live_bearish_cross)
-                or (held_side == "SHORT" and live_bullish_cross)
-            ):
-                return {
-                    "action": "HOLD", "side": None,
-                    "reason": f"LOCK_PROFIT_{held_side}",
-                    "lock_to_market": True,
-                }
-            if profit_locked and entry_outer_chase:
-                return {
-                    "action": "HOLD", "side": None,
-                    "reason": (
-                        "HOLDING_LONG_RUN_TO_HIGH"
-                        if held_side == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"
-                    ),
-                }
+        # Remove the < 20 check block, we'll do it later.
 
         price = float(live_price)
 
@@ -7657,34 +7613,34 @@ class TradingEngine:
         live_bearish_cross = curr_ma3 >= curr_ma15 and live_ma3 < live_ma15
         live_bullish_cross = curr_ma3 <= curr_ma15 and live_ma3 > live_ma15
 
+        import time
         current_inside_channel = curr_lower <= curr_close <= curr_upper
         recovered_long = (
-            profit_locked and current_inside_channel and curr_ma3 >= curr_ma15
+            cross_timer_start > 0 and current_inside_channel and curr_ma3 >= curr_ma15
         )
         recovered_short = (
-            profit_locked and current_inside_channel and curr_ma3 <= curr_ma15
+            cross_timer_start > 0 and current_inside_channel and curr_ma3 <= curr_ma15
+        )
+        timer_expired = (
+            cross_timer_start > 0 and (time.time() - cross_timer_start) >= 180.0
         )
 
-        # Reversals use the same body-break + next-closed-candle confirmation.
-        held_upper_break = upper_break
-        held_lower_break = lower_break
-
         if held_side == "LONG":
-            if held_lower_break:
-                return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             if recovered_long:
                 return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_LONG"}
-            if not profit_locked and current_inside_channel and (bearish_cross or live_bearish_cross):
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG", "lock_to_market": True}
+            if cross_timer_start == 0 and current_inside_channel and (bearish_cross or live_bearish_cross):
+                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG"}
+            if cross_timer_start > 0 and curr_ma3 < curr_ma15 and timer_expired:
+                return {"action": "EXIT", "side": None, "reason": "MA3_MA15_BEARISH_EXIT_LONG"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
-            if held_upper_break:
-                return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             if recovered_short:
                 return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
-            if not profit_locked and current_inside_channel and (bullish_cross or live_bullish_cross):
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True}
+            if cross_timer_start == 0 and current_inside_channel and (bullish_cross or live_bullish_cross):
+                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT"}
+            if cross_timer_start > 0 and curr_ma3 > curr_ma15 and timer_expired:
+                return {"action": "EXIT", "side": None, "reason": "MA3_MA15_BULLISH_EXIT_SHORT"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
@@ -8531,6 +8487,11 @@ class TradingEngine:
                         or existing_pos.get("is_breakeven_moved")
                         or self.account.position_meta.get(symbol, {}).get("is_breakeven_moved")
                     ) if existing_pos else False,
+                    cross_timer_start=float(
+                        existing_pos.get("channel_cross_timer")
+                        or self.account.position_meta.get(symbol, {}).get("channel_cross_timer")
+                        or 0.0
+                    ) if existing_pos else 0.0,
                 )
                 break_reasons = {
                     "KC_UPPER_GREEN_REVERSE_LONG", "KC_LOWER_RED_REVERSE_SHORT",
