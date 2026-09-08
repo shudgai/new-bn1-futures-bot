@@ -7630,9 +7630,9 @@ class TradingEngine:
             if is_breakout_short and is_confirmed_short:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             
-            # 用戶指示：全部改成峰谷三點平倉，但不反手
+            # 用戶指示：真正的峰谷 MA3 會和上軌交叉 (用 MA3 的頂點判斷，過濾假峰谷)
             ma3_peak = curr_ma3 < float(previous["ma3"]) and float(previous["ma3"]) >= float(frame.iloc[-4]["ma3"])
-            if curr_close >= curr_upper and ma3_peak:
+            if float(previous["ma3"]) >= float(previous["kc_upper"]) and ma3_peak:
                 return {"action": "EXIT", "side": "LONG", "reason": "OUTER_PEAK_EXIT_LONG"}
                 
             # 依照用戶最新指示：異常紅K/均線死叉不直接平倉，必須死抱到對方CK外側(下軌)並確認後，才平倉反手
@@ -7646,9 +7646,9 @@ class TradingEngine:
             if is_breakout_long and is_confirmed_long:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             
-            # 用戶指示：全部改成峰谷三點平倉，但不反手
+            # 用戶指示：真正的峰谷 MA3 會和下軌交叉 (用 MA3 的谷底判斷，過濾假峰谷)
             ma3_trough = curr_ma3 > float(previous["ma3"]) and float(previous["ma3"]) <= float(frame.iloc[-4]["ma3"])
-            if curr_close <= curr_lower and ma3_trough:
+            if float(previous["ma3"]) <= float(previous["kc_lower"]) and ma3_trough:
                 return {"action": "EXIT", "side": "SHORT", "reason": "OUTER_TROUGH_EXIT_SHORT"}
                 
             # 依照用戶最新指示：異常綠K/均線金叉不直接平倉，必須死抱到對方CK外側(上軌)並確認後，才平倉反手

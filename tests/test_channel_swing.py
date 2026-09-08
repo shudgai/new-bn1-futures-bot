@@ -131,8 +131,8 @@ def test_short_holds_through_same_direction_waterfall_down():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[68, ['open', 'close', 'low', 'kc_lower']] = [93.0, 90.0, 89.5, 92.0]
     res = TradingEngine._channel_swing_action(df, 90.0, 'SHORT')
-    assert res['action'] == 'EXIT'
-    assert res['reason'] == 'OUTER_TROUGH_EXIT_SHORT'
+    assert res['action'] == 'HOLD'
+    assert res['reason'] != 'EMERGENCY_EXIT_WATERFALL_DOWN'
 
 def test_inflection_alone_does_not_open_long():
     df = _generate_macro_frame('DOWN', 70)
