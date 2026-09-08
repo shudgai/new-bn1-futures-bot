@@ -1406,7 +1406,7 @@ class TradingEngine:
                             )
                         )
                     trigger["rapid_adverse_exit"] = rapid_adverse_exit
-                    if rapid_adverse_exit and not entry_grace and not is_cr_position:
+                    if rapid_adverse_exit and not is_cr_position:
                         curr_p = self.tickers.get(symbol) or adverse_close
                         close_reason = (
                             f"{exit_tf} {side}單單根急速反向：實體 >= "
@@ -1434,7 +1434,7 @@ class TradingEngine:
 
                     # 瀑布/連噴 鎖利
                     waterfall_exit = False
-                    if not entry_grace and not rapid_adverse_exit and len(df) >= 5:
+                    if not rapid_adverse_exit and len(df) >= 5:
                         _wf_atr = max(float(trigger.get("atr") or 0.0), 1e-12)
                         try:
                             _wf_bars = df.iloc[-4:-1]
@@ -1466,7 +1466,7 @@ class TradingEngine:
 
                     # 連續兩根異常K鎖利
                     two_candle_crash = False
-                    if not entry_grace and not rapid_adverse_exit and not waterfall_exit and len(df) >= 4:
+                    if not rapid_adverse_exit and not waterfall_exit and len(df) >= 4:
                         _tc_atr = max(float(trigger.get("atr") or 0.0), 1e-12)
                         try:
                             _c1 = df.iloc[-3]
