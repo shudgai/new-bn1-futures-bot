@@ -7637,7 +7637,7 @@ class TradingEngine:
             ma15_is_close_to_upper = (curr_upper - curr_ma15) <= (channel_width * 0.08)
             ma3_peak = curr_ma3 < float(previous["ma3"]) and float(previous["ma3"]) >= float(frame.iloc[-4]["ma3"])
             if curr_close >= curr_upper and ma3_peak and ma15_is_close_to_upper:
-                return {"action": "EXIT", "side": "LONG", "reason": "MA15_EXHAUSTION_PEAK_EXIT_LONG"}
+                return {"action": "REVERSE", "side": "SHORT", "reason": "MA15_EXHAUSTION_PEAK_REVERSE_SHORT"}
                 
             # 依照用戶最新指示：異常紅K/均線死叉不直接平倉，必須死抱到對方CK外側(下軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
@@ -7651,7 +7651,7 @@ class TradingEngine:
             ma15_is_close_to_lower = (curr_ma15 - curr_lower) <= (channel_width * 0.08)
             ma3_trough = curr_ma3 > float(previous["ma3"]) and float(previous["ma3"]) <= float(frame.iloc[-4]["ma3"])
             if curr_close <= curr_lower and ma3_trough and ma15_is_close_to_lower:
-                return {"action": "EXIT", "side": "SHORT", "reason": "MA15_EXHAUSTION_TROUGH_EXIT_SHORT"}
+                return {"action": "REVERSE", "side": "LONG", "reason": "MA15_EXHAUSTION_TROUGH_REVERSE_LONG"}
                 
             # 依照用戶最新指示：異常綠K/均線金叉不直接平倉，必須死抱到對方CK外側(上軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
