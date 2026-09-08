@@ -354,18 +354,6 @@ CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
 CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
     os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "60")
 ))
-# 急速突破才啟用 Channel Swing 外軌追蹤：水位回撤此 ATR 倍數即市價平倉。
-CHANNEL_SWING_TRAILING_ATR_MULT = max(
-    0.1, float(os.getenv("CHANNEL_SWING_TRAILING_ATR_MULT", "1.0"))
-)
-# 曾取得至少一個 ATR 的順向空間後，價格回到含成本進場價即退出；0 可停用。
-CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT = max(
-    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_RECLAIM_ATR_MULT", "1.0"))
-)
-# Channel Swing 單筆淨損達帳戶權益此比例即強制撤退；0 可停用。
-CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT = min(
-    1.0, max(0.0, float(os.getenv("CHANNEL_SWING_MAX_NET_LOSS_WALLET_PCT", "0.03")))
-)
 # 強反轉收盤 K 若已深入下一個 KC 區間，可直接解除 MA15／KC 中軌附近的
 # 盤旋等待，不必再多等一根 K。三個門檻分別是：收盤深入下一區間比例、
 # K 棒實體位於下一區間的比例，以及實體相對 ATR 的最小倍數。
@@ -951,43 +939,6 @@ PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "0.0
 PROFIT_LOCK_TRAIL_RATIO = max(0.0, float(os.getenv("PROFIT_LOCK_TRAIL_RATIO", "0.25")))
 # 最小推進步距（USDT），避免止損每次報價波動都重算重掛
 PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT", "0.5")))
-
-# Channel Swing 新版淨利階梯：先讓趨勢運行，毛利覆蓋預估交易成本後
-# 再多出 3U 才啟動；初始保留淨利 1U。後續只有動能衰退時才按 2U 推進。
-CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT = max(
-    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT", "3.0"))
-)
-CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT = max(
-    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT", "1.0"))
-)
-CHANNEL_SWING_PROFIT_LOCK_STEP_USDT = max(
-    0.01, float(os.getenv("CHANNEL_SWING_PROFIT_LOCK_STEP_USDT", "2.0"))
-)
-
-
-def compute_channel_swing_profit_lock_usdt(
-    peak_gross_usdt: float,
-    estimated_cost_usdt: float,
-    momentum_declining: bool,
-) -> tuple[float, float, int] | None:
-    """Return (gross floor, activation gross, completed steps) once armed."""
-    peak = max(0.0, float(peak_gross_usdt or 0.0))
-    cost = max(0.0, float(estimated_cost_usdt or 0.0))
-    activation = cost + CHANNEL_SWING_PROFIT_LOCK_ACTIVATION_NET_USDT
-    if peak + 1e-9 < activation:
-        return None
-    completed_steps = 0
-    if momentum_declining:
-        completed_steps = math.floor(
-            max(0.0, peak - activation)
-            / CHANNEL_SWING_PROFIT_LOCK_STEP_USDT + 1e-9
-        )
-    floor = (
-        cost
-        + CHANNEL_SWING_PROFIT_LOCK_INITIAL_NET_USDT
-        + completed_steps * CHANNEL_SWING_PROFIT_LOCK_STEP_USDT
-    )
-    return floor, activation, completed_steps
 
 # ---------------------------------------------------------------------------
 # 固定百分比鎖利（Fixed Profit Lock by Unlevered %)

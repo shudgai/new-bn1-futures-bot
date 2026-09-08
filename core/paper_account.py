@@ -78,7 +78,6 @@ from core.config import (
     PROFIT_LOCK_FLOOR_USDT,
     PROFIT_LOCK_TRAIL_RATIO,
     PROFIT_LOCK_MIN_STEP_USDT,
-    compute_channel_swing_profit_lock_usdt,
     ENABLE_FIXED_PROFIT_LOCK_PCT,
     FIXED_PROFIT_LOCK_TRIGGER_PCT,
     FIXED_PROFIT_LOCK_FLOOR_PCT,

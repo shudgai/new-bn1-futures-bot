@@ -81,7 +81,6 @@ from core.config import (
     FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
     ENABLE_PROFIT_LOCK_USDT,
     OUTER_RUN_NET_GIVEBACK_USDT,
-    compute_channel_swing_profit_lock_usdt,
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
@@ -704,13 +703,16 @@ class BinanceTestnetAccount:
                 pos.get("wave_regime") or meta.get("wave_regime") or ""
             ).upper()
             is_structure_exit_mode = wave_regime in ("RANGE", "TREND")
+            is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
 
             # OUTER_RUN峰谷出現前完全不停利；峰谷出現後等待正式出場期間，
             # 若最高淨利固定回吐1U，才以保護性例外提前平倉。
             outer_run_active = bool(
                 pos.get("outer_run_active") or meta.get("outer_run_active")
             )
-            if ENABLE_PROFIT_LOCK_USDT and (outer_run_active or is_structure_exit_mode):
+            if ENABLE_PROFIT_LOCK_USDT and not is_channel_swing and (
+                outer_run_active or is_structure_exit_mode
+            ):
                 qty = float(pos.get("qty") or 0.0)
                 notional_value = qty * entry_p
                 round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
@@ -755,7 +757,6 @@ class BinanceTestnetAccount:
                 # 也不執行任何獲利／技術型出場。
                 continue
             # RANGE／TREND 結構出場交由主引擎；Channel Swing 額外只保留大瀑布防護。
-            is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
             if is_structure_exit_mode or is_channel_swing:
                 current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
                 cross_lock_active = bool(
