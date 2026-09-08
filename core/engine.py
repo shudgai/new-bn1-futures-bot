@@ -7610,36 +7610,21 @@ class TradingEngine:
 
         import time
         current_inside_channel = curr_lower <= curr_close <= curr_upper
-        recovered_long = (
-            cross_timer_start > 0 and current_inside_channel and curr_ma3 >= curr_ma15
-        )
-        recovered_short = (
-            cross_timer_start > 0 and current_inside_channel and curr_ma3 <= curr_ma15
-        )
-        timer_expired = (
-            cross_timer_start > 0 and (time.time() - cross_timer_start) >= 180.0
-        )
+        
+        # Removed 3-minute timer logic as per user request (instant exit on MA cross)
 
         if held_side == "LONG":
             if lower_entry_break:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
-            if recovered_long:
-                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_LONG"}
-            if cross_timer_start == 0 and current_inside_channel and (bearish_cross or live_bearish_cross):
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG"}
-            if cross_timer_start > 0 and curr_ma3 < curr_ma15 and timer_expired:
-                return {"action": "EXIT", "side": None, "reason": "MA3_MA15_BEARISH_EXIT_LONG"}
+            if bearish_cross:
+                return {"action": "EXIT", "side": "LONG", "reason": "MA_BEARISH_CROSS_EXIT_LONG"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
             if upper_entry_break:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
-            if recovered_short:
-                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
-            if cross_timer_start == 0 and current_inside_channel and (bullish_cross or live_bullish_cross):
-                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT"}
-            if cross_timer_start > 0 and curr_ma3 > curr_ma15 and timer_expired:
-                return {"action": "EXIT", "side": None, "reason": "MA3_MA15_BULLISH_EXIT_SHORT"}
+            if bullish_cross:
+                return {"action": "EXIT", "side": "SHORT", "reason": "MA_BULLISH_CROSS_EXIT_SHORT"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
