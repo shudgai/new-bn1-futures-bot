@@ -7555,25 +7555,19 @@ class TradingEngine:
             return strong_body(bar) and (c > o if side == "LONG" else c < o)
 
         is_breakout_long = body_break(before_break, breakout_candle, "LONG")
-        outer_confirmed_long = float(confirmation_candle["close"]) > float(confirmation_candle["kc_upper"])
-        is_confirmed_long = (
-            outer_confirmed_long
-            and directional_body(confirmation_candle, "LONG")
-        )
+        # 用戶指示：只要第二根是綠K即可，不需要也收在軌道外
+        is_confirmed_long = directional_body(confirmation_candle, "LONG")
         upper_break = bool(
-            is_breakout_long and outer_confirmed_long
+            is_breakout_long and is_confirmed_long
             and curr_close > curr_upper
             and price > curr_upper
         )
 
         is_breakout_short = body_break(before_break, breakout_candle, "SHORT")
-        outer_confirmed_short = float(confirmation_candle["close"]) < float(confirmation_candle["kc_lower"])
-        is_confirmed_short = (
-            outer_confirmed_short
-            and directional_body(confirmation_candle, "SHORT")
-        )
+        # 用戶指示：只要第二根是紅K即可，不需要也收在軌道外
+        is_confirmed_short = directional_body(confirmation_candle, "SHORT")
         lower_break = bool(
-            is_breakout_short and outer_confirmed_short
+            is_breakout_short and is_confirmed_short
             and curr_close < curr_lower
             and price < curr_lower
         )
@@ -7629,29 +7623,33 @@ class TradingEngine:
         # Removed 3-minute timer logic as per user request (instant exit on MA cross)
 
         if held_side == "LONG":
+            # 用戶指示：都破軌時就要賣出 (若持有多單，價格跌破下軌，立刻平倉，不用等確認)
+            if curr_close < curr_lower:
+                return {"action": "EXIT", "side": "LONG", "reason": "KC_LOWER_OPPOSITE_BREAK_EXIT_LONG"}
+            
             if is_breakout_short and is_confirmed_short:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             
-            # Exhaustion Exit: Price at/outside upper band + MA15 is close to upper band + Peak (MA3 turns down)
-            channel_width = max(curr_upper - curr_lower, 1e-12)
-            ma15_is_close_to_upper = (curr_upper - curr_ma15) <= (channel_width * 0.08)
+            # 用戶指示：全部改成峰谷三點平倉，但不反手
             ma3_peak = curr_ma3 < float(previous["ma3"]) and float(previous["ma3"]) >= float(frame.iloc[-4]["ma3"])
-            if curr_close >= curr_upper and ma3_peak and ma15_is_close_to_upper:
-                return {"action": "REVERSE", "side": "SHORT", "reason": "MA15_EXHAUSTION_PEAK_REVERSE_SHORT"}
+            if curr_close >= curr_upper and ma3_peak:
+                return {"action": "EXIT", "side": "LONG", "reason": "OUTER_PEAK_EXIT_LONG"}
                 
             # 依照用戶最新指示：異常紅K/均線死叉不直接平倉，必須死抱到對方CK外側(下軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
+            # 用戶指示：都破軌時就要賣出 (若持有空單，價格突破上軌，立刻平倉，不用等確認)
+            if curr_close > curr_upper:
+                return {"action": "EXIT", "side": "SHORT", "reason": "KC_UPPER_OPPOSITE_BREAK_EXIT_SHORT"}
+                
             if is_breakout_long and is_confirmed_long:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             
-            # Exhaustion Exit: Price at/outside lower band + MA15 is close to lower band + Trough (MA3 turns up)
-            channel_width = max(curr_upper - curr_lower, 1e-12)
-            ma15_is_close_to_lower = (curr_ma15 - curr_lower) <= (channel_width * 0.08)
+            # 用戶指示：全部改成峰谷三點平倉，但不反手
             ma3_trough = curr_ma3 > float(previous["ma3"]) and float(previous["ma3"]) <= float(frame.iloc[-4]["ma3"])
-            if curr_close <= curr_lower and ma3_trough and ma15_is_close_to_lower:
-                return {"action": "REVERSE", "side": "LONG", "reason": "MA15_EXHAUSTION_TROUGH_REVERSE_LONG"}
+            if curr_close <= curr_lower and ma3_trough:
+                return {"action": "EXIT", "side": "SHORT", "reason": "OUTER_TROUGH_EXIT_SHORT"}
                 
             # 依照用戶最新指示：異常綠K/均線金叉不直接平倉，必須死抱到對方CK外側(上軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
