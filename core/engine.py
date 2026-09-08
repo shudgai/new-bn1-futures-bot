@@ -7632,12 +7632,12 @@ class TradingEngine:
             if is_breakout_short and is_confirmed_short:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
             
-            # Exhaustion Exit: Price at/outside upper band + MA15 is close to upper band + Green K + Uphill
+            # Exhaustion Exit: Price at/outside upper band + MA15 is close to upper band + Peak (MA3 turns down)
             channel_width = max(curr_upper - curr_lower, 1e-12)
             ma15_is_close_to_upper = (curr_upper - curr_ma15) <= (channel_width * 0.08)
-            ma3_uphill = curr_ma3 > curr_ma15
-            if curr_close >= curr_upper and curr_close > curr_open and ma15_is_close_to_upper and ma3_uphill:
-                return {"action": "EXIT", "side": "LONG", "reason": "MA15_EXHAUSTION_EXIT_LONG"}
+            ma3_peak = curr_ma3 < float(previous["ma3"]) and float(previous["ma3"]) >= float(frame.iloc[-4]["ma3"])
+            if curr_close >= curr_upper and ma3_peak and ma15_is_close_to_upper:
+                return {"action": "EXIT", "side": "LONG", "reason": "MA15_EXHAUSTION_PEAK_EXIT_LONG"}
                 
             # 依照用戶最新指示：異常紅K/均線死叉不直接平倉，必須死抱到對方CK外側(下軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
@@ -7646,12 +7646,12 @@ class TradingEngine:
             if is_breakout_long and is_confirmed_long:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
             
-            # Exhaustion Exit: Price at/outside lower band + MA15 is close to lower band + Red K + Downhill
+            # Exhaustion Exit: Price at/outside lower band + MA15 is close to lower band + Trough (MA3 turns up)
             channel_width = max(curr_upper - curr_lower, 1e-12)
             ma15_is_close_to_lower = (curr_ma15 - curr_lower) <= (channel_width * 0.08)
-            ma3_downhill = curr_ma3 < curr_ma15
-            if curr_close <= curr_lower and curr_close < curr_open and ma15_is_close_to_lower and ma3_downhill:
-                return {"action": "EXIT", "side": "SHORT", "reason": "MA15_EXHAUSTION_EXIT_SHORT"}
+            ma3_trough = curr_ma3 > float(previous["ma3"]) and float(previous["ma3"]) <= float(frame.iloc[-4]["ma3"])
+            if curr_close <= curr_lower and ma3_trough and ma15_is_close_to_lower:
+                return {"action": "EXIT", "side": "SHORT", "reason": "MA15_EXHAUSTION_TROUGH_EXIT_SHORT"}
                 
             # 依照用戶最新指示：異常綠K/均線金叉不直接平倉，必須死抱到對方CK外側(上軌)並確認後，才平倉反手
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
