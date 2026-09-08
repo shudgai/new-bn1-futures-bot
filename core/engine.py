@@ -7601,11 +7601,15 @@ class TradingEngine:
         prev_is_green = float(prev_closed_candle["close"]) > float(prev_closed_candle["open"])
         prev_is_red = float(prev_closed_candle["close"]) < float(prev_closed_candle["open"])
         
-        # Upper breakout: Live price > KC Upper, prev closed inside, strong body, AND prev candle was green
-        upper_entry_break = prev_closed_inside and price > curr_upper and strong_live_body and prev_is_green
+        # 動能確認：前一根K線同色，或者剛好發生 MA 順向交叉，皆視為有效動能
+        valid_long_momentum = prev_is_green or curr_ma3 > curr_ma15
+        valid_short_momentum = prev_is_red or curr_ma3 < curr_ma15
+
+        # Upper breakout: Live price > KC Upper, prev closed inside, strong body, AND valid momentum
+        upper_entry_break = prev_closed_inside and price > curr_upper and strong_live_body and valid_long_momentum
         
-        # Lower breakout: Live price < KC Lower, prev closed inside, strong body, AND prev candle was red
-        lower_entry_break = prev_closed_inside and price < curr_lower and strong_live_body and prev_is_red
+        # Lower breakout: Live price < KC Lower, prev closed inside, strong body, AND valid momentum
+        lower_entry_break = prev_closed_inside and price < curr_lower and strong_live_body and valid_short_momentum
         
         fresh_break = False # Obsolete with live breakout
 
