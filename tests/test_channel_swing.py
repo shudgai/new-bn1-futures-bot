@@ -60,9 +60,7 @@ def test_macro_trend_entry_short_on_lower_kc_structure_break():
     df.loc[68, 'low'] = 92.4
     _add_closed_confirmation(df)
     res = TradingEngine._channel_swing_action(df, 92.5, None)
-    assert res['action'] == 'ENTER'
-    assert res['side'] == 'SHORT'
-    assert res['reason'] == 'KC_LOWER_BREAKOUT'
+    assert res['action'] == 'WAIT'
 
 def test_macro_trend_entry_long_on_pullback():
     df = _generate_macro_frame('UP', 70)
@@ -88,9 +86,27 @@ def test_macro_trend_entry_long_on_upper_kc_structure_break():
     df.loc[68, 'high'] = 107.6
     _add_closed_confirmation(df)
     res = TradingEngine._channel_swing_action(df, 107.5, None)
-    assert res['action'] == 'ENTER'
-    assert res['side'] == 'LONG'
-    assert res['reason'] == 'KC_UPPER_BREAKOUT'
+    assert res['action'] == 'WAIT'
+
+def test_breakout_waits_for_third_strong_body_after_weak_confirmation():
+    df = _generate_macro_frame('UP', 70)
+    df.loc[66, ['close', 'kc_upper']] = [100.0, 100.5]
+    df.loc[66:70, 'kc_lower'] = 99.0
+    df.loc[67, ['open', 'close', 'kc_upper']] = [100.0, 101.0, 100.5]
+    df.loc[68, ['open', 'close', 'high', 'kc_upper']] = [101.0, 101.02, 101.1, 100.5]
+    df.loc[69, ['open', 'close', 'high', 'kc_upper']] = [101.02, 101.02, 101.02, 100.5]
+    df['atr'] = 1.0
+
+    weak = TradingEngine._channel_swing_action(df, 101.02, None)
+    assert weak['action'] == 'WAIT'
+
+    df.loc[70] = df.loc[69]
+    df.loc[70, ['open', 'close', 'high']] = [101.02, 102.0, 102.1]
+    df.loc[71] = df.loc[69]
+    strong = TradingEngine._channel_swing_action(df, 102.0, None)
+    assert strong['action'] == 'ENTER'
+    assert strong['side'] == 'LONG'
+    assert strong['reason'] == 'KC_UPPER_BREAKOUT'
 
 def test_macro_trend_hold_position():
     df = _generate_macro_frame('DOWN', 70)
@@ -182,6 +198,17 @@ def test_locked_long_reverses_after_confirmed_lower_break():
     assert res['action'] == 'REVERSE'
     assert res['side'] == 'SHORT'
     assert res['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
+
+def test_long_reverses_on_weak_confirmed_opposite_body_break():
+    df = _generate_macro_frame('DOWN', 70)
+    df['atr'] = 1.5
+    df.loc[66, ['close', 'kc_lower', 'kc_upper']] = [100.0, 99.9, 101.0]
+    df.loc[67, ['open', 'close', 'kc_lower', 'kc_upper']] = [100.0, 99.8, 99.9, 101.0]
+    df.loc[68, ['open', 'close', 'kc_lower', 'kc_upper']] = [99.8, 99.7, 99.75, 101.0]
+    result = TradingEngine._channel_swing_action(df, 99.7, 'LONG')
+    assert result['action'] == 'REVERSE'
+    assert result['side'] == 'SHORT'
+    assert result['reason'] == 'KC_LOWER_RED_REVERSE_SHORT'
 
 def test_locked_short_reverses_after_confirmed_upper_break():
     df = _generate_macro_frame('UP', 70)

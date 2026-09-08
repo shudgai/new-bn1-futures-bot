@@ -1209,33 +1209,26 @@ class PaperAccount:
             is_channel_swing = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper() == "CHANNEL_SWING"
-            # Long waterfall protection acts on ticker speed, without waiting
-            # for a candle close or MA cross. Shorts retain the MA-cross rule.
             tick_adverse_pct = (
                 (previous_price - curr_p) / previous_price
                 if previous_price and previous_price > 0 else 0.0
             )
             rapid_adverse_triggered = bool(
-                (side == "LONG" and (
-                    tick_adverse_pct >= RAPID_ADVERSE_DROP_PCT
-                    or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
-                )) if is_channel_swing else (
+                (
                     structure_failed
                     or speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT
                     or entry_adverse_pct >= RAPID_ADVERSE_DROP_PCT
-                )
+                ) if not is_channel_swing else False
             )
             if (
-                (CONTINUOUS_PIVOT_ONLY or is_channel_swing)
+                CONTINUOUS_PIVOT_ONLY
                 and ENABLE_RAPID_ADVERSE_DROP
                 and side in ("LONG", "SHORT")
                 and rapid_adverse_triggered
             ):
                 self._rapid_drop_cooldown[symbol] = now_ts
                 stop_kind = (
-                    f"waterfall tick {tick_adverse_pct:.2%}, window {speed_adverse_pct:.2%} in {RAPID_ADVERSE_SPEED_WINDOW_SEC:.0f}s"
-                    if is_channel_swing
-                    else "pivot structure failed"
+                    "pivot structure failed"
                     if structure_failed
                     else f"speed {speed_adverse_pct:.2%} in {RAPID_ADVERSE_SPEED_WINDOW_SEC:.0f}s"
                     if speed_adverse_pct >= RAPID_ADVERSE_SPEED_PCT

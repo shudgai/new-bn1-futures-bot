@@ -760,7 +760,7 @@ class BinanceTestnetAccount:
             if is_structure_exit_mode or is_channel_swing:
                 # Channel Swing exits exclusively through confirmed opposite
                 # KC body break plus next closed-candle confirmation.
-                if ENABLE_RAPID_ADVERSE_DROP and not (is_channel_swing and side == "SHORT"):
+                if ENABLE_RAPID_ADVERSE_DROP and not is_channel_swing:
                     prev_p = self._last_ticker_prices.get(symbol)
                     last_cd = self._rapid_drop_cooldown.get(symbol, 0.0)
                     if prev_p and prev_p > 0 and (now_ts - last_cd) > RAPID_DROP_COOLDOWN_SEC:

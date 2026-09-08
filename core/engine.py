@@ -7572,9 +7572,9 @@ class TradingEngine:
         except (TypeError, ValueError, IndexError, KeyError):
             return {"action": "WAIT", "reason": "KC channel invalid"}
 
-        # A fresh body breakout must be followed immediately by one closed
-        # candle holding outside. Older breaks never qualify as catch-up entries.
-        # C1: before_break (iloc[-4]), C2: breakout_candle (iloc[-3]), C3: confirmation_candle (iloc[-2])
+        # A fresh body breakout must be followed by closed candles that remain
+        # outside the rail. Weak bodies and wicks keep the candidate pending;
+        # the first later strong body is the entry confirmation.
         before_break = frame.iloc[-4]
         breakout_candle = frame.iloc[-3]
         confirmation_candle = frame.iloc[-2]
@@ -7588,13 +7588,62 @@ class TradingEngine:
                 c > upper and c > o if side == "LONG" else c < lower and c < o
             )
 
+        def strong_body(bar):
+            body = abs(float(bar["close"]) - float(bar["open"]))
+            bar_atr = max(float(bar.get("atr") or atr), 1e-12)
+            return body >= max(bar_atr * 0.20, abs(float(bar["close"])) * 0.0001)
+
+        def directional_body(bar, side):
+            o, c = float(bar["open"]), float(bar["close"])
+            return strong_body(bar) and (c > o if side == "LONG" else c < o)
+
         is_breakout_long = body_break(before_break, breakout_candle, "LONG")
-        is_confirmed_long = float(confirmation_candle["close"]) > float(confirmation_candle["kc_upper"])
-        upper_break = bool(is_breakout_long and is_confirmed_long and curr_close > curr_upper and price > curr_upper)
+        outer_confirmed_long = float(confirmation_candle["close"]) > float(confirmation_candle["kc_upper"])
+        is_confirmed_long = (
+            outer_confirmed_long
+            and directional_body(confirmation_candle, "LONG")
+        )
+        upper_break = bool(
+            is_breakout_long and outer_confirmed_long
+            and curr_close > curr_upper
+            and price > curr_upper
+        )
 
         is_breakout_short = body_break(before_break, breakout_candle, "SHORT")
-        is_confirmed_short = float(confirmation_candle["close"]) < float(confirmation_candle["kc_lower"])
-        lower_break = bool(is_breakout_short and is_confirmed_short and curr_close < curr_lower and price < curr_lower)
+        outer_confirmed_short = float(confirmation_candle["close"]) < float(confirmation_candle["kc_lower"])
+        is_confirmed_short = (
+            outer_confirmed_short
+            and directional_body(confirmation_candle, "SHORT")
+        )
+        lower_break = bool(
+            is_breakout_short and outer_confirmed_short
+            and curr_close < curr_lower
+            and price < curr_lower
+        )
+        latest_closed_pos = len(frame) - 2
+
+        def pending_strong_entry(side):
+            if latest_closed_pos < 2:
+                return False
+            first = max(1, latest_closed_pos - 8)
+            for breakout_pos in range(first, latest_closed_pos):
+                breakout = frame.iloc[breakout_pos]
+                if not body_break(frame.iloc[breakout_pos - 1], breakout, side):
+                    continue
+                outside = True
+                for pos in range(breakout_pos + 1, latest_closed_pos + 1):
+                    bar = frame.iloc[pos]
+                    rail = float(bar["kc_upper"] if side == "LONG" else bar["kc_lower"])
+                    close = float(bar["close"])
+                    if (side == "LONG" and close <= rail) or (side == "SHORT" and close >= rail):
+                        outside = False
+                        break
+                if outside and directional_body(frame.iloc[latest_closed_pos], side):
+                    return True
+            return False
+
+        upper_entry_break = pending_strong_entry("LONG") and curr_close > curr_upper and price > curr_upper
+        lower_entry_break = pending_strong_entry("SHORT") and curr_close < curr_lower and price < curr_lower
 
         fresh_break = body_break(confirmation_candle, current, "LONG") or body_break(confirmation_candle, current, "SHORT")
 
@@ -7677,9 +7726,9 @@ class TradingEngine:
         has_peak = find_recent_turn(is_peak=True)
         has_trough = find_recent_turn(is_peak=False)
 
-        if lower_break:
+        if lower_entry_break:
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
-        if upper_break:
+        if upper_entry_break:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
 
         if fresh_break or curr_close > curr_upper or curr_close < curr_lower:
