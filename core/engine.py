@@ -6131,8 +6131,6 @@ class TradingEngine:
             frame, live_price, pending,
         )
 
-    @staticmethod
-
     def _channel_macro_market_mode(self, symbol: str) -> str:
         """Use the global BTC direction first, then the symbol market mode."""
         btc_direction = int(getattr(self, "btc_1h_st_direction", 0) or 0)
@@ -7489,10 +7487,56 @@ class TradingEngine:
         import core.config as config
         """KC Macro Trend Following Strategy"""
         required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
-        if frame is None or len(frame) < 20 or not required.issubset(frame.columns):
+        if frame is None or len(frame) < 2 or not required.issubset(frame.columns):
             return {"action": "WAIT", "reason": "KC data unavailable"}
-        
         held_side = str(current_side or "").upper()
+
+        if len(frame) < 20 and held_side:
+            previous_live = frame.iloc[-2]
+            live = frame.iloc[-1]
+            live_bearish_cross = (
+                float(previous_live["ma3"]) >= float(previous_live["ma15"])
+                and float(live["ma3"]) < float(live["ma15"])
+            )
+            live_bullish_cross = (
+                float(previous_live["ma3"]) <= float(previous_live["ma15"])
+                and float(live["ma3"]) > float(live["ma15"])
+            )
+            live_close = float(live["close"])
+            live_inside_channel = (
+                float(live["kc_lower"]) <= live_close <= float(live["kc_upper"])
+            )
+            live_direction_recovered = (
+                (held_side == "LONG" and float(live["ma3"]) >= float(live["ma15"]))
+                or (held_side == "SHORT" and float(live["ma3"]) <= float(live["ma15"]))
+            )
+            if (
+                profit_locked
+                and live_inside_channel
+                and live_direction_recovered
+            ):
+                return {
+                    "action": "HOLD", "side": None,
+                    "reason": f"UNLOCK_PROFIT_{held_side}",
+                }
+            if not profit_locked and (
+                (held_side == "LONG" and live_bearish_cross)
+                or (held_side == "SHORT" and live_bullish_cross)
+            ):
+                return {
+                    "action": "HOLD", "side": None,
+                    "reason": f"LOCK_PROFIT_{held_side}",
+                    "lock_to_market": True,
+                }
+            if profit_locked and entry_outer_chase:
+                return {
+                    "action": "HOLD", "side": None,
+                    "reason": (
+                        "HOLDING_LONG_RUN_TO_HIGH"
+                        if held_side == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"
+                    ),
+                }
+
         price = float(live_price)
 
         try:
@@ -7567,6 +7611,14 @@ class TradingEngine:
         live_bearish_cross = curr_ma3 >= curr_ma15 and live_ma3 < live_ma15
         live_bullish_cross = curr_ma3 <= curr_ma15 and live_ma3 > live_ma15
 
+        current_inside_channel = curr_lower <= curr_close <= curr_upper
+        recovered_long = (
+            profit_locked and current_inside_channel and curr_ma3 >= curr_ma15
+        )
+        recovered_short = (
+            profit_locked and current_inside_channel and curr_ma3 <= curr_ma15
+        )
+
         # Reversals use the same body-break + next-closed-candle confirmation.
         held_upper_break = upper_break
         held_lower_break = lower_break
@@ -7574,11 +7626,19 @@ class TradingEngine:
         if held_side == "LONG":
             if held_lower_break:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_RED_REVERSE_SHORT"}
+            if recovered_long:
+                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_LONG"}
+            if not profit_locked and current_inside_channel and (bearish_cross or live_bearish_cross):
+                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_LONG", "lock_to_market": True}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
 
         if held_side == "SHORT":
             if held_upper_break:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_GREEN_REVERSE_LONG"}
+            if recovered_short:
+                return {"action": "HOLD", "side": None, "reason": "UNLOCK_PROFIT_SHORT"}
+            if not profit_locked and current_inside_channel and (bullish_cross or live_bullish_cross):
+                return {"action": "HOLD", "side": None, "reason": "LOCK_PROFIT_SHORT", "lock_to_market": True}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
 
         # Entry Logic: Find pullbacks (peaks/troughs) matching the macro trend
@@ -8877,14 +8937,10 @@ class TradingEngine:
                     entry_price = float(existing_pos.get("entry_price") or 0.0)
                     if entry_price > 0.0:
                         if channel_action.get("lock_to_market"):
-                            _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 3.0
-                            _entry_p = float(existing_pos.get("entry_price") or 0.0)
                             if existing_pos.get("side") == "LONG":
-                                _safe_lock = max(_entry_p, channel_price - _atr_buffer) if _entry_p > 0 else channel_price - _atr_buffer
-                                lock_price = min(channel_price * (1.0 - SLIPPAGE_PCT), _safe_lock)
+                                lock_price = channel_price * (1.0 - SLIPPAGE_PCT)
                             else:
-                                _safe_lock = min(_entry_p, channel_price + _atr_buffer) if _entry_p > 0 else channel_price + _atr_buffer
-                                lock_price = max(channel_price * (1.0 + SLIPPAGE_PCT), _safe_lock)
+                                lock_price = channel_price * (1.0 + SLIPPAGE_PCT)
                         elif existing_pos.get("side") == "LONG":
                             lock_price = entry_price * (1.0 + 2.0 * TAKER_FEE_RATE) / max(1e-12, 1.0 - SLIPPAGE_PCT)
                         else:
@@ -8988,8 +9044,18 @@ class TradingEngine:
                         )
                     # 單幣模式：確認 KC 外側峰／谷後先立即平掉原倉；只有平倉
                     # 成功才建立同幣反向候選，禁止先掃描或等待其他幣種。
+                    position_meta = self.account.position_meta.get(symbol, {})
+                    locked_close_price = float(
+                        existing_pos.get("sl")
+                        or position_meta.get("sl")
+                        or 0.0
+                    ) if (
+                        existing_pos.get("channel_cross_lock")
+                        or position_meta.get("channel_cross_lock")
+                    ) else 0.0
+                    close_price = locked_close_price if locked_close_price > 0 else channel_price
                     closed = await self.account.close_position(
-                        symbol, channel_price,
+                        symbol, close_price,
                         f"Channel Swing {close_label} close-first", is_manual=True,
                     )
                     if not closed:

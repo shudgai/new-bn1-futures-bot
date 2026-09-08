@@ -758,7 +758,13 @@ class BinanceTestnetAccount:
             is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
             if is_structure_exit_mode or is_channel_swing:
                 current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                if is_channel_swing and current_sl > 0 and (mark_p <= current_sl if side == "LONG" else mark_p >= current_sl):
+                cross_lock_active = bool(
+                    pos.get("channel_cross_lock")
+                    or meta.get("channel_cross_lock")
+                )
+                if is_channel_swing and cross_lock_active and current_sl > 0 and (
+                    mark_p <= current_sl if side == "LONG" else mark_p >= current_sl
+                ):
                     await self.close_position(symbol, mark_p, "Channel Swing SL", is_manual=True)
                     continue
                 # Channel Swing shorts wait for confirmed candle/MA signals;
