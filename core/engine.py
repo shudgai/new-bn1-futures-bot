@@ -7597,11 +7597,15 @@ class TradingEngine:
         # 這裡設定 0.8 倍 ATR 為強勢實體的門檻
         strong_live_body = live_body >= (live_atr * 0.8)
         
-        # Upper breakout: Live price > KC Upper, prev closed inside, AND strong body (MA3/MA15 check removed to prioritize violent breakouts)
-        upper_entry_break = prev_closed_inside and price > curr_upper and strong_live_body
+        # 檢查上一根 K 線的顏色，避免被突發的長影線假突破騙進去
+        prev_is_green = float(prev_closed_candle["close"]) > float(prev_closed_candle["open"])
+        prev_is_red = float(prev_closed_candle["close"]) < float(prev_closed_candle["open"])
         
-        # Lower breakout: Live price < KC Lower, prev closed inside, AND strong body (MA3/MA15 check removed to prioritize violent breakouts)
-        lower_entry_break = prev_closed_inside and price < curr_lower and strong_live_body
+        # Upper breakout: Live price > KC Upper, prev closed inside, strong body, AND prev candle was green
+        upper_entry_break = prev_closed_inside and price > curr_upper and strong_live_body and prev_is_green
+        
+        # Lower breakout: Live price < KC Lower, prev closed inside, strong body, AND prev candle was red
+        lower_entry_break = prev_closed_inside and price < curr_lower and strong_live_body and prev_is_red
         
         fresh_break = False # Obsolete with live breakout
 
