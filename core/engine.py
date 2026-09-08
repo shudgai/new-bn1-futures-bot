@@ -1392,7 +1392,7 @@ class TradingEngine:
                             f"{exit_tf} {side}單單根急速反向：實體 >= "
                             f"{RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f} ATR 且突破MA3"
                         )
-                        self.account.log(f"⚠️ [急速反向鎖利] {symbol} {close_reason}", "WARNING")
+                        
                         
                         _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
                         _entry_p = float(position.get("entry_price") or 0.0)
@@ -1434,23 +1434,12 @@ class TradingEngine:
                     if waterfall_exit:
                         curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
                         close_reason = "EMERGENCY_EXIT_WATERFALL: 連續3根反向K急拉/跌>=2.5ATR"
-                        self.account.log(f"🚨 [瀑布鎖利] {symbol} {close_reason}", "WARNING")
                         
-                        _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
-                        _entry_p = float(position.get("entry_price") or 0.0)
-                        if side == "LONG":
-                            _safe_lock = max(_entry_p, curr_p - _atr_buffer) if _entry_p > 0 else curr_p - _atr_buffer
-                            lock_price = min(curr_p * (1.0 - SLIPPAGE_PCT), _safe_lock)
-                        else:
-                            _safe_lock = min(_entry_p, curr_p + _atr_buffer) if _entry_p > 0 else curr_p + _atr_buffer
-                            lock_price = max(curr_p * (1.0 + SLIPPAGE_PCT), _safe_lock)
-                        if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
-                            position_meta = self.account.position_meta.setdefault(symbol, {})
-                            position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
-                            position_meta["channel_cross_lock"] = True
-                            position["channel_cross_lock"] = True
-                            self.account.save_state()
-                            self.account.log(f"🔒 [異常K鎖利] {symbol} 已提早鎖定 SL={lock_price:.8g}", "SUCCESS")
+                        
+                        self.account.log(f"🚨 [急速反向出場] {symbol} {close_reason}", "WARNING")
+                        await self.account.close_position(
+                            symbol, curr_p, close_reason, is_manual=True
+                        )
                         self._channel_emergency_reentry_wait[symbol] = True
                         self._soft_warning_since.pop(symbol, None)
                         continue
@@ -1478,23 +1467,12 @@ class TradingEngine:
                     if two_candle_crash:
                         curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
                         close_reason = f"EMERGENCY_EXIT_2_CANDLE_CRASH: 連續兩根異常反向K>={RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f}ATR"
-                        self.account.log(f"🚨 [連續異常K鎖利] {symbol} {close_reason}", "WARNING")
                         
-                        _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
-                        _entry_p = float(position.get("entry_price") or 0.0)
-                        if side == "LONG":
-                            _safe_lock = max(_entry_p, curr_p - _atr_buffer) if _entry_p > 0 else curr_p - _atr_buffer
-                            lock_price = min(curr_p * (1.0 - SLIPPAGE_PCT), _safe_lock)
-                        else:
-                            _safe_lock = min(_entry_p, curr_p + _atr_buffer) if _entry_p > 0 else curr_p + _atr_buffer
-                            lock_price = max(curr_p * (1.0 + SLIPPAGE_PCT), _safe_lock)
-                        if await self.account.trail_stop_loss(symbol, lock_price, mark_profit_locked=True):
-                            position_meta = self.account.position_meta.setdefault(symbol, {})
-                            position_meta.setdefault("channel_pre_lock_sl", float(position.get("sl") or 0.0))
-                            position_meta["channel_cross_lock"] = True
-                            position["channel_cross_lock"] = True
-                            self.account.save_state()
-                            self.account.log(f"🔒 [異常K鎖利] {symbol} 已提早鎖定 SL={lock_price:.8g}", "SUCCESS")
+                        
+                        self.account.log(f"🚨 [急速反向出場] {symbol} {close_reason}", "WARNING")
+                        await self.account.close_position(
+                            symbol, curr_p, close_reason, is_manual=True
+                        )
                         self._channel_emergency_reentry_wait[symbol] = True
                         self._soft_warning_since.pop(symbol, None)
                         continue
@@ -8876,7 +8854,7 @@ class TradingEngine:
                     entry_price = float(existing_pos.get("entry_price") or 0.0)
                     if entry_price > 0.0:
                         if channel_action.get("lock_to_market"):
-                            _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 1.5
+                            _atr_buffer = max(float(trigger.get("atr") or 0.0), 1e-12) * 3.0
                             _entry_p = float(existing_pos.get("entry_price") or 0.0)
                             if existing_pos.get("side") == "LONG":
                                 _safe_lock = max(_entry_p, channel_price - _atr_buffer) if _entry_p > 0 else channel_price - _atr_buffer
