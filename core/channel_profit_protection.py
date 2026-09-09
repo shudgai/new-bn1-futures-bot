@@ -137,8 +137,38 @@ def reentry_gate(ticket, frame, price):
     side = ticket['side']
     outside = price > upper if side == 'LONG' else price < lower
     if side == 'LONG':
-        if price <= upper:
-            ticket['pulled_back_inside'] = True
+        # A tick outside can become only a wick. Require a closed solid body
+        # crossing the rail after the latest pullback, then its live successor.
+        try:
+            live, previous = frame.iloc[-1], frame.iloc[-2]
+            live_bar = float(live.get('timestamp', live.name))
+            if price <= upper:
+                if math.isfinite(live_bar):
+                    ticket['pulled_back_inside'] = True
+                    ticket['pullback_bar'] = live_bar
+                return 'wait'
+            if not ticket.get('pulled_back_inside') or 'pullback_bar' not in ticket:
+                return 'wait'
+            previous_bar = float(previous.get('timestamp', previous.name))
+            pullback_bar = float(ticket['pullback_bar'])
+            opened, closed, high, low, rail, bottom = (
+                float(previous[key]) for key in
+                ('open', 'close', 'high', 'low', 'kc_upper', 'kc_lower'))
+            live_open = float(live['open'])
+            if not all(math.isfinite(value) and value > 0 for value in
+                       (opened, closed, high, low, rail, bottom, live_open)):
+                return 'wait'
+            if not all(math.isfinite(value) for value in (previous_bar, pullback_bar, live_bar)):
+                return 'wait'
+            body, span = closed - opened, high - low
+            if (previous_bar < pullback_bar or previous_bar >= live_bar
+                    or bottom >= rail or not low <= opened < closed <= high
+                    or not bottom <= opened <= rail < closed
+                    or span <= 0 or body / span < .20
+                    or abs(live_open - closed) > .25 * body
+                    or price <= max(live_open, closed, upper)):
+                return 'wait'
+            return 'ready'
+        except (TypeError, ValueError, KeyError, IndexError):
             return 'wait'
-        return 'ready' if ticket.get('pulled_back_inside') else 'wait'
     return 'ready' if outside else 'end'

@@ -62,7 +62,11 @@ def test_long_reentry_waits_for_pullback_and_reclaim():
     assert reentry_gate(ticket,f,103.)=='wait'
     assert reentry_gate(ticket,f,104.)=='wait'
     assert reentry_gate(ticket,f,102.)=='wait'
-    assert reentry_gate(ticket,f,102.01)=='ready'
+    assert reentry_gate(ticket,f,102.01)=='wait'  # A live wick is not confirmation.
+    f.loc[19,['open','close','high','low']]=[101.9,103.,103.1,101.8]
+    f.loc[20]=f.loc[19].copy()
+    f.loc[20,'open']=103.
+    assert reentry_gate(ticket,f,103.1)=='ready'
 
 @pytest.mark.anyio
 async def test_short_two_closed_bodies_reopen_without_new_low():
@@ -92,4 +96,9 @@ async def test_long_pullback_ticket_survives_and_reopens_only_on_reclaim():
     await e._try_profit_reentry(SYMBOL,f,101.9,False)
     assert SYMBOL in e.account.channel_profit_reentries
     await e._try_profit_reentry(SYMBOL,f,102.1,False)
+    e._place_structured_entry.assert_not_awaited()
+    f.loc[19,['open','close','high','low']]=[101.9,103.,103.1,101.8]
+    f.loc[20]=f.loc[19].copy()
+    f.loc[20,'open']=103.
+    await e._try_profit_reentry(SYMBOL,f,103.1,False)
     e._place_structured_entry.assert_awaited_once()
