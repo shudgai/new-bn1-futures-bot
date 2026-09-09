@@ -6576,6 +6576,31 @@ class TradingEngine:
         return False
 
     @staticmethod
+    def _channel_all_same_color_inside(frame: pd.DataFrame, side: str) -> bool:
+        if len(frame) < 5:
+            return False
+        for i in range(len(frame) - 2, -1, -1):
+            row = frame.iloc[i]
+            open_p, close_p = float(row["open"]), float(row["close"])
+            if "ema_20" in row and not pd.isna(row["ema_20"]):
+                mid = float(row["ema_20"])
+            elif "kc_middle" in row and not pd.isna(row["kc_middle"]):
+                mid = float(row["kc_middle"])
+            else:
+                mid = (float(row["kc_upper"]) + float(row["kc_lower"])) / 2.0
+            
+            if side == "LONG" and close_p < open_p:
+                return False
+            if side == "SHORT" and close_p > open_p:
+                return False
+                
+            if side == "LONG" and (open_p <= mid or close_p <= mid):
+                return True
+            if side == "SHORT" and (open_p >= mid or close_p >= mid):
+                return True
+        return True
+
+    @staticmethod
     def _channel_closed_waves_falling(frame: pd.DataFrame) -> bool:
         """Three falling closed KC midpoints plus two lower confirmed highs/lows."""
         if frame is None or len(frame) < 7 or not {"high", "low", "kc_upper", "kc_lower"}.issubset(frame.columns):
@@ -6738,14 +6763,20 @@ class TradingEngine:
             if live_price > live_upper and TradingEngine._channel_closed_waves_falling(frame):
                 return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG"}
                 
+            # 除了Kc裡都是同色K時,突破就馬上開倉
+            if live_price > live_upper and trend > 0 and TradingEngine._channel_all_same_color_inside(frame, "LONG"):
+                return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
+            if live_price < live_lower and trend < 0 and TradingEngine._channel_all_same_color_inside(frame, "SHORT"):
+                return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
+                
             if max(breakout_range, confirmation_range) > kc_width * 1.25:
                 if not (clean_continuation_up or clean_continuation_down):
                     return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
 
-            # 嚴格突破 (從軌道內實體穿出，且第二根確認)：無條件進場，不受 60 根 MA15 趨勢限制
-            if upper_break_confirmed and live_price > live_upper:
+            # 其他開倉時都是第二根同色才開倉，且趨勢向上開多單,趨勢向下開空單
+            if upper_break_confirmed and live_price > live_upper and trend > 0:
                 return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT"}
-            if lower_break_confirmed and live_price < live_lower:
+            if lower_break_confirmed and live_price < live_lower and trend < 0:
                 return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT_STRICT"}
                 
             # 順勢進場 (已經在外軌外，趨勢延續)：需受 60 根 MA15 趨勢限制
@@ -7370,6 +7401,7 @@ class TradingEngine:
                 "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_LIVE_UPPER_MOMENTUM_LONG",
+                "LIVE_UPPER_BREAKOUT", "LIVE_LOWER_BREAKOUT",
                 "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                 "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
             }

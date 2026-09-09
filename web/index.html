@@ -850,7 +850,7 @@
                 });
                 ctx.ma3Series = chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
                 ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
-                ctx.ma99Series = chart.addLineSeries({ color: '#9C27B0', lineWidth: 2, title: 'MA99' });
+
                 ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
                 ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
                 ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
@@ -891,7 +891,7 @@
                     const candles = [];
                     const ma3 = [];
                     const ma15 = [];
-                    const ma99 = [];
+
                     const kcUpper = [];
                     const kcMiddle = [];
                     const kcLower = [];
@@ -901,7 +901,7 @@
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
                         if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
                         if (d.ma15 !== null) ma15.push({ time: d.time, value: d.ma15 });
-                        if (d.ma99 !== null) ma99.push({ time: d.time, value: d.ma99 });
+
                         if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
                         if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
                         if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
@@ -928,7 +928,7 @@
                     const referencePrice = Number(candles[candles.length - 1]?.close || 0);
                     const precision = referencePrice < 0.01 ? 8 : referencePrice < 1 ? 6 : referencePrice < 100 ? 4 : 2;
                     const priceFormat = { type: 'price', precision, minMove: 10 ** -precision };
-                    [ctx.candlestickSeries, ctx.ma3Series, ctx.ma15Series, ctx.ma99Series,
+                    [ctx.candlestickSeries, ctx.ma3Series, ctx.ma15Series,
                      ctx.kcUpperSeries, ctx.kcMiddleSeries, ctx.kcLowerSeries]
                         .forEach(series => series.applyOptions({ priceFormat }));
 
@@ -941,7 +941,7 @@
                         ctx.candlestickSeries.setData(candles);
                         ctx.ma3Series.setData(ma3);
                         ctx.ma15Series.setData(ma15);
-                        ctx.ma99Series.setData(ma99);
+
                         ctx.kcUpperSeries.setData(kcUpper);
                         ctx.kcMiddleSeries.setData(kcMiddle);
                         ctx.kcLowerSeries.setData(kcLower);
@@ -950,7 +950,7 @@
                         ctx.candlestickSeries.update(candles[candles.length - 1]);
                         [
                             [ctx.ma3Series, ma3], [ctx.ma15Series, ma15],
-                            [ctx.ma99Series, ma99], [ctx.kcUpperSeries, kcUpper],
+                            [ctx.kcUpperSeries, kcUpper],
                             [ctx.kcMiddleSeries, kcMiddle], [ctx.kcLowerSeries, kcLower],
                         ].forEach(([series, values]) => {
                             if (values.length > 0) series.update(values[values.length - 1]);
