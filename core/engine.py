@@ -6610,7 +6610,7 @@ class TradingEngine:
         position_path: dict | None = None,
         outer_entry_only: bool = False,
     ) -> dict:
-        """Use MA15-aligned pivots for flat entries; retain outer reversals/reentries."""
+        """Use MA15-aligned pivots or confirmed outer breaks; retain held exits."""
         held = str(current_side or "").upper()
         wait = {"action": "HOLD" if held in ("LONG", "SHORT") else "WAIT",
                 "side": None, "reason": "WAIT_OUTER_BREAK_CONFIRMATION"}
@@ -6621,6 +6621,13 @@ class TradingEngine:
             decision = pivot_entry(frame, live_price)
             if decision.get("action") == "ENTER" and TradingEngine._channel_closed_waves_falling(frame, decision["side"]):
                 return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if decision["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
+            if decision.get("action") == "ENTER" or decision.get("reason") != "WAIT_MA15_PRICE_PIVOT":
+                return decision
+            # A second authorized entry: a closed body crosses the outer rail
+            # and the next closed candle confirms. Do not revive outer chasing.
+            breakout = TradingEngine._channel_swing_action(frame, live_price, outer_entry_only=True)
+            if breakout.get("reason") in {"KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT"}:
+                return breakout
             return decision
         try:
             # The final row is still forming; [-3] is breakout and [-2] confirms.
@@ -7372,7 +7379,7 @@ class TradingEngine:
         if daily_halt or not self._profit_pivot_is_new(ticket, frame):
             return
         decision = self._channel_swing_action(frame, price)
-        if decision.get("action") != "ENTER" or decision.get("reason") not in PIVOT_CODES:
+        if decision.get("action") != "ENTER" or decision.get("reason") not in (PIVOT_CODES | {"KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT"}):
             return
         # Reuse ordinary pivot execution, including fresh data, profit room,
         # invalidation locks, account checks and persisted confirmation dedup.
@@ -7380,7 +7387,8 @@ class TradingEngine:
         if await self._execute_confirmed_channel_break(symbol, frame, price, side, daily_halt):
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
-            self.account.log(f"✅ [獲利保護重開] {symbol} {side} 新順勢峰谷確認，已重新開倉", "SUCCESS")
+            entry_label = "峰谷" if decision["reason"] in PIVOT_CODES else "外軌突破"
+            self.account.log(f"✅ [獲利保護重開] {symbol} {side} 新順勢{entry_label}確認，已重新開倉", "SUCCESS")
 
     @staticmethod
     def _profit_pivot_is_new(ticket, frame):

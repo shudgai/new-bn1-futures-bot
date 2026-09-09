@@ -156,11 +156,14 @@ async def test_daily_halt_and_invalid_candidate_still_block(side, monkeypatch):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_outer_continuation_without_pivot_is_only_for_recovery(side):
+def test_confirmed_outer_break_can_enter_without_pivot(side):
     from test_channel_symmetric_rules import market as outer_market
     f = outer_market(side); price = float(f.iloc[-1]["close"])
+    assert pivot_entry(f, price)["action"] == "WAIT"
+    assert TradingEngine._channel_swing_action(f, price)["side"] == side
+    # Merely staying outside the rail is not a new body crossing.
+    f.loc[17, "open"] = 102.5 if side == "LONG" else 97.5
     assert TradingEngine._channel_swing_action(f, price)["action"] == "WAIT"
-    assert TradingEngine._channel_swing_action(f, price, outer_entry_only=True)["side"] == side
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

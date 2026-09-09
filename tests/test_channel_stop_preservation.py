@@ -64,6 +64,8 @@ async def test_restart_repairs_exact_entry_and_unlock_restores_fixed(tmp_path, m
 async def test_short_cross_inside_channel_never_closes_or_reopens(setup_engine):
     e, f = setup_engine('LONG', 'SHORT')
     f['kc_upper']=110.; f['kc_lower']=90.; f['ma15']=100.
+    # Keep the short strictly below its middle exit; isolate MA/stop behavior.
+    f['ema_20']=101.; f['kc_middle']=101.
     f.loc[67:69,['open','close']]=100.
     f.loc[67:68,'ma3']=99.9
     f.loc[69,'ma3']=100.1
@@ -82,6 +84,8 @@ async def test_short_cross_inside_channel_never_closes_or_reopens(setup_engine):
 async def test_ma_recovery_does_not_modify_persisted_protective_stop(setup_engine):
     e, f=setup_engine('LONG','SHORT')
     f['kc_upper']=110.; f['kc_lower']=90.; f['ma15']=100.
+    # Keep the short strictly below its middle exit; isolate MA/stop behavior.
+    f['ema_20']=101.; f['kc_middle']=101.
     f.loc[67:69,['open','close']]=100.
     f.loc[67:69,'ma3']=99.
     p=e.account.positions[SYMBOL]

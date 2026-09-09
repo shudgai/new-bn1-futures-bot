@@ -1,4 +1,4 @@
-"""2026-09-08 rules: closed outer break, hold, confirmed reversal, single fill."""
+"""Current rules: closed MA15 pivots, confirmed outer reversals and single fills."""
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -7,6 +7,18 @@ from core.engine import TradingEngine
 from core.paper_account import PaperAccount
 from test_direct_break_execution import setup_engine, confirm_break
 from test_channel_swing_execution import SYMBOL
+from test_channel_pivot_entry import market
+
+def confirm_pivot(frame, side):
+    """Use a valid inside-channel pivot while preserving the 70-row clock."""
+    source = market(side)
+    for key in ('kc_upper', 'kc_lower', 'atr'):
+        frame[key] = source.iloc[-1][key]
+    frame['ema_20'] = 100.
+    for offset in range(4):
+        for key in ('open', 'high', 'low', 'close', 'ma3', 'ma15'):
+            frame.loc[frame.index[-4 + offset], key] = source.iloc[-4 + offset][key]
+    return float(frame.iloc[-1]['close'])
 
 @pytest.fixture
 def anyio_backend():
@@ -16,9 +28,9 @@ def anyio_backend():
 @pytest.mark.parametrize('length', [4, 30, 70])
 def test_available_ma15_history_confirms_entry(setup_engine, side, length):
     _, f = setup_engine(side)
-    confirm_break(f, side)
+    price = confirm_pivot(f, side)
     f = f.tail(length)
-    assert TradingEngine._channel_swing_action(f, 100.)['side'] == side
+    assert TradingEngine._channel_swing_action(f, price)['side'] == side
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('held', [False, True])
@@ -41,13 +53,13 @@ def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, inva
         f.loc[67, 'close'] = 100.
     else:
         f.loc[67, 'open'] = 102.5 if side == 'LONG' else 97.5
-    result = TradingEngine._channel_swing_action(f, 105., old)
-    if invalid == 'live_only' and not held and side == 'LONG':
-        # Newly authorized: the previous closed body broke the rail and the
-        # immediate live successor pushes further. Held reversal still waits.
-        assert result == {'action': 'ENTER', 'side': 'LONG', 'reason': 'KC_NEXT_LIVE_PUSH_LONG'}
-    else:
-        assert result['action'] == ('HOLD' if held else 'WAIT')
+    # Keep live body neutral so this shape test does not trigger the
+    # separately authorized adverse long-candle exit.
+    price = float(f.iloc[-1]['open'])
+    f['high'] = f[['open', 'close', 'high']].max(axis=1)
+    f['low'] = f[['open', 'close', 'low']].min(axis=1)
+    result = TradingEngine._channel_swing_action(f, price, old)
+    assert result['action'] == ('HOLD' if held else 'WAIT')
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -55,25 +67,32 @@ def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, inva
 async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held):
     old = ('SHORT' if side == 'LONG' else 'LONG') if held else None
     e, f = setup_engine(side, old)
-    confirm_break(f, side)
     if held:
-        # Reversal does not require profit, MA alignment or first visiting own rail.
-        f['ma15'] = list(reversed(f['ma15'].tolist()))
+        confirm_break(f, side)
+        # Successful reversal needs sustained directional energy, not fading volume.
+        f.loc[66:68, "volume"] = [1., 10., 100.]
+        f.loc[69, ["open", "close", "high", "low"]] = ([103.2, 103.25, 103.3, 103.1] if side == "LONG" else [96.8, 96.75, 96.9, 96.7])
+        e.tickers[SYMBOL] = float(f.iloc[-1]["close"])
+    else:
+        e.tickers[SYMBOL] = confirm_pivot(f, side)
+    if held:
+        # The new order must pass the existing MA15 direction revalidation.
         e.account.positions[SYMBOL]['channel_favorable_rail_reached'] = False
     await asyncio.gather(*(e._process_single_symbol(SYMBOL, 1., None, False) for _ in range(3)))
+    assert SYMBOL in e.account.positions, '\n'.join(row['text'] for row in e.account.logs)
     assert e.account.positions[SYMBOL]['side'] == side, e.account.logs
     actions = [t['action'] for t in reversed(e.account.trades)]
     assert actions == ([f'CLOSE_{old}'] if held else []) + [f'OPEN_{side}']
     assert e.account.positions[SYMBOL]['sl'] == 0.
-    assert e.account.trades[0]['channel_confirmation_bar_id'] == 68
+    assert e.account.trades[0]['channel_confirmation_bar_id'] == f.iloc[-2].get('timestamp', f.index[-2])
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('reload', [False, True])
 async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_engine, reload):
     e, f = setup_engine('LONG')
-    confirm_break(f, 'LONG')
+    e.tickers[SYMBOL] = confirm_pivot(f, 'LONG')
     await e._process_single_symbol(SYMBOL, 1., None, False)
-    assert SYMBOL in e.account.positions
+    assert SYMBOL in e.account.positions, '\n'.join(row['text'] for row in e.account.logs)
     assert await e.account.close_position(SYMBOL, 103., '手動平倉', is_manual=True)
     e.release_manual_close_state(SYMBOL)
     if reload:
@@ -91,7 +110,7 @@ async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_e
 @pytest.mark.anyio
 async def test_expired_confirmation_cannot_open(setup_engine):
     e, f = setup_engine('LONG')
-    confirm_break(f, 'LONG')
+    e.tickers[SYMBOL] = confirm_pivot(f, 'LONG')
     fresh = f.copy()
     fresh['timestamp'] = list(range(70))
     fresh.loc[68, 'timestamp'] = 999
