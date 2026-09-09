@@ -299,6 +299,8 @@ async def test_unarmed_middle_exit_uses_price_for_every_style(style):
     e.account.save_state = lambda: None
     # Entry above all tested prices ensures protection cannot arm.
     e.account.positions[SYMBOL].update(position('LONG'), entry_price=110.)
+    # Enter after the existing turn; this case isolates the middle-price exit.
+    e.account.positions[SYMBOL]['open_timestamp'] = float(f.iloc[-1]['timestamp']) / 1000
     e._channel_swing_action = lambda *a, **k: {'action':'EXIT', 'reason':'KC_REACHED_MIDDLE_COMPRESSED'}
     e.tickers[SYMBOL] = middle + .01
     await e._process_single_symbol(SYMBOL, 1., None, False)

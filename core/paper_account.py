@@ -150,6 +150,7 @@ ENTRY_CONTEXT_KEYS = (
     "eligibility_note", "wave_regime", "market_mode", "entry_market_mode",
     "channel_entry_profile", "channel_entry_profile_basis",
     "profit_lock_usdt_v2",
+    "channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
 )
 
 

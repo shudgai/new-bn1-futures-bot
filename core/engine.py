@@ -3813,6 +3813,39 @@ class TradingEngine:
 
 
     @staticmethod
+    def _channel_live_ma3_turn_exit(position, frame, price):
+        """Exit a position established before a live adverse MA3 turn."""
+        try:
+            side = position.get("side")
+            if side not in ("LONG", "SHORT"):
+                return False
+            if position.get("channel_live_ma3_exit_pending"):
+                return True
+            if frame is None or len(frame) < 5:
+                return False
+            opened = float(position.get("open_timestamp") or 0)
+            bar = float(frame.iloc[-1]["timestamp"]) / 1000
+            closes = [float(v) for v in frame["close"].iloc[-5:-1]]
+            if not all(math.isfinite(v) and v > 0 for v in [opened, bar, price, *closes]):
+                return False
+            if opened > time.time():
+                return False
+            sign = 1 if side == "LONG" else -1
+            previous = sum(closes[:3]) / 3
+            last = sum(closes[1:]) / 3
+            live = (sum(closes[-2:]) + price) / 3
+            # An entry during this candle needs a favorable observation first;
+            # otherwise its already adverse slope could predate the position.
+            if sign * (live - last) > 0:
+                position["channel_live_ma3_favorable_bar"] = bar
+            predates_turn = (opened < bar or
+                             position.get("channel_live_ma3_favorable_bar") == bar)
+            return (predates_turn and sign * (last - previous) > 0
+                    and sign * (live - last) < 0)
+        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
+            return False
+
+    @staticmethod
     def _channel_outer_ma3_turn_exit(position, frame, price):
         """Unarmed outer entries exit on the first live adverse MA3 turn."""
         try:
@@ -7510,6 +7543,17 @@ class TradingEngine:
                 if (channel_action.get("action") == "EXIT"
                         and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
                     channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
+                live_ma3_before = existing_pos.get("channel_live_ma3_favorable_bar")
+                if (channel_action.get("action") not in {"EXIT", "REVERSE"}
+                        and self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price)):
+                    existing_pos["channel_live_ma3_exit_pending"] = True
+                    self.account.position_meta.setdefault(symbol, {})["channel_live_ma3_exit_pending"] = True
+                    self.account.save_state()
+                    channel_action = {"action": "EXIT", "side": None,
+                                      "reason": f"KC_{existing_pos['side']}_LIVE_MA3_TURN_EXIT"}
+                if live_ma3_before != existing_pos.get("channel_live_ma3_favorable_bar"):
+                    self.account.position_meta.setdefault(symbol, {})["channel_live_ma3_favorable_bar"] = existing_pos["channel_live_ma3_favorable_bar"]
+                    self.account.save_state()
                 if (channel_action.get("action") not in {"EXIT", "REVERSE"}
                         and self._channel_outer_ma3_turn_exit(existing_pos, channel_df, channel_price)):
                     if not existing_pos.get("channel_ma3_turn_exit_pending"):
