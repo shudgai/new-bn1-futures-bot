@@ -249,3 +249,54 @@ async def test_testnet_fill_and_refresh_preserve_pivot_metadata(side, tmp_path, 
     assert p["channel_pivot_entry"] and p["channel_pivot_middle_reached"]
     assert p["channel_pivot_middle_exit_pending"]
     assert p["channel_confirmation_bar_id"] == 18
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+async def test_profit_reentry_uses_new_inside_channel_pivot(side, monkeypatch):
+    f = market(side); price = float(f.iloc[-1]['close'])
+    e = _execution_engine(f, side, True)
+    e.account.positions.clear(); e.account.save_state = lambda: None
+    e.tickers[SYMBOL] = price
+    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
+    e._abnormal_market_entry_allowed = lambda *a, **k: True
+    e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='old', phase='closed', exit_bar_id=19)}
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    assert not e.account.events  # pre-close confirmation cannot be replayed
+    f.index += 1
+    await e._try_profit_reentry(SYMBOL, f, price, True)
+    assert not e.account.events  # daily halt still applies
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    assert len(e.account.events) == 1, e.account.logs
+    assert e.account.events[0][2] == side
+    assert SYMBOL not in e.account.channel_profit_reentries
+    assert any('新順勢峰谷' in text for text, _ in e.account.logs)
+    # Another profit close can repeat the same flow on a later confirmation.
+    e.account.positions.clear()
+    e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='next', phase='closed', exit_bar_id=20)}
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    assert len(e.account.events) == 1
+    f.index += 1
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    assert len(e.account.events) == 2, e.account.logs
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+async def test_profit_reentry_migrates_ticket_and_preserves_failed_order(side):
+    f = market(side); price = float(f.iloc[-1]['close'])
+    e = _execution_engine(f, side, True)
+    e.account.positions.clear(); e.account.save_state = lambda: None
+    ticket = dict(side=side, token='old', phase='closed', pulled_back_inside=True)
+    e.account.channel_profit_reentries = {SYMBOL: ticket}
+    e._execute_confirmed_channel_break = AsyncMock(return_value=False)
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    assert ticket['exit_bar_id'] == 19
+    e._execute_confirmed_channel_break.assert_not_awaited()
+    f.index += 1
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    e._execute_confirmed_channel_break.assert_awaited_once()
+    assert SYMBOL in e.account.channel_profit_reentries
+    f.loc[f.index[-2], 'ma15'] = f.iloc[-3]['ma15']
+    await e._try_profit_reentry(SYMBOL, f, price, False)
+    e._execute_confirmed_channel_break.assert_awaited_once()

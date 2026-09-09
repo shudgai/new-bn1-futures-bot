@@ -2370,6 +2370,9 @@ class TradingEngine:
             "ENTER", False, side, frame, exit_info, symbol, live_price=price,
         ):
             return None
+        profit_ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
+        if profit_ticket and not self._profit_pivot_is_new(profit_ticket, frame):
+            return None
         fresh_candidate_bar_id = self._channel_candidate_bar_id(frame)
         if (
             not all(math.isfinite(value) for value in (price, upper, lower))
@@ -7361,18 +7364,34 @@ class TradingEngine:
                 self.account.save_state()
                 return
             ticket["phase"] = "closed"
-        if not self._profit_reentry_ready(symbol, ticket, frame, price) or daily_halt:
-            return
-        signal = {"side": ticket["side"], "score": 100, "entry_mode": "CHANNEL_SWING",
-                  "action": "ENTER_MARKET", "reason": "Channel Swing PROFIT_OUTER_REENTRY " + ticket["token"],
-                  "profit_reentry_token": ticket["token"], "signal_code": "PROFIT_OUTER_REENTRY",
-                  "candidate_bar_id": "profit:" + ticket["token"], "profit_profile": "TREND_EXTENSION",
-                  "atr": float(frame.iloc[-1].get("atr") or price * .015)}
-        if await self._place_structured_entry(symbol, signal, price):
-            self.account.channel_profit_reentries.pop(symbol, None)
-            getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
+        # Migrate existing outer-reentry tickets conservatively: observe a new
+        # confirmation after this scan instead of replaying a pre-close pivot.
+        if "exit_bar_id" not in ticket:
+            ticket["exit_bar_id"] = frame.iloc[-1].get("timestamp", frame.index[-1])
             self.account.save_state()
-            self.account.log(f"✅ [獲利保護重開] {symbol} {ticket['side']} 仍在外軌，已重新開倉", "SUCCESS")
+        if daily_halt or not self._profit_pivot_is_new(ticket, frame):
+            return
+        decision = self._channel_swing_action(frame, price)
+        if decision.get("action") != "ENTER" or decision.get("reason") not in PIVOT_CODES:
+            return
+        # Reuse ordinary pivot execution, including fresh data, profit room,
+        # invalidation locks, account checks and persisted confirmation dedup.
+        side = decision["side"]
+        if await self._execute_confirmed_channel_break(symbol, frame, price, side, daily_halt):
+            self.account.channel_profit_reentries.pop(symbol, None)
+            self.account.save_state()
+            self.account.log(f"✅ [獲利保護重開] {symbol} {side} 新順勢峰谷確認，已重新開倉", "SUCCESS")
+
+    @staticmethod
+    def _profit_pivot_is_new(ticket, frame):
+        try:
+            # Confirmation on the closing candle becomes eligible only once
+            # that candle has closed; already closed signals cannot be reused.
+            confirmed = float(frame.iloc[-2].get("timestamp", frame.index[-2]))
+            exited = float(ticket["exit_bar_id"])
+            return math.isfinite(confirmed) and math.isfinite(exited) and confirmed >= exited
+        except (KeyError, IndexError, TypeError, ValueError):
+            return False
 
     async def _process_single_symbol(self, symbol, now_time, btc_1m_turn, daily_halt):
         locks = getattr(self, "_channel_symbol_locks", None)
@@ -7515,6 +7534,7 @@ class TradingEngine:
                     token = str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns())
                     tickets[symbol] = {"token": token, "phase": "closing", "side": existing_pos["side"],
                                        "opened_at": existing_pos.get("open_timestamp"),
+                                       "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                        "path": copy.deepcopy(path_state)}
                     self.account.save_state()
                     self.account.log(f"🛡️ [獲利保護] {symbol} 走勢={profit['trend_style']} 回吐={profit['retracement_fraction']:.0%} 最高浮盈={profit['peak_gross']:.4f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
+from test_channel_pivot_entry import market as pivot_market
 
 from core.channel_profit_protection import protection, reentry_gate, trend_style
 from core.engine import TradingEngine
@@ -113,12 +114,12 @@ async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
         f.loc[11,'open'] = 102.
         await e._try_profit_reentry(SYMBOL, f, 102., False)
         e._place_structured_entry.assert_not_awaited()
-        await e._try_profit_reentry(SYMBOL, confirmed_reentry_frame('LONG'), 104.5, False)
+        await e._try_profit_reentry(SYMBOL, pivot_market('LONG'), 98.1, False)
         e._place_structured_entry.assert_awaited_once()
         assert e._place_structured_entry.call_args.args[1]['side'] == 'LONG'
     else:
         assert SYMBOL in e.account.positions
-        await e._try_profit_reentry(SYMBOL, confirmed_reentry_frame('LONG'), 104.5, False)
+        await e._try_profit_reentry(SYMBOL, pivot_market('LONG'), 98.1, False)
         e._place_structured_entry.assert_not_awaited()
     assert SYMBOL not in e.account.channel_profit_reentries
 
@@ -141,16 +142,16 @@ async def test_general_exit_has_priority_over_profit_close():
 @pytest.mark.anyio
 @pytest.mark.parametrize('matched', [False, True])
 async def test_restart_requires_matching_successful_close(matched):
-    f = confirmed_reentry_frame('LONG')
+    f = pivot_market('LONG')
     e = _execution_engine(f, 'LONG', True)
     e.account.positions.clear()
     e.account.save_state = lambda: None
     e.account.channel_profit_reentries = {SYMBOL: dict(side='LONG', token='abc', phase='closing',
-        pulled_back_inside=True, pullback_bar=17.)}
+        pulled_back_inside=True, pullback_bar=17., exit_bar_id=17.)}
     e.account.trades = [dict(symbol=SYMBOL, action='CLOSE_LONG',
                             reason='Channel Swing PROFIT_PROTECTION abc')] if matched else []
     e._place_structured_entry = AsyncMock(return_value=True)
-    await e._try_profit_reentry(SYMBOL, f, 104.5, False)
+    await e._try_profit_reentry(SYMBOL, f, 98.1, False)
     assert e._place_structured_entry.await_count == int(matched)
     assert SYMBOL not in e.account.channel_profit_reentries
 
@@ -327,7 +328,7 @@ async def test_middle_signal_cannot_preempt_profit_exit_or_cancel_reentry():
     e._channel_swing_action = TradingEngine._channel_swing_action
     f.loc[11,'open'] = 102.
     await e._try_profit_reentry(SYMBOL, f, 102., False)
-    await e._try_profit_reentry(SYMBOL, confirmed_reentry_frame('LONG'), 104.5, False)
+    await e._try_profit_reentry(SYMBOL, pivot_market('LONG'), 98.1, False)
     e._place_structured_entry.assert_awaited_once()
 
 
