@@ -1,6 +1,6 @@
 import pytest
 from core.engine import TradingEngine
-from test_direct_break_execution import setup_engine, anyio_backend
+from test_direct_break_execution import setup_engine, anyio_backend, confirm_break
 from test_channel_swing_execution import SYMBOL
 
 
@@ -19,7 +19,7 @@ def reclaim_setup(setup_engine):
 
 
 @pytest.mark.parametrize("invalid", [None, "wick", "touch", "already_above", "returned_below", "opposite_closed_color"])
-def test_short_reclaim_requires_live_cross_without_closed_confirmation(setup_engine, invalid):
+def test_lower_reclaim_never_opens_long_without_upper_break(setup_engine, invalid):
     engine, frame = reclaim_setup(setup_engine)
     if invalid == "wick":
         frame.loc[69, "high"] = 101.
@@ -29,24 +29,23 @@ def test_short_reclaim_requires_live_cross_without_closed_confirmation(setup_eng
     if invalid == "returned_below": engine.tickers[SYMBOL] = 97.
     if invalid == "opposite_closed_color": frame.loc[68, ["open", "close"]] = [97., 96.]
     result = TradingEngine._channel_swing_action(frame, engine.tickers[SYMBOL], "SHORT")
-    assert result["action"] == ("REVERSE" if invalid in (None, "opposite_closed_color") else "HOLD")
-    if result["action"] == "REVERSE":
-        assert result["side"] == "LONG"
-        assert result["reason"] == "KC_LOWER_RECLAIM_LONG"
+    assert result["action"] in {"HOLD", "EXIT"}
+    assert result["side"] is None
+
 
 
 @pytest.mark.parametrize("outside", [False, True])
-def test_short_trough_only_exits_below_lower_rail(setup_engine, outside):
+def test_small_body_trough_alone_does_not_exit(setup_engine, outside):
     engine, frame = reclaim_setup(setup_engine)
     frame.loc[66:68, "ma3"] = [100., 97. if outside else 99., 100.]
     frame.loc[67, ["open", "close"]] = [97., 97.]
     frame.loc[68, ["open", "close"]] = [97., 97.]
     result = TradingEngine._channel_swing_action(frame, 97., "SHORT")
-    assert result["action"] == ("EXIT" if outside else "HOLD")
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.anyio
-async def test_scan_closes_short_then_really_opens_long_inside_channel(setup_engine):
+async def test_inside_channel_reclaim_scan_keeps_short(setup_engine):
     engine, frame = reclaim_setup(setup_engine)
     events = []
     original_close, original_open = engine.account.close_position, engine.account.open_position
@@ -60,18 +59,19 @@ async def test_scan_closes_short_then_really_opens_long_inside_channel(setup_eng
         return await original_open(*args, **kwargs)
     engine.account.close_position, engine.account.open_position = close, open_long
     _, candidates = await engine._process_single_symbol(SYMBOL, 1., None, False)
-    assert events == ["closed", "open"]
-    assert sorted(t["status"] for t in engine.account.trades) == ["CLOSED", "OPEN"]
-    assert engine.account.positions[SYMBOL]["side"] == "LONG"
+    assert events == []
+    assert engine.account.trades == []
+    assert engine.account.positions[SYMBOL]["side"] == "SHORT"
     assert not candidates
     assert SYMBOL not in engine._channel_outer_reentry_after_exit
     await engine._process_single_symbol(SYMBOL, 2., None, False)
-    assert len(engine.account.trades) == 2
+    assert len(engine.account.trades) == 0
 
 
 @pytest.mark.anyio
 async def test_failed_close_never_opens_long(setup_engine):
-    engine, frame = reclaim_setup(setup_engine)
+    engine, frame = setup_engine("LONG", "SHORT")
+    confirm_break(frame, "LONG")
     async def fail(*args, **kwargs): return False
     engine.account.close_position = fail
     await engine._process_single_symbol(SYMBOL, 1., None, False)
@@ -82,7 +82,8 @@ async def test_failed_close_never_opens_long(setup_engine):
 @pytest.mark.anyio
 @pytest.mark.parametrize("block", ["chop", "daily", "price_changed", "account"])
 async def test_close_success_but_new_long_must_pass_safety_checks(setup_engine, block):
-    engine, frame = reclaim_setup(setup_engine)
+    engine, frame = setup_engine("LONG", "SHORT")
+    confirm_break(frame, "LONG")
     if block == "chop":
         engine._channel_chop_state = lambda _: {"detected": True, "clear_direction": None}
     if block == "account": engine._abnormal_market_entry_allowed = lambda *_: False
@@ -94,6 +95,10 @@ async def test_close_success_but_new_long_must_pass_safety_checks(setup_engine, 
             return result
         engine.account.close_position = close_and_move
     await engine._process_single_symbol(SYMBOL, 1., None, block == "daily")
-    assert SYMBOL not in engine.account.positions
-    assert [t["status"] for t in engine.account.trades] == ["CLOSED"]
-    assert SYMBOL not in engine._channel_outer_reentry_after_exit
+    if block == "chop":
+        # CHOP is diagnostic-only; a valid closed outer break remains tradable.
+        assert engine.account.positions[SYMBOL]["side"] == "LONG"
+        assert sorted(t["status"] for t in engine.account.trades) == ["CLOSED", "OPEN"]
+    else:
+        assert SYMBOL not in engine.account.positions
+        assert [t["status"] for t in engine.account.trades] == ["CLOSED"]

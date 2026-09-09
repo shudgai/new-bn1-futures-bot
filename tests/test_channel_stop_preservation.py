@@ -74,12 +74,12 @@ async def test_short_cross_inside_channel_never_closes_or_reopens(setup_engine):
         await e._process_single_symbol(SYMBOL,float(i),None,False)
         await e.account.update_positions({SYMBOL:100.1})
     assert e.account.positions[SYMBOL] is p
-    assert p['sl'] == pytest.approx(100.01)
-    assert e.account.position_meta[SYMBOL].get('channel_cross_lock') is True
+    assert p['sl'] == 105.
+    assert not e.account.position_meta[SYMBOL].get('channel_cross_lock')
     assert not e.account.trades
 
 @pytest.mark.anyio
-async def test_short_cross_lock_clears_after_direction_recovery(setup_engine):
+async def test_ma_recovery_does_not_modify_persisted_protective_stop(setup_engine):
     e, f=setup_engine('LONG','SHORT')
     f['kc_upper']=110.; f['kc_lower']=90.; f['ma15']=100.
     f.loc[67:69,['open','close']]=100.
@@ -89,5 +89,5 @@ async def test_short_cross_lock_clears_after_direction_recovery(setup_engine):
     e.account.position_meta[SYMBOL].update(channel_cross_lock=True,channel_pre_lock_sl=105.)
     e.tickers[SYMBOL]=100.
     await e._process_single_symbol(SYMBOL,1.,None,False)
-    assert p['sl']==105.
-    assert not e.account.position_meta[SYMBOL].get('channel_cross_lock')
+    assert p['sl']==100.01
+    assert e.account.position_meta[SYMBOL].get('channel_cross_lock') is True

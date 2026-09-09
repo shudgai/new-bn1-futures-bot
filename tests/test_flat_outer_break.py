@@ -43,3 +43,20 @@ async def test_fresh_flat_scan_requires_latest_closed_break(setup_engine, side, 
     await engine._process_single_symbol(SYMBOL, 2., None, False)
     assert engine.account.positions[SYMBOL]["side"] == side
     assert "處理失敗" not in str(engine.account.logs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("location", ["inside", "touch", "opposite", "outside"])
+async def test_order_rechecks_price_against_current_outer_rail(setup_engine, side, location):
+    e, f = setup_engine(side)
+    confirm_break(f, side)
+    edge = 102. if side == "LONG" else 98.
+    price = {"inside": 100., "touch": edge,
+             "opposite": 97. if side == "LONG" else 103.,
+             "outside": 103. if side == "LONG" else 97.}[location]
+    e.tickers[SYMBOL] = price
+    result = await e._execute_confirmed_channel_break(SYMBOL, f, price, side)
+    assert result is (location == "outside")
+    assert bool(e.account.positions) is (location == "outside")
+    assert len(e.account.trades) == (1 if location == "outside" else 0)

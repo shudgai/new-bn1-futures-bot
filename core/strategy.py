@@ -1597,6 +1597,16 @@ class SuperTrendKeltnerStrategy:
         curr = df.iloc[-1]
 
         live_price = float(curr['close'])
+        
+        # User Rule: 開倉都要在突破上下軌才開倉，其他位子不要開倉
+        if live_price <= curr['kc_upper'] and live_price >= curr['kc_lower']:
+            return {
+                "action": "HOLD",
+                "reason": "User Rule: 價格未突破上下軌，不允許開倉",
+                "eligible": False,
+                "score_stage": "ELIGIBILITY"
+            }
+
         sig = detect_simple_ma5_signal(df, live_price=live_price)
         
         if sig.get("detected"):

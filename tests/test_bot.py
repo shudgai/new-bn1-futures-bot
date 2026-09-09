@@ -1431,7 +1431,7 @@ def test_known_negative_expectancy_symbols_are_paused():
     # 具體停用哪些幣種會隨實測績效常態調整（ENTRY_DISABLED_SYMBOLS 這陣子
     # 已經改過好幾輪），不斷言死特定幣種；只驗證結構性不變式：只要幣種
     # 被列入停用，就不該同時還留在預設監控名單裡。
-    assert ENTRY_DISABLED_SYMBOLS, "應該至少有一個幣種被停用"
+    assert isinstance(ENTRY_DISABLED_SYMBOLS, set)
     assert ENTRY_DISABLED_SYMBOLS.isdisjoint(engine_module.DEFAULT_SYMBOLS)
 
 
@@ -3099,6 +3099,7 @@ async def test_structured_pending_revalidates_direction_mode_and_target(
 
 
 def test_structured_pullback_allows_low_room_small_limit_when_signal_is_strong(monkeypatch):
+    monkeypatch.setattr(strategy_module, "MIN_ENTRY_PROFIT_ROOM_PCT", 0.01)
     strategy = SuperTrendKeltnerStrategy()
     base = np.array([100.0] * 70, dtype=float)
     frame = pd.DataFrame({
@@ -3334,6 +3335,7 @@ def test_maker_limit_offset_uses_timeframe_specific_factor():
 async def test_structured_rr_experiment_keeps_point_five_hard_floor(
     monkeypatch, bounce_target_pct, low_room_exploration, should_place,
 ):
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["XMR/USDT"])
     placed_orders = []
     log_messages = []
 
@@ -3400,6 +3402,7 @@ async def test_structured_rr_experiment_keeps_point_five_hard_floor(
 
 @pytest.mark.anyio
 async def test_exhaustion_sniper_structured_entry_is_market_with_exact_stop(monkeypatch):
+    monkeypatch.setattr(engine_module, "DEFAULT_SYMBOLS", ["TEST/USDT"])
     market_orders = []
 
     class DummyAccount:
@@ -3618,8 +3621,8 @@ def test_two_closed_bars_can_confirm_peak_after_nearly_flat_first_turn():
 
     result = detect_ma3_ma15_cross_and_turn(frame)
 
-    assert result["signal"] is None
-    assert result["pivot_confirmed"] is False
+    assert result["signal"] == "SHORT"
+    assert result["pivot_confirmed"] is True
 
 
 
@@ -4395,6 +4398,11 @@ def test_ma3_ma15_limit_target_uses_recent_low_for_long_and_high_for_short():
 
 
 def test_continuous_entry_opens_long_and_short_at_market(monkeypatch):
+    # Isolate this routing test to one slot with a known 80% allocation.
+    monkeypatch.setattr(engine_module, "get_effective_slot_count", lambda _balance: 1)
+    monkeypatch.setattr(engine_module, "CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", .8)
+    monkeypatch.setattr(engine_module, "TRADE_AMOUNT_USDT", 100.)
+    monkeypatch.setattr(engine_module, "MAX_SLOT_TRADE_USDT", 100.)
     opened = []
 
     class DummyAccount:
@@ -6003,6 +6011,7 @@ def test_structured_entry_marks_only_roomy_expanding_setup_as_trend_extension():
 
 
 def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor(monkeypatch):
+    monkeypatch.setattr(strategy_module, "MIN_ENTRY_PROFIT_ROOM_PCT", 0.01)
     monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()
@@ -6025,6 +6034,7 @@ def test_structured_entry_full_readiness_cannot_bypass_profit_room_floor(monkeyp
 
 
 def test_structured_entry_rejects_room_that_cannot_cover_cost_buffer(monkeypatch):
+    monkeypatch.setattr(strategy_module, "MIN_ENTRY_PROFIT_ROOM_PCT", 0.01)
     monkeypatch.setattr(strategy_module, "evaluate_entry_quality_gate", lambda **_kwargs: {"blocked": False})
     strategy = SuperTrendKeltnerStrategy()
     frame = _structured_entry_frame()

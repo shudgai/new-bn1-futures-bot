@@ -1,4 +1,4 @@
-"""Regression cases for the user-approved 2026-09-07 Channel Swing rules."""
+"""Regression cases for the user-approved 2026-09-09 Channel Swing rules."""
 import pytest
 from core.engine import TradingEngine
 from core.paper_account import PaperAccount
@@ -23,7 +23,7 @@ def test_new_break_requires_closed_body_from_inside(side, invalid):
     f.loc[67, 'close'] = edge - sign * .5
     f.loc[68, ['open', 'close', 'ma3', 'ma15']] = [edge-sign*.5, edge+sign*.5, edge+sign*.2, edge-sign*.1]
     if invalid == 'wick': f.loc[68, 'close'] = edge-sign*.1
-    if invalid == 'already_outside': f.loc[67, 'close'] = edge+sign*.1
+    if invalid == 'already_outside': f.loc[67, ['open', 'close']] = edge+sign*.1
     if invalid == 'gap': f.loc[68, 'open'] = edge+sign*.1
     if invalid == 'live_only':
         f.loc[68, 'close'] = edge-sign*.1
@@ -32,11 +32,21 @@ def test_new_break_requires_closed_body_from_inside(side, invalid):
     assert result['action'] == 'WAIT', result
 
 
-def test_thirty_bars_can_confirm_pullback():
+def _confirm_outer_break(f, side):
+    f['kc_upper'], f['kc_lower'] = 102., 98.
+    f['open'] = f['close'] = 100.
+    f['ma15'] = [100. + (i*.01 if side == 'LONG' else -i*.01) for i in range(len(f))]
+    f.loc[f.index[-3], ['open', 'close']] = [100., 103.] if side == 'LONG' else [100., 97.]
+    f.loc[f.index[-2], ['open', 'close']] = [103., 103.2] if side == 'LONG' else [97., 96.8]
+    f.loc[f.index[-1], ['open', 'close']] = 103.2 if side == 'LONG' else 96.8
+    f['high'] = f[['open', 'close']].max(axis=1) + .1
+    f['low'] = f[['open', 'close']].min(axis=1) - .1
+
+
+def test_thirty_bars_can_confirm_outer_break():
     f = _generate_macro_frame('DOWN', 30)
-    f.loc[26:28, 'ma3'] = [97.0, 97.5, 97.1]
-    f.loc[28, ['close', 'ma15']] = [97.0, 97.2]
-    assert TradingEngine._channel_swing_action(f, 97.0)['side'] == 'SHORT'
+    _confirm_outer_break(f, 'SHORT')
+    assert TradingEngine._channel_swing_action(f, 96.8)['side'] == 'SHORT'
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -77,7 +87,7 @@ async def test_testnet_unlock_cancels_only_lock_and_keeps_state_on_failure(fail)
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-async def test_paper_ticker_preserves_and_triggers_channel_stop(tmp_path, monkeypatch, side):
+async def test_paper_ticker_preserves_channel_stop_but_defers_exit_to_engine(tmp_path, monkeypatch, side):
     import core.paper_account as module
     monkeypatch.setattr(module, 'STATE_FILE', str(tmp_path/'paper.json'))
     a = PaperAccount()
@@ -91,7 +101,8 @@ async def test_paper_ticker_preserves_and_triggers_channel_stop(tmp_path, monkey
     assert a.positions[SYMBOL]['sl'] == stop
     assert calls == []
     await a.update_positions({SYMBOL:stop})
-    assert len(calls) == 1
+    assert calls == []
+    assert a.positions[SYMBOL]["sl"] == stop
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('old_side', ['LONG', 'SHORT'])
@@ -99,10 +110,7 @@ async def test_paper_ticker_preserves_and_triggers_channel_stop(tmp_path, monkey
 async def test_reversal_closes_first_and_submits_opposite_order(old_side, close_ok, monkeypatch):
     f = _generate_macro_frame('DOWN' if old_side == 'LONG' else 'UP', 70)
     f['atr']=2.; f['volume']=2000.; f['vol_ma_20']=1000.
-    if old_side == 'LONG':
-        f.loc[68, ['open','close','kc_lower']]=[93.8,92.5,93.]
-    else:
-        f.loc[68, ['open','close','kc_upper']]=[106.2,107.5,107.]
+    _confirm_outer_break(f, 'SHORT' if old_side == 'LONG' else 'LONG')
     e = _execution_engine(f, old_side, close_ok)
     e._channel_swing_last_reverse_bar = {}
     e.tickers[SYMBOL]=float(f.loc[68,'close'])
@@ -130,7 +138,7 @@ async def test_reversal_closes_first_and_submits_opposite_order(old_side, close_
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('outside', [False, True])
-async def test_failed_reverse_retries_without_new_break_only_while_outside(side, outside):
+async def test_stale_reverse_cannot_retry_without_closed_break(side, outside):
     f = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     f['atr']=2.; f['volume']=2000.; f['vol_ma_20']=1000.
     f['ma3']=f['ma15']
@@ -155,12 +163,12 @@ async def test_failed_reverse_retries_without_new_break_only_while_outside(side,
     _, candidates=await e._process_single_symbol(SYMBOL, 1., None, False)
     assert not any('處理失敗' in msg for msg,_ in e.account.logs), e.account.logs
     assert candidates == []
-    assert submitted == ([side] if outside else [])
+    assert submitted == []
     assert SYMBOL not in e._channel_outer_reentry_after_exit
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-async def test_fresh_snapshot_keeps_valid_inside_channel_pullback(side):
+async def test_fresh_snapshot_rejects_inside_channel_pullback(side):
     f = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     if side == 'LONG':
         f.loc[66:68, 'ma3'] = [107.,106.5,106.9]
@@ -170,7 +178,7 @@ async def test_fresh_snapshot_keeps_valid_inside_channel_pullback(side):
         f.loc[68,['close','ma15']] = [93.,93.2]
     e = _execution_engine(f, side, True)
     e.tickers[SYMBOL] = float(f.loc[68,'close'])
-    assert await e._fresh_channel_entry_snapshot(SYMBOL, side) is not None
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side) is None
     assert e._channel_entry_min_profit_ok('ENTER', False, side, e.tickers[SYMBOL], f)
 
 
@@ -179,7 +187,7 @@ def _short_single_abnormal_frame():
     f['kc_middle'] = 100.
     f['kc_upper'] = 102.
     f['kc_lower'] = 98.
-    f['atr'] = .5
+    f['atr'] = 4.  # Ordinary favorable body: not a waterfall.
     f.loc[67, ['open', 'close', 'ma3', 'ma15']] = [100., 99.5, 99.4, 100.]
     f.loc[68, ['open', 'close', 'high', 'ma3', 'ma15']] = [99.5, 101., 105., 100.5, 100.]
     return f
@@ -205,25 +213,24 @@ def test_short_after_lock_unlocks_below_ma15_even_above_kc_middle():
     f.loc[67, ['ma3','ma15']] = [100.5,100.]
     f.loc[68, ['ma3','ma15','close','kc_middle']] = [99.8,100.,99.9,99.5]
     result = TradingEngine._channel_swing_action(f, 99.9, 'SHORT', profit_locked=True)
-    assert result['reason'] == 'UNLOCK_PROFIT_SHORT'
+    assert result['reason'] == 'HOLDING_SHORT_RUN_TO_LOW'
 
 
 def test_short_locked_single_pump_then_true_upper_break_closes_first():
     f = _short_single_abnormal_frame()
-    f.loc[67, ['open','close']] = [100.5,101.]
-    f.loc[68, ['open','close']] = [101.,103.]
+    _confirm_outer_break(f, 'LONG')
     result = TradingEngine._channel_swing_action(f, 103., 'SHORT', profit_locked=True)
     assert result['action'] == 'REVERSE'
-    assert result['reason'] == 'KC_UPPER_GREEN_REVERSE_LONG'
+    assert result['reason'] == 'KC_UPPER_BREAKOUT'
 
 
-def test_short_two_abnormal_candles_still_exit():
+def test_two_adverse_candles_without_favorable_run_or_structure_failure_hold():
     f = _short_single_abnormal_frame()
     f.loc[67, ['open','close']] = [99.,101.]
     f.loc[68, ['open','close']] = [101.,103.]
     result = TradingEngine._channel_swing_action(f, 103., 'SHORT', profit_locked=True)
-    assert result['action'] == 'EXIT'
-    assert result['reason'] == 'EMERGENCY_EXIT_2_CANDLE_PUMP'
+    assert result['action'] == 'HOLD'
+    assert result['reason'] == 'HOLDING_SHORT_RUN_TO_LOW'
 
 @pytest.mark.anyio
 async def test_testnet_channel_short_ticker_spike_does_not_force_close(tmp_path, monkeypatch):

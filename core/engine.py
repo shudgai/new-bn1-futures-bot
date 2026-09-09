@@ -64,6 +64,7 @@ from core.config import (
     FULL_MARKET_SURVEILLANCE_STEADY_MIN_EFFICIENCY,
     FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC,
 )
+from core.indicators import strict_pivot_type
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
     compute_pullback_target, compute_net_reward_risk,
@@ -3536,6 +3537,7 @@ class TradingEngine:
         if (
             not all(math.isfinite(value) for value in (price, upper, lower))
             or price <= 0.0 or lower >= upper
+            or not ((side == "LONG" and price > upper) or (side == "SHORT" and price < lower))
             or (
                 candidate_bar_id is not None
                 and fresh_candidate_bar_id != candidate_bar_id
@@ -7461,7 +7463,21 @@ class TradingEngine:
             direction = 1.0 if side == "LONG" else -1.0
             for adverse_count in (1, 2):
                 start = position - adverse_count + 1
-                if start < 1:
+                if start < 2:
+                    continue
+                # The chart rule requires an MA3 peak/trough, not body color alone.
+                ma3_before, ma3_pivot, ma3_now = (
+                    float(frame.iloc[index]["ma3"]) for index in (start - 2, start - 1, position)
+                )
+                if not all(math.isfinite(value) for value in (ma3_before, ma3_pivot, ma3_now)):
+                    continue
+                
+                # 使用者要求：如果 MA3 根本都還沒出軌道，就不算趨勢衰竭，不能提早平倉
+                pivot_row = frame.iloc[start - 1]
+                if not TradingEngine._channel_ma3_outside(pivot_row, side):
+                    continue
+                if not (direction * (ma3_pivot - ma3_before) > 0
+                        and direction * (ma3_pivot - ma3_now) > 0):
                     continue
                 threshold = float(frame.iloc[start - 1].get("atr", 0.0)) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
                 if not math.isfinite(threshold) or threshold <= 0:
@@ -7473,11 +7489,27 @@ class TradingEngine:
                     adverse.append(direction * (float(row["open"]) - close))
                 if not all(math.isfinite(body) and body >= threshold for body in adverse):
                     continue
-                favorable = [direction * (float(row["close"]) - float(row["open"]))
-                             for _, row in frame.iloc[max(0, start - 2):start].iterrows()]
+                favorable = []
+                for i in range(1, 4):
+                    idx = start - i
+                    if idx < 0:
+                        break
+                    row = frame.iloc[idx]
+                    favorable.append(direction * (float(row["close"]) - float(row["open"])))
+                
                 if not all(math.isfinite(body) for body in favorable):
                     continue
-                if favorable[-1] >= threshold * 2.0 or (len(favorable) == 2 and all(body >= threshold for body in favorable)):
+                
+                has_favorable = False
+                for i in range(len(favorable)):
+                    if favorable[i] >= threshold * 2.0:
+                        has_favorable = True
+                        break
+                    if i + 1 < len(favorable) and favorable[i] >= threshold and favorable[i+1] >= threshold:
+                        has_favorable = True
+                        break
+                        
+                if has_favorable:
                     return True
             return False
         except (ValueError, TypeError, KeyError, IndexError):
@@ -7555,8 +7587,10 @@ class TradingEngine:
                 side == "SHORT" and ma3_before <= float(previous["kc_lower"])
                 and lower < ma3_now < upper and ma3_now > ma3_before
             )
-            # 40% is a strategy threshold, not a universal reversal guarantee.
-            if width <= reference * 0.40 and abs(ma15 - rail) <= width * 0.25 and crossed_inside:
+            # 使用者要求：計算 MA15 與外軌的距離佔整個通道寬度的比例（黑圈大約佔 40%）。
+            # 若距離小於等於 40%，且 MA3 從軌道外彎下進入通道，就平倉。
+            # 若大於 40%（MA15 離外軌很遠），則繼續持倉不平倉。
+            if abs(ma15 - rail) <= width * 0.40 and crossed_inside:
                 return "KC_MA3_REENTER_EXIT"
             # A channel midpoint must never be substituted with MA15.
             if "ema_20" not in closed:
@@ -7607,9 +7641,15 @@ class TradingEngine:
         breakout_range = bo_high - bo_low
         confirmation_range = cf_high - cf_low
         kc_width = min(bo_upper - bo_lower, cf_upper - cf_lower)
-        # Held-position reversals retain the two-closed-candle confirmation.
-        upper_break_confirmed = bo_open <= bo_upper < bo_close and cf_close > cf_open and cf_close > cf_upper
-        lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower
+        # 確保第二根確認K不是十字線或T字形/長影線（實體至少佔全長的 20%）
+        cf_body = abs(cf_close - cf_open)
+        cf_is_solid = cf_body / (confirmation_range + 1e-9) >= 0.20
+        # 嚴格突破（用於反手與初始突破）：必須是從軌道內實體穿出
+        upper_break_confirmed = bo_open <= bo_upper < bo_close and cf_close > cf_open and cf_close > cf_upper and cf_is_solid
+        lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
+        # 順勢進場（用於空手時在趨勢延續中進場）：只要連續兩根收在外軌外，且當前是實體順勢K
+        upper_trend_entry = bo_close > bo_upper and cf_close > cf_open and cf_close > cf_upper and cf_is_solid
+        lower_trend_entry = bo_close < bo_lower and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
         continuation_up = bool(
             cf_close > cf_open
             and cf_close > bo_close
@@ -7642,6 +7682,14 @@ class TradingEngine:
             if not (clean_continuation_up or clean_continuation_down):
                 return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
         if held in ("LONG", "SHORT"):
+            # 上軌一突破就要平倉 (立即停損/停利)
+            # 使用前一根已收線的通道邊界作為基準，避免當前形成中 K 線的指標未計算完全
+            previous_kc = frame.iloc[-2]
+            if held == "SHORT" and live_price > float(previous_kc["kc_upper"]):
+                return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
+            if held == "LONG" and live_price < float(previous_kc["kc_lower"]):
+                return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
+            
             # Confirmed opposite outer breaks take precedence over exit-only signals.
             if held == "LONG" and lower_break_confirmed:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
@@ -7665,10 +7713,30 @@ class TradingEngine:
         history = pd.to_numeric(frame["ma15"].iloc[:-1], errors="coerce").tail(60)
         history = history[history.map(lambda value: math.isfinite(value) and value > 0)]
         trend = float(history.iloc[-1] - history.iloc[0]) if len(history) >= 2 else 0.0
-        if upper_break_confirmed and trend > 0:
-            return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
-        if lower_break_confirmed and trend < 0:
-            return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
+        
+        if not held:
+            current_live = frame.iloc[-1]
+            previous_kc = frame.iloc[-2]
+            live_open = float(current_live["open"])
+            
+            # 用戶指示：「這種在Kc內就是綠K,一突破要馬上開倉,不用等第2根」
+            if live_open <= float(previous_kc["kc_upper"]) and live_price > live_open and live_price > float(previous_kc["kc_upper"]):
+                return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
+            if live_open >= float(previous_kc["kc_lower"]) and live_price < live_open and live_price < float(previous_kc["kc_lower"]):
+                return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
+                
+            # 嚴格突破 (從軌道內實體穿出，且第二根確認)：無條件進場，不受 60 根 MA15 趨勢限制
+            if upper_break_confirmed:
+                return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT"}
+            if lower_break_confirmed:
+                return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT_STRICT"}
+                
+            # 順勢進場 (已經在外軌外，趨勢延續)：需受 60 根 MA15 趨勢限制
+            if upper_trend_entry and trend > 0:
+                return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_TREND_ENTRY"}
+            if lower_trend_entry and trend < 0:
+                return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_TREND_ENTRY"}
+                
         return wait
 
 

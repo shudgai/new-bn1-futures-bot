@@ -28,6 +28,7 @@ def _turn_frame(side, timing='live', bodies=(0.2, 0.2), reverse=0.6):
     frame.loc[turn - 2, ['open', 'close']] = [102. - sum(bodies), 102. - bodies[-1]]
     frame.loc[turn - 1, ['open', 'close']] = [102. - bodies[-1], 102.]
     frame.loc[turn, ['open', 'close', 'ma3']] = [102., 102. - reverse, 102.2]
+    frame.loc[turn - 1, 'ma3'] = 102.4
     if timing == 'closed':
         frame.loc[19, ['open', 'close', 'ma3']] = [102. - reverse, 102. - reverse, 102.2]
     frame['high'] = frame[['high', 'open', 'close']].max(axis=1)
@@ -219,6 +220,7 @@ def test_two_adverse_bars_require_immediately_preceding_favorable_run(side, timi
     f.loc[end-2, ['open', 'close']] = [102.-body, 102.]
     f.loc[end-1, ['open', 'close']] = [102., 101.4]
     f.loc[end, ['open', 'close']] = [101.4, 100.8]
+    f.loc[end-3:end, 'ma3'] = [102.1, 102.4, 102.2, 102.0]
     if timing == 'closed': f.loc[19, ['open', 'close']] = 100.8
     if side == 'SHORT':
         for column in ('open', 'close', 'ma3', 'ma15'):
@@ -241,3 +243,17 @@ async def test_impulse_exit_repeated_scans_never_reopen_old_signal(side, close_o
     assert (SYMBOL in e.account.positions) is (not close_ok)
     assert bool(e._channel_swing_peak_exit_info) is close_ok
     assert not any('處理失敗' in message for message, _ in e.account.logs)
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('timing', ['live', 'closed'])
+@pytest.mark.parametrize('shape', ['flat', 'continuing', 'nan'])
+def test_long_body_without_ma3_peak_or_trough_holds(side, timing, shape):
+    f = _turn_frame(side, timing, bodies=(.6, .6))
+    turn = 19 if timing == 'live' else 18
+    direction = 1 if side == 'LONG' else -1
+    base = float(f.loc[turn-1, 'ma3'])
+    if shape == 'flat': f.loc[turn-2:turn, 'ma3'] = base
+    elif shape == 'continuing': f.loc[turn-2:turn, 'ma3'] = [base-direction*.1, base, base+direction*.1]
+    else: f.loc[turn-1, 'ma3'] = float('nan')
+    assert TradingEngine._channel_swing_action(f, float(f.iloc[-1]['close']), side)['action'] == 'HOLD'

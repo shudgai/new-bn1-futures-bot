@@ -41,7 +41,7 @@ async def test_fee_floor_then_half_usdt_ladder(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "PROFIT_LOCK_LADDER_STEP_USDT", 0.5)
 
     account = PaperAccount()
-    account.balance = 150.0
+    account.balance = 1000.0  # Include funds for the entry fee as well as margin.
     assert await account.open_position(
         "BTC/USDT", "LONG", 100.0, 150.0, 98.0, 0.0, "MA alignment",
         atr=1.0, leverage=5, signal_score=100, apply_slippage=False,
@@ -82,6 +82,7 @@ async def test_outer_run_ignores_one_usdt_giveback_even_after_pivot(
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     account = PaperAccount()
+    account.balance = 1000.0  # Include funds for the entry fee as well as margin.
     assert await account.open_position(
         "BTC/USDT", "LONG", 100.0, 300.0, 95.0, 0.0, "OUTER_RUN",
         leverage=1, signal_score=100, apply_slippage=False,
@@ -116,6 +117,7 @@ async def test_kc_structure_ignores_pivot_and_one_usdt_giveback(
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     monkeypatch.setattr(pa_module, "ENABLE_FIXED_PROFIT_LOCK_PCT", False)
     account = PaperAccount()
+    account.balance = 1000.0  # Include funds for the entry fee as well as margin.
     assert await account.open_position(
         "BTC/USDT", "LONG", 100.0, 150.0, 95.0, 0.0, "KC trend",
         leverage=1, signal_score=100, apply_slippage=False,
@@ -145,7 +147,7 @@ async def test_wide_trail_mode_does_not_exit_at_fixed_take_profit(tmp_path, monk
     )
     monkeypatch.setattr(pa_module, "ENABLE_PROFIT_LOCK_USDT", True)
     account = PaperAccount()
-    account.balance = 150.0
+    account.balance = 1000.0  # Include funds for the entry fee as well as margin.
     assert await account.open_position(
         "BTC/USDT", "LONG", 100.0, 150.0, 98.0, 104.0,
         "trend-end mode", atr=1.0, leverage=5, signal_score=100,
@@ -173,6 +175,7 @@ async def test_one_usdt_floor_advances_every_two_usdt(tmp_path, monkeypatch):
     monkeypatch.setattr(pa_module, "PROFIT_LOCK_BASE_MARGIN_USDT", 50.0)
 
     account = PaperAccount()
+    account.balance = 1000.0  # Include funds for the entry fee as well as margin.
     assert await account.open_position(
         "BTC/USDT", "LONG", 100.0, 50.0, 95.0, 0.0, "1U/2U ladder",
         leverage=1, signal_score=100, apply_slippage=False,

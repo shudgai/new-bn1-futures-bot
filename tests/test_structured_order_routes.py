@@ -3,6 +3,12 @@ import pytest
 from core.engine import TradingEngine
 
 
+@pytest.fixture(autouse=True)
+def isolated_route_symbols(monkeypatch):
+    # Synthetic test symbols must pass the production allowlist to reach routing.
+    monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", ["MODE/USDT", "HYPE/USDT"])
+
+
 STRUCTURED_ORDER_CASES = [
     ("BREAKOUT", "ENTER_LIMIT"),
     ("BREAKOUT", "ENTER_MARKET"),
@@ -67,7 +73,7 @@ def _engine():
 
     engine._execution_price_is_safe = execution_price_is_safe
 
-    async def fresh_channel_entry_snapshot(_symbol, side, _candidate_bar_id=None):
+    async def fresh_channel_entry_snapshot(_symbol, side, _candidate_bar_id=None, **_kwargs):
         return {
             "price": 101.0 if side == "LONG" else 99.0,
             "kc_upper": 101.0, "kc_lower": 99.0,
@@ -123,7 +129,7 @@ async def test_every_structured_trade_mode_uses_the_expected_order_route(
 async def test_channel_swing_order_is_cancelled_after_price_returns_inside_kc(side):
     engine = _engine()
 
-    async def fresh_inside_snapshot(_symbol, _side, _candidate_bar_id=None):
+    async def fresh_inside_snapshot(_symbol, _side, _candidate_bar_id=None, **_kwargs):
         return None
 
     engine._fresh_channel_entry_snapshot = fresh_inside_snapshot
@@ -151,7 +157,7 @@ async def test_hype_three_second_retry_locks_only_the_failed_closed_candidate(si
     engine._channel_invalid_entry_candidates = set()
     validation_calls = []
 
-    async def fresh_snapshot(_symbol, _side, candidate_bar_id=None):
+    async def fresh_snapshot(_symbol, _side, candidate_bar_id=None, **_kwargs):
         validation_calls.append(candidate_bar_id)
         if candidate_bar_id == 1_725_000_000_000:
             return None

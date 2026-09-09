@@ -35,19 +35,19 @@ def test_detector_does_not_label_monotonic_middle_as_pivot(tail):
 
 from core.engine import TradingEngine
 from test_channel_swing import _generate_macro_frame
-from test_direct_break_execution import setup_engine, anyio_backend
+from test_direct_break_execution import setup_engine, anyio_backend, confirm_break
 from test_channel_swing_execution import SYMBOL
 
 
 @pytest.mark.parametrize("side,points,action", [
-    ("LONG", [100, 102, 101], "EXIT"),
-    ("SHORT", [100, 98, 99], "EXIT"),
+    ("LONG", [100, 102, 101], "HOLD"),
+    ("SHORT", [100, 98, 99], "HOLD"),
     ("LONG", [103, 102, 101], "HOLD"),
     ("SHORT", [97, 98, 99], "HOLD"),
     ("LONG", [100, 102, 102], "HOLD"),
     ("SHORT", [100, 98, 98], "HOLD"),
 ])
-def test_channel_exit_uses_distinct_closed_points(side, points, action):
+def test_geometric_pivot_without_favorable_impulse_keeps_position(side, points, action):
     frame = _generate_macro_frame()
     frame.loc[66:68, "ma3"] = points
     frame["kc_lower"], frame["kc_upper"] = (90., 101.) if side == "LONG" else (99., 110.)
@@ -64,6 +64,11 @@ def test_channel_exit_uses_distinct_closed_points(side, points, action):
 async def test_scan_pivot_closes_without_reversing(setup_engine, side):
     engine, frame = setup_engine(side, side)
     frame.loc[66:68, "ma3"] = [100, 103, 101] if side == "LONG" else [100, 97, 99]
+    # A real favorable waterfall and adverse long body accompany the MA3 turn.
+    frame.loc[67, ['open', 'close']] = [100., 103.] if side == 'LONG' else [100., 97.]
+    frame.loc[68, ['open', 'close']] = [103., 102.] if side == 'LONG' else [97., 98.]
+    frame.loc[69, ['open', 'close']] = 102. if side == 'LONG' else 98.
+    engine.tickers[SYMBOL] = float(frame.loc[69, 'close'])
     _, candidates = await engine._process_single_symbol(SYMBOL, 1., None, False)
     assert SYMBOL not in engine.account.positions
     assert len(engine.account.trades) == 1
@@ -74,7 +79,7 @@ async def test_scan_pivot_closes_without_reversing(setup_engine, side):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("invalid", [None, "wick", "touch", "live_return"])
-def test_entry_requires_live_body_crossing(side, invalid):
+def test_live_body_crossing_alone_never_opens(side, invalid):
     frame = _generate_macro_frame()
     frame["kc_upper"], frame["kc_lower"], frame["atr"] = 102., 98., 1.
     frame.loc[69, "open"] = 100.
@@ -85,18 +90,17 @@ def test_entry_requires_live_body_crossing(side, invalid):
     elif invalid == "touch": price = 102. if side == "LONG" else 98.
     elif invalid == "live_return": price = 100.
     result = TradingEngine._channel_swing_action(frame, price)
-    assert result["action"] == ("ENTER" if invalid is None else "WAIT")
-    if invalid is None:
-        assert result["side"] == side
+    assert result["action"] == "WAIT"
+    assert result["side"] is None
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 async def test_scan_confirmed_break_opens_paper_position(setup_engine, side):
     engine, frame = setup_engine(side)
+    confirm_break(frame, side)
     engine._channel_chop_state = lambda _: {"detected": False, "clear_direction": side}
     frame.loc[69, "open"] = 100.
-    frame.loc[68, "close"] = 104. if side == "LONG" else 96.
     engine.tickers[SYMBOL] = float(frame.loc[68, "close"])
     await engine._process_single_symbol(SYMBOL, 1., None, False)
     assert engine.account.positions[SYMBOL]["side"] == side
@@ -112,6 +116,11 @@ async def test_failed_pivot_close_keeps_position_without_new_order(setup_engine,
     async def fail_close(*args, **kwargs):
         return False
     engine.account.close_position = fail_close
+    # A real favorable waterfall and adverse long body accompany the MA3 turn.
+    frame.loc[67, ['open', 'close']] = [100., 103.] if side == 'LONG' else [100., 97.]
+    frame.loc[68, ['open', 'close']] = [103., 102.] if side == 'LONG' else [97., 98.]
+    frame.loc[69, ['open', 'close']] = 102. if side == 'LONG' else 98.
+    engine.tickers[SYMBOL] = float(frame.loc[69, 'close'])
     _, candidates = await engine._process_single_symbol(SYMBOL, 1., None, False)
     assert engine.account.positions[SYMBOL]["side"] == side
     assert not engine.account.trades
