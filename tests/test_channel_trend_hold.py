@@ -138,3 +138,39 @@ def test_incomplete_entry_rails_do_not_invent_a_compression_reference(entry_uppe
     f = frame_for('SHORT')
     f.loc[:16, ['kc_lower', 'kc_upper']] = [98., 102.]
     assert TradingEngine._channel_swing_action(f, 98.1, 'SHORT', entry_kc_upper=entry_upper, entry_kc_lower=entry_lower)['action'] == 'HOLD'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('gaps,expected', [
+    ([.2, .3, .4], 'HOLD'), ([.4, .4, .4], 'EXIT'),
+    ([.6, .5, .4], 'EXIT'), ([.5, .3, .4], 'EXIT'),
+])
+def test_expanding_gap_prevents_compression_exit(side, gaps, expected):
+    f = frame_for(side)
+    rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
+    for index, gap in zip((16, 17, 18), gaps):
+        f.loc[index, 'ma15'] = f.loc[index, rail] + (-gap if side == 'LONG' else gap)
+    assert TradingEngine._channel_swing_action(f, float(f.iloc[-1]['close']), side)['action'] == expected
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_live_gap_widening_does_not_override_closed_exit(side):
+    f = frame_for(side)
+    f.loc[19, 'ma15'] = 100.
+    assert TradingEngine._channel_swing_action(f, float(f.iloc[-1]['close']), side)['action'] == 'EXIT'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+async def test_expanding_gap_scan_keeps_position(side):
+    f = frame_for(side)
+    rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
+    for index, gap in zip((16, 17, 18), (.2, .3, .4)):
+        f.loc[index, 'ma15'] = f.loc[index, rail] + (-gap if side == 'LONG' else gap)
+    e = _execution_engine(f, side, True)
+    e.tickers[SYMBOL] = float(f.iloc[-1]['close'])
+    e.market_prebreakout_directions = {}; e.st_direction_1h_cache = {}
+    await e._process_single_symbol(SYMBOL, 1., None, False)
+    assert e.account.positions[SYMBOL]['side'] == side
+    assert e.account.events == []
+    assert not any('處理失敗' in message for message, _ in e.account.logs)

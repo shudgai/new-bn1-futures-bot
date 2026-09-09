@@ -7501,8 +7501,31 @@ class TradingEngine:
         )
 
     @staticmethod
+    def _channel_outer_gap_expanding(frame: pd.DataFrame, side: str) -> bool:
+        """Hold while MA15-to-held-side rail room grows over three closed bars."""
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        try:
+            recent = frame.iloc[-4:-1]
+            upper, lower, ma15 = (
+                pd.to_numeric(recent[key], errors="coerce")
+                for key in ("kc_upper", "kc_lower", "ma15")
+            )
+            if not all(math.isfinite(float(value)) and value > 0
+                       for series in (upper, lower, ma15) for value in series):
+                return False
+            if not ((lower < upper) & (lower <= ma15) & (ma15 <= upper)).all():
+                return False
+            gaps = upper - ma15 if side == "LONG" else ma15 - lower
+            return bool(gaps.iloc[0] < gaps.iloc[1] < gaps.iloc[2])
+        except (TypeError, ValueError, KeyError, IndexError):
+            return False
+
+    @staticmethod
     def _channel_trend_exit_reason(frame: pd.DataFrame, side: str, entry_width: float = 0.0) -> str | None:
         """Closed-candle exits only: compressed rail re-entry or confirmed structure failure."""
+        if TradingEngine._channel_outer_gap_expanding(frame, side):
+            return None
         try:
             closed = frame.iloc[:-1].copy()
             previous, current = closed.iloc[-2], closed.iloc[-1]
