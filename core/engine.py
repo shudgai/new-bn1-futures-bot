@@ -6733,15 +6733,10 @@ class TradingEngine:
             previous_kc = frame.iloc[-2]
             live_open = float(current_live["open"])
             
-            # 用戶指示：「這種在Kc內就是綠K,一突破要馬上開倉,不用等第2根」
             live_upper = float(current_live["kc_upper"])
             live_lower = float(current_live["kc_lower"])
             if live_price > live_upper and TradingEngine._channel_closed_waves_falling(frame):
                 return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG"}
-            if live_open <= live_upper and live_price > live_open and live_price > live_upper:
-                return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
-            if live_open >= live_lower and live_price < live_open and live_price < live_lower:
-                return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
                 
             if max(breakout_range, confirmation_range) > kc_width * 1.25:
                 if not (clean_continuation_up or clean_continuation_down):
@@ -7375,7 +7370,6 @@ class TradingEngine:
                 "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_LIVE_UPPER_MOMENTUM_LONG",
-                "LIVE_UPPER_BREAKOUT", "LIVE_LOWER_BREAKOUT",
                 "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                 "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
             }
