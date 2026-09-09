@@ -29,6 +29,10 @@ def setup_engine(tmp_path, monkeypatch):
         e.account.daily_start_balance=1000.
         e.account.positions={};e.account.position_meta={}
         if held:
+            # A normal reversal now requires this position's own outside/reentry path.
+            f['timestamp'] = [(i + 1) * 60000 for i in range(len(f))]
+            f.loc[64, 'ma3'] = 103. if held == 'LONG' else 97.
+            f.loc[65:66, 'ma3'] = 100.
             e.account.positions[SYMBOL]={'symbol':SYMBOL,'side':held,'entry_price':100.,'qty':1.,'margin':100.,'leverage':1,'sl':0.,'tp':0.,'entry_mode':'CHANNEL_SWING','open_timestamp':1.}
             e.account.position_meta[SYMBOL]={'entry_mode':'CHANNEL_SWING'}
         e.tickers[SYMBOL]=103. if side=='LONG' else 97.

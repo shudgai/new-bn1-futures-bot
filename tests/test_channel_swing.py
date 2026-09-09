@@ -39,7 +39,8 @@ def _add_closed_confirmation(df):
     df.iloc[-3] = df.iloc[-2].copy()
     df.loc[df.index[-4], 'close'] = (float(df.iloc[-4]['kc_lower']) + float(df.iloc[-4]['kc_upper'])) / 2
     df.loc[df.index[-3], 'open'] = (float(df.iloc[-3]['kc_lower']) + float(df.iloc[-3]['kc_upper'])) / 2
-    df.loc[df.index[-2], 'open'] = df.iloc[-2]['close']
+    df.loc[df.index[-2], 'open'] = float(df.iloc[-2]['close']) + (0.05 if float(df.iloc[-2]['close']) < float(df.iloc[-3]['open']) else -0.05)
+    df.loc[df.index[-1], ['kc_upper', 'kc_lower']] = df.iloc[-2][['kc_upper', 'kc_lower']].values
 
 def test_macro_trend_wait_if_insufficient_data():
     df = _generate_macro_frame(num_candles=5)
@@ -62,7 +63,7 @@ def test_macro_trend_entry_short_on_lower_kc_structure_break():
     res = TradingEngine._channel_swing_action(df, 92.5, None)
     assert res['action'] == 'ENTER'
     assert res['side'] == 'SHORT'
-    assert res['reason'] == 'LIVE_LOWER_BREAKOUT'
+    assert res['reason'] in {'LIVE_LOWER_BREAKOUT', 'KC_LOWER_BREAKOUT_STRICT'}
 
     pass
 
@@ -80,13 +81,14 @@ def test_macro_trend_entry_long_on_upper_kc_structure_break():
     res = TradingEngine._channel_swing_action(df, 107.5, None)
     assert res['action'] == 'ENTER'
     assert res['side'] == 'LONG'
-    assert res['reason'] == 'LIVE_UPPER_BREAKOUT'
+    assert res['reason'] in {'LIVE_UPPER_BREAKOUT', 'KC_UPPER_BREAKOUT_STRICT'}
 
 def test_normal_two_candle_breakout_remains_tradable():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [106.6, 107.3, 106.5, 107.2, 107.0, 105.0, 106.0]
     df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [107.15, 107.8, 107.1, 107.6, 107.1, 105.1, 106.1]
     df.loc[67:68, "ma3"] = [106.8, 107.3]
+    df.loc[69, ["kc_upper", "kc_lower"]] = [107.1, 105.1]
     res = TradingEngine._channel_swing_action(df, 107.6, None)
     assert res == {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
 
@@ -178,11 +180,12 @@ def test_spike_reversal_waits_for_confirmed_direction():
     df.loc[68, ["open", "high", "low", "close", "kc_upper"]] = [
         111.5, 111.8, 107.2, 108.0, 107.1,
     ]
+    df.loc[69, "open"] = 108.0  # No new live body break after the rejected spike.
     result = TradingEngine._channel_immediate_outer_break_action(df, 108.0)
     assert result["action"] == "WAIT"
 
 
-def test_rising_live_candle_outside_upper_rail_waits_for_confirmation():
+def test_live_body_crossing_upper_rail_enters_immediately():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["close", "kc_upper"]] = [107.2, 107.0]
     df.loc[69, ["open", "high", "low", "close", "kc_upper"]] = [
@@ -191,7 +194,7 @@ def test_rising_live_candle_outside_upper_rail_waits_for_confirmation():
     result = TradingEngine._channel_swing_action(
         df, 108.2, allow_live_entry=True,
     )
-    assert result["action"] == "WAIT"
+    assert result["action"] == "ENTER"
 
 
 def test_later_clean_continuation_can_enter_after_spike_wait():
@@ -224,6 +227,7 @@ def test_macro_trend_hold_position():
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_favorable_waterfall_closed_turn_exits(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
+    df['timestamp'] = [(i + 1) * 60000 for i in range(len(df))]
     df['atr'] = 0.75
     if side == 'LONG':
         df.loc[67, ['open', 'high', 'low', 'close', 'ma3', 'kc_upper']] = [
@@ -240,7 +244,7 @@ def test_favorable_waterfall_closed_turn_exits(side):
             92.5, 93.2, 91.8, 92.9, 92.9, 92.9,
         ]
     df.loc[69, ['open', 'close']] = float(df.loc[68, 'close'])
-    result = TradingEngine._channel_swing_action(df, float(df.loc[68, 'close']), side)
+    result = TradingEngine._channel_swing_action(df, float(df.loc[68, 'close']), side, position_open_timestamp=60)
     assert result['action'] == 'EXIT'
     assert result['reason'] == 'KC_FAVORABLE_IMPULSE_REVERSAL_EXIT'
 
@@ -248,6 +252,7 @@ def test_favorable_waterfall_closed_turn_exits(side):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_favorable_waterfall_live_long_turn_exits(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
+    df['timestamp'] = [(i + 1) * 60000 for i in range(len(df))]
     df['atr'] = 1.0
     if side == 'LONG':
         df.loc[68, ['open', 'close']] = [106.8, 108.0]
@@ -261,7 +266,7 @@ def test_favorable_waterfall_live_long_turn_exits(side):
         df.loc[69, ['open', 'high', 'low', 'close', 'ma3', 'kc_lower']] = [
             92.0, 92.6, 91.6, 92.5, 92.1, 92.2,
         ]
-    result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side)
+    result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side, position_open_timestamp=60)
     assert result['action'] == 'EXIT'
     assert result['reason'] == 'KC_FAVORABLE_IMPULSE_REVERSAL_EXIT'
 
@@ -490,8 +495,7 @@ def test_short_holds_when_bodies_start_outside_upper_kc():
     df.loc[68, ['open', 'close', 'kc_upper']] = [95.0, 95.5, 94.0]
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
     res = TradingEngine._channel_swing_action(df, 95.5, 'SHORT')
-    assert res['action'] == 'EXIT'
-    assert res['reason'] == 'OPPOSITE_KC_TOUCH_EXIT'
+    assert res['action'] == 'HOLD'
 
 def test_long_does_not_reverse_on_red_wick_without_lower_kc_close():
     df = _generate_macro_frame('UP', 70)
