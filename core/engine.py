@@ -7580,21 +7580,38 @@ class TradingEngine:
             if not all(math.isfinite(value) for value in (width, reference, ma3_before, ma3_now, ma15, upper, lower)) or width <= 0 or reference <= 0:
                 return None
             rail = upper if side == "LONG" else lower
-            crossed_inside = (
-                side == "LONG" and ma3_before >= float(previous["kc_upper"])
-                and lower < ma3_now < upper and ma3_now < ma3_before
-            ) or (
-                side == "SHORT" and ma3_before <= float(previous["kc_lower"])
-                and lower < ma3_now < upper and ma3_now > ma3_before
-            )
-            # 使用者要求：計算 MA15 與外軌的距離佔整個通道寬度的比例（黑圈大約佔 40%）。
-            # 若距離小於等於 40%，且 MA3 從軌道外彎下進入通道，就平倉。
-            # 若大於 40%（MA15 離外軌很遠），則繼續持倉不平倉。
-            if abs(ma15 - rail) <= width * 0.40 and crossed_inside:
-                return "KC_MA3_REENTER_EXIT"
-            # A channel midpoint must never be substituted with MA15.
             if "ema_20" not in closed:
                 closed["ema_20"] = closed["kc_middle"] if "kc_middle" in closed else (closed["kc_upper"] + closed["kc_lower"]) / 2.0
+            
+            middle_now = float(current["ema_20"])
+
+            # 使用者要求：MA3 轉進通道內時不立刻平倉，還要看 K 線是否走到中軌。
+            # 若通道空間 <= 40%，且 K 線已經走到中軌（空單 >= 中軌，多單 <= 中軌）才平倉。
+            ma3_inside = lower < ma3_now < upper
+            space_compressed = abs(ma15 - rail) <= width * 0.40
+
+            k_reached_middle = (
+                (side == "LONG" and float(current["close"]) <= middle_now) or
+                (side == "SHORT" and float(current["close"]) >= middle_now)
+            )
+
+            lookback_rows = closed.tail(8)
+            if side == "LONG":
+                ma3_was_outside = any(
+                    float(row["ma3"]) >= float(row["kc_upper"])
+                    for _, row in lookback_rows.iterrows()
+                    if math.isfinite(float(row.get("ma3", float("nan")))) and float(row.get("kc_upper", float("nan"))) > 0
+                )
+            else:
+                ma3_was_outside = any(
+                    float(row["ma3"]) <= float(row["kc_lower"])
+                    for _, row in lookback_rows.iterrows()
+                    if math.isfinite(float(row.get("ma3", float("nan")))) and float(row.get("kc_lower", float("nan"))) > 0
+                )
+
+            if space_compressed and ma3_inside and ma3_was_outside and k_reached_middle:
+                return "KC_MA3_REENTER_EXIT"
+            # A channel midpoint must never be substituted with MA15.
             needed = ["close", "ma3", "ma15", "ema_20", "kc_upper", "kc_lower"]
             recent = closed[needed].tail(3).apply(pd.to_numeric, errors="coerce")
             if len(recent) == 3 and all(math.isfinite(float(value)) and float(value) > 0 for value in recent.to_numpy().flat):
@@ -8619,6 +8636,9 @@ class TradingEngine:
                     "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                     "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                     "KC_LIVE_UPPER_MOMENTUM_LONG",
+                    "LIVE_UPPER_BREAKOUT", "LIVE_LOWER_BREAKOUT",
+                    "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
+                    "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
                 }
                 peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
                 pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
