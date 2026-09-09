@@ -194,6 +194,13 @@
         .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
         .chart-pane-header { height: 38px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 800; }
         .chart-container { width: 100%; height: calc(100% - 38px); }
+        .chart-entry-notice {
+            min-height: 44px; padding: 6px 10px; background: #fffbeb;
+            color: #92400e; border-bottom: 1px solid #fde68a; font-size: 12px;
+        }
+        .chart-entry-notice strong { display: block; font-size: 13px; }
+        .chart-pane.has-entry-notice .chart-container { height: calc(100% - 96px); }
+        .chart-pane.has-entry-notice .chart-entry-notice { height: 58px; overflow: auto; }
         .chart-status-overlay {
             position: absolute; inset: 0; z-index: 2;
             display: flex; justify-content: center; align-items: center;
@@ -554,10 +561,14 @@
                 </div>
             </div>
             <div class="chart-modal-body chart-grid">
-                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane">
+                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': chartModal.states[symbol]?.entryBlock }">
                     <div class="chart-pane-header">
                         <span>{{ symbol }}</span>
                         <span class="market-mode-badge" :class="'market-mode-' + getChartMarketMode(symbol).toLowerCase()">市場：{{ getChartMarketLabel(symbol) }}</span>
+                    </div>
+                    <div v-if="chartModal.states[symbol]?.entryBlock" class="chart-entry-notice" role="status">
+                        <strong>{{ chartModal.states[symbol].entryBlock.message }}</strong>
+                        <span>{{ chartModal.states[symbol].entryBlock.detail }}</span>
                     </div>
                     <div :id="'tv-chart-' + index" class="chart-container"></div>
                     <div v-if="chartModal.states[symbol] && chartModal.states[symbol].loading" class="chart-status-overlay" style="color:var(--muted)">載入中...</div>
@@ -716,7 +727,7 @@
                 this.chartModal.symbol = symbol;
                 this.chartModal.symbols = symbols;
                 this.chartModal.states = Object.fromEntries(
-                    symbols.map(item => [item, { loading: true, error: '' }])
+                    symbols.map(item => [item, { loading: true, error: '', entryBlock: null }])
                 );
                 this.chartModal.show = true;
 
@@ -867,7 +878,7 @@
                 ctx.abortController = controller;
                 const timeoutId = setTimeout(() => controller.abort(), 8000);
                 try {
-                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=80&include_live=true&_=${Date.now()}`, {
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=200&include_live=true&_=${Date.now()}`, {
                         cache: 'no-store', signal: controller.signal
                     });
                     if (!res.ok) throw new Error(`K 線服務暫時無法使用（HTTP ${res.status}）`);
@@ -876,6 +887,7 @@
                     // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
+                    state.entryBlock = json.cache?.source === 'stale' ? null : (json.entry_block || null);
                     const candles = [];
                     const ma3 = [];
                     const ma15 = [];
@@ -962,6 +974,7 @@
                     state.loading = false;
                 } catch (e) {
                     if (this.chartModal.symbols.includes(symbol)) {
+                        state.entryBlock = null;
                         ctx.failureCount = (ctx.failureCount || 0) + 1;
                         const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(ctx.failureCount, 5)));
                         ctx.nextRetryAt = Date.now() + retryDelay;

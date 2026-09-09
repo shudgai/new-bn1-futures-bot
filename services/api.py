@@ -607,7 +607,17 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "is_live": bool(include_live and index == df.index[-1]),
             })
             
-        return {"symbol": symbol, "timeframe": timeframe, "data": result}
+        entry_block = None
+        if include_live and timeframe == "1m" and engine.is_running and symbol not in engine.account.positions:
+            price = float(engine.tickers.get(symbol) or indicators.iloc[-1]["close"])
+            decision = engine._channel_swing_action(indicators, price, allow_live_entry=True)
+            if decision.get("reason") == "KC_FALLING_WAVES_BLOCK_LONG":
+                entry_block = {
+                    "reason": decision["reason"],
+                    "message": "下降波浪，暫停新多單",
+                    "detail": "KC 中軌連降三根，波峰與波谷降低；開空仍須符合進場條件。",
+                }
+        return {"symbol": symbol, "timeframe": timeframe, "data": result, "entry_block": entry_block}
     except HTTPException:
         raise
     except Exception as e:
