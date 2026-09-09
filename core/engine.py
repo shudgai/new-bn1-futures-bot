@@ -7313,58 +7313,14 @@ class TradingEngine:
                 managed_at = time.time()
                 existing_pos["bot_last_managed_at"] = managed_at
                 self.account.position_meta.setdefault(symbol, {})["bot_last_managed_at"] = managed_at
-            ranked_direction = str(
-                self.market_prebreakout_directions.get(symbol)
-                or self.symbol_rotation.direction_map.get(symbol)
-                or ""
-            ).upper()
-            chop_info = self._channel_chop_state(channel_df)
-            prior_chop_info = (
-                self._channel_chop_state(channel_df.iloc[:-1])
-                if len(channel_df) >= 15 else {}
-            )
-            recent_chop_detected = bool(prior_chop_info.get("detected"))
-            was_chop_locked = bool(self._channel_chop_locked.get(symbol))
-            if was_chop_locked:
-                chop_locked = not bool(chop_info.get("clear_direction"))
-            else:
-                chop_locked = bool(
-                    chop_info.get("detected")
-                    and not chop_info.get("clear_direction")
-                )
-            if chop_locked:
-                self._channel_chop_locked[symbol] = True
-                # 被盤整鎖擋掉的趨勢候選不得保留到解鎖後補開。
-                self._channel_outer_trend_wait.pop(symbol, None)
-                if not was_chop_locked:
-                    self._record_channel_chop_event(
-                        symbol, "LOCK", channel_df,
-                    )
-                    self.account.log(
-                        f"⏸️ {symbol} 進入 CHOP_WAIT：MA3/MA15交叉"
-                        f"{chop_info.get('ma_crosses', 0)}次、KC中軌交叉"
-                        f"{chop_info.get('middle_crosses', 0)}次、"
-                        f"方向效率{float(chop_info.get('efficiency') or 0.0):.2f}；"
-                        "盤整期間暫停空倉新開倉；既有持倉仍等待真突破反手",
-                        "INFO",
-                    )
-            else:
-                self._channel_chop_locked.pop(symbol, None)
-                if was_chop_locked:
-                    self._record_channel_chop_event(
-                        symbol, "UNLOCK", channel_df,
-                        direction=chop_info.get("clear_direction"),
-                    )
-                    self.account.log(
-                        f"▶️ {symbol} CHOP_WAIT 解鎖：連續兩根已收盤K"
-                        f"確認 {chop_info.get('clear_direction')} 方向",
-                        "INFO",
-                    )
-            # CHOP state is chart/log diagnostics only; do not discard a valid breakout.
+            # Outer-body breaks and continuation determine entry directly.
+            # Retire stale CHOP state without calculating or waiting for range unlocks.
+            getattr(self, "_channel_chop_locked", {}).pop(symbol, None)
+            getattr(self, "_channel_chop_events", {}).pop(symbol, None)
             btc_lead_candidate = None
             if not existing_pos and btc_pulse in ("LONG", "SHORT"):
                 btc_lead_candidate = self._record_btc_lead_shadow_candidate(
-                    symbol, channel_df, channel_price, chop_locked,
+                    symbol, channel_df, channel_price, False,
                 )
             channel_market_mode = self._channel_macro_market_mode(symbol)
             channel_exit_net_profitable = True

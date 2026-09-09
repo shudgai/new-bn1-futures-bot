@@ -242,3 +242,27 @@ async def test_channel_waterfall_respects_disabled_switch(setup_engine, monkeypa
     await e.account.update_positions({SYMBOL: 100.})
     await e.account.update_positions({SYMBOL: 95.})
     assert SYMBOL in e.account.positions
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("live", [False, True])
+async def test_outer_entry_fills_without_chop_evaluation(setup_engine, side, live):
+    e, f = setup_engine(side)
+    confirm_break(f, side)
+    if live:
+        f.loc[67:68, ["open", "close", "high", "low"]] = [100., 100., 100.1, 99.9]
+        f.loc[69, "open"] = 100.
+    e._channel_chop_locked[SYMBOL] = True
+    e._channel_chop_events = {SYMBOL: [{"action": "LOCK"}]}
+    e._channel_outer_trend_wait[SYMBOL] = {"side": side}
+    def forbidden(*args, **kwargs):
+        raise AssertionError("CHOP must not execute in the trading scan")
+    e._channel_chop_state = forbidden
+    e._record_channel_chop_event = forbidden
+    await e._process_single_symbol(SYMBOL, 1., None, False)
+    assert e.account.positions[SYMBOL]["side"] == side
+    assert SYMBOL not in e._channel_chop_locked
+    assert SYMBOL not in e._channel_chop_events
+    assert e._channel_outer_trend_wait[SYMBOL] == {"side": side}
+    assert not any("CHOP_WAIT" in str(trade.get("reason", "")) for trade in e.account.trades)

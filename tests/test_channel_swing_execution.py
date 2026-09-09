@@ -124,6 +124,7 @@ async def test_outer_rechase_holds_position_without_confirmed_exit_or_reverse(
     old_side,
 ):
     frame = _narrow_channel_frame()
+    frame["atr"] = 1.0  # Rail touch is an ordinary body, not a waterfall.
     engine = _execution_engine(frame, old_side, close_succeeds=True)
 
     _, candidates = await engine._process_single_symbol(
@@ -132,6 +133,7 @@ async def test_outer_rechase_holds_position_without_confirmed_exit_or_reverse(
 
     assert candidates == []
     assert engine.account.events == []
+    assert not any("處理失敗" in message for message, _ in engine.account.logs)
     assert engine.account.positions[SYMBOL]["side"] == old_side
 
 
@@ -139,6 +141,7 @@ async def test_outer_rechase_holds_position_without_confirmed_exit_or_reverse(
 async def test_low_volume_outer_rechase_keeps_existing_position(monkeypatch):
     monkeypatch.setattr("core.engine.KELTNER_MIN_VOLUME_RATIO", 1.2)
     frame = _narrow_channel_frame()
+    frame["atr"] = 1.0  # Isolate volume from the emergency-body exit.
     frame["volume"] = 100.0
     frame["vol_ma_20"] = 100.0
     engine = _execution_engine(frame, "SHORT", close_succeeds=True)
@@ -149,5 +152,6 @@ async def test_low_volume_outer_rechase_keeps_existing_position(monkeypatch):
 
     assert candidates == []
     assert engine.account.events == []
+    assert not any("處理失敗" in message for message, _ in engine.account.logs)
     assert engine.account.positions[SYMBOL]["side"] == "SHORT"
     assert not any("反手訊號" in message for message in progress)
