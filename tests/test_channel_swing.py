@@ -253,6 +253,51 @@ def test_live_outer_ma3_turn_exits_immediately(side):
     }
 
 
+def test_peak_exit_requires_normal_two_bar_reversal_before_short():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        107.0, 107.8, 106.5, 106.8, 107.2, 105.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        106.8, 106.9, 106.0, 106.2, 107.1, 105.0,
+    ]
+    result = TradingEngine._channel_peak_reversal_action(
+        df, 106.1, {"side": "LONG"},
+    )
+    assert result == {
+        "action": "ENTER", "side": "SHORT", "reason": "PEAK_REVERSAL_SHORT",
+    }
+
+
+def test_peak_exit_does_not_chase_abnormal_reverse_candle():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        107.0, 107.8, 106.5, 106.8, 107.2, 105.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        106.8, 106.9, 100.0, 100.2, 107.1, 105.0,
+    ]
+    result = TradingEngine._channel_peak_reversal_action(
+        df, 100.1, {"side": "LONG"},
+    )
+    assert result["action"] == "WAIT"
+
+
+def test_flat_scan_can_detect_recent_upper_peak_without_exit_state():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[66, ["high", "kc_upper", "ma3"]] = [107.8, 107.2, 107.4]
+    df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma3"]] = [
+        107.0, 107.1, 106.2, 106.5, 107.1, 105.0, 107.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma3"]] = [
+        106.5, 106.6, 105.5, 105.7, 106.9, 104.9, 106.4,
+    ]
+    result = TradingEngine._channel_peak_reversal_action(df, 105.7, None)
+    assert result == {
+        "action": "ENTER", "side": "SHORT", "reason": "PEAK_REVERSAL_SHORT",
+    }
+
+
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_outer_rail_ma15_convergence_exits_without_continuation(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)

@@ -3538,6 +3538,7 @@ class TradingEngine:
             or self._channel_swing_action(
                 frame, price,
                 ("SHORT" if side == "LONG" else "LONG") if confirmed_reverse else None,
+                allow_live_entry=bool(allow_live_outer),
             ).get("side") != side
         ):
             return None
@@ -3609,6 +3610,7 @@ class TradingEngine:
             if fresh_snapshot is None:
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
                     symbol, side, validation_bar_id,
+                    allow_live_outer=True,
                     confirmed_reverse=bool(signal.get("channel_reversal")),
                 )
             if fresh_snapshot is None:
@@ -6971,6 +6973,70 @@ class TradingEngine:
             pass
         return True
 
+    @staticmethod
+    def _channel_peak_reversal_action(
+        frame: pd.DataFrame, live_price: float, peak_exit_info: dict | None,
+    ) -> dict:
+        """Confirm a normal post-peak reversal before opening the opposite side."""
+        if frame is None or len(frame) < 4:
+            return {"action": "WAIT", "side": None, "reason": "PEAK_REVERSAL_WAIT"}
+        exited_side = str((peak_exit_info or {}).get("side") or "").upper()
+        if not exited_side:
+            recent = frame.iloc[-6:-1]
+            if len(recent) >= 3:
+                upper_peak = recent.iloc[-3]
+                next_bar = recent.iloc[-2]
+                last_bar = recent.iloc[-1]
+                try:
+                    peak_width = float(upper_peak["kc_upper"]) - float(upper_peak["kc_lower"])
+                    has_upper_peak = (
+                        peak_width > 0
+                        and float(upper_peak["high"]) >= float(upper_peak["kc_upper"])
+                        and float(upper_peak["ma3"]) > float(next_bar["ma3"])
+                        and float(next_bar["close"]) < float(next_bar["open"])
+                    )
+                    has_down_follow_through = (
+                        float(last_bar["close"]) < float(last_bar["open"])
+                        and float(last_bar["close"]) < float(next_bar["low"])
+                    )
+                    if has_upper_peak and has_down_follow_through:
+                        exited_side = "LONG"
+                except (TypeError, ValueError, KeyError, IndexError):
+                    pass
+        if exited_side not in ("LONG", "SHORT"):
+            return {"action": "WAIT", "side": None, "reason": "PEAK_REVERSAL_WAIT"}
+        first, second = frame.iloc[-3], frame.iloc[-2]
+        try:
+            width = min(
+                float(first["kc_upper"]) - float(first["kc_lower"]),
+                float(second["kc_upper"]) - float(second["kc_lower"]),
+            )
+            first_body = abs(float(first["close"]) - float(first["open"]))
+            second_body = abs(float(second["close"]) - float(second["open"]))
+            if width <= 0 or max(first_body, second_body) >= width * 0.90:
+                return {"action": "WAIT", "side": None, "reason": "PEAK_REVERSAL_ABNORMAL_WAIT"}
+            if exited_side == "LONG":
+                confirmed = (
+                    float(first["close"]) < float(first["open"])
+                    and float(second["close"]) < float(second["open"])
+                    and float(second["close"]) < float(first["low"])
+                    and float(live_price) <= float(second["close"])
+                )
+                if confirmed:
+                    return {"action": "ENTER", "side": "SHORT", "reason": "PEAK_REVERSAL_SHORT"}
+            else:
+                confirmed = (
+                    float(first["close"]) > float(first["open"])
+                    and float(second["close"]) > float(second["open"])
+                    and float(second["close"]) > float(first["high"])
+                    and float(live_price) >= float(second["close"])
+                )
+                if confirmed:
+                    return {"action": "ENTER", "side": "LONG", "reason": "TROUGH_REVERSAL_LONG"}
+        except (TypeError, ValueError, KeyError, IndexError):
+            pass
+        return {"action": "WAIT", "side": None, "reason": "PEAK_REVERSAL_WAIT"}
+
 
 
 
@@ -7715,6 +7781,13 @@ class TradingEngine:
                 frame, price, held_side,
                 allow_live_entry=not bool(position),
             )
+            if not position:
+                peak_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
+                peak_decision = self._channel_peak_reversal_action(
+                    frame, price, peak_info,
+                )
+                if peak_decision.get("action") == "ENTER":
+                    decision = peak_decision
             if decision.get("side") != side or decision.get("action") not in {"ENTER", "REVERSE"}:
                 pending.pop(symbol, None)
                 reverse_bars.pop(symbol, None)
@@ -7757,6 +7830,7 @@ class TradingEngine:
                 used[symbol] = (side, bar_id)
                 reverse_bars.pop(symbol, None)
                 pending.pop(symbol, None)
+                getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
                 self.account.log(f"✅ [真突破] {symbol} 已直接開 {side}", "SUCCESS")
             else:
                 self.account.log(f"⚠️ [真突破] {symbol} {side} 未成交，請查看前述風控原因；本根確認仍有效才重試", "WARNING")
@@ -8459,7 +8533,17 @@ class TradingEngine:
                             symbol, "PEAK_EXIT_WAIT_REBREAK", channel_df,
                         )
                     else:
-                        getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
+                        if channel_action.get("reason") not in {
+                            "PEAK_REVERSAL_SHORT", "TROUGH_REVERSAL_LONG",
+                        }:
+                            getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
+                if not existing_pos and direct_side is None:
+                    reversal_action = self._channel_peak_reversal_action(
+                        channel_df, channel_price, peak_exit_info,
+                    )
+                    if reversal_action.get("action") == "ENTER":
+                        channel_action = reversal_action
+                        direct_side = reversal_action["side"]
                 if not existing_pos and pending_side in ("LONG", "SHORT"):
                     retry_bar = getattr(self, "_channel_pending_reverse_bar", {}).get(symbol)
                     if retry_bar == (pending_side, self._channel_candidate_bar_id(channel_df)):
