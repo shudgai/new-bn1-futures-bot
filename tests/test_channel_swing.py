@@ -334,6 +334,24 @@ def test_outer_rail_ma15_convergence_exits_without_continuation(side):
     }
 
 
+def test_ma3_ma15_compression_exits_long_at_first_turn():
+    df = _generate_macro_frame('UP', 70)
+    df['atr'] = 0.5
+    df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma3', 'ma15']] = [
+        99.5, 100.5, 100.0, 98.0, 100.2, 99.0,
+    ]
+    df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma3', 'ma15']] = [
+        100.5, 100.2, 100.0, 98.0, 100.0, 99.8,
+    ]
+    _set_gradual_convergence(df, 'kc_upper', [0.9, 0.75, 0.55, 0.35, 0.1])
+    result = TradingEngine._channel_swing_action(df, 100.2, 'LONG')
+    assert result == {
+        'action': 'EXIT',
+        'side': None,
+        'reason': 'UPPER_MA3_COMPRESSION_EXIT',
+    }
+
+
 def test_outer_rail_ma15_convergence_holds_when_long_continues():
     df = _generate_macro_frame('UP', 70)
     df['atr'] = 0.5

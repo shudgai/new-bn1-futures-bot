@@ -7617,6 +7617,22 @@ class TradingEngine:
             and float(confirmation.get("ma3") or 0.0) > float(breakout.get("ma3") or 0.0)
             and not lower_ma15_converged_gradually
         )
+        upper_compression_exit = bool(
+            held == "LONG"
+            and upper_ma15_converged_gradually
+            and float(confirmation["ma3"]) < float(breakout["ma3"])
+            and float(confirmation["ma3"]) > ma15_now
+            and abs(float(confirmation["ma3"]) - ma15_now) <= convergence_atr * 0.35
+            and abs(cf_upper - ma15_now) <= convergence_atr * 0.75
+        )
+        lower_compression_exit = bool(
+            held == "SHORT"
+            and lower_ma15_converged_gradually
+            and float(confirmation["ma3"]) > float(breakout["ma3"])
+            and float(confirmation["ma3"]) < ma15_now
+            and abs(float(confirmation["ma3"]) - ma15_now) <= convergence_atr * 0.35
+            and abs(cf_lower - ma15_now) <= convergence_atr * 0.75
+        )
         clean_continuation_up = bool(
             continuation_up
             and bo_open <= bo_upper
@@ -7639,6 +7655,8 @@ class TradingEngine:
         if held == "LONG":
             if lower_break_confirmed:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
+            if upper_compression_exit:
+                return {"action": "EXIT", "side": None, "reason": "UPPER_MA3_COMPRESSION_EXIT"}
             if upper_ma3_turn_exit:
                 return {"action": "EXIT", "side": None, "reason": "UPPER_MA3_TURN_EXIT"}
             if upper_ma15_converged_gradually and cf_close >= cf_upper and upper_ma15_converged:
@@ -7651,6 +7669,8 @@ class TradingEngine:
         if held == "SHORT":
             if upper_break_confirmed:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
+            if lower_compression_exit:
+                return {"action": "EXIT", "side": None, "reason": "LOWER_MA3_COMPRESSION_EXIT"}
             if lower_ma3_turn_exit:
                 return {"action": "EXIT", "side": None, "reason": "LOWER_MA3_TURN_EXIT"}
             if lower_ma15_converged_gradually and cf_close <= cf_lower and lower_ma15_converged:
@@ -8575,6 +8595,7 @@ class TradingEngine:
                         if channel_action.get("reason") in {
                             "UPPER_MA3_TURN_EXIT", "LOWER_MA3_TURN_EXIT",
                             "LIVE_UPPER_MA3_TURN_EXIT", "LIVE_LOWER_MA3_TURN_EXIT",
+                            "UPPER_MA3_COMPRESSION_EXIT", "LOWER_MA3_COMPRESSION_EXIT",
                         }:
                             self._channel_swing_peak_exit_info[symbol] = {
                                 "side": existing_pos.get("side"),
