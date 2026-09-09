@@ -180,6 +180,21 @@ def test_spike_reversal_waits_for_confirmed_direction():
     assert result["action"] == "WAIT"
 
 
+def test_rising_candle_already_outside_upper_rail_enters_immediately():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[68, ["close", "kc_upper"]] = [107.2, 107.0]
+    df.loc[69, ["open", "high", "low", "close", "kc_upper"]] = [
+        107.3, 110.0, 107.2, 108.2, 107.5,
+    ]
+    result = TradingEngine._channel_swing_action(
+        df, 108.2, allow_live_entry=True,
+    )
+    assert result == {
+        "action": "ENTER", "side": "LONG",
+        "reason": "KC_LIVE_UPPER_MOMENTUM_LONG",
+    }
+
+
 def test_later_clean_continuation_can_enter_after_spike_wait():
     df = _generate_macro_frame("UP", 72)
     df.loc[67, ["open", "high", "low", "close", "kc_upper"]] = [

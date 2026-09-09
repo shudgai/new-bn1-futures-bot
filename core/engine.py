@@ -7488,10 +7488,15 @@ class TradingEngine:
             live_upper = float(live["kc_upper"])
             live_lower = float(live["kc_lower"])
             live_open = float(live["open"])
-            if live_price > live_upper and live_open <= live_upper and live_price > live_open:
+            previous_close = float(confirmation["close"])
+            if (
+                live_price > live_upper
+                and live_price > live_open
+                and live_price >= previous_close
+            ):
                 return {
                     "action": "ENTER", "side": "LONG",
-                    "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                    "reason": "KC_LIVE_UPPER_MOMENTUM_LONG",
                 }
             if live_price < live_lower and live_open >= live_lower and live_price < live_open:
                 return {
@@ -8519,6 +8524,7 @@ class TradingEngine:
                 break_reasons = {
                     "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                     "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                    "KC_LIVE_UPPER_MOMENTUM_LONG",
                 }
                 peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
                 pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
