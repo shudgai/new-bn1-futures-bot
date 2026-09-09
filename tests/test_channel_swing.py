@@ -225,7 +225,7 @@ def test_macro_trend_hold_position():
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_favorable_waterfall_closed_turn_exits(side):
+def test_favorable_waterfall_closed_turn_holds_without_middle_exit(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     df['timestamp'] = [(i + 1) * 60000 for i in range(len(df))]
     df['atr'] = 0.75
@@ -245,12 +245,11 @@ def test_favorable_waterfall_closed_turn_exits(side):
         ]
     df.loc[69, ['open', 'close']] = float(df.loc[68, 'close'])
     result = TradingEngine._channel_swing_action(df, float(df.loc[68, 'close']), side, position_open_timestamp=60)
-    assert result['action'] == 'EXIT'
-    assert result['reason'] == 'KC_FAVORABLE_IMPULSE_REVERSAL_EXIT'
+    assert result['action'] == 'HOLD'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_favorable_waterfall_live_long_turn_exits(side):
+def test_favorable_waterfall_live_turn_holds_while_ma3_outside(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     df['timestamp'] = [(i + 1) * 60000 for i in range(len(df))]
     df['atr'] = 1.0
@@ -267,8 +266,7 @@ def test_favorable_waterfall_live_long_turn_exits(side):
             92.0, 92.6, 91.6, 92.5, 92.1, 92.2,
         ]
     result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side, position_open_timestamp=60)
-    assert result['action'] == 'EXIT'
-    assert result['reason'] == 'KC_FAVORABLE_IMPULSE_REVERSAL_EXIT'
+    assert result['action'] == 'HOLD'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

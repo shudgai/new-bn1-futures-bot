@@ -6687,8 +6687,8 @@ class TradingEngine:
                     if offset == -1 and held == "LONG" and live_open >= lower > live_price:
                         return {"action": "REVERSE", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
                     return {"action": "EXIT", "side": None, "reason": "KC_ADVERSE_WATERFALL_EXIT"}
-            if TradingEngine._channel_impulse_first_turn(recent, held, live_price):
-                return {"action": "EXIT", "side": None, "reason": "KC_FAVORABLE_IMPULSE_REVERSAL_EXIT"}
+            # A normal opposite candle after a surge is not an exit by itself.
+            # It must pass this position's MA3 reentry, space and middle conditions.
             if not path_ready:
                 return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
             if held == "LONG" and lower_break_confirmed and live_price < float(current_live["kc_lower"]):

@@ -66,15 +66,14 @@ def test_waterfall_opposite_outer_break_reverses(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_first_tiny_reverse_body_after_surge_exits(side):
+def test_first_tiny_reverse_body_after_surge_holds_without_reentry(side):
     f = frame_for(side); f["atr"] = 1.
     peak = 103. if side == "LONG" else 97.
     f.loc[6, "close"] = peak
     f.loc[7, "open"] = peak
     price = peak + (-.01 if side == "LONG" else .01)
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["reason"] == "KC_FAVORABLE_IMPULSE_REVERSAL_EXIT"
-    assert result["action"] == "EXIT"
+    assert result["action"] == "HOLD"
     assert TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=480)["action"] == "HOLD"
 
 
@@ -196,3 +195,23 @@ async def test_retired_pending_orders_cancel_without_fill_check():
     await e._validate_pending_limit_orders(500.)
     assert calls == [SYMBOL]
     assert not e.account.events
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("space", [.25, .50, .60])
+def test_surge_turn_respects_current_ma3_and_channel_space(side, inside, space):
+    f = frame_for(side)
+    sign = 1 if side == "LONG" else -1
+    f["atr"] = .5
+    f["ma15"] = 102 - 4*space if side == "LONG" else 98 + 4*space
+    f.loc[4, "ma3"] = 103 if side == "LONG" else 97
+    f.loc[5, "ma3"] = 100  # This position already returned inside once.
+    f.loc[6, ["open", "close"]] = [100., 100+sign*3]
+    f.loc[6, "ma3"] = 103 if side == "LONG" else 97
+    f.loc[7, "ma3"] = 100 if inside else (103 if side == "LONG" else 97)
+    # Small opposite body past the middle, so only MA3/space can prevent the exit.
+    price = 100-sign*.1
+    f.loc[7, ["open", "close"]] = [price+sign*.1, price]
+    result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
+    assert result["action"] == ("EXIT" if inside and space < .4 else "HOLD")
