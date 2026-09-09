@@ -7572,87 +7572,12 @@ class TradingEngine:
          ma15_before, ma15_now) = values
         if bo_lower >= bo_upper or cf_lower >= cf_upper:
             return {**wait, "reason": "KC_DATA_INVALID"}
-        if not held and allow_live_entry:
-            live = frame.iloc[-1]
-            live_upper = float(live["kc_upper"])
-            live_lower = float(live["kc_lower"])
-            live_open = float(live["open"])
-            previous_close = float(confirmation["close"])
-            if (
-                live_price > live_upper
-                and live_price > live_open
-                and live_price >= previous_close
-            ):
-                return {
-                    "action": "ENTER", "side": "LONG",
-                    "reason": "KC_LIVE_UPPER_MOMENTUM_LONG",
-                }
-            if live_price < live_lower and live_open >= live_lower and live_price < live_open:
-                return {
-                    "action": "ENTER", "side": "SHORT",
-                    "reason": "KC_LIVE_LOWER_BREAK_SHORT",
-                }
         breakout_range = bo_high - bo_low
         confirmation_range = cf_high - cf_low
         kc_width = min(bo_upper - bo_lower, cf_upper - cf_lower)
         # Held-position reversals retain the two-closed-candle confirmation.
         upper_break_confirmed = bo_open <= bo_upper < bo_close and cf_close > cf_open and cf_close > cf_upper
         lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower
-        weak_body_limit = kc_width * 0.35 if "kc_width" in locals() else abs(bo_close) * 0.0035
-        def weak_then_body_break(direction: str) -> bool:
-            recent = frame.iloc[-8:]
-            if len(recent) < 3:
-                return False
-            for index in range(len(recent) - 2):
-                first = recent.iloc[index]
-                second = recent.iloc[index + 1]
-                third = recent.iloc[index + 2]
-                width = min(
-                    float(first["kc_upper"]) - float(first["kc_lower"]),
-                    float(second["kc_upper"]) - float(second["kc_lower"]),
-                    float(third["kc_upper"]) - float(third["kc_lower"]),
-                )
-                if width <= 0:
-                    continue
-                body_limit = width * 0.35
-                if direction == "LONG":
-                    first_break = float(first["open"]) <= float(first["kc_upper"]) < float(first["close"])
-                    weak = (
-                        float(second["close"]) >= float(second["kc_upper"]) - width * 0.20
-                        and float(second["close"]) > float(second["open"])
-                        and abs(float(second["close"]) - float(second["open"])) <= body_limit
-                    )
-                    third_body = abs(float(third["close"]) - float(third["open"]))
-                    third_range = float(third["high"]) - float(third["low"])
-                    abnormal = third_range > width * 1.25 or third_body > width * 0.75
-                    reverse_waterfall = float(third["close"]) < float(third["open"]) and third_body >= width * 0.50
-                    body_break = (
-                        not abnormal
-                        and not reverse_waterfall
-                        and float(third["close"]) > float(third["kc_upper"])
-                    )
-                else:
-                    first_break = float(first["open"]) >= float(first["kc_lower"]) > float(first["close"])
-                    weak = (
-                        float(second["close"]) <= float(second["kc_lower"]) + width * 0.20
-                        and float(second["close"]) < float(second["open"])
-                        and abs(float(second["close"]) - float(second["open"])) <= body_limit
-                    )
-                    third_body = abs(float(third["close"]) - float(third["open"]))
-                    third_range = float(third["high"]) - float(third["low"])
-                    abnormal = third_range > width * 1.25 or third_body > width * 0.75
-                    reverse_waterfall = float(third["close"]) > float(third["open"]) and third_body >= width * 0.50
-                    body_break = (
-                        not abnormal
-                        and not reverse_waterfall
-                        and float(third["close"]) < float(third["kc_lower"])
-                    )
-                if first_break and weak and body_break:
-                    return True
-            return False
-
-        upper_weak_then_body = weak_then_body_break("LONG")
-        lower_weak_then_body = weak_then_body_break("SHORT")
         continuation_up = bool(
             cf_close > cf_open
             and cf_close > bo_close
@@ -7704,9 +7629,9 @@ class TradingEngine:
         history = pd.to_numeric(frame["ma15"].iloc[:-1], errors="coerce").tail(60)
         history = history[history.map(lambda value: math.isfinite(value) and value > 0)]
         trend = float(history.iloc[-1] - history.iloc[0]) if len(history) >= 2 else 0.0
-        if (upper_break_confirmed or upper_weak_then_body or clean_continuation_up) and trend > 0:
+        if upper_break_confirmed and trend > 0:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
-        if (lower_break_confirmed or lower_weak_then_body or clean_continuation_down) and trend < 0:
+        if lower_break_confirmed and trend < 0:
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
         return wait
 
@@ -7830,13 +7755,6 @@ class TradingEngine:
                 frame, price, held_side,
                 allow_live_entry=not bool(position),
             )
-            if not position:
-                peak_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
-                peak_decision = self._channel_peak_reversal_action(
-                    frame, price, peak_info,
-                )
-                if peak_decision.get("action") == "ENTER":
-                    decision = peak_decision
             if decision.get("side") != side or decision.get("action") not in {"ENTER", "REVERSE"}:
                 pending.pop(symbol, None)
                 reverse_bars.pop(symbol, None)
@@ -8587,13 +8505,6 @@ class TradingEngine:
                             "PEAK_REVERSAL_SHORT", "TROUGH_REVERSAL_LONG",
                         }:
                             getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
-                if not existing_pos and direct_side is None:
-                    reversal_action = self._channel_peak_reversal_action(
-                        channel_df, channel_price, peak_exit_info,
-                    )
-                    if reversal_action.get("action") == "ENTER":
-                        channel_action = reversal_action
-                        direct_side = reversal_action["side"]
                 if not existing_pos and pending_side in ("LONG", "SHORT"):
                     retry_bar = getattr(self, "_channel_pending_reverse_bar", {}).get(symbol)
                     if retry_bar == (pending_side, self._channel_candidate_bar_id(channel_df)):

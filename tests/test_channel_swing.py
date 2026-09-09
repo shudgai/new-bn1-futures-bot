@@ -87,7 +87,7 @@ def test_normal_two_candle_breakout_remains_tradable():
     assert res == {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
 
 
-def test_weak_body_then_any_later_candle_can_enter():
+def test_inside_confirmation_cannot_use_later_live_candle():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [
         106.6, 107.4, 106.5, 107.3, 107.0, 105.0, 106.0,
@@ -100,9 +100,7 @@ def test_weak_body_then_any_later_candle_can_enter():
     ]
     df.loc[67:68, "ma3"] = [106.8, 107.1]
     result = TradingEngine._channel_swing_action(df, 107.35)
-    assert result == {
-        "action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT",
-    }
+    assert result["action"] == "WAIT"
 
 
 def test_weak_breakout_is_invalidated_by_reverse_waterfall():
@@ -180,7 +178,7 @@ def test_spike_reversal_waits_for_confirmed_direction():
     assert result["action"] == "WAIT"
 
 
-def test_rising_candle_already_outside_upper_rail_enters_immediately():
+def test_rising_live_candle_outside_upper_rail_waits_for_confirmation():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["close", "kc_upper"]] = [107.2, 107.0]
     df.loc[69, ["open", "high", "low", "close", "kc_upper"]] = [
@@ -189,10 +187,7 @@ def test_rising_candle_already_outside_upper_rail_enters_immediately():
     result = TradingEngine._channel_swing_action(
         df, 108.2, allow_live_entry=True,
     )
-    assert result == {
-        "action": "ENTER", "side": "LONG",
-        "reason": "KC_LIVE_UPPER_MOMENTUM_LONG",
-    }
+    assert result["action"] == "WAIT"
 
 
 def test_later_clean_continuation_can_enter_after_spike_wait():
