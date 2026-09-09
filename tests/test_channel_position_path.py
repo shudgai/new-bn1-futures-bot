@@ -237,3 +237,17 @@ def test_adverse_bodies_hold_at_or_outside_favorable_rail(side, pair, closed, di
     assert TradingEngine._channel_swing_action(
         f, price, side, position_open_timestamp=120,
     )["action"] == "HOLD"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("closed_space", [.39, .40, .4106594857, .50, .60])
+@pytest.mark.parametrize("live_space", [.25, .50])
+def test_live_contraction_requires_closed_space_confirmation(side, closed_space, live_space):
+    f = frame_for(side)
+    f.loc[3, "ma3"] = 103. if side == "LONG" else 97.
+    for index, ratio in ((6, closed_space), (7, live_space)):
+        f.loc[index, "ma15"] = 102-4*ratio if side == "LONG" else 98+4*ratio
+    price = 99.9 if side == "LONG" else 100.1
+    f.loc[7, ["open", "close"]] = price
+    result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
+    assert result["action"] == ("EXIT" if closed_space < .4 and live_space < .4 else "HOLD")

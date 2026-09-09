@@ -6676,7 +6676,19 @@ class TradingEngine:
             rail_now = float(current_live["kc_upper"]) if held == "LONG" else float(current_live["kc_lower"])
             space_ratio = abs(ma15_now - rail_now) / kc_width_now if kc_width_now > 0 else 1.0
             
-            if space_ratio < 0.40 and not math.isclose(space_ratio, 0.40, rel_tol=0.0, abs_tol=1e-12):
+            # A transient live-bar contraction must not override closed channel room.
+            closed_row = frame.iloc[-2]
+            closed_width = float(closed_row["kc_upper"]) - float(closed_row["kc_lower"])
+            closed_rail = float(closed_row["kc_upper"] if held == "LONG" else closed_row["kc_lower"])
+            closed_space_ratio = (
+                abs(float(closed_row["ma15"]) - closed_rail) / closed_width
+                if closed_width > 0 else 1.0
+            )
+            if all(
+                math.isfinite(ratio) and ratio < 0.40
+                and not math.isclose(ratio, 0.40, rel_tol=0.0, abs_tol=1e-12)
+                for ratio in (space_ratio, closed_space_ratio)
+            ):
                 ma3_now = float(current_live["ma3"])
                 ma3_inside = float(current_live["kc_lower"]) < ma3_now < float(current_live["kc_upper"])
                 
@@ -7357,6 +7369,15 @@ class TradingEngine:
                 await self._execute_confirmed_channel_break(symbol, channel_df, channel_price, direct_side, daily_halt)
                 return signal_progress, detected_candidates
             if existing_pos and channel_action.get("action") == "EXIT":
+                if channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED":
+                    rows = channel_df.iloc[-2:]
+                    details = []
+                    for label, (_, row) in zip(("closed", "live"), rows.iterrows()):
+                        upper, lower, ma15 = (float(row[key]) for key in ("kc_upper", "kc_lower", "ma15"))
+                        rail = upper if existing_pos.get("side") == "LONG" else lower
+                        ratio = abs(ma15 - rail) / (upper - lower)
+                        details.append(f"{label}: bar={row.get('timestamp')} space={ratio:.6%} upper={upper:.10g} lower={lower:.10g} ma15={ma15:.10g} ma3={float(row['ma3']):.10g}")
+                    self.account.log(f"[KC 平倉條件] {symbol} price={channel_price:.10g} " + " | ".join(details), "INFO")
                 closed = await self.account.close_position(
                     symbol,
                     channel_price,
