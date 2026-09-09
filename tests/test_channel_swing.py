@@ -87,6 +87,39 @@ def test_normal_two_candle_breakout_remains_tradable():
     assert res == {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
 
 
+def test_weak_body_then_any_later_candle_can_enter():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [
+        106.6, 107.4, 106.5, 107.3, 107.0, 105.0, 106.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [
+        107.3, 107.7, 107.1, 107.35, 107.4, 105.1, 106.1,
+    ]
+    df.loc[69, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        108.2, 108.3, 107.2, 108.2, 107.8, 105.8,
+    ]
+    df.loc[67:68, "ma3"] = [106.8, 107.1]
+    result = TradingEngine._channel_swing_action(df, 107.35)
+    assert result == {
+        "action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT",
+    }
+
+
+def test_weak_breakout_is_invalidated_by_reverse_waterfall():
+    df = _generate_macro_frame("UP", 70)
+    df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        106.6, 107.4, 106.5, 107.3, 107.0, 105.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        107.3, 107.7, 107.1, 107.35, 107.4, 105.1,
+    ]
+    df.loc[69, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
+        109.5, 109.6, 107.0, 108.2, 107.8, 105.8,
+    ]
+    result = TradingEngine._channel_swing_action(df, 108.2)
+    assert result["action"] == "WAIT"
+
+
 def test_channel_live_waterfall_and_two_abnormal_bars_exit():
     df = _generate_macro_frame("UP", 70)
     df.loc[69, ["open", "close"]] = [100.0, 101.0]
@@ -172,6 +205,52 @@ def test_macro_trend_hold_position():
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
     res = TradingEngine._channel_swing_action(df, 93.0, 'SHORT')
     assert res['action'] == 'HOLD'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_outer_ma3_turn_exits_without_immediate_reverse(side):
+    df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
+    if side == 'LONG':
+        df.loc[67, ['open', 'high', 'low', 'close', 'ma3', 'kc_upper']] = [
+            106.0, 108.0, 105.8, 107.5, 107.2, 107.0,
+        ]
+        df.loc[68, ['open', 'high', 'low', 'close', 'ma3', 'kc_upper']] = [
+            107.5, 108.2, 106.8, 107.1, 106.9, 107.1,
+        ]
+    else:
+        df.loc[67, ['open', 'high', 'low', 'close', 'ma3', 'kc_lower']] = [
+            94.0, 94.2, 92.0, 92.5, 92.8, 93.0,
+        ]
+        df.loc[68, ['open', 'high', 'low', 'close', 'ma3', 'kc_lower']] = [
+            92.5, 93.2, 91.8, 92.9, 93.1, 92.9,
+        ]
+    result = TradingEngine._channel_swing_action(df, float(df.loc[68, 'close']), side)
+    assert result == {
+        'action': 'EXIT',
+        'side': None,
+        'reason': 'UPPER_MA3_TURN_EXIT' if side == 'LONG' else 'LOWER_MA3_TURN_EXIT',
+    }
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_live_outer_ma3_turn_exits_immediately(side):
+    df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
+    if side == 'LONG':
+        df.loc[68, ['ma3', 'kc_upper']] = [107.2, 107.1]
+        df.loc[69, ['open', 'high', 'low', 'close', 'ma3', 'kc_upper']] = [
+            108.0, 108.4, 107.4, 107.5, 106.9, 107.8,
+        ]
+    else:
+        df.loc[68, ['ma3', 'kc_lower']] = [92.8, 92.9]
+        df.loc[69, ['open', 'high', 'low', 'close', 'ma3', 'kc_lower']] = [
+            92.0, 92.6, 91.6, 92.5, 93.1, 92.2,
+        ]
+    result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side)
+    assert result == {
+        'action': 'EXIT',
+        'side': None,
+        'reason': 'LIVE_UPPER_MA3_TURN_EXIT' if side == 'LONG' else 'LIVE_LOWER_MA3_TURN_EXIT',
+    }
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
