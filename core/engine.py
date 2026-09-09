@@ -6709,9 +6709,17 @@ class TradingEngine:
                 ma3_now = float(current_live["ma3"])
                 ma3_inside = float(current_live["kc_lower"]) < ma3_now < float(current_live["kc_upper"])
                 
-                if held == "LONG" and live_price < middle_now and ma3_inside:
+                # A ticker dip alone is insufficient: the last closed candle
+                # must finish beyond its own middle, with price still beyond now.
+                closed_row = frame.iloc[-2]
+                closed_middle = closed_row.get("ema_20", closed_row.get("kc_middle"))
+                if closed_middle is None or pd.isna(closed_middle):
+                    closed_middle = (float(closed_row["kc_upper"]) + float(closed_row["kc_lower"])) / 2.0
+                closed_middle = float(closed_middle)
+                closed_price = float(closed_row["close"])
+                if held == "LONG" and closed_price < closed_middle and live_price < middle_now and ma3_inside:
                     return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
-                if held == "SHORT" and live_price > middle_now and ma3_inside:
+                if held == "SHORT" and closed_price > closed_middle and live_price > middle_now and ma3_inside:
                     return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
             return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
         # Use up to 60 available closed MA15 values for the broad direction;

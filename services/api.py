@@ -218,7 +218,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"Channel Swing 外軌突破／軌外追單；MA3出軌回通道＋空間不足40%＋價格過中軌才一般平倉（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"Channel Swing 外軌突破／軌外追單；MA3出軌回通道＋空間不足40%＋K線收過中軌且現價仍過中軌才一般平倉（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
