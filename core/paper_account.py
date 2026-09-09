@@ -129,6 +129,8 @@ def get_outer_run_net_giveback_usdt(_margin_usdt: float = 0.0) -> float:
     """OUTER_RUN 最高淨利回吐固定為 1U，不隨保證金或部位金額縮放。"""
     return OUTER_RUN_NET_GIVEBACK_USDT
 ENTRY_CONTEXT_KEYS = (
+    "channel_pivot_entry", "channel_pivot_middle_reached",
+    "channel_pivot_middle_exit_pending", "entry_kc_middle",
     "channel_confirmation_bar_id",
     "manual_entry", "managed_by_bot", "bot_last_managed_at",
     "channel_favorable_rail_reached",

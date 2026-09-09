@@ -91,7 +91,7 @@ def protection(position, price, fee, slippage, frame=None):
                 state['tightened'] = True
         except (TypeError, ValueError, KeyError):
             pass
-    retracement = .10 if state.get('tightened') else .30
+    retracement = .10 if state.get('tightened') else .20
     state['retracement_fraction'] = retracement
     if side == 'LONG':
         floor = (entry * (1 + fee) + 1 / qty) / ((1 - slippage) * (1 - fee))
@@ -127,48 +127,80 @@ def abnormal_long_bar(frame, price):
     return abnormal
 
 
+def directional_entry_ready(frame, price, side="LONG"):
+    """Require a solid directional live body and non-adverse outer/middle KC."""
+    if side not in ("LONG", "SHORT"):
+        return False
+    sign = 1 if side == "LONG" else -1
+    try:
+        rows = frame.iloc[-3:]
+        if len(rows) != 3:
+            return False
+        upper = [float(v) for v in rows['kc_upper']]
+        lower = [float(v) for v in rows['kc_lower']]
+        middle = []
+        for (_, row), top, bottom in zip(rows.iterrows(), upper, lower):
+            value = row.get('ema_20', float('nan'))
+            if not math.isfinite(float(value)):
+                value = row.get('kc_middle', float('nan'))
+            middle.append(float(value) if math.isfinite(float(value)) else (top + bottom) / 2)
+        live = rows.iloc[-1]
+        opened, high, low = (float(live[k]) for k in ('open', 'high', 'low'))
+        if not all(math.isfinite(v) and v > 0 for v in upper + lower + middle + [opened, high, low, price]):
+            return False
+        span = max(high, price) - min(low, price)
+        return bool(all(b < t for b, t in zip(lower, upper))
+                    and all(sign * values[0] <= sign * values[1] <= sign * values[2]
+                            for values in (upper if side == "LONG" else lower, middle))
+                    and sign * (price - opened) > 0
+                    and sign * (price - (upper[-1] if side == "LONG" else lower[-1])) > 0
+                    and span > 0 and sign * (price - opened) / span >= .20)
+    except (TypeError, ValueError, KeyError, IndexError):
+        return False
+
+
+def long_entry_ready(frame, price):
+    return directional_entry_ready(frame, price, "LONG")
+
+
 def reentry_gate(ticket, frame, price):
-    """Returns ready/wait/end."""
-    if frame is None or len(frame) < 4:
-        return 'wait'
-    upper, lower = (float(frame.iloc[-1][key]) for key in ('kc_upper', 'kc_lower'))
-    if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
-        return 'wait'
-    side = ticket['side']
-    outside = price > upper if side == 'LONG' else price < lower
-    if side == 'LONG':
-        # A tick outside can become only a wick. Require a closed solid body
-        # crossing the rail after the latest pullback, then its live successor.
-        try:
-            live, previous = frame.iloc[-1], frame.iloc[-2]
-            live_bar = float(live.get('timestamp', live.name))
-            if price <= upper:
-                if math.isfinite(live_bar):
-                    ticket['pulled_back_inside'] = True
-                    ticket['pullback_bar'] = live_bar
-                return 'wait'
-            if not ticket.get('pulled_back_inside') or 'pullback_bar' not in ticket:
-                return 'wait'
-            previous_bar = float(previous.get('timestamp', previous.name))
-            pullback_bar = float(ticket['pullback_bar'])
-            opened, closed, high, low, rail, bottom = (
-                float(previous[key]) for key in
-                ('open', 'close', 'high', 'low', 'kc_upper', 'kc_lower'))
-            live_open = float(live['open'])
-            if not all(math.isfinite(value) and value > 0 for value in
-                       (opened, closed, high, low, rail, bottom, live_open)):
-                return 'wait'
-            if not all(math.isfinite(value) for value in (previous_bar, pullback_bar, live_bar)):
-                return 'wait'
-            body, span = closed - opened, high - low
-            if (previous_bar < pullback_bar or previous_bar >= live_bar
-                    or bottom >= rail or not low <= opened < closed <= high
-                    or not bottom <= opened <= rail < closed
-                    or span <= 0 or body / span < .20
-                    or abs(live_open - closed) > .25 * body
-                    or price <= max(live_open, closed, upper)):
-                return 'wait'
-            return 'ready'
-        except (TypeError, ValueError, KeyError, IndexError):
+    """Pull back, then form two new closed directional bodies before reentry."""
+    try:
+        side = ticket['side']
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 4:
             return 'wait'
-    return 'ready' if outside else 'end'
+        sign = 1 if side == 'LONG' else -1
+        rail_key = 'kc_upper' if side == 'LONG' else 'kc_lower'
+        live = frame.iloc[-1]
+        rail = float(live[rail_key])
+        bar = float(live.get('timestamp', live.name))
+        if not all(math.isfinite(v) and v > 0 for v in (price, rail)) or not math.isfinite(bar):
+            return 'wait'
+        if sign * (price - rail) <= 0:
+            ticket['pulled_back_inside'] = True
+            ticket['pullback_bar'] = bar
+            return 'wait'
+        if not ticket.get('pulled_back_inside') or 'pullback_bar' not in ticket:
+            return 'wait'
+        breakout, confirmation = frame.iloc[-3], frame.iloc[-2]
+        times = [float(row.get('timestamp', row.name)) for row in (breakout, confirmation)]
+        pullback = float(ticket['pullback_bar'])
+        if not all(math.isfinite(v) for v in times + [pullback]) or not pullback <= times[0] < times[1] < bar:
+            return 'wait'
+        for row in (breakout, confirmation):
+            o, c, h, l, u, d = [float(row[k]) for k in ('open','close','high','low','kc_upper','kc_lower')]
+            if (not all(math.isfinite(v) and v > 0 for v in (o,c,h,l,u,d))
+                    or not l <= min(o,c) < max(o,c) <= h or d >= u
+                    or sign * (c-o) / (h-l) < .20
+                    or sign * (c-float(row[rail_key])) <= 0):
+                return 'wait'
+        o = float(breakout['open'])
+        if not float(breakout['kc_lower']) <= o <= float(breakout['kc_upper']):
+            return 'wait'
+        body = abs(float(breakout['close']) - o)
+        if (abs(float(confirmation['open']) - float(breakout['close'])) > .25 * body
+                or sign * (float(confirmation['close']) - float(breakout['close'])) <= 0):
+            return 'wait'
+        return 'ready' if directional_entry_ready(frame, price, side) else 'wait'
+    except (TypeError, ValueError, KeyError, IndexError, ZeroDivisionError):
+        return 'wait'

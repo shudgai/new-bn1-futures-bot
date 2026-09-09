@@ -8,6 +8,7 @@ import pytest
 from core.channel_profit_protection import protection, reentry_gate, trend_style
 from core.engine import TradingEngine
 from test_channel_swing_execution import _execution_engine, SYMBOL
+from test_channel_symmetric_rules import market as confirmed_reentry_frame
 
 
 @pytest.fixture
@@ -38,12 +39,12 @@ def test_peak_retracement_monotonic_and_survives_json_restart(side):
     sign = 1 if side == 'LONG' else -1
     peak = protection(p, 100 + sign * 5, .0005, .0001)
     assert peak['peak_gross'] == 10.
-    assert peak['stop_price'] == pytest.approx(100 + sign * 3.5)
+    assert peak['stop_price'] == pytest.approx(100 + sign * 4.0)
     p = json.loads(json.dumps(p))
-    before = protection(p, 100 + sign * 3.6, .0005, .0001)
+    before = protection(p, 100 + sign * 4.1, .0005, .0001)
     assert not before['triggered']
     assert before['stop_price'] == peak['stop_price']
-    assert protection(p, 100 + sign * 3.5, .0005, .0001)['triggered']
+    assert protection(p, 100 + sign * 4.0, .0005, .0001)['triggered']
     p['open_timestamp'] = 2.
     assert protection(p, 100., .0005, .0001) is None
     assert not p['channel_profit_protection']['armed']
@@ -61,47 +62,64 @@ def test_long_anomaly_requires_pullback_then_reclaim():
     f = frame()
     f.loc[11, ['open', 'high', 'low', 'close']] = [108., 108., 102.5, 103.]
     ticket = {'side': 'LONG'}
-    assert reentry_gate(ticket, f, 103.) == 'ready'
+    assert reentry_gate(ticket, f, 103.) == 'wait'
     assert reentry_gate(ticket, f, 102.) == 'wait'
-    assert reentry_gate(ticket, f, 102.1) == 'ready'
-    # A subsequent abnormal candle invalidates the earlier observed pullback.
-    f.loc[11, 'timestamp'] = 12
-    assert reentry_gate(ticket, f, 103.) == 'ready'
+    assert ticket['pullback_bar'] == 11
+    assert reentry_gate(ticket, f, 102.1) == 'wait'
+    fresh = confirmed_reentry_frame('LONG')
+    assert reentry_gate(ticket, fresh, 104.5) == 'ready'
+    # A newer pullback invalidates the earlier breakout.
+    assert reentry_gate(ticket, fresh, 102.) == 'wait'
+    assert ticket['pullback_bar'] == 19
+    assert reentry_gate(ticket, fresh, 104.5) == 'wait'
 
 
 @pytest.mark.parametrize('side,price', [('LONG', 103.1), ('SHORT', 97.)])
-def test_ordinary_outer_reentry_and_inside_expiry(side, price):
-    f = frame()
-    if side == 'SHORT':
-        f[['open', 'close', 'high', 'low']] -= 6
-    if side == 'LONG':
-        f['kc_upper'] = 103.05
-    ticket = {'side': side}
-    assert reentry_gate(ticket, f, price) == 'ready'
-    assert reentry_gate(ticket, f, 103. if side == 'LONG' else 100.) == 'end'
+def test_ordinary_outer_reentry_requires_pullback_and_new_confirmation(side, price):
+    f = confirmed_reentry_frame(side)
+    outside = float(f.iloc[-1]['close'])
+    rail = 102. if side == 'LONG' else 98.
+    ticket = {'side':side}
+    assert reentry_gate(ticket, f, outside) == 'wait'
+    assert reentry_gate(ticket, f, rail) == 'wait'
+    assert ticket['pullback_bar'] == 19
+    # The next breakout/confirmation pair occurs after the observed pullback.
+    later = f.copy(); later.index = later.index + 3
+    assert reentry_gate(ticket, later, outside) == 'ready'
+    assert reentry_gate(ticket, later, rail) == 'wait'
+    assert ticket['pullback_bar'] == 22
+    assert reentry_gate(ticket, later, outside) == 'wait'
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('close_ok', [False, True])
 async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
     f = frame()
-        f.loc[10, ['open', 'close']] = [101., 102.]
-        f.loc[11, ['open', 'close']] = [102., 103.]
     e = _execution_engine(f, 'LONG', close_ok)
     e.account.save_state = lambda: None
     e.account.positions[SYMBOL].update(position('LONG'))
     protection(e.account.positions[SYMBOL], 105., .0005, .0001)
     e.tickers[SYMBOL] = 103.1
-    e._channel_swing_action = lambda *a, **k: {'action': 'HOLD'}
+    e._channel_swing_action = lambda *a, **k: {'action':'HOLD'}
     e._place_structured_entry = AsyncMock(return_value=True)
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert len(e.account.events) == 1, e.account.logs
     assert 'PROFIT_PROTECTION' in e.account.events[0][3]
-    assert e._place_structured_entry.await_count == int(close_ok)
+    e._place_structured_entry.assert_not_awaited()
     if close_ok:
+        assert SYMBOL not in e.account.positions
+        assert e.account.channel_profit_reentries[SYMBOL]['phase'] == 'closed'
+        e._channel_swing_action = TradingEngine._channel_swing_action
+        f.loc[11,'open'] = 102.
+        await e._try_profit_reentry(SYMBOL, f, 102., False)
+        e._place_structured_entry.assert_not_awaited()
+        await e._try_profit_reentry(SYMBOL, confirmed_reentry_frame('LONG'), 104.5, False)
+        e._place_structured_entry.assert_awaited_once()
         assert e._place_structured_entry.call_args.args[1]['side'] == 'LONG'
     else:
         assert SYMBOL in e.account.positions
+        await e._try_profit_reentry(SYMBOL, confirmed_reentry_frame('LONG'), 104.5, False)
+        e._place_structured_entry.assert_not_awaited()
     assert SYMBOL not in e.account.channel_profit_reentries
 
 
@@ -123,19 +141,18 @@ async def test_general_exit_has_priority_over_profit_close():
 @pytest.mark.anyio
 @pytest.mark.parametrize('matched', [False, True])
 async def test_restart_requires_matching_successful_close(matched):
-    e = _execution_engine(frame(), 'LONG', True)
+    f = confirmed_reentry_frame('LONG')
+    e = _execution_engine(f, 'LONG', True)
     e.account.positions.clear()
     e.account.save_state = lambda: None
-    e.account.channel_profit_reentries = {SYMBOL: dict(side='LONG', token='abc', phase='closing')}
+    e.account.channel_profit_reentries = {SYMBOL: dict(side='LONG', token='abc', phase='closing',
+        pulled_back_inside=True, pullback_bar=17.)}
     e.account.trades = [dict(symbol=SYMBOL, action='CLOSE_LONG',
                             reason='Channel Swing PROFIT_PROTECTION abc')] if matched else []
-    e._channel_swing_action = lambda *a, **k: {'action': 'HOLD'}
     e._place_structured_entry = AsyncMock(return_value=True)
-    f = frame()
-        f.loc[10, ['open', 'close']] = [101., 102.]
-        f.loc[11, ['open', 'close']] = [102., 103.]
-        await e._try_profit_reentry(SYMBOL, f, 103.1, False)
+    await e._try_profit_reentry(SYMBOL, f, 104.5, False)
     assert e._place_structured_entry.await_count == int(matched)
+    assert SYMBOL not in e.account.channel_profit_reentries
 
 
 
@@ -168,17 +185,17 @@ def test_style_classification(side, style):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_smooth_trend_arms_thirty_percent_protection(side):
+def test_smooth_trend_arms_twenty_percent_protection(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1
     f = styled_frame('SMOOTH', side)
     first = protection(p, 100 + sign * 5, .0005, .0001, f)
-    assert first['retracement_fraction'] == .30
+    assert first['retracement_fraction'] == .20
     assert p['channel_profit_protection']['armed']
     result = protection(p, 100 + sign * 5, .0005, .0001, styled_frame('CHOPPY', side))
-    assert result['stop_price'] == pytest.approx(100 + sign * 3.5)
-    # Reclassification cannot remove or loosen the existing seven-dollar line.
-    result = protection(p, 100 + sign * 3.5, .0005, .0001, f)
+    assert result['stop_price'] == pytest.approx(100 + sign * 4.0)
+    # Reclassification cannot remove or loosen the existing eight-dollar line.
+    result = protection(p, 100 + sign * 4.0, .0005, .0001, f)
     assert result['triggered']
 
 
@@ -188,8 +205,8 @@ def test_stack_live_opposite_tightens_ten_dollar_peak_to_nine(side):
     sign = 1 if side == 'LONG' else -1
     f = styled_frame('STACKED', side)
     result = protection(p, 100 + sign * 5, .0005, .0001, f)
-    assert result['stop_price'] == pytest.approx(100 + sign * 3.5)
-    assert result['retracement_fraction'] == .30  # Live doji is not opposite.
+    assert result['stop_price'] == pytest.approx(100 + sign * 4.0)
+    assert result['retracement_fraction'] == .20  # Live doji is not opposite.
     # close remains favorable/doji in the frame; ticker alone forms the red K.
     result = protection(p, 100 + sign * 4.8, .0005, .0001, f)
     assert result['retracement_fraction'] == .10
@@ -222,7 +239,7 @@ def test_pre_entry_stack_does_not_tighten_and_live_bar_cannot_complete_stack():
     p = position('LONG')
     protection(p, 105., .0005, .0001, f)
     result = protection(p, 104.4, .0005, .0001, f)
-    assert result['retracement_fraction'] == .30
+    assert result['retracement_fraction'] == .20
     assert not result['triggered']
 
 
@@ -264,7 +281,7 @@ async def test_engine_passes_live_frame_and_preserves_exit_priority(action):
 
 def test_tightening_on_opposite_tick_honors_previously_observed_peak():
     p = position('LONG')
-    assert protection(p, 105., .0005, .0001, styled_frame('SMOOTH'))['retracement_fraction'] == .30
+    assert protection(p, 105., .0005, .0001, styled_frame('SMOOTH'))['retracement_fraction'] == .20
     result = protection(p, 104.4, .0005, .0001, styled_frame('STACKED'))
     assert result['peak_gross'] == 10.
     assert result['stop_price'] == 104.5
@@ -274,32 +291,43 @@ def test_tightening_on_opposite_tick_honors_previously_observed_peak():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('style', ['CHOPPY', 'STACKED', 'SMOOTH'])
-async def test_middle_exit_disabled_for_every_unarmed_style(style):
+async def test_unarmed_middle_exit_uses_price_for_every_style(style):
     f = styled_frame(style)
+    middle = (float(f.iloc[-1]['kc_upper'])+float(f.iloc[-1]['kc_lower']))/2
     e = _execution_engine(f, 'LONG', True)
     e.account.save_state = lambda: None
-    e.account.positions[SYMBOL].update(position('LONG'))
-    e.tickers[SYMBOL] = 100.1  # Net floor has not armed; still route by style.
-    e._channel_swing_action = lambda *a, **k: {'action': 'EXIT', 'reason': 'KC_REACHED_MIDDLE_COMPRESSED'}
+    # Entry above all tested prices ensures protection cannot arm.
+    e.account.positions[SYMBOL].update(position('LONG'), entry_price=110.)
+    e._channel_swing_action = lambda *a, **k: {'action':'EXIT', 'reason':'KC_REACHED_MIDDLE_COMPRESSED'}
+    e.tickers[SYMBOL] = middle + .01
     await e._process_single_symbol(SYMBOL, 1., None, False)
-    assert e.account.events == [], e.account.logs
+    assert not e.account.events
     assert SYMBOL in e.account.positions
+    e.tickers[SYMBOL] = middle
+    await e._process_single_symbol(SYMBOL, 2., None, False)
+    assert len(e.account.events) == 1, e.account.logs
+    assert e.account.events[0][3].endswith('KC_LONG_UNARMED_MIDDLE_EXIT')
+    assert SYMBOL not in e.account.positions
 
 
 @pytest.mark.anyio
 async def test_middle_signal_cannot_preempt_profit_exit_or_cancel_reentry():
     f = frame()
-        f.loc[10, ['open', 'close']] = [101., 102.]
-        f.loc[11, ['open', 'close']] = [102., 103.]
     e = _execution_engine(f, 'LONG', True)
     e.account.save_state = lambda: None
     e.account.positions[SYMBOL].update(position('LONG'))
     protection(e.account.positions[SYMBOL], 105., .0005, .0001)
     e.tickers[SYMBOL] = 103.1
-    e._channel_swing_action = lambda *a, **k: {'action': 'EXIT', 'reason': 'KC_REACHED_MIDDLE_COMPRESSED'}
+    e._channel_swing_action = lambda *a, **k: {'action':'EXIT', 'reason':'KC_REACHED_MIDDLE_COMPRESSED'}
     e._place_structured_entry = AsyncMock(return_value=True)
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert 'PROFIT_PROTECTION' in e.account.events[0][3], e.account.logs
+    assert e.account.channel_profit_reentries[SYMBOL]['phase'] == 'closed'
+    e._place_structured_entry.assert_not_awaited()
+    e._channel_swing_action = TradingEngine._channel_swing_action
+    f.loc[11,'open'] = 102.
+    await e._try_profit_reentry(SYMBOL, f, 102., False)
+    await e._try_profit_reentry(SYMBOL, confirmed_reentry_frame('LONG'), 104.5, False)
     e._place_structured_entry.assert_awaited_once()
 
 
@@ -314,16 +342,16 @@ def test_reopened_position_reclassifies_without_previous_ten_percent_lock(style)
     result = protection(p, 101., .0005, .0001, styled_frame(style))
     assert p['channel_profit_protection']['trend_style'] == style
     assert not p['channel_profit_protection'].get('tightened')
-    assert result['retracement_fraction'] == .30
+    assert result['retracement_fraction'] == .20
     assert p['channel_profit_protection']['armed']
 
 
 
-def test_unknown_style_still_arms_thirty_percent_protection():
+def test_unknown_style_still_arms_twenty_percent_protection():
     p = position('LONG')
     f = frame().iloc[:2]
     result = protection(p, 105., .0005, .0001, f)
     assert result['trend_style'] == 'UNKNOWN'
-    assert result['retracement_fraction'] == .30
-    assert result['stop_price'] == 103.5
-    assert protection(p, 103.5, .0005, .0001, f)['triggered']
+    assert result['retracement_fraction'] == .20
+    assert result['stop_price'] == 104.0
+    assert protection(p, 104.0, .0005, .0001, f)['triggered']

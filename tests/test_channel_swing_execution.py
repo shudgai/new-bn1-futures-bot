@@ -127,6 +127,8 @@ async def test_outer_rechase_holds_position_without_confirmed_exit_or_reverse(
     frame["atr"] = 1.0  # Rail touch is an ordinary body, not a waterfall.
     engine = _execution_engine(frame, old_side, close_succeeds=True)
 
+    # Keep price on the favorable side of middle; this tests no automatic rechase.
+    engine.tickers[SYMBOL] = 100.1 if old_side == "LONG" else 99.9
     _, candidates = await engine._process_single_symbol(
         SYMBOL, now_time=1.0, btc_1m_turn=None, daily_halt=False,
     )
@@ -146,6 +148,7 @@ async def test_low_volume_outer_rechase_keeps_existing_position(monkeypatch):
     frame["vol_ma_20"] = 100.0
     engine = _execution_engine(frame, "SHORT", close_succeeds=True)
 
+    engine.tickers[SYMBOL] = 99.9  # Below middle: isolate the volume behavior.
     progress, candidates = await engine._process_single_symbol(
         SYMBOL, now_time=1.0, btc_1m_turn=None, daily_halt=False,
     )

@@ -42,6 +42,17 @@ def _add_closed_confirmation(df):
     df.loc[df.index[-2], 'open'] = float(df.iloc[-2]['close']) + (0.05 if float(df.iloc[-2]['close']) < float(df.iloc[-3]['open']) else -0.05)
     df.loc[df.index[-1], ['kc_upper', 'kc_lower']] = df.iloc[-2][['kc_upper', 'kc_lower']].values
 
+    # Valid confirmation body, live body, and the current three-closed MA15 filter.
+    sign = 1 if float(df.iloc[-3]['close']) > float(df.iloc[-3]['open']) else -1
+    close = float(df.iloc[-2]['close'])
+    df.loc[df.index[-2], 'open'] = close - sign * .3
+    df.loc[df.index[-1], ['open','close']] = [close - sign * .1, close]
+    base = float(df.iloc[-2]['ma15'])
+    df.loc[df.index[-4:-1], 'ma15'] = [base-sign*.2, base-sign*.1, base]
+    for i in df.index[-3:]:
+        df.loc[i,'high'] = max(float(df.loc[i,'open']),float(df.loc[i,'close']))+.05
+        df.loc[i,'low'] = min(float(df.loc[i,'open']),float(df.loc[i,'close']))-.05
+
 def test_macro_trend_wait_if_insufficient_data():
     df = _generate_macro_frame(num_candles=5)
     res = TradingEngine._channel_swing_action(df, 100.0, None)
@@ -49,7 +60,7 @@ def test_macro_trend_wait_if_insufficient_data():
 
     pass
 
-def test_macro_trend_entry_short_on_lower_kc_structure_break():
+def test_outer_reentry_macro_trend_entry_short_on_lower_kc_structure_break():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[65, 'low'] = 94.0
     df.loc[66, 'low'] = 93.5
@@ -60,14 +71,14 @@ def test_macro_trend_entry_short_on_lower_kc_structure_break():
     df.loc[68, 'kc_lower'] = 93.0
     df.loc[68, 'low'] = 92.4
     _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 92.5, None)
+    res = TradingEngine._channel_swing_action(df, 92.5, None, outer_entry_only=True)
     pass  # Removed immediate entry shortcut
     assert res['side'] == 'SHORT'
     assert res['reason'] in {'LIVE_LOWER_BREAKOUT', 'KC_LOWER_BREAKOUT_STRICT'}
 
     pass
 
-def test_macro_trend_entry_long_on_upper_kc_structure_break():
+def test_outer_reentry_macro_trend_entry_long_on_upper_kc_structure_break():
     df = _generate_macro_frame('UP', 70)
     df.loc[65, 'high'] = 106.0
     df.loc[66, 'high'] = 106.5
@@ -78,19 +89,21 @@ def test_macro_trend_entry_long_on_upper_kc_structure_break():
     df.loc[68, 'kc_upper'] = 107.0
     df.loc[68, 'high'] = 107.6
     _add_closed_confirmation(df)
-    res = TradingEngine._channel_swing_action(df, 107.5, None)
+    res = TradingEngine._channel_swing_action(df, 107.5, None, outer_entry_only=True)
     pass  # Removed immediate entry shortcut
     assert res['side'] == 'LONG'
     assert res['reason'] in {'LIVE_UPPER_BREAKOUT', 'KC_UPPER_BREAKOUT_STRICT'}
 
-def test_normal_two_candle_breakout_remains_tradable():
+def test_outer_reentry_normal_two_candle_breakout_remains_tradable():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [106.6, 107.3, 106.5, 107.2, 107.0, 105.0, 106.0]
     df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [107.15, 107.8, 107.1, 107.6, 107.1, 105.1, 106.1]
     df.loc[67:68, "ma3"] = [106.8, 107.3]
     df.loc[69, ["kc_upper", "kc_lower"]] = [107.1, 105.1]
-    res = TradingEngine._channel_swing_action(df, 107.6, None)
-    assert res == {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
+    df.loc[66,"ma15"] = 105.9
+    df.loc[69,["open","high","low","close"]] = [107.5,107.7,107.4,107.6]
+    res = TradingEngine._channel_swing_action(df, 107.6, None, outer_entry_only=True)
+    assert res == {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT"}
 
 
 def test_inside_confirmation_cannot_use_later_live_candle():
@@ -158,7 +171,7 @@ def test_chop_unlocks_after_two_clear_directional_closed_bars():
 
 
 
-def test_spike_breakout_is_not_traded():
+def test_outer_reentry_spike_breakout_is_not_traded():
     """A huge outer-rail spike is prone to an immediate opposite candle."""
     df = _generate_macro_frame("UP", 70)
     # [-3] breaks up normally; [-2] confirms green but spans more than the
@@ -166,7 +179,7 @@ def test_spike_breakout_is_not_traded():
     df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [106.6, 107.5, 106.4, 107.2, 107.0, 105.0, 106.0]
     df.loc[68, ["open", "high", "low", "close", "kc_upper", "kc_lower", "ma15"]] = [107.1, 110.0, 106.8, 107.6, 107.1, 105.1, 106.1]
     df.loc[67:68, "ma3"] = [106.8, 107.3]
-    res = TradingEngine._channel_swing_action(df, 107.6, None)
+    res = TradingEngine._channel_swing_action(df, 107.6, None, outer_entry_only=True)
     assert res["action"] == "WAIT"
     assert res["reason"] == "KC_SPIKE_BREAKOUT_WAIT"
 
@@ -185,7 +198,7 @@ def test_spike_reversal_waits_for_confirmed_direction():
     assert result["action"] == "WAIT"
 
 
-def test_live_body_crossing_upper_rail_enters_immediately():
+def test_live_body_crossing_upper_rail_waits_for_second_closed_body():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["close", "kc_upper"]] = [107.2, 107.0]
     df.loc[69, ["open", "high", "low", "close", "kc_upper"]] = [
@@ -194,10 +207,10 @@ def test_live_body_crossing_upper_rail_enters_immediately():
     result = TradingEngine._channel_swing_action(
         df, 108.2, allow_live_entry=True,
     )
-    assert result["action"] == "ENTER"
+    assert result["action"] == "WAIT"
 
 
-def test_later_clean_continuation_can_enter_after_spike_wait():
+def test_outer_reentry_later_clean_continuation_can_enter_after_spike_wait():
     df = _generate_macro_frame("UP", 72)
     df.loc[67, ["open", "high", "low", "close", "kc_upper"]] = [
         106.0, 112.0, 105.8, 111.5, 107.0,
@@ -211,9 +224,9 @@ def test_later_clean_continuation_can_enter_after_spike_wait():
     df.loc[70, ["open", "high", "low", "close", "kc_upper"]] = [
         108.8, 110.0, 108.7, 109.7, 107.8,
     ]
-    result = TradingEngine._channel_swing_action(df, 109.7)
+    result = TradingEngine._channel_swing_action(df, 109.7, outer_entry_only=True)
     assert result == {
-        "action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT",
+        "action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT",
     }
 
 
@@ -249,7 +262,7 @@ def test_favorable_waterfall_closed_turn_holds_without_middle_exit(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_favorable_waterfall_live_turn_holds_while_ma3_outside(side):
+def test_favorable_waterfall_live_turn_exits_on_long_adverse_body(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     df['timestamp'] = [(i + 1) * 60000 for i in range(len(df))]
     df['atr'] = 1.0
@@ -266,7 +279,8 @@ def test_favorable_waterfall_live_turn_holds_while_ma3_outside(side):
             92.0, 92.6, 91.6, 92.5, 92.1, 92.2,
         ]
     result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side, position_open_timestamp=60)
-    assert result['action'] == 'HOLD'
+    assert result['action'] == 'EXIT'
+    assert result['reason'] == ('KC_LONG_LIVE_RED_LONG_EXIT' if side == 'LONG' else 'KC_SHORT_LIVE_GREEN_LONG_EXIT')
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -434,6 +448,9 @@ def test_local_ma3_peak_inside_channel_holds_long():
     df.loc[66:68, "ma3"] = [100.0, 102.0, 101.0]
     df.loc[67, ["kc_upper", "kc_lower"]] = [105.0, 95.0]
     df.loc[68, ["open", "close", "kc_upper", "kc_lower"]] = [102.0, 101.0, 105.0, 95.0]
+    # Isolate MA behavior: no live adverse body or accidental price gap.
+    df.loc[69] = df.loc[68].copy()
+    df.loc[69, ["open", "close"]] = 101.0
     res = TradingEngine._channel_swing_action(df, 101.0, "LONG")
     assert res["action"] == "HOLD"
 
@@ -443,6 +460,9 @@ def test_confirmed_ma3_valley_without_outer_break_holds_short():
     df.loc[66:68, "ma3"] = [100.0, 98.0, 99.0]
     df.loc[67, ["kc_upper", "kc_lower"]] = [105.0, 95.0]
     df.loc[68, ["open", "close", "kc_upper", "kc_lower"]] = [98.0, 99.0, 105.0, 95.0]
+    # Isolate MA behavior: no live adverse body or accidental price gap.
+    df.loc[69] = df.loc[68].copy()
+    df.loc[69, ["open", "close"]] = 99.0
     res = TradingEngine._channel_swing_action(df, 99.0, "SHORT")
     assert res["action"] == "HOLD"
 
@@ -453,6 +473,9 @@ def test_ma3_touching_ma15_without_upper_cross_holds_long():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "close", "ma3", "ma15", "kc_upper", "kc_lower"]] = [102.0, 101.0, 101.0, 100.0, 105.0, 95.0]
     df.loc[68, ["open", "close", "ma3", "ma15", "kc_upper", "kc_lower"]] = [101.0, 99.0, 100.0, 100.0, 105.0, 95.0]
+    # Isolate MA behavior: no live adverse body or accidental price gap.
+    df.loc[69] = df.loc[68].copy()
+    df.loc[69, ["open", "close"]] = 99.0
     res = TradingEngine._channel_swing_action(df, 99.0, "LONG")
     assert res["action"] == "HOLD"
 
@@ -461,6 +484,9 @@ def test_ma3_touching_ma15_on_same_colour_candle_holds():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "close", "ma3", "ma15", "kc_upper", "kc_lower"]] = [102.0, 101.0, 101.0, 100.0, 105.0, 95.0]
     df.loc[68, ["open", "close", "ma3", "ma15", "kc_upper", "kc_lower"]] = [99.0, 101.0, 100.0, 100.0, 105.0, 95.0]
+    # Isolate MA behavior: no live adverse body or accidental price gap.
+    df.loc[69] = df.loc[68].copy()
+    df.loc[69, ["open", "close"]] = 101.0
     res = TradingEngine._channel_swing_action(df, 101.0, "LONG")
     assert res["action"] == "HOLD"
 
@@ -469,6 +495,9 @@ def test_long_does_not_lock_without_ma_cross():
     df = _generate_macro_frame('UP', 70)
     df.loc[68, ['open', 'close', 'ma3', 'ma15', 'kc_middle', 'kc_lower']] = [107.0, 106.5, 106.8, 106.7, 106.8, 105.5]
     df.loc[69, ['ma3', 'ma15']] = [107.0, 106.7]
+    # Isolate MA behavior: no live adverse body or accidental price gap.
+    df.loc[69] = df.loc[68].copy()
+    df.loc[69, ["open", "close"]] = 106.5
     res = TradingEngine._channel_swing_action(df, 106.5, 'LONG')
     assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
@@ -477,6 +506,9 @@ def test_short_does_not_lock_without_ma_cross():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[68, ['open', 'close', 'ma3', 'ma15', 'kc_middle', 'kc_upper']] = [93.0, 93.5, 93.2, 93.3, 93.2, 94.5]
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
+    # Isolate MA behavior: no live adverse body or accidental price gap.
+    df.loc[69] = df.loc[68].copy()
+    df.loc[69, ["open", "close"]] = 93.5
     res = TradingEngine._channel_swing_action(df, 93.5, 'SHORT')
     assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] == 'HOLDING_SHORT_RUN_TO_LOW'
@@ -510,9 +542,9 @@ def test_live_outer_entry_requires_fresh_short_crossing():
     df.loc[68, ['open', 'close', 'low', 'kc_lower']] = [92.8, 92.5, 92.4, 92.7]
     df.loc[69, ['open', 'close', 'kc_lower']] = [92.5, 92.3, 92.6]
     df.loc[69, 'open'] = 92.7  # Live body crosses the 92.6 lower rail.
-    res = TradingEngine._channel_live_outer_entry_action(df, 92.3)
+    res = TradingEngine._channel_swing_action(df, 92.3)
     pass  # Removed immediate entry shortcut
-    assert res['reason'] == 'KC_LIVE_LOWER_BREAK_SHORT'
+    assert res['action'] == 'WAIT'  # A live outer crossing is no longer a flat-entry signal.
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)

@@ -92,6 +92,9 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "channel_pivot_entry", "channel_pivot_middle_reached",
+    "channel_pivot_middle_exit_pending", "entry_kc_middle",
+    "channel_confirmation_bar_id",
     "manual_entry", "managed_by_bot", "bot_last_managed_at",
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
@@ -387,6 +390,7 @@ class BinanceTestnetAccount:
             return self.unrealized_pnl
 
         previous = dict(self.positions)
+        close_generation = dict(getattr(self, "_close_generation", {}))
         balance_rows = await self.exchange.fapiPrivateV2GetBalance()
         usdt = next((row for row in balance_rows if row.get("asset") == "USDT"), {})
         self.balance = float(usdt.get("balance") or 0.0)
@@ -400,6 +404,12 @@ class BinanceTestnetAccount:
             if abs(signed_qty) <= 0:
                 continue
             symbol = self._clean_symbol(row.get("symbol", ""))
+            if close_generation.get(symbol, 0) != getattr(self, "_close_generation", {}).get(symbol, 0):
+                continue  # Discard a response that started before this close completed.
+            if symbol in self.closing_lock:
+                if symbol in self.positions:
+                    active[symbol] = self.positions[symbol]
+                continue  # Do not resurrect a just-closed position from a stale response.
             side = "LONG" if signed_qty > 0 else "SHORT"
             qty = abs(signed_qty)
             entry_price = float(row.get("entryPrice") or 0.0)
@@ -450,7 +460,8 @@ class BinanceTestnetAccount:
         self.last_sync_at = now
 
         for symbol, old_position in previous.items():
-            if symbol in active or symbol in self.closing_lock:
+            if (symbol in active or symbol in self.closing_lock
+                    or close_generation.get(symbol, 0) != getattr(self, "_close_generation", {}).get(symbol, 0)):
                 continue
             await self._record_external_close(symbol, old_position)
 
@@ -2223,7 +2234,8 @@ class BinanceTestnetAccount:
                 return False
         # ✅ 修正：若是手動平倉，直接跳過自動冷卻計時器，避免用戶手動平倉卡住
         _now = time.time()
-        if not is_manual and _now < self._close_retry_after.get(symbol, 0.0):
+        strategy_close = str(close_reason).startswith("Channel Swing ")
+        if (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = _now
@@ -2269,7 +2281,16 @@ class BinanceTestnetAccount:
             self.position_meta.pop(symbol, None)
             self.positions.pop(symbol, None)
             self.pending_limit_orders.pop(symbol, None)
-            await self.refresh(force=True)
+            generations = getattr(self, "_close_generation", None)
+            if generations is None:
+                generations = self._close_generation = {}
+            generations[symbol] = generations.get(symbol, 0) + 1
+            self._close_retry_after.pop(symbol, None)
+            self.save_state()
+            try:
+                await self.refresh(force=True)
+            except Exception as refresh_error:
+                self.log(f"⚠️ {symbol} 已成交平倉，帳戶同步稍後重試：{refresh_error}", "WARNING")
             self.log(
                 f"🏁 Binance Testnet 平倉 [{position['side']}] {symbol} @ "
                 f"{execution_price:.6f} | 淨損益: {net_pnl:+.2f} USDT ({close_reason})",
@@ -2290,9 +2311,6 @@ class BinanceTestnetAccount:
                 "DANGER",
             )
             return False
-        else:
-            # 平倉成功，清除冷卻記錄
-            self._close_retry_after.pop(symbol, None)
         finally:
             self.closing_lock.discard(symbol)
 
