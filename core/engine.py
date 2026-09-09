@@ -6688,7 +6688,7 @@ class TradingEngine:
         lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
         # 順勢進場（用於空手時在趨勢延續中進場）：只要連續兩根收在外軌外，且當前是實體順勢K
         upper_trend_entry = bo_close > bo_upper and cf_close > cf_open and cf_close > cf_upper and cf_is_solid
-        lower_trend_entry = bo_close < bo_lower and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
+        lower_trend_entry = bo_close < bo_open and bo_close < bo_lower and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
         continuation_up = bool(
             cf_close > cf_open
             and cf_close > bo_close
@@ -6719,6 +6719,18 @@ class TradingEngine:
         # after two closed candles confirm that the trend is still extending.
         if held in ("LONG", "SHORT"):
             current_live = frame.iloc[-1]
+            # User-authorized short emergency exit: a live long green body,
+            # independent of profit arming or the MA3 outside/inside path.
+            if held == "SHORT":
+                green_body = live_price - float(current_live["open"])
+                live_width = float(current_live["kc_upper"]) - float(current_live["kc_lower"])
+                prior_bodies = (frame["close"].iloc[-10:-1].astype(float)
+                                - frame["open"].iloc[-10:-1].astype(float)).abs()
+                average_body = float(prior_bodies.mean())
+                if (math.isfinite(green_body) and green_body > 0 and live_width > 0
+                        and (green_body >= .8 * live_width
+                             or (average_body > 0 and green_body >= 3 * average_body))):
+                    return {"action": "EXIT", "side": None, "reason": "KC_SHORT_LIVE_GREEN_BODY_EXIT"}
             recent, path_ready = TradingEngine._channel_position_path(
                 frame, held, position_open_timestamp, position_path,
             )
@@ -6743,14 +6755,12 @@ class TradingEngine:
             
             # Use the unfinished candle body (open -> latest price), not wicks.
             live_open = float(current_live["open"])
-            body_midpoint = (live_open + live_price) / 2.0
             valid_body = all(math.isfinite(value) and value > 0 for value in
                              (live_open, live_price, middle_now))
-            majority_beyond = not math.isclose(body_midpoint, middle_now, rel_tol=1e-12, abs_tol=0.0)
-            if valid_body and ma3_inside and majority_beyond:
-                if held == "LONG" and live_price < live_open and body_midpoint < middle_now:
+            if valid_body:
+                if held == "LONG" and live_price < live_open and live_price < middle_now:
                     return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
-                if held == "SHORT" and live_price > live_open and body_midpoint > middle_now:
+                if held == "SHORT" and live_price > live_open and live_price > middle_now:
                     return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
             return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
         # Only the latest three closed MA15 values determine entry direction.
@@ -6773,16 +6783,7 @@ class TradingEngine:
             if live_price > live_upper and TradingEngine._channel_closed_waves_falling(frame):
                 return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG"}
                 
-            recent_bodies = [abs(float(row["close"]) - float(row["open"])) for _, row in frame.iloc[-10:-1].iterrows()]
-            avg_body = sum(recent_bodies) / len(recent_bodies) if recent_bodies else 0
-            live_body = abs(live_price - live_open)
-            is_abnormal = (live_body >= kc_width * 0.8) or (avg_body > 0 and live_body >= avg_body * 3)
-            
-            # 除了Kc裡都是同色K時,突破就馬上開倉 (只限於異常K及大瀑布)
-            if live_price > live_upper and trend > 0 and TradingEngine._channel_all_same_color_inside(frame, "LONG") and is_abnormal:
-                return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT_ABNORMAL"}
-            if live_price < live_lower and trend < 0 and TradingEngine._channel_all_same_color_inside(frame, "SHORT") and is_abnormal:
-                return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT_ABNORMAL"}
+
                 
             if max(breakout_range, confirmation_range) > kc_width * 1.25:
                 if not (clean_continuation_up or clean_continuation_down):
@@ -7369,6 +7370,16 @@ class TradingEngine:
         ends_recovery = decision["action"] == "REVERSE" or (
             decision["action"] == "EXIT" and decision.get("reason") != "KC_REACHED_MIDDLE_COMPRESSED")
         result = "end" if ends_recovery else reentry_gate(ticket, frame, price)
+        if result == "ready":
+            previous, live = frame.iloc[-2], frame.iloc[-1]
+            if ticket["side"] == "SHORT":
+                if not (float(previous["close"]) < float(previous["open"])
+                        and price < min(float(live["open"]), float(previous["close"]))):
+                    result = "wait"
+            elif ticket["side"] == "LONG":
+                if not (float(previous["close"]) > float(previous["open"])
+                        and price > max(float(live["open"]), float(previous["close"]))):
+                    result = "wait"
         if result == "end":
             self.account.channel_profit_reentries.pop(symbol, None)
             self._channel_swing_peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {})
@@ -7524,7 +7535,7 @@ class TradingEngine:
                 "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_LIVE_UPPER_MOMENTUM_LONG",
-                "LIVE_UPPER_BREAKOUT_ABNORMAL", "LIVE_LOWER_BREAKOUT_ABNORMAL",
+
                 "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                 "KC_NEXT_LIVE_PUSH_LONG", "KC_NEXT_LIVE_PUSH_SHORT",
                 "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",

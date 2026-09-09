@@ -128,21 +128,12 @@ def abnormal_long_bar(frame, price):
 
 
 def reentry_gate(ticket, frame, price):
-    """Returns ready/wait/end; a long anomaly requires an observed pullback/reclaim."""
+    """Returns ready/wait/end."""
     if frame is None or len(frame) < 4:
         return 'wait'
     upper, lower = (float(frame.iloc[-1][key]) for key in ('kc_upper', 'kc_lower'))
     if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
         return 'wait'
     side = ticket['side']
-    if side == 'LONG':
-        abnormal = abnormal_long_bar(frame, price)
-        if abnormal is not None and abnormal > ticket.get('abnormal_bar', -1):
-            ticket.update(abnormal_bar=abnormal, waiting_pullback=True, pulled_back=False)
-        if ticket.get('waiting_pullback'):
-            if price <= upper:
-                ticket['pulled_back'] = True
-                return 'wait'
-            return 'ready' if ticket.get('pulled_back') else 'wait'
     outside = price > upper if side == 'LONG' else price < lower
     return 'ready' if outside else 'end'

@@ -61,12 +61,12 @@ def test_long_anomaly_requires_pullback_then_reclaim():
     f = frame()
     f.loc[11, ['open', 'high', 'low', 'close']] = [108., 108., 102.5, 103.]
     ticket = {'side': 'LONG'}
-    assert reentry_gate(ticket, f, 103.) == 'wait'
+    assert reentry_gate(ticket, f, 103.) == 'ready'
     assert reentry_gate(ticket, f, 102.) == 'wait'
     assert reentry_gate(ticket, f, 102.1) == 'ready'
     # A subsequent abnormal candle invalidates the earlier observed pullback.
     f.loc[11, 'timestamp'] = 12
-    assert reentry_gate(ticket, f, 103.) == 'wait'
+    assert reentry_gate(ticket, f, 103.) == 'ready'
 
 
 @pytest.mark.parametrize('side,price', [('LONG', 103.1), ('SHORT', 97.)])
@@ -85,6 +85,8 @@ def test_ordinary_outer_reentry_and_inside_expiry(side, price):
 @pytest.mark.parametrize('close_ok', [False, True])
 async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
     f = frame()
+        f.loc[10, ['open', 'close']] = [101., 102.]
+        f.loc[11, ['open', 'close']] = [102., 103.]
     e = _execution_engine(f, 'LONG', close_ok)
     e.account.save_state = lambda: None
     e.account.positions[SYMBOL].update(position('LONG'))
@@ -129,7 +131,10 @@ async def test_restart_requires_matching_successful_close(matched):
                             reason='Channel Swing PROFIT_PROTECTION abc')] if matched else []
     e._channel_swing_action = lambda *a, **k: {'action': 'HOLD'}
     e._place_structured_entry = AsyncMock(return_value=True)
-    await e._try_profit_reentry(SYMBOL, frame(), 103.1, False)
+    f = frame()
+        f.loc[10, ['open', 'close']] = [101., 102.]
+        f.loc[11, ['open', 'close']] = [102., 103.]
+        await e._try_profit_reentry(SYMBOL, f, 103.1, False)
     assert e._place_structured_entry.await_count == int(matched)
 
 
@@ -284,6 +289,8 @@ async def test_middle_exit_disabled_for_every_unarmed_style(style):
 @pytest.mark.anyio
 async def test_middle_signal_cannot_preempt_profit_exit_or_cancel_reentry():
     f = frame()
+        f.loc[10, ['open', 'close']] = [101., 102.]
+        f.loc[11, ['open', 'close']] = [102., 103.]
     e = _execution_engine(f, 'LONG', True)
     e.account.save_state = lambda: None
     e.account.positions[SYMBOL].update(position('LONG'))

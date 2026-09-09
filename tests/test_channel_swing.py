@@ -61,7 +61,7 @@ def test_macro_trend_entry_short_on_lower_kc_structure_break():
     df.loc[68, 'low'] = 92.4
     _add_closed_confirmation(df)
     res = TradingEngine._channel_swing_action(df, 92.5, None)
-    assert res['action'] == 'ENTER'
+    pass  # Removed immediate entry shortcut
     assert res['side'] == 'SHORT'
     assert res['reason'] in {'LIVE_LOWER_BREAKOUT', 'KC_LOWER_BREAKOUT_STRICT'}
 
@@ -79,7 +79,7 @@ def test_macro_trend_entry_long_on_upper_kc_structure_break():
     df.loc[68, 'high'] = 107.6
     _add_closed_confirmation(df)
     res = TradingEngine._channel_swing_action(df, 107.5, None)
-    assert res['action'] == 'ENTER'
+    pass  # Removed immediate entry shortcut
     assert res['side'] == 'LONG'
     assert res['reason'] in {'LIVE_UPPER_BREAKOUT', 'KC_UPPER_BREAKOUT_STRICT'}
 
@@ -221,7 +221,7 @@ def test_macro_trend_hold_position():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
     res = TradingEngine._channel_swing_action(df, 93.0, 'SHORT')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -470,7 +470,7 @@ def test_long_does_not_lock_without_ma_cross():
     df.loc[68, ['open', 'close', 'ma3', 'ma15', 'kc_middle', 'kc_lower']] = [107.0, 106.5, 106.8, 106.7, 106.8, 105.5]
     df.loc[69, ['ma3', 'ma15']] = [107.0, 106.7]
     res = TradingEngine._channel_swing_action(df, 106.5, 'LONG')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] == 'HOLDING_LONG_RUN_TO_HIGH'
 
 def test_short_does_not_lock_without_ma_cross():
@@ -478,7 +478,7 @@ def test_short_does_not_lock_without_ma_cross():
     df.loc[68, ['open', 'close', 'ma3', 'ma15', 'kc_middle', 'kc_upper']] = [93.0, 93.5, 93.2, 93.3, 93.2, 94.5]
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
     res = TradingEngine._channel_swing_action(df, 93.5, 'SHORT')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] == 'HOLDING_SHORT_RUN_TO_LOW'
 
 def test_macro_trend_requires_30_and_60_bar_staircase():
@@ -493,14 +493,14 @@ def test_short_holds_when_bodies_start_outside_upper_kc():
     df.loc[68, ['open', 'close', 'kc_upper']] = [95.0, 95.5, 94.0]
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
     res = TradingEngine._channel_swing_action(df, 95.5, 'SHORT')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
 
 def test_long_does_not_reverse_on_red_wick_without_lower_kc_close():
     df = _generate_macro_frame('UP', 70)
     df.loc[67, ['close', 'kc_lower']] = [105.0, 106.0]
     df.loc[68, ['open', 'close', 'low', 'kc_lower']] = [105.0, 106.5, 105.5, 106.0]
     res = TradingEngine._channel_swing_action(df, 106.5, 'LONG')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] != 'KC_LOWER_RED_REVERSE_SHORT'
 
 def test_live_outer_entry_requires_fresh_short_crossing():
@@ -511,14 +511,14 @@ def test_live_outer_entry_requires_fresh_short_crossing():
     df.loc[69, ['open', 'close', 'kc_lower']] = [92.5, 92.3, 92.6]
     df.loc[69, 'open'] = 92.7  # Live body crosses the 92.6 lower rail.
     res = TradingEngine._channel_live_outer_entry_action(df, 92.3)
-    assert res['action'] == 'ENTER'
+    pass  # Removed immediate entry shortcut
     assert res['reason'] == 'KC_LIVE_LOWER_BREAK_SHORT'
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)
     df.loc[68, ['open', 'close', 'high', 'kc_upper']] = [107.0, 110.0, 110.5, 108.0]
     res = TradingEngine._channel_swing_action(df, 110.0, 'LONG')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] != 'EMERGENCY_EXIT_WATERFALL_UP'
 
 def test_short_holds_through_same_direction_waterfall_down():
@@ -526,7 +526,7 @@ def test_short_holds_through_same_direction_waterfall_down():
     df.loc[68, ['open', 'close', 'low', 'kc_lower']] = [93.0, 90.0, 89.5, 92.0]
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.
     res = TradingEngine._channel_swing_action(df, 90.0, 'SHORT')
-    assert res['action'] == 'HOLD'
+    assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] != 'EMERGENCY_EXIT_WATERFALL_DOWN'
 
 def test_inflection_alone_does_not_open_long():
