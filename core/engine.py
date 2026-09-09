@@ -7470,12 +7470,14 @@ class TradingEngine:
         fast_upper_ma3_turn = bool(
             held == "LONG"
             and live_high >= live_upper
+            and live_ma3 >= live_upper
             and live_close < live_open
             and live_ma3 < confirmation_ma3
         )
         fast_lower_ma3_turn = bool(
             held == "SHORT"
             and live_low <= live_lower
+            and live_ma3 <= live_lower
             and live_close > live_open
             and live_ma3 > confirmation_ma3
         )
@@ -7606,20 +7608,25 @@ class TradingEngine:
         upper_ma3_turn_exit = bool(
             held == "LONG"
             and cf_high >= cf_upper
+            and float(confirmation.get("ma3") or 0.0) >= cf_upper
             and cf_close < cf_open
             and float(confirmation.get("ma3") or 0.0) < float(breakout.get("ma3") or 0.0)
+            and abs(cf_upper - ma15_now) <= kc_width * 0.20
             and not upper_ma15_converged_gradually
         )
         lower_ma3_turn_exit = bool(
             held == "SHORT"
             and cf_low <= cf_lower
+            and float(confirmation.get("ma3") or 0.0) <= cf_lower
             and cf_close > cf_open
             and float(confirmation.get("ma3") or 0.0) > float(breakout.get("ma3") or 0.0)
+            and abs(cf_lower - ma15_now) <= kc_width * 0.20
             and not lower_ma15_converged_gradually
         )
         upper_compression_exit = bool(
             held == "LONG"
             and upper_ma15_converged_gradually
+            and float(confirmation["ma3"]) >= cf_upper
             and float(confirmation["ma3"]) < float(breakout["ma3"])
             and float(confirmation["ma3"]) > ma15_now
             and abs(float(confirmation["ma3"]) - ma15_now) <= convergence_atr * 0.35
@@ -7628,10 +7635,21 @@ class TradingEngine:
         lower_compression_exit = bool(
             held == "SHORT"
             and lower_ma15_converged_gradually
+            and float(confirmation["ma3"]) <= cf_lower
             and float(confirmation["ma3"]) > float(breakout["ma3"])
             and float(confirmation["ma3"]) < ma15_now
             and abs(float(confirmation["ma3"]) - ma15_now) <= convergence_atr * 0.35
             and abs(cf_lower - ma15_now) <= convergence_atr * 0.75
+        )
+        upper_compression_exit = bool(
+            upper_compression_exit
+            and abs(cf_upper - ma15_now) <= kc_width * 0.25
+            and abs(float(confirmation["ma3"]) - ma15_now) <= kc_width * 0.15
+        )
+        lower_compression_exit = bool(
+            lower_compression_exit
+            and abs(cf_lower - ma15_now) <= kc_width * 0.25
+            and abs(float(confirmation["ma3"]) - ma15_now) <= kc_width * 0.15
         )
         clean_continuation_up = bool(
             continuation_up
@@ -7659,7 +7677,12 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "reason": "UPPER_MA3_COMPRESSION_EXIT"}
             if upper_ma3_turn_exit:
                 return {"action": "EXIT", "side": None, "reason": "UPPER_MA3_TURN_EXIT"}
-            if upper_ma15_converged_gradually and cf_close >= cf_upper and upper_ma15_converged:
+            if (
+                upper_ma15_converged_gradually
+                and float(confirmation["ma3"]) >= cf_upper
+                and cf_close >= cf_upper
+                and upper_ma15_converged
+            ):
                 if continuation_up:
                     return {"action": "HOLD", "side": None, "reason": "UPPER_MA15_CONTINUATION"}
                 return {"action": "EXIT", "side": None, "reason": "UPPER_MA15_NO_CONTINUATION"}
@@ -7673,7 +7696,12 @@ class TradingEngine:
                 return {"action": "EXIT", "side": None, "reason": "LOWER_MA3_COMPRESSION_EXIT"}
             if lower_ma3_turn_exit:
                 return {"action": "EXIT", "side": None, "reason": "LOWER_MA3_TURN_EXIT"}
-            if lower_ma15_converged_gradually and cf_close <= cf_lower and lower_ma15_converged:
+            if (
+                lower_ma15_converged_gradually
+                and float(confirmation["ma3"]) <= cf_lower
+                and cf_close <= cf_lower
+                and lower_ma15_converged
+            ):
                 if continuation_down:
                     return {"action": "HOLD", "side": None, "reason": "LOWER_MA15_CONTINUATION"}
                 return {"action": "EXIT", "side": None, "reason": "LOWER_MA15_NO_CONTINUATION"}
