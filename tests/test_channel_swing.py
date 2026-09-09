@@ -122,7 +122,7 @@ def test_inside_confirmation_cannot_use_later_live_candle():
     assert result["action"] == "WAIT"
 
 
-def test_weak_breakout_is_invalidated_by_reverse_waterfall():
+def test_outside_long_signal_ignores_live_red_body():
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
         106.6, 107.4, 106.5, 107.3, 107.0, 105.0,
@@ -133,8 +133,14 @@ def test_weak_breakout_is_invalidated_by_reverse_waterfall():
     df.loc[69, ["open", "high", "low", "close", "kc_upper", "kc_lower"]] = [
         109.5, 109.6, 107.0, 108.2, 107.8, 105.8,
     ]
+    # Supply the CK trend now required by every flat entry.
+    midpoint = (float(df.loc[68, "kc_upper"]) + float(df.loc[68, "kc_lower"])) / 2
+    df["kc_middle"] = midpoint
+    df.loc[66:68, "kc_middle"] = [midpoint - 1 * .2, midpoint - 1 * .1, midpoint]
+    rail_now = float(df.loc[68, "kc_upper"])
+    df.loc[66:68, "kc_upper"] = [rail_now - 1 * .2, rail_now - 1 * .1, rail_now]
     result = TradingEngine._channel_swing_action(df, 108.2)
-    assert result["action"] == "WAIT"
+    assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"}
 
 
 def test_channel_live_waterfall_and_two_abnormal_bars_exit():
@@ -184,8 +190,8 @@ def test_outer_reentry_spike_breakout_is_not_traded():
     assert res["reason"] == "KC_SPIKE_BREAKOUT_WAIT"
 
 
-def test_spike_reversal_waits_for_confirmed_direction():
-    """An impulse candle followed by a red rejection must not open long."""
+def test_outside_long_signal_does_not_wait_after_spike():
+    """Outside signal ignores color; execution still applies market risk checks."""
     df = _generate_macro_frame("UP", 70)
     df.loc[67, ["open", "high", "low", "close", "kc_upper"]] = [
         106.0, 112.0, 105.8, 111.5, 107.0,
@@ -194,20 +200,32 @@ def test_spike_reversal_waits_for_confirmed_direction():
         111.5, 111.8, 107.2, 108.0, 107.1,
     ]
     df.loc[69, "open"] = 108.0  # No new live body break after the rejected spike.
+    # Supply the CK trend now required by every flat entry.
+    midpoint = (float(df.loc[68, "kc_upper"]) + float(df.loc[68, "kc_lower"])) / 2
+    df["kc_middle"] = midpoint
+    df.loc[66:68, "kc_middle"] = [midpoint - 1 * .2, midpoint - 1 * .1, midpoint]
+    rail_now = float(df.loc[68, "kc_upper"])
+    df.loc[66:68, "kc_upper"] = [rail_now - 1 * .2, rail_now - 1 * .1, rail_now]
     result = TradingEngine._channel_immediate_outer_break_action(df, 108.0)
-    assert result["action"] == "WAIT"
+    assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"}
 
 
-def test_live_body_crossing_upper_rail_waits_for_second_closed_body():
+def test_live_price_above_upper_rail_enters_without_closed_body():
     df = _generate_macro_frame("UP", 70)
     df.loc[68, ["close", "kc_upper"]] = [107.2, 107.0]
     df.loc[69, ["open", "high", "low", "close", "kc_upper"]] = [
         107.3, 110.0, 107.2, 108.2, 107.5,
     ]
+    # Supply the CK trend now required by every flat entry.
+    midpoint = (float(df.loc[68, "kc_upper"]) + float(df.loc[68, "kc_lower"])) / 2
+    df["kc_middle"] = midpoint
+    df.loc[66:68, "kc_middle"] = [midpoint - 1 * .2, midpoint - 1 * .1, midpoint]
+    rail_now = float(df.loc[68, "kc_upper"])
+    df.loc[66:68, "kc_upper"] = [rail_now - 1 * .2, rail_now - 1 * .1, rail_now]
     result = TradingEngine._channel_swing_action(
         df, 108.2, allow_live_entry=True,
     )
-    assert result["action"] == "WAIT"
+    assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"}
 
 
 def test_outer_reentry_later_clean_continuation_can_enter_after_spike_wait():
@@ -535,16 +553,21 @@ def test_long_does_not_reverse_on_red_wick_without_lower_kc_close():
     assert res['action'] in ('HOLD', 'EXIT')
     assert res['reason'] != 'KC_LOWER_RED_REVERSE_SHORT'
 
-def test_live_outer_entry_requires_fresh_short_crossing():
+def test_live_price_below_lower_rail_enters_without_fresh_crossing():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[66, ['close', 'kc_lower']] = [93.1, 93.0]
     df.loc[67, ['close', 'kc_lower']] = [92.8, 92.9]
     df.loc[68, ['open', 'close', 'low', 'kc_lower']] = [92.8, 92.5, 92.4, 92.7]
     df.loc[69, ['open', 'close', 'kc_lower']] = [92.5, 92.3, 92.6]
     df.loc[69, 'open'] = 92.7  # Live body crosses the 92.6 lower rail.
+    # Supply the CK trend now required by every flat entry.
+    midpoint = (float(df.loc[68, "kc_upper"]) + float(df.loc[68, "kc_lower"])) / 2
+    df["kc_middle"] = midpoint
+    df.loc[66:68, "kc_middle"] = [midpoint - -1 * .2, midpoint - -1 * .1, midpoint]
+    rail_now = float(df.loc[68, "kc_lower"])
+    df.loc[66:68, "kc_lower"] = [rail_now - -1 * .2, rail_now - -1 * .1, rail_now]
     res = TradingEngine._channel_swing_action(df, 92.3)
-    pass  # Removed immediate entry shortcut
-    assert res['action'] == 'WAIT'  # A live outer crossing is no longer a flat-entry signal.
+    assert res == {'action': 'ENTER', 'side': 'SHORT', 'reason': 'KC_OUTSIDE_SHORT'}
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)

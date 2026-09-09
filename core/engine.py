@@ -1,5 +1,6 @@
 import asyncio
 import copy
+from core.channel_outer_entry import OUTER_CODES, outside_entry
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2364,7 +2365,10 @@ class TradingEngine:
                     or symbol in self.account.positions):
                 return None
             ready = self._profit_reentry_ready(symbol, ticket, frame, price)
-            return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame} if ready else None
+            if not ready:
+                return None
+            return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame,
+                    "signal_code": self._channel_swing_action(frame, price)["reason"]}
         exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
         if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
             "ENTER", False, side, frame, exit_info, symbol, live_price=price,
@@ -2444,7 +2448,9 @@ class TradingEngine:
         planned_price = float(signal.get("target_price") if is_limit else live_price)
         if entry_mode == "CHANNEL_SWING":
             candidate_bar_id = signal.get("candidate_bar_id")
-            live_outer_entry = False
+            # A profit-close token authorizes one fresh reentry attempt; a
+            # transient price rejection must remain eligible for later quotes.
+            live_outer_entry = bool(signal.get("profit_reentry_token"))
             validation_bar_id = candidate_bar_id
             invalid_candidate_key = (
                 symbol, str(side).upper(), validation_bar_id,
@@ -2476,6 +2482,8 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
+            if signal.get("profit_reentry_token") and fresh_snapshot.get("signal_code"):
+                signal["signal_code"] = fresh_snapshot["signal_code"]
             planned_price = float(fresh_snapshot["price"])
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
@@ -6610,27 +6618,23 @@ class TradingEngine:
         position_path: dict | None = None,
         outer_entry_only: bool = False,
     ) -> dict:
-        """Use MA15-aligned pivots or confirmed outer breaks; retain held exits."""
+        """Use live CK outside direction or closed pivots; retain held exits."""
         held = str(current_side or "").upper()
         wait = {"action": "HOLD" if held in ("LONG", "SHORT") else "WAIT",
                 "side": None, "reason": "WAIT_OUTER_BREAK_CONFIRMATION"}
+        if held not in ("LONG", "SHORT") and not outer_entry_only:
+            decision = pivot_entry(frame, live_price)
+            if decision.get("action") == "ENTER":
+                if TradingEngine._channel_closed_waves_falling(frame, decision["side"]):
+                    return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if decision["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
+                # A CK-aligned peak/trough takes priority even beyond the
+                # opposite rail; do not replace its turn with an outside chase.
+                return decision
+            outside = outside_entry(frame, live_price)
+            return outside if outside["reason"] != "KC_INSIDE_CHANNEL" else decision
         required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
             return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
-        if held not in ("LONG", "SHORT") and not outer_entry_only:
-            decision = pivot_entry(frame, live_price)
-            if decision.get("action") == "ENTER" and TradingEngine._channel_closed_waves_falling(frame, decision["side"]):
-                return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if decision["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
-            if (decision.get("action") == "ENTER"
-                    or (decision.get("reason") != "WAIT_MA15_PRICE_PIVOT"
-                        and not (len(frame) == 4 and decision.get("reason") == "KC_DATA_UNAVAILABLE"))):
-                return decision
-            # A second authorized entry: a closed body crosses the outer rail
-            # and the next closed candle confirms. Do not revive outer chasing.
-            breakout = TradingEngine._channel_swing_action(frame, live_price, outer_entry_only=True)
-            if breakout.get("reason") in {"KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT"}:
-                return breakout
-            return decision
         try:
             # The final row is still forming; [-3] is breakout and [-2] confirms.
             breakout, confirmation = frame.iloc[-3], frame.iloc[-2]
@@ -6942,7 +6946,8 @@ class TradingEngine:
                 self.account.log(f"⏸️ [真突破] {symbol} 帳戶風控暫停新倉，保留重試", "WARNING")
                 return False
             latest = frame.iloc[-2]
-            confirmation_label = "MA15 aligned confirmed price pivot" if decision["reason"] in PIVOT_CODES else "two closed candles"
+            confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
+                                  "live price outside CK" if decision["reason"] in OUTER_CODES else "two closed candles")
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
                 "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
@@ -7338,32 +7343,30 @@ class TradingEngine:
 
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
-        # A profit-exit recovery is not cancelled by the disabled middle exit.
-        decision = self._channel_swing_action(
-            frame, price, ticket["side"],
-            position_open_timestamp=ticket.get("opened_at"),
-            position_path=ticket.setdefault("path", {}),
-        )
-        ends_recovery = decision["action"] == "REVERSE" or (
-            decision["action"] == "EXIT" and decision.get("reason") != "KC_REACHED_MIDDLE_COMPRESSED")
-        result = "end" if ends_recovery else reentry_gate(ticket, frame, price)
-        if result == "ready" and self._channel_swing_action(frame, price, outer_entry_only=True).get("side") != ticket["side"]:
-            result = "wait"
-        if result == "end":
-            self.account.channel_profit_reentries.pop(symbol, None)
-            self._channel_swing_peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {})
-            self._channel_swing_peak_exit_info[symbol] = {
-                "side": ticket["side"], "exit_bar_id": frame.iloc[-1].get("timestamp", frame.index[-1]),
-                "require_new_closed_break": True, "allow_new_outer_signal": True,
-            }
-        self.account.save_state()
-        return result == "ready"
+        if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
+                or symbol in self.account.positions):
+            return False
+        decision = self._channel_swing_action(frame, price)
+        if decision.get("action") != "ENTER" or decision.get("side") != ticket["side"]:
+            return False
+        if decision.get("reason") in PIVOT_CODES:
+            if "exit_bar_id" not in ticket:
+                ticket["exit_bar_id"] = frame.iloc[-1].get("timestamp", frame.index[-1])
+                self.account.save_state()
+            return self._profit_pivot_is_new(ticket, frame)
+        return decision.get("reason") in OUTER_CODES
 
     async def _try_profit_reentry(self, symbol, frame, price, daily_halt):
+        lock = getattr(self, "_channel_profit_reentry_lock", None)
+        if lock is None:
+            lock = self._channel_profit_reentry_lock = asyncio.Lock()
+        async with lock:
+            await self._try_profit_reentry_locked(symbol, frame, price, daily_halt)
+
+    async def _try_profit_reentry_locked(self, symbol, frame, price, daily_halt):
         ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
         if not ticket or symbol in self.account.positions:
             return
-        # A crash after close is recoverable only with its matching close trade.
         if ticket.get("phase") == "closing":
             reason = "Channel Swing PROFIT_PROTECTION " + ticket["token"]
             if not any(t.get("symbol") == symbol and t.get("reason") == reason
@@ -7373,24 +7376,29 @@ class TradingEngine:
                 self.account.save_state()
                 return
             ticket["phase"] = "closed"
-        # Migrate existing outer-reentry tickets conservatively: observe a new
-        # confirmation after this scan instead of replaying a pre-close pivot.
-        if "exit_bar_id" not in ticket:
-            ticket["exit_bar_id"] = frame.iloc[-1].get("timestamp", frame.index[-1])
             self.account.save_state()
-        if daily_halt or not self._profit_pivot_is_new(ticket, frame):
-            return
-        decision = self._channel_swing_action(frame, price)
-        if decision.get("action") != "ENTER" or decision.get("reason") not in (PIVOT_CODES | {"KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT"}):
-            return
-        # Reuse ordinary pivot execution, including fresh data, profit room,
-        # invalidation locks, account checks and persisted confirmation dedup.
-        side = decision["side"]
-        if await self._execute_confirmed_channel_break(symbol, frame, price, side, daily_halt):
+        candidate = "profit:" + ticket["token"]
+        if any(t.get("symbol") == symbol and t.get("action") == "OPEN_" + ticket["side"]
+               and t.get("channel_confirmation_bar_id") == candidate
+               for t in getattr(self.account, "trades", [])):
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
-            entry_label = "峰谷" if decision["reason"] in PIVOT_CODES else "外軌突破"
-            self.account.log(f"✅ [獲利保護重開] {symbol} {side} 新順勢{entry_label}確認，已重新開倉", "SUCCESS")
+            return
+        if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
+            return
+        decision = self._channel_swing_action(frame, price)
+        signal = {"side": ticket["side"], "score": 100, "entry_mode": "CHANNEL_SWING",
+                  "action": "ENTER_MARKET", "reason": "Channel Swing PROFIT_REENTRY " + decision["reason"] + " " + ticket["token"],
+                  "profit_reentry_token": ticket["token"], "signal_code": decision["reason"],
+                  "candidate_bar_id": candidate, "profit_profile": "TREND_EXTENSION",
+                  "atr": float(frame.iloc[-1].get("atr") or price * .015)}
+        # Fresh quote, remaining profit room, fading momentum and account risk
+        # are all checked by the normal order route before this same-bar reentry.
+        if await self._place_structured_entry(symbol, signal, price):
+            self.account.channel_profit_reentries.pop(symbol, None)
+            getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
+            self.account.save_state()
+            self.account.log(f"✅ [獲利保護重開] {symbol} {ticket['side']} 入口確認、利潤空間與安全檢查通過，已重開", "SUCCESS")
 
     @staticmethod
     def _profit_pivot_is_new(ticket, frame):
@@ -7560,7 +7568,7 @@ class TradingEngine:
                     return signal_progress, detected_candidates
             if path_state != path_before and hasattr(self.account, "save_state"):
                 self.account.save_state()
-            break_reasons = PIVOT_CODES | {
+            break_reasons = PIVOT_CODES | OUTER_CODES | {
                 "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_LIVE_UPPER_MOMENTUM_LONG",
@@ -7572,6 +7580,9 @@ class TradingEngine:
             pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
             direct_side = channel_action.get("side") if channel_action.get("reason") in break_reasons else None
             if not existing_pos and pending_side in ("LONG", "SHORT"):
+                # A new live outside signal must not keep an expired reversal
+                # retry alive or replace its closed confirmation on this scan.
+                direct_side = None
                 retry_bar = getattr(self, "_channel_pending_reverse_bar", {}).get(symbol)
                 if retry_bar == (pending_side, self._channel_candidate_bar_id(channel_df)):
                     retry_decision = self._channel_swing_action(

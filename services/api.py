@@ -218,7 +218,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"MA15順勢峰谷開倉／剩餘淨利空間檢查／峰谷倉先越中軌再回中軌退場；最高浮盈回吐20%平倉；階梯式遇即時反色K收緊至10%；預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"CK順勢：峰谷第一根收線確認即進場／外側即時入口／方向不明不開倉／剩餘淨利空間檢查／峰谷倉先越中軌再回中軌退場；最高浮盈回吐20%平倉；階梯式遇即時反色K收緊至10%；預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

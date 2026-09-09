@@ -1,4 +1,4 @@
-"""MA15-aligned closed pivots and position-specific middle exit regressions."""
+"""CK-aligned closed pivots and position-specific middle exit regressions."""
 import asyncio
 import json
 from unittest.mock import AsyncMock
@@ -21,10 +21,13 @@ def market(side="LONG"):
     f.loc[16, ["open", "high", "low", "close", "ma3", "ma15"]] = [97., 98., 94., 95., 97., 96.1]
     f.loc[17, ["open", "high", "low", "close", "ma3", "ma15"]] = [95., 99., 95., 98., 97.5, 96.2]
     f.loc[18, ["open", "high", "low", "close", "ma3", "ma15"]] = [97.8, 99., 97.5, 98., 97.8, 96.3]
+    f.loc[16:18] = f.loc[15:17].to_numpy()
     f.loc[19, ["open", "high", "low", "close"]] = [98., 98.2, 97.9, 98.1]
+    f["kc_middle"] = 100.
+    f.loc[16:18, "kc_middle"] = [99.8, 99.9, 100.]
     if side == "SHORT":
         original = f.copy()
-        for key in ("open", "close", "ma3", "ma15"):
+        for key in ("open", "close", "ma3", "ma15", "kc_middle"):
             f[key] = 200. - original[key]
         f["high"], f["low"] = 200. - original["low"], 200. - original["high"]
     return f
@@ -39,18 +42,19 @@ def test_closed_pivot_confirmation(side, case):
     if case == "flat_ma15": f.loc[16:18, "ma15"] = 100.
     elif case == "mixed_ma15": f.loc[16:18, "ma15"] = [100., 101., 100.5]
     elif case == "opposite_ma15": f.loc[16:18, "ma15"] = f.loc[16:18, "ma15"].to_numpy()[::-1]
-    elif case == "equal_extreme": f.loc[15, extreme] = f.loc[16, extreme]
+    elif case == "equal_extreme": f.loc[16, extreme] = f.loc[17, extreme]
     elif case == "opposite_body": f.loc[18, ["open", "close"]] = f.loc[18, ["close", "open"]].to_numpy()
     elif case == "doji": f.loc[18, "open"] = f.loc[18, "close"]
-    elif case == "flat_ma3": f.loc[17, "ma3"] = f.loc[16, "ma3"]
-    elif case == "no_ma3_turn": f.loc[15, "ma3"] = f.loc[16, "ma3"]
+    elif case == "flat_ma3": f.loc[18, "ma3"] = f.loc[17, "ma3"]
+    elif case == "no_ma3_turn": f.loc[16, "ma3"] = f.loc[17, "ma3"]
     elif case == "invalid": f.loc[17, "low"] = float("nan")
     elif case == "bad_ohlc": f.loc[18, "high"] = f.loc[18, "low"] - 1
     elif case == "live_only": f = f.iloc[:-1].copy()
-    elif case == "broken_pivot": price = float(f.loc[16, extreme])
+    elif case == "broken_pivot": price = float(f.loc[17, extreme])
     result = TradingEngine._channel_swing_action(f, price)
-    assert (result["action"] == "ENTER") is (case == "valid"), result
-    if case == "valid": assert result["side"] == side
+    allowed = case in {"valid", "flat_ma15", "mixed_ma15", "opposite_ma15"}
+    assert (result["action"] == "ENTER") is allowed, result
+    if allowed: assert result["side"] == side
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -84,6 +88,8 @@ async def test_snapshot_accepts_inside_channel_and_rejects_changed_signal(side):
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 17) is None
     f.loc[16:18, "ma15"] = 100.
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
+    f.loc[16:18, "kc_middle"] = 100.
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is None
 
 
@@ -162,9 +168,9 @@ def test_confirmed_outer_break_can_enter_without_pivot(side):
     f = outer_market(side); price = float(f.iloc[-1]["close"])
     assert pivot_entry(f, price)["action"] == "WAIT"
     assert TradingEngine._channel_swing_action(f, price)["side"] == side
-    # Merely staying outside the rail is not a new body crossing.
+    # Latest authorization permits outside entry without a body crossing.
     f.loc[17, "open"] = 102.5 if side == "LONG" else 97.5
-    assert TradingEngine._channel_swing_action(f, price)["action"] == "WAIT"
+    assert TradingEngine._channel_swing_action(f, price)["side"] == side
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -274,7 +280,7 @@ async def test_profit_reentry_uses_new_inside_channel_pivot(side, monkeypatch):
     assert len(e.account.events) == 1, e.account.logs
     assert e.account.events[0][2] == side
     assert SYMBOL not in e.account.channel_profit_reentries
-    assert any('新順勢峰谷' in text for text, _ in e.account.logs)
+    assert any('入口確認' in text for text, _ in e.account.logs)
     # Another profit close can repeat the same flow on a later confirmation.
     e.account.positions.clear()
     e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='next', phase='closed', exit_bar_id=20)}
@@ -293,33 +299,33 @@ async def test_profit_reentry_migrates_ticket_and_preserves_failed_order(side):
     e.account.positions.clear(); e.account.save_state = lambda: None
     ticket = dict(side=side, token='old', phase='closed', pulled_back_inside=True)
     e.account.channel_profit_reentries = {SYMBOL: ticket}
-    e._execute_confirmed_channel_break = AsyncMock(return_value=False)
+    e._place_structured_entry = AsyncMock(return_value=False)
     await e._try_profit_reentry(SYMBOL, f, price, False)
     assert ticket['exit_bar_id'] == 19
-    e._execute_confirmed_channel_break.assert_not_awaited()
+    e._place_structured_entry.assert_not_awaited()
     f.index += 1
     await e._try_profit_reentry(SYMBOL, f, price, False)
-    e._execute_confirmed_channel_break.assert_awaited_once()
+    e._place_structured_entry.assert_awaited_once()
     assert SYMBOL in e.account.channel_profit_reentries
-    f.loc[f.index[-2], 'ma15'] = f.iloc[-3]['ma15']
+    f.loc[f.index[-2], 'kc_middle'] = f.iloc[-3]['kc_middle']
     await e._try_profit_reentry(SYMBOL, f, price, False)
-    e._execute_confirmed_channel_break.assert_awaited_once()
+    e._place_structured_entry.assert_awaited_once()
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('bad', ['first_opposite', 'first_doji', 'second_opposite', 'second_doji', 'second_live'])
-async def test_pivot_requires_two_closed_same_colour_candles_at_order_time(side, bad):
+@pytest.mark.parametrize('bad', ['first_opposite', 'first_doji', 'first_live'])
+async def test_pivot_requires_first_closed_turn_at_order_time(side, bad):
     f = market(side); price = float(f.iloc[-1]['close'])
     e = _execution_engine(f, side, True); e.account.positions.clear(); e.tickers[SYMBOL] = price
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
-    row = 17 if bad.startswith('first') else 18
+    row = 18
     if bad.endswith('opposite'):
         f.loc[row, ['open', 'close']] = f.loc[row, ['close', 'open']].to_numpy()
     elif bad.endswith('doji'):
         f.loc[row, 'open'] = f.loc[row, 'close']
     else:
-        # The second directional candle is still live, so cannot confirm.
+        # The first turn candle is still live, so cannot confirm.
         e.fetch_klines = AsyncMock(return_value=f.iloc[:-1].copy())
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is None
 
@@ -328,7 +334,7 @@ def test_reported_pepe_and_lobster_entry_replay():
     from pathlib import Path
     import pandas as pd
     data = json.loads((Path(__file__).parent / 'fixtures' / 'pepe_lobster_entry_20260909.json').read_text())
-    for name, price, expected in [('pepe', .0034988, 'ENTER'), ('lobster', .052423, 'WAIT')]:
+    for name, price, expected in [('pepe', .0034988, 'ENTER'), ('lobster', .052423, 'ENTER')]:
         f = pd.DataFrame(data[name]); f = f[f.time <= 1788990300].copy()
         f['timestamp'] = f.time * 1000
         # Historical closed candles plus entry-time price; reconstruct the live
@@ -339,8 +345,10 @@ def test_reported_pepe_and_lobster_entry_replay():
         assert decision['action'] == expected, (name, decision)
         if name == 'pepe':
             assert decision['side'] == 'SHORT'
-            assert decision['reason'] == 'KC_LOWER_BREAKOUT_STRICT'
+            assert decision['reason'] == 'KC_OUTSIDE_SHORT'
         else:
-            # Next scan still cannot confirm: the second candle closed red.
+            assert decision["side"] == "LONG"
+            assert decision["reason"] == "KC_MA15_TROUGH_LONG"
+            # A later bar cannot reuse the previous first-turn confirmation.
             later = pd.DataFrame(data[name]); later['timestamp'] = later.time * 1000
             assert TradingEngine._channel_swing_action(later, float(later.iloc[-1]['open']))['action'] == 'WAIT'

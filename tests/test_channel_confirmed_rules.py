@@ -1,4 +1,4 @@
-"""Current rules: closed MA15 pivots, confirmed outer reversals and single fills."""
+"""Current rules: closed CK pivots, confirmed outer reversals and single fills."""
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -16,7 +16,7 @@ def confirm_pivot(frame, side):
         frame[key] = source.iloc[-1][key]
     frame['ema_20'] = 100.
     for offset in range(5):
-        for key in ('open', 'high', 'low', 'close', 'ma3', 'ma15'):
+        for key in ('open', 'high', 'low', 'close', 'ma3', 'ma15', 'kc_middle'):
             frame.loc[frame.index[-5 + offset], key] = source.iloc[-5 + offset][key]
     return float(frame.iloc[-1]['close'])
 
@@ -26,7 +26,7 @@ def anyio_backend():
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('length', [5, 30, 70])
-def test_available_ma15_history_confirms_entry(setup_engine, side, length):
+def test_available_ck_history_confirms_entry(setup_engine, side, length):
     _, f = setup_engine(side)
     price = confirm_pivot(f, side)
     f = f.tail(length)
@@ -35,7 +35,7 @@ def test_available_ma15_history_confirms_entry(setup_engine, side, length):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('held', [False, True])
 @pytest.mark.parametrize('invalid', ['live_only', 'doji', 'opposite_colour', 'wick', 'gap'])
-def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, invalid):
+def test_outside_entry_ignores_colour_but_reversal_requires_confirmation(setup_engine, side, held, invalid):
     old = ('SHORT' if side == 'LONG' else 'LONG') if held else None
     _, f = setup_engine(side, old)
     # Isolate invalid breakout shapes from the separately tested emergency exits.
@@ -61,8 +61,12 @@ def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, inva
     if not held:
         # Isolate the invalid outer break from an independently valid pivot.
         f["ma3"] = 100.
+    f['kc_middle'] = 100.
+    sign = 1 if side == 'LONG' else -1
+    f.loc[66:68, 'kc_middle'] = [100. - sign * .2, 100. - sign * .1, 100.]
     result = TradingEngine._channel_swing_action(f, price, old)
-    assert result['action'] == ('HOLD' if held else 'WAIT')
+    assert result['action'] == ('HOLD' if held else 'ENTER')
+    if not held: assert result['side'] == side
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -122,15 +126,17 @@ async def test_expired_confirmation_cannot_open(setup_engine):
     assert not e.account.trades
 
 @pytest.mark.anyio
-async def test_rejected_reverse_retry_expires_with_bar(setup_engine):
-    e, f = setup_engine('LONG', 'SHORT')
-    confirm_break(f, 'LONG')
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+async def test_rejected_reverse_retry_expires_with_bar(setup_engine, side):
+    old = 'SHORT' if side == 'LONG' else 'LONG'
+    e, f = setup_engine(side, old)
+    confirm_break(f, side)
     e._abnormal_market_entry_allowed = lambda *_: False
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert SYMBOL not in e.account.positions
-    assert e._channel_outer_reentry_after_exit[SYMBOL] == 'LONG'
+    assert e._channel_outer_reentry_after_exit[SYMBOL] == side
     e._abnormal_market_entry_allowed = lambda *_: True
-    f.loc[67, ['open','close']] = [103., 103.2]
+    f.loc[67, ['open','close']] = [103., 103.2] if side == 'LONG' else [97., 96.8]
     f['timestamp'] = list(range(70))
     f.loc[68, 'timestamp'] = 999
     await e._process_single_symbol(SYMBOL, 2., None, False)

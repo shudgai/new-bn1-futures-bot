@@ -14,12 +14,14 @@ def market(side):
     f = _narrow_channel_frame()
     f['kc_upper'], f['kc_lower'], f['atr'] = 102., 98., 2.
     f.loc[16:18, 'ma15'] = [99., 100., 101.]
+    f['kc_middle'] = 100.
+    f.loc[16:18, 'kc_middle'] = [99.8, 99.9, 100.]
     f.loc[17, ['open','close','high','low']] = [101.,103.,103.1,100.9]
     f.loc[18, ['open','close','high','low']] = [103.,104.,104.1,102.9]
     f.loc[19, ['open','close','high','low']] = [104.,104.5,104.6,103.9]
     if side == 'SHORT':
         original = f.copy()
-        for key in ('open','close','ma3','ma15'):
+        for key in ('open','close','ma3','ma15','kc_middle'):
             f[key] = 200. - original[key]
         f['high'], f['low'] = 200.-original['low'], 200.-original['high']
         f['kc_upper'], f['kc_lower'] = 200.-original['kc_lower'], 200.-original['kc_upper']
