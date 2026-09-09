@@ -7360,13 +7360,15 @@ class TradingEngine:
 
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
-        # General exit/reversal ends this recovery cycle even while waiting flat.
+        # A profit-exit recovery is not cancelled by the disabled middle exit.
         decision = self._channel_swing_action(
             frame, price, ticket["side"],
             position_open_timestamp=ticket.get("opened_at"),
             position_path=ticket.setdefault("path", {}),
         )
-        result = "end" if decision["action"] in {"EXIT", "REVERSE"} else reentry_gate(ticket, frame, price)
+        ends_recovery = decision["action"] == "REVERSE" or (
+            decision["action"] == "EXIT" and decision.get("reason") != "KC_REACHED_MIDDLE_COMPRESSED")
+        result = "end" if ends_recovery else reentry_gate(ticket, frame, price)
         if result == "end":
             self.account.channel_profit_reentries.pop(symbol, None)
             self._channel_swing_peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {})
@@ -7492,6 +7494,13 @@ class TradingEngine:
                 profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
                 if previous_protection != existing_pos.get("channel_profit_protection"):
                     self.account.save_state()
+                profit_state = existing_pos.get("channel_profit_protection", {})
+                uses_profit_exit = bool(
+                    profit_state.get("armed") or profit_state.get("stacked_seen")
+                    or profit_state.get("trend_style") in {"CHOPPY", "STACKED"})
+                if (uses_profit_exit and channel_action.get("action") == "EXIT"
+                        and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
+                    channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
                     if tickets.pop(symbol, None) is not None:
                         self.account.save_state()

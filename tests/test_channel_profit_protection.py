@@ -263,3 +263,51 @@ def test_first_arming_on_opposite_tick_honors_previously_observed_peak():
     assert result['peak_gross'] == 10.
     assert result['stop_price'] == 104.5
     assert result['triggered']
+
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('style', ['CHOPPY', 'STACKED', 'SMOOTH'])
+async def test_middle_exit_only_manages_smooth_unarmed_position(style):
+    f = styled_frame(style)
+    e = _execution_engine(f, 'LONG', True)
+    e.account.save_state = lambda: None
+    e.account.positions[SYMBOL].update(position('LONG'))
+    e.tickers[SYMBOL] = 100.1  # Net floor has not armed; still route by style.
+    e._channel_swing_action = lambda *a, **k: {'action': 'EXIT', 'reason': 'KC_REACHED_MIDDLE_COMPRESSED'}
+    await e._process_single_symbol(SYMBOL, 1., None, False)
+    assert bool(e.account.events) is (style == 'SMOOTH'), e.account.logs
+    assert (SYMBOL in e.account.positions) is (style != 'SMOOTH')
+
+
+@pytest.mark.anyio
+async def test_middle_signal_cannot_preempt_profit_exit_or_cancel_reentry():
+    f = frame()
+    e = _execution_engine(f, 'LONG', True)
+    e.account.save_state = lambda: None
+    e.account.positions[SYMBOL].update(position('LONG'))
+    protection(e.account.positions[SYMBOL], 105., .0005, .0001)
+    e.tickers[SYMBOL] = 103.1
+    e._channel_swing_action = lambda *a, **k: {'action': 'EXIT', 'reason': 'KC_REACHED_MIDDLE_COMPRESSED'}
+    e._place_structured_entry = AsyncMock(return_value=True)
+    await e._process_single_symbol(SYMBOL, 1., None, False)
+    assert 'PROFIT_PROTECTION' in e.account.events[0][3], e.account.logs
+    e._place_structured_entry.assert_awaited_once()
+
+
+@pytest.mark.parametrize('style', ['CHOPPY', 'SMOOTH'])
+def test_reopened_position_reclassifies_without_previous_ten_percent_lock(style):
+    p = position('LONG')
+    protection(p, 105., .0005, .0001, styled_frame('STACKED'))
+    protection(p, 104.4, .0005, .0001, styled_frame('STACKED'))
+    assert p['channel_profit_protection']['tightened']
+    # Even an accidentally retained state must reset for a new position identity.
+    p['open_timestamp'] = 20.
+    result = protection(p, 101., .0005, .0001, styled_frame(style))
+    assert p['channel_profit_protection']['trend_style'] == style
+    assert not p['channel_profit_protection'].get('tightened')
+    if style == 'SMOOTH':
+        assert result is None
+        assert not p['channel_profit_protection']['armed']
+    else:
+        assert result['retracement_fraction'] == .30
