@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, outside_entry
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, middle_trend_entry
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2398,6 +2398,7 @@ class TradingEngine:
         return {
             "price": price, "kc_upper": upper, "kc_lower": lower,
             "frame": frame,
+            "signal_code": self._channel_swing_action(frame, price)["reason"] if not confirmed_reverse else None,
         }
 
     async def _place_structured_entry(
@@ -2482,7 +2483,7 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
-            if signal.get("profit_reentry_token") and fresh_snapshot.get("signal_code"):
+            if fresh_snapshot.get("signal_code"):
                 signal["signal_code"] = fresh_snapshot["signal_code"]
             planned_price = float(fresh_snapshot["price"])
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
@@ -6631,6 +6632,11 @@ class TradingEngine:
                 # opposite rail; do not replace its turn with an outside chase.
                 return decision
             outside = outside_entry(frame, live_price)
+            if outside.get("action") == "ENTER":
+                return outside
+            trend = middle_trend_entry(frame, live_price)
+            if trend.get("action") == "ENTER":
+                return trend
             return outside if outside["reason"] != "KC_INSIDE_CHANNEL" else decision
         required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
@@ -6947,7 +6953,8 @@ class TradingEngine:
                 return False
             latest = frame.iloc[-2]
             confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
-                                  "live price outside CK" if decision["reason"] in OUTER_CODES else "two closed candles")
+                                  "live price outside CK" if decision["reason"] in OUTER_CODES else
+                                  "closed CK middle trend and live candle" if decision["reason"] in TREND_CODES else "two closed candles")
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
                 "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
@@ -7354,7 +7361,7 @@ class TradingEngine:
                 ticket["exit_bar_id"] = frame.iloc[-1].get("timestamp", frame.index[-1])
                 self.account.save_state()
             return self._profit_pivot_is_new(ticket, frame)
-        return decision.get("reason") in OUTER_CODES
+        return decision.get("reason") in (OUTER_CODES | TREND_CODES)
 
     async def _try_profit_reentry(self, symbol, frame, price, daily_halt):
         lock = getattr(self, "_channel_profit_reentry_lock", None)
@@ -7568,7 +7575,7 @@ class TradingEngine:
                     return signal_progress, detected_candidates
             if path_state != path_before and hasattr(self.account, "save_state"):
                 self.account.save_state()
-            break_reasons = PIVOT_CODES | OUTER_CODES | {
+            break_reasons = PIVOT_CODES | OUTER_CODES | TREND_CODES | {
                 "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_LIVE_UPPER_MOMENTUM_LONG",

@@ -5,7 +5,7 @@ import math
 PIVOT_CODES = {"KC_MA15_TROUGH_LONG", "KC_MA15_PEAK_SHORT"}
 
 
-def closed_ck_direction(frame):
+def closed_ck_direction(frame, require_outer_slope=True):
     """Use three closed midpoints and a non-adverse directional outer rail."""
     try:
         if frame is None or len(frame) < 4:
@@ -19,9 +19,9 @@ def closed_ck_direction(frame):
             return None
         if any(lo >= hi for lo, hi in zip(lower, upper)):
             return None
-        if middle[0] < middle[1] < middle[2] and upper[0] <= upper[1] <= upper[2]:
+        if middle[0] < middle[1] < middle[2] and (not require_outer_slope or upper[0] <= upper[1] <= upper[2]):
             return "LONG"
-        if middle[0] > middle[1] > middle[2] and lower[0] >= lower[1] >= lower[2]:
+        if middle[0] > middle[1] > middle[2] and (not require_outer_slope or lower[0] >= lower[1] >= lower[2]):
             return "SHORT"
     except (AttributeError, TypeError, ValueError, KeyError, IndexError):
         return None

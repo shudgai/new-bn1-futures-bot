@@ -51,7 +51,7 @@ def test_closed_pivot_confirmation(side, case):
     elif case == "bad_ohlc": f.loc[18, "high"] = f.loc[18, "low"] - 1
     elif case == "live_only": f = f.iloc[:-1].copy()
     elif case == "broken_pivot": price = float(f.loc[17, extreme])
-    result = TradingEngine._channel_swing_action(f, price)
+    result = pivot_entry(f, price)
     allowed = case in {"valid", "flat_ma15", "mixed_ma15", "opposite_ma15"}
     assert (result["action"] == "ENTER") is allowed, result
     if allowed: assert result["side"] == side
@@ -317,6 +317,8 @@ async def test_profit_reentry_migrates_ticket_and_preserves_failed_order(side):
 @pytest.mark.parametrize('bad', ['first_opposite', 'first_doji', 'first_live'])
 async def test_pivot_requires_first_closed_turn_at_order_time(side, bad):
     f = market(side); price = float(f.iloc[-1]['close'])
+    # Keep the live candle neutral to isolate the closed-pivot route.
+    f.loc[19, "open"] = price
     e = _execution_engine(f, side, True); e.account.positions.clear(); e.tickers[SYMBOL] = price
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
     row = 18

@@ -66,9 +66,10 @@ async def test_reentry_snapshot_revalidates_both_entries(side, case):
         ticket["exit_bar_id"] = 19
     engine.tickers[SYMBOL] = price
     snapshot = await engine._fresh_channel_entry_snapshot(SYMBOL, side, profit_reentry_token=token)
-    assert (snapshot is not None) == (case in {"valid", "outside"})
+    assert (snapshot is not None) == (case in {"valid", "outside", "no_pivot"})
     if case == "valid": assert snapshot["signal_code"] in {"KC_MA15_TROUGH_LONG", "KC_MA15_PEAK_SHORT"}
     if case == "outside": assert snapshot["signal_code"] == "KC_OUTSIDE_" + side
+    if case == "no_pivot": assert snapshot["signal_code"] == "KC_MIDDLE_TREND_" + side
 
 
 @pytest.mark.anyio
@@ -155,7 +156,7 @@ def test_outside_requires_closed_ck_trend(side, case):
     if case == "short_history": frame = frame.tail(3)
     if case == "rail_opposite": frame.loc[18, "kc_upper" if side == "LONG" else "kc_lower"] -= 1 if side == "LONG" else -1
     if case == "live_opposite": frame.loc[19, "kc_middle"] = 1. if side == "LONG" else 1000.
-    result = TradingEngine._channel_swing_action(frame, price)
+    result = outside_entry(frame, price)
     assert (result["action"] == "ENTER") == (case in {"aligned", "live_opposite"})
     if result["action"] == "ENTER": assert result["side"] == side
 
