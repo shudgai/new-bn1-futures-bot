@@ -12,6 +12,8 @@ def anyio_backend(): return 'asyncio'
 async def test_weak_confirmation_waits_for_later_strong_body(setup_engine, side, held):
     old=('SHORT' if side=='LONG' else 'LONG') if held else None
     e,f=setup_engine(side,old)
+    # Isolate ordinary breakout timing; these bodies are not abnormal.
+    f["atr"] = 10.
     confirmed=f.copy()
     # Move breakout to the newest closed row: live outside is not confirmation.
     f.loc[67]=f.loc[66].copy()

@@ -3527,6 +3527,11 @@ class TradingEngine:
             lower = float(latest["kc_lower"])
         except (TypeError, ValueError, IndexError, KeyError):
             return None
+        exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
+        if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
+            "ENTER", False, side, frame, exit_info, symbol,
+        ):
+            return None
         fresh_candidate_bar_id = self._channel_candidate_bar_id(frame)
         if (
             not all(math.isfinite(value) for value in (price, upper, lower))
@@ -6951,6 +6956,22 @@ class TradingEngine:
             and isinstance(peak_exit_info, dict)
         ):
             return False
+        if peak_exit_info.get("require_new_closed_break"):
+            try:
+                breakout, confirmation = frame.iloc[-3], frame.iloc[-2]
+                breakout_id = breakout.get("timestamp", frame.index[-3])
+                breakout_time, exit_time = float(breakout_id), float(peak_exit_info["exit_bar_id"])
+                if not all(math.isfinite(value) for value in (breakout_time, exit_time)) or breakout_time <= exit_time:
+                    return True
+                if entry_side == "LONG":
+                    return not (float(breakout["open"]) <= float(breakout["kc_upper"]) < float(breakout["close"])
+                                and float(confirmation["close"]) > max(float(confirmation["open"]), float(confirmation["kc_upper"])))
+                if entry_side == "SHORT":
+                    return not (float(breakout["open"]) >= float(breakout["kc_lower"]) > float(breakout["close"])
+                                and float(confirmation["close"]) < min(float(confirmation["open"]), float(confirmation["kc_lower"])))
+            except (TypeError, ValueError, KeyError, IndexError):
+                pass
+            return True
         exited_side = str(peak_exit_info.get("side") or "").upper()
         if exited_side != str(entry_side or "").upper():
             # 反向開倉不受峰谷冷卻限制
@@ -6978,6 +6999,8 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float, peak_exit_info: dict | None,
     ) -> dict:
         """Confirm a normal post-peak reversal before opening the opposite side."""
+        if peak_exit_info and peak_exit_info.get("require_new_closed_break"):
+            return {"action": "WAIT", "side": None, "reason": "WAIT_NEW_CLOSED_BREAK_AFTER_EXIT"}
         if frame is None or len(frame) < 4:
             return {"action": "WAIT", "side": None, "reason": "PEAK_REVERSAL_WAIT"}
         exited_side = str((peak_exit_info or {}).get("side") or "").upper()
@@ -7373,30 +7396,83 @@ class TradingEngine:
         return action, target_side, None
 
     @staticmethod
-
-    @staticmethod
-
-    @staticmethod
     def _channel_adverse_exit_reason(frame: pd.DataFrame, side: str, price: float, atr: float) -> str | None:
-        """Detect one live adverse waterfall or two closed abnormal opposite bars."""
-        if frame is None or len(frame) < 3 or not {"open", "close"}.issubset(frame.columns):
+        """Exit on a 2x abnormal body or two individually abnormal adverse bars."""
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
             return None
         try:
-            threshold = max(float(atr), abs(float(price)) * 1e-12) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-            live_open = float(frame.iloc[-1]["open"])
-            adverse_live = float(price) - live_open if side == "SHORT" else live_open - float(price)
-            if adverse_live >= threshold:
+            threshold = float(atr) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+            if not math.isfinite(threshold) or threshold <= 0:
+                return None
+            direction = 1.0 if side == "SHORT" else -1.0
+            adverse_live = direction * (float(price) - float(frame.iloc[-1]["open"]))
+            bodies = [direction * (float(row["close"]) - float(row["open"]))
+                      for _, row in frame.iloc[-3:-1].iterrows()]
+            if not all(math.isfinite(body) for body in [adverse_live, *bodies]):
+                return None
+            if adverse_live >= threshold * 2.0:
                 return "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
-            closed = frame.iloc[-3:-1]
-            bodies = [(float(row["close"]) - float(row["open"])) if side == "SHORT" else (float(row["open"]) - float(row["close"])) for _, row in closed.iterrows()]
-            # Two same-colour adverse bars may be individually smaller than the
-            # single-bar threshold; their combined body still represents an
-            # abnormal two-candle waterfall.
-            if len(bodies) == 2 and all(body > 0.0 for body in bodies) and sum(bodies) >= threshold * 2.0:
+            if bodies[-1] >= threshold * 2.0:
+                return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
+            if all(body >= threshold for body in bodies):
                 return "EMERGENCY_EXIT_2_CANDLE_ADVERSE"
         except (TypeError, ValueError, KeyError, IndexError):
             return None
         return None
+
+    @staticmethod
+    def _channel_ma3_outside(row: pd.Series, side: str) -> bool:
+        try:
+            ma3, upper, lower = (float(row[key]) for key in ("ma3", "kc_upper", "kc_lower"))
+            return bool(
+                all(math.isfinite(value) and value > 0 for value in (ma3, upper, lower))
+                and lower < upper
+                and ((side == "LONG" and ma3 >= upper) or (side == "SHORT" and ma3 <= lower))
+            )
+        except (TypeError, ValueError, KeyError):
+            return False
+
+    @staticmethod
+    def _channel_outer_half_space_hold(previous: pd.Series, current: pd.Series, side: str) -> bool:
+        """Hold ordinary turns while MA3 stays outside and rail-to-MA15 room is >= half KC."""
+        if not all(TradingEngine._channel_ma3_outside(row, side) for row in (previous, current)):
+            return False
+        try:
+            upper, lower, ma15 = (float(current[key]) for key in ("kc_upper", "kc_lower", "ma15"))
+            gap = upper - ma15 if side == "LONG" else ma15 - lower
+            return bool(math.isfinite(ma15) and ma15 > 0 and gap >= (upper - lower) * 0.5)
+        except (TypeError, ValueError, KeyError):
+            return False
+
+    @staticmethod
+    def _channel_impulse_turn_allowed(
+        frame: pd.DataFrame, side: str, offset: int, live_price: float | None = None,
+    ) -> bool:
+        """A long reversal must immediately follow a favorable waterfall or pair."""
+        if side not in ("LONG", "SHORT"):
+            return False
+        try:
+            position = len(frame) + offset
+            if position < 2:
+                return False
+            turn = frame.iloc[position]
+            previous = frame.iloc[position - 1]
+            if TradingEngine._channel_outer_half_space_hold(previous, turn, side):
+                return False
+            threshold = float(previous.get("atr", 0.0)) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+            if not math.isfinite(threshold) or threshold <= 0:
+                return False
+            direction = 1.0 if side == "LONG" else -1.0
+            close = float(live_price) if offset == -1 and live_price is not None else float(turn["close"])
+            reverse_body = direction * (float(turn["open"]) - close)
+            bodies = [direction * (float(row["close"]) - float(row["open"]))
+                      for _, row in frame.iloc[position - 2:position].iterrows()]
+            if not all(math.isfinite(body) for body in [reverse_body, *bodies]):
+                return False
+            impulse = bodies[-1] >= threshold * 2.0 or all(body >= threshold for body in bodies)
+            return bool(reverse_body >= threshold and impulse)
+        except (ValueError, TypeError, KeyError, IndexError):
+            return False
 
     @staticmethod
     def _channel_ma15_convergence_is_gradual(
@@ -7423,6 +7499,44 @@ class TradingEngine:
             and gaps[0] - gaps[-1] >= atr_value * 0.50
             and max(reductions) <= atr_value * 0.50
         )
+
+    @staticmethod
+    def _channel_trend_exit_reason(frame: pd.DataFrame, side: str, entry_width: float = 0.0) -> str | None:
+        """Closed-candle exits only: compressed rail re-entry or confirmed structure failure."""
+        try:
+            closed = frame.iloc[:-1].copy()
+            previous, current = closed.iloc[-2], closed.iloc[-1]
+            widths = pd.to_numeric(closed["kc_upper"], errors="coerce") - pd.to_numeric(closed["kc_lower"], errors="coerce")
+            valid_widths = widths.tail(60)
+            valid_widths = valid_widths[valid_widths.map(lambda value: math.isfinite(value) and value > 0)]
+            width = float(widths.iloc[-1])
+            reference = max(float(valid_widths.max()), float(entry_width or 0.0))
+            ma3_before, ma3_now, ma15 = float(previous["ma3"]), float(current["ma3"]), float(current["ma15"])
+            upper, lower = float(current["kc_upper"]), float(current["kc_lower"])
+            if not all(math.isfinite(value) for value in (width, reference, ma3_before, ma3_now, ma15, upper, lower)) or width <= 0 or reference <= 0:
+                return None
+            rail = upper if side == "LONG" else lower
+            crossed_inside = (
+                side == "LONG" and ma3_before >= float(previous["kc_upper"])
+                and lower < ma3_now < upper and ma3_now < ma3_before
+            ) or (
+                side == "SHORT" and ma3_before <= float(previous["kc_lower"])
+                and lower < ma3_now < upper and ma3_now > ma3_before
+            )
+            # 40% is a strategy threshold, not a universal reversal guarantee.
+            if width <= reference * 0.40 and abs(ma15 - rail) <= width * 0.25 and crossed_inside:
+                return "KC_MA3_REENTER_EXIT"
+            # A channel midpoint must never be substituted with MA15.
+            if "ema_20" not in closed:
+                closed["ema_20"] = closed["kc_middle"] if "kc_middle" in closed else (closed["kc_upper"] + closed["kc_lower"]) / 2.0
+            needed = ["close", "ma3", "ma15", "ema_20", "kc_upper", "kc_lower"]
+            recent = closed[needed].tail(3).apply(pd.to_numeric, errors="coerce")
+            if len(recent) == 3 and all(math.isfinite(float(value)) and float(value) > 0 for value in recent.to_numpy().flat):
+                if TradingEngine._two_bar_structure_failure_exit(closed, side):
+                    return "KC_STRUCTURE_FAILURE_EXIT"
+        except (TypeError, ValueError, KeyError, IndexError):
+            return None
+        return None
 
     @staticmethod
     def _channel_swing_action(
@@ -7458,33 +7572,6 @@ class TradingEngine:
          ma15_before, ma15_now) = values
         if bo_lower >= bo_upper or cf_lower >= cf_upper:
             return {**wait, "reason": "KC_DATA_INVALID"}
-        live = frame.iloc[-1]
-        live_open = float(live["open"])
-        live_close = float(live["close"])
-        live_high = float(live["high"])
-        live_low = float(live["low"])
-        live_upper = float(live["kc_upper"])
-        live_lower = float(live["kc_lower"])
-        live_ma3 = float(live["ma3"])
-        confirmation_ma3 = float(confirmation["ma3"])
-        fast_upper_ma3_turn = bool(
-            held == "LONG"
-            and live_high >= live_upper
-            and live_ma3 >= live_upper
-            and live_close < live_open
-            and live_ma3 < confirmation_ma3
-        )
-        fast_lower_ma3_turn = bool(
-            held == "SHORT"
-            and live_low <= live_lower
-            and live_ma3 <= live_lower
-            and live_close > live_open
-            and live_ma3 > confirmation_ma3
-        )
-        if fast_upper_ma3_turn:
-            return {"action": "EXIT", "side": None, "reason": "LIVE_UPPER_MA3_TURN_EXIT"}
-        if fast_lower_ma3_turn:
-            return {"action": "EXIT", "side": None, "reason": "LIVE_LOWER_MA3_TURN_EXIT"}
         if not held and allow_live_entry:
             live = frame.iloc[-1]
             live_upper = float(live["kc_upper"])
@@ -7566,33 +7653,6 @@ class TradingEngine:
 
         upper_weak_then_body = weak_then_body_break("LONG")
         lower_weak_then_body = weak_then_body_break("SHORT")
-        convergence_atr = max(
-            float(confirmation.get("atr") or 0.0),
-            abs(cf_close) * 1e-12,
-        )
-        continuation_gap = convergence_atr * 0.25
-        previous_upper_gap = abs(bo_upper - ma15_before)
-        current_upper_gap = abs(cf_upper - ma15_now)
-        previous_lower_gap = abs(bo_lower - ma15_before)
-        current_lower_gap = abs(cf_lower - ma15_now)
-        upper_ma15_converged = current_upper_gap <= continuation_gap
-        lower_ma15_converged = current_lower_gap <= continuation_gap
-        upper_ma15_converged_gradually = TradingEngine._channel_ma15_convergence_is_gradual(
-            frame, "kc_upper", convergence_atr,
-        )
-        lower_ma15_converged_gradually = TradingEngine._channel_ma15_convergence_is_gradual(
-            frame, "kc_lower", convergence_atr,
-        )
-        upper_convergence_forecast = bool(
-            not upper_ma15_converged
-            and current_upper_gap < previous_upper_gap
-            and cf_close >= cf_upper - convergence_atr * 0.5
-        )
-        lower_convergence_forecast = bool(
-            not lower_ma15_converged
-            and current_lower_gap < previous_lower_gap
-            and cf_close <= cf_lower + convergence_atr * 0.5
-        )
         continuation_up = bool(
             cf_close > cf_open
             and cf_close > bo_close
@@ -7604,52 +7664,6 @@ class TradingEngine:
             and cf_close < bo_close
             and cf_lower <= bo_lower
             and ma15_now <= ma15_before
-        )
-        upper_ma3_turn_exit = bool(
-            held == "LONG"
-            and cf_high >= cf_upper
-            and float(confirmation.get("ma3") or 0.0) >= cf_upper
-            and cf_close < cf_open
-            and float(confirmation.get("ma3") or 0.0) < float(breakout.get("ma3") or 0.0)
-            and abs(cf_upper - ma15_now) <= kc_width * 0.20
-            and not upper_ma15_converged_gradually
-        )
-        lower_ma3_turn_exit = bool(
-            held == "SHORT"
-            and cf_low <= cf_lower
-            and float(confirmation.get("ma3") or 0.0) <= cf_lower
-            and cf_close > cf_open
-            and float(confirmation.get("ma3") or 0.0) > float(breakout.get("ma3") or 0.0)
-            and abs(cf_lower - ma15_now) <= kc_width * 0.20
-            and not lower_ma15_converged_gradually
-        )
-        upper_compression_exit = bool(
-            held == "LONG"
-            and upper_ma15_converged_gradually
-            and float(confirmation["ma3"]) >= cf_upper
-            and float(confirmation["ma3"]) < float(breakout["ma3"])
-            and float(confirmation["ma3"]) > ma15_now
-            and abs(float(confirmation["ma3"]) - ma15_now) <= convergence_atr * 0.35
-            and abs(cf_upper - ma15_now) <= convergence_atr * 0.75
-        )
-        lower_compression_exit = bool(
-            held == "SHORT"
-            and lower_ma15_converged_gradually
-            and float(confirmation["ma3"]) <= cf_lower
-            and float(confirmation["ma3"]) > float(breakout["ma3"])
-            and float(confirmation["ma3"]) < ma15_now
-            and abs(float(confirmation["ma3"]) - ma15_now) <= convergence_atr * 0.35
-            and abs(cf_lower - ma15_now) <= convergence_atr * 0.75
-        )
-        upper_compression_exit = bool(
-            upper_compression_exit
-            and abs(cf_upper - ma15_now) <= kc_width * 0.25
-            and abs(float(confirmation["ma3"]) - ma15_now) <= kc_width * 0.15
-        )
-        lower_compression_exit = bool(
-            lower_compression_exit
-            and abs(cf_lower - ma15_now) <= kc_width * 0.25
-            and abs(float(confirmation["ma3"]) - ma15_now) <= kc_width * 0.15
         )
         clean_continuation_up = bool(
             continuation_up
@@ -7670,44 +7684,21 @@ class TradingEngine:
         if not held and max(breakout_range, confirmation_range) > kc_width * 1.25:
             if not (clean_continuation_up or clean_continuation_down):
                 return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
-        if held == "LONG":
-            if lower_break_confirmed:
+        if held in ("LONG", "SHORT"):
+            # Confirmed opposite outer breaks take precedence over exit-only signals.
+            if held == "LONG" and lower_break_confirmed:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
-            if upper_compression_exit:
-                return {"action": "EXIT", "side": None, "reason": "UPPER_MA3_COMPRESSION_EXIT"}
-            if upper_ma3_turn_exit:
-                return {"action": "EXIT", "side": None, "reason": "UPPER_MA3_TURN_EXIT"}
-            if (
-                upper_ma15_converged_gradually
-                and float(confirmation["ma3"]) >= cf_upper
-                and cf_close >= cf_upper
-                and upper_ma15_converged
-            ):
-                if continuation_up:
-                    return {"action": "HOLD", "side": None, "reason": "UPPER_MA15_CONTINUATION"}
-                return {"action": "EXIT", "side": None, "reason": "UPPER_MA15_NO_CONTINUATION"}
-            if upper_ma15_converged_gradually and upper_convergence_forecast:
-                return {"action": "HOLD", "side": None, "reason": "UPPER_MA15_CONVERGENCE_FORECAST"}
-            return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
-        if held == "SHORT":
-            if upper_break_confirmed:
+            if held == "SHORT" and upper_break_confirmed:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
-            if lower_compression_exit:
-                return {"action": "EXIT", "side": None, "reason": "LOWER_MA3_COMPRESSION_EXIT"}
-            if lower_ma3_turn_exit:
-                return {"action": "EXIT", "side": None, "reason": "LOWER_MA3_TURN_EXIT"}
-            if (
-                lower_ma15_converged_gradually
-                and float(confirmation["ma3"]) <= cf_lower
-                and cf_close <= cf_lower
-                and lower_ma15_converged
-            ):
-                if continuation_down:
-                    return {"action": "HOLD", "side": None, "reason": "LOWER_MA15_CONTINUATION"}
-                return {"action": "EXIT", "side": None, "reason": "LOWER_MA15_NO_CONTINUATION"}
-            if lower_ma15_converged_gradually and lower_convergence_forecast:
-                return {"action": "HOLD", "side": None, "reason": "LOWER_MA15_CONVERGENCE_FORECAST"}
-            return {**wait, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
+            try:
+                entry_upper, entry_lower = float(entry_kc_upper or 0.0), float(entry_kc_lower or 0.0)
+                entry_width = entry_upper - entry_lower if 0 < entry_lower < entry_upper and math.isfinite(entry_upper) else 0.0
+            except (TypeError, ValueError):
+                entry_width = 0.0
+            exit_reason = TradingEngine._channel_trend_exit_reason(frame, held, entry_width)
+            if exit_reason:
+                return {"action": "EXIT", "side": None, "reason": exit_reason}
+            return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
         # Use up to 60 available closed MA15 values for the broad direction;
         # a one-bar turn alone does not change the entry trend.
         history = pd.to_numeric(frame["ma15"].iloc[:-1], errors="coerce").tail(60)
@@ -7809,6 +7800,11 @@ class TradingEngine:
             if pending is None:
                 pending = self._channel_outer_reentry_after_exit = {}
             position = self.account.positions.get(symbol)
+            exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
+            if not position and exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
+                "ENTER", False, side, frame, exit_info, symbol,
+            ):
+                return False
             bar_id = self._channel_candidate_bar_id(frame)
             used = getattr(self, "_channel_used_confirmation", None)
             if used is None:
@@ -8587,7 +8583,7 @@ class TradingEngine:
                             symbol, "PEAK_EXIT_WAIT_REBREAK", channel_df,
                         )
                     else:
-                        if channel_action.get("reason") not in {
+                        if not peak_exit_info.get("require_new_closed_break") and channel_action.get("reason") not in {
                             "PEAK_REVERSAL_SHORT", "TROUGH_REVERSAL_LONG",
                         }:
                             getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
@@ -8619,16 +8615,16 @@ class TradingEngine:
                         f"Channel Swing {channel_action.get('reason')}",
                         is_manual=True,
                     )
-                    if closed:
-                        if channel_action.get("reason") in {
-                            "UPPER_MA3_TURN_EXIT", "LOWER_MA3_TURN_EXIT",
-                            "LIVE_UPPER_MA3_TURN_EXIT", "LIVE_LOWER_MA3_TURN_EXIT",
-                            "UPPER_MA3_COMPRESSION_EXIT", "LOWER_MA3_COMPRESSION_EXIT",
-                        }:
-                            self._channel_swing_peak_exit_info[symbol] = {
-                                "side": existing_pos.get("side"),
-                                "bar_count": 0,
-                            }
+                    if closed and symbol not in self.account.positions:
+                        if not hasattr(self, "_channel_swing_peak_exit_info"):
+                            self._channel_swing_peak_exit_info = {}
+                        self._channel_swing_peak_exit_info[symbol] = {
+                            "side": existing_pos.get("side"), "bar_count": 0,
+                            "require_new_closed_break": True,
+                            "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
+                        }
+                        getattr(self, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
+                        getattr(self, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                         self.account.log(
                             f"✅ [Channel Swing 趨勢檢查] {symbol} 已平倉，等待下一個有效破軌點",
                             "SUCCESS",

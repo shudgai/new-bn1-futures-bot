@@ -176,7 +176,8 @@ async def test_live_adverse_cross_does_not_set_profit_lock(setup_engine,side):
     import core.engine as em
     e,f=setup_engine('LONG',side)
     f['kc_upper']=110.;f['kc_lower']=90.;f['ma15']=100.
-    f.loc[67:69,'close']=100.
+    # A pure MA cross has no adverse candle body.
+    f.loc[67:69,['open','high','low','close']]=100.
     f.loc[67:68,'ma3']=100.1 if side=='LONG' else 99.9
     f.loc[69,'ma3']=99.9 if side=='LONG' else 100.1
     e.tickers[SYMBOL]=100.

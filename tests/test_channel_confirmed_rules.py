@@ -26,6 +26,8 @@ def test_available_ma15_history_confirms_entry(setup_engine, side, length):
 def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, invalid):
     old = ('SHORT' if side == 'LONG' else 'LONG') if held else None
     _, f = setup_engine(side, old)
+    # Isolate invalid breakout shapes from the separately tested emergency exits.
+    f["atr"] = 10.
     confirm_break(f, side)
     if invalid == 'live_only':
         f.loc[69] = f.loc[68].copy()
