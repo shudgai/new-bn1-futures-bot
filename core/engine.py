@@ -7699,13 +7699,30 @@ class TradingEngine:
             if not (clean_continuation_up or clean_continuation_down):
                 return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
         if held in ("LONG", "SHORT"):
-            # 上軌一突破就要平倉 (立即停損/停利)
             # 使用前一根已收線的通道邊界作為基準，避免當前形成中 K 線的指標未計算完全
             previous_kc = frame.iloc[-2]
-            if held == "SHORT" and live_price > float(previous_kc["kc_upper"]):
-                return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
-            if held == "LONG" and live_price < float(previous_kc["kc_lower"]):
-                return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
+            current_live = frame.iloc[-1]
+            live_open = float(current_live["open"])
+            
+            try:
+                atr = float(current_live["atr"]) if "atr" in current_live and not pd.isna(current_live["atr"]) else live_price * 0.015
+            except (KeyError, ValueError, TypeError):
+                atr = live_price * 0.015
+
+            from core.config import RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+            # 使用戶能捕捉「紅長K」，若目前實體逆向超過閾值就立刻平倉，不用等收盤。
+            adverse_threshold = atr * max(0.3, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR)
+
+            if held == "SHORT":
+                if live_price > live_open and (live_price - live_open) >= adverse_threshold:
+                    return {"action": "EXIT", "side": None, "reason": "LIVE_ADVERSE_CANDLE_EXIT"}
+                if live_price > float(previous_kc["kc_upper"]):
+                    return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
+            if held == "LONG":
+                if live_price < live_open and (live_open - live_price) >= adverse_threshold:
+                    return {"action": "EXIT", "side": None, "reason": "LIVE_ADVERSE_CANDLE_EXIT"}
+                if live_price < float(previous_kc["kc_lower"]):
+                    return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
             
             # Confirmed opposite outer breaks take precedence over exit-only signals.
             if held == "LONG" and lower_break_confirmed:
