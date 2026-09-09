@@ -1,4 +1,4 @@
-"""2026-09-09: hold through candle impulses; only confirmed trend exits may flatten."""
+"""2026-09-09: exit after favorable impulses reverse; small candles alone keep holding."""
 import pandas as pd
 import pytest
 
@@ -51,10 +51,10 @@ def test_ordinary_run_then_long_reversal_holds(side, timing, bodies):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('timing', ['live', 'closed'])
 @pytest.mark.parametrize('bodies', [(0.2, 1.2), (0.6, 0.6)])
-def test_favorable_impulse_then_long_pivot_holds(side, timing, bodies):
+def test_favorable_impulse_then_long_pivot_exits(side, timing, bodies):
     frame = _turn_frame(side, timing, bodies)
     result = TradingEngine._channel_swing_action(frame, frame.iloc[-1]['close'], side)
-    assert result['action'] == 'HOLD'
+    assert result['action'] == 'EXIT'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -99,14 +99,14 @@ def test_live_pivot_uses_latest_price_when_frame_close_lags(side):
     frame = _turn_frame(side, bodies=(0.2, 1.2))
     price = frame.iloc[-1]['close']
     frame.loc[19, 'close'] = frame.loc[19, 'open']
-    assert TradingEngine._channel_swing_action(frame, price, side)['action'] == 'HOLD'
+    assert TradingEngine._channel_swing_action(frame, price, side)['action'] == 'EXIT'
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('scenario', ['ordinary', 'favorable', 'adverse', 'pair'])
 @pytest.mark.parametrize('close_ok', [False, True])
-async def test_impulse_execution_keeps_existing_position(side, scenario, close_ok):
+async def test_impulse_execution_only_closes_after_favorable_run(side, scenario, close_ok):
     bodies = {'ordinary': (0.2, 0.2), 'favorable': (0.6, 0.6), 'adverse': (0.2, 0.2), 'pair': (-0.6, -0.6)}[scenario]
     frame = _turn_frame(side, bodies=bodies, reverse=1.2 if scenario == 'adverse' else 0.6)
     engine = _execution_engine(frame, side, close_ok)
@@ -118,8 +118,8 @@ async def test_impulse_execution_keeps_existing_position(side, scenario, close_o
     _, candidates = await engine._process_single_symbol(SYMBOL, 1., None, False)
     assert not any('處理失敗' in message for message, _ in engine.account.logs), engine.account.logs
     assert candidates == []
-    assert engine.account.events == []
-    assert SYMBOL in engine.account.positions
+    assert [event[0] for event in engine.account.events] == (['close'] if scenario == 'favorable' else [])
+    assert (SYMBOL in engine.account.positions) is (scenario != 'favorable' or not close_ok)
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -179,3 +179,65 @@ def test_long_shadow_with_small_body_never_triggers_impulse_exit(side, timing):
     turn = 19 if timing == 'live' else 18
     frame.loc[turn, ['high', 'low']] = [120., 80.]
     assert TradingEngine._channel_swing_action(frame, frame.iloc[-1]['close'], side)['action'] == 'HOLD'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('timing', ['live', 'closed'])
+def test_expanding_gap_overrides_favorable_impulse_exit(side, timing):
+    f = _turn_frame(side, timing, bodies=(.6, .6))
+    rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
+    for index, gap in zip((16, 17, 18), (.05, .1, .2)):
+        f.loc[index, 'ma15'] = f.loc[index, rail] + (-gap if side == 'LONG' else gap)
+    result = TradingEngine._channel_swing_action(f, float(f.iloc[-1]['close']), side)
+    assert result['action'] == 'HOLD'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('count', [1, 2, 5])
+@pytest.mark.parametrize('body,expected', [(.2, 'HOLD'), (.6, 'EXIT')])
+def test_small_candle_run_never_accumulates_into_favorable_impulse(side, count, body, expected):
+    f = _turn_frame('LONG', bodies=(0., 0.), reverse=1.2)
+    for index in range(19-count, 19):
+        close = 102. - (18-index)*body
+        f.loc[index, ['open', 'close']] = [close-body, close]
+    if side == 'SHORT':
+        for column in ('open', 'close', 'ma3', 'ma15'):
+            f[column] = 200. - f[column]
+    # One ordinary long candle is not a waterfall or a two-candle run.
+    if count == 1: expected = 'HOLD'
+    assert TradingEngine._channel_swing_action(f, float(f.iloc[-1]['close']), side)['action'] == expected
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('timing', ['live', 'closed'])
+@pytest.mark.parametrize('favorable', [True, False])
+def test_two_adverse_bars_require_immediately_preceding_favorable_run(side, timing, favorable):
+    f = _turn_frame('LONG', timing, bodies=(0., 0.), reverse=.6)
+    end = 19 if timing == 'live' else 18
+    body = .6 if favorable else .2
+    f.loc[end-3, ['open', 'close']] = [102.-2*body, 102.-body]
+    f.loc[end-2, ['open', 'close']] = [102.-body, 102.]
+    f.loc[end-1, ['open', 'close']] = [102., 101.4]
+    f.loc[end, ['open', 'close']] = [101.4, 100.8]
+    if timing == 'closed': f.loc[19, ['open', 'close']] = 100.8
+    if side == 'SHORT':
+        for column in ('open', 'close', 'ma3', 'ma15'):
+            f[column] = 200. - f[column]
+    assert TradingEngine._channel_impulse_turn_allowed(f, side, -1 if timing == 'live' else -2, float(f.iloc[-1]['close'])) is favorable
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('close_ok', [False, True])
+async def test_impulse_exit_repeated_scans_never_reopen_old_signal(side, close_ok):
+    f = _turn_frame(side, bodies=(.6, .6))
+    e = _execution_engine(f, side, close_ok)
+    e.tickers[SYMBOL] = float(f.iloc[-1]['close'])
+    e.market_prebreakout_directions = {}; e.st_direction_1h_cache = {}
+    e._channel_swing_peak_exit_info = {}
+    for scan in range(3):
+        await e._process_single_symbol(SYMBOL, float(scan), None, False)
+    assert [event[0] for event in e.account.events] == (['close'] if close_ok else ['close'] * 3)
+    assert (SYMBOL in e.account.positions) is (not close_ok)
+    assert bool(e._channel_swing_peak_exit_info) is close_ok
+    assert not any('處理失敗' in message for message, _ in e.account.logs)

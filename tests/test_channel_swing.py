@@ -218,7 +218,7 @@ def test_macro_trend_hold_position():
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_outer_ma3_turn_without_reentry_holds(side):
+def test_favorable_waterfall_closed_turn_exits(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     df['atr'] = 0.75
     if side == 'LONG':
@@ -237,11 +237,12 @@ def test_outer_ma3_turn_without_reentry_holds(side):
         ]
     df.loc[69, ['open', 'close']] = float(df.loc[68, 'close'])
     result = TradingEngine._channel_swing_action(df, float(df.loc[68, 'close']), side)
-    assert result['action'] == 'HOLD'
+    assert result['action'] == 'EXIT'
+    assert result['reason'] == 'KC_FAVORABLE_IMPULSE_REVERSAL_EXIT'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_live_outer_ma3_turn_waits_for_closed_confirmation(side):
+def test_favorable_waterfall_live_long_turn_exits(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
     df['atr'] = 1.0
     if side == 'LONG':
@@ -257,7 +258,8 @@ def test_live_outer_ma3_turn_waits_for_closed_confirmation(side):
             92.0, 92.6, 91.6, 92.5, 92.1, 92.2,
         ]
     result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side)
-    assert result['action'] == 'HOLD'
+    assert result['action'] == 'EXIT'
+    assert result['reason'] == 'KC_FAVORABLE_IMPULSE_REVERSAL_EXIT'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -329,7 +331,8 @@ def test_flat_scan_can_detect_recent_upper_peak_without_exit_state():
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_outer_rail_ma15_convergence_alone_holds(side):
     df = _generate_macro_frame('UP' if side == 'LONG' else 'DOWN', 70)
-    df['atr'] = 0.5
+    # Isolate MA/rail behavior: these bodies are ordinary relative to ATR.
+    df['atr'] = 4.0
     if side == 'LONG':
         df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 100.5, 100.0, 98.0, 99.8]
         df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 100.2, 100.0, 98.0, 99.9]
@@ -347,7 +350,8 @@ def test_outer_rail_ma15_convergence_alone_holds(side):
 
 def test_ma3_ma15_compression_without_reentry_holds():
     df = _generate_macro_frame('UP', 70)
-    df['atr'] = 0.5
+    # Isolate MA/rail behavior: these bodies are ordinary relative to ATR.
+    df['atr'] = 4.0
     df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma3', 'ma15']] = [
         99.5, 100.5, 100.0, 98.0, 100.2, 99.0,
     ]
@@ -362,7 +366,8 @@ def test_ma3_ma15_compression_without_reentry_holds():
 
 def test_ma15_half_kc_width_away_from_outer_rail_keeps_long():
     df = _generate_macro_frame('UP', 70)
-    df['atr'] = 0.5
+    # Isolate MA/rail behavior: these bodies are ordinary relative to ATR.
+    df['atr'] = 4.0
     df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma3', 'ma15']] = [
         99.5, 100.5, 102.0, 98.0, 100.2, 99.0,
     ]
@@ -399,7 +404,8 @@ def test_outer_rail_ma15_convergence_forecast_does_not_exit_long_early():
 
 def test_sudden_ma15_upper_rail_jump_is_not_convergence():
     df = _generate_macro_frame('UP', 70)
-    df['atr'] = 0.5
+    # Isolate MA/rail behavior: these bodies are ordinary relative to ATR.
+    df['atr'] = 4.0
     df.loc[67, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [99.5, 100.5, 100.0, 98.0, 99.8]
     df.loc[68, ['open', 'close', 'kc_upper', 'kc_lower', 'ma15']] = [100.5, 100.2, 100.0, 98.0, 99.9]
     df.loc[69, ['open', 'close']] = float(df.loc[68, 'close'])

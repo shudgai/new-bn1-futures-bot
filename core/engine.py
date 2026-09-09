@@ -7448,29 +7448,38 @@ class TradingEngine:
     def _channel_impulse_turn_allowed(
         frame: pd.DataFrame, side: str, offset: int, live_price: float | None = None,
     ) -> bool:
-        """A long reversal must immediately follow a favorable waterfall or pair."""
-        if side not in ("LONG", "SHORT"):
+        """Require a favorable impulse directly before a long adverse body or pair."""
+        if side not in ("LONG", "SHORT") or offset not in (-1, -2):
             return False
         try:
             position = len(frame) + offset
             if position < 2:
                 return False
-            turn = frame.iloc[position]
-            previous = frame.iloc[position - 1]
+            turn, previous = frame.iloc[position], frame.iloc[position - 1]
             if TradingEngine._channel_outer_half_space_hold(previous, turn, side):
                 return False
-            threshold = float(previous.get("atr", 0.0)) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-            if not math.isfinite(threshold) or threshold <= 0:
-                return False
             direction = 1.0 if side == "LONG" else -1.0
-            close = float(live_price) if offset == -1 and live_price is not None else float(turn["close"])
-            reverse_body = direction * (float(turn["open"]) - close)
-            bodies = [direction * (float(row["close"]) - float(row["open"]))
-                      for _, row in frame.iloc[position - 2:position].iterrows()]
-            if not all(math.isfinite(body) for body in [reverse_body, *bodies]):
-                return False
-            impulse = bodies[-1] >= threshold * 2.0 or all(body >= threshold for body in bodies)
-            return bool(reverse_body >= threshold and impulse)
+            for adverse_count in (1, 2):
+                start = position - adverse_count + 1
+                if start < 1:
+                    continue
+                threshold = float(frame.iloc[start - 1].get("atr", 0.0)) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+                if not math.isfinite(threshold) or threshold <= 0:
+                    continue
+                adverse = []
+                for index in range(start, position + 1):
+                    row = frame.iloc[index]
+                    close = float(live_price) if index == position and offset == -1 and live_price is not None else float(row["close"])
+                    adverse.append(direction * (float(row["open"]) - close))
+                if not all(math.isfinite(body) and body >= threshold for body in adverse):
+                    continue
+                favorable = [direction * (float(row["close"]) - float(row["open"]))
+                             for _, row in frame.iloc[max(0, start - 2):start].iterrows()]
+                if not all(math.isfinite(body) for body in favorable):
+                    continue
+                if favorable[-1] >= threshold * 2.0 or (len(favorable) == 2 and all(body >= threshold for body in favorable)):
+                    return True
+            return False
         except (ValueError, TypeError, KeyError, IndexError):
             return False
 
@@ -7643,6 +7652,10 @@ class TradingEngine:
                 entry_width = entry_upper - entry_lower if 0 < entry_lower < entry_upper and math.isfinite(entry_upper) else 0.0
             except (TypeError, ValueError):
                 entry_width = 0.0
+            if not TradingEngine._channel_outer_gap_expanding(frame, held):
+                if any(TradingEngine._channel_impulse_turn_allowed(frame, held, offset, live_price)
+                       for offset in (-2, -1)):
+                    return {"action": "EXIT", "side": None, "reason": "KC_FAVORABLE_IMPULSE_REVERSAL_EXIT"}
             exit_reason = TradingEngine._channel_trend_exit_reason(frame, held, entry_width)
             if exit_reason:
                 return {"action": "EXIT", "side": None, "reason": exit_reason}
