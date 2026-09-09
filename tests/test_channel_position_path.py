@@ -22,9 +22,10 @@ def test_middle_strict_cross_and_space(side, ratio, cross):
     f.loc[3, "ma3"] = 103 if side == "LONG" else 97
     f.loc[4:, "ma3"] = 100
     price = 100 - sign * .1 if cross else 100
-    f.loc[6:7, ["open", "close"]] = price
+    f.loc[6:7, "close"] = price
+    f.loc[7, "open"] = 100.  # Immediate opposite body beyond the middle.
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == ("EXIT" if cross and ratio < .4 else "HOLD")
+    assert result["action"] == ("EXIT" if cross else "HOLD")
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -205,11 +206,11 @@ def test_surge_turn_respects_current_ma3_and_channel_space(side, inside, space):
     f.loc[6, ["open", "close"]] = [100., 100+sign*3]
     f.loc[6, "ma3"] = 103 if side == "LONG" else 97
     f.loc[7, "ma3"] = 100 if inside else (103 if side == "LONG" else 97)
-    # Small opposite body past the middle, so only MA3/space can prevent the exit.
+    # Small opposite body past the middle, so only MA3 can prevent the exit; space is no longer a gate.
     price = 100-sign*.1
     f.loc[7, ["open", "close"]] = [price+sign*.1, price]
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == "HOLD"  # The preceding candle has not closed past the middle.
+    assert result["action"] == ("EXIT" if inside else "HOLD")  # No closed-candle wait.
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -242,21 +243,22 @@ def test_adverse_bodies_hold_at_or_outside_favorable_rail(side, pair, closed, di
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("closed_space", [.39, .40, .4106594857, .50, .60])
 @pytest.mark.parametrize("live_space", [.25, .50])
-def test_live_space_controls_exit_independently_of_closed_space(side, closed_space, live_space):
+def test_exit_independent_of_live_and_closed_space(side, closed_space, live_space):
     f = frame_for(side)
     f.loc[3, "ma3"] = 103. if side == "LONG" else 97.
     for index, ratio in ((6, closed_space), (7, live_space)):
         f.loc[index, "ma15"] = 102-4*ratio if side == "LONG" else 98+4*ratio
     price = 99.9 if side == "LONG" else 100.1
-    f.loc[6:7, ["open", "close"]] = price
+    f.loc[6:7, "close"] = price
+    f.loc[7, "open"] = 100.  # Immediate opposite body beyond the middle.
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == ("EXIT" if live_space < .4 else "HOLD")
+    assert result["action"] == "EXIT"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("closed_offset", [-.1, 0., .1])
 @pytest.mark.parametrize("live_offset", [-.1, 0., .1])
-def test_middle_exit_requires_closed_candle_and_current_price(side, closed_offset, live_offset):
+def test_middle_exit_uses_live_body_independently_of_closed_candle(side, closed_offset, live_offset):
     f = frame_for(side)
     direction = 1 if side == "LONG" else -1
     f.loc[3, "ma3"] = 100+direction*3
@@ -264,6 +266,7 @@ def test_middle_exit_requires_closed_candle_and_current_price(side, closed_offse
     f.loc[6, "low"] = 99.  # Wick crossing must not count as a close.
     f.loc[6, "high"] = 101.
     price = 100+direction*live_offset
-    f.loc[7, ["open", "close"]] = price
+    f.loc[7, "open"] = 100.
+    f.loc[7, "close"] = price
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == ("EXIT" if closed_offset < 0 and live_offset < 0 else "HOLD")
+    assert result["action"] == ("EXIT" if live_offset < 0 else "HOLD")

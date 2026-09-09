@@ -41,7 +41,13 @@ def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, inva
         f.loc[67, 'close'] = 100.
     else:
         f.loc[67, 'open'] = 102.5 if side == 'LONG' else 97.5
-    assert TradingEngine._channel_swing_action(f, 105., old)['action'] == ('HOLD' if held else 'WAIT')
+    result = TradingEngine._channel_swing_action(f, 105., old)
+    if invalid == 'live_only' and not held and side == 'LONG':
+        # Newly authorized: the previous closed body broke the rail and the
+        # immediate live successor pushes further. Held reversal still waits.
+        assert result == {'action': 'ENTER', 'side': 'LONG', 'reason': 'KC_NEXT_LIVE_PUSH_LONG'}
+    else:
+        assert result['action'] == ('HOLD' if held else 'WAIT')
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
