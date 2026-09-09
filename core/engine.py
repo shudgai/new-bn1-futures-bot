@@ -7937,7 +7937,11 @@ class TradingEngine:
     def _two_bar_structure_failure_exit(
         frame: pd.DataFrame, position_side: str,
     ) -> bool:
-        """兩根已收盤 K 確認 MA3 與 KC 正持續朝持倉不利方向移動。"""
+        """兩根已收盤 K 確認 MA3 與 KC 正持續朝持倉不利方向移動。
+
+        前提條件（修正兩圖共同問題）：MA3 必須曾在持倉方向外軌外出現過，
+        否則代表行情從未真正突出外軌，不屬於「結構失效」，應繼續持倉。
+        """
         required = {"close", "ma3", "ma15", "ema_20", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
             return False
@@ -7949,7 +7953,21 @@ class TradingEngine:
         ma15 = recent["ma15"].astype(float)
         middle = recent["ema_20"].astype(float)
         side = str(position_side or "").upper()
+
+        # ── 前置條件：MA3 必須在最近 N 根中至少有一根曾在外軌外 ──
+        # 若 MA3 從未出過外軌，K 線仍在通道內整理，不能以「結構失效」提早平倉。
+        lookback_rows = frame.iloc[:-1].tail(8)  # 最近 8 根已收線
         if side == "SHORT":
+            # 空單：MA3 必須曾 <= kc_lower
+            ma3_was_outside = any(
+                float(row["ma3"]) <= float(row["kc_lower"])
+                for _, row in lookback_rows.iterrows()
+                if math.isfinite(float(row.get("ma3", float("nan"))))
+                and math.isfinite(float(row.get("kc_lower", float("nan"))))
+                and float(row["kc_lower"]) > 0
+            )
+            if not ma3_was_outside:
+                return False
             upper = recent["kc_upper"].astype(float)
             lines_rising = bool(
                 ma3.iloc[0] < ma3.iloc[1] < ma3.iloc[2]
@@ -7962,6 +7980,16 @@ class TradingEngine:
             )
             return lines_rising and closes_confirmed
         if side == "LONG":
+            # 多單：MA3 必須曾 >= kc_upper
+            ma3_was_outside = any(
+                float(row["ma3"]) >= float(row["kc_upper"])
+                for _, row in lookback_rows.iterrows()
+                if math.isfinite(float(row.get("ma3", float("nan"))))
+                and math.isfinite(float(row.get("kc_upper", float("nan"))))
+                and float(row["kc_upper"]) > 0
+            )
+            if not ma3_was_outside:
+                return False
             lower = recent["kc_lower"].astype(float)
             lines_falling = bool(
                 ma3.iloc[0] > ma3.iloc[1] > ma3.iloc[2]
