@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
+from test_channel_outer_cycle import setup as outer_cycle_market
 from test_channel_pivot_entry import market as pivot_market
 
 from core.channel_profit_protection import protection, reentry_gate, trend_style
@@ -114,7 +115,8 @@ async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
         f.loc[11,'open'] = 102.
         await e._try_profit_reentry(SYMBOL, f, 102., False)
         e._place_structured_entry.assert_not_awaited()
-        await e._try_profit_reentry(SYMBOL, pivot_market('LONG'), 98.1, False)
+        fresh, price = outer_cycle_market('LONG')
+        await e._try_profit_reentry(SYMBOL, fresh, price, False)
         e._place_structured_entry.assert_awaited_once()
         assert e._place_structured_entry.call_args.args[1]['side'] == 'LONG'
     else:
@@ -330,7 +332,8 @@ async def test_middle_signal_cannot_preempt_profit_exit_or_cancel_reentry():
     e._channel_swing_action = TradingEngine._channel_swing_action
     f.loc[11,'open'] = 102.
     await e._try_profit_reentry(SYMBOL, f, 102., False)
-    await e._try_profit_reentry(SYMBOL, pivot_market('LONG'), 98.1, False)
+    fresh, price = outer_cycle_market('LONG')
+    await e._try_profit_reentry(SYMBOL, fresh, price, False)
     e._place_structured_entry.assert_awaited_once()
 
 

@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, middle_trend_entry
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, middle_trend_entry, outside_reentry
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2368,7 +2368,9 @@ class TradingEngine:
             if not ready:
                 return None
             return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame,
-                    "signal_code": self._channel_swing_action(frame, price)["reason"]}
+                    "signal_code": (outside_reentry(frame, price, side) if ticket.get("mode") == "outer_cycle"
+                                    else self._channel_swing_action(frame, price))["reason"],
+                    "outer_cycle_reentry": ticket.get("mode") == "outer_cycle"}
         exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
         if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
             "ENTER", False, side, frame, exit_info, symbol, live_price=price,
@@ -2494,7 +2496,7 @@ class TradingEngine:
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
-            if side in ("LONG", "SHORT"):
+            if side in ("LONG", "SHORT") and not fresh_snapshot.get("outer_cycle_reentry"):
                 room = self._channel_profit_room(fresh_frame, planned_price, side)
                 if not room["allowed"]:
                     self.account.log(
@@ -7402,6 +7404,8 @@ class TradingEngine:
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
+        if ticket.get("mode") == "outer_cycle":
+            return outside_reentry(frame, price, ticket["side"]).get("side") == ticket["side"]
         decision = self._channel_swing_action(frame, price)
         if decision.get("action") != "ENTER" or decision.get("side") != ticket["side"]:
             return False
@@ -7442,19 +7446,20 @@ class TradingEngine:
             return
         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
             return
-        decision = self._channel_swing_action(frame, price)
+        decision = (outside_reentry(frame, price, ticket["side"]) if ticket.get("mode") == "outer_cycle"
+                    else self._channel_swing_action(frame, price))
         signal = {"side": ticket["side"], "score": 100, "entry_mode": "CHANNEL_SWING",
                   "action": "ENTER_MARKET", "reason": "Channel Swing PROFIT_REENTRY " + decision["reason"] + " " + ticket["token"],
                   "profit_reentry_token": ticket["token"], "signal_code": decision["reason"],
                   "candidate_bar_id": candidate, "profit_profile": "TREND_EXTENSION",
                   "atr": float(frame.iloc[-1].get("atr") or price * .015)}
-        # Fresh quote, remaining profit room, fading momentum and account risk
-        # are all checked by the normal order route before this same-bar reentry.
+        # Revalidate the quote and account risk; outer-cycle tickets use live
+        # color and MA3 instead of the estimated profit-room threshold.
         if await self._place_structured_entry(symbol, signal, price):
             self.account.channel_profit_reentries.pop(symbol, None)
             getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
             self.account.save_state()
-            self.account.log(f"✅ [獲利保護重開] {symbol} {ticket['side']} 入口確認、利潤空間與安全檢查通過，已重開", "SUCCESS")
+            self.account.log(f"✅ [獲利保護重開] {symbol} {ticket['side']} 入口確認與安全檢查通過，已重開", "SUCCESS")
 
     @staticmethod
     def _profit_pivot_is_new(ticket, frame):
@@ -7621,6 +7626,9 @@ class TradingEngine:
                                        "opened_at": existing_pos.get("open_timestamp"),
                                        "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                        "path": copy.deepcopy(path_state)}
+                    rail = float(channel_df.iloc[-1]["kc_upper" if existing_pos["side"] == "LONG" else "kc_lower"])
+                    if (1 if existing_pos["side"] == "LONG" else -1) * (channel_price - rail) > 0:
+                        tickets[symbol]["mode"] = "outer_cycle"
                     self.account.save_state()
                     self.account.log(f"🛡️ [獲利保護] {symbol} 走勢={profit['trend_style']} 回吐={profit['retracement_fraction']:.0%} 最高浮盈={profit['peak_gross']:.4f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
                     closed = await self.account.close_position(
@@ -7688,6 +7696,14 @@ class TradingEngine:
                         "require_new_closed_break": True,
                         "allow_new_outer_signal": True,
                     }
+                    if str(channel_action.get("reason", "")).endswith(("LIVE_MA3_TURN_EXIT", "OUTER_MA3_TURN_EXIT")):
+                        rail = float(channel_df.iloc[-1]["kc_upper" if existing_pos["side"] == "LONG" else "kc_lower"])
+                        if (1 if existing_pos["side"] == "LONG" else -1) * (channel_price - rail) > 0:
+                            tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
+                                               "phase": "closed", "side": existing_pos["side"], "mode": "outer_cycle",
+                                               "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1])}
+                            self.account.save_state()
+                            await self._try_profit_reentry(symbol, channel_df, channel_price, daily_halt)
                     getattr(self, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
                     getattr(self, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                     self.account.log(

@@ -40,3 +40,23 @@ def middle_trend_entry(frame, price):
     except (AttributeError, TypeError, ValueError, KeyError, IndexError):
         return {**wait, "reason": "KC_DATA_INVALID"}
     return wait
+
+
+def outside_reentry(frame, price, side):
+    """Same-side CK reentry needs a live directional candle and MA3 slope."""
+    decision = outside_entry(frame, price)
+    if decision.get("side") != side:
+        return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
+    try:
+        sign = 1 if side == "LONG" else -1
+        opened = float(frame.iloc[-1]["open"])
+        closes = [float(v) for v in frame["close"].iloc[-4:-1]]
+        if len(closes) != 3 or not all(math.isfinite(v) and v > 0 for v in [opened, price, *closes]):
+            raise ValueError("invalid MA3 data")
+        last = sum(closes) / 3
+        live = (sum(closes[-2:]) + price) / 3
+        if sign * (price - opened) > 0 and sign * (live - last) > 0:
+            return decision
+    except (TypeError, ValueError, KeyError, IndexError):
+        pass
+    return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_COLOR_MA3_WAIT"}
