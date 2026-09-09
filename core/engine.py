@@ -6576,6 +6576,35 @@ class TradingEngine:
         return False
 
     @staticmethod
+    def _channel_closed_waves_falling(frame: pd.DataFrame) -> bool:
+        """Three falling closed KC midpoints plus two lower confirmed highs/lows."""
+        if frame is None or len(frame) < 7 or not {"high", "low", "kc_upper", "kc_lower"}.issubset(frame.columns):
+            return False
+        closed = frame.iloc[:-1]
+        try:
+            if "ema_20" in closed:
+                middle = pd.to_numeric(closed["ema_20"], errors="coerce")
+            elif "kc_middle" in closed:
+                middle = pd.to_numeric(closed["kc_middle"], errors="coerce")
+            else:
+                middle = (closed["kc_upper"].astype(float) + closed["kc_lower"].astype(float)) / 2
+            values = middle.iloc[-3:].tolist()
+            highs = closed["high"].astype(float).tolist()
+            lows = closed["low"].astype(float).tolist()
+            if not all(math.isfinite(value) for value in values + highs + lows):
+                return False
+            if not values[0] > values[1] > values[2]:
+                return False
+            peaks = [highs[i] for i in range(1, len(highs)-1)
+                     if highs[i] > highs[i-1] and highs[i] > highs[i+1]]
+            troughs = [lows[i] for i in range(1, len(lows)-1)
+                       if lows[i] < lows[i-1] and lows[i] < lows[i+1]]
+            return bool(len(peaks) >= 2 and len(troughs) >= 2
+                        and peaks[-1] < peaks[-2] and troughs[-1] < troughs[-2])
+        except (TypeError, ValueError, KeyError):
+            return False
+
+    @staticmethod
     def _channel_swing_action(
         frame: pd.DataFrame, live_price: float, current_side: str | None = None,
         entry_turn_low: float | None = None, entry_turn_high: float | None = None,
@@ -6699,6 +6728,8 @@ class TradingEngine:
             # 用戶指示：「這種在Kc內就是綠K,一突破要馬上開倉,不用等第2根」
             live_upper = float(current_live["kc_upper"])
             live_lower = float(current_live["kc_lower"])
+            if live_price > live_upper and TradingEngine._channel_closed_waves_falling(frame):
+                return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG"}
             if live_open <= live_upper and live_price > live_open and live_price > live_upper:
                 return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
             if live_open >= live_lower and live_price < live_open and live_price < live_lower:
