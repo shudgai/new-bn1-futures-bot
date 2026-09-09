@@ -6763,11 +6763,16 @@ class TradingEngine:
             if live_price > live_upper and TradingEngine._channel_closed_waves_falling(frame):
                 return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG"}
                 
-            # 除了Kc裡都是同色K時,突破就馬上開倉
-            if live_price > live_upper and trend > 0 and TradingEngine._channel_all_same_color_inside(frame, "LONG"):
-                return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
-            if live_price < live_lower and trend < 0 and TradingEngine._channel_all_same_color_inside(frame, "SHORT"):
-                return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
+            recent_bodies = [abs(float(row["close"]) - float(row["open"])) for _, row in frame.iloc[-10:-1].iterrows()]
+            avg_body = sum(recent_bodies) / len(recent_bodies) if recent_bodies else 0
+            live_body = abs(live_price - live_open)
+            is_abnormal = (live_body >= kc_width * 0.8) or (avg_body > 0 and live_body >= avg_body * 3)
+            
+            # 除了Kc裡都是同色K時,突破就馬上開倉 (只限於異常K及大瀑布)
+            if live_price > live_upper and trend > 0 and TradingEngine._channel_all_same_color_inside(frame, "LONG") and is_abnormal:
+                return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT_ABNORMAL"}
+            if live_price < live_lower and trend < 0 and TradingEngine._channel_all_same_color_inside(frame, "SHORT") and is_abnormal:
+                return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT_ABNORMAL"}
                 
             if max(breakout_range, confirmation_range) > kc_width * 1.25:
                 if not (clean_continuation_up or clean_continuation_down):
@@ -7401,7 +7406,7 @@ class TradingEngine:
                 "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_LIVE_UPPER_MOMENTUM_LONG",
-                "LIVE_UPPER_BREAKOUT", "LIVE_LOWER_BREAKOUT",
+                "LIVE_UPPER_BREAKOUT_ABNORMAL", "LIVE_LOWER_BREAKOUT_ABNORMAL",
                 "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                 "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
             }
