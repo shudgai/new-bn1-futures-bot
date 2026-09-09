@@ -147,6 +147,26 @@ def test_spike_reversal_waits_for_confirmed_direction():
     assert result["action"] == "WAIT"
 
 
+def test_later_clean_continuation_can_enter_after_spike_wait():
+    df = _generate_macro_frame("UP", 72)
+    df.loc[67, ["open", "high", "low", "close", "kc_upper"]] = [
+        106.0, 112.0, 105.8, 111.5, 107.0,
+    ]
+    df.loc[68, ["open", "high", "low", "close", "kc_upper"]] = [
+        111.5, 111.8, 107.2, 108.0, 107.1,
+    ]
+    df.loc[69, ["open", "high", "low", "close", "kc_upper"]] = [
+        107.4, 109.0, 107.3, 108.8, 107.5,
+    ]
+    df.loc[70, ["open", "high", "low", "close", "kc_upper"]] = [
+        108.8, 110.0, 108.7, 109.7, 107.8,
+    ]
+    result = TradingEngine._channel_swing_action(df, 109.7)
+    assert result == {
+        "action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT",
+    }
+
+
 def test_macro_trend_hold_position():
     df = _generate_macro_frame('DOWN', 70)
     df.loc[66:68, "ma3"] = [95.0, 94.0, 93.0]  # No closed trough.

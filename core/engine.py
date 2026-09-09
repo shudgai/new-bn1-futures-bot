@@ -1408,7 +1408,8 @@ class TradingEngine:
                     # meaningful body and cross MA3, so ordinary pullbacks are ignored.
                     rapid_adverse_exit = False
                     if (
-                        RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED
+                        not is_cr_position
+                        and RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED
                         and not df.empty
                         and len(df) >= 3
                     ):
@@ -1477,7 +1478,7 @@ class TradingEngine:
                         except (IndexError, KeyError, TypeError, ValueError):
                             pass
                     trigger["waterfall_exit"] = waterfall_exit
-                    if waterfall_exit:
+                    if waterfall_exit and not is_cr_position:
                         curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
                         close_reason = "EMERGENCY_EXIT_WATERFALL: 連續3根反向K急拉/跌>=2.5ATR"
                         
@@ -1510,7 +1511,7 @@ class TradingEngine:
                         except (IndexError, KeyError, TypeError, ValueError):
                             pass
                     trigger["two_candle_crash"] = two_candle_crash
-                    if two_candle_crash:
+                    if two_candle_crash and not is_cr_position:
                         curr_p = self.tickers.get(symbol) or float(df.iloc[-1]["close"])
                         close_reason = f"EMERGENCY_EXIT_2_CANDLE_CRASH: 連續兩根異常反向K>={RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR:.2f}ATR"
                         
@@ -1532,13 +1533,16 @@ class TradingEngine:
                             exit_frame["timestamp"].astype(float) >= opened_ms
                         ]
                     structure_failure_exit = bool(
-                        is_cr_position
-                        and self._two_bar_structure_failure_exit(
+                        self._two_bar_structure_failure_exit(
                             structure_exit_frame, position.get("side"),
                         )
                     )
                     trigger["two_bar_structure_failure_exit"] = structure_failure_exit
-                    if structure_failure_exit and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY:
+                    if (
+                        structure_failure_exit
+                        and not is_cr_position
+                        and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY
+                    ):
                         curr_p = float(
                             self.tickers.get(symbol)
                             or exit_frame["close"].iloc[-1]
@@ -6439,7 +6443,9 @@ class TradingEngine:
         frame: pd.DataFrame, live_price: float,
     ) -> dict:
         """Compatibility entry point using the same immediate crossing rules."""
-        result = TradingEngine._channel_swing_action(frame, live_price)
+        result = TradingEngine._channel_swing_action(
+            frame, live_price, allow_live_entry=True,
+        )
         if result.get("action") == "ENTER":
             result = {**result,
                       "reason": "KC_LIVE_UPPER_BREAK_LONG" if result["side"] == "LONG" else "KC_LIVE_LOWER_BREAK_SHORT",
@@ -7360,6 +7366,7 @@ class TradingEngine:
         exit_net_profitable: bool = True, entry_kc_upper: float | None = None,
         entry_kc_lower: float | None = None, entry_outer_chase: bool = False,
         profit_locked: bool = False, cross_timer_start: float = 0.0,
+        allow_live_entry: bool = False,
     ) -> dict:
         """Apply the Channel Swing two-closed-candle outer-rail rule."""
         held = str(current_side or "").upper()
@@ -7385,13 +7392,24 @@ class TradingEngine:
          ma15_before, ma15_now) = values
         if bo_lower >= bo_upper or cf_lower >= cf_upper:
             return {**wait, "reason": "KC_DATA_INVALID"}
-        # Do not chase a spike that crosses most of the KC channel in one bar.
-        # Such breakouts are prone to an immediate opposite-candle reversal.
+        if not held and allow_live_entry:
+            live = frame.iloc[-1]
+            live_upper = float(live["kc_upper"])
+            live_lower = float(live["kc_lower"])
+            live_open = float(live["open"])
+            if live_price > live_upper and live_open <= live_upper and live_price > live_open:
+                return {
+                    "action": "ENTER", "side": "LONG",
+                    "reason": "KC_LIVE_UPPER_BREAK_LONG",
+                }
+            if live_price < live_lower and live_open >= live_lower and live_price < live_open:
+                return {
+                    "action": "ENTER", "side": "SHORT",
+                    "reason": "KC_LIVE_LOWER_BREAK_SHORT",
+                }
         breakout_range = bo_high - bo_low
         confirmation_range = cf_high - cf_low
         kc_width = min(bo_upper - bo_lower, cf_upper - cf_lower)
-        if not held and max(breakout_range, confirmation_range) > kc_width * 1.25:
-            return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
         # Held-position reversals retain the two-closed-candle confirmation.
         upper_break_confirmed = bo_open <= bo_upper < bo_close and cf_close > cf_open and cf_close > cf_upper
         lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower
@@ -7434,6 +7452,25 @@ class TradingEngine:
             and cf_lower <= bo_lower
             and ma15_now <= ma15_before
         )
+        clean_continuation_up = bool(
+            continuation_up
+            and bo_open <= bo_upper
+            and bo_close > bo_upper
+            and cf_close > cf_upper
+            and max(breakout_range, confirmation_range) <= kc_width * 1.25
+        )
+        clean_continuation_down = bool(
+            continuation_down
+            and bo_open >= bo_lower
+            and bo_close < bo_lower
+            and cf_close < cf_lower
+            and max(breakout_range, confirmation_range) <= kc_width * 1.25
+        )
+        # Do not chase the original spike, but allow a later clean continuation
+        # after two closed candles confirm that the trend is still extending.
+        if not held and max(breakout_range, confirmation_range) > kc_width * 1.25:
+            if not (clean_continuation_up or clean_continuation_down):
+                return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
         if held == "LONG":
             if lower_break_confirmed:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
@@ -7459,9 +7496,9 @@ class TradingEngine:
         history = pd.to_numeric(frame["ma15"].iloc[:-1], errors="coerce").tail(60)
         history = history[history.map(lambda value: math.isfinite(value) and value > 0)]
         trend = float(history.iloc[-1] - history.iloc[0]) if len(history) >= 2 else 0.0
-        if upper_break_confirmed and trend > 0:
+        if (upper_break_confirmed or clean_continuation_up) and trend > 0:
             return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
-        if lower_break_confirmed and trend < 0:
+        if (lower_break_confirmed or clean_continuation_down) and trend < 0:
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
         return wait
 
@@ -7576,7 +7613,10 @@ class TradingEngine:
             held_side = position.get("side") if position else (
                 ("SHORT" if side == "LONG" else "LONG") if retry_reverse else None
             )
-            decision = self._channel_swing_action(frame, price, held_side)
+            decision = self._channel_swing_action(
+                frame, price, held_side,
+                allow_live_entry=not bool(position),
+            )
             if decision.get("side") != side or decision.get("action") not in {"ENTER", "REVERSE"}:
                 pending.pop(symbol, None)
                 reverse_bars.pop(symbol, None)
@@ -8302,8 +8342,12 @@ class TradingEngine:
                         or self.account.position_meta.get(symbol, {}).get("channel_cross_timer")
                         or 0.0
                     ) if existing_pos else 0.0,
+                    allow_live_entry=not bool(existing_pos),
                 )
-                break_reasons = {"KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT"}
+                break_reasons = {
+                    "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
+                    "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+                }
                 pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
                 direct_side = channel_action.get("side") if channel_action.get("reason") in break_reasons else None
                 if not existing_pos and pending_side in ("LONG", "SHORT"):
