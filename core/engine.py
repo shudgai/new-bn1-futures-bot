@@ -7703,20 +7703,7 @@ class TradingEngine:
             except (KeyError, ValueError, TypeError):
                 atr = live_price * 0.015
 
-            from core.config import RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-            # 使用戶能捕捉「紅長K」，若目前實體逆向超過閾值就立刻平倉，不用等收盤。
-            adverse_threshold = atr * max(0.3, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR)
-
-            if held == "SHORT":
-                if live_price > live_open and (live_price - live_open) >= adverse_threshold:
-                    return {"action": "EXIT", "side": None, "reason": "LIVE_ADVERSE_CANDLE_EXIT"}
-                if live_price > float(previous_kc["kc_upper"]):
-                    return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
-            if held == "LONG":
-                if live_price < live_open and (live_open - live_price) >= adverse_threshold:
-                    return {"action": "EXIT", "side": None, "reason": "LIVE_ADVERSE_CANDLE_EXIT"}
-                if live_price < float(previous_kc["kc_lower"]):
-                    return {"action": "EXIT", "side": None, "reason": "OPPOSITE_KC_TOUCH_EXIT"}
+            # (LIVE_ADVERSE_CANDLE_EXIT removed. Exit is now handled by KC_FAVORABLE_IMPULSE_REVERSAL_EXIT and KC_MA3_REENTER_EXIT)
             
             # Confirmed opposite outer breaks take precedence over exit-only signals.
             if held == "LONG" and lower_break_confirmed:
@@ -7748,9 +7735,11 @@ class TradingEngine:
             live_open = float(current_live["open"])
             
             # 用戶指示：「這種在Kc內就是綠K,一突破要馬上開倉,不用等第2根」
-            if live_open <= float(previous_kc["kc_upper"]) and live_price > live_open and live_price > float(previous_kc["kc_upper"]):
+            live_upper = float(current_live["kc_upper"])
+            live_lower = float(current_live["kc_lower"])
+            if live_open <= live_upper and live_price > live_open and live_price > live_upper:
                 return {"action": "ENTER", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
-            if live_open >= float(previous_kc["kc_lower"]) and live_price < live_open and live_price < float(previous_kc["kc_lower"]):
+            if live_open >= live_lower and live_price < live_open and live_price < live_lower:
                 return {"action": "ENTER", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
                 
             # 嚴格突破 (從軌道內實體穿出，且第二根確認)：無條件進場，不受 60 根 MA15 趨勢限制
