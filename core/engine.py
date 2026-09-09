@@ -7447,6 +7447,59 @@ class TradingEngine:
             return False
 
     @staticmethod
+    def _check_parabolic_reversal_exit(frame: pd.DataFrame, side: str, live_price: float | None = None) -> bool:
+        """用戶要求的極端反轉例外：在最高點出現大長紅(黑)K時，即使前面夾雜小K，也要立刻平倉。"""
+        if side not in ("LONG", "SHORT") or len(frame) < 5:
+            return False
+            
+        direction = 1.0 if side == "LONG" else -1.0
+        
+        try:
+            from core.config import RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+            atr = float(frame.iloc[-2].get("atr", 0.0))
+            if atr <= 0:
+                return False
+            threshold = atr * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
+            
+            # 檢查最近3根是否有「長反向K」
+            for offset in (-1, -2, -3):
+                pos = len(frame) + offset
+                if pos < 2: continue
+                row = frame.iloc[pos]
+                close = float(live_price) if offset == -1 and live_price is not None else float(row["close"])
+                adverse_body = direction * (float(row["open"]) - close)
+                
+                if adverse_body >= threshold:
+                    # 找到長反向K，往前找是否有連續大漲
+                    favorable_found = False
+                    for i in range(1, 4):
+                        idx = pos - i
+                        if idx < 0: break
+                        prev_row = frame.iloc[idx]
+                        fav_body = direction * (float(prev_row["close"]) - float(prev_row["open"]))
+                        
+                        if fav_body >= threshold * 2.0:
+                            favorable_found = True
+                            break
+                        
+                        if idx - 1 >= 0:
+                            prev_prev_row = frame.iloc[idx - 1]
+                            fav_body_2 = direction * (float(prev_prev_row["close"]) - float(prev_prev_row["open"]))
+                            if fav_body >= threshold and fav_body_2 >= threshold:
+                                favorable_found = True
+                                break
+                                
+                    if favorable_found:
+                        # 確認反向K的前一根，MA3是在軌道外的 (真的在最上面)
+                        pivot_row = frame.iloc[pos - 1]
+                        if TradingEngine._channel_ma3_outside(pivot_row, side):
+                            return True
+        except (ValueError, TypeError, KeyError):
+            pass
+            
+        return False
+
+    @staticmethod
     def _channel_impulse_turn_allowed(
         frame: pd.DataFrame, side: str, offset: int, live_price: float | None = None,
     ) -> bool:
@@ -7710,6 +7763,11 @@ class TradingEngine:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
             if held == "SHORT" and upper_break_confirmed:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
+                
+            # 拋物線極端反轉平倉 (用戶要求：長綠K衝刺後，就算中間夾個小紅K，只要出長紅K就立刻平倉)
+            if TradingEngine._check_parabolic_reversal_exit(frame, held, live_price):
+                return {"action": "EXIT", "side": None, "reason": "KC_PARABOLIC_REVERSAL_EXIT"}
+
             # 用戶明確指示平倉唯一標準：
             # 1. 空間(MA15 到 持倉側外軌的距離) > 40%：絕對不平倉，只等對向破軌(已由上面的 REVERSE 處理)
             # 2. 空間 <= 40%：MA3 進入通道，且價格碰到中軌，才平倉
