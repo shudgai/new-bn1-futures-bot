@@ -7611,12 +7611,6 @@ class TradingEngine:
 
             if space_compressed and ma3_inside and ma3_was_outside and k_reached_middle:
                 return "KC_MA3_REENTER_EXIT"
-            # A channel midpoint must never be substituted with MA15.
-            needed = ["close", "ma3", "ma15", "ema_20", "kc_upper", "kc_lower"]
-            recent = closed[needed].tail(3).apply(pd.to_numeric, errors="coerce")
-            if len(recent) == 3 and all(math.isfinite(float(value)) and float(value) > 0 for value in recent.to_numpy().flat):
-                if TradingEngine._two_bar_structure_failure_exit(closed, side):
-                    return "KC_STRUCTURE_FAILURE_EXIT"
         except (TypeError, ValueError, KeyError, IndexError):
             return None
         return None
