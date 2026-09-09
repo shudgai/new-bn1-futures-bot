@@ -80,9 +80,8 @@ def protection(position, price, fee, slippage, frame=None):
     state['trend_style'] = style
     if style == 'STACKED':
         state['stacked_seen'] = True
-    # A smooth trend uses the existing channel exit until protection is armed.
-    # An existing floor is never removed when the classification changes.
-    state['armed'] = was_armed or (net >= 1.0 and (style in ('CHOPPY', 'STACKED') or state.get('stacked_seen', False)))
+    # Every style arms at the same net floor; classification only tightens stacking.
+    state['armed'] = was_armed or net >= 1.0
     if not state['armed']:
         return None
     if state.get('stacked_seen') and frame is not None and not frame.empty:

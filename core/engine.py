@@ -7494,11 +7494,8 @@ class TradingEngine:
                 profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
                 if previous_protection != existing_pos.get("channel_profit_protection"):
                     self.account.save_state()
-                profit_state = existing_pos.get("channel_profit_protection", {})
-                uses_profit_exit = bool(
-                    profit_state.get("armed") or profit_state.get("stacked_seen")
-                    or profit_state.get("trend_style") in {"CHOPPY", "STACKED"})
-                if (uses_profit_exit and channel_action.get("action") == "EXIT"
+                # All positions use profit protection, never the ordinary middle exit.
+                if (channel_action.get("action") == "EXIT"
                         and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
                     channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:

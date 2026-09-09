@@ -58,7 +58,7 @@ def test_live_majority_retains_path_but_ignores_space(side, guard):
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('success', [True, False])
-async def test_live_majority_closes_same_scan_and_preserves_failed_position(side, success):
+async def test_live_majority_does_not_close_under_profit_only_rules(side, success):
     f = exit_frame(side)
     e = _execution_engine(f, side, success)
     e.account.positions[SYMBOL]['open_timestamp'] = 120
@@ -66,14 +66,8 @@ async def test_live_majority_closes_same_scan_and_preserves_failed_position(side
     e.market_prebreakout_directions = {}
     e.tickers[SYMBOL] = float(f.iloc[-1]['close'])
     await e._process_single_symbol(SYMBOL, 500., None, False)
-    assert len(e.account.events) == 1, e.account.logs
-    assert e.account.events[0][0] == 'close'
-    assert 'KC_REACHED_MIDDLE_COMPRESSED' in e.account.events[0][3]
-    assert (SYMBOL in e.account.positions) == (not success)
-    if success:
-        info = e._channel_swing_peak_exit_info[SYMBOL]
-        assert info['require_new_closed_break']
-        assert TradingEngine._channel_peak_exit_reentry_blocked('ENTER', False, side, f, info, SYMBOL)
-    else:
-        assert SYMBOL not in getattr(e, '_channel_swing_peak_exit_info', {})
+    # The user retired this ordinary exit for every style, even before arming.
+    assert e.account.events == [], e.account.logs
+    assert SYMBOL in e.account.positions
+    assert SYMBOL not in getattr(e, '_channel_swing_peak_exit_info', {})
     assert not any('處理失敗' in message for message, _ in e.account.logs)

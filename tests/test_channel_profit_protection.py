@@ -163,12 +163,13 @@ def test_style_classification(side, style):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_smooth_trend_keeps_original_exit_until_protection_armed(side):
+def test_smooth_trend_arms_thirty_percent_protection(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1
     f = styled_frame('SMOOTH', side)
-    assert protection(p, 100 + sign * 5, .0005, .0001, f) is None
-    assert not p['channel_profit_protection']['armed']
+    first = protection(p, 100 + sign * 5, .0005, .0001, f)
+    assert first['retracement_fraction'] == .30
+    assert p['channel_profit_protection']['armed']
     result = protection(p, 100 + sign * 5, .0005, .0001, styled_frame('CHOPPY', side))
     assert result['stop_price'] == pytest.approx(100 + sign * 3.5)
     # Reclassification cannot remove or loosen the existing seven-dollar line.
@@ -256,9 +257,9 @@ async def test_engine_passes_live_frame_and_preserves_exit_priority(action):
 
 
 
-def test_first_arming_on_opposite_tick_honors_previously_observed_peak():
+def test_tightening_on_opposite_tick_honors_previously_observed_peak():
     p = position('LONG')
-    assert protection(p, 105., .0005, .0001, styled_frame('SMOOTH')) is None
+    assert protection(p, 105., .0005, .0001, styled_frame('SMOOTH'))['retracement_fraction'] == .30
     result = protection(p, 104.4, .0005, .0001, styled_frame('STACKED'))
     assert result['peak_gross'] == 10.
     assert result['stop_price'] == 104.5
@@ -268,7 +269,7 @@ def test_first_arming_on_opposite_tick_honors_previously_observed_peak():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('style', ['CHOPPY', 'STACKED', 'SMOOTH'])
-async def test_middle_exit_only_manages_smooth_unarmed_position(style):
+async def test_middle_exit_disabled_for_every_unarmed_style(style):
     f = styled_frame(style)
     e = _execution_engine(f, 'LONG', True)
     e.account.save_state = lambda: None
@@ -276,8 +277,8 @@ async def test_middle_exit_only_manages_smooth_unarmed_position(style):
     e.tickers[SYMBOL] = 100.1  # Net floor has not armed; still route by style.
     e._channel_swing_action = lambda *a, **k: {'action': 'EXIT', 'reason': 'KC_REACHED_MIDDLE_COMPRESSED'}
     await e._process_single_symbol(SYMBOL, 1., None, False)
-    assert bool(e.account.events) is (style == 'SMOOTH'), e.account.logs
-    assert (SYMBOL in e.account.positions) is (style != 'SMOOTH')
+    assert e.account.events == [], e.account.logs
+    assert SYMBOL in e.account.positions
 
 
 @pytest.mark.anyio
@@ -306,8 +307,16 @@ def test_reopened_position_reclassifies_without_previous_ten_percent_lock(style)
     result = protection(p, 101., .0005, .0001, styled_frame(style))
     assert p['channel_profit_protection']['trend_style'] == style
     assert not p['channel_profit_protection'].get('tightened')
-    if style == 'SMOOTH':
-        assert result is None
-        assert not p['channel_profit_protection']['armed']
-    else:
-        assert result['retracement_fraction'] == .30
+    assert result['retracement_fraction'] == .30
+    assert p['channel_profit_protection']['armed']
+
+
+
+def test_unknown_style_still_arms_thirty_percent_protection():
+    p = position('LONG')
+    f = frame().iloc[:2]
+    result = protection(p, 105., .0005, .0001, f)
+    assert result['trend_style'] == 'UNKNOWN'
+    assert result['retracement_fraction'] == .30
+    assert result['stop_price'] == 103.5
+    assert protection(p, 103.5, .0005, .0001, f)['triggered']
