@@ -3834,6 +3834,14 @@ class TradingEngine:
             previous = sum(closes[:3]) / 3
             last = sum(closes[1:]) / 3
             live = (sum(closes[-2:]) + price) / 3
+            # The turning MA3 extremum must be outside its contemporaneous CK rail.
+            upper = float(frame.iloc[-2]["kc_upper"])
+            lower = float(frame.iloc[-2]["kc_lower"])
+            if not (math.isfinite(upper) and math.isfinite(lower) and 0 < lower < upper):
+                return False
+            pivot_rail = upper if side == "LONG" else lower
+            if sign * (last - pivot_rail) <= 0:
+                return False
             # An entry during this candle needs a favorable observation first;
             # otherwise its already adverse slope could predate the position.
             if sign * (live - last) > 0:
@@ -3870,6 +3878,14 @@ class TradingEngine:
             previous = sum(closes[:3]) / 3
             last = sum(closes[1:]) / 3
             live = (sum(closes[-2:]) + price) / 3
+            # The turning MA3 extremum must be outside its contemporaneous CK rail.
+            upper = float(frame.iloc[-2]["kc_upper"])
+            lower = float(frame.iloc[-2]["kc_lower"])
+            if not (math.isfinite(upper) and math.isfinite(lower) and 0 < lower < upper):
+                return False
+            pivot_rail = upper if side == "LONG" else lower
+            if sign * (last - pivot_rail) <= 0:
+                return False
             return sign * (last - previous) > 0 and sign * (live - last) < 0
         except (TypeError, ValueError, KeyError, IndexError):
             return False
