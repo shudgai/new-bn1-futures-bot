@@ -48,21 +48,19 @@ def test_path_survives_window_roll_and_resets_for_new_position(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_waterfall_inside_exits_before_path_is_ready(side):
+def test_waterfall_inside_holds_before_path_is_ready(side):
     f = frame_for(side); f["atr"] = 1.
     price = 99. if side == "LONG" else 101.
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=420)
-    assert result["action"] == "EXIT"
-    assert result["reason"] == "KC_ADVERSE_WATERFALL_EXIT"
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_waterfall_opposite_outer_break_reverses(side):
+def test_waterfall_opposite_outer_break_requires_confirmation(side):
     f = frame_for(side); f["atr"] = 1.
     price = 97. if side == "LONG" else 103.
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=420)
-    assert result["action"] == "REVERSE"
-    assert result["side"] != side
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -93,7 +91,7 @@ def test_continuation_needs_current_price_outside(side):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("success", [True, False])
-async def test_waterfall_scan_close_and_reentry_block(success):
+async def test_waterfall_scan_keeps_position(success):
     f = frame_for("LONG"); f["atr"] = 1.
     f.loc[7, "close"] = 99.
     e = _execution_engine(f, "LONG", success)
@@ -102,11 +100,8 @@ async def test_waterfall_scan_close_and_reentry_block(success):
     e.market_prebreakout_directions = {}
     e.tickers[SYMBOL] = 99.
     await e._process_single_symbol(SYMBOL, now_time=500, btc_1m_turn=None, daily_halt=False)
-    assert [event[0] for event in e.account.events] == ["close"], e.account.logs
-    assert (SYMBOL in e.account.positions) is (not success)
-    if success:
-        info = e._channel_swing_peak_exit_info[SYMBOL]
-        assert TradingEngine._channel_peak_exit_reentry_blocked("ENTER", False, "LONG", f, info, SYMBOL)
+    assert not e.account.events, e.account.logs
+    assert SYMBOL in e.account.positions
 
 
 @pytest.fixture
@@ -131,7 +126,7 @@ def test_normal_opposite_break_requires_postentry_path(side):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("success", [True, False])
-async def test_live_waterfall_reverse_closes_before_open(success):
+async def test_live_waterfall_cannot_close_or_reverse_without_confirmation(success):
     f = frame_for("SHORT"); f["atr"] = 1.
     f.loc[7, "close"] = 103.
     e = _execution_engine(f, "SHORT", success)
@@ -145,14 +140,14 @@ async def test_live_waterfall_reverse_closes_before_open(success):
         return True
     e._fresh_channel_entry_snapshot = snapshot
     e._place_structured_entry = place
-    assert await e._execute_confirmed_channel_break(SYMBOL, f, 103., "LONG") is success
-    assert [event[0] for event in events] == (["close", "open"] if success else ["close"])
-    assert (SYMBOL in e.account.positions) is (not success)
+    assert not await e._execute_confirmed_channel_break(SYMBOL, f, 103., "LONG")
+    assert not events
+    assert SYMBOL in e.account.positions
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("closed", [False, True])
-def test_two_abnormal_opposite_bodies_exit_immediately(side, closed):
+def test_two_abnormal_opposite_bodies_do_not_exit(side, closed):
     f = frame_for(side); f["atr"] = 1.
     sign = -1 if side == "LONG" else 1
     start = 5 if closed else 6
@@ -162,7 +157,7 @@ def test_two_abnormal_opposite_bodies_exit_immediately(side, closed):
         f.loc[7, ["open", "close"]] = 100+sign*1.2
     price = float(f.iloc[-1]["close"])
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result == {"action": "EXIT", "side": None, "reason": "KC_TWO_ADVERSE_ABNORMAL_EXIT"}
+    assert result["action"] == "HOLD"
     assert TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=480)["action"] == "HOLD"
     f.loc[start, "close"] = 100+sign*.2
     assert TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)["action"] == "HOLD"
@@ -215,3 +210,30 @@ def test_surge_turn_respects_current_ma3_and_channel_space(side, inside, space):
     f.loc[7, ["open", "close"]] = [price+sign*.1, price]
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
     assert result["action"] == ("EXIT" if inside and space < .4 else "HOLD")
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+@pytest.mark.parametrize("pair", [False, True])
+@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize("distance", [0., .2])
+def test_adverse_bodies_hold_at_or_outside_favorable_rail(side, pair, closed, distance):
+    f = frame_for(side)
+    f["atr"] = 1.
+    direction = 1 if side == "LONG" else -1
+    rail = 102. if side == "LONG" else 98.
+    price = rail + direction * distance
+    end = 6 if closed else 7
+    if pair:
+        f.loc[end-1, ["open", "close"]] = [price+direction*1.2, price+direction*.6]
+        f.loc[end, ["open", "close"]] = [price+direction*.6, price]
+    else:
+        f.loc[end, ["open", "close"]] = [price+direction*1.2, price]
+    if closed:
+        f.loc[7, ["open", "close"]] = price
+    f["high"] = f[["open", "close"]].max(axis=1)+.1
+    f["low"] = f[["open", "close"]].min(axis=1)-.1
+    # Include a completed MA3 path: the hold must not rely on missing history.
+    f.loc[2, "ma3"] = rail + direction
+    assert TradingEngine._channel_swing_action(
+        f, price, side, position_open_timestamp=120,
+    )["action"] == "HOLD"

@@ -6655,40 +6655,8 @@ class TradingEngine:
             recent, path_ready = TradingEngine._channel_position_path(
                 frame, held, position_open_timestamp, position_path,
             )
-            # Without an entry timestamp only the live emergency body is usable.
-            emergency_rows = recent if len(recent) else frame.iloc[-1:]
-            direction = 1 if held == "LONG" else -1
-            for end in (len(emergency_rows), len(emergency_rows) - 1):
-                if end < 2:
-                    continue
-                abnormal_pair = True
-                for index in (end - 2, end - 1):
-                    row = emergency_rows.iloc[index]
-                    close = float(live_price) if index == len(emergency_rows) - 1 else float(row["close"])
-                    threshold = float(row.get("atr", 0)) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-                    body = direction * (float(row["open"]) - close)
-                    if not (math.isfinite(threshold) and threshold > 0 and math.isfinite(body) and body >= threshold):
-                        abnormal_pair = False
-                        break
-                if abnormal_pair:
-                    return {"action": "EXIT", "side": None, "reason": "KC_TWO_ADVERSE_ABNORMAL_EXIT"}
-            for offset in (-1, -2):
-                if len(emergency_rows) < abs(offset):
-                    continue
-                row = emergency_rows.iloc[offset]
-                threshold = float(row.get("atr", 0)) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR * 2
-                close = float(live_price) if offset == -1 else float(row["close"])
-                if math.isfinite(threshold) and threshold > 0 and direction * (float(row["open"]) - close) >= threshold:
-                    upper, lower = float(current_live["kc_upper"]), float(current_live["kc_lower"])
-                    live_open = float(current_live["open"])
-                    # A waterfall can reverse immediately only after crossing the opposite outer rail.
-                    if offset == -1 and held == "SHORT" and live_open <= upper < live_price:
-                        return {"action": "REVERSE", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT"}
-                    if offset == -1 and held == "LONG" and live_open >= lower > live_price:
-                        return {"action": "REVERSE", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT"}
-                    return {"action": "EXIT", "side": None, "reason": "KC_ADVERSE_WATERFALL_EXIT"}
-            # A normal opposite candle after a surge is not an exit by itself.
-            # It must pass this position's MA3 reentry, space and middle conditions.
+            # Candle color, body size and consecutive adverse bodies never close
+            # holdings independently; preserve the existing channel exit conditions.
             if not path_ready:
                 return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
             if held == "LONG" and lower_break_confirmed and live_price < float(current_live["kc_lower"]):
