@@ -2366,7 +2366,7 @@ class TradingEngine:
             return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame} if ready else None
         exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
         if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
-            "ENTER", False, side, frame, exit_info, symbol,
+            "ENTER", False, side, frame, exit_info, symbol, live_price=price,
         ):
             return None
         fresh_candidate_bar_id = self._channel_candidate_bar_id(frame)
@@ -2483,12 +2483,17 @@ class TradingEngine:
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
             getattr(self, "tickers", {})[symbol] = planned_price
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
+        # Keep closed signal metadata for the order, but assess current market
+        # risk from the forming candle and latest execution price.
+        risk_candle = fresh_frame.iloc[-1] if isinstance(fresh_frame, pd.DataFrame) and not fresh_frame.empty else None
+        risk_open = float(risk_candle["open"]) if risk_candle is not None else float(signal.get("signal_candle_open") or planned_price)
+        risk_high = max(float(risk_candle["high"]), planned_price) if risk_candle is not None else float(signal.get("signal_candle_high") or planned_price)
+        risk_low = min(float(risk_candle["low"]), planned_price) if risk_candle is not None else float(signal.get("signal_candle_low") or planned_price)
+        risk_close = planned_price if risk_candle is not None else float(signal.get("signal_candle_close") or planned_price)
+        risk_atr = float(risk_candle.get("atr") or atr) if risk_candle is not None else atr
         if not self._abnormal_market_entry_allowed(
-            symbol, side, planned_price, atr,
-            float(signal.get("signal_candle_open") or planned_price),
-            float(signal.get("signal_candle_high") or planned_price),
-            float(signal.get("signal_candle_low") or planned_price),
-            float(signal.get("signal_candle_close") or planned_price),
+            symbol, side, planned_price, risk_atr,
+            risk_open, risk_high, risk_low, risk_close,
         ):
             return False
         # 最後一道方向守門：避免在高週期趨勢不符時開錯方向 (MA5_CROSS_PIVOT 策略除外)
@@ -5799,6 +5804,7 @@ class TradingEngine:
         peak_exit_info: dict | None,
         symbol: str,
         max_bars: int = 3,
+        live_price: float | None = None,
     ) -> bool:
         """三點峰谷平倉後，在價格仍位於外軌一側時封鎖同方向重開倉。
 
@@ -5818,8 +5824,20 @@ class TradingEngine:
                 exit_bar = float(peak_exit_info["exit_bar_id"])
                 live_bar = float(frame.iloc[-1].get("timestamp", frame.index[-1]))
                 breakout_bar = float(frame.iloc[-3].get("timestamp", frame.index[-3]))
-                decision = TradingEngine._channel_swing_action(frame, float(frame.iloc[-1]["close"]))
-                fresh = live_bar > exit_bar if str(decision.get("reason", "")).startswith("LIVE_") else breakout_bar > exit_bar
+                price = float(frame.iloc[-1]["close"]) if live_price is None else live_price
+                decision = TradingEngine._channel_swing_action(frame, price)
+                reason = str(decision.get("reason", ""))
+                if reason.startswith("KC_NEXT_LIVE_PUSH_"):
+                    signal_bar = float(frame.iloc[-2].get("timestamp", frame.index[-2]))
+                elif reason.startswith("LIVE_"):
+                    signal_bar = live_bar
+                else:
+                    signal_bar = breakout_bar
+                opposite = str(peak_exit_info.get("side", "")).upper() != str(entry_side).upper()
+                # Closing a short during the breakout bar does not invalidate
+                # that bar's subsequent closed confirmation for a new long.
+                fresh = signal_bar > exit_bar or (
+                    opposite and signal_bar == exit_bar and live_bar > exit_bar)
                 return not (fresh and decision.get("action") == "ENTER" and decision.get("side") == entry_side)
             except (TypeError, ValueError, KeyError, IndexError):
                 return True
@@ -6704,17 +6722,17 @@ class TradingEngine:
         )
         clean_continuation_up = bool(
             continuation_up
-            and bo_open <= bo_upper
+            and bo_close > bo_open
             and bo_close > bo_upper
             and cf_close > cf_upper
-            and max(breakout_range, confirmation_range) <= kc_width * 1.25
+            and bo_is_solid and cf_is_solid
         )
         clean_continuation_down = bool(
             continuation_down
-            and bo_open >= bo_lower
+            and bo_close < bo_open
             and bo_close < bo_lower
             and cf_close < cf_lower
-            and max(breakout_range, confirmation_range) <= kc_width * 1.25
+            and bo_is_solid and cf_is_solid
         )
         # Do not chase the original spike, but allow a later clean continuation
         # after two closed candles confirm that the trend is still extending.
@@ -6801,25 +6819,28 @@ class TradingEngine:
                 
 
                 
-            if max(breakout_range, confirmation_range) > kc_width * 1.25:
-                if not (clean_continuation_up or clean_continuation_down):
-                    return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
-
             # A closed body breaks the rail; its immediate live successor pushes
             # beyond that close. Allow unclear MA15, but never missing/invalid or
-            # explicitly opposing MA15. Keep spike and falling-wave guards above.
+            # explicitly opposing MA15. A solid directional breakout can be large;
+            # evaluate its qualified successor before the historical spike guard.
             valid_direction_data = len(history) == 3 and all(
                 math.isfinite(value) and value > 0 for value in history)
             live_valid = all(math.isfinite(v) and v > 0 for v in
                              (live_open, live_price, live_upper, live_lower)) and live_lower < live_upper
             adjoining = cf_body > 0 and abs(live_open - cf_close) <= .25 * cf_body
             if valid_direction_data and live_valid and adjoining:
-                if (trend >= 0 and cf_lower <= cf_open <= cf_upper < cf_close
+                if (trend >= 0 and cf_is_solid and cf_lower <= cf_open <= cf_upper < cf_close
                         and live_price > max(live_open, cf_close, live_upper)):
                     return {"action": "ENTER", "side": "LONG", "reason": "KC_NEXT_LIVE_PUSH_LONG"}
                 if (trend <= 0 and cf_is_solid and cf_lower > cf_close and cf_lower <= cf_open <= cf_upper
                         and live_price < min(live_open, cf_close, live_lower)):
                     return {"action": "ENTER", "side": "SHORT", "reason": "KC_NEXT_LIVE_PUSH_SHORT"}
+
+            # Once two solid outside bodies keep advancing, an earlier large
+            # candle must not repeatedly suppress a fresh continuation entry.
+            if max(breakout_range, confirmation_range) > kc_width * 1.25:
+                if not (clean_continuation_up or clean_continuation_down):
+                    return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
 
             # 其他開倉時都是第二根同色才開倉，且趨勢向上開多單,趨勢向下開空單
             if upper_break_confirmed and live_price > live_upper and trend > 0:
@@ -6927,7 +6948,7 @@ class TradingEngine:
             position = self.account.positions.get(symbol)
             exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
             if not position and exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
-                "ENTER", False, side, frame, exit_info, symbol,
+                "ENTER", False, side, frame, exit_info, symbol, live_price=price,
             ):
                 return False
             bar_id = self._channel_candidate_bar_id(frame)
