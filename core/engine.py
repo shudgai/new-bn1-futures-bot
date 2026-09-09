@@ -7710,18 +7710,28 @@ class TradingEngine:
                 return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
             if held == "SHORT" and upper_break_confirmed:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
-            try:
-                entry_upper, entry_lower = float(entry_kc_upper or 0.0), float(entry_kc_lower or 0.0)
-                entry_width = entry_upper - entry_lower if 0 < entry_lower < entry_upper and math.isfinite(entry_upper) else 0.0
-            except (TypeError, ValueError):
-                entry_width = 0.0
-            if not TradingEngine._channel_outer_gap_expanding(frame, held):
-                if any(TradingEngine._channel_impulse_turn_allowed(frame, held, offset, live_price)
-                       for offset in (-2, -1)):
-                    return {"action": "EXIT", "side": None, "reason": "KC_FAVORABLE_IMPULSE_REVERSAL_EXIT"}
-            exit_reason = TradingEngine._channel_trend_exit_reason(frame, held, entry_width)
-            if exit_reason:
-                return {"action": "EXIT", "side": None, "reason": exit_reason}
+            # 用戶明確指示平倉唯一標準：
+            # 1. 空間(MA15 到 持倉側外軌的距離) > 40%：絕對不平倉，只等對向破軌(已由上面的 REVERSE 處理)
+            # 2. 空間 <= 40%：MA3 進入通道，且價格碰到中軌，才平倉
+            
+            ma15_now = float(current_live["ma15"])
+            if "ema_20" in current_live and not pd.isna(current_live["ema_20"]):
+                middle_now = float(current_live["ema_20"])
+            else:
+                middle_now = (float(current_live["kc_upper"]) + float(current_live["kc_lower"])) / 2.0
+                
+            kc_width_now = float(current_live["kc_upper"]) - float(current_live["kc_lower"])
+            rail_now = float(current_live["kc_upper"]) if held == "LONG" else float(current_live["kc_lower"])
+            space_ratio = abs(ma15_now - rail_now) / kc_width_now if kc_width_now > 0 else 1.0
+            
+            if space_ratio <= 0.40:
+                ma3_now = float(current_live["ma3"])
+                ma3_inside = float(current_live["kc_lower"]) < ma3_now < float(current_live["kc_upper"])
+                
+                if held == "LONG" and live_price <= middle_now and ma3_inside:
+                    return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
+                if held == "SHORT" and live_price >= middle_now and ma3_inside:
+                    return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
             return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
         # Use up to 60 available closed MA15 values for the broad direction;
         # a one-bar turn alone does not change the entry trend.
