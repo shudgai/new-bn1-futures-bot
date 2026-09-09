@@ -7764,6 +7764,14 @@ class TradingEngine:
             if held == "SHORT" and upper_break_confirmed:
                 return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
                 
+            # 用戶指示：就算持有部位，只要對向出現破軌(在KC內是綠K，一突破上軌)，就要立刻平倉並反手，不等第2根
+            live_upper = float(current_live["kc_upper"])
+            live_lower = float(current_live["kc_lower"])
+            if held == "SHORT" and live_open <= live_upper and live_price > live_open and live_price > live_upper:
+                return {"action": "REVERSE", "side": "LONG", "reason": "LIVE_UPPER_BREAKOUT_REVERSE"}
+            if held == "LONG" and live_open >= live_lower and live_price < live_open and live_price < live_lower:
+                return {"action": "REVERSE", "side": "SHORT", "reason": "LIVE_LOWER_BREAKOUT_REVERSE"}
+                
             # 拋物線極端反轉平倉 (用戶要求：長綠K衝刺後，就算中間夾個小紅K，只要出長紅K就立刻平倉)
             if TradingEngine._check_parabolic_reversal_exit(frame, held, live_price):
                 return {"action": "EXIT", "side": None, "reason": "KC_PARABOLIC_REVERSAL_EXIT"}
