@@ -8,11 +8,11 @@ PIVOT_CODES = {"KC_MA15_TROUGH_LONG", "KC_MA15_PEAK_SHORT"}
 def pivot_entry(frame, price):
     wait = {"action": "WAIT", "side": None, "reason": "WAIT_MA15_PRICE_PIVOT"}
     required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
-    if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
+    if frame is None or len(frame) < 5 or not required.issubset(frame.columns):
         return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
     try:
-        left, pivot, right = frame.iloc[-4], frame.iloc[-3], frame.iloc[-2]
-        rows = (left, pivot, right)
+        left, pivot, right, confirmation = (frame.iloc[-5], frame.iloc[-4], frame.iloc[-3], frame.iloc[-2])
+        rows = (left, pivot, right, confirmation)
         values = [float(row[key]) for row in rows for key in required] + [float(price)]
         if not all(math.isfinite(v) and v > 0 for v in values):
             return {**wait, "reason": "KC_DATA_INVALID"}
@@ -22,15 +22,17 @@ def pivot_entry(frame, price):
         rails = [(float(r["kc_lower"]), float(r["kc_upper"])) for r in (*rows, frame.iloc[-1])]
         if any(not (math.isfinite(lo) and math.isfinite(hi) and 0 < lo < hi) for lo, hi in rails):
             return {**wait, "reason": "KC_DATA_INVALID"}
-        rising = float(left["ma15"]) < float(pivot["ma15"]) < float(right["ma15"])
-        falling = float(left["ma15"]) > float(pivot["ma15"]) > float(right["ma15"])
+        rising = float(pivot["ma15"]) < float(right["ma15"]) < float(confirmation["ma15"])
+        falling = float(pivot["ma15"]) > float(right["ma15"]) > float(confirmation["ma15"])
         if (rising and float(pivot["low"]) < min(float(left["low"]), float(right["low"]))
                 and float(right["close"]) > float(right["open"])
+                and float(confirmation["close"]) > float(confirmation["open"])
                 and float(left["ma3"]) > float(pivot["ma3"]) < float(right["ma3"])
                 and price > float(pivot["low"])):
             return {"action": "ENTER", "side": "LONG", "reason": "KC_MA15_TROUGH_LONG"}
         if (falling and float(pivot["high"]) > max(float(left["high"]), float(right["high"]))
                 and float(right["close"]) < float(right["open"])
+                and float(confirmation["close"]) < float(confirmation["open"])
                 and float(left["ma3"]) < float(pivot["ma3"]) > float(right["ma3"])
                 and price < float(pivot["high"])):
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_MA15_PEAK_SHORT"}

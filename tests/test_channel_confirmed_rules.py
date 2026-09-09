@@ -15,9 +15,9 @@ def confirm_pivot(frame, side):
     for key in ('kc_upper', 'kc_lower', 'atr'):
         frame[key] = source.iloc[-1][key]
     frame['ema_20'] = 100.
-    for offset in range(4):
+    for offset in range(5):
         for key in ('open', 'high', 'low', 'close', 'ma3', 'ma15'):
-            frame.loc[frame.index[-4 + offset], key] = source.iloc[-4 + offset][key]
+            frame.loc[frame.index[-5 + offset], key] = source.iloc[-5 + offset][key]
     return float(frame.iloc[-1]['close'])
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def anyio_backend():
     return 'asyncio'
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('length', [4, 30, 70])
+@pytest.mark.parametrize('length', [5, 30, 70])
 def test_available_ma15_history_confirms_entry(setup_engine, side, length):
     _, f = setup_engine(side)
     price = confirm_pivot(f, side)
@@ -58,6 +58,9 @@ def test_unconfirmed_break_cannot_open_or_reverse(setup_engine, side, held, inva
     price = float(f.iloc[-1]['open'])
     f['high'] = f[['open', 'close', 'high']].max(axis=1)
     f['low'] = f[['open', 'close', 'low']].min(axis=1)
+    if not held:
+        # Isolate the invalid outer break from an independently valid pivot.
+        f["ma3"] = 100.
     result = TradingEngine._channel_swing_action(f, price, old)
     assert result['action'] == ('HOLD' if held else 'WAIT')
 

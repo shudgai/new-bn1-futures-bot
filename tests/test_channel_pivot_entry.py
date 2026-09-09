@@ -17,9 +17,10 @@ def anyio_backend():
 def market(side="LONG"):
     f = _narrow_channel_frame()
     f["kc_upper"], f["kc_lower"], f["atr"] = 110., 90., 4.
-    f.loc[16, ["open", "high", "low", "close", "ma3", "ma15"]] = [98., 99., 96., 97., 98., 96.]
-    f.loc[17, ["open", "high", "low", "close", "ma3", "ma15"]] = [97., 98., 94., 95., 97., 96.1]
-    f.loc[18, ["open", "high", "low", "close", "ma3", "ma15"]] = [95., 99., 95., 98., 97.5, 96.2]
+    f.loc[15, ["open", "high", "low", "close", "ma3", "ma15"]] = [98., 99., 96., 97., 98., 96.]
+    f.loc[16, ["open", "high", "low", "close", "ma3", "ma15"]] = [97., 98., 94., 95., 97., 96.1]
+    f.loc[17, ["open", "high", "low", "close", "ma3", "ma15"]] = [95., 99., 95., 98., 97.5, 96.2]
+    f.loc[18, ["open", "high", "low", "close", "ma3", "ma15"]] = [97.8, 99., 97.5, 98., 97.8, 96.3]
     f.loc[19, ["open", "high", "low", "close"]] = [98., 98.2, 97.9, 98.1]
     if side == "SHORT":
         original = f.copy()
@@ -38,15 +39,15 @@ def test_closed_pivot_confirmation(side, case):
     if case == "flat_ma15": f.loc[16:18, "ma15"] = 100.
     elif case == "mixed_ma15": f.loc[16:18, "ma15"] = [100., 101., 100.5]
     elif case == "opposite_ma15": f.loc[16:18, "ma15"] = f.loc[16:18, "ma15"].to_numpy()[::-1]
-    elif case == "equal_extreme": f.loc[16, extreme] = f.loc[17, extreme]
+    elif case == "equal_extreme": f.loc[15, extreme] = f.loc[16, extreme]
     elif case == "opposite_body": f.loc[18, ["open", "close"]] = f.loc[18, ["close", "open"]].to_numpy()
     elif case == "doji": f.loc[18, "open"] = f.loc[18, "close"]
-    elif case == "flat_ma3": f.loc[18, "ma3"] = f.loc[17, "ma3"]
-    elif case == "no_ma3_turn": f.loc[16, "ma3"] = f.loc[17, "ma3"]
+    elif case == "flat_ma3": f.loc[17, "ma3"] = f.loc[16, "ma3"]
+    elif case == "no_ma3_turn": f.loc[15, "ma3"] = f.loc[16, "ma3"]
     elif case == "invalid": f.loc[17, "low"] = float("nan")
     elif case == "bad_ohlc": f.loc[18, "high"] = f.loc[18, "low"] - 1
     elif case == "live_only": f = f.iloc[:-1].copy()
-    elif case == "broken_pivot": price = float(f.loc[17, extreme])
+    elif case == "broken_pivot": price = float(f.loc[16, extreme])
     result = TradingEngine._channel_swing_action(f, price)
     assert (result["action"] == "ENTER") is (case == "valid"), result
     if case == "valid": assert result["side"] == side
@@ -303,3 +304,43 @@ async def test_profit_reentry_migrates_ticket_and_preserves_failed_order(side):
     f.loc[f.index[-2], 'ma15'] = f.iloc[-3]['ma15']
     await e._try_profit_reentry(SYMBOL, f, price, False)
     e._execute_confirmed_channel_break.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('bad', ['first_opposite', 'first_doji', 'second_opposite', 'second_doji', 'second_live'])
+async def test_pivot_requires_two_closed_same_colour_candles_at_order_time(side, bad):
+    f = market(side); price = float(f.iloc[-1]['close'])
+    e = _execution_engine(f, side, True); e.account.positions.clear(); e.tickers[SYMBOL] = price
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
+    row = 17 if bad.startswith('first') else 18
+    if bad.endswith('opposite'):
+        f.loc[row, ['open', 'close']] = f.loc[row, ['close', 'open']].to_numpy()
+    elif bad.endswith('doji'):
+        f.loc[row, 'open'] = f.loc[row, 'close']
+    else:
+        # The second directional candle is still live, so cannot confirm.
+        e.fetch_klines = AsyncMock(return_value=f.iloc[:-1].copy())
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is None
+
+
+def test_reported_pepe_and_lobster_entry_replay():
+    from pathlib import Path
+    import pandas as pd
+    data = json.loads((Path(__file__).parent / 'fixtures' / 'pepe_lobster_entry_20260909.json').read_text())
+    for name, price, expected in [('pepe', .0034988, 'ENTER'), ('lobster', .052423, 'WAIT')]:
+        f = pd.DataFrame(data[name]); f = f[f.time <= 1788990300].copy()
+        f['timestamp'] = f.time * 1000
+        # Historical closed candles plus entry-time price; reconstruct the live
+        # body without feeding its later closing price into the decision.
+        live = f.index[-1]; opened = float(f.loc[live, 'open'])
+        f.loc[live, ['close', 'high', 'low']] = [price, max(price, opened), min(price, opened)]
+        decision = TradingEngine._channel_swing_action(f, price)
+        assert decision['action'] == expected, (name, decision)
+        if name == 'pepe':
+            assert decision['side'] == 'SHORT'
+            assert decision['reason'] == 'KC_LOWER_BREAKOUT_STRICT'
+        else:
+            # Next scan still cannot confirm: the second candle closed red.
+            later = pd.DataFrame(data[name]); later['timestamp'] = later.time * 1000
+            assert TradingEngine._channel_swing_action(later, float(later.iloc[-1]['open']))['action'] == 'WAIT'

@@ -6621,7 +6621,9 @@ class TradingEngine:
             decision = pivot_entry(frame, live_price)
             if decision.get("action") == "ENTER" and TradingEngine._channel_closed_waves_falling(frame, decision["side"]):
                 return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if decision["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
-            if decision.get("action") == "ENTER" or decision.get("reason") != "WAIT_MA15_PRICE_PIVOT":
+            if (decision.get("action") == "ENTER"
+                    or (decision.get("reason") != "WAIT_MA15_PRICE_PIVOT"
+                        and not (len(frame) == 4 and decision.get("reason") == "KC_DATA_UNAVAILABLE"))):
                 return decision
             # A second authorized entry: a closed body crosses the outer rail
             # and the next closed candle confirms. Do not revive outer chasing.
