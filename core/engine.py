@@ -8650,23 +8650,8 @@ class TradingEngine:
                     "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                     "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
                 }
-                peak_exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
                 pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
                 direct_side = channel_action.get("side") if channel_action.get("reason") in break_reasons else None
-                if direct_side in ("LONG", "SHORT") and peak_exit_info:
-                    if self._channel_peak_exit_reentry_blocked(
-                        "ENTER", False, direct_side, channel_df, peak_exit_info,
-                        symbol,
-                    ):
-                        direct_side = None
-                        self._record_channel_signal_event(
-                            symbol, "PEAK_EXIT_WAIT_REBREAK", channel_df,
-                        )
-                    else:
-                        if not peak_exit_info.get("require_new_closed_break") and channel_action.get("reason") not in {
-                            "PEAK_REVERSAL_SHORT", "TROUGH_REVERSAL_LONG",
-                        }:
-                            getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
                 if not existing_pos and pending_side in ("LONG", "SHORT"):
                     retry_bar = getattr(self, "_channel_pending_reverse_bar", {}).get(symbol)
                     if retry_bar == (pending_side, self._channel_candidate_bar_id(channel_df)):
@@ -8689,13 +8674,6 @@ class TradingEngine:
                         is_manual=True,
                     )
                     if closed and symbol not in self.account.positions:
-                        if not hasattr(self, "_channel_swing_peak_exit_info"):
-                            self._channel_swing_peak_exit_info = {}
-                        self._channel_swing_peak_exit_info[symbol] = {
-                            "side": existing_pos.get("side"), "bar_count": 0,
-                            "require_new_closed_break": True,
-                            "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
-                        }
                         getattr(self, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
                         getattr(self, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                         self.account.log(
