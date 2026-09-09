@@ -1121,7 +1121,7 @@ def test_paused_api_startup_still_starts_market_data():
     from services.api import startup_event
 
     startup_source = inspect.getsource(startup_event)
-    assert "engine.start_market_data()" in startup_source
+    assert "recover_bot_if_needed()" in startup_source
 
 
 @pytest.mark.anyio
@@ -1156,7 +1156,7 @@ async def test_bot_supervisor_restarts_unexpectedly_stopped_engine(
 
 
 @pytest.mark.anyio
-async def test_bot_supervisor_respects_manual_pause(monkeypatch, tmp_path):
+async def test_bot_supervisor_clears_legacy_pause(monkeypatch, tmp_path):
     import services.api as api
 
     paused_file = tmp_path / "paused.flag"
@@ -1167,12 +1167,17 @@ async def test_bot_supervisor_respects_manual_pause(monkeypatch, tmp_path):
         task = None
 
         async def start(self):
-            raise AssertionError("manual pause must not auto-start")
+            self.is_running = True
 
-    monkeypatch.setattr(api, "engine", Engine())
+    from types import SimpleNamespace
+    fake_engine = Engine()
+    fake_engine.account = SimpleNamespace(log=lambda *args: None)
+    monkeypatch.setattr(api, "engine", fake_engine)
     monkeypatch.setattr(api, "BOT_PAUSED_FILE", str(paused_file))
 
-    assert await api.recover_bot_if_needed() is False
+    assert await api.recover_bot_if_needed() is True
+    assert fake_engine.is_running
+    assert not paused_file.exists()
 
 
 @pytest.mark.anyio
@@ -6567,3 +6572,48 @@ def test_two_symbol_rotation_keeps_kc_inner_trend_even_if_next_rank_is_unqualifi
     assert "ZEC/USDT" in selected
     assert len(selected) == 2
     assert directions["ZEC/USDT"] == "LONG"
+
+
+@pytest.mark.anyio
+async def test_toggle_restarts_instead_of_pausing(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import asyncio
+    import services.api as api
+
+    events = []
+    fake = SimpleNamespace(is_running=True)
+    async def stop():
+        events.append('stop')
+        fake.is_running = False
+    async def start():
+        events.append('start')
+        fake.is_running = True
+    fake.stop, fake.start = stop, start
+    paused = tmp_path / 'paused.flag'
+    paused.write_text('paused')
+    monkeypatch.setattr(api, 'engine', fake)
+    monkeypatch.setattr(api, '_bot_control_lock', asyncio.Lock())
+    monkeypatch.setattr(api, 'BOT_PAUSED_FILE', str(paused))
+    assert await api.toggle_bot() == {'is_running': True}
+    assert events == ['stop', 'start']
+    assert not paused.exists()
+
+
+@pytest.mark.anyio
+async def test_startup_failure_still_launches_supervisor(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import asyncio
+    import services.api as api
+
+    started = asyncio.Event()
+    async def supervisor():
+        started.set()
+    monkeypatch.setattr(api, 'engine', SimpleNamespace(account=SimpleNamespace(log=lambda *args: None)))
+    monkeypatch.setattr(api, 'recover_bot_if_needed', AsyncMock(side_effect=RuntimeError('temporary failure')))
+    monkeypatch.setattr(api, 'bot_supervisor_loop', supervisor)
+    monkeypatch.setattr(api, '_bot_supervisor_task', None)
+    await api.startup_event()
+    await api._bot_supervisor_task
+    assert started.is_set()

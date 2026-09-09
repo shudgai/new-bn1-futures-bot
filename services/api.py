@@ -124,12 +124,10 @@ class ManualCloseRequest(BaseModel):
 
 
 async def recover_bot_if_needed() -> bool:
-    """Restart trading tasks that stopped unexpectedly, unless the user paused them."""
-    if os.path.exists(BOT_PAUSED_FILE):
-        return False
+    """Keep trading running, including after a legacy manual pause."""
     async with _bot_control_lock:
         if os.path.exists(BOT_PAUSED_FILE):
-            return False
+            os.remove(BOT_PAUSED_FILE)
         main_task = getattr(engine, "task", None)
         if engine.is_running and main_task is not None and not main_task.done():
             return False
@@ -158,22 +156,20 @@ async def bot_supervisor_loop():
             # Check immediately after startup so an unexpectedly stopped bot
             # is not left inactive for the first supervisor interval.
             await recover_bot_if_needed()
-            await asyncio.sleep(BOT_SUPERVISOR_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             engine.account.log(f"⚠️ [自動恢復] 本次重啟失敗，稍後重試：{exc}", "WARNING")
+        await asyncio.sleep(BOT_SUPERVISOR_INTERVAL_SECONDS)
 
 
 @app.on_event("startup")
 async def startup_event():
     global _bot_supervisor_task
-    if os.path.exists(BOT_PAUSED_FILE):
-        await engine.account.initialize()
-        engine.start_market_data()
-        engine.account.log("⏸️ 機器人維持暫停；按下啟動後才接管持倉", "INFO")
-    else:
-        await engine.start()
+    try:
+        await recover_bot_if_needed()
+    except Exception as exc:
+        engine.account.log(f"⚠️ [自動恢復] 啟動失敗，監督器將重試：{exc}", "WARNING")
     if _bot_supervisor_task is None or _bot_supervisor_task.done():
         _bot_supervisor_task = asyncio.create_task(bot_supervisor_loop())
 
@@ -363,16 +359,11 @@ async def run_ai_trade_analysis():
 @app.post("/api/toggle")
 async def toggle_bot():
     async with _bot_control_lock:
+        if os.path.exists(BOT_PAUSED_FILE):
+            os.remove(BOT_PAUSED_FILE)
         if engine.is_running:
-            # 先寫旗標，避免監督器在 stop() 與寫檔之間誤判為意外停止。
-            os.makedirs(os.path.dirname(BOT_PAUSED_FILE), exist_ok=True)
-            with open(BOT_PAUSED_FILE, "w", encoding="utf-8") as pause_file:
-                pause_file.write("paused\n")
             await engine.stop()
-        else:
-            if os.path.exists(BOT_PAUSED_FILE):
-                os.remove(BOT_PAUSED_FILE)
-            await engine.start()
+        await engine.start()
     return {"is_running": engine.is_running}
 
 @app.post("/api/manual_order")

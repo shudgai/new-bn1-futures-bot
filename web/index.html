@@ -247,7 +247,7 @@
             <div style="display:flex; align-items:center; gap:16px;">
                 <span style="font-size:12px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
                 <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
-                    {{ bot.is_running ? '🟢 策略運行中' : '🔴 已停止' }}
+                    {{ bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復' }}
                 </div>
             </div>
         </div>
@@ -471,7 +471,7 @@
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
                     <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
-                        {{ isTogglingBot ? '處理中...' : (bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人') }}
+                        {{ isTogglingBot ? '處理中...' : (bot.is_running ? '🔄 重新啟動交易機器人' : '▶️ 啟動交易機器人') }}
                     </button>
                     <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">
                         🔄 重置帳戶（清空損益與記錄）
