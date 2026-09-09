@@ -136,4 +136,9 @@ def reentry_gate(ticket, frame, price):
         return 'wait'
     side = ticket['side']
     outside = price > upper if side == 'LONG' else price < lower
+    if side == 'LONG':
+        if price <= upper:
+            ticket['pulled_back_inside'] = True
+            return 'wait'
+        return 'ready' if ticket.get('pulled_back_inside') else 'wait'
     return 'ready' if outside else 'end'

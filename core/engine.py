@@ -6683,12 +6683,13 @@ class TradingEngine:
         # 確保第二根確認K不是十字線或T字形/長影線（實體至少佔全長的 20%）
         cf_body = abs(cf_close - cf_open)
         cf_is_solid = cf_body / (confirmation_range + 1e-9) >= 0.20
+        bo_is_solid = abs(bo_close - bo_open) / (breakout_range + 1e-9) >= 0.20
         # 嚴格突破（用於反手與初始突破）：必須是從軌道內實體穿出
         upper_break_confirmed = bo_open <= bo_upper < bo_close and cf_close > cf_open and cf_close > cf_upper and cf_is_solid
-        lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
+        lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower and cf_is_solid and bo_is_solid
         # 順勢進場（用於空手時在趨勢延續中進場）：只要連續兩根收在外軌外，且當前是實體順勢K
         upper_trend_entry = bo_close > bo_upper and cf_close > cf_open and cf_close > cf_upper and cf_is_solid
-        lower_trend_entry = bo_close < bo_open and bo_close < bo_lower and cf_close < cf_open and cf_close < cf_lower and cf_is_solid
+        lower_trend_entry = bo_close < bo_open and bo_close < bo_lower and cf_close < cf_open and cf_close < cf_lower and cf_is_solid and bo_is_solid
         continuation_up = bool(
             cf_close > cf_open
             and cf_close > bo_close
@@ -6719,18 +6720,33 @@ class TradingEngine:
         # after two closed candles confirm that the trend is still extending.
         if held in ("LONG", "SHORT"):
             current_live = frame.iloc[-1]
-            # User-authorized short emergency exit: a live long green body,
-            # independent of profit arming or the MA3 outside/inside path.
-            if held == "SHORT":
-                green_body = live_price - float(current_live["open"])
-                live_width = float(current_live["kc_upper"]) - float(current_live["kc_lower"])
-                prior_bodies = (frame["close"].iloc[-10:-1].astype(float)
-                                - frame["open"].iloc[-10:-1].astype(float)).abs()
-                average_body = float(prior_bodies.mean())
-                if (math.isfinite(green_body) and green_body > 0 and live_width > 0
-                        and (green_body >= .8 * live_width
-                             or (average_body > 0 and green_body >= 3 * average_body))):
-                    return {"action": "EXIT", "side": None, "reason": "KC_SHORT_LIVE_GREEN_BODY_EXIT"}
+            # A live adverse long body must also pass the middle rail.
+            # Symmetric for both sides, independent of profit arming and MA3.
+            live_open = float(current_live["open"])
+            live_upper = float(current_live["kc_upper"])
+            live_lower = float(current_live["kc_lower"])
+            middle = current_live.get("ema_20", float("nan"))
+            if pd.isna(middle):
+                middle = current_live.get("kc_middle", float("nan"))
+            if pd.isna(middle):
+                middle = (live_upper + live_lower) / 2
+            middle = float(middle)
+            adverse_sign = 1 if held == "SHORT" else -1
+            adverse_body = adverse_sign * (live_price - live_open)
+            live_width = live_upper - live_lower
+            prior_bodies = (frame["close"].iloc[-10:-1].astype(float)
+                            - frame["open"].iloc[-10:-1].astype(float)).abs()
+            average_body = float(prior_bodies.mean())
+            valid_live = all(math.isfinite(value) and value > 0 for value in
+                             (live_open, live_price, live_upper, live_lower, middle))
+            long_body = (adverse_body >= .8 * live_width
+                         or (math.isfinite(average_body) and average_body > 0
+                             and adverse_body >= 3 * average_body))
+            if (valid_live and live_width > 0 and adverse_body > 0 and long_body
+                    and adverse_sign * (live_price - middle) > 0):
+                reason = ("KC_SHORT_LIVE_GREEN_MIDDLE_EXIT" if held == "SHORT"
+                          else "KC_LONG_LIVE_RED_MIDDLE_EXIT")
+                return {"action": "EXIT", "side": None, "reason": reason}
             recent, path_ready = TradingEngine._channel_position_path(
                 frame, held, position_open_timestamp, position_path,
             )
@@ -6801,7 +6817,7 @@ class TradingEngine:
                 if (trend >= 0 and cf_lower <= cf_open <= cf_upper < cf_close
                         and live_price > max(live_open, cf_close, live_upper)):
                     return {"action": "ENTER", "side": "LONG", "reason": "KC_NEXT_LIVE_PUSH_LONG"}
-                if (trend <= 0 and cf_lower > cf_close and cf_lower <= cf_open <= cf_upper
+                if (trend <= 0 and cf_is_solid and cf_lower > cf_close and cf_lower <= cf_open <= cf_upper
                         and live_price < min(live_open, cf_close, live_lower)):
                     return {"action": "ENTER", "side": "SHORT", "reason": "KC_NEXT_LIVE_PUSH_SHORT"}
 
@@ -7373,12 +7389,17 @@ class TradingEngine:
         if result == "ready":
             previous, live = frame.iloc[-2], frame.iloc[-1]
             if ticket["side"] == "SHORT":
-                if not (float(previous["close"]) < float(previous["open"])
-                        and price < min(float(live["open"]), float(previous["close"]))):
+                older = frame.iloc[-3]
+                def solid_red(row):
+                    body = float(row["open"]) - float(row["close"])
+                    span = float(row["high"]) - float(row["low"])
+                    return body > 0 and body / (span + 1e-9) >= .20
+                two_closed = solid_red(older) and solid_red(previous)
+                live_second = solid_red(previous) and price < float(live["open"])
+                if not (two_closed or live_second):
                     result = "wait"
             elif ticket["side"] == "LONG":
-                if not (float(previous["close"]) > float(previous["open"])
-                        and price > max(float(live["open"]), float(previous["close"]))):
+                if not price > float(live["open"]):
                     result = "wait"
         if result == "end":
             self.account.channel_profit_reentries.pop(symbol, None)
