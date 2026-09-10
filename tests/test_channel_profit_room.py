@@ -23,7 +23,7 @@ def test_remaining_room_shrinks_as_entry_chases(price, allowed):
     if price < 110.:
         assert result['target'] == 110.
     else:
-        assert result['reason'] == 'KC_LATE_TARGET_UNAVAILABLE'
+        assert result['reason'] == 'KC_PROFIT_TARGET_UNAVAILABLE'
 
 
 def test_nearby_confirmed_peak_caps_upside():
@@ -45,8 +45,8 @@ def test_declining_energy_alone_does_not_block_developing_move(monkeypatch):
     f = phase_frame(late=False)
     monkeypatch.setattr(TradingEngine, '_channel_held_momentum_is_declining', staticmethod(lambda *a: True))
     result = TradingEngine._channel_long_profit_room(f, 106.1)
-    assert result['allowed'] and not result['checked']
-    assert result['reason'] == 'KC_TREND_ROOM_SKIPPED'
+    assert result['allowed'] and result['checked']
+    assert result['reason'] == 'KC_PROFIT_ROOM_OK'
 
 
 @pytest.mark.anyio
@@ -54,6 +54,9 @@ def test_declining_energy_alone_does_not_block_developing_move(monkeypatch):
 async def test_order_gate_rejects_no_room_before_open(monkeypatch, token):
     f = phase_frame(target=105.9)
     e = _execution_engine(f, 'LONG', True); e.account.positions.clear()
+    e.tickers[SYMBOL] = 105.8
+    monkeypatch.setattr('core.engine.aligned_entry_ready', lambda *a: True)
+    e._channel_intrabar_ready = lambda *a: True
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
     e._fresh_channel_entry_snapshot = AsyncMock(return_value={
         'price': 105.8, 'kc_upper': 102., 'kc_lower': 98., 'frame': f})

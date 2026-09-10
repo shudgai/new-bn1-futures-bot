@@ -2406,17 +2406,11 @@ class TradingEngine:
         watcher.observe(symbol, price, quoted)
 
     def _channel_intrabar_ready(self, symbol, frame, price, side):
-        watcher = getattr(self, "_channel_intrabar_entries", None)
-        if watcher is None:
-            watcher = self._channel_intrabar_entries = IntrabarEntry()
+        """Validate the current quote without requiring an observed pullback."""
         quoted = getattr(self, "_channel_entry_quote_times", {}).get(symbol)
         if quoted is not None and (not math.isfinite(quoted) or not 0 <= time.time() - quoted <= 5):
-            watcher.reset(symbol)
             return False
-        if symbol in self.account.positions or not aligned_entry_ready(frame, price, side):
-            watcher.reset(symbol)
-            return False
-        return watcher.prepare(symbol, side, frame, price, time.time())
+        return symbol not in self.account.positions and aligned_entry_ready(frame, price, side)
 
     async def _fresh_channel_entry_snapshot(
         self, symbol: str, side: str, candidate_bar_id: object = None,
@@ -2641,7 +2635,7 @@ class TradingEngine:
                 )
                 return False
             if not self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side):
-                self.account.log(f"⏳ {symbol} {side} KC_INTRABAR_PULLBACK_WAIT：等同根回調後轉回順向", "INFO")
+                self.account.log(f"⏳ {symbol} {side} KC_ENTRY_QUOTE_WAIT：報價過期或進場條件失效", "INFO")
                 return False
             if isinstance(fresh_frame, pd.DataFrame) and not fresh_frame.empty:
                 fresh_live = fresh_frame.iloc[-2]
@@ -2655,8 +2649,7 @@ class TradingEngine:
                         f"🛑 {symbol} {side} 禁止追單：{room['reason']} "
                         + room.get("detail", "進場空間檢查未通過"), "WARNING")
                     return False
-                # A developing move has no price target or computed profit room.
-                # Clear cached estimates instead of carrying the old ceiling.
+                # Replace cached estimates with the current structural target and costs.
                 signal.pop("profit_room_pct", None)
                 signal.pop("estimated_profit_target", None)
                 signal["profit_room_checked"] = room.get("checked", True)
@@ -2854,7 +2847,7 @@ class TradingEngine:
             latest_price = float(getattr(self, "tickers", {}).get(symbol) or planned_price)
             if (latest_price != planned_price
                     or not self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side)):
-                self.account.log(f"⏳ {symbol} {side} KC_INTRABAR_RECHECK：價格或同根轉向已變，等待重新評估", "INFO")
+                self.account.log(f"⏳ {symbol} {side} KC_INTRABAR_RECHECK：價格或進場條件已變，等待重新評估", "INFO")
                 return False
         if is_limit:
             placed = await self.account.place_limit_entry(
@@ -3991,7 +3984,7 @@ class TradingEngine:
 
     @staticmethod
     def _channel_profit_room(frame, price, side="LONG"):
-        """Skip room estimates until a mature move weakens; then use structure."""
+        """Require structural net profit room for every new entry and reentry."""
         return entry_room(frame, price, side, TAKER_FEE_RATE, SLIPPAGE_PCT,
                           NET_PROFIT_GUARANTEE_BUFFER)
 

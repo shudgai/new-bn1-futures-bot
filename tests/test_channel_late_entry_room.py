@@ -1,4 +1,4 @@
-"""Initial momentum bypasses profit estimates; mature weakening uses real structure."""
+"""All phases require net room to confirmed structure."""
 from unittest.mock import AsyncMock
 import pytest
 from core.engine import TradingEngine
@@ -38,14 +38,13 @@ def room(f, side, price=None):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_strong_push_skips_even_near_resistance_or_beyond_old_atr_ceiling(side):
+def test_strong_push_blocks_near_resistance_or_without_target(side):
     f = phase_frame(side, late=False, target=106.2)
     sign = 1 if side == "LONG" else -1
     for price in (float(f.iloc[-1]["close"]), float(f.iloc[-2]["close"]) + sign * 2):
         r = room(f, side, price)
-        assert r["allowed"] and not r["checked"]
+        assert not r["allowed"] and r["checked"]
         assert r["stage"] == "developing"
-        assert "net_room_pct" not in r and "target" not in r
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -53,7 +52,7 @@ def test_weakening_without_mature_extension_is_not_late(side):
     f = phase_frame(side)
     f["atr"] = 10.
     r = room(f, side)
-    assert r["allowed"] and not r["checked"]
+    assert r["allowed"] and r["checked"]
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -79,7 +78,7 @@ def test_late_structural_space_after_actual_costs(side, target, allowed):
 def test_late_without_a_confirmed_target_does_not_invent_one(side):
     r = room(phase_frame(side, target=None), side)
     assert not r["allowed"]
-    assert r["reason"] == "KC_LATE_TARGET_UNAVAILABLE"
+    assert r["reason"] == "KC_PROFIT_TARGET_UNAVAILABLE"
     assert "net_room_pct" not in r and "target" not in r
 
 
@@ -134,6 +133,9 @@ async def test_final_order_checks_phase_for_every_route(side, route, late, monke
     price = float(f.iloc[-1]["close"])
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
+    e.tickers[SYMBOL] = price
+    monkeypatch.setattr("core.engine.aligned_entry_ready", lambda *a: True)
+    e._channel_intrabar_ready = lambda *a: True
     e.account.save_state = lambda: None
     e._abnormal_market_entry_allowed = lambda *a, **kw: True
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
@@ -146,14 +148,10 @@ async def test_final_order_checks_phase_for_every_route(side, route, late, monke
     if route == "reentry": signal["profit_reentry_token"] = "ticket"
     result = await e._place_structured_entry(
         SYMBOL, signal, price, channel_snapshot=snapshot if route == "cached" else None)
-    assert result is (not late), e.account.logs
-    if late:
-        assert not e.account.events
-        assert any("KC_PROFIT_ROOM_INSUFFICIENT" in message for message, _ in e.account.logs)
-    else:
-        assert len(e.account.events) == 1
-        assert signal["profit_room_checked"] is False
-        assert "profit_room_pct" not in signal and "estimated_profit_target" not in signal
+    assert not result, e.account.logs
+    assert not e.account.events
+    assert any("KC_PROFIT_ROOM_INSUFFICIENT" in message for message, _ in e.account.logs), e.account.logs
+
 
 
 @pytest.mark.anyio
@@ -164,6 +162,9 @@ async def test_quote_refresh_makes_late_order_fail_if_room_disappears(side, monk
     assert room(f, side, price)["allowed"]
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
+    e.tickers[SYMBOL] = price
+    monkeypatch.setattr("core.engine.aligned_entry_ready", lambda *a: True)
+    e._channel_intrabar_ready = lambda *a: True
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
     quote = 109.99 if side == "LONG" else 90.01
     e._fresh_channel_entry_snapshot = AsyncMock(return_value=dict(

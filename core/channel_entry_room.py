@@ -1,4 +1,4 @@
-"""Only mature, weakening moves need a structural entry-room estimate."""
+"""Every entry needs sufficient net room to a confirmed structural target."""
 import math
 
 
@@ -34,12 +34,6 @@ def entry_room(frame, price, side, fee, slippage, minimum_net):
         last = pushes[-3:]
         weakening = last[0] > last[1] > last[2] and last[0] > 0 and last[2] <= .5 * last[0]
         mature = sum(v > 0 for v in pushes) >= 4 and extension >= 3.
-        if not (mature and weakening):
-            return dict(allowed=True, checked=False, stage="developing",
-                        reason="KC_TREND_ROOM_SKIPPED",
-                        detail="尚未符合末端衰退條件，不計算淨利空間。",
-                        extension_atr=extension)
-
         # A pivot ceases to be an obstacle once any later closed wick clears it.
         # Never manufacture a ceiling from last close + ATR in price discovery.
         extremes = [row[1] if side == "LONG" else row[2] for row in rows]
@@ -50,10 +44,10 @@ def entry_room(frame, price, side, fee, slippage, minimum_net):
             and sign * (value - price) > 0
             and all(sign * later < sign * value for later in extremes[i + 1:])
         ]
-        base = dict(checked=True, stage="late", extension_atr=extension)
+        base = dict(checked=True, stage="late" if mature and weakening else "developing", extension_atr=extension)
         if not targets:
-            return dict(base, allowed=False, reason="KC_LATE_TARGET_UNAVAILABLE",
-                        detail="疑似走勢末端，沒有尚未突破的前高／前低可估算空間，暫不追入。")
+            return dict(base, allowed=False, reason="KC_PROFIT_TARGET_UNAVAILABLE",
+                        detail="沒有尚未突破的已確認前高／前低可估算空間，暫不進場。")
         target = min(targets, key=lambda value: sign * value)
         entry_fill = price * (1 + sign * slippage)
         exit_fill = target * (1 - sign * slippage)
@@ -61,6 +55,6 @@ def entry_room(frame, price, side, fee, slippage, minimum_net):
         allowed = net_room > 0 and net_room >= minimum_net
         return dict(base, allowed=allowed, target=target, net_room_pct=net_room * 100,
                     reason="KC_PROFIT_ROOM_OK" if allowed else "KC_PROFIT_ROOM_INSUFFICIENT",
-                    detail=f"疑似走勢末端；至未突破前高／前低的剩餘淨空間 {net_room * 100:.4f}%，門檻 {minimum_net * 100:.4f}%。")
+                    detail=f"至未突破前高／前低的剩餘淨空間 {net_room * 100:.4f}%，門檻 {minimum_net * 100:.4f}%。")
     except (AttributeError, TypeError, ValueError, KeyError, IndexError, OverflowError):
         return invalid

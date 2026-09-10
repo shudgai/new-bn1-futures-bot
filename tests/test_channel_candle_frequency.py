@@ -24,6 +24,10 @@ def clock(monkeypatch):
 def ready_engine(side, monkeypatch):
     frame, price = market(side)
     frame['atr'] = 6.
+    # Frequency checks need a valid untouched target under the all-entry room rule.
+    key = 'high' if side == 'LONG' else 'low'
+    frame.loc[frame.index[5], key] = (frame['high'].max() + 5. if side == 'LONG'
+                                       else frame['low'].min() - 5.)
     e = _execution_engine(frame, side, True)
     e.account.positions.clear()
     e.account.save_state = lambda: None

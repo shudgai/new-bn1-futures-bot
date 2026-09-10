@@ -14,6 +14,8 @@ def confirm_entry(frame, side):
     source = closed_outer_entry_frame(side, len(frame))
     for key in source.columns:
         frame[key] = source[key].to_numpy()
+    # Dedup tests require a confirmed, untouched structural target.
+    frame.loc[frame.index[-10], "high" if side == "LONG" else "low"] = 110. if side == "LONG" else 90.
     # Dedup tests need a clear trend, without the removed live-push chop exemption.
     sign = 1 if side == "LONG" else -1
     for key in ("ma15", "kc_middle", "ema_20"):
