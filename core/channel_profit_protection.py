@@ -68,41 +68,29 @@ def protection(position, price, fee, slippage, frame=None):
     if state.get('identity') != identity:
         state.clear()
         state['identity'] = identity
-    peak = max(float(state.get('peak_gross', 0)), gross)
-    state['peak_gross'] = peak
-    was_armed = bool(state.get('armed'))
-    style_opened_at = position.get('open_timestamp')
-    if style_opened_at and 'KC_NEXT_LIVE_PUSH_' in str(position.get('reason') or ''):
-        # This entry was bought during the second candle: retain its preceding
-        # breakout as context, otherwise its two-body stack would be discarded.
-        style_opened_at = math.floor(float(style_opened_at) / 60) * 60 - 60
-    style = trend_style(frame, side, style_opened_at) if frame is not None else 'CHOPPY'
-    state['trend_style'] = style
-    if style == 'STACKED':
-        state['stacked_seen'] = True
-    # Every style arms at the same net floor; classification only tightens stacking.
-    state['armed'] = was_armed or net >= 1.0
+    # Old percentage stops cannot become fixed-dollar steps. Start observing
+    # net profit under this policy; never infer historical net peaks from gross.
+    if state.get('policy') != 'fixed_net_steps_v1':
+        state.clear()
+        state.update(identity=identity, policy='fixed_net_steps_v1', peak_net=net)
+    state['peak_net'] = max(float(state.get('peak_net', net)), net)
+    state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
+    locked = max(0., (math.floor(state['peak_net'] / 2.) - 1) * 2.)
+    state['locked_net'] = max(float(state.get('locked_net', 0.)), locked)
+    state['armed'] = state['locked_net'] >= 2.
     if not state['armed']:
         return None
-    # Disable the 10% tightening on opposite candle based on user request; always use 20%
-    retracement = .20
-    state['retracement_fraction'] = retracement
+    locked = state['locked_net']
     if side == 'LONG':
-        floor = (entry * (1 + fee) + 1 / qty) / ((1 - slippage) * (1 - fee))
-        trailing = entry + (1 - retracement) * peak / qty
-        stop = max(floor, trailing, float(state.get('stop_price', 0)))
+        stop = (entry * (1 + fee) + locked / qty) / ((1 - slippage) * (1 - fee))
     else:
-        floor = (entry * (1 - fee) - 1 / qty) / ((1 + slippage) * (1 + fee))
-        trailing = entry - (1 - retracement) * peak / qty
-        stop = min(floor, trailing, float(state.get('stop_price', float('inf'))))
+        stop = (entry * (1 - fee) - locked / qty) / ((1 + slippage) * (1 + fee))
     state['stop_price'] = stop
-    state['net_floor_price'] = floor
-    # Arming at exactly one dollar must not instantly close the new position.
-    crossed = sign * (price - stop)
-    triggered = (was_armed and crossed <= 0) or (bool(state.get('tightened')) and crossed < 0)
-    return {'triggered': triggered,
-            'stop_price': stop, 'peak_gross': peak, 'net_pnl': net,
-            'retracement_fraction': retracement, 'trend_style': style}
+    state['net_floor_price'] = stop
+    state['pending'] = bool(state.get('pending')) or net <= locked
+    return {'triggered': state['pending'], 'stop_price': stop,
+            'peak_gross': state['peak_gross'], 'net_pnl': net,
+            'locked_net': locked, 'peak_net': state['peak_net']}
 
 
 def abnormal_long_bar(frame, price):

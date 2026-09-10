@@ -232,3 +232,10 @@
 - MA3實際反向斜率與峰谷回退均須達固定0.10 ATR；小弧度不平，其他出口不變。圖表診斷純讀，不推進或清除交易狀態。
 - 主要現行路徑342 passed；全59檔1367 passed / 382 failed / 40 skipped。失敗集合與隔離4f7da5f基準完全相同，新增失敗0，非全套通過。
 - 完整每檔結果、失敗清單與證據見 `scratch/pepe-entry-and-ma3-validation.md`。
+
+
+## 固定2U階梯與CK只平倉（2026-09-10）
+- 用戶確認淨利4U鎖2U、6U鎖4U，以此類推，扣雙邊費用與滑點後回落才平。取消MA3出口及百分比回吐；緊急瀑布／雙異常在階梯前後有效，硬止損保留，CK只平倉不立即反手。
+- 舊百分比狀態從首次新版淨利觀察建立階梯；MA3待平清除。新階梯待平持久化重試；舊CK票據不再授權新倉。
+- 新策略、single_abnormal_removed、close_deduplication、hard_stop共63 passed，涵蓋多空、成本、階梯、恢復、緊急出口及平倉失敗重試。
+- 規定三份交易回歸加ck_reverse及profit_protection：隔離b671f83基準158 passed / 76 failed；修改後140 passed / 94 failed。新增18項均為舊1U／20%鎖利或立即反手預期。不宣稱全套通過。證據 /tmp/fixed-baseline.txt、/tmp/fixed-regression.txt、/tmp/fixed-focused.txt。

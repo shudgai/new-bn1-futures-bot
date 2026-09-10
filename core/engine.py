@@ -1,4 +1,3 @@
-from core.channel_ma3_turn import significant_ma3_turn
 from core.channel_live_pivot import LivePivot
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
@@ -7513,28 +7512,8 @@ class TradingEngine:
         return bool((daily_check and daily_check()[0]) or self._market_crash_entries_paused(time.time()))
 
     def _ck_reverse_order_authorized(self, symbol, signal):
-        """Only a matched close fill can waive the ordinary candle frequency gate."""
-        ticket = getattr(self.account, 'channel_profit_reentries', {}).get(symbol, {})
-        if (ticket.get('mode') != 'ck_reverse' or ticket.get('phase') != 'closed'
-                or not signal.get('profit_reentry_token')
-                or ticket.get('token') != signal.get('profit_reentry_token')
-                or ticket.get('side') != signal.get('side')
-                or ticket.get('old_side') != ('SHORT' if ticket.get('side') == 'LONG' else 'LONG')
-                or symbol in self.account.positions):
-            return False
-        try:
-            trades = [t for t in getattr(self.account, 'trades', []) if t.get('symbol') == symbol]
-            fills = [float(t['id']) for t in trades
-                     if t.get('action') == 'CLOSE_' + ticket['old_side']
-                     and t.get('reason') == ticket.get('close_reason')
-                     and float(t['id']) >= float(ticket['close_requested_at_ms'])]
-            if not fills:
-                return False
-            closed = max(fills)
-            return not any(t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
-                           and float(t.get('id', 0)) >= closed for t in trades)
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return False
+        """CK trend-end closes never authorize a same-candle reverse order."""
+        return False
 
     async def _try_ck_reverse(self, symbol, frame, price, daily_halt):
         locks = getattr(self, '_ck_reverse_locks', None)
@@ -7571,10 +7550,9 @@ class TradingEngine:
             closed = await self.account.close_position(symbol, price, ticket['close_reason'], is_manual=True)
             if not closed or symbol in self.account.positions:
                 return True
-            ticket['phase'] = 'closed'
+            tickets.pop(symbol, None)
             self.account.save_state()
-            self.account.log(f"✅ [CK反手] {symbol} 舊倉已平，立即重驗 {ticket['side']} 新倉", 'INFO')
-            await self._try_profit_reentry(symbol, frame, price, daily_halt)
+            self.account.log(f"✅ [CK趨勢結束] {symbol} 已平倉；下一根重新評估一般入口", 'INFO')
             return True
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
@@ -7582,10 +7560,7 @@ class TradingEngine:
                 or symbol in self.account.positions):
             return False
         if ticket.get('mode') == 'ck_reverse':
-            return (not self._ck_reverse_new_leg_halted()
-                    and self._ck_reverse_order_authorized(symbol, {'side': ticket['side'], 'profit_reentry_token': ticket['token']})
-                    and self._channel_candidate_bar_id(frame) == ticket.get('confirmation_bar_id')
-                    and self._channel_intrabar_ready(symbol, frame, price, ticket['side'], ck_reverse=True))
+            return False
         if ticket.get("mode") != "outer_cycle":
             ticket["mode"] = "outer_cycle"
             self.account.save_state()
@@ -7635,6 +7610,10 @@ class TradingEngine:
     async def _try_profit_reentry_locked(self, symbol, frame, price, daily_halt):
         ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
         if not ticket or symbol in self.account.positions:
+            return
+        if ticket.get('mode') == 'ck_reverse':
+            self.account.channel_profit_reentries.pop(symbol, None)
+            self.account.save_state()
             return
         if ticket.get("phase") == "closing":
             reason = ticket.get("close_reason") or "Channel Swing PROFIT_PROTECTION " + ticket["token"]
@@ -7853,17 +7832,11 @@ class TradingEngine:
                 profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
                 if previous_protection != existing_pos.get("channel_profit_protection"):
                     self.account.save_state()
-                # Armed holdings use profit retracement; unarmed holdings also check technical exits.
-                # Remove obsolete requests from positions and persisted metadata.
+                # MA3 never exits; emergencies remain active at every profit step.
                 changed = False
                 stale_keys = ["channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
                               "channel_outer_ma3_turn_exit_pending", "channel_live_ma3_turn_exit_pending",
-                              "channel_ma3_turn_observed_bar"]
-                is_armed = (existing_pos.get("channel_profit_protection") or {}).get("armed")
-                if is_armed:
-                    # 當獲利保護啟動時，不再讓異常 K 或 MA3 搶先平倉，清除舊有標記
-                    stale_keys.extend(["channel_significant_ma3_turn", "channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar", "channel_exception_exit_pending"])
-                    
+                              "channel_ma3_turn_observed_bar", "channel_significant_ma3_turn"]
                 for state in (existing_pos, self.account.position_meta.get(symbol, {})):
                     if state.get("channel_exception_exit_pending") == "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL":
                         state.pop("channel_exception_exit_pending")
@@ -7872,30 +7845,13 @@ class TradingEngine:
                         if key in state:
                             state.pop(key)
                             changed = True
-                channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
-                if not is_armed:
-                    # 未啟動獲利保護時先檢查瀑布／雙異常，再檢查有幅度門檻的 MA3 反轉。
-                    emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
-                    if emergency:
-                        if existing_pos.get("channel_exception_exit_pending") != emergency:
-                            existing_pos["channel_exception_exit_pending"] = emergency
-                            changed = True
-                        channel_action = {"action": "EXIT", "side": None, "reason": emergency}
-                if not is_armed and not emergency:
-                    turn_key = "channel_significant_ma3_turn"
-                    meta = self.account.position_meta.setdefault(symbol, {})
-                    if turn_key not in existing_pos and turn_key in meta:
-                        existing_pos[turn_key] = copy.deepcopy(meta[turn_key])
-                    before_turn = copy.deepcopy(existing_pos.get(turn_key))
-                    if significant_ma3_turn(existing_pos, channel_df, channel_price):
-                        channel_action = {"action": "EXIT", "side": None,
-                                          "reason": "KC_" + existing_pos["side"] + "_SIGNIFICANT_MA3_TURN_EXIT"}
-                    if before_turn != existing_pos.get(turn_key):
-                        if turn_key in existing_pos:
-                            meta[turn_key] = copy.deepcopy(existing_pos[turn_key])
-                        else:
-                            meta.pop(turn_key, None)
+                channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_FIXED_PROFIT_STEPS"}
+                emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
+                if emergency:
+                    if existing_pos.get("channel_exception_exit_pending") != emergency:
+                        existing_pos["channel_exception_exit_pending"] = emergency
                         changed = True
+                    channel_action = {"action": "EXIT", "side": None, "reason": emergency}
                 if changed:
                     self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
@@ -7909,7 +7865,7 @@ class TradingEngine:
                                        "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                        "path": copy.deepcopy(path_state)}
                     self.account.save_state()
-                    self.account.log(f"🛡️ [獲利保護] {symbol} 走勢={profit['trend_style']} 回吐={profit['retracement_fraction']:.0%} 最高浮盈={profit['peak_gross']:.4f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
+                    self.account.log(f"🛡️ [獲利保護] {symbol} 固定階梯 淨利峰值={profit['peak_net']:.4f} 鎖定淨利={profit['locked_net']:.2f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
                     closed = await self.account.close_position(
                         symbol, channel_price, "Channel Swing PROFIT_PROTECTION " + token, is_manual=True)
                     if closed and symbol not in self.account.positions:
