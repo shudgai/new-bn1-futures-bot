@@ -134,3 +134,42 @@
 既有失敗分布：獲利保護 11、Channel Swing 15、持倉路徑 50、confirmed_rules 4。這些測試仍未通過，不能宣稱全套正常；本次僅確認未新增失敗。
 
 原始輸出：`/tmp/logic-validation-current.txt`；JUnit：`/tmp/logic-validation-current.xml`。
+
+## 2026-09-10 進場當根反向異常修正
+
+- 當根原始開盤價計算反向異常／瀑布，不改用成交價重新累計；只平原倉。
+- 執行 channel_swing、channel_position_path、channel_swing_execution、channel_immediate_exits、channel_protected_only_exit、close_deduplication 六份測試。
+- 修改前 173 passed / 71 failed；修改後 187 passed / 71 failed，失敗清單完全相同。新增案例涵蓋多空、成交價未再移動、普通 K 不出場與失敗重試。未宣稱全套通過。
+
+## 2026-09-10 送單前反向異常攔截
+
+- 共用 live_adverse_entry_safe：當根原開盤與最新價形成反向異常／瀑布則新倉與重開皆等待；最終送單另重驗最新 ticker，快取不能繞過。無效 ATR 禁入，小反色與順向實體不因本檢查禁入。
+- 新增 tests/test_channel_adverse_entry.py 共 30 項通過，含多空、門檻邊界、行情無效、最新價、快取與重開。
+- 本輪指定回歸 channel_swing、channel_position_path、channel_swing_execution、channel_outside_continuation、channel_immediate_exits：修改前 157 passed / 71 failed；加上新測試後 187 passed / 71 failed，失敗清單完全相同。
+
+## 2026-09-10 以用戶兩條出場分流核查
+
+- 實作先更新 protection，再依 armed 分流：已啟動不執行異常／瀑布／MA3 helper，並清除相關待平旗標；未啟動依既有異常／瀑布與進場後 MA3 轉彎判斷出場。
+- 專項驗證 scratch/test_exit_policy_audit.py 加既有回吐與異常失敗重試案例：36 passed。涵蓋多空、未啟動、同次報價剛啟動、已啟動、達回吐線及舊待平旗標。
+- 細節：保護仍取淨利 1 USDT 底線、保留峰值 80% 與既有更有利保護價；因此不是每次都必須回吐滿 20%。MA3 同根進場須先實際觀察順向再反向。
+- 8006 API is_running=true / paper_trading=true，服務目錄吻合。API 策略說明仍是舊版「異常／MA3不單獨平倉」，與未啟動分流不一致。此次只核查並記錄，未修改交易邏輯或重啟。
+
+## 2026-09-10 移除單根反向異常 K 出口
+
+- 刪除 LIVE_ADVERSE_ABNORMAL 觸發與重試，清除持倉及 metadata 的該待平標記。保留瀑布、雙異常、MA3、獲利保護及送單前異常攔截。
+- 逐報價、待平清理與保護專項 64 passed。指定回歸修改前 161 passed / 65 failed，修改後含新測試 171 passed / 65 failed，無新增失敗。
+
+## 2026-09-10 單向走勢篩選
+
+- 已加入最近 6 根已收線的 CK 持續順向、高低點推進、方向效率、中軌穿越與實體重疊篩選；具體預設见 AGENTS.md 最新節。掃描、新倉、重開及快取送單共用，持倉出口不變。
+- tests/test_channel_sustained_trend.py：26 passed，涵蓋多空有效趨勢、波浪／重疊／回調／資料無效拒絕、即時 K 隔離與快取及重開攔截。
+- 指定回歸含 channel_swing、channel_position_path、channel_swing_execution、single_abnormal_removed、immediate_exits：修改前 159 passed / 65 failed；加新測試後 185 passed / 65 failed，失敗清單相同。
+- 同步 API 策略文字為現行入口與保護分流。未使用圖示後續走勢擬合，無歷史績效改善或保證獲利結論。
+
+## 2026-09-10 GitHub 發布驗證與破軌雙入口
+
+- 最後授權：有效上下軌突破可略過新增六根走勢篩選；單向延續仍受篩選。共用其他進場風控，出口不變。
+- 現行專項 sustained_trend、adverse_entry、single_abnormal_removed、immediate_exits、exit_policy、close_deduplication：168 passed。
+- 指定五份舊回歸 swing、position_path、swing_execution、confirmed_rules、stop_preservation：138 passed / 69 failed；失敗清單與隔離 HEAD 基準完全相同。未宣稱全套通過。
+- 首輪兩項重疊測試因資料同時符合新增破軌例外而失敗，已改用非破軌重疊案例且專項重跑通過。異常進場測試更新成符合單向條件的行情，未放寬策略。
+- 提交包含現行程式、API說明、授權與驗證、正式測試；scratch 修補腳本與歷史暫存 audit 不納入。

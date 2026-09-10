@@ -4,7 +4,7 @@ from core.channel_entry_room import entry_room
 from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
 from core.channel_surge_entry import surge_recovery_entry, long_entry_recovery_ready
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready
+from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe
 from core.channel_intrabar_entry import IntrabarEntry
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2625,6 +2625,10 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
+            entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
+            if not live_adverse_entry_safe(fresh_frame, entry_quote, side):
+                self.account.log(f"🛑 {symbol} {side} KC_LIVE_ADVERSE_ENTRY_WAIT：當根反向異常風險，取消開倉", "WARNING")
+                return False
             if not aligned_entry_ready(fresh_frame, planned_price, side):
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
@@ -6362,7 +6366,7 @@ class TradingEngine:
 
     @staticmethod
     def _channel_adverse_exit_reason(frame: pd.DataFrame, side: str, price: float, atr: float) -> str | None:
-        """Exit as soon as a live adverse body reaches the existing ATR threshold."""
+        """Keep waterfalls and two closed adverse bodies; a single abnormal body holds."""
         if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
             return None
         try:
@@ -6377,8 +6381,6 @@ class TradingEngine:
                 return None
             if adverse_live >= threshold * 2.0:
                 return "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
-            if adverse_live >= threshold:
-                return "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL"
             if bodies[-1] >= threshold * 2.0:
                 return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
             if all(body >= threshold for body in bodies):
@@ -7490,9 +7492,9 @@ class TradingEngine:
 
     @staticmethod
     def _channel_exception_exit(position, frame, price):
-        """Post-entry live abnormalities, with closed emergency fallback and retries."""
+        """Use the full live body, including entry-bar abnormalities, and retry exits."""
         pending = position.get("channel_exception_exit_pending")
-        if pending in {"EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL", "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
+        if pending in {"EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
                        "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL", "EMERGENCY_EXIT_2_CANDLE_ADVERSE"}:
             return pending
         try:
@@ -7503,7 +7505,7 @@ class TradingEngine:
             if not all(math.isfinite(v) and v > 0 for v in (opened, entry, float(price))):
                 return None
             recent = frame.iloc[-3:].copy()
-            for idx, row in recent.iterrows():
+            for idx, row in recent.iloc[:-1].iterrows():
                 bar = float(row["timestamp"]) / 1000
                 if not math.isfinite(bar) or bar <= 0:
                     return None
@@ -7511,8 +7513,10 @@ class TradingEngine:
                     # Never attribute a completed pre-entry candle to this holding.
                     recent.loc[idx, "open"] = float(row["close"])
             live_bar = float(recent.iloc[-1]["timestamp"]) / 1000
-            if live_bar < opened:
-                recent.loc[recent.index[-1], "open"] = entry
+            if not math.isfinite(live_bar) or live_bar <= 0 or opened >= live_bar + 60:
+                return None
+            # The live candle can already be abnormal when the order fills.
+            # Keep its actual open instead of restarting the body at entry.
             return TradingEngine._channel_adverse_exit_reason(
                 recent, position.get("side"), float(price), float(frame.iloc[-2]["atr"]))
         except (TypeError, ValueError, KeyError, IndexError, OverflowError):
@@ -7639,6 +7643,9 @@ class TradingEngine:
                     stale_keys.extend(["channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar", "channel_exception_exit_pending"])
                     
                 for state in (existing_pos, self.account.position_meta.get(symbol, {})):
+                    if state.get("channel_exception_exit_pending") == "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL":
+                        state.pop("channel_exception_exit_pending")
+                        changed = True
                     for key in stale_keys:
                         if key in state:
                             state.pop(key)
