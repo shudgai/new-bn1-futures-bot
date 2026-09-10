@@ -245,3 +245,10 @@
 - 已按用戶要求移除Channel Swing送單與診斷的結構淨空間攔截，兼容helper標示停用，清除快取舊目標。其他入口安全條件與固定階梯出口不變。
 - all_entry_room更新成多空／快取／重開及遠近／缺少目標均可通過空間關卡；加fixed_steps、adverse_entry、candle_frequency及close_deduplication共102 passed。
 - 規定三份交易回歸：隔離2b6ecf3及修改後均99 passed / 65 failed。結果見/tmp/remove-room-before.txt、/tmp/remove-room-after.txt、/tmp/remove-room-focused.txt；非全套通過。
+
+
+## CK動能衰退只停新倉（2026-09-10）
+- 最新4根已收線中軌的3次順向位移連續縮小時暫停該方向進場；每根重新評估，動能恢復即重新走既有風控。此為實作預設，不保證預知頂底。
+- 峰谷、外軌、新倉／重開與送單前重驗共用；只讀診斷顯示KC_MOMENTUM_FADE_WAIT。持倉不因衰退平倉，固定階梯與原出口保留。
+- 6份專項122 passed，包含多空、恢復、即時K隔離、峰谷觀察、新倉快取重開與持倉不受影響。
+- 規定三份回歸，隔離f9a1470與修改後皆99 passed / 65 failed，失敗集合相同。證據/tmp/ck-fade-focused.txt、/tmp/ck-fade-before.txt、/tmp/ck-fade-after.txt；非全套通過。

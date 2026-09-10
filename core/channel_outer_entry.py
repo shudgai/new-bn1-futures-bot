@@ -7,6 +7,28 @@ OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
 
 
+def ck_entry_momentum_ready(frame, side):
+    """Pause entries when three closed directional CK steps keep shrinking.
+
+    No state or exit signal: the next completed bar re-evaluates the pause.
+    """
+    try:
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 5:
+            return False
+        key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
+        values = [float(v) for v in frame.iloc[-5:-1][key]]
+        if not all(math.isfinite(v) and v > 0 for v in values):
+            return False
+        sign = 1 if side == 'LONG' else -1
+        steps = [sign * (b - a) for a, b in zip(values, values[1:])]
+        tolerance = max(values) * 1e-12
+        fading = (steps[2] > 0 and steps[0] - steps[1] > tolerance
+                  and steps[1] - steps[2] > tolerance)
+        return not fading
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
 def aligned_direction(frame, side):
     """CK sets direction without waiting for moving-average alignment."""
     return side in ('LONG', 'SHORT') and ck_direction(frame) == side
@@ -106,6 +128,8 @@ def aligned_entry(frame, price):
         side = ck_direction(frame)
         if not aligned_direction(frame, side):
             return wait
+        if not ck_entry_momentum_ready(frame, side):
+            return {**wait, "reason": "KC_MOMENTUM_FADE_WAIT"}
         if not live_ma3_direction_ready(frame, price, side):
             return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):

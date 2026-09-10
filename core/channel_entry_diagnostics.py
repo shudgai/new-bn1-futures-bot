@@ -1,6 +1,6 @@
 """Read-only entry diagnostics; viewing a chart never observes or consumes a turn."""
 import math
-from core.channel_outer_entry import ck_direction, aligned_entry, live_adverse_entry_safe, live_ma3_direction_ready
+from core.channel_outer_entry import ck_direction, aligned_entry, live_adverse_entry_safe, live_ma3_direction_ready, ck_entry_momentum_ready
 
 
 def entry_diagnostics(engine, symbol, frame, price, now):
@@ -44,6 +44,9 @@ def entry_diagnostics(engine, symbol, frame, price, now):
                       f"下軌 {float(a['kc_lower']):.10g} → {float(b['kc_lower']):.10g}。"
                       '中軌須嚴格順向且持倉側外軌不得逆向。')
             return result('KC_DIRECTION_WAIT', 'CK方向條件尚未一致', detail, **extra)
+        if not ck_entry_momentum_ready(frame, side):
+            return result('KC_MOMENTUM_FADE_WAIT', 'CK動能衰退或資料不足，暫停新倉',
+                          '最近4根已收線中軌的3次順向位移連續縮小時暫停；下一根重新評估，不影響持倉出口。', **extra)
         if not live_ma3_direction_ready(frame, price, side):
             return result('KC_LIVE_MA3_DIRECTION_WAIT', '即時MA3未順向，暫不開倉', '多單須MA3上升、空單須下降；反向、持平或無效都不開。', **extra)
         if not live_adverse_entry_safe(frame, price, side):

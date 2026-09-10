@@ -5,7 +5,7 @@ import copy
 from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
 from core.channel_surge_entry import surge_recovery_entry, long_entry_recovery_ready
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
+from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, ck_entry_momentum_ready, LIVE_OUTER_CODES
 from core.channel_intrabar_entry import IntrabarEntry
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2477,11 +2477,14 @@ class TradingEngine:
             pivot.reset(symbol)
             return False
         observed = pivot.observe(symbol, frame, price, side, quoted)
-        return (observed and live_adverse_entry_safe(frame, price, side)
+        return (observed and ck_entry_momentum_ready(frame, side)
+                and live_adverse_entry_safe(frame, price, side)
                 and live_ma3_direction_ready(frame, price, side))
 
     def _channel_intrabar_ready(self, symbol, frame, price, side, ck_reverse=False, live_pivot=False):
         """Validate the current quote without requiring an observed pullback."""
+        if not ck_entry_momentum_ready(frame, side):
+            return False
         quoted = getattr(self, "_channel_entry_quote_times", {}).get(symbol)
         if quoted is not None and (not math.isfinite(quoted) or not 0 <= time.time() - quoted <= 5):
             return False
@@ -2728,6 +2731,9 @@ class TradingEngine:
             if not live_adverse_entry_safe(fresh_frame, entry_quote, side):
                 self.account.log(f"🛑 {symbol} {side} KC_LIVE_ADVERSE_ENTRY_WAIT：當根反向異常風險，取消開倉", "WARNING")
                 return False
+            if not ck_entry_momentum_ready(fresh_frame, side):
+                self.account.log(f"⏳ {symbol} {side} KC_MOMENTUM_FADE_WAIT：已收線CK動能連續衰退，暫停新倉", "INFO")
+                return False
             if not live_ma3_direction_ready(fresh_frame, planned_price, side):
                 self.account.log(f'⏳ {symbol} {side} KC_LIVE_MA3_DIRECTION_WAIT：即時MA3未順向，不開倉', 'INFO')
                 return False
@@ -2951,7 +2957,8 @@ class TradingEngine:
                                or not self._ck_reverse_order_authorized(symbol, signal)):
                 return False
             latest_price = float(getattr(self, "tickers", {}).get(symbol) or planned_price)
-            if (latest_price != planned_price
+            if (not ck_entry_momentum_ready(fresh_frame, side)
+                    or latest_price != planned_price
                     or not (self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, live_pivot=True) if live_pivot else
                             self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, ck_reverse=True)
                             if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side))):
