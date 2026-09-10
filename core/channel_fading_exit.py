@@ -37,7 +37,7 @@ def fading_ma3_turn(position, frame, price):
 
 
 def next_breakout_ready(account, symbol, frame, price):
-    """A matched successful close must precede the live MA3 crossing candle."""
+    """A matched successful close must precede the live MA3 continuation candle."""
     ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol, {})
     if symbol in account.positions or ticket.get('mode') != 'next_breakout':
         return False

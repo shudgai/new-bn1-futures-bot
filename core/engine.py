@@ -2997,7 +2997,7 @@ class TradingEngine:
                     position["channel_energy_score"] = self._channel_candidate_energy(signal)
             order_type = "支撐限價" if is_limit else "市價"
             protection_text = (
-                "MA3順KC穿越外軌進場；不直接反手，鎖利與緊急出口沿用"
+                "MA3順KC軌外進場／延續；同根限次、鎖利與緊急出口沿用"
                 if channel_swing_no_stop
                 else f"硬停損 {sl:.8g}｜風險 {initial_risk:.8g}"
             )
@@ -7067,7 +7067,7 @@ class TradingEngine:
                 return False
             latest = frame.iloc[-2]
             confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
-                                  "live MA3 crossing CK outer rail" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
+                                  "live MA3 outside CK outer rail" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
                                   "closed MA3/MA15/KC aligned trend" if decision["reason"] in TREND_CODES else
                                   "closed breakout continuation" if decision["reason"] in {"KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT"} else
                                   "next live breakout candle")
@@ -7955,7 +7955,7 @@ class TradingEngine:
                 if pullback_exit:
                     if closed and symbol not in self.account.positions:
                         tickets[symbol]["phase"] = "closed"
-                        self.account.log(f"⏳ [平倉後重開] {symbol} " + ("等待平倉後新K的MA3穿越KC外軌，多空皆重新驗證" if fading_exit else "異常出場，等後續K回到CK內再順向站回外軌" if abnormal_exit else "等待MA3重新穿越同側KC外軌，送單前重驗"), "INFO")
+                        self.account.log(f"⏳ [平倉後重開] {symbol} " + ("正常平倉下一根起MA3軌外順向可延續，不必回調" if fading_exit else "異常出場，等後續K回到CK內再順向站回外軌" if abnormal_exit else "下一根起MA3仍在同側外軌外可延續，無需回調或重新穿軌"), "INFO")
                     else:
                         tickets.pop(symbol, None)
                     self.account.save_state()
@@ -7971,7 +7971,7 @@ class TradingEngine:
                     getattr(self, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
                     getattr(self, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                     self.account.log(
-                        f"✅ [Channel Swing 趨勢檢查] {symbol} 已平倉，等待下一個有效破軌點",
+                        f"✅ [Channel Swing 趨勢檢查] {symbol} 已平倉，後續按MA3軌外條件及票據風控重新評估",
                         "SUCCESS",
                     )
                 return signal_progress, detected_candidates

@@ -50,7 +50,7 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             ticket = None
         if ticket and ticket.get('mode') == 'next_breakout':
             if not next_breakout_ready(engine.account, symbol, frame, price):
-                return result('KC_NEXT_BREAKOUT_WAIT', '等待平倉後新的MA3穿軌', '不反手；MA3穿軌須在實際平倉K之後，多空皆須重新驗證。', **extra)
+                return result('KC_NEXT_BREAKOUT_WAIT', '等待下一根有效MA3軌外入口', '平倉當根不開；下一根起MA3仍在外軌外可延續，不必回調或重新穿軌。', **extra)
             ticket = None
         if ticket and opposite_entry_releases(engine.account, symbol, frame, price):
             # Preview order validation without mutating persisted state.
@@ -68,7 +68,7 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             return result('KC_CANDIDATE_INVALIDATED', '此候選訊號已失效', '等待下一個有效候選，再重新評估進場。', **extra)
         if outer.get('action') == 'ENTER':
             return result('KC_ENTRY_READY', '已有入口訊號，等待送單風控', '仍須重驗帳戶、行情、票據與每根限次；不代表保證成交。', **extra)
-        return result('KC_ENTRY_SIGNAL_WAIT', '等待MA3穿越KC外軌',
-                      'KC向上時即時MA3穿上軌開多，向下時穿下軌開空；前根已收線MA3須在該軌內側或碰軌，最新MA3與報價須嚴格在軌外。', **extra)
+        return result('KC_ENTRY_SIGNAL_WAIT', '等待MA3位於KC外軌外',
+                      'KC向上且即時MA3在上軌外開多，向下且在下軌外開空；穿軌未成交可延續，MA3與報價仍須嚴格在軌外且順向。', **extra)
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
         return result('KC_ENTRY_DATA_WAIT', '等待有效行情資料', '資料不足或無效，不推測進場方向。')

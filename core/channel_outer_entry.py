@@ -135,8 +135,25 @@ def ma3_outer_cross_ready(frame, price, side):
         return False
 
 
+def ma3_outer_continuation_ready(frame, price, side):
+    """A missed cross stays eligible while live MA3 and price remain outside."""
+    try:
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 4:
+            return False
+        closes = [float(v) for v in frame['close'].iloc[-3:-1]]
+        rail = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        price = float(price)
+        if not all(math.isfinite(v) and v > 0 for v in [price, rail, *closes]):
+            return False
+        sign = 1 if side == 'LONG' else -1
+        ma3 = (sum(closes) + price) / 3.
+        return sign * (ma3 - rail) > 0 and sign * (price - rail) > 0
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def aligned_entry(frame, price):
-    """Closed KC direction plus a live MA3 outer crossing; all orders share this."""
+    """Closed KC direction with live MA3 outside; missed crosses may continue."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -162,9 +179,9 @@ def aligned_entry(frame, price):
             recovery = surge_recovery_entry(frame, price)
             if recovery is not None and recovery.get("action") != "ENTER":
                 return recovery
-        if ma3_outer_cross_ready(frame, price, side):
+        if ma3_outer_continuation_ready(frame, price, side):
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
-        return {**wait, "reason": "KC_MA3_OUTER_CROSS_WAIT"}
+        return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return wait
 
