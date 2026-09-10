@@ -2398,6 +2398,7 @@ class TradingEngine:
             lower = float(latest["kc_lower"])
         except (TypeError, ValueError, IndexError, KeyError):
             return None
+        self._release_resolved_upward_exit(symbol, frame, price)
         # Closing a held position on a confirmed reversal must not wait for the
         # new long's trough. The new leg is independently gated before its order.
         closing_reverse = confirmed_reverse and symbol in self.account.positions
@@ -2552,7 +2553,8 @@ class TradingEngine:
                 return False
             if (getattr(self.account, "channel_profit_reentries", {}).get(symbol)
                     and not signal.get("profit_reentry_token")):
-                return False  # A cached ordinary signal cannot bypass the pullback ticket.
+                # Refresh through the shared release check; never trust a cached release candle.
+                channel_snapshot = None
             fresh_snapshot = None if signal.get("profit_reentry_token") else channel_snapshot
             if fresh_snapshot is None:
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
@@ -7417,6 +7419,40 @@ class TradingEngine:
         return False
 
 
+    def _release_resolved_upward_exit(self, symbol, frame, price):
+        """A later effective closed green releases a confirmed upward-exit ticket."""
+        tickets = getattr(self.account, "channel_profit_reentries", {})
+        ticket = tickets.get(symbol)
+        if (not ticket or symbol in self.account.positions or ticket.get("phase") != "closed"
+                or ticket.get("side") != "SHORT" or not ticket.get("requires_pullback")
+                or ticket.get("close_reason") != "Channel Swing KC_SHORT_LIVE_GREEN_LONG_EXIT"):
+            return False
+        try:
+            exited = float(ticket["exit_bar_id"])
+            requested = float(ticket["close_requested_at_ms"])
+            if not all(math.isfinite(v) and v > 0 for v in (exited, requested)):
+                return False
+            if not any(t.get("symbol") == symbol and t.get("action") == "CLOSE_SHORT"
+                       and t.get("reason") == ticket["close_reason"]
+                       and requested <= float(t.get("id") or 0) < exited + 60_000
+                       for t in getattr(self.account, "trades", [])):
+                return False
+            if frame is None or len(frame) < 4 or surge_recovery_entry(frame, price) is not None:
+                return False
+            for _, row in frame.iloc[:-1].iterrows():
+                bar, opened, high, low, closed = (float(row[k]) for k in
+                    ("timestamp", "open", "high", "low", "close"))
+                if (all(math.isfinite(v) and v > 0 for v in (bar, opened, high, low, closed))
+                        and bar > exited and low <= opened < closed <= high
+                        and (closed - opened) / (high - low) >= .20):
+                    tickets.pop(symbol)
+                    self.account.save_state()
+                    self.account.log(f"✅ {symbol} 後續已收線有效綠K解除舊異常平空等待，重新評估正常入口", "INFO")
+                    return True
+        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
+            return False
+        return False
+
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
@@ -7649,6 +7685,8 @@ class TradingEngine:
             tickets = getattr(self.account, "channel_profit_reentries", None)
             if tickets is None:
                 tickets = self.account.channel_profit_reentries = {}
+            if not existing_pos:
+                self._release_resolved_upward_exit(symbol, channel_df, channel_price)
             if not existing_pos and symbol in tickets:
                 await self._try_profit_reentry(symbol, channel_df, channel_price, daily_halt)
                 return signal_progress, detected_candidates
