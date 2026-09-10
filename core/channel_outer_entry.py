@@ -113,8 +113,30 @@ def sustained_trend_ready(frame, side):
         return False
 
 
+def ma3_outer_cross_ready(frame, price, side):
+    """Cross from the last closed MA3/rail to quote-derived live MA3/rail."""
+    try:
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 4:
+            return False
+        closes = [float(v) for v in frame['close'].iloc[-4:-1]]
+        price = float(price)
+        rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
+        previous = float(frame.iloc[-2][rail])
+        current = float(frame.iloc[-1][rail])
+        if not all(math.isfinite(v) and v > 0 for v in [price, previous, current, *closes]):
+            return False
+        closed_ma = sum(closes) / 3.
+        live_ma = (sum(closes[-2:]) + price) / 3.
+        sign = 1 if side == 'LONG' else -1
+        return (sign * (closed_ma - previous) <= 0
+                and sign * (live_ma - current) > 0
+                and sign * (price - current) > 0)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def aligned_entry(frame, price):
-    """Two closed valid bodies confirm a new outer break; all order routes share this."""
+    """Closed KC direction plus a live MA3 outer crossing; all orders share this."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -140,9 +162,9 @@ def aligned_entry(frame, price):
             recovery = surge_recovery_entry(frame, price)
             if recovery is not None and recovery.get("action") != "ENTER":
                 return recovery
-        if confirmed_outer_breakout_ready(frame, price, side):
+        if ma3_outer_cross_ready(frame, price, side):
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
-        return {**wait, "reason": "KC_OUTER_BREAK_CONFIRM_WAIT"}
+        return {**wait, "reason": "KC_MA3_OUTER_CROSS_WAIT"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return wait
 

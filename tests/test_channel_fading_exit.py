@@ -83,7 +83,7 @@ async def test_live_exit_and_restart_retry_no_reverse(side,success,armed,monkeyp
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('old_side',['LONG','SHORT'])
 @pytest.mark.parametrize('case',['ready','old_break','same_bar','missing_fill','wrong_reason','inside','delayed_fill'])
-def test_next_break_requires_matched_fill_and_two_new_candles(side,old_side,case):
+def test_next_cross_requires_matched_fill_and_later_live_candle(side,old_side,case):
     f=closed_outer_entry_frame(side)
     f['timestamp']=[(i+1)*60000 for i in range(len(f))]
     price=float(f.iloc[-1]['close'])
@@ -92,8 +92,11 @@ def test_next_break_requires_matched_fill_and_two_new_candles(side,old_side,case
     ticket=dict(mode='next_breakout',phase='closed',side=old_side,close_reason=reason,close_requested_at_ms=closed-1)
     trade=dict(symbol=SYMBOL,action='CLOSE_'+old_side,reason=reason,id=closed)
     a=SimpleNamespace(positions={},channel_profit_reentries={SYMBOL:ticket},trades=[trade])
-    if case=='old_break': trade['id']=float(f.iloc[-2]['timestamp'])+1
-    if case=='same_bar': trade['id']=float(f.iloc[-3]['timestamp'])+1
+    if case=='old_break':
+        sign=1 if side=='LONG' else -1
+        f.loc[f.index[-4],'close']=100+sign*5
+        f['open']=f['close'];f['high']=f['close']+.1;f['low']=f['close']-.1
+    if case=='same_bar': trade['id']=float(f.iloc[-1]['timestamp'])+1
     if case=='missing_fill': a.trades=[]
     if case=='wrong_reason': trade['reason']='manual'
     if case=='inside': price=float(f.iloc[-1]['kc_middle'])

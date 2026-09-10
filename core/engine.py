@@ -2997,7 +2997,7 @@ class TradingEngine:
                     position["channel_energy_score"] = self._channel_candidate_energy(signal)
             order_type = "支撐限價" if is_limit else "市價"
             protection_text = (
-                "CK確認反向先平後反手；硬止損與獲利保護沿用"
+                "MA3順KC穿越外軌進場；不直接反手，鎖利與緊急出口沿用"
                 if channel_swing_no_stop
                 else f"硬停損 {sl:.8g}｜風險 {initial_risk:.8g}"
             )
@@ -6906,7 +6906,7 @@ class TradingEngine:
         position_path: dict | None = None,
         outer_entry_only: bool = False,
     ) -> dict:
-        """Use one outer-breakout entry and position-aware execution exits."""
+        """Use one MA3 outer-cross entry and position-aware execution exits."""
         if str(current_side or "").upper() in ("LONG", "SHORT"):
             return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
         return aligned_entry(frame, live_price)
@@ -7067,7 +7067,7 @@ class TradingEngine:
                 return False
             latest = frame.iloc[-2]
             confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
-                                  "live price outside CK" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
+                                  "live MA3 crossing CK outer rail" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
                                   "closed MA3/MA15/KC aligned trend" if decision["reason"] in TREND_CODES else
                                   "closed breakout continuation" if decision["reason"] in {"KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT"} else
                                   "next live breakout candle")
@@ -7955,7 +7955,7 @@ class TradingEngine:
                 if pullback_exit:
                     if closed and symbol not in self.account.positions:
                         tickets[symbol]["phase"] = "closed"
-                        self.account.log(f"⏳ [平倉後重開] {symbol} " + ("等待平倉後新的兩根收線破軌確認，多空皆重新驗證" if fading_exit else "異常出場，等後續K回到CK內再順向站回外軌" if abnormal_exit else "等實體破軌及下一根同色收線確認，送單時仍在原側外軌外"), "INFO")
+                        self.account.log(f"⏳ [平倉後重開] {symbol} " + ("等待平倉後新K的MA3穿越KC外軌，多空皆重新驗證" if fading_exit else "異常出場，等後續K回到CK內再順向站回外軌" if abnormal_exit else "等待MA3重新穿越同側KC外軌，送單前重驗"), "INFO")
                     else:
                         tickets.pop(symbol, None)
                     self.account.save_state()

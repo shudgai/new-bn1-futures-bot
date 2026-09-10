@@ -37,7 +37,7 @@ def fading_ma3_turn(position, frame, price):
 
 
 def next_breakout_ready(account, symbol, frame, price):
-    """A matched successful close must precede both new breakout candles."""
+    """A matched successful close must precede the live MA3 crossing candle."""
     ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol, {})
     if symbol in account.positions or ticket.get('mode') != 'next_breakout':
         return False
@@ -51,7 +51,7 @@ def next_breakout_ready(account, symbol, frame, price):
         if not fills or not math.isfinite(requested):
             return False
         closed = max(fills)
-        first = float(frame.iloc[-3]['timestamp'])
+        first = float(frame.iloc[-1]['timestamp'])
         return (math.isfinite(closed) and math.isfinite(first)
                 and first > math.floor(closed / 60000) * 60000
                 and aligned_entry(frame, price).get('action') == 'ENTER')
