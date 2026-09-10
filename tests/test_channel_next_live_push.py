@@ -40,17 +40,17 @@ def push_frame(side='LONG'):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_unclear_direction_can_enter_on_live_successor(side):
+def test_live_successor_cannot_replace_closed_confirmation(side):
     f = push_frame(side)
     price = 103.2 if side == 'LONG' else 96.8
     result = TradingEngine._channel_swing_action(f, price)
-    assert result == dict(action='ENTER', side=side, reason='KC_NEXT_LIVE_PUSH_' + side)
+    assert result == dict(action='WAIT', side=None, reason='KC_SURGE_WAIT_TROUGH' if side == 'LONG' else 'KC_OUTSIDE_WAIT_NEXT_CANDLE')
     # No first-candle or same-close entry.
     assert TradingEngine._channel_swing_action(f, float(f.iloc[-2]['close']))['action'] == 'WAIT'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_half_breakout_body_is_enough(side):
+def test_breakout_body_alone_is_not_enough(side):
     f = push_frame(side)
     if side == 'LONG':
         f.loc[10, ['open', 'close']] = [100.9, 103.3]
@@ -61,8 +61,8 @@ def test_half_breakout_body_is_enough(side):
     f['high'] = f[['open', 'close']].max(axis=1) + .1
     f['low'] = f[['open', 'close']].min(axis=1) - .1
     result = TradingEngine._channel_swing_action(f, price)
-    assert result['action'] == 'ENTER'
-    assert result['side'] == side
+    assert result['action'] == 'WAIT'
+    assert result['side'] is None
 
 
 @pytest.mark.parametrize('invalid', ['wick', 'gap', 'opposite', 'deep_overlap', 'first_live', 'bad_ma15', 'opposing_ma15', 'spike'])
@@ -85,7 +85,7 @@ def test_live_push_does_not_bypass_shape_and_direction_guards(side, invalid):
 def test_falling_waves_and_held_position_do_not_use_exception(monkeypatch):
     f = push_frame()
     monkeypatch.setattr(TradingEngine, '_channel_closed_waves_falling', lambda _: True)
-    assert TradingEngine._channel_swing_action(f, 103.2)['reason'] == 'KC_FALLING_WAVES_BLOCK_LONG'
+    assert TradingEngine._channel_swing_action(f, 103.2)['action'] == 'WAIT'
     assert TradingEngine._channel_swing_action(f, 103.2, 'SHORT')['action'] == 'HOLD'
 
 
@@ -96,7 +96,7 @@ async def test_fresh_snapshot_rechecks_price_and_candidate():
     e.account.positions.clear()
     e.tickers[SYMBOL] = 103.2
     bar = e._channel_candidate_bar_id(f)
-    assert await e._fresh_channel_entry_snapshot(SYMBOL, 'LONG', bar) is not None
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, 'LONG', bar) is None
     e.tickers[SYMBOL] = 103.
     assert await e._fresh_channel_entry_snapshot(SYMBOL, 'LONG', bar) is None
     e.tickers[SYMBOL] = 103.2
@@ -104,17 +104,14 @@ async def test_fresh_snapshot_rechecks_price_and_candidate():
 
 
 @pytest.mark.anyio
-async def test_scan_routes_live_push_and_execution_deduplicates():
+async def test_scan_never_submits_removed_live_push():
     f = push_frame()
     e = _execution_engine(f, 'LONG', True)
     e.account.positions.clear()
     e.tickers[SYMBOL] = 103.2
     e._place_structured_entry = AsyncMock(return_value=True)
     await asyncio.gather(*(e._process_single_symbol(SYMBOL, 1., None, False) for _ in range(3)))
-    e._place_structured_entry.assert_awaited_once()
-    signal = e._place_structured_entry.call_args.args[1]
-    assert signal['signal_code'] == 'KC_NEXT_LIVE_PUSH_LONG'
-    assert 'two closed candles' not in signal['reason']
+    e._place_structured_entry.assert_not_awaited()
 
 
 @pytest.mark.anyio

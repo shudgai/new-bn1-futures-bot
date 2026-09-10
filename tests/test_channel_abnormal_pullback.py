@@ -69,7 +69,8 @@ async def test_pullback_reentry_revalidates_and_preserves_risk(side, block, monk
     e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='a', phase='closed', mode='outer_cycle',
                                                       requires_pullback=True, exit_bar_id=19, pullback_bar=20)}
     fresh = f.copy()
-    if block == 'room': fresh['atr'] = 4.
+    if block == 'room':
+        e._channel_profit_room = lambda *a: dict(allowed=False, reason='KC_PROFIT_ROOM_INSUFFICIENT')
     if block == 'color': fresh.loc[21, 'open'] = price
     if block == 'ma': fresh.loc[18, 'close'] = price
     if block == 'inside': fresh['kc_upper'], fresh['kc_lower'] = 110., 90.

@@ -139,7 +139,7 @@ async def test_general_exit_has_priority_over_profit_close():
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert e.account.events[0][3] == 'Channel Swing GENERAL_EXIT', e.account.logs
     e._place_structured_entry.assert_not_awaited()
-    assert e.account.channel_profit_reentries[SYMBOL]["requires_pullback"]
+    assert not e.account.channel_profit_reentries[SYMBOL]["requires_pullback"]
     assert e.account.channel_profit_reentries[SYMBOL]["phase"] == "closed"
 
 
@@ -302,7 +302,7 @@ def test_tightening_on_opposite_tick_honors_previously_observed_peak():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('style', ['CHOPPY', 'STACKED', 'SMOOTH'])
-async def test_unarmed_middle_exit_uses_price_for_every_style(style):
+async def test_unarmed_middle_touch_holds_for_every_style(style):
     f = styled_frame(style)
     middle = (float(f.iloc[-1]['kc_upper'])+float(f.iloc[-1]['kc_lower']))/2
     e = _execution_engine(f, 'LONG', True)
@@ -318,9 +318,8 @@ async def test_unarmed_middle_exit_uses_price_for_every_style(style):
     assert SYMBOL in e.account.positions
     e.tickers[SYMBOL] = middle
     await e._process_single_symbol(SYMBOL, 2., None, False)
-    assert len(e.account.events) == 1, e.account.logs
-    assert e.account.events[0][3].endswith('KC_LONG_UNARMED_MIDDLE_EXIT')
-    assert SYMBOL not in e.account.positions
+    assert not e.account.events, e.account.logs
+    assert SYMBOL in e.account.positions
 
 
 @pytest.mark.anyio

@@ -1,4 +1,4 @@
-"""Current rules: closed CK pivots, confirmed outer reversals and single fills."""
+"""Current rules: two closed bodies, confirmed reversals and single fills."""
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -7,18 +7,20 @@ from core.engine import TradingEngine
 from core.paper_account import PaperAccount
 from test_direct_break_execution import setup_engine, confirm_break
 from test_channel_swing_execution import SYMBOL
-from test_channel_pivot_entry import market
+from channel_test_frames import closed_outer_entry_frame
 
-def confirm_pivot(frame, side):
-    """Use a valid inside-channel pivot while preserving the 70-row clock."""
-    source = market(side)
-    for key in ('kc_upper', 'kc_lower', 'atr'):
-        frame[key] = source.iloc[-1][key]
-    frame['ema_20'] = 100.
-    for offset in range(5):
-        for key in ('open', 'high', 'low', 'close', 'ma3', 'ma15', 'kc_middle'):
-            frame.loc[frame.index[-5 + offset], key] = source.iloc[-5 + offset][key]
-    return float(frame.iloc[-1]['close'])
+def confirm_entry(frame, side):
+    """Supply a valid two-body outer entry while preserving the caller's clock."""
+    source = closed_outer_entry_frame(side, len(frame))
+    for key in source.columns:
+        frame[key] = source[key].to_numpy()
+    # Dedup tests need a clear trend, without the removed live-push chop exemption.
+    sign = 1 if side == "LONG" else -1
+    for key in ("ma15", "kc_middle", "ema_20"):
+        frame.loc[frame.index[-4:-1], key] = [100 - sign * .4, 100 - sign * .2, 100.]
+    frame.loc[frame.index[-4:-1], "kc_upper"] = [102 - sign * .4, 102 - sign * .2, 102.]
+    frame.loc[frame.index[-4:-1], "kc_lower"] = [98 - sign * .4, 98 - sign * .2, 98.]
+    return float(frame.iloc[-1]["close"])
 
 @pytest.fixture
 def anyio_backend():
@@ -28,14 +30,14 @@ def anyio_backend():
 @pytest.mark.parametrize('length', [5, 30, 70])
 def test_available_ck_history_confirms_entry(setup_engine, side, length):
     _, f = setup_engine(side)
-    price = confirm_pivot(f, side)
+    price = confirm_entry(f, side)
     f = f.tail(length)
     assert TradingEngine._channel_swing_action(f, price)['side'] == side
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('held', [False, True])
 @pytest.mark.parametrize('invalid', ['live_only', 'doji', 'opposite_colour', 'wick', 'gap'])
-def test_outside_entry_ignores_colour_but_reversal_requires_confirmation(setup_engine, side, held, invalid):
+def test_invalid_bodies_cannot_enter_or_reverse(setup_engine, side, held, invalid):
     old = ('SHORT' if side == 'LONG' else 'LONG') if held else None
     _, f = setup_engine(side, old)
     # Isolate invalid breakout shapes from the separately tested emergency exits.
@@ -65,8 +67,8 @@ def test_outside_entry_ignores_colour_but_reversal_requires_confirmation(setup_e
     sign = 1 if side == 'LONG' else -1
     f.loc[66:68, 'kc_middle'] = [100. - sign * .2, 100. - sign * .1, 100.]
     result = TradingEngine._channel_swing_action(f, price, old)
-    assert result['action'] == ('HOLD' if held else 'ENTER')
-    if not held: assert result['side'] == side
+    assert result['action'] == ('HOLD' if held else 'WAIT')
+    assert result['side'] is None
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -74,8 +76,12 @@ def test_outside_entry_ignores_colour_but_reversal_requires_confirmation(setup_e
 async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held, monkeypatch):
     old = ('SHORT' if side == 'LONG' else 'LONG') if held else None
     e, f = setup_engine(side, old)
+    e._channel_chop_state = TradingEngine._channel_chop_state
     if held:
         confirm_break(f, side)
+        sign = 1 if side == "LONG" else -1
+        f.loc[66:68, "kc_middle"] = [100 - sign * .2, 100 - sign * .1, 100.]
+        f.loc[67:68, "ma3"] = [100 + sign * 1., 100 + sign * 1.2]
         # setup_engine resets this candle's open/close to 100; its old trend
         # high/low must be reset too now every new leg validates market data.
         f.loc[66, ["high", "low"]] = [100.1, 99.9]
@@ -84,7 +90,7 @@ async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held
         f.loc[69, ["open", "close", "high", "low"]] = ([103.2, 103.25, 103.3, 103.1] if side == "LONG" else [96.8, 96.75, 96.9, 96.7])
         e.tickers[SYMBOL] = float(f.iloc[-1]["close"])
     else:
-        e.tickers[SYMBOL] = confirm_pivot(f, side)
+        e.tickers[SYMBOL] = confirm_entry(f, side)
     if held:
         # The new order must pass the existing MA15 direction revalidation.
         e.account.positions[SYMBOL]['channel_favorable_rail_reached'] = False
@@ -108,7 +114,8 @@ async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held
 @pytest.mark.parametrize('reload', [False, True])
 async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_engine, reload, monkeypatch):
     e, f = setup_engine('LONG')
-    e.tickers[SYMBOL] = confirm_pivot(f, 'LONG')
+    e._channel_chop_state = TradingEngine._channel_chop_state
+    e.tickers[SYMBOL] = confirm_entry(f, 'LONG')
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert SYMBOL in e.account.positions, '\n'.join(row['text'] for row in e.account.logs)
     assert await e.account.close_position(SYMBOL, 103., '手動平倉', is_manual=True)
@@ -131,7 +138,7 @@ async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_e
 @pytest.mark.anyio
 async def test_expired_confirmation_cannot_open(setup_engine):
     e, f = setup_engine('LONG')
-    e.tickers[SYMBOL] = confirm_pivot(f, 'LONG')
+    e.tickers[SYMBOL] = confirm_entry(f, 'LONG')
     fresh = f.copy()
     fresh['timestamp'] = list(range(70))
     fresh.loc[68, 'timestamp'] = 999

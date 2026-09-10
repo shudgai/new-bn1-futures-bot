@@ -2,7 +2,7 @@
 import pytest
 from core.engine import TradingEngine
 from core.channel_outer_entry import (
-    continuation_entry, next_live_push_entry, outside_reentry, two_closed_bodies_ready,
+    continuation_entry, outside_reentry, two_closed_bodies_ready,
 )
 from test_channel_next_live_push import push_frame
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
@@ -29,13 +29,13 @@ def continuation_frame(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("route", ["push", "continuation"])
+@pytest.mark.parametrize("route", ["continuation"])
 @pytest.mark.parametrize("bar", [-3, -2])
 @pytest.mark.parametrize("invalid", ["opposite", "doji", "wick", "nan"])
 def test_each_closed_body_is_required(side, route, bar, invalid):
     f = push_frame(side) if route == "push" else continuation_frame(side)
     price = (103.2 if route == "push" else 103.4) if side == "LONG" else (96.8 if route == "push" else 96.6)
-    fn = next_live_push_entry if route == "push" else continuation_entry
+    fn = continuation_entry
     assert fn(f, price)["side"] == side
     idx = f.index[bar]
     if invalid == "opposite":
@@ -114,4 +114,4 @@ async def test_cached_or_fresh_signal_cannot_bypass_body_gate(side, cached, monk
     assert not await e._place_structured_entry(
         SYMBOL, signal, price, channel_snapshot=snapshot if cached else None)
     assert not e.account.events
-    assert any("最近兩根已收線同色實體不足" in message for message, _ in e.account.logs)
+    assert any("缺少已收線實體破軌與下一根同色確認" in message for message, _ in e.account.logs)

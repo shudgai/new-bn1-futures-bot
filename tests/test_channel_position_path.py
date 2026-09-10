@@ -77,7 +77,7 @@ def test_first_tiny_reverse_body_after_surge_holds_without_reentry(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_outer_reentry_continuation_needs_current_price_outside(side):
+def test_old_outer_continuation_without_body_cross_is_rejected(side):
     f = frame_for(side)
     sign = 1 if side == "LONG" else -1
     f["ma15"] = [100 + sign * i * .01 for i in range(8)]
@@ -87,13 +87,13 @@ def test_outer_reentry_continuation_needs_current_price_outside(side):
     f.loc[7,"open"] = 100+sign*2.3
     f["high"] = f[["open", "close"]].max(axis=1)+.1
     f["low"] = f[["open", "close"]].min(axis=1)-.1
-    assert TradingEngine._channel_swing_action(f, 100+sign*2.5, outer_entry_only=True)["action"] == "ENTER"
+    assert TradingEngine._channel_swing_action(f, 100+sign*2.5, outer_entry_only=True)["action"] == "WAIT"
     assert TradingEngine._channel_swing_action(f, 100, outer_entry_only=True)["action"] == "WAIT"
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("success", [True, False])
-async def test_waterfall_scan_closes_at_middle_and_keeps_failed_close(success):
+async def test_middle_touch_does_not_close_unarmed_position(success):
     f = frame_for("LONG"); f["atr"] = 1.
     f.loc[7, "close"] = 99.
     e = _execution_engine(f, "LONG", success)
@@ -102,9 +102,8 @@ async def test_waterfall_scan_closes_at_middle_and_keeps_failed_close(success):
     e.market_prebreakout_directions = {}
     e.tickers[SYMBOL] = 99.
     await e._process_single_symbol(SYMBOL, now_time=500, btc_1m_turn=None, daily_halt=False)
-    assert len(e.account.events) == 1, e.account.logs
-    assert e.account.events[0][3].endswith("KC_LONG_UNARMED_MIDDLE_EXIT")
-    assert (SYMBOL in e.account.positions) is (not success)
+    assert not e.account.events, e.account.logs
+    assert SYMBOL in e.account.positions
 
 
 @pytest.fixture

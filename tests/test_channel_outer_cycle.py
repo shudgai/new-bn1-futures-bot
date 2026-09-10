@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock
 import pytest
+from channel_test_frames import closed_outer_entry_frame
 from core.channel_outer_entry import outside_reentry
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
@@ -25,15 +26,12 @@ def market(side):
 
 
 def setup(side):
-    f, _ = market(side)
-    sign = 1 if side == 'LONG' else -1
-    f['kc_upper'], f['kc_lower'] = 103., 97.
-    price = 100 + sign * 4
-    f.loc[19, ['open', 'close', 'high', 'low']] = [100 + sign * 3.5, price, max(price, 100), min(price, 100)]
-    return f, price
+    f = closed_outer_entry_frame(side)
+    return f, float(f.iloc[-1]["close"])
+
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('case', ['valid', 'opposite', 'doji', 'ma_flat', 'ma_reverse', 'inside', 'ck_flat', 'invalid'])
+@pytest.mark.parametrize('case', ['valid', 'opposite', 'doji', 'ma_flat', 'ma_reverse', 'inside', 'first_doji', 'invalid'])
 def test_outer_cycle_conditions(side, case):
     f, price = setup(side)
     sign = 1 if side == 'LONG' else -1
@@ -42,9 +40,10 @@ def test_outer_cycle_conditions(side, case):
     if case == 'ma_flat': f.loc[16, 'close'] = price
     if case == 'ma_reverse': f.loc[16, 'close'] = price + sign
     if case == 'inside': price = 100.
-    if case == 'ck_flat': f['kc_middle'] = 100.
+    if case == 'first_doji': f.loc[17, 'open'] = f.loc[17, 'close']
     if case == 'invalid': f.loc[18, 'close'] = float('nan')
-    assert (outside_reentry(f, price, side).get('side') == side) is (case == 'valid')
+    # A doji prevents breakout confirmation but not an independently aligned trend.
+    assert (outside_reentry(f, price, side).get('side') == side) is (case in ('valid', 'first_doji'))
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

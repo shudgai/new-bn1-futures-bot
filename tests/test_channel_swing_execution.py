@@ -115,6 +115,9 @@ def _execution_engine(frame, side, close_succeeds):
     engine._directional_trend_quality = lambda *_args, **_kwargs: 1.0
     engine._same_side_entry_allowed = lambda *_args, **_kwargs: True
     engine._continuous_entry_amount = lambda: 120.0
+    # These fixtures isolate existing execution/exit contracts. The intrabar
+    # suite explicitly restores the real gate and supplies ordered live quotes.
+    engine._channel_intrabar_ready = lambda *args: True
     return engine
 
 

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 from core.engine import TradingEngine
 from test_channel_outer_cycle import setup as market
-from test_channel_live_ma3_exit import setup as turn_market
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
 
@@ -103,8 +102,11 @@ async def test_close_observed_during_await_blocks_final_order(monkeypatch, clock
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('success', [False, True])
-async def test_minute_limit_never_blocks_ma3_exit_or_failed_close_retry(side, success, clock):
-    frame, position, price = turn_market(side)
+async def test_minute_limit_never_blocks_adverse_exit_or_failed_close_retry(side, success, clock):
+    frame, _ = market(side)
+    price = 99. if side == 'LONG' else 101.
+    frame.loc[19, 'open'] = 105. if side == 'LONG' else 95.
+    position = dict(side=side, entry_price=100., qty=1., open_timestamp=1.)
     e = _execution_engine(frame, side, success)
     e.account.save_state = lambda: None
     e.account.positions[SYMBOL].update(position)
@@ -113,6 +115,8 @@ async def test_minute_limit_never_blocks_ma3_exit_or_failed_close_retry(side, su
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert len(e.account.events) == 1
     assert e.account.events[0][0] == 'close'
+    assert e.account.events[0][3].endswith(
+        'KC_LONG_LIVE_RED_LONG_EXIT' if side == 'LONG' else 'KC_SHORT_LIVE_GREEN_LONG_EXIT')
     if not success:
         await e._process_single_symbol(SYMBOL, 2., None, False)
         assert len(e.account.events) == 2
@@ -120,7 +124,7 @@ async def test_minute_limit_never_blocks_ma3_exit_or_failed_close_retry(side, su
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-async def test_reclaim_opens_on_same_live_candle_as_pullback_without_two_bar_wait(side, monkeypatch, clock):
+async def test_reclaim_uses_two_existing_closed_bodies_after_later_pullback(side, monkeypatch, clock):
     e, frame, price, signal = ready_engine(side, monkeypatch)
     e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='now', phase='closed',
         mode='outer_cycle', requires_pullback=True, exit_bar_id=18)}
