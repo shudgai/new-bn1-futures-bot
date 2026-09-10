@@ -2555,9 +2555,6 @@ class TradingEngine:
                 return False  # A cached ordinary signal cannot bypass the pullback ticket.
             fresh_snapshot = None if signal.get("profit_reentry_token") else channel_snapshot
             if fresh_snapshot is None:
-                watcher = getattr(self, "_channel_intrabar_entries", None)
-                if watcher is not None:
-                    watcher.reset(symbol)
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
                     symbol, side, validation_bar_id,
                     allow_live_outer=True,
@@ -2565,6 +2562,9 @@ class TradingEngine:
                     profit_reentry_token=signal.get("profit_reentry_token"),
                 )
             if fresh_snapshot is None:
+                watcher = getattr(self, "_channel_intrabar_entries", None)
+                if watcher is not None:
+                    watcher.reset(symbol)
                 if invalid_candidate_key is not None and not live_outer_entry:
                     if not hasattr(self, "_channel_invalid_entry_candidates"):
                         self._channel_invalid_entry_candidates = set()
