@@ -1,4 +1,4 @@
-"""Abnormal upward candles cannot be chased; only a later closed trough buys."""
+"""Later effective green candles release old surges while order guards remain."""
 from unittest.mock import AsyncMock
 import pytest
 from core.channel_surge_entry import surge_recovery_entry
@@ -19,7 +19,7 @@ def recovery_frame():
 
 
 @pytest.mark.parametrize("case", ["valid", "live_only", "red", "doji", "small", "flat_ma3", "equal_low", "broken", "wick_break", "chase", "wrong_ck", "nan", "new_surge"])
-def test_recovery_requires_new_closed_trough(case):
+def test_recovery_releases_old_surge_after_effective_green(case):
     f = recovery_frame()
     price = 98.1
     if case == "live_only": f = f.iloc[:-1]
@@ -36,9 +36,13 @@ def test_recovery_requires_new_closed_trough(case):
     if case == "new_surge":
         f.loc[19, ["open", "low"]] = [80., 80.]
     result = surge_recovery_entry(f, price)
-    assert result is not None
-    assert (result.get("side") == "LONG") is (case == "valid")
-    assert (TradingEngine._channel_swing_action(f, price).get("side") == "LONG") is (case == "valid")
+    released = case in {"valid", "flat_ma3", "equal_low", "broken", "wick_break", "chase", "wrong_ck"}
+    if released:
+        assert result is None
+    else:
+        assert result is not None and result["action"] == "WAIT"
+    allowed = case in {"valid", "equal_low", "broken", "wick_break", "chase"}
+    assert (TradingEngine._channel_swing_action(f, price).get("side") == "LONG") is allowed
 
 
 @pytest.mark.anyio
@@ -66,20 +70,21 @@ async def test_recovery_scan_and_real_order_revalidate(block, monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("cached", [False, True])
-async def test_cache_cannot_buy_above_confirmation_high(cached, monkeypatch):
+async def test_released_surge_no_longer_caps_price_at_old_confirmation(cached, monkeypatch):
     f = recovery_frame()
     e = _execution_engine(f, "LONG", True)
     e.account.positions.clear()
     snapshot = dict(price=100., frame=f, kc_upper=110., kc_lower=90.)
     e._fresh_channel_entry_snapshot = AsyncMock(return_value=snapshot)
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
-    signal = dict(side="LONG", entry_mode="CHANNEL_SWING", action="ENTER_MARKET")
-    assert not await e._place_structured_entry(SYMBOL, signal, 100., channel_snapshot=snapshot if cached else None)
-    assert not e.account.events
+    e.tickers[SYMBOL] = 100.
+    signal = dict(side="LONG", entry_mode="CHANNEL_SWING", action="ENTER_MARKET", reason="released surge")
+    assert await e._place_structured_entry(SYMBOL, signal, 100., channel_snapshot=snapshot if cached else None)
+    assert len(e.account.events) == 1
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("case", ["normal", "old_pivot", "failed_close", "abnormal_wait", "fresh_broken"])
+@pytest.mark.parametrize("case", ["normal", "same_bar", "failed_close", "abnormal_wait", "fresh_ma"])
 async def test_reentry_keeps_ticket_and_freshness_guards(case, monkeypatch):
     f = recovery_frame()
     e = _execution_engine(f, "LONG", True)
@@ -90,13 +95,13 @@ async def test_reentry_keeps_ticket_and_freshness_guards(case, monkeypatch):
     e._channel_profit_room = lambda *a: dict(allowed=True, checked=False)
     ticket = dict(side="LONG", phase="closed", token="recovery", mode="outer_cycle",
                   requires_pullback=False, exit_bar_id=16)
-    if case == "old_pivot": ticket["exit_bar_id"] = 18.5
+    if case == "same_bar": ticket["exit_bar_id"] = 19
     if case == "failed_close": ticket["phase"] = "closing"
     if case == "abnormal_wait": ticket["requires_pullback"] = True
     e.account.channel_profit_reentries = {SYMBOL: ticket}
-    if case == "fresh_broken":
+    if case == "fresh_ma":
         fresh = f.copy()
-        fresh.loc[19, "low"] = 93.
+        fresh.loc[18, "ma3"] = fresh.loc[17, "ma3"]
         e.fetch_klines = AsyncMock(return_value=fresh)
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
     await e._try_profit_reentry(SYMBOL, f, 98.1, False)

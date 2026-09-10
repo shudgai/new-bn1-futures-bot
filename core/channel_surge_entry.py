@@ -38,6 +38,9 @@ def surge_recovery_entry(frame, price):
                         or (len(prior) == 9 and math.isfinite(average) and average > 0 and body >= 3 * average))
             if abnormal:
                 latest_surge = i
+            elif i < len(recent) - 1 and high > low and body / (high - low) >= .20:
+                # A later closed effective green candle supersedes the old surge.
+                latest_surge = None
         if latest_surge is None:
             return None
         # Trough must form after the surge, not be a pre-surge buy signal.

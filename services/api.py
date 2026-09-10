@@ -216,7 +216,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"MA3／MA15／KC同向雙入口，均等同根回調再轉順向：前根ATR回調0.10、轉向0.05、離極值超過0.15不追。最近兩根已收線MA3與MA15同向，MA3多高空低於MA15；KC最近三根已收線中軌同向、持倉側外軌不逆向。可順向進場，或外軌突破兩根收線確認（空單另容許三根紅K、中間小實體）；新倉與重開送單前重驗。向上異常大K後仍等谷底，異常出場後仍須回踩再站回外軌；每幣每分鐘最多開倉一次，平倉當根不重開；末端空間與帳戶風控保留；出口不變，最高浮盈回吐20%、階梯反色收緊10%、預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"MA3／MA15／KC同向雙入口，均等同根回調再轉順向：前根ATR回調0.10、轉向0.05、離極值超過0.15不追。最近兩根已收線MA3與MA15同向，MA3多高空低於MA15；KC最近三根已收線中軌同向、持倉側外軌不逆向。可順向進場，或外軌突破兩根收線確認（空單另容許三根紅K、中間小實體）；新倉與重開送單前重驗。向上異常大K後若有後續已收線有效綠K則解除舊阻擋，否則等谷底，異常出場後仍須回踩再站回外軌；每幣每分鐘最多開倉一次，平倉當根不重開；末端空間與帳戶風控保留；出口不變，最高浮盈回吐20%、階梯反色收緊10%、預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -645,7 +645,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             if recovery is not None and decision.get("side") != "SHORT":
                 if recovery.get("action") == "WAIT":
                     entry_block = {"reason": recovery["reason"], "message": "異常拉升後不追高，等待谷底確認",
-                                   "detail": "等待大K之後已收線价格谷底、MA3先降後升及CK順向；最新價破底或超過確認K高點不買。"}
+                                   "detail": "後續已收線有效綠K可解除舊異常阻擋，重新依MA3／MA15／KC及同根回調評估；尚無有效綠K時仍可等待谷底確認。"}
                 elif not ticket:
                     room = engine._channel_profit_room(indicators, price, "LONG")
                     entry_block = {"reason": "KC_SURGE_TROUGH_READY" if room["allowed"] else room["reason"],
