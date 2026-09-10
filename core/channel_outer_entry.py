@@ -92,9 +92,57 @@ def next_live_push_entry(frame, price):
     return wait
 
 
+def continuation_entry(frame, price):
+    """Enter a still-running breakout missed on its first successor candle."""
+    wait = {"action": "WAIT", "side": None, "reason": "KC_CONTINUATION_WAIT"}
+    required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
+    if frame is None or len(frame) < 5 or not required.issubset(frame.columns):
+        return {**wait, "reason": "KC_CONTINUATION_DATA_UNAVAILABLE"}
+    try:
+        breakout, confirmation, live = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
+        values = [float(row[key]) for row in (breakout, confirmation, live) for key in required]
+        values.append(float(price))
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return {**wait, "reason": "KC_CONTINUATION_DATA_INVALID"}
+        body = abs(float(confirmation["close"]) - float(confirmation["open"]))
+        candle_range = float(confirmation["high"]) - float(confirmation["low"])
+        if candle_range <= 0 or body / candle_range < 0.20:
+            return wait
+        ma3 = [float(row["ma3"]) for row in (breakout, confirmation, live)]
+        if not all(math.isfinite(value) and value > 0 for value in ma3):
+            return {**wait, "reason": "KC_CONTINUATION_DATA_INVALID"}
+        long_signal = (
+            (float(breakout["open"]) <= float(breakout["kc_upper"])
+             <= float(breakout["close"]) or float(breakout["close"]) > float(breakout["kc_upper"]))
+            and float(confirmation["close"]) > float(confirmation["open"])
+            and float(confirmation["close"]) > float(confirmation["kc_upper"])
+            and float(price) > float(live["kc_upper"])
+            and float(confirmation["kc_upper"]) >= float(breakout["kc_upper"])
+            and ma3[0] < ma3[1] <= ma3[2]
+        )
+        short_signal = (
+            (float(breakout["open"]) >= float(breakout["kc_lower"])
+             >= float(breakout["close"]) or float(breakout["close"]) < float(breakout["kc_lower"]))
+            and float(confirmation["close"]) < float(confirmation["open"])
+            and float(confirmation["close"]) < float(confirmation["kc_lower"])
+            and float(price) < float(live["kc_lower"])
+            and float(confirmation["kc_lower"]) <= float(breakout["kc_lower"])
+            and ma3[0] > ma3[1] >= ma3[2]
+        )
+        if long_signal:
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_CONTINUATION_LONG"}
+        if short_signal:
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_CONTINUATION_SHORT"}
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {**wait, "reason": "KC_CONTINUATION_DATA_INVALID"}
+    return wait
+
+
 def outside_reentry(frame, price, side):
     """Same-side CK reentry needs a live directional candle and MA3 slope."""
-    decision = outside_entry(frame, price)
+    decision = next_live_push_entry(frame, price)
+    if decision.get("side") != side:
+        decision = outside_entry(frame, price)
     if decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
     try:

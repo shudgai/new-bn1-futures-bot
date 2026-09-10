@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, next_live_push_entry, outside_reentry, abnormal_pullback_ready
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, next_live_push_entry, continuation_entry, outside_reentry, abnormal_pullback_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -6657,6 +6657,9 @@ class TradingEngine:
                 if falling_waves:
                     return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if push["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
                 return push
+            continuation = continuation_entry(frame, live_price)
+            if continuation.get("action") == "ENTER":
+                return continuation
             outside = outside_entry(frame, live_price)
             if outside.get("action") == "ENTER":
                 return outside
@@ -6977,7 +6980,9 @@ class TradingEngine:
             latest = frame.iloc[-2]
             confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
                                   "live price outside CK" if decision["reason"] in OUTER_CODES else
-                                  "closed CK middle trend and live candle" if decision["reason"] in TREND_CODES else "two closed candles")
+                                  "closed CK middle trend and live candle" if decision["reason"] in TREND_CODES else
+                                  "closed breakout continuation" if decision["reason"] in {"KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT"} else
+                                  "next live breakout candle")
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
                 "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
@@ -7625,6 +7630,7 @@ class TradingEngine:
 
                 "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                 "KC_NEXT_LIVE_PUSH_LONG", "KC_NEXT_LIVE_PUSH_SHORT",
+                "KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT",
                 "KC_NEXT_LIVE_PUSH_LONG", "KC_NEXT_LIVE_PUSH_SHORT",
                 "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
             }
