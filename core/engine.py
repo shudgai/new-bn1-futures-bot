@@ -7523,6 +7523,39 @@ class TradingEngine:
         async with locks.setdefault(symbol, asyncio.Lock()):
             return await self._process_single_symbol_locked(symbol, now_time, btc_1m_turn, daily_halt)
 
+    @staticmethod
+    def _channel_live_ma3_turn_exit(position, frame, price):
+        """Recognize an adverse live MA3 turn observed after entry, before protection."""
+        if position.get("channel_live_ma3_exit_pending"):
+            return True
+        if (position.get("channel_profit_protection") or {}).get("armed"):
+            return False
+        try:
+            side = position.get("side")
+            if side not in ("LONG", "SHORT") or frame is None or len(frame) < 5:
+                return False
+            opened = float(position.get("open_timestamp") or 0)
+            bar = float(frame.iloc[-1]["timestamp"]) / 1000
+            price = float(price)
+            closes = [float(v) for v in frame["close"].iloc[-5:-1]]
+            if not all(math.isfinite(v) and v > 0 for v in [opened, bar, price, *closes]):
+                return False
+            if opened > time.time():
+                return False
+            sign = 1 if side == "LONG" else -1
+            previous = sum(closes[:3]) / 3
+            last = sum(closes[1:]) / 3
+            live = (sum(closes[-2:]) + price) / 3
+            if sign * (live - last) > 0:
+                position["channel_live_ma3_favorable_bar"] = bar
+            # The closed slope must develop after entry; same-bar entries
+            # instead require an actual favorable live observation.
+            favorable = (opened <= bar - 60 and sign * (last - previous) > 0
+                         or position.get("channel_live_ma3_favorable_bar") == bar)
+            return favorable and sign * (live - last) < 0
+        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
+            return False
+
     async def _process_single_symbol_locked(self, symbol, now_time, btc_1m_turn, daily_halt):
         signal_progress = []
         detected_candidates = []
@@ -7628,6 +7661,16 @@ class TradingEngine:
                 if (channel_action.get("action") == "EXIT"
                         and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
                     channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
+                ma3_before = (existing_pos.get("channel_live_ma3_favorable_bar"),
+                              existing_pos.get("channel_live_ma3_exit_pending"))
+                if self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price):
+                    existing_pos["channel_live_ma3_exit_pending"] = True
+                    if channel_action.get("action") not in {"EXIT", "REVERSE"}:
+                        channel_action = {"action": "EXIT", "side": existing_pos["side"],
+                                          "reason": f"KC_{existing_pos['side']}_LIVE_MA3_TURN_EXIT"}
+                if ma3_before != (existing_pos.get("channel_live_ma3_favorable_bar"),
+                                  existing_pos.get("channel_live_ma3_exit_pending")):
+                    self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
                     if tickets.pop(symbol, None) is not None:
                         self.account.save_state()

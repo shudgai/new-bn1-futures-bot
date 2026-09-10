@@ -70,7 +70,7 @@ async def test_order_snapshot_rechecks_two_closed_bodies(side):
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("pending", [False, True])
-async def test_ma3_turn_alone_does_not_sell(side, pending):
+async def test_unarmed_ma3_turn_sells(side, pending):
     f = _narrow_channel_frame()
     sign = 1 if side == "LONG" else -1
     f["kc_upper"], f["kc_lower"] = 110., 90.
@@ -93,8 +93,9 @@ async def test_ma3_turn_alone_does_not_sell(side, pending):
     e.tickers[SYMBOL] = price
     await e._process_single_symbol(SYMBOL, 2., None, False)
     assert not any("處理失敗" in text for text, _ in e.account.logs)
-    assert e.account.events == []
-    assert SYMBOL in e.account.positions
+    assert len(e.account.events) == 1
+    assert e.account.events[0][3].endswith("LIVE_MA3_TURN_EXIT")
+    assert SYMBOL not in e.account.positions
 
 
 @pytest.mark.anyio
