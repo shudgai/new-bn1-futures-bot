@@ -7645,22 +7645,6 @@ class TradingEngine:
                             changed = True
                 channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
                 
-                if not is_armed:
-                    # 尚未啟動獲利保護，允許異常 K、瀑布與 MA3 轉彎出場
-                    emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
-                    if emergency:
-                        if existing_pos.get("channel_exception_exit_pending") != emergency:
-                            existing_pos["channel_exception_exit_pending"] = emergency
-                            changed = True
-                        channel_action = {"action": "EXIT", "side": None, "reason": emergency}
-                    elif self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price):
-                        if not existing_pos.get("channel_live_ma3_turn_exit_pending"):
-                            existing_pos["channel_live_ma3_turn_exit_pending"] = True
-                            changed = True
-                        channel_action = {
-                            "action": "EXIT", "side": None,
-                            "reason": "KC_" + existing_pos["side"] + "_LIVE_MA3_TURN_EXIT",
-                        }
 
                 if changed:
                     self.account.save_state()
