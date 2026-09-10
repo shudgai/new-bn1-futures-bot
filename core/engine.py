@@ -2467,21 +2467,8 @@ class TradingEngine:
         watcher.observe(symbol, price, quoted)
 
     def _live_pivot_ready(self, symbol, frame, price, side):
-        pivot = getattr(self, '_channel_live_pivots', None)
-        if pivot is None:
-            pivot = self._channel_live_pivots = LivePivot()
-        if symbol in self.account.positions or side not in ('LONG', 'SHORT') or ck_direction(frame) != side:
-            pivot.reset(symbol)
-            return False
-        quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol, float('nan'))
-        if (not math.isfinite(quoted) or not 0 <= time.time() - quoted <= 5
-                or math.floor(time.time() / 60) != math.floor(quoted / 60)):
-            pivot.reset(symbol)
-            return False
-        observed = pivot.observe(symbol, frame, price, side, quoted)
-        return (observed and ck_entry_momentum_ready(frame, side)
-                and live_adverse_entry_safe(frame, price, side)
-                and live_ma3_direction_ready(frame, price, side))
+        """Only confirmed outer breaks may enter; old live-pivot signals are inert."""
+        return False
 
     def _channel_intrabar_ready(self, symbol, frame, price, side, ck_reverse=False, live_pivot=False):
         """Validate the current quote without requiring an observed pullback."""
@@ -2740,6 +2727,7 @@ class TradingEngine:
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
+            planned_price = float(entry_quote)
             if not live_adverse_entry_safe(fresh_frame, entry_quote, side):
                 self.account.log(f"🛑 {symbol} {side} KC_LIVE_ADVERSE_ENTRY_WAIT：當根反向異常風險，取消開倉", "WARNING")
                 return False
@@ -7535,57 +7523,20 @@ class TradingEngine:
         return reverse_authorized(self.account, symbol, signal, time.time())
 
     async def _try_ck_reverse(self, symbol, frame, price, daily_halt):
-        locks = getattr(self, '_ck_reverse_locks', None)
-        if locks is None:
-            locks = self._ck_reverse_locks = {}
-        async with locks.setdefault(symbol, asyncio.Lock()):
-            position = self.account.positions.get(symbol)
-            if not position:
-                return False
-            side = ck_direction(frame)
-            tickets = getattr(self.account, 'channel_profit_reentries', None)
-            if tickets is None:
-                tickets = self.account.channel_profit_reentries = {}
-            ticket = tickets.get(symbol, {})
-            waiting = position.get('channel_reverse_wait_ck')
-            if waiting is None:
-                waiting = self.account.position_meta.get(symbol, {}).get('channel_reverse_wait_ck', False)
-            if waiting:
-                if side == position.get('side'):
-                    position['channel_reverse_wait_ck'] = False
-                    self.account.position_meta.setdefault(symbol, {})['channel_reverse_wait_ck'] = False
-                    self.account.save_state()
-                return False
-            pending = ticket.get('mode') in ('ck_reverse', 'direct_reverse') and ticket.get('phase') == 'closing'
-            if pending and ticket.get('opened_at') != position.get('open_timestamp'):
-                tickets.pop(symbol, None)
-                self.account.save_state()
-                pending = False
-            if not pending and (side is None or side == position.get('side')):
-                return False
-            if not math.isfinite(float(price)) or price <= 0:
-                return False
-            if not pending:
-                token = str(position.get('open_timestamp')) + ':' + str(time.time_ns())
-                ticket = dict(mode='direct_reverse', phase='closing', side=side,
-                              opened_at=position.get('open_timestamp'),
-                              old_side=position['side'], token=token,
-                              confirmation_bar_id=self._channel_candidate_bar_id(frame),
-                              close_reason='Channel Swing CK_REVERSE ' + token,
-                              close_requested_at_ms=int(time.time() * 1000))
-                tickets[symbol] = ticket
-                self.account.save_state()
-            closed = await self.account.close_position(symbol, price, ticket['close_reason'], is_manual=True)
-            if not closed or symbol in self.account.positions:
-                return True
-            if ticket.get('mode') == 'direct_reverse':
-                ticket['phase'] = 'closed'
-                self.account.save_state()
-                await self._try_profit_reentry(symbol, frame, price, daily_halt)
-            else:
-                tickets.pop(symbol, None)
-                self.account.save_state()
-            return True
+        """CK changes no longer close positions or authorize direct reversals."""
+        tickets = getattr(self.account, 'channel_profit_reentries', {})
+        changed = False
+        if tickets.get(symbol, {}).get('mode') in ('ck_reverse', 'direct_reverse', 'ma3_turn_wait'):
+            tickets.pop(symbol)
+            changed = True
+        for state in (self.account.positions.get(symbol, {}), self.account.position_meta.get(symbol, {})):
+            for key in ('channel_reverse_wait_ck', 'channel_terminal_turn'):
+                if key in state:
+                    state.pop(key)
+                    changed = True
+        if changed:
+            self.account.save_state()
+        return False
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
@@ -7646,27 +7597,7 @@ class TradingEngine:
         ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
         if not ticket or symbol in self.account.positions:
             return
-        if ticket.get('mode') == 'direct_reverse':
-            signal = dict(side=ticket['side'], profit_reentry_token=ticket['token'])
-            # Recover a close that completed before a restart without trusting phase alone.
-            if ticket.get('phase') == 'closing':
-                ticket['phase'] = 'closed'
-            if not self._ck_reverse_order_authorized(symbol, signal):
-                self.account.channel_profit_reentries.pop(symbol, None)
-                self.account.save_state()
-                return
-            self.account.save_state()
-            if daily_halt or self._ck_reverse_new_leg_halted():
-                return
-            signal.update(score=100, entry_mode='CHANNEL_SWING', action='ENTER_MARKET',
-                          reason='Channel Swing DIRECT_REVERSE ' + ticket['token'],
-                          candidate_bar_id='reverse:' + ticket['token'],
-                          signal_code='KC_DIRECT_REVERSE_' + ticket['side'])
-            if await self._place_structured_entry(symbol, signal, price):
-                self.account.channel_profit_reentries.pop(symbol, None)
-                self.account.save_state()
-            return
-        if ticket.get('mode') == 'ck_reverse':
+        if ticket.get('mode') in ('direct_reverse', 'ck_reverse', 'ma3_turn_wait'):
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
             return
@@ -7900,7 +7831,7 @@ class TradingEngine:
                         if key in state:
                             state.pop(key)
                             changed = True
-                channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_FIXED_PROFIT_STEPS"}
+                channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_NET_PROFIT_GIVEBACK"}
                 emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
                 if emergency:
                     if existing_pos.get("channel_exception_exit_pending") != emergency:
@@ -7915,8 +7846,8 @@ class TradingEngine:
                 elif profit and profit["triggered"]:
                     token = str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns())
                     tickets[symbol] = {"token": token, "phase": "closing",
-                                       "side": "SHORT" if existing_pos["side"] == "LONG" else "LONG",
-                                       "old_side": existing_pos["side"], "mode": "direct_reverse",
+                                       "side": existing_pos["side"],
+                                       "old_side": existing_pos["side"], "mode": "outer_cycle",
                                        "close_reason": "Channel Swing PROFIT_PROTECTION " + token,
                                        "close_requested_at_ms": int(time.time() * 1000),
                                        "requires_pullback": False,
@@ -7924,7 +7855,7 @@ class TradingEngine:
                                        "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                        "path": copy.deepcopy(path_state)}
                     self.account.save_state()
-                    self.account.log(f"🛡️ [獲利保護] {symbol} 固定階梯 淨利峰值={profit['peak_net']:.4f} 鎖定淨利={profit['locked_net']:.2f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
+                    self.account.log(f"🛡️ [獲利保護] {symbol} 浮盈回吐20% 淨利峰值={profit['peak_net']:.4f} 鎖定淨利={profit['locked_net']:.2f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
                     closed = await self.account.close_position(
                         symbol, channel_price, "Channel Swing PROFIT_PROTECTION " + token, is_manual=True)
                     if closed and symbol not in self.account.positions:

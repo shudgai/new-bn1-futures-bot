@@ -39,7 +39,7 @@ def invalid_frame(side, case):
     return f, price
 
 
-CASES = ['inside', 'touch', 'flat', 'reverse', 'one_body', 'wrong_color', 'small_body', 'invalid']
+CASES = ['inside', 'touch', 'flat', 'reverse', 'no_cross', 'one_body', 'wrong_color', 'small_body', 'invalid']
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

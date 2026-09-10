@@ -112,7 +112,7 @@ def sustained_trend_ready(frame, side):
 
 
 def aligned_entry(frame, price):
-    """Live outside entry needs clear closed CK and strictly aligned live MA3."""
+    """Two closed valid bodies confirm a new outer break; all order routes share this."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -138,9 +138,9 @@ def aligned_entry(frame, price):
             recovery = surge_recovery_entry(frame, price)
             if recovery is not None and recovery.get("action") != "ENTER":
                 return recovery
-        if (price > upper if side == "LONG" else price < lower):
-            return {"action": "ENTER", "side": side, "reason": "KC_LIVE_OUTER_" + side}
-        return {**wait, "reason": "KC_OUTSIDE_WAIT"}
+        if confirmed_outer_breakout_ready(frame, price, side):
+            return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
+        return {**wait, "reason": "KC_OUTER_BREAK_CONFIRM_WAIT"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return wait
 

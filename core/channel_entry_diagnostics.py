@@ -17,34 +17,16 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             raise ValueError('missing frame')
         bar = float(frame.iloc[-1]['timestamp'])
         if not math.isfinite(bar) or int(now // 60) != int(bar // 60000):
-            return result('KC_ENTRY_FRAME_WAIT', '等待本根行情資料', '不沿用上一根的盤中峰谷。')
+            return result('KC_ENTRY_FRAME_WAIT', '等待本根行情資料', '送單前須以本根有效行情重驗破軌入口。')
         side = ck_direction(frame)
         outer = aligned_entry(frame, price)
         quoted = float(getattr(engine, '_channel_entry_quote_times', {}).get(symbol, float('nan')))
         fresh = math.isfinite(quoted) and 0 <= now - quoted <= 5
-        tracker = getattr(engine, '_channel_live_pivots', None)
-        state = tracker.states.get(symbol, {}) if tracker is not None else {}
-        pivot_ready = bool(side and fresh and state.get('identity') == (bar / 1000, side)
-                           and state.get('at') == quoted and state.get('ready')
-                           and state.get('last') == (price if side == 'LONG' else -price))
         room = None
-        extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=pivot_ready,
+        extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=False,
                      outer_signal=outer.get('reason'), profit_room=room)
-        direct = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol, {})
-        if direct.get('mode') == 'direct_reverse':
-            from core.channel_direct_reverse import authorized, quote_ready
-            direct_side = direct.get('side')
-            extra['side'] = direct_side
-            if not authorized(engine.account, symbol, {'side': direct_side, 'profit_reentry_token': direct.get('token')}, now):
-                return result('KC_REVERSE_FILL_WAIT', '反手票據未獲成交確認或已過期', '僅成功平倉當根可重驗一次反向新倉。', **extra)
-            if not quote_ready(engine, symbol, frame, price, direct_side):
-                return result('KC_REVERSE_QUOTE_WAIT', '反手等待有效報價或反向異常解除', '仍保留報價時效與異常進場攔截。', **extra)
-            return result('KC_DIRECT_REVERSE_READY', '平倉已確認，評估直接反手', '不等CK方向；送單仍須通過帳戶風控，不能保證成交。', **extra)
         if engine._channel_candle_entry_blocked(symbol, now):
-            # The diagnostic does not grant the CK reverse exception; order validation does.
-            ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol, {})
-            if ticket.get('mode') != 'ck_reverse':
-                return result('KC_ONE_ENTRY_PER_CANDLE', '本根K已有成交，等待下一根', '每根限次保留，必要平倉不受限制。', **extra)
+            return result('KC_ONE_ENTRY_PER_CANDLE', '本根K已有成交，等待下一根', '平倉後不反手；每根限次保留。', **extra)
         if not fresh:
             return result('KC_ENTRY_QUOTE_WAIT', '等待有效即時報價', '報價缺失或超過5秒，不送單。', **extra)
         if not side:
@@ -63,6 +45,8 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         if not live_adverse_entry_safe(frame, price, side):
             return result('KC_LIVE_ADVERSE_ENTRY_WAIT', '當根反向異常，暫不開倉', '沿用原開盤價及已收線ATR門檻。', **extra)
         ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol)
+        if ticket and ticket.get('mode') in ('direct_reverse', 'ck_reverse', 'ma3_turn_wait'):
+            ticket = None
         if ticket and opposite_entry_releases(engine.account, symbol, frame, price):
             # Preview order validation without mutating persisted state.
             ticket = None
@@ -74,12 +58,12 @@ def entry_diagnostics(engine, symbol, frame, price, now):
                 return result('KC_POST_CLOSE_PULLBACK_WAIT', '異常平倉後須重驗回踩', '後續K須先回到CK內，再順向站回原側外軌。', **extra)
             if ticket.get('side') != side:
                 return result('KC_REENTRY_DIRECTION_WAIT', '預定重開方向與CK方向不同', '等待新的同向重開條件成立。', **extra)
-        candidate = 'live:' + str(bar) if pivot_ready else engine._channel_candidate_bar_id(frame)
+        candidate = engine._channel_candidate_bar_id(frame)
         if not ticket and (symbol, side, candidate) in getattr(engine, '_channel_invalid_entry_candidates', set()):
             return result('KC_CANDIDATE_INVALIDATED', '此候選訊號已失效', '等待下一個有效候選，再重新評估進場。', **extra)
-        if pivot_ready or outer.get('action') == 'ENTER':
+        if outer.get('action') == 'ENTER':
             return result('KC_ENTRY_READY', '已有入口訊號，等待送單風控', '仍須重驗帳戶、行情、票據與每根限次；不代表保證成交。', **extra)
-        return result('KC_ENTRY_SIGNAL_WAIT', '等待盤中峰谷或有效外軌訊號',
-                      '多單需實際報價先跌後升，空單先升後跌；順CK且MA3同向站在同側外軌外可即時評估，不等兩根K。', **extra)
+        return result('KC_ENTRY_SIGNAL_WAIT', '等待上下外軌破軌確認',
+                      '第一根已收線同向實體穿出外軌，第二根同色有效實體確認；最新價仍須在同側外軌外。', **extra)
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
         return result('KC_ENTRY_DATA_WAIT', '等待有效行情資料', '資料不足或無效，不推測進場方向。')
