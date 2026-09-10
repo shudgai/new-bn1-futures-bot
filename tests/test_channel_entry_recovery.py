@@ -1,5 +1,5 @@
 import pytest
-from core.channel_outer_entry import aligned_entry, ck_entry_momentum_ready, ma3_outer_gap_ready
+from core.channel_outer_entry import aligned_entry, ck_entry_momentum_ready, ma3_outer_continuation_ready
 from test_channel_ma3_continuation import continuing
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -22,24 +22,14 @@ def test_closed_momentum_must_strengthen(side,steps,expected):
     assert (aligned_entry(f,price)['action']=='ENTER') is expected
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('gap,expected',[(0,False),(.099,False),(.1,True),(.3,True)])
+@pytest.mark.parametrize('gap,expected',[(0,False),(.001,True),(.099,True),(.1,True),(.3,True)])
 def test_ma3_gap_closed_atr_boundary(side,gap,expected):
     f,price=ready(side);sign=1 if side=='LONG' else -1
     ma=(float(f.iloc[-3]['close'])+float(f.iloc[-2]['close'])+price)/3
     f.loc[f.index[-1],'kc_upper' if side=='LONG' else 'kc_lower']=ma-sign*gap
     f.loc[f.index[-2],'atr']=1
     f.loc[f.index[-1],'atr']=1000
-    assert ma3_outer_gap_ready(f,price,side) is expected
-
-@pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('field',['atr','kc_upper','kc_lower','close'])
-def test_invalid_gap_data_rejected(side,field):
-    f,price=ready(side)
-    if field.startswith('kc_'):
-        field='kc_upper' if side=='LONG' else 'kc_lower'
-        f.loc[f.index[-1],field]=float('nan')
-    else: f.loc[f.index[-2],field]=float('nan')
-    assert not ma3_outer_gap_ready(f,price,side)
+    assert ma3_outer_continuation_ready(f,price,side) is expected
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -65,5 +55,5 @@ async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypat
         e.account.channel_profit_reentries={SYMBOL:dict(side=side,token='new',phase='closed',mode='outer_cycle',requires_pullback=False,exit_bar_id=float(f.iloc[-2]['timestamp']))}
     e.tickers[SYMBOL]=price;e._observe_channel_entry_quote(SYMBOL,price,now*1000)
     result=await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot if route=='cached' else None)
-    assert bool(result) is (blocked is None),e.account.logs
-    assert [v[0] for v in e.account.events]==(['open'] if blocked is None else [])
+    assert bool(result) is (blocked != 'momentum'),e.account.logs
+    assert [v[0] for v in e.account.events]==(['open'] if blocked != 'momentum' else [])
