@@ -1,6 +1,6 @@
 """Read-only entry diagnostics; viewing a chart never observes or consumes a turn."""
 import math
-from core.channel_outer_entry import ck_direction, aligned_entry, live_adverse_entry_safe
+from core.channel_outer_entry import ck_direction, aligned_entry, live_adverse_entry_safe, live_ma3_direction_ready
 
 
 def entry_diagnostics(engine, symbol, frame, price, now):
@@ -44,6 +44,8 @@ def entry_diagnostics(engine, symbol, frame, price, now):
                       f"下軌 {float(a['kc_lower']):.10g} → {float(b['kc_lower']):.10g}。"
                       '中軌須嚴格順向且持倉側外軌不得逆向。')
             return result('KC_DIRECTION_WAIT', 'CK方向條件尚未一致', detail, **extra)
+        if not live_ma3_direction_ready(frame, price, side):
+            return result('KC_LIVE_MA3_DIRECTION_WAIT', '即時MA3未順向，暫不開倉', '多單須MA3上升、空單須下降；反向、持平或無效都不開。', **extra)
         if not live_adverse_entry_safe(frame, price, side):
             return result('KC_LIVE_ADVERSE_ENTRY_WAIT', '當根反向異常，暫不開倉', '沿用原開盤價及已收線ATR門檻。', **extra)
         if not room['allowed']:
@@ -62,6 +64,6 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         if pivot_ready or outer.get('action') == 'ENTER':
             return result('KC_ENTRY_READY', '已有入口訊號，等待送單風控', '仍須重驗帳戶、行情、票據與每根限次；不代表保證成交。', **extra)
         return result('KC_ENTRY_SIGNAL_WAIT', '等待盤中峰谷或有效外軌訊號',
-                      '多單需實際報價先跌後升，空單先升後跌；外軌入口沿用已收線實體確認。', **extra)
+                      '多單需實際報價先跌後升，空單先升後跌；順CK且MA3同向站在同側外軌外可即時評估，不等兩根K。', **extra)
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
         return result('KC_ENTRY_DATA_WAIT', '等待有效行情資料', '資料不足或無效，不推測進場方向。')

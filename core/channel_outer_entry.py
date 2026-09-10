@@ -2,6 +2,7 @@
 import math
 from core.channel_surge_entry import surge_recovery_entry
 
+LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"}
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
 
@@ -89,7 +90,7 @@ def sustained_trend_ready(frame, side):
 
 
 def aligned_entry(frame, price):
-    """Two closed bodies outside the rail allow breakout or continuation entry."""
+    """Live outside entry needs clear closed CK and strictly aligned live MA3."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -105,20 +106,17 @@ def aligned_entry(frame, price):
         side = ck_direction(frame)
         if not aligned_direction(frame, side):
             return wait
-        if not (confirmed_outer_breakout_ready(frame, price, side)
-                or sustained_trend_ready(frame, side)):
-            return {**wait, "reason": "KC_SUSTAINED_TREND_WAIT"}
+        if not live_ma3_direction_ready(frame, price, side):
+            return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        if not two_closed_bodies_ready(frame, side):
-            return {**wait, "reason": "KC_TWO_CLOSED_BODIES_WAIT"}
         if side == "LONG":
             recovery = surge_recovery_entry(frame, price)
             if recovery is not None and recovery.get("action") != "ENTER":
                 return recovery
-        if confirmed_outer_continuation_ready(frame, price, side):
-            return {"action": "ENTER", "side": side, "reason": "KC_CONTINUATION_" + side}
-        return {**wait, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
+        if (price > upper if side == "LONG" else price < lower):
+            return {"action": "ENTER", "side": side, "reason": "KC_LIVE_OUTER_" + side}
+        return {**wait, "reason": "KC_OUTSIDE_WAIT"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return wait
 
@@ -294,7 +292,7 @@ def continuation_entry(frame, price):
 
 
 def outside_reentry(frame, price, side):
-    """Use the same CK direction and body checks for normal reentries."""
+    """Use the same live CK outside and MA3 checks for reentries."""
     decision = aligned_entry(frame, price)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
