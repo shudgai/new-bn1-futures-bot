@@ -34,6 +34,26 @@ def test_outside_needs_no_color_or_closed_confirmation(side):
     assert outside_entry(frame, price)["side"] == side
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_single_closed_directional_candle_outside_ck_enters_without_second_bar(side):
+    frame = market()
+    sign = 1 if side == "LONG" else -1
+    frame["kc_middle"] = 100.
+    frame.loc[16:18, "kc_middle"] = [100., 100. + sign, 100. + 2 * sign]
+    frame.loc[18, ["open", "close", "high", "low"]] = (
+        [105., 111., 112., 104.] if side == "LONG" else [95., 89., 96., 88.]
+    )
+    frame.loc[19, ["open", "close", "high", "low"]] = (
+        [111., 109., 112., 108.] if side == "LONG" else [89., 91., 92., 88.]
+    )
+    result = outside_entry(frame, float(frame.iloc[-1]["close"]))
+    assert result == {
+        "action": "ENTER",
+        "side": side,
+        "reason": "KC_CLOSED_OUTSIDE_" + side,
+    }
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -106,7 +126,7 @@ async def test_confirmed_turn_and_outside_entry_remain_tradable(side, reopen, mo
     price = float(frame.iloc[-1]["close"])
     if side == "LONG": frame["kc_lower"] = price + .1
     else: frame["kc_upper"] = price - .1
-    assert outside_entry(frame, price)["action"] == "ENTER"
+    assert outside_entry(frame, price)["action"] == "WAIT"
     decision = TradingEngine._channel_swing_action(frame, price)
     assert decision["side"] == side and decision["reason"] in PIVOT_CODES
     engine = _execution_engine(frame, side, True)
@@ -140,7 +160,7 @@ def test_first_closed_turn_enters_before_second_candle_closes(side):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("case", ["aligned", "flat", "mixed", "opposite", "invalid", "missing", "short_history", "rail_opposite", "live_opposite"])
-def test_outside_uses_current_ck_rail_only(side, case):
+def test_outside_requires_clear_ck_direction(side, case):
     from test_channel_symmetric_rules import market as outer_market
     frame = outer_market(side)
     price = float(frame.iloc[-1]["close"])
@@ -153,14 +173,15 @@ def test_outside_uses_current_ck_rail_only(side, case):
     if case == "rail_opposite": frame.loc[18, "kc_upper" if side == "LONG" else "kc_lower"] -= 1 if side == "LONG" else -1
     if case == "live_opposite": frame.loc[19, "kc_middle"] = 1. if side == "LONG" else 1000.
     result = outside_entry(frame, price)
-    assert result["action"] == "ENTER"
-    assert result["side"] == side
+    assert (result["action"] == "ENTER") == (case in {"aligned", "live_opposite"})
+    if result["action"] == "ENTER":
+        assert result["side"] == side
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("reopen", [False, True])
-async def test_outside_order_allows_newly_unclear_ck_when_not_reentry(side, reopen, monkeypatch):
+async def test_outside_order_rejects_newly_unclear_ck(side, reopen, monkeypatch):
     from core.engine import TradingEngine
     from test_channel_swing_execution import _execution_engine, SYMBOL
     from test_channel_symmetric_rules import market as outer_market
@@ -178,8 +199,8 @@ async def test_outside_order_allows_newly_unclear_ck_when_not_reentry(side, reop
     if reopen:
         engine.account.channel_profit_reentries = {SYMBOL: dict(side=side, phase="closed", token="trend", exit_bar_id=19)}
         signal["profit_reentry_token"] = "trend"
-    # CK direction is no longer an outer-entry blocker.
+    # A flat CK direction must block a fresh outer entry and re-entry alike.
     frame.loc[16:18, "kc_middle"] = 100.
     placed = await engine._place_structured_entry(SYMBOL, signal, price)
-    assert placed is (not reopen)
-    assert bool(engine.account.events) is (not reopen)
+    assert not placed
+    assert not engine.account.events

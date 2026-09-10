@@ -2535,7 +2535,12 @@ class TradingEngine:
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
-            if side in ("LONG", "SHORT"):
+            breakout_signal = str(signal.get("signal_code") or "") in {
+                "KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT",
+                "KC_CLOSED_OUTSIDE_LONG", "KC_CLOSED_OUTSIDE_SHORT",
+                "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
+            }
+            if side in ("LONG", "SHORT") and (not breakout_signal or live_outer_entry):
                 room = self._channel_profit_room(fresh_frame, planned_price, side)
                 if not room["allowed"]:
                     self.account.log(
@@ -3882,6 +3887,21 @@ class TradingEngine:
             previous = sum(closes[:3]) / 3
             last = sum(closes[1:]) / 3
             live = (sum(closes[-2:]) + price) / 3
+            # Only exit on the latest confirmed price peak/trough. A MA3
+            # wiggle between two still-developing swings is not an exit.
+            closed = frame.iloc[:-1]
+            if len(closed) < 3:
+                return False
+            left_close, pivot_close, right_close = (
+                float(value) for value in closed["close"].iloc[-3:]
+            )
+            final_extreme = (
+                pivot_close > left_close and pivot_close > right_close
+                if side == "LONG"
+                else pivot_close < left_close and pivot_close < right_close
+            )
+            if not final_extreme:
+                return False
             # An entry during this candle needs a favorable observation first;
             # otherwise its already adverse slope could predate the position.
             if sign * (live - last) > 0:
@@ -6693,25 +6713,15 @@ class TradingEngine:
         position_path: dict | None = None,
         outer_entry_only: bool = False,
     ) -> dict:
-        """Use live CK outside direction or closed pivots; retain held exits."""
+        """Use only upper/lower CK breakouts for flat entries; retain held exits."""
         held = str(current_side or "").upper()
         wait = {"action": "HOLD" if held in ("LONG", "SHORT") else "WAIT",
                 "side": None, "reason": "WAIT_OUTER_BREAK_CONFIRMATION"}
         if held not in ("LONG", "SHORT") and not outer_entry_only:
-            decision = pivot_entry(frame, live_price)
-            if decision.get("action") == "ENTER":
-                if TradingEngine._channel_closed_waves_falling(frame, decision["side"]):
-                    return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if decision["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
-                # A CK-aligned peak/trough takes priority even beyond the
-                # opposite rail; do not replace its turn with an outside chase.
-                return decision
             outside = outside_entry(frame, live_price)
             if outside.get("action") == "ENTER":
                 return outside
-            trend = middle_trend_entry(frame, live_price)
-            if trend.get("action") == "ENTER":
-                return trend
-            return outside if outside["reason"] != "KC_INSIDE_CHANNEL" else decision
+            return outside
         required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
         if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
             return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
@@ -7532,10 +7542,9 @@ class TradingEngine:
                 managed_at = time.time()
                 existing_pos["bot_last_managed_at"] = managed_at
                 self.account.position_meta.setdefault(symbol, {})["bot_last_managed_at"] = managed_at
-            # Outer-body breaks and continuation determine entry directly.
-            # Retire stale CHOP state without calculating or waiting for range unlocks.
-            getattr(self, "_channel_chop_locked", {}).pop(symbol, None)
-            getattr(self, "_channel_chop_events", {}).pop(symbol, None)
+            # Keep range conditions out of ordinary flat entries. A confirmed
+            # directional breakout is allowed to release the wait state.
+            chop_state = self._channel_chop_state(channel_df)
             btc_lead_candidate = None
             if not existing_pos and btc_pulse in ("LONG", "SHORT"):
                 btc_lead_candidate = self._record_btc_lead_shadow_candidate(
@@ -7581,6 +7590,20 @@ class TradingEngine:
                 ) if existing_pos else 0.0,
                 allow_live_entry=not bool(existing_pos),
             )
+            if (
+                not existing_pos
+                and channel_action.get("action") == "ENTER"
+                and chop_state.get("detected")
+                and not chop_state.get("clear_direction")
+            ):
+                breakout = self._channel_chop_breakout_action(channel_df, channel_price)
+                if breakout.get("action") == "ENTER":
+                    channel_action = breakout
+                else:
+                    channel_action = {
+                        "action": "WAIT", "side": None,
+                        "reason": "CHOP_WAIT_NO_ENTRY",
+                    }
             tickets = getattr(self.account, "channel_profit_reentries", None)
             if tickets is None:
                 tickets = self.account.channel_profit_reentries = {}

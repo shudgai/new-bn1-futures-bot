@@ -30,7 +30,7 @@ def test_outer_cycle_conditions(side, case):
     if case == 'inside': price = 100.
     if case == 'ck_flat': f['kc_middle'] = 100.
     if case == 'invalid': f.loc[18, 'close'] = float('nan')
-    assert (outside_reentry(f, price, side).get('side') == side) is (case in ('valid', 'ck_flat'))
+    assert (outside_reentry(f, price, side).get('side') == side) is (case == 'valid')
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

@@ -46,6 +46,16 @@ def test_live_turn(side, case):
         case in ('loss', 'profit', 'armed', 'same_bar_turn'))
 
 
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_intermediate_ma3_turn_does_not_exit(side):
+    frame, position, price = setup(side)
+    if side == 'LONG':
+        frame.loc[17:18, 'close'] = [103.0, 104.0]
+    else:
+        frame.loc[17:18, 'close'] = [97.0, 96.0]
+    assert not TradingEngine._channel_live_ma3_turn_exit(position, frame, price)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('armed', [False, True])

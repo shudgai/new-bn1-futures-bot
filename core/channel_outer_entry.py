@@ -15,7 +15,29 @@ def outside_entry(frame, price):
             return {**wait, "reason": "KC_DATA_INVALID"}
         side = 'LONG' if price > upper else 'SHORT' if price < lower else None
         if side:
+            if closed_ck_direction(frame) != side:
+                return {**wait, "reason": "KC_DIRECTION_BLOCK_" + side}
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
+
+        # A single fully closed directional candle outside CK is enough to enter;
+        # do not require a second confirmation candle if price has only retraced
+        # inside the channel by the next scan.
+        if len(frame) >= 2:
+            closed = frame.iloc[-2]
+            closed_open = float(closed["open"])
+            closed_close = float(closed["close"])
+            closed_upper = float(closed["kc_upper"])
+            closed_lower = float(closed["kc_lower"])
+            values = (closed_open, closed_close, closed_upper, closed_lower)
+            if all(math.isfinite(v) and v > 0 for v in values) and closed_lower < closed_upper:
+                if closed_close < closed_open and closed_close < closed_lower:
+                    if closed_ck_direction(frame) != "SHORT":
+                        return {**wait, "reason": "KC_DIRECTION_BLOCK_SHORT"}
+                    return {"action": "ENTER", "side": "SHORT", "reason": "KC_CLOSED_OUTSIDE_SHORT"}
+                if closed_close > closed_open and closed_close > closed_upper:
+                    if closed_ck_direction(frame) != "LONG":
+                        return {**wait, "reason": "KC_DIRECTION_BLOCK_LONG"}
+                    return {"action": "ENTER", "side": "LONG", "reason": "KC_CLOSED_OUTSIDE_LONG"}
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
     return wait
