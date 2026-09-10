@@ -39,8 +39,8 @@ def entry_diagnostics(engine, symbol, frame, price, now):
                       '中軌須嚴格順向且持倉側外軌不得逆向。')
             return result('KC_DIRECTION_WAIT', 'CK方向條件尚未一致', detail, **extra)
         if not ck_entry_momentum_ready(frame, side):
-            return result('KC_MOMENTUM_FADE_WAIT', 'CK動能衰退或資料不足，暫停新倉',
-                          '最近4根已收線中軌的3次順向位移連續縮小時暫停；下一根重新評估，不影響持倉出口。', **extra)
+            return result('KC_MOMENTUM_FADE_WAIT', 'CK動能尚未增強或資料不足，暫停新倉',
+                          '最近已收線CK中軌順向位移須大於前一次；持平、縮小或反向不開，下一根重新評估。', **extra)
         if not live_ma3_direction_ready(frame, price, side):
             return result('KC_LIVE_MA3_DIRECTION_WAIT', '即時MA3未順向，暫不開倉', '多單須MA3上升、空單須下降；反向、持平或無效都不開。', **extra)
         if not live_adverse_entry_safe(frame, price, side):
@@ -66,6 +66,8 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         candidate = engine._channel_candidate_bar_id(frame)
         if not ticket and (symbol, side, candidate) in getattr(engine, '_channel_invalid_entry_candidates', set()):
             return result('KC_CANDIDATE_INVALIDATED', '此候選訊號已失效', '等待下一個有效候選，再重新評估進場。', **extra)
+        if outer.get('reason') == 'KC_MA3_OUTER_GAP_WAIT':
+            return result('KC_MA3_OUTER_GAP_WAIT', 'MA3貼近外軌，等待距離拉開', '即時MA3距同側外軌至少上一根已收線ATR的0.10倍才評估開倉。', **extra)
         if outer.get('action') == 'ENTER':
             return result('KC_ENTRY_READY', '已有入口訊號，等待送單風控', '仍須重驗帳戶、行情、票據與每根限次；不代表保證成交。', **extra)
         return result('KC_ENTRY_SIGNAL_WAIT', '等待MA3位於KC外軌外',

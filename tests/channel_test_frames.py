@@ -15,7 +15,7 @@ def closed_outer_entry_frame(side="LONG", rows=20):
     f.loc[rows-2, ["open", "close"]] = [102.5, 103.]
     f.loc[rows-1, ["open", "close"]] = [103., 103.2]
     f.loc[rows-2:, "kc_upper"] = 102.1
-    f.loc[rows-4:rows-1, "kc_middle"] = [99.7, 99.8, 99.9, 100.]
+    f.loc[rows-4:rows-1, "kc_middle"] = [99.7, 99.75, 99.9, 100.]
     f.loc[rows-4:rows-1, "ma15"] = [99.7, 99.8, 99.9, 100.]
     f["high"] = f[["open", "close"]].max(axis=1) + .1
     f["low"] = f[["open", "close"]].min(axis=1) - .1

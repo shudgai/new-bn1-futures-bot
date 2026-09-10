@@ -16,7 +16,7 @@ def frame(side, steps=(.3,.2,.1)):
     return f
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('steps,ready',[((.3,.2,.1),False),((.1,.2,.3),True),((.2,.2,.2),True),((.3,.1,.2),True)])
+@pytest.mark.parametrize('steps,ready',[((.3,.2,.1),False),((.1,.2,.3),True),((.2,.2,.2),False),((.3,.1,.2),True)])
 def test_closed_steps_and_recovery(side,steps,ready):
     f=frame(side,steps)
     assert ck_direction(f)==side

@@ -27,8 +27,18 @@ def ck_momentum_fading(frame, side):
 
 
 def ck_entry_momentum_ready(frame, side):
-    """Invalid CK data or confirmed fading pauses entries."""
-    return ck_momentum_fading(frame, side) is False
+    """Only strengthening confirmed directional CK momentum permits entries."""
+    try:
+        if ck_momentum_fading(frame, side) is not False:
+            return False
+        key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
+        a, b, c = [float(v) for v in frame.iloc[-4:-1][key]]
+        sign = 1 if side == 'LONG' else -1
+        previous, latest = sign * (b - a), sign * (c - b)
+        tolerance = max(a, b, c) * 1e-12
+        return previous >= 0 and latest > 0 and latest - previous > tolerance
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
 
 
 def aligned_direction(frame, side):
@@ -152,6 +162,25 @@ def ma3_outer_continuation_ready(frame, price, side):
         return False
 
 
+MA3_OUTER_MIN_GAP_ATR = 0.10
+
+
+def ma3_outer_gap_ready(frame, price, side):
+    """Quote-derived MA3 must clear the same-side rail by 0.10 closed ATR."""
+    try:
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 4:
+            return False
+        closes = [float(v) for v in frame['close'].iloc[-3:-1]]
+        rail = float(frame.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+        atr, price = float(frame.iloc[-2]['atr']), float(price)
+        if not all(math.isfinite(v) and v > 0 for v in [rail, atr, price, *closes]):
+            return False
+        gap = (1 if side == 'LONG' else -1) * ((sum(closes) + price) / 3. - rail)
+        return gap >= atr * MA3_OUTER_MIN_GAP_ATR - rail * 1e-12
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def aligned_entry(frame, price):
     """Closed KC direction with live MA3 outside; missed crosses may continue."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
@@ -180,6 +209,8 @@ def aligned_entry(frame, price):
             if recovery is not None and recovery.get("action") != "ENTER":
                 return recovery
         if ma3_outer_continuation_ready(frame, price, side):
+            if not ma3_outer_gap_ready(frame, price, side):
+                return {**wait, "reason": "KC_MA3_OUTER_GAP_WAIT"}
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
         return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):

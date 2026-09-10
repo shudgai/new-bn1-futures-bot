@@ -2700,7 +2700,8 @@ class TradingEngine:
                     and not signal.get("profit_reentry_token")):
                 # Refresh through the shared release check; never trust a cached release candle.
                 channel_snapshot = None
-            fresh_snapshot = None if signal.get("profit_reentry_token") or signal.get("live_pivot") or signal.get("live_outer") else channel_snapshot
+            # Cached scans cannot authorize an order after CK/gap conditions change.
+            fresh_snapshot = None
             if fresh_snapshot is None:
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
                     symbol, side, validation_bar_id,
@@ -2735,7 +2736,7 @@ class TradingEngine:
                 return False
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             if not ck_reverse and not ck_entry_momentum_ready(fresh_frame, side):
-                self.account.log(f"⏳ {symbol} {side} KC_MOMENTUM_FADE_WAIT：已收線CK動能連續衰退，暫停新倉", "INFO")
+                self.account.log(f"⏳ {symbol} {side} KC_MOMENTUM_FADE_WAIT：已收線CK順向動能尚未增強，暫停新倉", "INFO")
                 return False
             if not ck_reverse and not live_ma3_direction_ready(fresh_frame, planned_price, side):
                 self.account.log(f'⏳ {symbol} {side} KC_LIVE_MA3_DIRECTION_WAIT：即時MA3未順向，不開倉', 'INFO')
