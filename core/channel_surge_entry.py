@@ -66,6 +66,5 @@ def surge_recovery_entry(frame, price):
 
 
 def long_entry_recovery_ready(frame, price, side, ordinary_ready):
-    """All long order routes share the same surge veto and trough exception."""
-    recovery = surge_recovery_entry(frame, price) if side == "LONG" else None
-    return recovery.get("side") == side if recovery is not None else ordinary_ready(frame, price, side)
+    """Compatibility entry delegates exclusively to the current ordinary rule."""
+    return ordinary_ready(frame, price, side)

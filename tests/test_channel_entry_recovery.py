@@ -34,7 +34,7 @@ def test_ma3_gap_closed_atr_boundary(side,gap,expected):
 @pytest.mark.anyio
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('route',['fresh','cached','reentry'])
-@pytest.mark.parametrize('blocked',[None,'momentum','gap'])
+@pytest.mark.parametrize('blocked',[None,'momentum','gap','surge'])
 async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypatch):
     f,price=ready(side);sign=1 if side=='LONG' else -1
     snapshot=dict(price=price,frame=f.copy(),kc_upper=float(f.iloc[-1]['kc_upper']),kc_lower=float(f.iloc[-1]['kc_lower']))
@@ -43,6 +43,11 @@ async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypat
     if blocked=='gap':
         ma=(float(f.iloc[-3]['close'])+float(f.iloc[-2]['close'])+price)/3
         f.loc[f.index[-1],'kc_upper' if side=='LONG' else 'kc_lower']=ma-sign*.01
+    if blocked=='surge':
+        # A historical upward surge must not veto an otherwise valid entry.
+        f.loc[f.index[-6],['open','high','low','close']]=[90.,110.,89.,109.]
+        f.loc[f.index[-5],['open','high','low','close']]=[100.,100.1,99.9,100.]
+        f.loc[f.index[-3],['open','high','low','close']]=[float(f.iloc[-3]['close']),float(f.iloc[-3]['close'])+.1,float(f.iloc[-3]['close'])-.1,float(f.iloc[-3]['close'])]
     e=_execution_engine(f,side,True);del e._channel_intrabar_ready
     e.account.positions.clear();e.account.save_state=lambda:None
     e._abnormal_market_entry_allowed=lambda *a,**k:True
@@ -57,3 +62,21 @@ async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypat
     result=await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot if route=='cached' else None)
     assert bool(result) is (blocked != 'momentum'),e.account.logs
     assert [v[0] for v in e.account.events]==(['open'] if blocked != 'momentum' else [])
+
+def test_live_upward_surge_no_long_entry_veto():
+    from core.channel_surge_entry import surge_recovery_entry
+    from core.channel_outer_entry import outside_reentry
+    f,price=ready('LONG')
+    f.loc[f.index[-1],['open','low','high']]=[90.,89.,price+.1]
+    assert surge_recovery_entry(f,price)['action']=='WAIT'
+    assert aligned_entry(f,price)['side']=='LONG'
+    assert outside_reentry(f,price,'LONG')['side']=='LONG'
+
+
+def test_production_entry_modules_do_not_import_retired_surge_veto():
+    import ast
+    from pathlib import Path
+    for name in ('channel_outer_entry.py','engine.py'):
+        tree=ast.parse((Path(__file__).resolve().parents[1]/'core'/name).read_text())
+        assert not any(isinstance(n,ast.ImportFrom) and n.module=='core.channel_surge_entry'
+                       for n in ast.walk(tree))

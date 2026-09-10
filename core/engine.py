@@ -7,7 +7,6 @@ import asyncio
 import copy
 from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
-from core.channel_surge_entry import surge_recovery_entry, long_entry_recovery_ready
 from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, ck_entry_momentum_ready, LIVE_OUTER_CODES
 from core.channel_intrabar_entry import IntrabarEntry
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
@@ -7506,7 +7505,7 @@ class TradingEngine:
                        and requested <= float(t.get("id") or 0) < exited + 60_000
                        for t in getattr(self.account, "trades", [])):
                 return False
-            if frame is None or len(frame) < 4 or surge_recovery_entry(frame, price) is not None:
+            if frame is None or len(frame) < 4:
                 return False
             for _, row in frame.iloc[:-1].iterrows():
                 bar, opened, high, low, closed = (float(row[k]) for k in

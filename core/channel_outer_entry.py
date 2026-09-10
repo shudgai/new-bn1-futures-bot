@@ -1,6 +1,5 @@
 """Live outside entries use the current CK rail; order route checks room and risk."""
 import math
-from core.channel_surge_entry import surge_recovery_entry
 
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"}
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
@@ -185,10 +184,6 @@ def aligned_entry(frame, price):
             return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        if side == "LONG":
-            recovery = surge_recovery_entry(frame, price)
-            if recovery is not None and recovery.get("action") != "ENTER":
-                return recovery
         if ma3_outer_continuation_ready(frame, price, side):
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
         return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}

@@ -1,5 +1,12 @@
 # 現行出口續驗紀錄
 
+## 2026-09-11 去除異常拉升等待
+
+- 一般入口、重開、快取送單不再受surge_recovery_entry攔截；舊異常平空票據解除也不再額外檢查surge，其餘匹配成交及有效後續K條件保留。
+- 新增多空各送單路徑的歷史拉升案例、即時拉升仍可進場及禁止交易模組匯入舊surge veto的固定規則測試。
+- 七份專項237 passed。舊post_close_recovery與surge_release回歸16 passed / 27 failed，隔離修改前亦16 passed / 27 failed，失敗集合相同。證據 /tmp/surge-remove-baseline.txt、/tmp/surge-remove-current.txt。
+- 沒有證據顯示程式會自行改寫；此次明確移除仍有效的舊限制，保留行情變化下的動能及帳戶重驗，不宣稱每次軌外都必成交。
+
 ## 2026-09-11 移除MA3進場ATR距離限制
 
 - 移除MA3距同側外軌至少0.10ATR的進場限制，穿軌及延續只需嚴格軌外；保留CK動能增強、價格及MA3順向與其他風控。
