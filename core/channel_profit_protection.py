@@ -84,14 +84,8 @@ def protection(position, price, fee, slippage, frame=None):
     state['armed'] = was_armed or net >= 1.0
     if not state['armed']:
         return None
-    if state.get('stacked_seen') and frame is not None and not frame.empty:
-        try:
-            live_open = float(frame.iloc[-1]['open'])
-            if math.isfinite(live_open) and live_open > 0 and sign * (price - live_open) < 0:
-                state['tightened'] = True
-        except (TypeError, ValueError, KeyError):
-            pass
-    retracement = .10 if state.get('tightened') else .20
+    # Disable the 10% tightening on opposite candle based on user request; always use 20%
+    retracement = .20
     state['retracement_fraction'] = retracement
     if side == 'LONG':
         floor = (entry * (1 + fee) + 1 / qty) / ((1 - slippage) * (1 - fee))

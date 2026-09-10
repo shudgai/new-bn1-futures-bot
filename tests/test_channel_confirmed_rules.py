@@ -94,6 +94,9 @@ async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held
     if held:
         # The new order must pass the existing MA15 direction revalidation.
         e.account.positions[SYMBOL]['channel_favorable_rail_reached'] = False
+        pos = e.account.positions[SYMBOL]
+        pos['channel_profit_protection'] = dict(armed=True, peak_gross=1.,
+            identity=[pos['side'], pos['open_timestamp'], pos['entry_price'], pos['qty']])
     await asyncio.gather(*(e._process_single_symbol(SYMBOL, 1., None, False) for _ in range(3)))
     if held:
         assert SYMBOL not in e.account.positions
@@ -151,6 +154,9 @@ async def test_expired_confirmation_cannot_open(setup_engine):
 async def test_rejected_reverse_retry_expires_with_bar(setup_engine, side):
     old = 'SHORT' if side == 'LONG' else 'LONG'
     e, f = setup_engine(side, old)
+    pos = e.account.positions[SYMBOL]
+    pos['channel_profit_protection'] = dict(armed=True, peak_gross=1.,
+        identity=[pos['side'], pos['open_timestamp'], pos['entry_price'], pos['qty']])
     confirm_break(f, side)
     e._abnormal_market_entry_allowed = lambda *_: False
     await e._process_single_symbol(SYMBOL, 1., None, False)

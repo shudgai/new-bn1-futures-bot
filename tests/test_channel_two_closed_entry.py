@@ -82,10 +82,11 @@ async def test_order_snapshot_falls_back_to_trend_and_rechecks_alignment(side):
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("pending", [False, True])
-async def test_unarmed_ma3_turn_sells(side, pending):
+async def test_unarmed_ma3_turn_holds(side, pending):
     f = _narrow_channel_frame()
     sign = 1 if side == "LONG" else -1
     f["kc_upper"], f["kc_lower"] = 110., 90.
+    f["atr"] = 100.
     f["timestamp"] = [60_000 * (i + 1) for i in range(len(f))]
     f.loc[15:18, "close"] = [100 + sign * x for x in (0., 2., 4., 3.)]
     price = 100. + sign
@@ -105,9 +106,8 @@ async def test_unarmed_ma3_turn_sells(side, pending):
     e.tickers[SYMBOL] = price
     await e._process_single_symbol(SYMBOL, 2., None, False)
     assert not any("處理失敗" in text for text, _ in e.account.logs)
-    assert len(e.account.events) == 1
-    assert e.account.events[0][3].endswith("LIVE_MA3_TURN_EXIT")
-    assert SYMBOL not in e.account.positions
+    assert not e.account.events
+    assert SYMBOL in e.account.positions
 
 
 @pytest.mark.anyio

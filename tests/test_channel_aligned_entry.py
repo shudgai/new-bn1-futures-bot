@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.channel_outer_entry import aligned_direction, aligned_entry, outside_reentry
+from core.channel_outer_entry import aligned_entry_ready
 from core.engine import TradingEngine
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
@@ -33,12 +34,15 @@ def aligned_frame(side="LONG", route="trend"):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("route", ["trend", "breakout"])
-def test_both_routes_and_closed_only_direction(side, route):
+def test_only_breakout_route_and_closed_direction(side, route):
     f = aligned_frame(side, route)
     price = float(f.iloc[-1]["close"])
     result = aligned_entry(f, price)
     code = "KC_MIDDLE_TREND_" if route == "trend" else "KC_CONTINUATION_"
-    assert result == dict(action="ENTER", side=side, reason=code+side)
+    if route == "breakout":
+        assert result == dict(action="ENTER", side=side, reason=code+side)
+    else:
+        assert result["action"] == "WAIT"
     assert TradingEngine._channel_swing_action(f, price) == result
     f.loc[19, ["ma3", "ma15", "kc_middle"]] = [float("nan"), 1., 1000.]
     assert aligned_entry(f, price) == result
@@ -69,6 +73,21 @@ def test_neither_route_bypasses_alignment_or_invalid_data(side, route, bad):
     assert outside_reentry(f, price, side)["action"] == "WAIT"
 
 
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_order_validation_requires_live_ma3_slope_and_matching_candle(side):
+    f = aligned_frame(side, "breakout")
+    price = float(f.iloc[-1]["close"])
+    assert aligned_entry_ready(f, price, side)
+
+    f.loc[19, "ma3"] = f.loc[18, "ma3"]  # stale indicator is ignored
+    assert aligned_entry_ready(f, price, side)
+    assert not aligned_entry_ready(f, float(f.iloc[-4]["close"]), side)
+
+    f = aligned_frame(side)
+    f.loc[19, "open"] = price + (1.0 if side == "LONG" else -1.0)
+    assert not aligned_entry_ready(f, price, side)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("route", ["trend", "breakout"])
@@ -91,7 +110,7 @@ async def test_scan_and_real_order_keep_risk_checks(side, route, block, monkeypa
         e.fetch_klines = AsyncMock(side_effect=[f.copy(), fresh])
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
     await e._process_single_symbol(SYMBOL, 1., None, block == "halt")
-    assert len(e.account.events) == int(block == "none"), e.account.logs
+    assert len(e.account.events) == int(block == "none" and route == "breakout"), e.account.logs
     assert not any("處理失敗" in text for text, _ in e.account.logs)
 
 
@@ -116,7 +135,7 @@ async def test_cached_order_rechecks_alignment(side, cached, monkeypatch):
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("case", ["normal", "abnormal_inside", "abnormal_no_pullback", "recovered", "fresh_ma"])
 async def test_profit_reentry_keeps_pullback_and_fresh_direction(side, case, monkeypatch):
-    f = aligned_frame(side, "breakout" if case in ("abnormal_no_pullback", "recovered") else "trend")
+    f = aligned_frame(side, "breakout")
     f["timestamp"] = list(range(len(f)))
     price = float(f.iloc[-1]["close"])
     e = _execution_engine(f, side, True)
@@ -127,6 +146,8 @@ async def test_profit_reentry_keeps_pullback_and_fresh_direction(side, case, mon
     e._channel_profit_room = lambda *a: dict(allowed=True, checked=False)
     ticket = dict(side=side, token="aligned", phase="closed", mode="outer_cycle", exit_bar_id=15,
                   requires_pullback=case.startswith("abnormal") or case == "recovered")
+    if case == "abnormal_inside":
+        price = (float(f.iloc[-1]["kc_upper"]) + float(f.iloc[-1]["kc_lower"])) / 2
     if case == "recovered": ticket["pullback_bar"] = 16
     e.account.channel_profit_reentries = {SYMBOL: ticket}
     if case == "fresh_ma":
@@ -140,21 +161,23 @@ async def test_profit_reentry_keeps_pullback_and_fresh_direction(side, case, mon
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("outer", [False, True])
-def test_trend_after_close_requires_new_closed_signal(side, outer):
-    f = aligned_frame(side)
+def test_breakout_after_close_requires_new_closed_signal(side, outer):
+    f = aligned_frame(side, "breakout")
     f["timestamp"] = list(range(len(f)))
     info = dict(side=side, require_new_closed_break=True, allow_new_outer_signal=outer, exit_bar_id=18)
     args = ("ENTER", False, side, f, info, SYMBOL)
     assert TradingEngine._channel_peak_exit_reentry_blocked(*args)
     info["exit_bar_id"] = 17
+    assert TradingEngine._channel_peak_exit_reentry_blocked(*args)
+    info["exit_bar_id"] = 16
     assert not TradingEngine._channel_peak_exit_reentry_blocked(*args)
 
 
-def test_three_red_breakout_remains_available_only_with_alignment():
+def test_three_red_small_middle_cannot_bypass_two_closed_bodies():
     from test_channel_three_red_entry import three_red_frame
     f = three_red_frame()
     f.loc[9:10, "ma15"] = [99.1, 99.]
-    assert aligned_entry(f, 96.4) == dict(action="ENTER", side="SHORT", reason="KC_CONTINUATION_SHORT")
+    assert aligned_entry(f, 96.4)["action"] == "WAIT"
     f.loc[10, "ma15"] = 99.2
     assert aligned_entry(f, 96.4)["action"] == "WAIT"
 

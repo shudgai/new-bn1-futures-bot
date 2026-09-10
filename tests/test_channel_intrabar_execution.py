@@ -11,11 +11,22 @@ def anyio_backend():
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("route", ["fresh", "cached", "reentry"])
-async def test_order_attempts_preserve_observed_pullback(side, route, monkeypatch):
-    f = aligned_frame(side)
+@pytest.mark.parametrize("opposite_live", [False, True])
+@pytest.mark.parametrize("continuation", [False, True])
+async def test_order_attempts_preserve_observed_pullback(side, route, opposite_live, continuation, monkeypatch):
+    f = aligned_frame(side, "breakout")
     sign = 1 if side == "LONG" else -1
+    if continuation:
+        rail = "kc_upper" if side == "LONG" else "kc_lower"
+        f.loc[17, "open"] = float(f.loc[17, rail]) + sign * .1
+        f["high"] = f[["open", "close"]].max(axis=1) + .1
+        f["low"] = f[["open", "close"]].min(axis=1) - .1
     f.loc[19, "open"] -= sign * .2
     f.loc[19, "low" if side == "LONG" else "high"] = f.loc[19, "open"] - sign * .1
+    if opposite_live:
+        f.loc[19, "open"] = float(f.iloc[-1]["close"]) + sign * .1
+        f["high"] = f[["open", "close"]].max(axis=1) + .2
+        f["low"] = f[["open", "close"]].min(axis=1) - .2
     bar = 1200000
     f["timestamp"] = [(bar - (19-i)*60)*1000 for i in range(20)]
     f["atr"] = 1.

@@ -216,7 +216,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"MA3／MA15／KC同向雙入口，均等同根回調再轉順向：前根ATR回調0.10、轉向0.05、離極值超過0.15不追。最近兩根已收線MA3與MA15同向，MA3多高空低於MA15；KC最近三根已收線中軌同向、持倉側外軌不逆向。可順向進場，或外軌突破兩根收線確認（空單另容許三根紅K、中間小實體）；新倉與重開送單前重驗。向上異常大K後若有後續已收線有效綠K則解除舊阻擋，否則等谷底，異常出場後仍須回踩再站回外軌；每幣每分鐘最多開倉一次，平倉當根不重開；末端空間與帳戶風控保留；出口不變，最高浮盈回吐20%、階梯反色收緊10%、預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"CK外軌突破與延續開倉：最近兩根已收線同向實體均收在同側外軌外，多單兩綠、空單兩紅，每根實體至少20%；不要求第一根重新穿軌；最新價仍在同側外軌外。MA3／MA15／KC須順向，即時MA3多單嚴格上升、空單嚴格下降，持平或反向不開。新倉、重開與送單前統一重驗；保留同根回調、異常等待、每根限次、末端及帳戶風控。普通反色K不平倉；反向大瀑布、單根異常K達門檻或MA3轉彎即時平倉，不等收線；最高浮盈回吐20%出口，預估淨利1USDT啟動保護（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -614,12 +614,12 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             if ticket:
                 entry_block = {
                     "reason": "KC_POST_CLOSE_PULLBACK_WAIT",
-                    "message": ("異常出場後，等待回踩及新順向訊號" if ticket.get("requires_pullback", True) else "平倉後，等待新破軌雙收線確認"),
-                    "detail": (("第一根紅實體收線穿出下軌，第二根紅實體收線確認（各至少20%）；即時紅K、MA3及CK順向且仍在下軌外。"
+                    "message": ("異常出場後，等待回踩及新順向訊號" if ticket.get("requires_pullback", True) else "平倉後，等待新軌外雙收線確認"),
+                    "detail": (("最近兩根紅實體均收在下軌外，不必重新穿軌（各至少20%）；即時MA3及CK順向且仍在下軌外。"
                                 if ticket.get("side") == "SHORT" else
-                                "第一根綠實體收線穿出上軌，第二根綠實體收線確認（各至少20%）；即時綠K、MA3及CK順向且仍在上軌外。")
+                                "最近兩根綠實體均收在上軌外，不必重新穿軌（各至少20%）；即時MA3及CK順向且仍在上軌外。")
                                if not ticket.get("requires_pullback", True) else
-                               "已觀察回到 CK 內；等待第一根實體破軌及第二根同色收線確認（各至少20%），以及即時同色K、MA3與CK順向站回原側外軌。"
+                               "已觀察回到 CK 內；等待兩根同色實體均收在原側軌外（各至少20%），以及即時MA3與CK順向站回原側外軌。"
                                if ticket.get("pullback_bar") is not None else
                                "後續 K 須先回到 CK 通道內，平倉當根不算回踩。"),
                 }
@@ -631,8 +631,8 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                             entry_block = {"reason": room["reason"], "message": "已重新站出外軌，進場風控未通過",
                                            "detail": room["detail"]}
                         else:
-                            entry_block = {"reason": "KC_REENTRY_READY", "message": "破軌雙收線已確認，等待送單檢查",
-                                           "detail": "送單前重驗實體破軌與第二根同色收線確認，並保留帳戶安全與每根 K 限次。"}
+                            entry_block = {"reason": "KC_REENTRY_READY", "message": "軌外雙收線已確認，等待送單檢查",
+                                           "detail": "送單前重驗最近兩根同色實體均收在原側軌外，並保留帳戶安全與每根 K 限次。"}
             elif not ticket and decision.get("action") == "ENTER":
                 room = engine._channel_profit_room(indicators, price, decision["side"])
                 if not room["allowed"]:

@@ -24,7 +24,7 @@ def aligned_direction(frame, side):
 
 
 def aligned_entry(frame, price):
-    """Shared new-position decision: aligned breakout, trend, or surge recovery."""
+    """Two closed bodies outside the rail allow breakout or continuation entry."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_MA_ALIGNMENT_WAIT"}
     try:
         price = float(price)
@@ -40,19 +40,53 @@ def aligned_entry(frame, price):
         side = closed_ck_direction(frame)
         if not aligned_direction(frame, side):
             return wait
+        if not two_closed_bodies_ready(frame, side):
+            return {**wait, "reason": "KC_TWO_CLOSED_BODIES_WAIT"}
+        if not live_ma3_direction_ready(frame, price, side):
+            return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if side == "LONG":
             recovery = surge_recovery_entry(frame, price)
-            if recovery is not None:
+            if recovery is not None and recovery.get("action") != "ENTER":
                 return recovery
-        if confirmed_outer_breakout_ready(frame, price, side):
+        if confirmed_outer_continuation_ready(frame, price, side):
             return {"action": "ENTER", "side": side, "reason": "KC_CONTINUATION_" + side}
-        return {"action": "ENTER", "side": side, "reason": "KC_MIDDLE_TREND_" + side}
+        return {**wait, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return wait
 
 
 def aligned_entry_ready(frame, price, side):
-    return side in ("LONG", "SHORT") and aligned_entry(frame, price).get("side") == side
+    if side not in ("LONG", "SHORT") or aligned_entry(frame, price).get("side") != side:
+        return False
+    try:
+        previous, latest, live = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
+        ma3_values = [float(previous["ma3"]), float(latest["ma3"])]
+        opened, quoted = float(live["open"]), float(price)
+        values = (*ma3_values, opened, quoted)
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return False
+        sign = 1 if side == "LONG" else -1
+        ma3_descends_or_rises = all(
+            sign * (current - prior) > 0
+            for prior, current in zip(ma3_values, ma3_values[1:])
+        )
+        return ma3_descends_or_rises and live_ma3_direction_ready(frame, price, side)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def live_ma3_direction_ready(frame, price, side):
+    """Compare quote-derived live MA3 with closed MA3, ignoring stale live rows."""
+    try:
+        closes = [float(v) for v in frame["close"].iloc[-4:-1]]
+        price = float(price)
+        if (side not in ("LONG", "SHORT") or len(closes) != 3
+                or not all(math.isfinite(v) and v > 0 for v in [price, *closes])):
+            return False
+        # Shared closes cancel; avoid rounding a flat MA into a slope.
+        return (1 if side == "LONG" else -1) * (price - closes[0]) > 0
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
 
 
 def two_closed_bodies_ready(frame, side):
@@ -99,7 +133,30 @@ def three_closed_short_breakout_ready(frame, price):
         return False
 
 
-def confirmed_outer_breakout_ready(frame, price, side, allow_three_short=True):
+def confirmed_outer_continuation_ready(frame, price, side):
+    """A missed breakout may continue; both closed bodies must finish outside."""
+    if not two_closed_bodies_ready(frame, side):
+        return False
+    try:
+        sign = 1 if side == "LONG" else -1
+        rail = "kc_upper" if side == "LONG" else "kc_lower"
+        price = float(price)
+        if not math.isfinite(price) or price <= 0:
+            return False
+        for offset in (-3, -2, -1):
+            row = frame.iloc[offset]
+            lower, upper = float(row["kc_lower"]), float(row["kc_upper"])
+            if not all(math.isfinite(v) for v in (lower, upper)) or not 0 < lower < upper:
+                return False
+            quoted = price if offset == -1 else float(row["close"])
+            if sign * (quoted - float(row[rail])) <= 0:
+                return False
+        return True
+    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+        return False
+
+
+def confirmed_outer_breakout_ready(frame, price, side, allow_three_short=False):
     """Require a closed breakout/confirmation, with the three-red short option."""
     if allow_three_short and side == "SHORT" and three_closed_short_breakout_ready(frame, price):
         return True
@@ -164,7 +221,7 @@ def continuation_entry(frame, price):
             and float(confirmation["close"]) > float(confirmation["kc_upper"])
             and float(price) > float(live["kc_upper"])
             and float(confirmation["kc_upper"]) >= float(breakout["kc_upper"])
-            and ma3[0] < ma3[1] <= ma3[2]
+            and ma3[0] < ma3[1] < ma3[2]
         )
         short_signal = (
             (float(breakout["open"]) >= float(breakout["kc_lower"]) > float(breakout["close"])
@@ -173,7 +230,7 @@ def continuation_entry(frame, price):
             and float(confirmation["close"]) < float(confirmation["kc_lower"])
             and float(price) < float(live["kc_lower"])
             and float(confirmation["kc_lower"]) <= float(breakout["kc_lower"])
-            and ma3[0] > ma3[1] >= ma3[2]
+            and ma3[0] > ma3[1] > ma3[2]
         )
         if long_signal and aligned_direction(frame, "LONG") and confirmed_outer_breakout_ready(frame, price, "LONG"):
             return {"action": "ENTER", "side": "LONG", "reason": "KC_CONTINUATION_LONG"}
@@ -185,7 +242,7 @@ def continuation_entry(frame, price):
 
 
 def outside_reentry(frame, price, side):
-    """Revalidate either aligned route, retaining live reentry color and MA3."""
+    """Revalidate two closed outside bodies and live MA3 for every reentry."""
     decision = aligned_entry(frame, price)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
@@ -203,11 +260,11 @@ def outside_reentry(frame, price, side):
             raise ValueError("invalid MA3 data")
         last = sum(closes) / 3
         live = (sum(closes[-2:]) + price) / 3
-        if sign * (price - opened) > 0 and sign * (live - last) > 0:
+        if sign * (live - last) > 0:
             return decision
     except (TypeError, ValueError, KeyError, IndexError):
         pass
-    return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_COLOR_MA3_WAIT"}
+    return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_MA3_WAIT"}
 
 
 def abnormal_pullback_ready(ticket, frame, price):

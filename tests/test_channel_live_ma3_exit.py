@@ -21,94 +21,32 @@ def setup(side):
     return frame, position, price
 
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('case', ['loss', 'profit', 'armed', 'flat', 'continuing',
-                                  'invalid', 'missing_time', 'after_turn', 'same_bar_turn'])
-def test_live_turn(side, case):
-    frame, position, price = setup(side)
-    sign = 1 if side == 'LONG' else -1
-    if case == 'profit':
-        position['entry_price'] = 100 - sign * 5
-    elif case == 'armed':
-        position['channel_profit_protection'] = {'armed': True}
-    elif case == 'flat':
-        price = 100 + sign * 2
-    elif case == 'continuing':
-        price = 100 + sign * 3
-    elif case == 'invalid':
-        frame.loc[18, 'close'] = float('nan')
-    elif case == 'missing_time':
-        frame = frame.drop(columns='timestamp')
-    elif case in ('after_turn', 'same_bar_turn'):
-        position['open_timestamp'] = 1201
-        if case == 'same_bar_turn':
-            assert not TradingEngine._channel_live_ma3_turn_exit(position, frame, 100 + sign * 3)
-            position = json.loads(json.dumps(position))
-    assert TradingEngine._channel_live_ma3_turn_exit(position, frame, price) is (
-        case in ('loss', 'profit', 'same_bar_turn'))
-
-
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_ma3_turn_needs_no_price_pivot(side):
-    frame, position, price = setup(side)
-    if side == 'LONG':
-        frame.loc[17:18, 'close'] = [103.0, 104.0]
-    else:
-        frame.loc[17:18, 'close'] = [97.0, 96.0]
-    assert TradingEngine._channel_live_ma3_turn_exit(position, frame, price)
-
-
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('armed', [False])
-@pytest.mark.parametrize('success', [False, True])
-async def test_market_exit_and_persistent_retry(side, armed, success):
+@pytest.mark.parametrize('pending', [False, True])
+async def test_legacy_pending_is_cleared_without_a_new_turn(side, pending):
     frame, position, price = setup(side)
-    engine = _execution_engine(frame, side, success)
+    # Isolate a normal MA3 turn from the ATR emergency exceptions.
+    frame['atr'] = 100.
+    frame['close'] = price
+    position['channel_live_ma3_exit_pending'] = pending
+    engine = _execution_engine(frame, side, True)
     engine.account.save_state = lambda: None
-    if armed:
-        position['channel_profit_protection'] = {
-            'identity': [side, position['open_timestamp'], position['entry_price'], position['qty']],
-            'armed': True, 'peak_gross': 10,
-        }
     engine.account.positions[SYMBOL].update(position)
     engine.tickers[SYMBOL] = price
     await engine._process_single_symbol(SYMBOL, 2., None, False)
-    assert len(engine.account.events) == 1, engine.account.logs
-    assert engine.account.events[0][2] == price
-    assert engine.account.events[0][3].endswith(f'KC_{side}_LIVE_MA3_TURN_EXIT')
-    assert (SYMBOL in engine.account.positions) is (not success)
-    if not success:
-        engine.account.positions[SYMBOL] = json.loads(json.dumps(engine.account.positions[SYMBOL]))
-        frame['timestamp'] += 60_000
-        engine.tickers[SYMBOL] = position['entry_price']
-        await engine._process_single_symbol(SYMBOL, 3., None, False)
-        assert len(engine.account.events) == 2, engine.account.logs
-        assert all(event[0] == 'close' for event in engine.account.events)
-
-
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('location', ['inside', 'touch', 'outside', 'invalid'])
-@pytest.mark.parametrize('helper', ['_channel_live_ma3_turn_exit'])
-def test_turn_exit_is_independent_of_ck_location(side, location, helper):
-    frame, position, price = setup(side)
-    position.update(entry_kc_upper=100.5, entry_kc_lower=99.5)
-    sign = 1 if side == 'LONG' else -1
-    key = 'kc_upper' if side == 'LONG' else 'kc_lower'
-    pivot = 100 + sign * 3
-    frame.loc[18, key] = pivot + sign * {'inside': 1, 'touch': 0, 'outside': -1, 'invalid': 0}[location]
-    if location == 'invalid':
-        frame.loc[18, key] = float('nan')
-    # CK position and CK data no longer constrain a valid price/MA3 turn.
-    assert getattr(TradingEngine, helper)(position, frame, price)
+    assert not engine.account.events, engine.account.logs
+    assert SYMBOL in engine.account.positions
+    assert 'channel_live_ma3_exit_pending' not in engine.account.positions[SYMBOL]
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('already_armed', [False, True])
 @pytest.mark.parametrize('triggered', [False, True])
-async def test_protection_keeps_priority_over_new_ma3_turn(side, already_armed, triggered):
+async def test_ma3_turn_exits_even_when_protection_arms_or_is_already_armed(side, already_armed, triggered):
     frame, position, price = setup(side)
+    frame['atr'] = 100.
     sign = 1 if side == 'LONG' else -1
     position['entry_price'] = price - sign * 5
     if already_armed:
@@ -121,10 +59,25 @@ async def test_protection_keeps_priority_over_new_ma3_turn(side, already_armed, 
     engine.account.positions[SYMBOL].update(position)
     engine.tickers[SYMBOL] = price
     await engine._process_single_symbol(SYMBOL, 2., None, False)
-    if already_armed and triggered:
-        assert len(engine.account.events) == 1
-        assert 'PROFIT_PROTECTION' in engine.account.events[0][3]
-    else:
-        assert not engine.account.events
-        assert engine.account.positions[SYMBOL]['channel_profit_protection']['armed']
+    assert len(engine.account.events) == 1
+    assert engine.account.events[0][3].endswith('LIVE_MA3_TURN_EXIT')
+    assert SYMBOL not in engine.account.positions
     assert not position.get('channel_live_ma3_exit_pending')
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+async def test_post_entry_ma3_turn_exits_at_live_price(side):
+    frame, position, price = setup(side)
+    frame['atr'] = 100.
+    frame['ma3'] = float('nan')  # quote and closed prices are authoritative
+    engine = _execution_engine(frame, side, True)
+    engine.account.save_state = lambda: None
+    engine.account.positions[SYMBOL].update(position)
+    engine.tickers[SYMBOL] = price
+
+    await engine._process_single_symbol(SYMBOL, 2., None, False)
+
+    assert len(engine.account.events) == 1
+    assert engine.account.events[0][2] == price
+    assert engine.account.events[0][3].endswith('LIVE_MA3_TURN_EXIT')

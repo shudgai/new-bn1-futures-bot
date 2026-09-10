@@ -104,6 +104,8 @@ async def test_close_observed_during_await_blocks_final_order(monkeypatch, clock
 @pytest.mark.parametrize('success', [False, True])
 async def test_minute_limit_never_blocks_adverse_exit_or_failed_close_retry(side, success, clock):
     frame, _ = market(side)
+    frame['timestamp'] = [(i+1)*60000 for i in range(len(frame))]
+    frame['atr'] = 1.
     price = 99. if side == 'LONG' else 101.
     frame.loc[19, 'open'] = 105. if side == 'LONG' else 95.
     position = dict(side=side, entry_price=100., qty=1., open_timestamp=1.)
@@ -115,8 +117,7 @@ async def test_minute_limit_never_blocks_adverse_exit_or_failed_close_retry(side
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert len(e.account.events) == 1
     assert e.account.events[0][0] == 'close'
-    assert e.account.events[0][3].endswith(
-        'KC_LONG_LIVE_RED_LONG_EXIT' if side == 'LONG' else 'KC_SHORT_LIVE_GREEN_LONG_EXIT')
+    assert e.account.events[0][3].endswith('EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL')
     if not success:
         await e._process_single_symbol(SYMBOL, 2., None, False)
         assert len(e.account.events) == 2

@@ -51,16 +51,23 @@ def pivot_entry(frame, price):
         if not all(math.isfinite(v) and v > 0 for v in middle):
             return {**wait, "reason": "KC_DATA_INVALID"}
         direction = closed_ck_direction(frame)
+
+        live = frame.iloc[-1]
+        ma3_live = float(live.get("ma3", 0.0))
+        ma3_right = float(right["ma3"])
+
         if (float(pivot["low"]) < min(float(left["low"]), float(right["low"]))
                 and float(right["close"]) > float(right["open"])
-                and float(left["ma3"]) > float(pivot["ma3"]) < float(right["ma3"])
+                and float(left["ma3"]) > float(pivot["ma3"]) < ma3_right
+                and ma3_live > ma3_right
                 and price > float(pivot["low"])):
             if direction != "LONG":
                 return {**wait, "reason": "KC_DIRECTION_BLOCK_LONG"}
             return {"action": "ENTER", "side": "LONG", "reason": "KC_MA15_TROUGH_LONG"}
         if (float(pivot["high"]) > max(float(left["high"]), float(right["high"]))
                 and float(right["close"]) < float(right["open"])
-                and float(left["ma3"]) < float(pivot["ma3"]) > float(right["ma3"])
+                and float(left["ma3"]) < float(pivot["ma3"]) > ma3_right
+                and ma3_live < ma3_right
                 and price < float(pivot["high"])):
             if direction != "SHORT":
                 return {**wait, "reason": "KC_DIRECTION_BLOCK_SHORT"}

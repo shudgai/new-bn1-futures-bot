@@ -1557,6 +1557,41 @@ class TradingEngine:
                     "WARNING",
                 )
 
+    async def _channel_quote_exit(self, symbol, price, quote_ms=None):
+        """Evaluate held exits on a received quote without waiting for the scan."""
+        if not getattr(self, "is_running", False):
+            return
+        position = self.account.positions.get(symbol)
+        if not position:
+            return
+        identity = (position.get("side"), position.get("open_timestamp"))
+        try:
+            quoted_at = float(quote_ms) / 1000 if quote_ms is not None else time.time()
+            if not math.isfinite(quoted_at) or not 0 <= time.time() - quoted_at <= 5:
+                return
+            locks = getattr(self, "_channel_symbol_locks", None)
+            if locks is None:
+                locks = self._channel_symbol_locks = {}
+            async with locks.setdefault(symbol, asyncio.Lock()):
+                current = self.account.positions.get(symbol)
+                if not current or (current.get("side"), current.get("open_timestamp")) != identity:
+                    return
+                frame = getattr(self, "_channel_exit_frames", {}).get(symbol)
+                bar = math.floor(quoted_at / 60) * 60000
+                if frame is None or frame.empty or float(frame.iloc[-1]["timestamp"]) != bar:
+                    frame = await self.fetch_klines(symbol, timeframe="1m", limit=200, keep_live=True)
+                    if frame is None or frame.empty or float(frame.iloc[-1]["timestamp"]) != bar:
+                        return
+                    frame = self.strategy.compute_indicators(frame.copy())
+                current = self.account.positions.get(symbol)
+                if not current or (current.get("side"), current.get("open_timestamp")) != identity:
+                    return
+                await self._process_single_symbol_locked(
+                    symbol, quoted_at, None, False, exit_frame=frame,
+                    exit_quote=price, exit_only=True)
+        except (TypeError, ValueError, KeyError, IndexError) as exc:
+            self.account.log(f"⚠️ [{symbol}] 即時出口行情無效: {exc}", "WARNING")
+
     async def _ticker_loop(self):
         """接收 Binance 全合約 ticker；UI 名單不再是行情監控邊界。"""
         while True:
@@ -1646,6 +1681,14 @@ class TradingEngine:
                                             f"全市場熔斷 BTC{event_label} ({event_move:.2f}%/{BTC_FLASH_CRASH_WINDOW_SEC:.0f}s)",
                                             is_manual=True,
                                         ))
+
+                await asyncio.gather(*(
+                    self._channel_quote_exit(
+                        sym.replace(":USDT", "") if sym.endswith(":USDT") else sym,
+                        float(ticker["last"]), ticker.get("timestamp"))
+                    for sym, ticker in tickers.items() if ticker.get("last") is not None
+                    and (sym.replace(":USDT", "") if sym.endswith(":USDT") else sym) in self.account.positions
+                ))
 
             except asyncio.CancelledError:
                 break
@@ -2383,7 +2426,7 @@ class TradingEngine:
         try:
             frame = await self.fetch_klines(
                 symbol, timeframe=config.CONTINUOUS_REVERSE_TIMEFRAME,
-                limit=80, keep_live=True,
+                limit=200, keep_live=True,
             )
             if frame is None or frame.empty or len(frame) < 4:
                 return None
@@ -2594,9 +2637,6 @@ class TradingEngine:
             if not self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side):
                 self.account.log(f"⏳ {symbol} {side} KC_INTRABAR_PULLBACK_WAIT：等同根回調後轉回順向", "INFO")
                 return False
-            recovery = surge_recovery_entry(fresh_frame, planned_price) if side == "LONG" else None
-            if recovery is not None and recovery.get("side") == "LONG":
-                signal["signal_code"] = recovery["reason"]
             if isinstance(fresh_frame, pd.DataFrame) and not fresh_frame.empty:
                 fresh_live = fresh_frame.iloc[-2]
                 for field in ("open", "high", "low", "close"):
@@ -5956,12 +5996,18 @@ class TradingEngine:
             second_body = abs(float(second["close"]) - float(second["open"]))
             if width <= 0 or max(first_body, second_body) >= width * 0.90:
                 return {"action": "WAIT", "side": None, "reason": "PEAK_REVERSAL_ABNORMAL_WAIT"}
+
+            ma3_1 = float(first.get("ma3", 0.0))
+            ma3_2 = float(second.get("ma3", 0.0))
+            live_ma3 = float(live_row.get("ma3", 0.0)) if live_row is not None else ma3_2
+
             if exited_side == "LONG":
                 confirmed = (
                     float(first["close"]) < float(first["open"])
                     and float(second["close"]) < float(second["open"])
                     and float(second["close"]) < float(first["low"])
                     and float(live_price) <= float(second["close"])
+                    and ma3_1 > ma3_2 > live_ma3  # MA3 strictly descending
                 )
                 if confirmed:
                     return {"action": "ENTER", "side": "SHORT", "reason": "PEAK_REVERSAL_SHORT"}
@@ -5971,6 +6017,7 @@ class TradingEngine:
                     and float(second["close"]) > float(second["open"])
                     and float(second["close"]) > float(first["high"])
                     and float(live_price) >= float(second["close"])
+                    and ma3_1 < ma3_2 < live_ma3  # MA3 strictly ascending
                 )
                 if confirmed:
                     return {"action": "ENTER", "side": "LONG", "reason": "TROUGH_REVERSAL_LONG"}
@@ -6315,7 +6362,7 @@ class TradingEngine:
 
     @staticmethod
     def _channel_adverse_exit_reason(frame: pd.DataFrame, side: str, price: float, atr: float) -> str | None:
-        """Exit on a 2x abnormal body or two individually abnormal adverse bars."""
+        """Exit as soon as a live adverse body reaches the existing ATR threshold."""
         if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
             return None
         try:
@@ -6330,6 +6377,8 @@ class TradingEngine:
                 return None
             if adverse_live >= threshold * 2.0:
                 return "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
+            if adverse_live >= threshold:
+                return "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL"
             if bodies[-1] >= threshold * 2.0:
                 return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
             if all(body >= threshold for body in bodies):
@@ -6337,6 +6386,34 @@ class TradingEngine:
         except (TypeError, ValueError, KeyError, IndexError):
             return None
         return None
+
+    @staticmethod
+    def _channel_live_ma3_turn_exit(position: dict, frame: pd.DataFrame, price: float) -> bool:
+        """Exit after an in-position MA3 impulse turns against the holding side."""
+        if not isinstance(position, dict):
+            return False
+        if position.get("channel_live_ma3_turn_exit_pending"):
+            return True
+        try:
+            side = str(position["side"]).upper()
+            opened_at = float(position.get("open_timestamp") or 0.0)
+            closes = [float(v) for v in frame["close"].iloc[-5:-1]]
+            price = float(price)
+            live_bar = float(frame.iloc[-1]["timestamp"]) / 1000.0
+            if (side not in ("LONG", "SHORT") or len(closes) != 4
+                    or not all(math.isfinite(v) and v > 0 for v in [opened_at, live_bar, price, *closes])
+                    or opened_at >= live_bar + 60):
+                return False
+            sign = 1 if side == "LONG" else -1
+            live_slope = sign * (price - closes[-3])
+            observed = position.get("channel_ma3_turn_observed_bar") == live_bar
+            if live_slope > 0:
+                position["channel_ma3_turn_observed_bar"] = live_bar
+            # A turn on the entry candle needs an actual post-entry observation.
+            favorable = observed or (opened_at < live_bar and sign * (closes[-1] - closes[0]) > 0)
+            return favorable and live_slope < 0
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            return False
 
     @staticmethod
     def _channel_ma3_outside(row: pd.Series, side: str) -> bool:
@@ -6706,173 +6783,10 @@ class TradingEngine:
         position_path: dict | None = None,
         outer_entry_only: bool = False,
     ) -> dict:
-        """Use only upper/lower CK breakouts for flat entries; retain held exits."""
-        held = str(current_side or "").upper()
-        wait = {"action": "HOLD" if held in ("LONG", "SHORT") else "WAIT",
-                "side": None, "reason": "WAIT_OUTER_BREAK_CONFIRMATION"}
-        if held not in ("LONG", "SHORT") and not outer_entry_only:
-            return aligned_entry(frame, live_price)
-        required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
-        if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
-            return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
-        try:
-            # The final row is still forming; [-3] is breakout and [-2] confirms.
-            breakout, confirmation = frame.iloc[-3], frame.iloc[-2]
-            values = tuple(float(value) for value in (
-                breakout["open"], breakout["high"], breakout["low"], breakout["close"], breakout["kc_upper"], breakout["kc_lower"],
-                confirmation["open"], confirmation["high"], confirmation["low"], confirmation["close"], confirmation["kc_upper"], confirmation["kc_lower"],
-                breakout["ma15"], confirmation["ma15"],
-            ))
-        except (TypeError, ValueError, KeyError):
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        if not all(math.isfinite(value) and value > 0 for value in values):
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        (bo_open, bo_high, bo_low, bo_close, bo_upper, bo_lower,
-         cf_open, cf_high, cf_low, cf_close, cf_upper, cf_lower,
-         ma15_before, ma15_now) = values
-        if bo_lower >= bo_upper or cf_lower >= cf_upper:
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        breakout_range = bo_high - bo_low
-        confirmation_range = cf_high - cf_low
-        kc_width = min(bo_upper - bo_lower, cf_upper - cf_lower)
-        # 確保第二根確認K不是十字線或T字形/長影線（實體至少佔全長的 20%）
-        cf_body = abs(cf_close - cf_open)
-        cf_is_solid = cf_body / (confirmation_range + 1e-9) >= 0.20
-        bo_is_solid = abs(bo_close - bo_open) / (breakout_range + 1e-9) >= 0.20
-        # 嚴格突破（用於反手與初始突破）：必須是從軌道內實體穿出
-        upper_break_confirmed = bo_open <= bo_upper < bo_close and cf_close > cf_open and cf_close > cf_upper and cf_is_solid and bo_is_solid
-        lower_break_confirmed = bo_open >= bo_lower > bo_close and cf_close < cf_open and cf_close < cf_lower and cf_is_solid and bo_is_solid
-        continuation_up = bool(
-            cf_close > cf_open
-            and cf_close > bo_close
-            and cf_upper >= bo_upper
-            and ma15_now >= ma15_before
-        )
-        continuation_down = bool(
-            cf_close < cf_open
-            and cf_close < bo_close
-            and cf_lower <= bo_lower
-            and ma15_now <= ma15_before
-        )
-        clean_continuation_up = bool(
-            continuation_up
-            and bo_close > bo_open
-            and bo_close > bo_upper
-            and cf_close > cf_upper
-            and bo_is_solid and cf_is_solid
-        )
-        clean_continuation_down = bool(
-            continuation_down
-            and bo_close < bo_open
-            and bo_close < bo_lower
-            and cf_close < cf_lower
-            and bo_is_solid and cf_is_solid
-        )
-        # Do not chase the original spike, but allow a later clean continuation
-        # after two closed candles confirm that the trend is still extending.
-        if held in ("LONG", "SHORT"):
-            current_live = frame.iloc[-1]
-            # Both sides exit immediately on a live adverse long body.
-            live_open = float(current_live["open"])
-            live_upper = float(current_live["kc_upper"])
-            live_lower = float(current_live["kc_lower"])
-            middle = current_live.get("ema_20", float("nan"))
-            if pd.isna(middle):
-                middle = current_live.get("kc_middle", float("nan"))
-            if pd.isna(middle):
-                middle = (live_upper + live_lower) / 2
-            middle = float(middle)
-            adverse_sign = 1 if held == "SHORT" else -1
-            adverse_body = adverse_sign * (live_price - live_open)
-            live_width = live_upper - live_lower
-            prior_bodies = (frame["close"].iloc[-10:-1].astype(float)
-                            - frame["open"].iloc[-10:-1].astype(float)).abs()
-            average_body = float(prior_bodies.mean())
-            valid_live = all(math.isfinite(value) and value > 0 for value in
-                             (live_open, live_price, live_upper, live_lower, middle))
-            long_body = (adverse_body >= .8 * live_width
-                         or (math.isfinite(average_body) and average_body > 0
-                             and adverse_body >= 3 * average_body))
-            if valid_live and live_width > 0 and adverse_body > 0 and long_body:
-                reason = ("KC_SHORT_LIVE_GREEN_LONG_EXIT" if held == "SHORT"
-                          else "KC_LONG_LIVE_RED_LONG_EXIT")
-                return {"action": "EXIT", "side": None, "reason": reason}
-            recent, path_ready = TradingEngine._channel_position_path(
-                frame, held, position_open_timestamp, position_path,
-            )
-            # Other candle patterns retain the existing channel path requirements.
-            if not path_ready:
-                return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
-            if held == "LONG" and lower_break_confirmed and live_price < float(current_live["kc_lower"]):
-                return {"action": "REVERSE", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT"}
-            if held == "SHORT" and upper_break_confirmed and live_price > float(current_live["kc_upper"]):
-                return {"action": "REVERSE", "side": "LONG", "reason": "KC_UPPER_BREAKOUT"}
-
-            if "ema_20" in current_live and not pd.isna(current_live["ema_20"]):
-                middle_now = float(current_live["ema_20"])
-            elif "kc_middle" in current_live and pd.notna(current_live["kc_middle"]):
-                middle_now = float(current_live["kc_middle"])
-            else:
-                middle_now = (float(current_live["kc_upper"]) + float(current_live["kc_lower"])) / 2.0
-                
-            ma3_now = float(current_live["ma3"])
-            ma3_inside = float(current_live["kc_lower"]) < ma3_now < float(current_live["kc_upper"])
-            
-            # Use the unfinished candle body (open -> latest price), not wicks.
-            live_open = float(current_live["open"])
-            valid_body = all(math.isfinite(value) and value > 0 for value in
-                             (live_open, live_price, middle_now))
-            if valid_body:
-                if held == "LONG" and live_price < live_open and live_price < middle_now:
-                    return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
-                if held == "SHORT" and live_price > live_open and live_price > middle_now:
-                    return {"action": "EXIT", "side": None, "reason": "KC_REACHED_MIDDLE_COMPRESSED"}
-            return {**wait, "reason": "HOLDING_LONG_RUN_TO_HIGH" if held == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
-        if not any(confirmed_outer_breakout_ready(frame, live_price, side) for side in ("LONG", "SHORT")):
-            return {**wait, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
-        # Only the latest three closed MA15 values determine entry direction.
-        history = pd.to_numeric(frame["ma15"].iloc[-4:-1], errors="coerce")
-        trend = 0.0
-        if len(history) == 3 and all(math.isfinite(value) and value > 0 for value in history):
-            first, second, third = history
-            if first < second < third:
-                trend = 1.0
-            elif first > second > third:
-                trend = -1.0
-        
-        if not held:
-            current_live = frame.iloc[-1]
-            previous_kc = frame.iloc[-2]
-            live_open = float(current_live["open"])
-            
-            live_upper = float(current_live["kc_upper"])
-            live_lower = float(current_live["kc_lower"])
-            if live_price > live_upper and not long_entry_ready(frame, live_price):
-                return {**wait, "reason": "KC_LONG_BODY_OR_SLOPE_WAIT"}
-            if live_price < live_lower and not directional_entry_ready(frame, live_price, "SHORT"):
-                return {**wait, "reason": "KC_SHORT_BODY_OR_SLOPE_WAIT"}
-            if live_price < live_lower and TradingEngine._channel_closed_waves_falling(frame, "SHORT"):
-                return {**wait, "reason": "KC_RISING_WAVES_BLOCK_SHORT"}
-            if live_price > live_upper and TradingEngine._channel_closed_waves_falling(frame):
-                return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG"}
-                
-
-                
-            # Once two solid outside bodies keep advancing, an earlier large
-            # candle must not repeatedly suppress a fresh continuation entry.
-            if max(breakout_range, confirmation_range) > kc_width * 1.25:
-                if not (clean_continuation_up or clean_continuation_down):
-                    return {**wait, "reason": "KC_SPIKE_BREAKOUT_WAIT"}
-
-            # 其他開倉時都是第二根同色才開倉，且趨勢向上開多單,趨勢向下開空單
-            if upper_break_confirmed and live_price > live_upper and trend > 0:
-                return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT"}
-            if lower_break_confirmed and live_price < live_lower and trend < 0:
-                return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT_STRICT"}
-                
-                
-        return wait
-
+        """Use one outer-breakout entry and position-aware execution exits."""
+        if str(current_side or "").upper() in ("LONG", "SHORT"):
+            return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
+        return aligned_entry(frame, live_price)
 
     @staticmethod
     def _is_continuous_wave_position(position: dict, meta: dict | None = None) -> bool:
@@ -6955,6 +6869,12 @@ class TradingEngine:
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False):
         """Submit on this scan, retaining every structured-order account safety check."""
+
+        # 嚴格驗證「所有新倉與重開必須有最近兩根同向且實體達 20% 的已收線K棒」
+        from core.channel_outer_entry import two_closed_bodies_ready
+        if not two_closed_bodies_ready(frame, side):
+            return False
+
         lock = getattr(self, "_channel_break_execution_lock", None)
         if lock is None:
             lock = self._channel_break_execution_lock = asyncio.Lock()
@@ -6963,6 +6883,8 @@ class TradingEngine:
             if pending is None:
                 pending = self._channel_outer_reentry_after_exit = {}
             position = self.account.positions.get(symbol)
+            if position:
+                return False
             exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
             if not position and exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
                 "ENTER", False, side, frame, exit_info, symbol, live_price=price,
@@ -7001,6 +6923,8 @@ class TradingEngine:
                 reverse_bars.pop(symbol, None)
                 return False
             if position:
+                if not (position.get("channel_profit_protection") or {}).get("armed"):
+                    return False
                 snapshot = await self._fresh_channel_entry_snapshot(
                     symbol, side, bar_id, confirmed_reverse=True,
                 )
@@ -7425,7 +7349,12 @@ class TradingEngine:
         ticket = tickets.get(symbol)
         if (not ticket or symbol in self.account.positions or ticket.get("phase") != "closed"
                 or ticket.get("side") != "SHORT" or not ticket.get("requires_pullback")
-                or ticket.get("close_reason") != "Channel Swing KC_SHORT_LIVE_GREEN_LONG_EXIT"):
+                or ticket.get("close_reason") not in {
+                    "Channel Swing KC_SHORT_LIVE_GREEN_LONG_EXIT",
+                    "Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
+                    "Channel Swing EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
+                    "Channel Swing EMERGENCY_EXIT_2_CANDLE_ADVERSE",
+                    "Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL"}):
             return False
         try:
             exited = float(ticket["exit_bar_id"])
@@ -7490,7 +7419,7 @@ class TradingEngine:
         if before != ticket.get("pullback_bar"):
             self.account.save_state()
         decision = outside_reentry(frame, price, ticket["side"])
-        if decision.get("reason") in PIVOT_CODES and not self._profit_pivot_is_new(ticket, frame):
+        if not self._profit_pivot_is_new(ticket, frame):
             return False
         return ready and decision.get("side") == ticket["side"]
 
@@ -7560,54 +7489,59 @@ class TradingEngine:
             return await self._process_single_symbol_locked(symbol, now_time, btc_1m_turn, daily_halt)
 
     @staticmethod
-    def _channel_live_ma3_turn_exit(position, frame, price):
-        """Recognize an adverse live MA3 turn observed after entry, before protection."""
-        if position.get("channel_live_ma3_exit_pending"):
-            return True
-        if (position.get("channel_profit_protection") or {}).get("armed"):
-            return False
+    def _channel_exception_exit(position, frame, price):
+        """Post-entry live abnormalities, with closed emergency fallback and retries."""
+        pending = position.get("channel_exception_exit_pending")
+        if pending in {"EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL", "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
+                       "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL", "EMERGENCY_EXIT_2_CANDLE_ADVERSE"}:
+            return pending
         try:
-            side = position.get("side")
-            if side not in ("LONG", "SHORT") or frame is None or len(frame) < 5:
-                return False
+            if frame is None or len(frame) < 3:
+                return None
             opened = float(position.get("open_timestamp") or 0)
-            bar = float(frame.iloc[-1]["timestamp"]) / 1000
-            price = float(price)
-            closes = [float(v) for v in frame["close"].iloc[-5:-1]]
-            if not all(math.isfinite(v) and v > 0 for v in [opened, bar, price, *closes]):
-                return False
-            if opened > time.time():
-                return False
-            sign = 1 if side == "LONG" else -1
-            previous = sum(closes[:3]) / 3
-            last = sum(closes[1:]) / 3
-            live = (sum(closes[-2:]) + price) / 3
-            if sign * (live - last) > 0:
-                position["channel_live_ma3_favorable_bar"] = bar
-            # The closed slope must develop after entry; same-bar entries
-            # instead require an actual favorable live observation.
-            favorable = (opened <= bar - 60 and sign * (last - previous) > 0
-                         or position.get("channel_live_ma3_favorable_bar") == bar)
-            return favorable and sign * (live - last) < 0
+            entry = float(position.get("entry_price") or 0)
+            if not all(math.isfinite(v) and v > 0 for v in (opened, entry, float(price))):
+                return None
+            recent = frame.iloc[-3:].copy()
+            for idx, row in recent.iterrows():
+                bar = float(row["timestamp"]) / 1000
+                if not math.isfinite(bar) or bar <= 0:
+                    return None
+                if bar < opened:
+                    # Never attribute a completed pre-entry candle to this holding.
+                    recent.loc[idx, "open"] = float(row["close"])
+            live_bar = float(recent.iloc[-1]["timestamp"]) / 1000
+            if live_bar < opened:
+                recent.loc[recent.index[-1], "open"] = entry
+            return TradingEngine._channel_adverse_exit_reason(
+                recent, position.get("side"), float(price), float(frame.iloc[-2]["atr"]))
         except (TypeError, ValueError, KeyError, IndexError, OverflowError):
-            return False
+            return None
 
-    async def _process_single_symbol_locked(self, symbol, now_time, btc_1m_turn, daily_halt):
+    async def _process_single_symbol_locked(self, symbol, now_time, btc_1m_turn, daily_halt,
+                                            exit_frame=None, exit_quote=None, exit_only=False):
         signal_progress = []
         detected_candidates = []
         try:
             btc_pulse = str(btc_1m_turn or "").upper()
-            # Flat and held positions use the same KC outer pivot confirmation.
-            channel_df = await self.fetch_klines(
-                symbol, timeframe="1m", limit=200, keep_live=True,
-            )
+            if exit_only and symbol not in self.account.positions:
+                return signal_progress, detected_candidates
+            channel_df = exit_frame
+            if channel_df is None:
+                channel_df = await self.fetch_klines(symbol, timeframe="1m", limit=200, keep_live=True)
+                if not channel_df.empty:
+                    channel_df = self.strategy.compute_indicators(channel_df.copy())
             if not channel_df.empty:
-                channel_df = self.strategy.compute_indicators(channel_df.copy())
-            channel_price = float(
+                cache = getattr(self, "_channel_exit_frames", None)
+                if cache is None:
+                    cache = self._channel_exit_frames = {}
+                cache[symbol] = channel_df.copy()
+            channel_price = float(exit_quote if exit_quote is not None else (
                 self.tickers.get(symbol)
-                or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)
-            )
+                or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)))
             existing_pos = self.account.positions.get(symbol)
+            if exit_only and not existing_pos:
+                return signal_progress, detected_candidates
             if not existing_pos:
                 entry_side = aligned_entry(channel_df, channel_price).get("side")
                 self._channel_intrabar_ready(symbol, channel_df, channel_price, entry_side)
@@ -7675,9 +7609,8 @@ class TradingEngine:
                 and not chop_state.get("clear_direction")
             ):
                 breakout = self._channel_chop_breakout_action(channel_df, channel_price)
-                if breakout.get("action") == "ENTER":
-                    channel_action = breakout
-                else:
+                if not (breakout.get("action") == "ENTER"
+                        and breakout.get("side") == channel_action.get("side")):
                     channel_action = {
                         "action": "WAIT", "side": None,
                         "reason": "CHOP_WAIT_NO_ENTRY",
@@ -7699,15 +7632,32 @@ class TradingEngine:
                 if (channel_action.get("action") == "EXIT"
                         and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
                     channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
-                ma3_before = (existing_pos.get("channel_live_ma3_favorable_bar"),
-                              existing_pos.get("channel_live_ma3_exit_pending"))
-                if self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price):
-                    existing_pos["channel_live_ma3_exit_pending"] = True
-                    if channel_action.get("action") not in {"EXIT", "REVERSE"}:
-                        channel_action = {"action": "EXIT", "side": existing_pos["side"],
-                                          "reason": f"KC_{existing_pos['side']}_LIVE_MA3_TURN_EXIT"}
-                if ma3_before != (existing_pos.get("channel_live_ma3_favorable_bar"),
-                                  existing_pos.get("channel_live_ma3_exit_pending")):
+                # Withdraw legacy MA3 requests; the active turn request below is
+                # persisted separately so a failed close can be retried.
+                changed = False
+                for key in ("channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
+                            "channel_outer_ma3_turn_exit_pending"):
+                    if key in existing_pos:
+                        existing_pos.pop(key)
+                        changed = True
+                previous_ma3_observation = existing_pos.get("channel_ma3_turn_observed_bar")
+                emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
+                if emergency:
+                    if existing_pos.get("channel_exception_exit_pending") != emergency:
+                        existing_pos["channel_exception_exit_pending"] = emergency
+                        changed = True
+                    channel_action = {"action": "EXIT", "side": None, "reason": emergency}
+                elif self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price):
+                    if not existing_pos.get("channel_live_ma3_turn_exit_pending"):
+                        existing_pos["channel_live_ma3_turn_exit_pending"] = True
+                        changed = True
+                    channel_action = {
+                        "action": "EXIT", "side": None,
+                        "reason": "KC_" + existing_pos["side"] + "_LIVE_MA3_TURN_EXIT",
+                    }
+                else:
+                    channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
+                if changed or previous_ma3_observation != existing_pos.get("channel_ma3_turn_observed_bar"):
                     self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
                     if tickets.pop(symbol, None) is not None:
@@ -7726,7 +7676,8 @@ class TradingEngine:
                     if closed and symbol not in self.account.positions:
                         tickets[symbol]["phase"] = "closed"
                         self.account.save_state()
-                        await self._try_profit_reentry(symbol, channel_df, channel_price, daily_halt)
+                        if not exit_only:
+                            await self._try_profit_reentry(symbol, channel_df, channel_price, daily_halt)
                     else:
                         tickets.pop(symbol, None)
                         self.account.save_state()
@@ -7774,9 +7725,10 @@ class TradingEngine:
                 abnormal_exit = channel_action.get("reason") in {
                     "KC_LONG_LIVE_RED_LONG_EXIT", "KC_SHORT_LIVE_GREEN_LONG_EXIT",
                     "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL", "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
-                    "EMERGENCY_EXIT_2_CANDLE_ADVERSE",
+                    "EMERGENCY_EXIT_2_CANDLE_ADVERSE", "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL",
                 }
-                pullback_exit = abnormal_exit or channel_exit_net_profitable
+                ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
+                pullback_exit = abnormal_exit or ma3_turn_exit or channel_exit_net_profitable
                 if pullback_exit:
                     tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
                                        "phase": "closing", "side": existing_pos["side"], "mode": "outer_cycle",
