@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, outside_reentry, abnormal_pullback_ready
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, next_live_push_entry, outside_reentry, abnormal_pullback_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -3866,76 +3866,6 @@ class TradingEngine:
 
 
     @staticmethod
-    def _channel_live_ma3_turn_exit(position, frame, price):
-        """Exit a position established before a live adverse MA3 turn."""
-        try:
-            side = position.get("side")
-            if side not in ("LONG", "SHORT"):
-                return False
-            if position.get("channel_live_ma3_exit_pending"):
-                return True
-            if frame is None or len(frame) < 5:
-                return False
-            opened = float(position.get("open_timestamp") or 0)
-            bar = float(frame.iloc[-1]["timestamp"]) / 1000
-            closes = [float(v) for v in frame["close"].iloc[-5:-1]]
-            if not all(math.isfinite(v) and v > 0 for v in [opened, bar, price, *closes]):
-                return False
-            if opened > time.time():
-                return False
-            sign = 1 if side == "LONG" else -1
-            previous = sum(closes[:3]) / 3
-            last = sum(closes[1:]) / 3
-            live = (sum(closes[-2:]) + price) / 3
-            # Only exit on the latest confirmed price peak/trough. A MA3
-            # wiggle between two still-developing swings is not an exit.
-            closed = frame.iloc[:-1]
-            if len(closed) < 3:
-                return False
-            left_close, pivot_close, right_close = (
-                float(value) for value in closed["close"].iloc[-3:]
-            )
-            final_extreme = (
-                pivot_close > left_close and pivot_close > right_close
-                if side == "LONG"
-                else pivot_close < left_close and pivot_close < right_close
-            )
-            if not final_extreme:
-                return False
-            # An entry during this candle needs a favorable observation first;
-            # otherwise its already adverse slope could predate the position.
-            if sign * (live - last) > 0:
-                position["channel_live_ma3_favorable_bar"] = bar
-            predates_turn = (opened < bar or
-                             position.get("channel_live_ma3_favorable_bar") == bar)
-            return (predates_turn and sign * (last - previous) > 0
-                    and sign * (live - last) < 0)
-        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
-            return False
-
-    @staticmethod
-    def _channel_outer_ma3_turn_exit(position, frame, price):
-        """Unarmed outer entries exit on the first live adverse MA3 turn."""
-        try:
-            side = position.get("side")
-            if side not in ("LONG", "SHORT"):
-                return False
-            if position.get("channel_ma3_turn_exit_pending"):
-                return True
-            if position.get("channel_profit_protection", {}).get("armed"):
-                return False
-            sign = 1 if side == "LONG" else -1
-            entry = float(position.get("entry_price") or 0)
-            rail = float(position.get("entry_kc_upper" if side == "LONG" else "entry_kc_lower") or 0)
-            if not all(math.isfinite(v) and v > 0 for v in (entry, rail, price)):
-                return False
-            if sign * (entry - rail) <= 0 or frame is None or len(frame) < 5:
-                return False
-            return TradingEngine._channel_live_ma3_turn_exit(position, frame, price)
-        except (TypeError, ValueError, KeyError, IndexError):
-            return False
-
-    @staticmethod
     def _channel_profit_room(frame, price, side="LONG"):
         """Estimate remaining directional space after both fees and slippage."""
         rejected = {"allowed": False, "reason": "KC_PROFIT_ROOM_DATA_INVALID"}
@@ -6718,6 +6648,15 @@ class TradingEngine:
         wait = {"action": "HOLD" if held in ("LONG", "SHORT") else "WAIT",
                 "side": None, "reason": "WAIT_OUTER_BREAK_CONFIRMATION"}
         if held not in ("LONG", "SHORT") and not outer_entry_only:
+            push = next_live_push_entry(frame, live_price)
+            if push.get("action") == "ENTER":
+                try:
+                    falling_waves = TradingEngine._channel_closed_waves_falling(frame, push["side"])
+                except TypeError:
+                    falling_waves = TradingEngine._channel_closed_waves_falling(frame)
+                if falling_waves:
+                    return {**wait, "reason": "KC_FALLING_WAVES_BLOCK_LONG" if push["side"] == "LONG" else "KC_RISING_WAVES_BLOCK_SHORT"}
+                return push
             outside = outside_entry(frame, live_price)
             if outside.get("action") == "ENTER":
                 return outside
@@ -7595,6 +7534,7 @@ class TradingEngine:
                 and channel_action.get("action") == "ENTER"
                 and chop_state.get("detected")
                 and not chop_state.get("clear_direction")
+                and not str(channel_action.get("reason") or "").startswith("KC_NEXT_LIVE_PUSH_")
             ):
                 breakout = self._channel_chop_breakout_action(channel_df, channel_price)
                 if breakout.get("action") == "ENTER":
@@ -7619,24 +7559,6 @@ class TradingEngine:
                 if (channel_action.get("action") == "EXIT"
                         and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
                     channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
-                live_ma3_before = existing_pos.get("channel_live_ma3_favorable_bar")
-                if (channel_action.get("action") not in {"EXIT", "REVERSE"}
-                        and self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price)):
-                    existing_pos["channel_live_ma3_exit_pending"] = True
-                    self.account.position_meta.setdefault(symbol, {})["channel_live_ma3_exit_pending"] = True
-                    self.account.save_state()
-                    channel_action = {"action": "EXIT", "side": None,
-                                      "reason": f"KC_{existing_pos['side']}_LIVE_MA3_TURN_EXIT"}
-                if live_ma3_before != existing_pos.get("channel_live_ma3_favorable_bar"):
-                    self.account.position_meta.setdefault(symbol, {})["channel_live_ma3_favorable_bar"] = existing_pos["channel_live_ma3_favorable_bar"]
-                    self.account.save_state()
-                if (channel_action.get("action") not in {"EXIT", "REVERSE"}
-                        and self._channel_outer_ma3_turn_exit(existing_pos, channel_df, channel_price)):
-                    if not existing_pos.get("channel_ma3_turn_exit_pending"):
-                        existing_pos["channel_ma3_turn_exit_pending"] = True
-                        self.account.save_state()
-                    channel_action = {"action": "EXIT", "side": None,
-                                      "reason": f"KC_{existing_pos['side']}_OUTER_MA3_TURN_EXIT"}
                 if (existing_pos.get("channel_pivot_middle_exit_pending")
                         and channel_action.get("action") not in {"EXIT", "REVERSE"}):
                     channel_action = {"action": "EXIT", "side": None,
@@ -7703,6 +7625,7 @@ class TradingEngine:
 
                 "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
                 "KC_NEXT_LIVE_PUSH_LONG", "KC_NEXT_LIVE_PUSH_SHORT",
+                "KC_NEXT_LIVE_PUSH_LONG", "KC_NEXT_LIVE_PUSH_SHORT",
                 "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
             }
             pending_side = getattr(self, "_channel_outer_reentry_after_exit", {}).get(symbol)
@@ -7739,16 +7662,7 @@ class TradingEngine:
                     "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL", "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
                     "EMERGENCY_EXIT_2_CANDLE_ADVERSE",
                 }
-                ma3_exit = str(channel_action.get("reason", "")).endswith(("LIVE_MA3_TURN_EXIT", "OUTER_MA3_TURN_EXIT"))
-                # Rail data may be unavailable: that must never delay an MA3 exit.
-                outer_ma3_exit = False
-                if ma3_exit:
-                    try:
-                        rail = float(channel_df.iloc[-1].get("kc_upper" if existing_pos["side"] == "LONG" else "kc_lower"))
-                        outer_ma3_exit = math.isfinite(rail) and (1 if existing_pos["side"] == "LONG" else -1) * (channel_price - rail) > 0
-                    except (TypeError, ValueError):
-                        pass
-                pullback_exit = abnormal_exit or channel_exit_net_profitable or outer_ma3_exit
+                pullback_exit = abnormal_exit or channel_exit_net_profitable
                 if pullback_exit:
                     tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
                                        "phase": "closing", "side": existing_pos["side"], "mode": "outer_cycle",

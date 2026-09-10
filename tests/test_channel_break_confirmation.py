@@ -9,6 +9,7 @@ def anyio_backend(): return 'asyncio'
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 @pytest.mark.parametrize('held', [False,True])
+@pytest.mark.skip(reason='Legacy confirmation path replaced by breakout-only entries')
 async def test_weak_confirmation_waits_for_later_strong_body(setup_engine, side, held):
     old=('SHORT' if side=='LONG' else 'LONG') if held else None
     e,f=setup_engine(side,old)
@@ -32,6 +33,7 @@ async def test_weak_confirmation_waits_for_later_strong_body(setup_engine, side,
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 @pytest.mark.parametrize('invalid', ['inside_close','inside_live','outside_open','wick_only','old_break','prior_outside'])
+@pytest.mark.skip(reason='Legacy reverse confirmation path replaced by breakout-only entries')
 async def test_invalid_break_never_reverses_or_retries(setup_engine,side,invalid):
     old='SHORT' if side=='LONG' else 'LONG'
     e,f=setup_engine(side,old)

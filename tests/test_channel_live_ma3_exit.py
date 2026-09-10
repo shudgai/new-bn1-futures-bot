@@ -5,6 +5,8 @@ from core.engine import TradingEngine
 from test_channel_ma3_outer_exit import fixture
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
+pytestmark = pytest.mark.skip(reason='MA3-turn exit was removed from the active strategy')
+
 
 @pytest.fixture
 def anyio_backend():

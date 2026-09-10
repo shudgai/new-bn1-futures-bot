@@ -1,6 +1,5 @@
 """Live outside entries use the current CK rail; order route checks room and risk."""
 import math
-from core.channel_pivot_entry import closed_ck_direction
 
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
@@ -15,31 +14,81 @@ def outside_entry(frame, price):
             return {**wait, "reason": "KC_DATA_INVALID"}
         side = 'LONG' if price > upper else 'SHORT' if price < lower else None
         if side:
-            if closed_ck_direction(frame) != side:
-                return {**wait, "reason": "KC_DIRECTION_BLOCK_" + side}
-            return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
+            return {**wait, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
 
-        # A single fully closed directional candle outside CK is enough to enter;
-        # do not require a second confirmation candle if price has only retraced
-        # inside the channel by the next scan.
-        if len(frame) >= 2:
-            closed = frame.iloc[-2]
-            closed_open = float(closed["open"])
-            closed_close = float(closed["close"])
-            closed_upper = float(closed["kc_upper"])
-            closed_lower = float(closed["kc_lower"])
-            values = (closed_open, closed_close, closed_upper, closed_lower)
-            if all(math.isfinite(v) and v > 0 for v in values) and closed_lower < closed_upper:
-                if closed_close < closed_open and closed_close < closed_lower:
-                    if closed_ck_direction(frame) != "SHORT":
-                        return {**wait, "reason": "KC_DIRECTION_BLOCK_SHORT"}
-                    return {"action": "ENTER", "side": "SHORT", "reason": "KC_CLOSED_OUTSIDE_SHORT"}
-                if closed_close > closed_open and closed_close > closed_upper:
-                    if closed_ck_direction(frame) != "LONG":
-                        return {**wait, "reason": "KC_DIRECTION_BLOCK_LONG"}
-                    return {"action": "ENTER", "side": "LONG", "reason": "KC_CLOSED_OUTSIDE_LONG"}
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
+    return wait
+
+
+def next_live_push_entry(frame, price):
+    """Enter on the live second candle after a genuine closed CK breakout."""
+    wait = {"action": "WAIT", "side": None, "reason": "KC_NEXT_LIVE_PUSH_WAIT"}
+    required = {"open", "high", "low", "close", "ma3", "ma15", "kc_upper", "kc_lower"}
+    if frame is None or len(frame) < 3 or not required.issubset(frame.columns):
+        return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_UNAVAILABLE"}
+    try:
+        prior, breakout, live = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
+        values = [
+            float(prior[key]) for key in required
+        ] + [float(breakout[key]) for key in required] + [
+            float(live["open"]), float(live["high"]), float(live["low"]),
+            float(live["ma15"]), float(price),
+        ]
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_INVALID"}
+        prior_upper, prior_lower = float(prior["kc_upper"]), float(prior["kc_lower"])
+        break_upper, break_lower = float(breakout["kc_upper"]), float(breakout["kc_lower"])
+        live_upper, live_lower = float(live["kc_upper"]), float(live["kc_lower"])
+        break_range = float(breakout["high"]) - float(breakout["low"])
+        break_open = float(breakout["open"])
+        break_close = float(breakout["close"])
+        break_body = abs(break_close - break_open)
+        if min(prior_lower, break_lower, live_lower) >= max(prior_upper, break_upper, live_upper):
+            return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_INVALID"}
+        if break_range <= 0 or break_body / break_range < 0.20:
+            return wait
+        ma15 = [float(frame["ma15"].iloc[index]) for index in (-4, -3, -2, -1)]
+        ma3 = [float(frame["ma3"].iloc[index]) for index in (-3, -2, -1)]
+        if not all(math.isfinite(value) and value > 0 for value in ma15):
+            return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_INVALID"}
+        if not all(math.isfinite(value) and value > 0 for value in ma3):
+            return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_INVALID"}
+        live_open = float(live["open"])
+        live_body_gap = abs(live_open - float(breakout["close"]))
+        max_gap = break_body * 0.25
+        if live_body_gap > max_gap:
+            return wait
+        long_break = (
+            float(prior["close"]) <= prior_upper
+            and break_upper >= prior_upper
+            and break_open <= break_upper <= break_open + break_body * 0.5
+            and break_close > break_upper
+            and float(price) > float(breakout["close"])
+            and float(price) > live_open
+            and float(price) > live_upper
+            and ma3[0] <= ma3[1] < ma3[2]
+            and not (ma15[0] > ma15[1] > ma15[2])
+            and not (ma15[0] < ma15[1] < ma15[2])
+        )
+        short_break = (
+            float(prior["close"]) >= prior_lower
+            and break_lower <= prior_lower
+            and break_open >= break_lower >= break_open - break_body * 0.5
+            and break_close < break_lower
+            and float(price) < float(breakout["close"])
+            and float(price) < live_open
+            and float(price) < live_lower
+            and ma3[0] >= ma3[1] > ma3[2]
+            and not (ma15[0] < ma15[1] < ma15[2])
+            and not (ma15[0] > ma15[1] > ma15[2])
+        )
+        if long_break:
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_NEXT_LIVE_PUSH_LONG"}
+        if short_break:
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_NEXT_LIVE_PUSH_SHORT"}
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_INVALID"}
     return wait
 
 

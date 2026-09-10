@@ -23,11 +23,18 @@ def push_frame(side='LONG'):
     f.loc[11, ['open', 'close']] = [103., 103.]  # Ticker, not stale close, pushes.
     f['high'] = f[['open', 'close']].max(axis=1) + .1
     f['low'] = f[['open', 'close']].min(axis=1) - .1
+    if side == 'LONG':
+        f.loc[10, 'kc_upper'] = 102.1
+    else:
+        f.loc[10, 'kc_lower'] = 97.9
     if side == 'SHORT':
         for k in ('open', 'close', 'high', 'low', 'kc_upper', 'kc_lower'):
             f[k] = 200 - f[k]
         f['high'], f['low'] = f['low'].copy(), f['high'].copy()
         f['kc_upper'], f['kc_lower'] = f['kc_lower'].copy(), f['kc_upper'].copy()
+    f.loc[9:11, 'ma3'] = (
+        [102.8, 103.0, 103.2] if side == 'LONG' else [97.2, 97.0, 96.8]
+    )
     return f
 
 
@@ -39,6 +46,20 @@ def test_unclear_direction_can_enter_on_live_successor(side):
     assert result == dict(action='ENTER', side=side, reason='KC_NEXT_LIVE_PUSH_' + side)
     # No first-candle or same-close entry.
     assert TradingEngine._channel_swing_action(f, float(f.iloc[-2]['close']))['action'] == 'WAIT'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_half_breakout_body_is_enough(side):
+    f = push_frame(side)
+    if side == 'LONG':
+        f.loc[10, ['open', 'close']] = [100.9, 103.3]
+        price = 103.5
+    else:
+        f.loc[10, ['open', 'close']] = [99.0, 97.0]
+        price = 96.8
+    result = TradingEngine._channel_swing_action(f, price)
+    assert result['action'] == 'ENTER'
+    assert result['side'] == side
 
 
 @pytest.mark.parametrize('invalid', ['wick', 'gap', 'opposite', 'deep_overlap', 'first_live', 'bad_ma15', 'opposing_ma15', 'spike'])

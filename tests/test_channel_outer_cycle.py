@@ -77,6 +77,7 @@ async def test_reentry_fresh_validation_profit_room_and_dedup(side, block, monke
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('success', [True, False])
+@pytest.mark.skip(reason='MA3-turn exit was removed from the active strategy')
 async def test_ma3_exit_waits_for_recovery_before_reopening(side, success):
     from test_channel_live_ma3_exit import setup as turn_setup
     f, p, price = turn_setup(side)
