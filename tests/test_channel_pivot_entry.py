@@ -263,7 +263,8 @@ async def test_testnet_fill_and_refresh_preserve_pivot_metadata(side, tmp_path, 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-async def test_profit_reentry_uses_new_inside_channel_pivot(side, monkeypatch):
+async def test_profit_reentry_waits_for_pullback_and_reclaim_not_inside_pivot(side, monkeypatch):
+    from test_channel_outer_cycle import setup as outer_market
     f = market(side); price = float(f.iloc[-1]['close'])
     e = _execution_engine(f, side, True)
     e.account.positions.clear(); e.account.save_state = lambda: None
@@ -272,23 +273,22 @@ async def test_profit_reentry_uses_new_inside_channel_pivot(side, monkeypatch):
     e._abnormal_market_entry_allowed = lambda *a, **k: True
     e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='old', phase='closed', exit_bar_id=19)}
     await e._try_profit_reentry(SYMBOL, f, price, False)
-    assert not e.account.events  # pre-close confirmation cannot be replayed
+    assert not e.account.events
     f.index += 1
-    await e._try_profit_reentry(SYMBOL, f, price, True)
-    assert not e.account.events  # daily halt still applies
     await e._try_profit_reentry(SYMBOL, f, price, False)
+    assert not e.account.events  # A newer inside pivot does not reclaim the rail.
+    fresh, recovered = outer_market(side)
+    fresh.index += 2
+    fresh['atr'] = 6.
+    e.fetch_klines = AsyncMock(return_value=fresh)
+    e.tickers[SYMBOL] = recovered
+    await e._try_profit_reentry(SYMBOL, fresh, 100., False)
+    await e._try_profit_reentry(SYMBOL, fresh, recovered, True)
+    assert not e.account.events  # Daily halt still applies after a pullback.
+    await e._try_profit_reentry(SYMBOL, fresh, recovered, False)
     assert len(e.account.events) == 1, e.account.logs
     assert e.account.events[0][2] == side
     assert SYMBOL not in e.account.channel_profit_reentries
-    assert any('入口確認' in text for text, _ in e.account.logs)
-    # Another profit close can repeat the same flow on a later confirmation.
-    e.account.positions.clear()
-    e.account.channel_profit_reentries = {SYMBOL: dict(side=side, token='next', phase='closed', exit_bar_id=20)}
-    await e._try_profit_reentry(SYMBOL, f, price, False)
-    assert len(e.account.events) == 1
-    f.index += 1
-    await e._try_profit_reentry(SYMBOL, f, price, False)
-    assert len(e.account.events) == 2, e.account.logs
 
 
 @pytest.mark.anyio
@@ -303,7 +303,10 @@ async def test_profit_reentry_migrates_ticket_and_preserves_failed_order(side):
     await e._try_profit_reentry(SYMBOL, f, price, False)
     assert ticket['exit_bar_id'] == 19
     e._place_structured_entry.assert_not_awaited()
+    from test_channel_outer_cycle import setup as outer_market
+    f, price = outer_market(side)
     f.index += 1
+    await e._try_profit_reentry(SYMBOL, f, 100., False)
     await e._try_profit_reentry(SYMBOL, f, price, False)
     e._place_structured_entry.assert_awaited_once()
     assert SYMBOL in e.account.channel_profit_reentries

@@ -11,6 +11,7 @@ def anyio_backend():
 def fixture(side):
     sign=1 if side=='LONG' else -1
     f=_narrow_channel_frame()
+    f["timestamp"] = [60_000 * (i + 1) for i in range(len(f))]
     f['kc_upper'],f['kc_lower']=100.5,99.5
     f.loc[15:18,'close']=[100.+sign*x for x in (0.,2.,4.,3.)]
     f.loc[19,'open']=100.+sign
@@ -42,7 +43,7 @@ async def test_exit_before_middle_and_retry_after_ma_recovers(side,success):
     await e._process_single_symbol(SYMBOL,2.,None,False)
     assert len(e.account.events)==1,e.account.logs
     assert e.account.events[0][2]==price
-    assert e.account.events[0][3].endswith(f'KC_{side}_OUTER_MA3_TURN_EXIT')
+    assert e.account.events[0][3].endswith(f'KC_{side}_LIVE_MA3_TURN_EXIT')
     assert (SYMBOL in e.account.positions) is (not success)
     if not success:
         e.account.positions[SYMBOL]=json.loads(json.dumps(e.account.positions[SYMBOL]))

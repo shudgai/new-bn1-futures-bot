@@ -71,7 +71,7 @@ def test_outside_entry_ignores_colour_but_reversal_requires_confirmation(setup_e
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('held', [False, True])
-async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held):
+async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held, monkeypatch):
     old = ('SHORT' if side == 'LONG' else 'LONG') if held else None
     e, f = setup_engine(side, old)
     if held:
@@ -86,6 +86,14 @@ async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held
         # The new order must pass the existing MA15 direction revalidation.
         e.account.positions[SYMBOL]['channel_favorable_rail_reached'] = False
     await asyncio.gather(*(e._process_single_symbol(SYMBOL, 1., None, False) for _ in range(3)))
+    if held:
+        assert SYMBOL not in e.account.positions
+        assert [t['action'] for t in e.account.trades] == [f'CLOSE_{old}']
+        # A confirmed reverse still closes immediately; its new leg waits a minute.
+        import time
+        next_minute = (int(time.time() // 60) + 1) * 60 + 1
+        monkeypatch.setattr('core.engine.time.time', lambda: next_minute)
+        await e._process_single_symbol(SYMBOL, 2., None, False)
     assert SYMBOL in e.account.positions, '\n'.join(row['text'] for row in e.account.logs)
     assert e.account.positions[SYMBOL]['side'] == side, e.account.logs
     actions = [t['action'] for t in reversed(e.account.trades)]
@@ -95,7 +103,7 @@ async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('reload', [False, True])
-async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_engine, reload):
+async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_engine, reload, monkeypatch):
     e, f = setup_engine('LONG')
     e.tickers[SYMBOL] = confirm_pivot(f, 'LONG')
     await e._process_single_symbol(SYMBOL, 1., None, False)
@@ -108,7 +116,10 @@ async def test_closed_trade_cannot_reuse_confirmation_even_after_restart(setup_e
     await e._process_single_symbol(SYMBOL, 2., None, False)
     assert SYMBOL not in e.account.positions
     assert len(e.account.trades) == 2
-    # An actual later confirmation is eligible.
+    # Both a new confirmation and a new execution minute are required.
+    import time
+    next_minute = (int(time.time() // 60) + 1) * 60 + 1
+    monkeypatch.setattr('core.engine.time.time', lambda: next_minute)
     f['timestamp'] = list(range(70))
     f.loc[68, 'timestamp'] = 999
     await e._process_single_symbol(SYMBOL, 3., None, False)

@@ -72,8 +72,10 @@ async def test_order_and_reentry_safety(side, reopen, block, monkeypatch):
         await asyncio.gather(*(engine._try_profit_reentry(SYMBOL, frame, price, block == "halt") for _ in range(3)))
     else:
         await asyncio.gather(*(engine._execute_confirmed_channel_break(SYMBOL, frame, price, side, block == "halt") for _ in range(3)))
-    assert len(engine.account.events) == (1 if block == "none" else 0), engine.account.logs
-    if block == "none": assert engine.account.events[0][2] == side
+    # A middle signal alone is no longer sufficient after a profit close.
+    allowed = block == "none" and not reopen
+    assert len(engine.account.events) == int(allowed), engine.account.logs
+    if allowed: assert engine.account.events[0][2] == side
 
 
 @pytest.mark.anyio

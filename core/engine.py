@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, middle_trend_entry, outside_reentry
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, middle_trend_entry, outside_reentry, abnormal_pullback_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2377,7 +2377,7 @@ class TradingEngine:
         ):
             return None
         profit_ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
-        if profit_ticket and not self._profit_pivot_is_new(profit_ticket, frame):
+        if profit_ticket:
             return None
         fresh_candidate_bar_id = self._channel_candidate_bar_id(frame)
         if (
@@ -2403,7 +2403,43 @@ class TradingEngine:
             "signal_code": self._channel_swing_action(frame, price)["reason"] if not confirmed_reverse else None,
         }
 
+    def _channel_candle_entry_blocked(self, symbol: str, now: float | None = None) -> bool:
+        """Use fill timestamps, not signal candles, to limit churn per UTC minute."""
+        minute = int((time.time() if now is None else now) // 60)
+        if getattr(self, "_channel_entry_minute", {}).get(symbol) == minute:
+            return True
+
+        def same_minute(value, divisor=1):
+            try:
+                stamp = float(value) / divisor
+                return math.isfinite(stamp) and stamp > 0 and int(stamp // 60) == minute
+            except (TypeError, ValueError, OverflowError):
+                return False
+
+        if same_minute(getattr(self.account, "last_closed_at", {}).get(symbol)):
+            return True
+        if same_minute(self.account.positions.get(symbol, {}).get("open_timestamp")):
+            return True
+        return any(
+            trade.get("symbol") == symbol
+            and trade.get("action") in {"OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"}
+            and same_minute(trade.get("id"), 1000)
+            for trade in getattr(self.account, "trades", [])
+        )
+
     async def _place_structured_entry(
+        self, symbol: str, signal: dict, live_price: float, channel_snapshot: dict | None = None
+    ) -> bool:
+        locks = getattr(self, "_channel_entry_locks", None)
+        if locks is None:
+            locks = self._channel_entry_locks = {}
+        async with locks.setdefault(symbol, asyncio.Lock()):
+            if self._channel_candle_entry_blocked(symbol):
+                self.account.log(f"⏳ {symbol} KC_ONE_ENTRY_PER_CANDLE：本根1分鐘K已開倉或平倉，等待下一根再評估", "INFO")
+                return False
+            return await self._place_structured_entry_locked(symbol, signal, live_price, channel_snapshot)
+
+    async def _place_structured_entry_locked(
         self, symbol: str, signal: dict, live_price: float, channel_snapshot: dict | None = None
     ) -> bool:
         """Place one of the three non-MA5 entries with an exchange hard stop."""
@@ -2467,6 +2503,9 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
+            if (getattr(self.account, "channel_profit_reentries", {}).get(symbol)
+                    and not signal.get("profit_reentry_token")):
+                return False  # A cached ordinary signal cannot bypass the pullback ticket.
             fresh_snapshot = None if signal.get("profit_reentry_token") else channel_snapshot
             if fresh_snapshot is None:
                 fresh_snapshot = await self._fresh_channel_entry_snapshot(
@@ -2496,7 +2535,7 @@ class TradingEngine:
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
-            if side in ("LONG", "SHORT") and not fresh_snapshot.get("outer_cycle_reentry"):
+            if side in ("LONG", "SHORT"):
                 room = self._channel_profit_room(fresh_frame, planned_price, side)
                 if not room["allowed"]:
                     self.account.log(
@@ -2687,6 +2726,10 @@ class TradingEngine:
             reason=signal["reason"], atr=atr, leverage=leverage,
             signal_score=score, entry_context=entry_context,
         )
+        # Account refreshes can observe a close while quote/risk checks await.
+        if self._channel_candle_entry_blocked(symbol):
+            self.account.log(f"⏳ {symbol} KC_ONE_ENTRY_PER_CANDLE：送單前確認當根已有成交，取消重開", "INFO")
+            return False
         if is_limit:
             placed = await self.account.place_limit_entry(
                 target_price=planned_price, post_only=True, **kwargs
@@ -2696,6 +2739,9 @@ class TradingEngine:
                 price=planned_price, **kwargs
             )
         if placed:
+            if not hasattr(self, "_channel_entry_minute"):
+                self._channel_entry_minute = {}
+            self._channel_entry_minute[symbol] = int(time.time() // 60)
             if channel_swing_no_stop:
                 position = getattr(self.account, "positions", {}).get(symbol)
                 if isinstance(position, dict):
@@ -3836,14 +3882,6 @@ class TradingEngine:
             previous = sum(closes[:3]) / 3
             last = sum(closes[1:]) / 3
             live = (sum(closes[-2:]) + price) / 3
-            # The turning MA3 extremum must be outside its contemporaneous CK rail.
-            upper = float(frame.iloc[-2]["kc_upper"])
-            lower = float(frame.iloc[-2]["kc_lower"])
-            if not (math.isfinite(upper) and math.isfinite(lower) and 0 < lower < upper):
-                return False
-            pivot_rail = upper if side == "LONG" else lower
-            if sign * (last - pivot_rail) <= 0:
-                return False
             # An entry during this candle needs a favorable observation first;
             # otherwise its already adverse slope could predate the position.
             if sign * (live - last) > 0:
@@ -3873,22 +3911,7 @@ class TradingEngine:
                 return False
             if sign * (entry - rail) <= 0 or frame is None or len(frame) < 5:
                 return False
-            # Recompute MA3 with the ticker rather than the cached live close.
-            closes = [float(v) for v in frame["close"].iloc[-5:-1]]
-            if not all(math.isfinite(v) and v > 0 for v in closes):
-                return False
-            previous = sum(closes[:3]) / 3
-            last = sum(closes[1:]) / 3
-            live = (sum(closes[-2:]) + price) / 3
-            # The turning MA3 extremum must be outside its contemporaneous CK rail.
-            upper = float(frame.iloc[-2]["kc_upper"])
-            lower = float(frame.iloc[-2]["kc_lower"])
-            if not (math.isfinite(upper) and math.isfinite(lower) and 0 < lower < upper):
-                return False
-            pivot_rail = upper if side == "LONG" else lower
-            if sign * (last - pivot_rail) <= 0:
-                return False
-            return sign * (last - previous) > 0 and sign * (live - last) < 0
+            return TradingEngine._channel_live_ma3_turn_exit(position, frame, price)
         except (TypeError, ValueError, KeyError, IndexError):
             return False
 
@@ -7404,17 +7427,24 @@ class TradingEngine:
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
-        if ticket.get("mode") == "outer_cycle":
-            return outside_reentry(frame, price, ticket["side"]).get("side") == ticket["side"]
-        decision = self._channel_swing_action(frame, price)
-        if decision.get("action") != "ENTER" or decision.get("side") != ticket["side"]:
+        if not ticket.get("requires_pullback") or ticket.get("mode") != "outer_cycle":
+            # Old profit/pivot/middle tickets cannot reuse a pre-upgrade signal.
+            ticket.update(requires_pullback=True, mode="outer_cycle")
+            ticket.pop("pullback_bar", None)
+            self.account.save_state()
+        if "exit_bar_id" not in ticket:
+            # With no reliable close candle, begin observing from this candle.
+            try:
+                ticket["exit_bar_id"] = float(frame.iloc[-1].get("timestamp", frame.index[-1]))
+            except (AttributeError, TypeError, ValueError, IndexError):
+                return False
+            self.account.save_state()
             return False
-        if decision.get("reason") in PIVOT_CODES:
-            if "exit_bar_id" not in ticket:
-                ticket["exit_bar_id"] = frame.iloc[-1].get("timestamp", frame.index[-1])
-                self.account.save_state()
-            return self._profit_pivot_is_new(ticket, frame)
-        return decision.get("reason") in (OUTER_CODES | TREND_CODES)
+        before = ticket.get("pullback_bar")
+        ready = abnormal_pullback_ready(ticket, frame, price)
+        if before != ticket.get("pullback_bar"):
+            self.account.save_state()
+        return ready and outside_reentry(frame, price, ticket["side"]).get("side") == ticket["side"]
 
     async def _try_profit_reentry(self, symbol, frame, price, daily_halt):
         lock = getattr(self, "_channel_profit_reentry_lock", None)
@@ -7428,9 +7458,11 @@ class TradingEngine:
         if not ticket or symbol in self.account.positions:
             return
         if ticket.get("phase") == "closing":
-            reason = "Channel Swing PROFIT_PROTECTION " + ticket["token"]
+            reason = ticket.get("close_reason") or "Channel Swing PROFIT_PROTECTION " + ticket["token"]
             if not any(t.get("symbol") == symbol and t.get("reason") == reason
                        and t.get("action") == "CLOSE_" + ticket["side"]
+                       and (not ticket.get("close_reason") or
+                            float(t.get("id") or 0) >= float(ticket.get("close_requested_at_ms") or math.inf))
                        for t in getattr(self.account, "trades", [])):
                 self.account.channel_profit_reentries.pop(symbol, None)
                 self.account.save_state()
@@ -7453,8 +7485,8 @@ class TradingEngine:
                   "profit_reentry_token": ticket["token"], "signal_code": decision["reason"],
                   "candidate_bar_id": candidate, "profit_profile": "TREND_EXTENSION",
                   "atr": float(frame.iloc[-1].get("atr") or price * .015)}
-        # Revalidate the quote and account risk; outer-cycle tickets use live
-        # color and MA3 instead of the estimated profit-room threshold.
+        # Revalidate quote, remaining profit room, momentum and account risk
+        # for every reentry, including same-side outer-cycle tickets.
         if await self._place_structured_entry(symbol, signal, price):
             self.account.channel_profit_reentries.pop(symbol, None)
             getattr(self, "_channel_swing_peak_exit_info", {}).pop(symbol, None)
@@ -7623,12 +7655,10 @@ class TradingEngine:
                 elif profit and profit["triggered"]:
                     token = str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns())
                     tickets[symbol] = {"token": token, "phase": "closing", "side": existing_pos["side"],
+                                       "mode": "outer_cycle", "requires_pullback": True,
                                        "opened_at": existing_pos.get("open_timestamp"),
                                        "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                        "path": copy.deepcopy(path_state)}
-                    rail = float(channel_df.iloc[-1]["kc_upper" if existing_pos["side"] == "LONG" else "kc_lower"])
-                    if (1 if existing_pos["side"] == "LONG" else -1) * (channel_price - rail) > 0:
-                        tickets[symbol]["mode"] = "outer_cycle"
                     self.account.save_state()
                     self.account.log(f"🛡️ [獲利保護] {symbol} 走勢={profit['trend_style']} 回吐={profit['retracement_fraction']:.0%} 最高浮盈={profit['peak_gross']:.4f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
                     closed = await self.account.close_position(
@@ -7681,12 +7711,42 @@ class TradingEngine:
                         ratio = abs(ma15 - rail) / (upper - lower)
                         details.append(f"{label}: bar={row.get('timestamp')} space={ratio:.6%} upper={upper:.10g} lower={lower:.10g} ma15={ma15:.10g} ma3={float(row['ma3']):.10g}")
                     self.account.log(f"[KC 平倉條件] {symbol} price={channel_price:.10g} " + " | ".join(details), "INFO")
+                abnormal_exit = channel_action.get("reason") in {
+                    "KC_LONG_LIVE_RED_LONG_EXIT", "KC_SHORT_LIVE_GREEN_LONG_EXIT",
+                    "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL", "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
+                    "EMERGENCY_EXIT_2_CANDLE_ADVERSE",
+                }
+                ma3_exit = str(channel_action.get("reason", "")).endswith(("LIVE_MA3_TURN_EXIT", "OUTER_MA3_TURN_EXIT"))
+                # Rail data may be unavailable: that must never delay an MA3 exit.
+                outer_ma3_exit = False
+                if ma3_exit:
+                    try:
+                        rail = float(channel_df.iloc[-1].get("kc_upper" if existing_pos["side"] == "LONG" else "kc_lower"))
+                        outer_ma3_exit = math.isfinite(rail) and (1 if existing_pos["side"] == "LONG" else -1) * (channel_price - rail) > 0
+                    except (TypeError, ValueError):
+                        pass
+                pullback_exit = abnormal_exit or channel_exit_net_profitable or outer_ma3_exit
+                if pullback_exit:
+                    tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
+                                       "phase": "closing", "side": existing_pos["side"], "mode": "outer_cycle",
+                                       "requires_pullback": True,
+                                       "close_reason": f"Channel Swing {channel_action.get('reason')}",
+                                       "close_requested_at_ms": int(time.time() * 1000),
+                                       "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1])}
+                    self.account.save_state()
                 closed = await self.account.close_position(
                     symbol,
                     channel_price,
                     f"Channel Swing {channel_action.get('reason')}",
                     is_manual=True,
                 )
+                if pullback_exit:
+                    if closed and symbol not in self.account.positions:
+                        tickets[symbol]["phase"] = "closed"
+                        self.account.log(f"⏳ [平倉後回踩重開] {symbol} 等後續K回到CK內，再同色K及MA3順向站回外軌", "INFO")
+                    else:
+                        tickets.pop(symbol, None)
+                    self.account.save_state()
                 if closed and symbol not in self.account.positions:
                     if not hasattr(self, "_channel_swing_peak_exit_info"):
                         self._channel_swing_peak_exit_info = {}
@@ -7696,14 +7756,6 @@ class TradingEngine:
                         "require_new_closed_break": True,
                         "allow_new_outer_signal": True,
                     }
-                    if str(channel_action.get("reason", "")).endswith(("LIVE_MA3_TURN_EXIT", "OUTER_MA3_TURN_EXIT")):
-                        rail = float(channel_df.iloc[-1]["kc_upper" if existing_pos["side"] == "LONG" else "kc_lower"])
-                        if (1 if existing_pos["side"] == "LONG" else -1) * (channel_price - rail) > 0:
-                            tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
-                                               "phase": "closed", "side": existing_pos["side"], "mode": "outer_cycle",
-                                               "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1])}
-                            self.account.save_state()
-                            await self._try_profit_reentry(symbol, channel_df, channel_price, daily_halt)
                     getattr(self, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
                     getattr(self, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                     self.account.log(

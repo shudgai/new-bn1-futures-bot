@@ -78,7 +78,7 @@ async def test_market_exit_and_persistent_retry(side, armed, success):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('location', ['inside', 'touch', 'outside', 'invalid'])
 @pytest.mark.parametrize('helper', ['_channel_live_ma3_turn_exit', '_channel_outer_ma3_turn_exit'])
-def test_turn_extremum_must_be_outside_its_own_ck_rail(side, location, helper):
+def test_turn_exit_is_independent_of_ck_location(side, location, helper):
     frame, position, price = setup(side)
     position.update(entry_kc_upper=100.5, entry_kc_lower=99.5)
     sign = 1 if side == 'LONG' else -1
@@ -87,5 +87,5 @@ def test_turn_extremum_must_be_outside_its_own_ck_rail(side, location, helper):
     frame.loc[18, key] = pivot + sign * {'inside': 1, 'touch': 0, 'outside': -1, 'invalid': 0}[location]
     if location == 'invalid':
         frame.loc[18, key] = float('nan')
-    # The live rail remains outside the MA3 extremum: use the pivot bar's rail.
-    assert getattr(TradingEngine, helper)(position, frame, price) is (location == 'outside')
+    # CK position and CK data no longer constrain a valid price/MA3 turn.
+    assert getattr(TradingEngine, helper)(position, frame, price)

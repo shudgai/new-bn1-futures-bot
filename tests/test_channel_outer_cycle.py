@@ -30,12 +30,12 @@ def test_outer_cycle_conditions(side, case):
     if case == 'inside': price = 100.
     if case == 'ck_flat': f['kc_middle'] = 100.
     if case == 'invalid': f.loc[18, 'close'] = float('nan')
-    assert (outside_reentry(f, price, side).get('side') == side) is (case == 'valid')
+    assert (outside_reentry(f, price, side).get('side') == side) is (case in ('valid', 'ck_flat'))
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('block', ['none', 'color', 'ma', 'halt', 'held', 'token', 'balance', 'risk', 'price'])
-async def test_reentry_fresh_validation_room_exemption_and_dedup(side, block, monkeypatch):
+@pytest.mark.parametrize('block', ['none', 'color', 'ma', 'halt', 'held', 'token', 'balance', 'risk', 'price', 'room', 'fading'])
+async def test_reentry_fresh_validation_profit_room_and_dedup(side, block, monkeypatch):
     f, price = setup(side)
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
@@ -44,9 +44,11 @@ async def test_reentry_fresh_validation_room_exemption_and_dedup(side, block, mo
     e._abnormal_market_entry_allowed = lambda *a, **k: block != 'risk'
     if block == 'balance': e.account.get_available_balance = lambda: 0.
     if block == 'price': e._execution_price_is_safe = AsyncMock(return_value=False)
-    e._channel_profit_room = lambda *a, **k: pytest.fail('outer cycle must bypass profit room')
+    e._channel_profit_room = lambda *a, **k: {
+        'allowed': block not in ('room', 'fading'), 'net_room_pct': 1., 'target': price,
+        'reason': 'KC_PROFIT_ROOM_INSUFFICIENT' if block == 'room' else 'KC_' + side + '_MOMENTUM_FADING'}
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
-    ticket = dict(side=side, phase='closed', token='cycle', mode='outer_cycle', exit_bar_id=19)
+    ticket = dict(side=side, phase='closed', token='cycle', mode='outer_cycle', requires_pullback=True, exit_bar_id=17, pullback_bar=18)
     e.account.channel_profit_reentries = {SYMBOL: ticket}
     fresh = f.copy()
     if block == 'color': fresh.loc[19, 'open'] = price
@@ -77,6 +79,10 @@ async def test_ma3_exit_waits_for_recovery_before_reopening(side, success):
     if success:
         assert e.account.channel_profit_reentries[SYMBOL]['mode'] == 'outer_cycle'
         fresh, recovered = setup(side)
+        fresh['timestamp'] = [60_000 * (i + 2) for i in range(len(fresh))]
+        await e._try_profit_reentry(SYMBOL, fresh, recovered, False)
+        e._place_structured_entry.assert_not_awaited()
+        await e._try_profit_reentry(SYMBOL, fresh, 100., False)
         await e._try_profit_reentry(SYMBOL, fresh, recovered, False)
         e._place_structured_entry.assert_awaited_once()
     else:

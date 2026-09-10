@@ -566,8 +566,8 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ symbol }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + (chartModal.states[symbol]?.ma15Trend || 'wait')" title="最近三根已收線 MA15 的方向">
-                                {{ { bull: '↑ 趨勢向上', bear: '↓ 趨勢向下', range: '趨勢未確認', wait: '趨勢待更新' }[chartModal.states[symbol]?.ma15Trend || 'wait'] }}
+                            <span class="market-mode-badge" :class="'market-mode-' + (chartModal.states[symbol]?.ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
+                                {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[chartModal.states[symbol]?.ckTrend || 'wait'] }}
                             </span>
                         </span>
                         <span class="market-mode-badge" :class="'market-mode-' + getChartMarketMode(symbol).toLowerCase()">市場：{{ getChartMarketLabel(symbol) }}</span>
@@ -894,7 +894,7 @@
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
                     state.entryBlock = json.cache?.source === 'stale' ? null : (json.entry_block || null);
-                    state.ma15Trend = json.cache?.source === 'stale' ? 'wait' : this.getClosedMa15Trend(json.data);
+                    state.ckTrend = json.cache?.source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
                     const candles = [];
                     const ma3 = [];
                     const ma15 = [];
@@ -979,7 +979,7 @@
                 } catch (e) {
                     if (this.chartModal.symbols.includes(symbol)) {
                         state.entryBlock = null;
-                        state.ma15Trend = 'wait';
+                        state.ckTrend = 'wait';
                         ctx.failureCount = (ctx.failureCount || 0) + 1;
                         const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(ctx.failureCount, 5)));
                         ctx.nextRetryAt = Date.now() + retryDelay;
@@ -995,8 +995,8 @@
                 }
             },
 
-                getClosedMa15Trend(data) {
-                    const values = data.filter(bar => bar.is_live === false).slice(-3).map(bar => Number(bar.ma15));
+                getClosedCkTrend(data) {
+                    const values = data.filter(bar => bar.is_live === false).slice(-3).map(bar => Number(bar.kc_middle));
                     if (values.length !== 3 || values.some(value => !Number.isFinite(value) || value <= 0)) return 'wait';
                     const [first, second, third] = values;
                     if (first < second && second < third) return 'bull';

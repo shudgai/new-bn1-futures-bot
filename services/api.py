@@ -16,6 +16,7 @@ from core.config import (
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
 from core.engine import engine
+from core.channel_outer_entry import outside_reentry
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
@@ -214,7 +215,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"CK順勢：中軌三根收線同向＋即時同色K可進場／保留峰谷與外側入口／方向不明不開倉／新倉淨利空間檢查／CK外平倉重開須即時同色K與MA3順向（免空間門檻）／進場後MA3於CK外峰谷反向轉彎不論盈虧平倉／峰谷倉先越中軌再回中軌退場；最高浮盈回吐20%平倉；階梯式遇即時反色K收緊至10%；預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"CK順勢：中軌三根收線同向＋即時同色K可進場／保留峰谷與外側入口／方向不明不開倉／新倉淨利空間檢查／獲利平倉後須後續K回踩CK內，再同色K、MA3與CK順向站回原側外軌（即時判斷，不等兩根K或收線，保留空間與動能檢查）；每幣每根1分鐘K最多開倉一次，平倉當根不再重開；異常K平倉後亦先等回踩／持倉MA3先順向再即時反向轉彎，不限CK位置、不論盈虧平倉／峰谷倉先越中軌再回中軌退場；最高浮盈回吐20%平倉；階梯式遇即時反色K收緊至10%；預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -608,6 +609,38 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                     "message": "下降波浪，暫停新多單",
                     "detail": "KC 中軌連降三根，波峰與波谷降低；開空仍須符合進場條件。",
                 }
+            ticket = getattr(engine.account, "channel_profit_reentries", {}).get(symbol)
+            if ticket:
+                entry_block = {
+                    "reason": "KC_POST_CLOSE_PULLBACK_WAIT",
+                    "message": "平倉後，等待回踩及新順向訊號",
+                    "detail": ("已觀察回到 CK 內；等待同色 K、MA3 與 CK 順向站回原側外軌。"
+                               if ticket.get("pullback_bar") is not None else
+                               "後續 K 須先回到 CK 通道內，平倉當根不算回踩。"),
+                }
+                if ticket.get("pullback_bar") is not None:
+                    reclaim = outside_reentry(indicators, price, ticket.get("side"))
+                    if reclaim.get("side") == ticket.get("side"):
+                        room = engine._channel_profit_room(indicators, price, ticket["side"])
+                        if not room["allowed"]:
+                            entry_block = {"reason": room["reason"], "message": "已重新站出外軌，進場風控未通過",
+                                           "detail": f"預估剩餘淨空間 {room.get('net_room_pct', 0):.4f}%；空間不足、動能衰退或資料無效。"}
+                        else:
+                            entry_block = {"reason": "KC_REENTRY_READY", "message": "回踩後已重新站出外軌，等待送單檢查",
+                                           "detail": "即時評估，不等兩根 K 或收線；仍保留帳戶安全與每根 K 限次。"}
+            elif not ticket and decision.get("action") == "ENTER":
+                room = engine._channel_profit_room(indicators, price, decision["side"])
+                if not room["allowed"]:
+                    entry_block = {
+                        "reason": room["reason"],
+                        "message": "已有方向訊號，進場風控未通過",
+                        "detail": (f"預估剩餘淨空間 {room.get('net_room_pct', 0):.4f}%；"
+                                   + ("連續動能衰退，暫不進場。" if "MOMENTUM_FADING" in room["reason"]
+                                      else "剩餘淨利空間不足或資料無效，暫不進場。")),
+                    }
+            if engine._channel_candle_entry_blocked(symbol):
+                entry_block = {"reason": "KC_ONE_ENTRY_PER_CANDLE", "message": "本根 K 已交易，等待下一根",
+                               "detail": "每幣每根1分鐘K最多開倉一次，平倉後當根不再重開；必要平倉不受限制。"}
         return {"symbol": symbol, "timeframe": timeframe, "data": result, "entry_block": entry_block}
     except HTTPException:
         raise

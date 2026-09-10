@@ -1,4 +1,4 @@
-"""Live outside entries follow closed CK trend; order route checks room and risk."""
+"""Live outside entries use the current CK rail; order route checks room and risk."""
 import math
 from core.channel_pivot_entry import closed_ck_direction
 
@@ -15,8 +15,6 @@ def outside_entry(frame, price):
             return {**wait, "reason": "KC_DATA_INVALID"}
         side = 'LONG' if price > upper else 'SHORT' if price < lower else None
         if side:
-            if closed_ck_direction(frame) != side:
-                return {**wait, "reason": "KC_DIRECTION_BLOCK_" + side}
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
@@ -60,3 +58,22 @@ def outside_reentry(frame, price, side):
     except (TypeError, ValueError, KeyError, IndexError):
         pass
     return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_COLOR_MA3_WAIT"}
+
+
+def abnormal_pullback_ready(ticket, frame, price):
+    """After a close, observe a later candle inside CK before a fresh reclaim."""
+    try:
+        row = frame.iloc[-1]
+        bar = float(row.get("timestamp", row.name))
+        exited = float(ticket["exit_bar_id"])
+        upper, lower = float(row["kc_upper"]), float(row["kc_lower"])
+        if (not all(math.isfinite(v) for v in (bar, exited, upper, lower, price))
+                or not 0 < lower < upper or price <= 0 or bar <= exited):
+            return False
+        if lower <= price <= upper:
+            ticket["pullback_bar"] = bar
+            return False
+        pulled = float(ticket.get("pullback_bar", float("nan")))
+        return math.isfinite(pulled) and exited < pulled <= bar
+    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+        return False

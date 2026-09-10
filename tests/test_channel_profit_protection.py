@@ -116,6 +116,7 @@ async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
         await e._try_profit_reentry(SYMBOL, f, 102., False)
         e._place_structured_entry.assert_not_awaited()
         fresh, price = outer_cycle_market('LONG')
+        await e._try_profit_reentry(SYMBOL, fresh, 100., False)
         await e._try_profit_reentry(SYMBOL, fresh, price, False)
         e._place_structured_entry.assert_awaited_once()
         assert e._place_structured_entry.call_args.args[1]['side'] == 'LONG'
@@ -138,7 +139,8 @@ async def test_general_exit_has_priority_over_profit_close():
     await e._process_single_symbol(SYMBOL, 1., None, False)
     assert e.account.events[0][3] == 'Channel Swing GENERAL_EXIT', e.account.logs
     e._place_structured_entry.assert_not_awaited()
-    assert SYMBOL not in e.account.channel_profit_reentries
+    assert e.account.channel_profit_reentries[SYMBOL]["requires_pullback"]
+    assert e.account.channel_profit_reentries[SYMBOL]["phase"] == "closed"
 
 
 @pytest.mark.anyio
@@ -154,7 +156,13 @@ async def test_restart_requires_matching_successful_close(matched):
                             reason='Channel Swing PROFIT_PROTECTION abc')] if matched else []
     e._place_structured_entry = AsyncMock(return_value=True)
     await e._try_profit_reentry(SYMBOL, f, 98.1, False)
-    assert e._place_structured_entry.await_count == int(matched)
+    e._place_structured_entry.assert_not_awaited()
+    assert (SYMBOL in e.account.channel_profit_reentries) is matched
+    if matched:
+        fresh, price = outer_cycle_market('LONG')
+        await e._try_profit_reentry(SYMBOL, fresh, 100., False)
+        await e._try_profit_reentry(SYMBOL, fresh, price, False)
+        e._place_structured_entry.assert_awaited_once()
     assert SYMBOL not in e.account.channel_profit_reentries
 
 
@@ -333,6 +341,7 @@ async def test_middle_signal_cannot_preempt_profit_exit_or_cancel_reentry():
     f.loc[11,'open'] = 102.
     await e._try_profit_reentry(SYMBOL, f, 102., False)
     fresh, price = outer_cycle_market('LONG')
+    await e._try_profit_reentry(SYMBOL, fresh, 100., False)
     await e._try_profit_reentry(SYMBOL, fresh, price, False)
     e._place_structured_entry.assert_awaited_once()
 
