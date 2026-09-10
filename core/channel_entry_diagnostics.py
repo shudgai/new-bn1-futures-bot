@@ -26,7 +26,7 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         pivot_ready = bool(side and fresh and state.get('identity') == (bar / 1000, side)
                            and state.get('at') == quoted and state.get('ready')
                            and state.get('last') == (price if side == 'LONG' else -price))
-        room = engine._channel_profit_room(frame, price, side) if side else None
+        room = None
         extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=pivot_ready,
                      outer_signal=outer.get('reason'), profit_room=room)
         if engine._channel_candle_entry_blocked(symbol, now):
@@ -48,8 +48,6 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             return result('KC_LIVE_MA3_DIRECTION_WAIT', '即時MA3未順向，暫不開倉', '多單須MA3上升、空單須下降；反向、持平或無效都不開。', **extra)
         if not live_adverse_entry_safe(frame, price, side):
             return result('KC_LIVE_ADVERSE_ENTRY_WAIT', '當根反向異常，暫不開倉', '沿用原開盤價及已收線ATR門檻。', **extra)
-        if not room['allowed']:
-            return result(room['reason'], '淨利空間未通過，暫不開倉', room['detail'], **extra)
         ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol)
         if ticket:
             if ticket.get('phase') != 'closed':

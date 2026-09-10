@@ -1,4 +1,4 @@
-"""All entries require net structural room, including cached and profit entries."""
+"""Structural room no longer blocks fresh, cached or reentry orders."""
 from unittest.mock import AsyncMock
 import pytest
 from core.channel_entry_room import entry_room
@@ -14,7 +14,7 @@ def anyio_backend(): return 'asyncio'
 @pytest.mark.parametrize('cached',[False,True])
 @pytest.mark.parametrize('reentry',[False,True])
 @pytest.mark.parametrize('target',['far','near','missing'])
-async def test_all_routes_require_room(side,cached,reentry,target,monkeypatch):
+async def test_all_routes_ignore_room(side,cached,reentry,target,monkeypatch):
     f=closed_outer_entry_frame(side);price=float(f.iloc[-1]['close'])
     sign=1 if side=='LONG' else -1
     rail='high' if side=='LONG' else 'low'
@@ -29,14 +29,11 @@ async def test_all_routes_require_room(side,cached,reentry,target,monkeypatch):
                 profit_room_pct=99.,estimated_profit_target=999.)
     if reentry:signal['profit_reentry_token']='old-profit'
     result=await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot if cached else None)
-    assert result is (target=='far'),e.account.logs
-    assert len(e.account.events)==int(target=='far')
-    if result:
-        assert signal['profit_room_checked']
-        assert signal['estimated_profit_target']==pytest.approx(price+sign*3.)
-    else:
-        reason='KC_PROFIT_TARGET_UNAVAILABLE' if target=='missing' else 'KC_PROFIT_ROOM_INSUFFICIENT'
-        assert any(reason in text for text,_ in e.account.logs),e.account.logs
+    assert result is True,e.account.logs
+    assert len(e.account.events)==1
+    assert signal['profit_room_checked'] is False
+    assert 'estimated_profit_target' not in signal
+    assert 'profit_room_pct' not in signal
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_live_extreme_cannot_supply_target(side):

@@ -239,3 +239,9 @@
 - 舊百分比狀態從首次新版淨利觀察建立階梯；MA3待平清除。新階梯待平持久化重試；舊CK票據不再授權新倉。
 - 新策略、single_abnormal_removed、close_deduplication、hard_stop共63 passed，涵蓋多空、成本、階梯、恢復、緊急出口及平倉失敗重試。
 - 規定三份交易回歸加ck_reverse及profit_protection：隔離b671f83基準158 passed / 76 failed；修改後140 passed / 94 failed。新增18項均為舊1U／20%鎖利或立即反手預期。不宣稱全套通過。證據 /tmp/fixed-baseline.txt、/tmp/fixed-regression.txt、/tmp/fixed-focused.txt。
+
+
+## 移除獲利空間（2026-09-10）
+- 已按用戶要求移除Channel Swing送單與診斷的結構淨空間攔截，兼容helper標示停用，清除快取舊目標。其他入口安全條件與固定階梯出口不變。
+- all_entry_room更新成多空／快取／重開及遠近／缺少目標均可通過空間關卡；加fixed_steps、adverse_entry、candle_frequency及close_deduplication共102 passed。
+- 規定三份交易回歸：隔離2b6ecf3及修改後均99 passed / 65 failed。結果見/tmp/remove-room-before.txt、/tmp/remove-room-after.txt、/tmp/remove-room-focused.txt；非全套通過。

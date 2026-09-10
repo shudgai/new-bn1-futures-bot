@@ -2,7 +2,6 @@ from core.channel_live_pivot import LivePivot
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
 import copy
-from core.channel_entry_room import entry_room
 from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
 from core.channel_surge_entry import surge_recovery_entry, long_entry_recovery_ready
@@ -2754,21 +2753,11 @@ class TradingEngine:
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
-            if side in ("LONG", "SHORT"):
-                room = self._channel_profit_room(fresh_frame, planned_price, side)
-                if not room["allowed"]:
-                    self.account.log(
-                        f"🛑 {symbol} {side} 禁止追單：{room['reason']} "
-                        + room.get("detail", "進場空間檢查未通過"), "WARNING")
-                    return False
-                # Replace cached estimates with the current structural target and costs.
-                signal.pop("profit_room_pct", None)
-                signal.pop("estimated_profit_target", None)
-                signal["profit_room_checked"] = room.get("checked", True)
-                signal["entry_trend_stage"] = room.get("stage")
-                if room.get("checked", True):
-                    signal["profit_room_pct"] = room["net_room_pct"]
-                    signal["estimated_profit_target"] = room["target"]
+            # User disabled structural profit-room filtering for all order routes.
+            signal.pop("profit_room_pct", None)
+            signal.pop("estimated_profit_target", None)
+            signal.pop("entry_trend_stage", None)
+            signal["profit_room_checked"] = False
             getattr(self, "tickers", {})[symbol] = planned_price
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         # Keep closed signal metadata for the order, but assess current market
@@ -4106,9 +4095,9 @@ class TradingEngine:
 
     @staticmethod
     def _channel_profit_room(frame, price, side="LONG"):
-        """Require structural net profit room for every new entry and reentry."""
-        return entry_room(frame, price, side, TAKER_FEE_RATE, SLIPPAGE_PCT,
-                          NET_PROFIT_GUARANTEE_BUFFER)
+        """Compatibility result: structural profit-room filtering is disabled."""
+        return dict(allowed=True, checked=False, reason="KC_PROFIT_ROOM_DISABLED",
+                    detail="獲利空間篩選已停用。")
 
     @staticmethod
     def _channel_long_profit_room(frame, price):
@@ -4144,10 +4133,8 @@ class TradingEngine:
 
     @staticmethod
     def _channel_entry_requires_profit_room(reason: str | None) -> bool:
-        """All KC outer entries must have enough projected profit room."""
-        if reason in {"KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT"}:
-            return False
-        return True
+        """No entry requires a structural profit target."""
+        return False
 
     @staticmethod
     def _channel_recent_candles_whipsawing(
