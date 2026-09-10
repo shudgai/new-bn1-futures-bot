@@ -213,3 +213,13 @@
 - 輸出：/tmp/ma3-restore-targeted.txt、/tmp/ma3-restore-regression.txt。
 
 - 部署驗證：8006重啟後 is_running=true、paper_trading=true，API策略說明已更新為MA3峰谷反向0.10 ATR。
+
+
+## 2026-09-10 盤中峰谷轉向入口完成
+
+- 新增逐報價峰谷入口：CK向上、同根報價先跌後升評估多單；CK向下、先升後跌評估空單。第一個嚴格轉向即有效，無額外K線、實體、MA或ATR反彈幅度要求；不使用當根影線推測報價先後。既有上下軌突破及受篩選延續保留。
+- WebSocket與掃描共用；正常平倉後下一根可重新觀察峰谷，異常票據仍須原回踩。新倉、快取、重開及最後送單重驗方向、報價、淨利空間、異常及帳戶風控；同幣鎖、每根限次沿用。換根、方向失效、持倉、重啟或報價中斷重新觀察；反向報價撤銷舊轉向。
+- 持倉出口、資金與槓桿未改。API策略與正常重開文字同步。
+- 新增峰谷測試50項全過；涵蓋多空、當根第一個轉向、掃描與WebSocket送單、正常／異常重開、報價順序、缺失／過期／跨分鐘、去重、失敗重試、最後報價變更、空間與帳戶攔截。
+- 最終18份測試：501 passed / 82 failed。隔離HEAD 50406c0基準六份164 passed / 80 failed、11份現行專項287 passed / 2 failed；最後失敗名稱與兩份基準聯集完全相同，新增失敗0。兩項專項既有失敗為exit_policy unarmed-ma3 LONG／SHORT；未改舊測試或出口以迎合斷言，不能宣稱全套通過。
+- 原始輸出與JUnit：/tmp/live-pivot-before.{txt,xml}、/tmp/live-pivot-targeted-before.{txt,xml}、/tmp/live-pivot-final.{txt,xml}。離線測試不代表實際市場已自動成交。

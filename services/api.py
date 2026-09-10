@@ -216,7 +216,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"雙入口：有效上下軌突破可進場；未重新破軌的延續須最近6根已收線K持續同向推進，排除反覆穿越中軌、CK轉向及實體大量重疊的波浪。CK外軌突破與延續開倉：最近兩根已收線同向實體均收在同側外軌外，多單兩綠、空單兩紅，每根實體至少20%；不要求第一根重新穿軌；最新價仍在同側外軌外。方向採最近兩根已收線CK中軌升降且同側外軌不逆向，不等MA3／MA15交叉或排列。CK方向與持倉相反即先平倉，成功後可同根反手，不等回調或重新破軌；反手新倉仍檢查淨利空間與帳戶風控。新倉、重開與送單前統一重驗；不要求同根價格回調；保留異常等待、每根限次及帳戶風控；每次新倉與重開均檢查已確認前高／前低的扣費滑點後淨利空間，無有效目標或未達既有淨空間門檻不開倉。預估淨利1USDT啟動20%回吐保護，保留淨利底線及既有更有利保護價；啟動後MA3、異常K與瀑布不另行平倉，CK確認反手及硬止損仍優先。未啟動保護時保留大瀑布及雙已收線反向異常出口，MA3進場後先順向，再相對上一根已收線MA3反向且從峰谷反向達觀察起始已收線ATR的0.10倍才平倉，不必碰軌，小幅抖動或線仍順向／持平不平，單根反向異常不平倉；送單前反向異常仍禁止開倉，手動及帳戶硬停損保留，硬停損適用所有Channel Swing持倉（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"盤中峰谷＋上下軌突破：CK向上時實際報價先跌後升開多，向下時先升後跌開空，不等收線或額外幾根K，不要求MA交叉或峰谷在軌外；不是預知絕對高低點。正常平倉後下一根可重新觀察峰谷，異常平倉專用回踩保留。有效上下軌突破可進場；未重新破軌的延續須最近6根已收線K持續同向推進，排除反覆穿越中軌、CK轉向及實體大量重疊的波浪。CK外軌突破與延續開倉：最近兩根已收線同向實體均收在同側外軌外，多單兩綠、空單兩紅，每根實體至少20%；不要求第一根重新穿軌；最新價仍在同側外軌外。方向採最近兩根已收線CK中軌升降且同側外軌不逆向，不等MA3／MA15交叉或排列。CK方向與持倉相反即先平倉，成功後可同根反手，不等回調或重新破軌；反手新倉仍檢查淨利空間與帳戶風控。新倉、重開與送單前統一重驗；不要求同根價格回調；保留異常等待、每根限次及帳戶風控；每次新倉與重開均檢查已確認前高／前低的扣費滑點後淨利空間，無有效目標或未達既有淨空間門檻不開倉。預估淨利1USDT啟動20%回吐保護，保留淨利底線及既有更有利保護價；啟動後MA3、異常K與瀑布不另行平倉，CK確認反手及硬止損仍優先。未啟動保護時保留大瀑布及雙已收線反向異常出口，MA3進場後先順向，再相對上一根已收線MA3反向且從峰谷反向達觀察起始已收線ATR的0.10倍才平倉，不必碰軌，小幅抖動或線仍順向／持平不平，單根反向異常不平倉；送單前反向異常仍禁止開倉，手動及帳戶硬停損保留，硬停損適用所有Channel Swing持倉（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -614,10 +614,10 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             if ticket:
                 entry_block = {
                     "reason": "KC_POST_CLOSE_PULLBACK_WAIT",
-                    "message": ("異常出場後，等待回踩及新順向訊號" if ticket.get("requires_pullback", True) else "平倉後，等待新軌外雙收線確認"),
-                    "detail": (("最近兩根紅實體均收在下軌外，不必重新穿軌（各至少20%）；即時MA3及CK順向且仍在下軌外。"
+                    "message": ("異常出場後，等待回踩及新順向訊號" if ticket.get("requires_pullback", True) else "平倉後，等待盤中峰谷或外軌訊號"),
+                    "detail": (("下一根起CK向下、報價先升後跌可評估峰頂空單，不等收線；或符合既有下軌突破／延續。"
                                 if ticket.get("side") == "SHORT" else
-                                "最近兩根綠實體均收在上軌外，不必重新穿軌（各至少20%）；即時MA3及CK順向且仍在上軌外。")
+                                "下一根起CK向上、報價先跌後升可評估谷底多單，不等收線；或符合既有上軌突破／延續。")
                                if not ticket.get("requires_pullback", True) else
                                "已觀察回到 CK 內；等待兩根同色實體均收在原側軌外（各至少20%），以及即時MA3與CK順向站回原側外軌。"
                                if ticket.get("pullback_bar") is not None else
