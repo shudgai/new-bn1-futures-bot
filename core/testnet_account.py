@@ -93,6 +93,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "channel_fading_ma3_turn",
     "channel_reverse_wait_ck",
     "channel_pivot_entry", "channel_pivot_middle_reached",
     "channel_pivot_middle_exit_pending", "entry_kc_middle",

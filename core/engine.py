@@ -1,3 +1,4 @@
+from core.channel_fading_exit import fading_ma3_turn, next_breakout_ready, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON
 from core.channel_direct_reverse import authorized as reverse_authorized, quote_ready as reverse_quote_ready
 from core.channel_abnormal_release import opposite_entry_releases
 from core.channel_live_pivot import LivePivot
@@ -7465,6 +7466,10 @@ class TradingEngine:
 
 
     def _release_resolved_abnormal_exit(self, symbol, frame, price):
+        if next_breakout_ready(self.account, symbol, frame, price):
+            self.account.channel_profit_reentries.pop(symbol)
+            self.account.save_state()
+            return True
         if opposite_entry_releases(self.account, symbol, frame, price):
             ticket = self.account.channel_profit_reentries.pop(symbol)
             self.account.save_state()
@@ -7539,6 +7544,8 @@ class TradingEngine:
         return False
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
+        if ticket.get("mode") == "next_breakout":
+            return False
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
@@ -7596,6 +7603,8 @@ class TradingEngine:
     async def _try_profit_reentry_locked(self, symbol, frame, price, daily_halt):
         ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
         if not ticket or symbol in self.account.positions:
+            return
+        if ticket.get('mode') == 'next_breakout':
             return
         if ticket.get('mode') in ('direct_reverse', 'ck_reverse', 'ma3_turn_wait'):
             self.account.channel_profit_reentries.pop(symbol, None)
@@ -7818,7 +7827,20 @@ class TradingEngine:
                 profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
                 if previous_protection != existing_pos.get("channel_profit_protection"):
                     self.account.save_state()
-                # MA3 never exits; emergencies remain active at every profit step.
+                # Observe MA3 independently; only confirmed CK fading permits this exit.
+                meta = self.account.position_meta.setdefault(symbol, {})
+                if FADING_STATE_KEY not in existing_pos and FADING_STATE_KEY in meta:
+                    existing_pos[FADING_STATE_KEY] = copy.deepcopy(meta[FADING_STATE_KEY])
+                before_turn = copy.deepcopy(existing_pos.get(FADING_STATE_KEY))
+                terminal_turn = fading_ma3_turn(existing_pos, channel_df, channel_price)
+                after_turn = existing_pos.get(FADING_STATE_KEY)
+                if after_turn is None:
+                    meta.pop(FADING_STATE_KEY, None)
+                else:
+                    meta[FADING_STATE_KEY] = copy.deepcopy(after_turn)
+                if before_turn != after_turn:
+                    self.account.save_state()
+                # Legacy MA3 pending flags cannot bypass the new fading gate.
                 changed = False
                 stale_keys = ["channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
                               "channel_outer_ma3_turn_exit_pending", "channel_live_ma3_turn_exit_pending",
@@ -7838,6 +7860,8 @@ class TradingEngine:
                         existing_pos["channel_exception_exit_pending"] = emergency
                         changed = True
                     channel_action = {"action": "EXIT", "side": None, "reason": emergency}
+                if terminal_turn and not emergency and not (profit and profit["triggered"]):
+                    channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
                 if changed:
                     self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
@@ -7912,10 +7936,11 @@ class TradingEngine:
                     "EMERGENCY_EXIT_2_CANDLE_ADVERSE", "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL",
                 }
                 ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
-                pullback_exit = abnormal_exit or ma3_turn_exit or channel_exit_net_profitable
+                fading_exit = channel_action.get("reason") == FADING_EXIT_REASON
+                pullback_exit = fading_exit or abnormal_exit or ma3_turn_exit or channel_exit_net_profitable
                 if pullback_exit:
                     tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
-                                       "phase": "closing", "side": existing_pos["side"], "mode": "outer_cycle",
+                                       "phase": "closing", "side": existing_pos["side"], "mode": "next_breakout" if fading_exit else "outer_cycle",
                                        "requires_pullback": abnormal_exit,
                                        "close_reason": f"Channel Swing {channel_action.get('reason')}",
                                        "close_requested_at_ms": int(time.time() * 1000),
@@ -7930,7 +7955,7 @@ class TradingEngine:
                 if pullback_exit:
                     if closed and symbol not in self.account.positions:
                         tickets[symbol]["phase"] = "closed"
-                        self.account.log(f"⏳ [平倉後重開] {symbol} " + ("異常出場，等後續K回到CK內再順向站回外軌" if abnormal_exit else "等實體破軌及下一根同色收線確認，送單時仍在原側外軌外"), "INFO")
+                        self.account.log(f"⏳ [平倉後重開] {symbol} " + ("等待平倉後新的兩根收線破軌確認，多空皆重新驗證" if fading_exit else "異常出場，等後續K回到CK內再順向站回外軌" if abnormal_exit else "等實體破軌及下一根同色收線確認，送單時仍在原側外軌外"), "INFO")
                     else:
                         tickets.pop(symbol, None)
                     self.account.save_state()

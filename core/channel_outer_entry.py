@@ -7,26 +7,28 @@ OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
 
 
-def ck_entry_momentum_ready(frame, side):
-    """Pause entries when three closed directional CK steps keep shrinking.
-
-    No state or exit signal: the next completed bar re-evaluates the pause.
-    """
+def ck_momentum_fading(frame, side):
+    """Return closed-bar directional fading, or None for invalid data."""
     try:
         if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 5:
-            return False
+            return None
         key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
         values = [float(v) for v in frame.iloc[-5:-1][key]]
         if not all(math.isfinite(v) and v > 0 for v in values):
-            return False
+            return None
         sign = 1 if side == 'LONG' else -1
         steps = [sign * (b - a) for a, b in zip(values, values[1:])]
         tolerance = max(values) * 1e-12
         fading = (steps[2] > 0 and steps[0] - steps[1] > tolerance
                   and steps[1] - steps[2] > tolerance)
-        return not fading
+        return fading
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return False
+        return None
+
+
+def ck_entry_momentum_ready(frame, side):
+    """Invalid CK data or confirmed fading pauses entries."""
+    return ck_momentum_fading(frame, side) is False
 
 
 def aligned_direction(frame, side):

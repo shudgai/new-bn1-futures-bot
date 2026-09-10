@@ -1,3 +1,4 @@
+from core.channel_fading_exit import next_breakout_ready
 """Read-only entry diagnostics; viewing a chart never observes or consumes a turn."""
 import math
 from core.channel_abnormal_release import opposite_entry_releases
@@ -46,6 +47,10 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             return result('KC_LIVE_ADVERSE_ENTRY_WAIT', '當根反向異常，暫不開倉', '沿用原開盤價及已收線ATR門檻。', **extra)
         ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol)
         if ticket and ticket.get('mode') in ('direct_reverse', 'ck_reverse', 'ma3_turn_wait'):
+            ticket = None
+        if ticket and ticket.get('mode') == 'next_breakout':
+            if not next_breakout_ready(engine.account, symbol, frame, price):
+                return result('KC_NEXT_BREAKOUT_WAIT', '等待平倉後新的兩根破軌確認', '不反手；第一根破軌須在實際平倉K之後，多空皆須重新驗證。', **extra)
             ticket = None
         if ticket and opposite_entry_releases(engine.account, symbol, frame, price):
             # Preview order validation without mutating persisted state.
