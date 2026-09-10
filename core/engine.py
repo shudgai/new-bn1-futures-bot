@@ -7644,8 +7644,8 @@ class TradingEngine:
                             state.pop(key)
                             changed = True
                 channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
-                if not is_armed and profit and profit.get("net_pnl", 0) > 0:
-                    # 尚未啟動獲利保護，且「有利潤」時，才允許異常 K、瀑布與 MA3 轉彎出場
+                if not is_armed:
+                    # 尚未啟動獲利保護（無足夠利潤可鎖時），才允許異常 K、瀑布與 MA3 轉彎出場
                     emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
                     if emergency:
                         if existing_pos.get("channel_exception_exit_pending") != emergency:
