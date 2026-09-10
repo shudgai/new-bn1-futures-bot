@@ -2,12 +2,26 @@ import asyncio
 from unittest.mock import AsyncMock
 import pytest
 from core.channel_outer_entry import outside_reentry
-from test_channel_middle_trend_entry import market
-from test_channel_swing_execution import _execution_engine, SYMBOL
+from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 @pytest.fixture
 def anyio_backend():
     return 'asyncio'
+
+
+def market(side):
+    frame = _narrow_channel_frame()
+    sign = 1 if side == 'LONG' else -1
+    frame['kc_upper'], frame['kc_lower'] = 103., 97.
+    frame['kc_middle'] = 100.
+    frame.loc[16:18, 'kc_middle'] = [100. - sign * .2, 100. - sign * .1, 100.]
+    frame.loc[16:18, 'kc_upper'] = [103., 102.9, 102.8]
+    frame.loc[16:18, 'kc_lower'] = [97., 97.1, 97.2]
+    price = 100. + sign * .4
+    frame.loc[19, ['open', 'close', 'high', 'low']] = [
+        100., price, max(100., price) + .1, min(100., price) - .1,
+    ]
+    return frame, price
 
 
 def setup(side):

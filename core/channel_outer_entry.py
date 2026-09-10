@@ -43,25 +43,6 @@ def outside_entry(frame, price):
     return wait
 
 
-def middle_trend_entry(frame, price):
-    """A closed middle trend plus live candle color needs no pivot or crossing."""
-    wait = {"action": "WAIT", "side": None, "reason": "KC_MIDDLE_TREND_WAIT"}
-    side = closed_ck_direction(frame, require_outer_slope=False)
-    if side is None:
-        return wait
-    try:
-        row = frame.iloc[-1]
-        opened, price = float(row["open"]), float(price)
-        lower, upper = float(row["kc_lower"]), float(row["kc_upper"])
-        if not all(math.isfinite(v) and v > 0 for v in (opened, price, lower, upper)) or lower >= upper:
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        if (side == "LONG" and price > opened) or (side == "SHORT" and price < opened):
-            return {"action": "ENTER", "side": side, "reason": "KC_MIDDLE_TREND_" + side}
-    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-        return {**wait, "reason": "KC_DATA_INVALID"}
-    return wait
-
-
 def outside_reentry(frame, price, side):
     """Same-side CK reentry needs a live directional candle and MA3 slope."""
     decision = outside_entry(frame, price)

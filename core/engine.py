@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, middle_trend_entry, outside_reentry, abnormal_pullback_ready
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, outside_reentry, abnormal_pullback_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
