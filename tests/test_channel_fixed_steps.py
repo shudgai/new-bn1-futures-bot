@@ -34,12 +34,13 @@ def test_old_percentage_stop_removed(side):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-async def test_ck_only_closes_and_stale_ticket_cannot_open(side,monkeypatch):
+async def test_ck_close_waits_for_fresh_quote_and_stale_legacy_ticket_cannot_open(side,monkeypatch):
     f,p,e=setup(side,monkeypatch)
     assert await e._try_ck_reverse(SYMBOL,f,p,False)
     assert [x[0] for x in e.account.events]==['close']
     assert SYMBOL not in e.account.positions
-    assert SYMBOL not in e.account.channel_profit_reentries
+    assert e.account.channel_profit_reentries[SYMBOL]['mode']=='direct_reverse'
+    assert e.account.channel_profit_reentries[SYMBOL]['phase']=='closed'
     e.account.channel_profit_reentries[SYMBOL]=dict(mode='ck_reverse',phase='closed',side=side,token='old')
     await e._try_profit_reentry_locked(SYMBOL,f,p,False)
     assert SYMBOL not in e.account.channel_profit_reentries

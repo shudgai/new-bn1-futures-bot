@@ -29,6 +29,16 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         room = None
         extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=pivot_ready,
                      outer_signal=outer.get('reason'), profit_room=room)
+        direct = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol, {})
+        if direct.get('mode') == 'direct_reverse':
+            from core.channel_direct_reverse import authorized, quote_ready
+            direct_side = direct.get('side')
+            extra['side'] = direct_side
+            if not authorized(engine.account, symbol, {'side': direct_side, 'profit_reentry_token': direct.get('token')}, now):
+                return result('KC_REVERSE_FILL_WAIT', '反手票據未獲成交確認或已過期', '僅成功平倉當根可重驗一次反向新倉。', **extra)
+            if not quote_ready(engine, symbol, frame, price, direct_side):
+                return result('KC_REVERSE_QUOTE_WAIT', '反手等待有效報價或反向異常解除', '仍保留報價時效與異常進場攔截。', **extra)
+            return result('KC_DIRECT_REVERSE_READY', '平倉已確認，評估直接反手', '不等CK方向；送單仍須通過帳戶風控，不能保證成交。', **extra)
         if engine._channel_candle_entry_blocked(symbol, now):
             # The diagnostic does not grant the CK reverse exception; order validation does.
             ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol, {})
