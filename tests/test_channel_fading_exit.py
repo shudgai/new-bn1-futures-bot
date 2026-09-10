@@ -2,6 +2,7 @@ import copy
 import json
 from types import SimpleNamespace
 import pytest
+import pandas as pd
 from core.channel_fading_exit import fading_ma3_turn, next_breakout_ready, STATE_KEY, EXIT_REASON
 from core.channel_outer_entry import ck_momentum_fading, ck_entry_momentum_ready
 from test_channel_significant_ma3 import setup
@@ -13,8 +14,17 @@ def anyio_backend(): return 'asyncio'
 
 def fading_frame(side, fading=True):
     f,p,s=setup(side)
+    prefix = f.iloc[:2].copy()
+    prefix["timestamp"] -= 120000
+    f = pd.concat([prefix, f], ignore_index=True)
+    f["kc_middle"] = 100.
     values=[0.,.3,.5,.6] if fading else [0.,.1,.3,.6]
     f.loc[f.index[-5:-1],'kc_middle']=[100+s*v for v in values]
+    middle = f["kc_middle"] if "kc_middle" in f else f["ema_20"]
+    f["kc_upper"] = middle * 1.02
+    f["kc_lower"] = middle * .98
+    f.loc[f.index[-2], "kc_upper"] = middle.iloc[-2] * 1.01
+    f.loc[f.index[-2], "kc_lower"] = middle.iloc[-2] * .99
     return f,p,s
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -142,3 +152,42 @@ def test_diagnostic_is_readonly_and_release_returns_to_general_entry(side):
     assert e._release_resolved_abnormal_exit(SYMBOL,f,price)
     assert SYMBOL not in e.account.channel_profit_reentries
     assert not e.account.events
+
+@pytest.mark.parametrize('ratio,expected',[(.5,True),(.75,True),(.751,False),(1.,False)])
+def test_relative_channel_width_boundary(ratio,expected):
+    from core.channel_fading_exit import ck_channel_narrow
+    f,_,_=fading_frame('LONG')
+    # Exact integer boundaries, avoiding fixture floating-point cancellation.
+    f['kc_middle']=100.;f['kc_upper']=102.;f['kc_lower']=98.
+    f.loc[f.index[-2],['kc_upper','kc_lower']]=[100+2*ratio,100-2*ratio]
+    assert ck_channel_narrow(f) is expected
+    f.loc[f.index[-1],['kc_upper','kc_lower']]=[float('nan'),float('nan')]
+    assert ck_channel_narrow(f) is expected
+
+@pytest.mark.parametrize('case',['short','nan','inverted','missing'])
+def test_invalid_narrow_data_does_not_authorize_exit(case):
+    from core.channel_fading_exit import ck_channel_narrow
+    f,_,_=fading_frame('LONG')
+    if case=='short': f=f.iloc[1:]
+    if case=='nan': f.loc[f.index[0],'kc_upper']=float('nan')
+    if case=='inverted': f.loc[f.index[-2],'kc_lower']=200.
+    if case=='missing': f=f.drop(columns='kc_lower')
+    assert not ck_channel_narrow(f)
+
+@pytest.mark.parametrize('side',['LONG','SHORT'])
+@pytest.mark.parametrize('armed',[False,True])
+def test_wide_channel_blocks_exit_but_still_blocks_new_entry(side,armed):
+    f,p,s=fading_frame(side)
+    p['channel_profit_protection']={'armed':armed}
+    middle=f['kc_middle']
+    f['kc_upper']=middle*1.02;f['kc_lower']=middle*.98
+    assert not ck_entry_momentum_ready(f,side)
+    for price in [100.,100+s*.3,100-s*.3]:
+        assert not fading_ma3_turn(p,f,price)
+    assert not p[STATE_KEY]['pending']
+    f.loc[f.index[-2],'kc_upper']=middle.iloc[-2]*1.01
+    f.loc[f.index[-2],'kc_lower']=middle.iloc[-2]*.99
+    assert not fading_ma3_turn(p,f,100-s*.3)
+    assert not fading_ma3_turn(p,f,100+s*.6)
+    assert fading_ma3_turn(p,f,100-s*.3)
+    assert fading_ma3_turn(json.loads(json.dumps(p)),None,100.)

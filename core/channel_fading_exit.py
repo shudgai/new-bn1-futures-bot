@@ -1,10 +1,34 @@
 """Post-entry MA3 turning exit gated by confirmed CK momentum fading."""
 import math
+from statistics import median
 from core.channel_ma3_turn import significant_ma3_turn
 from core.channel_outer_entry import ck_momentum_fading, aligned_entry
 
 STATE_KEY = 'channel_fading_ma3_turn'
 EXIT_REASON = 'CK_FADING_MA3_TURN_EXIT'
+
+
+# Relative closed-bar bandwidth avoids the fixed KC-width / current-ATR ratio.
+NARROW_LOOKBACK = 20
+NARROW_RATIO = 0.75
+
+
+def ck_channel_narrow(frame):
+    """Latest closed relative width <= 75% of preceding 20-bar median."""
+    try:
+        if frame is None or len(frame) < NARROW_LOOKBACK + 2:
+            return False
+        rows = frame.iloc[-(NARROW_LOOKBACK + 2):-1]
+        widths = []
+        for _, row in rows.iterrows():
+            upper, lower = float(row['kc_upper']), float(row['kc_lower'])
+            middle = float(row['kc_middle'] if 'kc_middle' in rows.columns else row['ema_20'])
+            if not all(math.isfinite(v) for v in (upper, lower, middle)) or not 0 < lower < middle < upper:
+                return False
+            widths.append((upper - lower) / middle)
+        return widths[-1] <= median(widths[:-1]) * NARROW_RATIO
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
 
 
 def fading_ma3_turn(position, frame, price):
@@ -29,11 +53,12 @@ def fading_ma3_turn(position, frame, price):
     if state is None:
         position.pop(STATE_KEY, None)
         return False
-    if turned and not fading:
+    eligible = fading and ck_channel_narrow(frame)
+    if turned and not eligible:
         # Do not save a non-fading turn to trigger retrospectively on a later bar.
         state.update(pending=False, favorable=False)
     position[STATE_KEY] = state
-    return bool(turned and fading)
+    return bool(turned and eligible)
 
 
 def next_breakout_ready(account, symbol, frame, price):

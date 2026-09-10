@@ -1,5 +1,12 @@
 # 現行出口續驗紀錄
 
+## 2026-09-11 CK衰退出口新增通道狹窄
+
+- 入口既有CK衰退攔截不變；出口新增最新已收線相對軌寬≤前20根中位數75%，再與CK衰退及MA3顯著反轉共同判斷。固定ATR倍數不適合判斷，因KC軌寬本身為ATR固定倍數。
+- 已觸發待平仍重試；寬通道反轉不追溯觸發。既有其他出口不變；不宣稱可避免07:17歷史平倉，缺少當時完整快照。
+- fading_exit、ma3_continuation、hard_stop共108 passed，含新增12項狹窄邊界、無效資料、多空及保護狀態測試。
+- waterfall_threshold及profit_protection回歸：52 passed / 18 failed；隔離HEAD基準同為52 passed / 18 failed，失敗集合一致，新增0。證據 /tmp/ck-narrow-baseline.txt、/tmp/ck-narrow-regression.txt。
+
 ## 2026-09-10 單根瀑布放寬至1.5 ATR
 
 - 使用者要求1 ATR設寬；本輪採1.5 ATR，多空及盤中／已收線補判一致。獨立CHANNEL_WATERFALL_BODY_ATR，保持原始開盤與上一根已收線ATR，雙異常各0.5 ATR及開倉異常攔截不變。已觸發待平仍重試，其他出口不變。
