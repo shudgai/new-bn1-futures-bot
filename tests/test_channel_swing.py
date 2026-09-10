@@ -569,7 +569,7 @@ def test_live_price_below_lower_rail_waits_without_valid_closed_bodies():
     rail_now = float(df.loc[68, "kc_lower"])
     df.loc[66:68, "kc_lower"] = [rail_now - -1 * .2, rail_now - -1 * .1, rail_now]
     res = TradingEngine._channel_swing_action(df, 92.3)
-    assert res == {'action': 'WAIT', 'side': None, 'reason': 'KC_MA_ALIGNMENT_WAIT'}
+    assert res == {'action': 'WAIT', 'side': None, 'reason': 'KC_DIRECTION_WAIT'}
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)

@@ -1,6 +1,5 @@
 """Live outside entries use the current CK rail; order route checks room and risk."""
 import math
-from core.channel_pivot_entry import closed_ck_direction
 from core.channel_surge_entry import surge_recovery_entry
 
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
@@ -8,19 +7,29 @@ TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
 
 
 def aligned_direction(frame, side):
-    """Two closed MA slopes and their latest ordering must agree with closed KC."""
-    if side not in ("LONG", "SHORT") or closed_ck_direction(frame) != side:
-        return False
+    """CK sets direction without waiting for moving-average alignment."""
+    return side in ('LONG', 'SHORT') and ck_direction(frame) == side
+
+
+def ck_direction(frame):
+    """Latest closed middle slope, confirmed by the directional outer slope."""
     try:
-        sign = 1 if side == "LONG" else -1
-        previous, latest = frame.iloc[-3], frame.iloc[-2]
-        values = [float(row[key]) for row in (previous, latest) for key in ("ma3", "ma15")]
-        if not all(math.isfinite(v) and v > 0 for v in values):
-            return False
-        a, b, c, d = values
-        return sign * (c - a) > 0 and sign * (d - b) > 0 and sign * (c - d) > 0
+        if frame is None or len(frame) < 3:
+            return None
+        key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
+        rows = [[float(row[k]) for k in ('kc_lower', key, 'kc_upper')]
+                for _, row in frame.iloc[-3:-1].iterrows()]
+        if any(not all(math.isfinite(v) and v > 0 for v in row)
+               or not row[0] < row[1] < row[2] for row in rows):
+            return None
+        a, b = rows
+        if b[1] > a[1] and b[2] >= a[2]:
+            return 'LONG'
+        if b[1] < a[1] and b[0] <= a[0]:
+            return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return False
+        return None
+    return None
 
 
 def live_adverse_entry_safe(frame, price, side):
@@ -81,7 +90,7 @@ def sustained_trend_ready(frame, side):
 
 def aligned_entry(frame, price):
     """Two closed bodies outside the rail allow breakout or continuation entry."""
-    wait = {"action": "WAIT", "side": None, "reason": "KC_MA_ALIGNMENT_WAIT"}
+    wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
         live = frame.iloc[-1]
@@ -93,7 +102,7 @@ def aligned_entry(frame, price):
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        side = closed_ck_direction(frame)
+        side = ck_direction(frame)
         if not aligned_direction(frame, side):
             return wait
         if not (confirmed_outer_breakout_ready(frame, price, side)
@@ -103,8 +112,6 @@ def aligned_entry(frame, price):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
         if not two_closed_bodies_ready(frame, side):
             return {**wait, "reason": "KC_TWO_CLOSED_BODIES_WAIT"}
-        if not live_ma3_direction_ready(frame, price, side):
-            return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if side == "LONG":
             recovery = surge_recovery_entry(frame, price)
             if recovery is not None and recovery.get("action") != "ENTER":
@@ -117,23 +124,7 @@ def aligned_entry(frame, price):
 
 
 def aligned_entry_ready(frame, price, side):
-    if side not in ("LONG", "SHORT") or aligned_entry(frame, price).get("side") != side:
-        return False
-    try:
-        previous, latest, live = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
-        ma3_values = [float(previous["ma3"]), float(latest["ma3"])]
-        opened, quoted = float(live["open"]), float(price)
-        values = (*ma3_values, opened, quoted)
-        if not all(math.isfinite(value) and value > 0 for value in values):
-            return False
-        sign = 1 if side == "LONG" else -1
-        ma3_descends_or_rises = all(
-            sign * (current - prior) > 0
-            for prior, current in zip(ma3_values, ma3_values[1:])
-        )
-        return ma3_descends_or_rises and live_ma3_direction_ready(frame, price, side)
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return False
+    return side in ('LONG', 'SHORT') and aligned_entry(frame, price).get('side') == side
 
 
 def live_ma3_direction_ready(frame, price, side):
@@ -303,29 +294,11 @@ def continuation_entry(frame, price):
 
 
 def outside_reentry(frame, price, side):
-    """Revalidate two closed outside bodies and live MA3 for every reentry."""
+    """Use the same CK direction and body checks for normal reentries."""
     decision = aligned_entry(frame, price)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
-    if decision.get("reason") not in TREND_CODES and not decision.get("reason", "").startswith("KC_CONTINUATION_"):
-        return decision
-    try:
-        sign = 1 if side == "LONG" else -1
-        price = float(price)
-        upper, lower = float(frame.iloc[-1]["kc_upper"]), float(frame.iloc[-1]["kc_lower"])
-        if not all(math.isfinite(v) for v in (upper, lower)) or not 0 < lower < upper:
-            raise ValueError("invalid CK data")
-        opened = float(frame.iloc[-1]["open"])
-        closes = [float(v) for v in frame["close"].iloc[-4:-1]]
-        if len(closes) != 3 or not all(math.isfinite(v) and v > 0 for v in [opened, price, *closes]):
-            raise ValueError("invalid MA3 data")
-        last = sum(closes) / 3
-        live = (sum(closes[-2:]) + price) / 3
-        if sign * (live - last) > 0:
-            return decision
-    except (TypeError, ValueError, KeyError, IndexError):
-        pass
-    return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_MA3_WAIT"}
+    return decision
 
 
 def abnormal_pullback_ready(ticket, frame, price):

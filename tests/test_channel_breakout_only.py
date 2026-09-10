@@ -22,8 +22,8 @@ def invalid_frame(side, case):
     if case in ('inside', 'touch'):
         price = float(f.iloc[-1][rail]) - (sign * .1 if case == 'inside' else 0)
     elif case in ('flat', 'reverse'):
-        # Stale live indicator still looks favorable; the latest quote must win.
-        f.loc[16, 'close'] = price + (sign * .1 if case == 'reverse' else 0)
+        # CK, rather than MA3, now determines the permitted entry direction.
+        f.loc[18, 'kc_middle'] = f.loc[17, 'kc_middle'] - (sign * .1 if case == 'reverse' else 0)
     elif case == 'no_cross':
         f.loc[17, 'open'] = float(f.loc[17, rail]) + sign * .1
     elif case == 'one_body':

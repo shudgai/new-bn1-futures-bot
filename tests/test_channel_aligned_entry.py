@@ -69,8 +69,10 @@ def test_neither_route_bypasses_alignment_or_invalid_data(side, route, bad):
     else:
         f.loc[18, "low"] = f.loc[18, "high"] + 1
     price = float(f.iloc[-1]["close"])
-    assert aligned_entry(f, price)["action"] == "WAIT"
-    assert outside_reentry(f, price, side)["action"] == "WAIT"
+    expected = 'ENTER' if route == 'breakout' and bad in (
+        'ma3_flat', 'ma3_reverse', 'ma15_flat', 'ma15_reverse', 'ordering', 'nan') else 'WAIT'
+    assert aligned_entry(f, price)["action"] == expected
+    assert outside_reentry(f, price, side)["action"] == expected
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -110,7 +112,7 @@ async def test_scan_and_real_order_keep_risk_checks(side, route, block, monkeypa
         e.fetch_klines = AsyncMock(side_effect=[f.copy(), fresh])
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
     await e._process_single_symbol(SYMBOL, 1., None, block == "halt")
-    assert len(e.account.events) == int(block == "none" and route == "breakout"), e.account.logs
+    assert len(e.account.events) == int(block in ("none", "fresh_ma") and route == "breakout"), e.account.logs
     assert not any("處理失敗" in text for text, _ in e.account.logs)
 
 
@@ -122,7 +124,7 @@ async def test_cached_order_rechecks_alignment(side, cached, monkeypatch):
     price = float(f.iloc[-1]["close"])
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
-    f.loc[18, "ma15"] = f.loc[17, "ma15"]
+    f.loc[18, "kc_middle"] = f.loc[17, "kc_middle"]
     snapshot = dict(price=price, frame=f, kc_upper=float(f.iloc[-1]["kc_upper"]), kc_lower=float(f.iloc[-1]["kc_lower"]))
     e._fresh_channel_entry_snapshot = AsyncMock(return_value=snapshot)
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
@@ -156,7 +158,7 @@ async def test_profit_reentry_keeps_pullback_and_fresh_direction(side, case, mon
         e.fetch_klines = AsyncMock(return_value=fresh)
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
     await e._try_profit_reentry(SYMBOL, f, price, False)
-    assert len(e.account.events) == int(case in ("normal", "recovered")), e.account.logs
+    assert len(e.account.events) == int(case in ("normal", "recovered", "fresh_ma")), e.account.logs
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
