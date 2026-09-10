@@ -7628,36 +7628,41 @@ class TradingEngine:
                 profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
                 if previous_protection != existing_pos.get("channel_profit_protection"):
                     self.account.save_state()
-                # Middle touches never close positions, including unarmed and legacy pivot positions.
-                if (channel_action.get("action") == "EXIT"
-                        and channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED"):
-                    channel_action = {"action": "HOLD", "side": None, "reason": "PROFIT_EXIT_MANAGED"}
-                # Withdraw legacy MA3 requests; the active turn request below is
-                # persisted separately so a failed close can be retried.
+                # Profit retracement is the only strategy-driven holding exit.
+                # Remove obsolete requests from positions and persisted metadata.
                 changed = False
-                for key in ("channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
-                            "channel_outer_ma3_turn_exit_pending"):
-                    if key in existing_pos:
-                        existing_pos.pop(key)
-                        changed = True
-                previous_ma3_observation = existing_pos.get("channel_ma3_turn_observed_bar")
-                emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
-                if emergency:
-                    if existing_pos.get("channel_exception_exit_pending") != emergency:
-                        existing_pos["channel_exception_exit_pending"] = emergency
-                        changed = True
-                    channel_action = {"action": "EXIT", "side": None, "reason": emergency}
-                elif self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price):
-                    if not existing_pos.get("channel_live_ma3_turn_exit_pending"):
-                        existing_pos["channel_live_ma3_turn_exit_pending"] = True
-                        changed = True
-                    channel_action = {
-                        "action": "EXIT", "side": None,
-                        "reason": "KC_" + existing_pos["side"] + "_LIVE_MA3_TURN_EXIT",
-                    }
-                else:
-                    channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
-                if changed or previous_ma3_observation != existing_pos.get("channel_ma3_turn_observed_bar"):
+                stale_keys = ["channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
+                              "channel_outer_ma3_turn_exit_pending"]
+                is_armed = (existing_pos.get("channel_profit_protection") or {}).get("armed")
+                if is_armed:
+                    # 當獲利保護啟動時，不再讓異常 K 或 MA3 搶先平倉，清除舊有標記
+                    stale_keys.extend(["channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar", "channel_exception_exit_pending"])
+                    
+                for state in (existing_pos, self.account.position_meta.get(symbol, {})):
+                    for key in stale_keys:
+                        if key in state:
+                            state.pop(key)
+                            changed = True
+                channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
+                
+                if not is_armed:
+                    # 尚未啟動獲利保護，允許異常 K、瀑布與 MA3 轉彎出場
+                    emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
+                    if emergency:
+                        if existing_pos.get("channel_exception_exit_pending") != emergency:
+                            existing_pos["channel_exception_exit_pending"] = emergency
+                            changed = True
+                        channel_action = {"action": "EXIT", "side": None, "reason": emergency}
+                    elif self._channel_live_ma3_turn_exit(existing_pos, channel_df, channel_price):
+                        if not existing_pos.get("channel_live_ma3_turn_exit_pending"):
+                            existing_pos["channel_live_ma3_turn_exit_pending"] = True
+                            changed = True
+                        channel_action = {
+                            "action": "EXIT", "side": None,
+                            "reason": "KC_" + existing_pos["side"] + "_LIVE_MA3_TURN_EXIT",
+                        }
+
+                if changed:
                     self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
                     if tickets.pop(symbol, None) is not None:
