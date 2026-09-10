@@ -1,10 +1,11 @@
-"""Two completed bodies at entry; an MA3 turn alone never closes a position."""
+"""Closed bodies qualify breakouts; aligned trend entries and order gates remain independent."""
 import pytest
 from core.engine import TradingEngine
 from core.channel_outer_entry import (
-    continuation_entry, outside_reentry, two_closed_bodies_ready,
+    aligned_entry, confirmed_outer_breakout_ready, outside_reentry, two_closed_bodies_ready,
 )
 from test_channel_next_live_push import push_frame
+from test_channel_aligned_entry import aligned_frame
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 
@@ -29,41 +30,52 @@ def continuation_frame(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("route", ["continuation"])
 @pytest.mark.parametrize("bar", [-3, -2])
-@pytest.mark.parametrize("invalid", ["opposite", "doji", "wick", "nan"])
-def test_each_closed_body_is_required(side, route, bar, invalid):
-    f = push_frame(side) if route == "push" else continuation_frame(side)
-    price = (103.2 if route == "push" else 103.4) if side == "LONG" else (96.8 if route == "push" else 96.6)
-    fn = continuation_entry
-    assert fn(f, price)["side"] == side
+@pytest.mark.parametrize("invalid", ["opposite", "doji", "small_body", "nan"])
+def test_closed_bodies_qualify_breakout_but_not_aligned_trend(side, bar, invalid):
+    f = aligned_frame(side, "breakout")
+    price = float(f.iloc[-1]["close"])
+    assert aligned_entry(f, price)["reason"] == "KC_CONTINUATION_" + side
+    assert confirmed_outer_breakout_ready(f, price, side)
     idx = f.index[bar]
+    sign = 1 if side == "LONG" else -1
+    closed = float(f.loc[idx, "close"])
     if invalid == "opposite":
-        opened, closed = f.loc[idx, ["open", "close"]]
-        f.loc[idx, ["open", "close"]] = [closed, opened]
+        f.loc[idx, "open"] = closed + sign * .05
     elif invalid == "doji":
-        f.loc[idx, "open"] = f.loc[idx, "close"]
-    elif invalid == "wick":
-        f.loc[idx, ["high", "low"]] = [120., 80.]
+        f.loc[idx, "open"] = closed
+    elif invalid == "small_body":
+        f.loc[idx, "open"] = closed - sign * .001
     else:
         f.loc[idx, "open"] = float("nan")
     assert not two_closed_bodies_ready(f, side)
-    assert fn(f, price)["action"] == "WAIT"
-    assert TradingEngine._channel_swing_action(f, price)["action"] == "WAIT"
-    assert outside_reentry(f, price, side)["action"] == "WAIT"
+    assert not confirmed_outer_breakout_ready(f, price, side)
+    expected = (dict(action="WAIT", side=None, reason="KC_MA_ALIGNMENT_WAIT")
+                if invalid == "nan" else
+                dict(action="ENTER", side=side, reason="KC_MIDDLE_TREND_" + side))
+    assert aligned_entry(f, price) == expected
+    assert TradingEngine._channel_swing_action(f, price) == expected
+    reentry = outside_reentry(f, price, side)
+    assert reentry["action"] == expected["action"]
+    if invalid != "nan":
+        assert reentry == expected
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-async def test_order_snapshot_rechecks_two_closed_bodies(side):
-    f = continuation_frame(side)
-    price = 103.4 if side == "LONG" else 96.6
+async def test_order_snapshot_falls_back_to_trend_and_rechecks_alignment(side):
+    f = aligned_frame(side, "breakout")
+    price = float(f.iloc[-1]["close"])
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
     e.tickers[SYMBOL] = price
     bar = e._channel_candidate_bar_id(f)
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, bar) is not None
     f.loc[f.index[-3], "open"] = f.iloc[-3]["close"]
+    snapshot = await e._fresh_channel_entry_snapshot(SYMBOL, side, bar)
+    assert snapshot is not None
+    assert aligned_entry(snapshot["frame"], price)["reason"] == "KC_MIDDLE_TREND_" + side
+    f.loc[f.index[-2], "ma15"] = f.iloc[-3]["ma15"]
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, bar) is None
 
 
@@ -101,11 +113,12 @@ async def test_unarmed_ma3_turn_sells(side, pending):
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("cached", [False, True])
-async def test_cached_or_fresh_signal_cannot_bypass_body_gate(side, cached, monkeypatch):
+async def test_cached_or_fresh_signal_cannot_bypass_invalid_candle(side, cached, monkeypatch):
     from unittest.mock import AsyncMock
-    f = continuation_frame(side)
-    f.loc[f.index[-3], "open"] = f.iloc[-3]["close"]
-    price = 103.4 if side == "LONG" else 96.6
+    f = aligned_frame(side, "breakout")
+    price = float(f.iloc[-1]["close"])
+    assert aligned_entry(f, price)["side"] == side
+    f.loc[f.index[-3], "open"] = float("nan")
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
@@ -115,4 +128,4 @@ async def test_cached_or_fresh_signal_cannot_bypass_body_gate(side, cached, monk
     assert not await e._place_structured_entry(
         SYMBOL, signal, price, channel_snapshot=snapshot if cached else None)
     assert not e.account.events
-    assert any("缺少已收線實體破軌與下一根同色確認" in message for message, _ in e.account.logs)
+    assert any("MA3／MA15／KC未同向或入口確認失效" in message for message, _ in e.account.logs)
