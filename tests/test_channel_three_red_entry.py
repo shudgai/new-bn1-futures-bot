@@ -2,7 +2,7 @@
 import pytest
 
 from core.channel_outer_entry import (
-    confirmed_outer_breakout_ready, continuation_entry, outside_reentry,
+    aligned_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry,
     three_closed_short_breakout_ready,
 )
 from core.engine import TradingEngine
@@ -24,6 +24,7 @@ def three_red_frame():
     f.loc[8:11, "kc_lower"] = [98., 97.9, 97.8, 97.7]
     f.loc[8:11, "kc_middle"] = [100., 99.9, 99.8, 99.7]
     f.loc[8:11, "ma3"] = [98., 97.5, 97., 96.8]
+    f.loc[8:11, "ma15"] = [99.2, 99.1, 99., 98.9]
     return f
 
 
@@ -70,11 +71,21 @@ def test_three_red_rejects_incomplete_or_invalid_confirmation(invalid):
     assert not three_closed_short_breakout_ready(f, price)
     assert not confirmed_outer_breakout_ready(f, price, "SHORT")
     assert continuation_entry(f, price)["action"] == "WAIT"
-    assert outside_reentry(f, price, "SHORT")["action"] == "WAIT"
+    # A rejected breakout can still qualify through the aligned trend route.
+    decision = aligned_entry(f, price)
+    if invalid in ("middle_green", "middle_doji", "first_small", "third_small", "no_cross", "third_inside"):
+        assert decision == dict(action="ENTER", side="SHORT", reason="KC_MIDDLE_TREND_SHORT")
+        assert outside_reentry(f, price, "SHORT") == decision
+    elif invalid == "live_inside":
+        assert decision == dict(action="ENTER", side="SHORT", reason="KC_MIDDLE_TREND_SHORT")
+        assert outside_reentry(f, price, "SHORT")["reason"] == "KC_REENTRY_COLOR_MA3_WAIT"
+    else:
+        assert decision["action"] == "WAIT"
+        assert outside_reentry(f, price, "SHORT")["action"] == "WAIT"
 
 
 @pytest.mark.anyio
-async def test_snapshot_revalidates_three_red_and_current_price():
+async def test_snapshot_relabels_lost_breakout_and_rechecks_direction():
     f = three_red_frame()
     e = _execution_engine(f, "SHORT", True)
     e.account.positions.clear()
@@ -82,9 +93,16 @@ async def test_snapshot_revalidates_three_red_and_current_price():
     bar = e._channel_candidate_bar_id(f)
     assert await e._fresh_channel_entry_snapshot(SYMBOL, "SHORT", bar) is not None
     e.tickers[SYMBOL] = 97.7
-    assert await e._fresh_channel_entry_snapshot(SYMBOL, "SHORT", bar) is None
+    snapshot = await e._fresh_channel_entry_snapshot(SYMBOL, "SHORT", bar)
+    assert snapshot is not None
+    assert aligned_entry(snapshot["frame"], e.tickers[SYMBOL])["reason"] == "KC_MIDDLE_TREND_SHORT"
     e.tickers[SYMBOL] = 96.4
     f.loc[9, "open"] = f.loc[9, "close"]
+    snapshot = await e._fresh_channel_entry_snapshot(SYMBOL, "SHORT", bar)
+    assert snapshot is not None
+    assert aligned_entry(snapshot["frame"], e.tickers[SYMBOL])["reason"] == "KC_MIDDLE_TREND_SHORT"
+
+    f.loc[10, "ma15"] = f.loc[9, "ma15"]
     assert await e._fresh_channel_entry_snapshot(SYMBOL, "SHORT", bar) is None
 
 
@@ -110,24 +128,25 @@ def test_three_green_does_not_receive_short_exception():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("cached", [False, True])
-async def test_order_gate_cannot_reuse_three_red_after_middle_changes(cached, monkeypatch):
+async def test_order_gate_cannot_reuse_three_red_after_alignment_changes(cached, monkeypatch):
     from unittest.mock import AsyncMock
     f = three_red_frame()
     e = _execution_engine(f, "SHORT", True)
     e.account.positions.clear()
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
-    f.loc[9, "open"] = f.loc[9, "close"]
+    assert aligned_entry(f, 96.4)["reason"] == "KC_CONTINUATION_SHORT"
+    f.loc[10, "ma15"] = f.loc[9, "ma15"]
     snapshot = dict(price=96.4, kc_upper=102., kc_lower=97.7, frame=f)
     e._fresh_channel_entry_snapshot = AsyncMock(return_value=snapshot)
     signal = dict(side="SHORT", entry_mode="CHANNEL_SWING", action="ENTER_MARKET")
     assert not await e._place_structured_entry(
         SYMBOL, signal, 96.4, channel_snapshot=snapshot if cached else None)
     assert not e.account.events
-    assert any("缺少已收線實體破軌" in message for message, _ in e.account.logs)
+    assert any("MA3／MA15／KC未同向或入口確認失效" in message for message, _ in e.account.logs)
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("case", ["normal", "abnormal", "recovered", "same_bar", "room", "changed"])
+@pytest.mark.parametrize("case", ["normal", "abnormal", "recovered", "same_bar", "room", "middle_doji", "alignment_changed"])
 async def test_three_red_profit_reentry_preserves_other_gates(case, monkeypatch):
     from unittest.mock import AsyncMock
     f = three_red_frame()
@@ -146,9 +165,11 @@ async def test_three_red_profit_reentry_preserves_other_gates(case, monkeypatch)
         ticket["exit_bar_id"] = 11000.
     e.account.channel_profit_reentries = {SYMBOL: ticket}
     fresh = f.copy()
-    if case == "changed":
+    if case == "middle_doji":
         fresh.loc[9, "open"] = fresh.loc[9, "close"]
+    if case == "alignment_changed":
+        fresh.loc[10, "ma15"] = fresh.loc[9, "ma15"]
     e.fetch_klines = AsyncMock(return_value=fresh)
     monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
     await e._try_profit_reentry(SYMBOL, f, 96.4, False)
-    assert len(e.account.events) == int(case in ("normal", "recovered")), e.account.logs
+    assert len(e.account.events) == int(case in ("normal", "recovered", "middle_doji")), e.account.logs
