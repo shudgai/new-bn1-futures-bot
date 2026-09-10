@@ -53,7 +53,7 @@ def trend_style(frame, side, opened_at=None):
 
 
 def protection(position, price, fee, slippage, frame=None):
-    """Arm at 1 USDT net, then close on a 20% drawdown of peak net profit."""
+    """Arm at 0.5 USDT net, then close on a 20% drawdown of peak net profit."""
     entry = float(position.get('entry_price') or 0)
     qty = float(position.get('qty') or 0)
     side = position.get('side')
@@ -81,7 +81,7 @@ def protection(position, price, fee, slippage, frame=None):
                      locked_net=max(0., floor), pending=pending)
     state['peak_net'] = max(float(state.get('peak_net', net)), net)
     state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
-    state['armed'] = bool(state.get('armed')) or state['peak_net'] >= 1. - 1e-10 or state['locked_net'] > 0.
+    state['armed'] = bool(state.get('armed')) or state['peak_net'] >= 0.5 - 1e-10 or state['locked_net'] > 0.
     if not state['armed']:
         return None
     locked = max(float(state['locked_net']), state['peak_net'] * .80)
