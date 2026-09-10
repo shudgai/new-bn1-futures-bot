@@ -1,3 +1,4 @@
+from core.channel_entry_diagnostics import entry_diagnostics
 import asyncio
 import os
 import csv
@@ -16,8 +17,6 @@ from core.config import (
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
 from core.engine import engine
-from core.channel_outer_entry import outside_reentry
-from core.channel_surge_entry import surge_recovery_entry
 from core.paper_account import get_taipei_now_str
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
@@ -216,7 +215,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"盤中峰谷＋上下軌突破：CK向上時實際報價先跌後升開多，向下時先升後跌開空，不等收線或額外幾根K，不要求MA交叉或峰谷在軌外；不是預知絕對高低點。正常平倉後下一根可重新觀察峰谷，異常平倉專用回踩保留。有效上下軌突破可進場；未重新破軌的延續須最近6根已收線K持續同向推進，排除反覆穿越中軌、CK轉向及實體大量重疊的波浪。CK外軌突破與延續開倉：最近兩根已收線同向實體均收在同側外軌外，多單兩綠、空單兩紅，每根實體至少20%；不要求第一根重新穿軌；最新價仍在同側外軌外。方向採最近兩根已收線CK中軌升降且同側外軌不逆向，不等MA3／MA15交叉或排列。CK方向與持倉相反即先平倉，成功後可同根反手，不等回調或重新破軌；反手新倉仍檢查淨利空間與帳戶風控。新倉、重開與送單前統一重驗；不要求同根價格回調；保留異常等待、每根限次及帳戶風控；每次新倉與重開均檢查已確認前高／前低的扣費滑點後淨利空間，無有效目標或未達既有淨空間門檻不開倉。預估淨利1USDT啟動20%回吐保護，保留淨利底線及既有更有利保護價；啟動後MA3、異常K與瀑布不另行平倉，CK確認反手及硬止損仍優先。未啟動保護時保留大瀑布及雙已收線反向異常出口，MA3進場後先順向，再相對上一根已收線MA3反向且從峰谷反向達觀察起始已收線ATR的0.10倍才平倉，不必碰軌，小幅抖動或線仍順向／持平不平，單根反向異常不平倉；送單前反向異常仍禁止開倉，手動及帳戶硬停損保留，硬停損適用所有Channel Swing持倉（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"盤中峰谷＋上下軌突破：CK向上時實際報價先跌後升開多，向下時先升後跌開空，不等收線或額外幾根K，不要求MA交叉或峰谷在軌外；不是預知絕對高低點。正常平倉後下一根可重新觀察峰谷，異常平倉專用回踩保留。有效上下軌突破可進場；未重新破軌的延續須最近6根已收線K持續同向推進，排除反覆穿越中軌、CK轉向及實體大量重疊的波浪。CK外軌突破與延續開倉：最近兩根已收線同向實體均收在同側外軌外，多單兩綠、空單兩紅，每根實體至少20%；不要求第一根重新穿軌；最新價仍在同側外軌外。方向採最近兩根已收線CK中軌升降且同側外軌不逆向，不等MA3／MA15交叉或排列。CK方向與持倉相反即先平倉，成功後可同根反手，不等回調或重新破軌；反手新倉仍檢查淨利空間與帳戶風控。新倉、重開與送單前統一重驗；不要求同根價格回調；保留異常等待、每根限次及帳戶風控；每次新倉與重開均檢查已確認前高／前低的扣費滑點後淨利空間，無有效目標或未達既有淨空間門檻不開倉。預估淨利1USDT啟動20%回吐保護，保留淨利底線及既有更有利保護價；啟動後MA3、異常K與瀑布不另行平倉，CK確認反手及硬止損仍優先。未啟動保護時保留大瀑布及雙已收線反向異常出口，MA3進場後先順向，之後相對上一根已收線MA3的反向幅度與從所觀察峰谷的回退幅度都須達首次觀察已收線ATR的0.10倍才平倉，不必碰軌，小幅抖動或線仍順向／持平不平，單根反向異常不平倉；送單前反向異常仍禁止開倉，手動及帳戶硬停損保留，硬停損適用所有Channel Swing持倉（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -603,57 +602,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
         entry_block = None
         if include_live and timeframe == "1m" and engine.is_running and symbol not in engine.account.positions:
             price = float(engine.tickers.get(symbol) or indicators.iloc[-1]["close"])
-            decision = engine._channel_swing_action(indicators, price, allow_live_entry=True)
-            if decision.get("reason") == "KC_FALLING_WAVES_BLOCK_LONG":
-                entry_block = {
-                    "reason": decision["reason"],
-                    "message": "下降波浪，暫停新多單",
-                    "detail": "KC 中軌連降三根，波峰與波谷降低；開空仍須符合進場條件。",
-                }
-            ticket = getattr(engine.account, "channel_profit_reentries", {}).get(symbol)
-            if ticket:
-                entry_block = {
-                    "reason": "KC_POST_CLOSE_PULLBACK_WAIT",
-                    "message": ("異常出場後，等待回踩及新順向訊號" if ticket.get("requires_pullback", True) else "平倉後，等待盤中峰谷或外軌訊號"),
-                    "detail": (("下一根起CK向下、報價先升後跌可評估峰頂空單，不等收線；或符合既有下軌突破／延續。"
-                                if ticket.get("side") == "SHORT" else
-                                "下一根起CK向上、報價先跌後升可評估谷底多單，不等收線；或符合既有上軌突破／延續。")
-                               if not ticket.get("requires_pullback", True) else
-                               "已觀察回到 CK 內；等待兩根同色實體均收在原側軌外（各至少20%），以及即時MA3與CK順向站回原側外軌。"
-                               if ticket.get("pullback_bar") is not None else
-                               "後續 K 須先回到 CK 通道內，平倉當根不算回踩。"),
-                }
-                if not ticket.get("requires_pullback", True) or ticket.get("pullback_bar") is not None:
-                    reclaim = outside_reentry(indicators, price, ticket.get("side"))
-                    if reclaim.get("side") == ticket.get("side"):
-                        room = engine._channel_profit_room(indicators, price, ticket["side"])
-                        if not room["allowed"]:
-                            entry_block = {"reason": room["reason"], "message": "已重新站出外軌，進場風控未通過",
-                                           "detail": room["detail"]}
-                        else:
-                            entry_block = {"reason": "KC_REENTRY_READY", "message": "軌外雙收線已確認，等待送單檢查",
-                                           "detail": "送單前重驗最近兩根同色實體均收在原側軌外，並保留帳戶安全與每根 K 限次。"}
-            elif not ticket and decision.get("action") == "ENTER":
-                room = engine._channel_profit_room(indicators, price, decision["side"])
-                if not room["allowed"]:
-                    entry_block = {
-                        "reason": room["reason"],
-                        "message": "已有方向訊號，進場風控未通過",
-                        "detail": room["detail"],
-                    }
-            recovery = surge_recovery_entry(indicators, price)
-            if recovery is not None and decision.get("side") != "SHORT":
-                if recovery.get("action") == "WAIT":
-                    entry_block = {"reason": recovery["reason"], "message": "異常拉升後不追高，等待谷底確認",
-                                   "detail": "後續已收線有效綠K可解除舊異常阻擋，重新依MA3／MA15／KC及同根回調評估；尚無有效綠K時仍可等待谷底確認。"}
-                elif not ticket:
-                    room = engine._channel_profit_room(indicators, price, "LONG")
-                    entry_block = {"reason": "KC_SURGE_TROUGH_READY" if room["allowed"] else room["reason"],
-                                   "message": "谷底及MA3轉升已確認，等待送單風控" if room["allowed"] else "谷底已確認，進場風控未通過",
-                                   "detail": "不額外等待第二根綠K；仍保留每根限次、末端空間及帳戶安全。"}
-            if engine._channel_candle_entry_blocked(symbol):
-                entry_block = {"reason": "KC_ONE_ENTRY_PER_CANDLE", "message": "本根 K 已交易，等待下一根",
-                               "detail": "每幣每根1分鐘K最多開倉一次，平倉後當根不再重開；必要平倉不受限制。"}
+            entry_block = entry_diagnostics(engine, symbol, indicators, price, time.time())
         return {"symbol": symbol, "timeframe": timeframe, "data": result, "entry_block": entry_block}
     except HTTPException:
         raise

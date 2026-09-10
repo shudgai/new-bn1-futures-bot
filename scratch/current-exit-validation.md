@@ -223,3 +223,12 @@
 - 新增峰谷測試50項全過；涵蓋多空、當根第一個轉向、掃描與WebSocket送單、正常／異常重開、報價順序、缺失／過期／跨分鐘、去重、失敗重試、最後報價變更、空間與帳戶攔截。
 - 最終18份測試：501 passed / 82 failed。隔離HEAD 50406c0基準六份164 passed / 80 failed、11份現行專項287 passed / 2 failed；最後失敗名稱與兩份基準聯集完全相同，新增失敗0。兩項專項既有失敗為exit_policy unarmed-ma3 LONG／SHORT；未改舊測試或出口以迎合斷言，不能宣稱全套通過。
 - 原始輸出與JUnit：/tmp/live-pivot-before.{txt,xml}、/tmp/live-pivot-targeted-before.{txt,xml}、/tmp/live-pivot-final.{txt,xml}。離線測試不代表實際市場已自動成交。
+
+
+## 2026-09-10 PEPE破軌與MA3小弧度修正
+
+- PEPE實際外軌訊號已進送單；23:02–23:03台北時間因淨空間約-0.08%低於0.15%、之後無有效前低而禁止新倉，未放寬門檻。
+- 修正峰谷盤中快照暫時失效被鎖整根的問題；保留既有失效鎖、每根限次與全部風控。
+- MA3實際反向斜率與峰谷回退均須達固定0.10 ATR；小弧度不平，其他出口不變。圖表診斷純讀，不推進或清除交易狀態。
+- 主要現行路徑342 passed；全59檔1367 passed / 382 failed / 40 skipped。失敗集合與隔離4f7da5f基準完全相同，新增失敗0，非全套通過。
+- 完整每檔結果、失敗清單與證據見 `scratch/pepe-entry-and-ma3-validation.md`。

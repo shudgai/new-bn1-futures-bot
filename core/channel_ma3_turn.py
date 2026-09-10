@@ -10,12 +10,15 @@ def significant_ma3_turn(position, frame, price):
         entry = float(position['entry_price'])
         identity = [side, opened, entry]
         state = position.get(key)
-        if state and (state.get('identity') != identity or state.get('version') != 2):
+        if state and (state.get('identity') != identity or state.get('version') not in (2, 3)):
             position.pop(key, None)
             state = None
         if (position.get('channel_profit_protection') or {}).get('armed'):
             position.pop(key, None)
             return False
+        if state and state.get('version') == 2:
+            # Keep the observed peak and fixed ATR, but reassess old tiny-slope exits.
+            state.update(version=3, pending=False)
         if state and state.get('pending'):
             return True
         price = float(price)
@@ -30,7 +33,7 @@ def significant_ma3_turn(position, frame, price):
         closed_ma = sum(closes) / 3.
         ma = (sum(closes[-2:]) + price) / 3.
         if not state:
-            position[key] = dict(identity=identity, version=2, extreme=ma, threshold=atr * .10,
+            position[key] = dict(identity=identity, version=3, extreme=ma, threshold=atr * .10,
                                  favorable=False, last_bar=bar, pending=False)
             return False
         if bar < state['last_bar']:
@@ -41,8 +44,10 @@ def significant_ma3_turn(position, frame, price):
         if advance > 0:
             state['extreme'] = ma
             state['favorable'] = state['favorable'] or sign * (ma - closed_ma) > 0
-        # A tick retracement alone is not a reversal of the plotted MA3 line.
-        elif (state['favorable'] and sign * (ma - closed_ma) < 0
+        # Both the peak retracement and the actual reverse slope must be significant.
+        # Shared closes cancel: this avoids subtraction noise at tiny PEPE prices.
+        elif (state['favorable']
+              and -sign * (price - closes[0]) / 3. >= state['threshold'] - abs(ma) * 1e-12
               and -advance >= state['threshold'] - abs(ma) * 1e-12):
             state['pending'] = True
             return True

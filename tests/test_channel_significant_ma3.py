@@ -20,7 +20,8 @@ def test_observed_peak_threshold_and_pending(side):
     assert not significant_ma3_turn(p,f,100.+s*.3)
     assert not significant_ma3_turn(p,f,100.+s*.03)
     p=json.loads(json.dumps(p))
-    assert significant_ma3_turn(p,f,100.-s*.03)
+    assert not significant_ma3_turn(p,f,100.-s*.03)
+    assert significant_ma3_turn(p,f,100.-s*.30)
     assert significant_ma3_turn(p,f,100.+s*.6)
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -35,7 +36,8 @@ def test_fixed_atr_and_candle_rollover(side):
     significant_ma3_turn(p,f,100.)
     significant_ma3_turn(p,f,100.+s*.3)
     f['timestamp']+=60000;f['atr']=10.
-    assert significant_ma3_turn(p,f,100.-s*.03)
+    assert not significant_ma3_turn(p,f,100.-s*.03)
+    assert significant_ma3_turn(p,f,100.-s*.30)
 
 @pytest.mark.parametrize('case',['armed','new_position','bad_atr'])
 def test_state_not_reused(case):
@@ -54,10 +56,10 @@ async def test_quote_exit_small_turn_holds_large_turn_closes_and_retries(side,su
     e.account.save_state=lambda:None;e.account.positions[SYMBOL].update(p)
     e._channel_exit_frames={SYMBOL:f}
     monkeypatch.setattr('core.engine.time.time',lambda:1201.)
-    for price in [100.,100.+s*.3,100.+s*.03]:
+    for price in [100.,100.+s*.3,100.+s*.03,100.-s*.03,100.-s*.299]:
         await e._channel_quote_exit(SYMBOL,price,1201000)
         assert not e.account.events
-    await e._channel_quote_exit(SYMBOL,100.-s*.03,1201000)
+    await e._channel_quote_exit(SYMBOL,100.-s*.30,1201000)
     assert len(e.account.events)==1
     assert 'SIGNIFICANT_MA3_TURN_EXIT' in e.account.events[0][3]
     if not success:
@@ -90,7 +92,8 @@ def test_tick_retracement_without_line_reversal_holds(side):
     assert not significant_ma3_turn(p,f,100.)
     # No rail touch is required once the MA3 line actually reverses.
     f['kc_upper']=110.;f['kc_lower']=90.
-    assert significant_ma3_turn(p,f,100.-s*.03)
+    assert not significant_ma3_turn(p,f,100.-s*.03)
+    assert significant_ma3_turn(p,f,100.-s*.30)
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_old_pending_cannot_bypass_line_direction(side):

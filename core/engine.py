@@ -2701,7 +2701,7 @@ class TradingEngine:
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
                     watcher.reset(symbol)
-                if invalid_candidate_key is not None and not live_outer_entry:
+                if invalid_candidate_key is not None and not live_outer_entry and not signal.get("live_pivot"):
                     if not hasattr(self, "_channel_invalid_entry_candidates"):
                         self._channel_invalid_entry_candidates = set()
                     self._channel_invalid_entry_candidates.add(invalid_candidate_key)
