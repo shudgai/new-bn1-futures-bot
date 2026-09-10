@@ -56,6 +56,10 @@
         .badge-status { cursor: pointer; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; transition: all 0.2s; }
         .badge-status.running { background: var(--up-bg); color: var(--up); border: 1px solid var(--up); }
         .badge-status.stopped { background: var(--down-bg); color: var(--down); border: 1px solid var(--down); }
+        .strategy-panel { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .strategy-description { font-size: 12px; font-weight: 700; color: var(--muted); overflow-wrap: anywhere; }
+        .strategy-toggle { display: none; }
+        .strategy-panel .badge-status { flex-shrink: 0; white-space: nowrap; }
 
         /* Main Container */
         .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 7fr 5fr; gap: 20px; }
@@ -129,6 +133,11 @@
             .stats-grid, .stats-grid-6 { grid-template-columns: repeat(2, 1fr); }
             .coin-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
             .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+            .topbar .logo { flex-wrap: wrap; font-size: 17px; }
+            .strategy-panel { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+            .strategy-toggle { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+            .strategy-description { display: none; order: 3; width: 100%; max-height: 35vh; overflow-y: auto; line-height: 1.6; }
+            .strategy-description.expanded { display: block; }
             table { font-size: 12px; }
             th, td { padding: 8px; }
             /* 手機版隱藏 AI 分析卡 */
@@ -244,8 +253,11 @@
                 <span v-if="bot.paper_trading" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
             </div>
-            <div style="display:flex; align-items:center; gap:16px;">
-                <span style="font-size:12px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
+            <div class="strategy-panel">
+                <button type="button" class="strategy-toggle" @click="strategyExpanded = !strategyExpanded" :aria-expanded="strategyExpanded" aria-controls="strategy-description">
+                    策略說明 <span class="collapse-arrow" :class="{ open: strategyExpanded }" aria-hidden="true">▶</span>
+                </button>
+                <span id="strategy-description" class="strategy-description" :class="{ expanded: strategyExpanded }">Strategy: {{ bot.strategy }}</span>
                 <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
                     {{ bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復' }}
                 </div>
@@ -599,6 +611,7 @@
                     states: {},
                 },
                 isProcessing: false,
+                strategyExpanded: false,
                 isTogglingBot: false,
                 isPlacingOrder: false,
                 isClosingPos: {},
