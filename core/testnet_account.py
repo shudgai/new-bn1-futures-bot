@@ -1,3 +1,4 @@
+from core.channel_hard_stop import enforce_hard_stop
 import asyncio
 import json
 import math
@@ -715,6 +716,8 @@ class BinanceTestnetAccount:
             ).upper()
             is_structure_exit_mode = wave_regime in ("RANGE", "TREND")
             is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
+            if await enforce_hard_stop(self, symbol, curr_p):
+                continue
 
             # OUTER_RUN峰谷出現前完全不停利；峰谷出現後等待正式出場期間，
             # 若最高淨利固定回吐1U，才以保護性例外提前平倉。

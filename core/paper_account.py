@@ -1,3 +1,4 @@
+from core.channel_hard_stop import enforce_hard_stop
 import json
 import math
 import os
@@ -1297,6 +1298,8 @@ class PaperAccount:
             if "peak_profit_updated_at" not in meta:
                 meta["peak_profit_updated_at"] = pos.get("open_timestamp") or now_ts
 
+            if await enforce_hard_stop(self, symbol, curr_p):
+                continue
             if is_channel_swing:
                 # Cross-lock is a reference price only; Channel Swing exits
                 # exclusively through the confirmed opposite KC breakout.

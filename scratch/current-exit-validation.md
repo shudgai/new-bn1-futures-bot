@@ -173,3 +173,15 @@
 - 指定五份舊回歸 swing、position_path、swing_execution、confirmed_rules、stop_preservation：138 passed / 69 failed；失敗清單與隔離 HEAD 基準完全相同。未宣稱全套通過。
 - 首輪兩項重疊測試因資料同時符合新增破軌例外而失敗，已改用非破軌重疊案例且專項重跑通過。異常進場測試更新成符合單向條件的行情，未放寬策略。
 - 提交包含現行程式、API說明、授權與驗證、正式測試；scratch 修補腳本與歷史暫存 audit 不納入。
+
+
+## 2026-09-10 移除殘留 MA3 出口與恢復 Channel Swing 硬止損
+
+- 使用者授權修正、邏輯測試、直接重啟及推送 GitHub。移除未啟動保護時 MA3 轉彎平倉分支並清除持倉／metadata 舊待平欄位；保留瀑布、雙異常、獲利回吐與進場規則。
+- 新增共用 channel_hard_stop：逐報價持倉路徑與紙上／測試網 update_positions 在提前略過策略出口之前，檢查既有保證金 10% 與價格逆向 2% 門檻，先達先平。75 USDT、5 倍約對應毛虧損 7.5 USDT；費用及跳價可能使最終淨損更大。屬本地市價平倉，未新增交易所掛單。
+- 用實際數量計算毛損，保護已啟動也不豁免；保存待平狀態，metadata 重啟恢復後行情回復仍重試，沿用帳戶平倉鎖／既有失敗重試規則。硬止損不建立獲利重開票據。
+- 專項 181 passed（hard_stop、immediate_exits、single_abnormal_removed、close_deduplication、candle_frequency、sustained_trend、adverse_entry）。涵蓋多空、兩個門檻、同根報價、兩種帳戶、MA3 待平清除、無效報價與待平恢復。
+- 指定五份回歸：修改前與後均 138 passed / 69 failed，失敗名稱完全相同；獲利保護 26 passed / 11 failed，11 項皆在本文件已有失敗清單。總計 345 passed / 80 failed，不能宣稱全套通過。
+- 原始測試結果：/tmp/exit-fix-before.txt、/tmp/exit-fix-after.txt、/tmp/exit-fix-targeted.txt、/tmp/exit-fix-profit.txt。
+
+- 部署核查：2026-09-10 12:57:28 UTC 重啟 binance-8006.service；/api/status 回報 is_running=true、paper_trading=true、port=8006，策略文字已包含「MA3轉彎不平倉」。

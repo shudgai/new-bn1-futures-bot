@@ -94,8 +94,8 @@ async def test_quote_monitor_closes_on_same_unfinished_bar(side, kind, armed, mo
     e.fetch_klines = AsyncMock(side_effect=AssertionError('same-bar quote must use cache'))
     monkeypatch.setattr('core.engine.time.time', lambda: 1201.)
     await e._channel_quote_exit(SYMBOL, price, 1201000)
-    assert len(e.account.events) == int(not armed and kind in ('waterfall', 'ma3')), e.account.logs
-    if not armed and kind in ('waterfall', 'ma3'):
+    assert len(e.account.events) == int(not armed and kind == 'waterfall'), e.account.logs
+    if not armed and kind == 'waterfall':
         assert e.account.events[0][2] == price
         expected = 'LIVE_MA3_TURN_EXIT' if kind == 'ma3' else 'LIVE_ADVERSE_' + kind.upper()
         assert e.account.events[0][3].endswith(expected)
