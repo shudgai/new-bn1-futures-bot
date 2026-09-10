@@ -1,4 +1,5 @@
 from core.channel_direct_reverse import authorized as reverse_authorized, quote_ready as reverse_quote_ready
+from core.channel_abnormal_release import opposite_entry_releases
 from core.channel_live_pivot import LivePivot
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
@@ -1576,7 +1577,7 @@ class TradingEngine:
         if SYMBOL_ROTATION_ENABLED and (getattr(rotation, 'last_rotation_at', 0) <= 0
                 or getattr(self, '_entry_waiting_for_post_close_rotation', False)):
             return False
-        self._release_resolved_upward_exit(symbol, frame, price)
+        self._release_resolved_abnormal_exit(symbol, frame, price)
         if symbol in getattr(self.account, 'channel_profit_reentries', {}):
             await self._try_profit_reentry(symbol, frame, price, daily_halt)
             return symbol in self.account.positions
@@ -2533,7 +2534,7 @@ class TradingEngine:
                 return None
             return dict(price=price, kc_upper=upper, kc_lower=lower, frame=frame,
                         signal_code='KC_DIRECT_REVERSE_' + side)
-        self._release_resolved_upward_exit(symbol, frame, price)
+        self._release_resolved_abnormal_exit(symbol, frame, price)
         # Closing a held position on a confirmed reversal must not wait for the
         # new long's trough. The new leg is independently gated before its order.
         closing_reverse = confirmed_reverse and symbol in self.account.positions
@@ -7475,6 +7476,17 @@ class TradingEngine:
         return False
 
 
+    def _release_resolved_abnormal_exit(self, symbol, frame, price):
+        if opposite_entry_releases(self.account, symbol, frame, price):
+            ticket = self.account.channel_profit_reentries.pop(symbol)
+            self.account.save_state()
+            self.account.log(
+                f"✅ {symbol} CK與即時MA3已轉向，解除異常平{ticket['side']}舊票據；重新驗證一般入口與風控",
+                'INFO',
+            )
+            return True
+        return self._release_resolved_upward_exit(symbol, frame, price)
+
     def _release_resolved_upward_exit(self, symbol, frame, price):
         """A later effective closed green releases a confirmed upward-exit ticket."""
         tickets = getattr(self.account, "channel_profit_reentries", {})
@@ -7864,7 +7876,7 @@ class TradingEngine:
             if tickets is None:
                 tickets = self.account.channel_profit_reentries = {}
             if not existing_pos:
-                self._release_resolved_upward_exit(symbol, channel_df, channel_price)
+                self._release_resolved_abnormal_exit(symbol, channel_df, channel_price)
             if not existing_pos and symbol in tickets:
                 await self._try_profit_reentry(symbol, channel_df, channel_price, daily_halt)
                 return signal_progress, detected_candidates

@@ -1,5 +1,6 @@
 """Read-only entry diagnostics; viewing a chart never observes or consumes a turn."""
 import math
+from core.channel_abnormal_release import opposite_entry_releases
 from core.channel_outer_entry import ck_direction, aligned_entry, live_adverse_entry_safe, live_ma3_direction_ready, ck_entry_momentum_ready
 
 
@@ -62,6 +63,10 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         if not live_adverse_entry_safe(frame, price, side):
             return result('KC_LIVE_ADVERSE_ENTRY_WAIT', '當根反向異常，暫不開倉', '沿用原開盤價及已收線ATR門檻。', **extra)
         ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol)
+        if ticket and opposite_entry_releases(engine.account, symbol, frame, price):
+            # Preview order validation without mutating persisted state.
+            ticket = None
+            extra['abnormal_ticket_release_ready'] = True
         if ticket:
             if ticket.get('phase') != 'closed':
                 return result('KC_CLOSE_CONFIRMATION_WAIT', '等待舊倉平倉確認', '平倉成功前不重開或反手。', **extra)

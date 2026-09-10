@@ -87,10 +87,12 @@ async def test_release_does_not_bypass_daily_halt(monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('cached', [False, True])
-async def test_cached_green_cannot_release_ticket_when_fresh_candles_are_doji(cached, monkeypatch):
+async def test_cached_signal_cannot_release_when_fresh_green_and_direction_are_invalid(cached, monkeypatch):
     e, f, price = setup()
     fresh = f.copy()
     fresh.loc[fresh.index[-4:-1], 'open'] = fresh.loc[fresh.index[-4:-1], 'close']
+    # Neither the legacy green release nor the new opposite-CK release is ready.
+    fresh['kc_middle'] = 100.
     e.fetch_klines = AsyncMock(return_value=fresh)
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
     signal = dict(side='LONG', entry_mode='CHANNEL_SWING', action='ENTER_MARKET', reason='stale green')
