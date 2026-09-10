@@ -185,3 +185,12 @@
 - 原始測試結果：/tmp/exit-fix-before.txt、/tmp/exit-fix-after.txt、/tmp/exit-fix-targeted.txt、/tmp/exit-fix-profit.txt。
 
 - 部署核查：2026-09-10 12:57:28 UTC 重啟 binance-8006.service；/api/status 回報 is_running=true、paper_trading=true、port=8006，策略文字已包含「MA3轉彎不平倉」。
+
+
+## 恢復明顯 MA3 峰谷反轉（2026-09-10）
+- 使用者要求恢復明顯峰谷反向平倉、小幅抖動不平。實作預設反向幅度 0.10 ATR：首次進場後有效觀察固定上一根已收線 ATR，MA3 用兩根已收線收盤及最新價計算；先觀察順向新極值，從極值反向達門檻才平。首次報價不追溯進場前峰谷。
+- 僅未啟動保護持倉適用；硬止損優先，瀑布／雙異常與已啟動獲利回吐不變。峰谷及待平狀態寫入持倉與metadata，重啟恢復；舊無幅度 MA3 旗標仍清除。
+- 專項196 passed；指定五份回歸加獲利保護164 passed / 80 failed，失敗名稱與上輪完全相同，無新增失敗。總計360 passed / 80 failed，非全套通過。
+- 輸出：/tmp/ma3-restore-targeted.txt、/tmp/ma3-restore-regression.txt。
+
+- 部署驗證：8006重啟後 is_running=true、paper_trading=true，API策略說明已更新為MA3峰谷反向0.10 ATR。

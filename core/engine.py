@@ -1,3 +1,4 @@
+from core.channel_ma3_turn import significant_ma3_turn
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
 import copy
@@ -7635,7 +7636,7 @@ class TradingEngine:
                 profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
                 if previous_protection != existing_pos.get("channel_profit_protection"):
                     self.account.save_state()
-                # Profit retracement is the only strategy-driven holding exit.
+                # Armed holdings use profit retracement; unarmed holdings also check technical exits.
                 # Remove obsolete requests from positions and persisted metadata.
                 changed = False
                 stale_keys = ["channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
@@ -7644,7 +7645,7 @@ class TradingEngine:
                 is_armed = (existing_pos.get("channel_profit_protection") or {}).get("armed")
                 if is_armed:
                     # 當獲利保護啟動時，不再讓異常 K 或 MA3 搶先平倉，清除舊有標記
-                    stale_keys.extend(["channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar", "channel_exception_exit_pending"])
+                    stale_keys.extend(["channel_significant_ma3_turn", "channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar", "channel_exception_exit_pending"])
                     
                 for state in (existing_pos, self.account.position_meta.get(symbol, {})):
                     if state.get("channel_exception_exit_pending") == "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL":
@@ -7656,13 +7657,28 @@ class TradingEngine:
                             changed = True
                 channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_PROFIT_PROTECTION"}
                 if not is_armed:
-                    # 未啟動獲利保護時保留瀑布與雙異常；MA3 不獨立出場。
+                    # 未啟動獲利保護時先檢查瀑布／雙異常，再檢查有幅度門檻的 MA3 反轉。
                     emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
                     if emergency:
                         if existing_pos.get("channel_exception_exit_pending") != emergency:
                             existing_pos["channel_exception_exit_pending"] = emergency
                             changed = True
                         channel_action = {"action": "EXIT", "side": None, "reason": emergency}
+                if not is_armed and not emergency:
+                    turn_key = "channel_significant_ma3_turn"
+                    meta = self.account.position_meta.setdefault(symbol, {})
+                    if turn_key not in existing_pos and turn_key in meta:
+                        existing_pos[turn_key] = copy.deepcopy(meta[turn_key])
+                    before_turn = copy.deepcopy(existing_pos.get(turn_key))
+                    if significant_ma3_turn(existing_pos, channel_df, channel_price):
+                        channel_action = {"action": "EXIT", "side": None,
+                                          "reason": "KC_" + existing_pos["side"] + "_SIGNIFICANT_MA3_TURN_EXIT"}
+                    if before_turn != existing_pos.get(turn_key):
+                        if turn_key in existing_pos:
+                            meta[turn_key] = copy.deepcopy(existing_pos[turn_key])
+                        else:
+                            meta.pop(turn_key, None)
+                        changed = True
                 if changed:
                     self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
