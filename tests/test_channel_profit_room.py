@@ -2,6 +2,7 @@
 from unittest.mock import AsyncMock
 import pytest
 from core.engine import TradingEngine
+from test_channel_late_entry_room import phase_frame
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 @pytest.fixture(autouse=True)
@@ -14,48 +15,51 @@ def fixed_costs(monkeypatch):
 def anyio_backend():
     return 'asyncio'
 
-@pytest.mark.parametrize('price,allowed', [(100., True), (101.5, False), (102.1, False)])
+@pytest.mark.parametrize('price,allowed', [(105.8, True), (109.8, False), (110.1, False)])
 def test_remaining_room_shrinks_as_entry_chases(price, allowed):
-    f = _narrow_channel_frame(); f['atr'] = 2.
+    f = phase_frame()
     result = TradingEngine._channel_long_profit_room(f, price)
     assert result['allowed'] is allowed
-    assert result['target'] == 102.
+    if price < 110.:
+        assert result['target'] == 110.
+    else:
+        assert result['reason'] == 'KC_LATE_TARGET_UNAVAILABLE'
 
 
 def test_nearby_confirmed_peak_caps_upside():
-    f = _narrow_channel_frame(); f['atr'] = 2.
-    f.loc[15, 'high'] = 100.3
-    result = TradingEngine._channel_long_profit_room(f, 100.)
-    assert result['target'] == 100.3
+    f = phase_frame(target=105.9)
+    result = TradingEngine._channel_long_profit_room(f, 105.8)
+    assert result['target'] == 105.9
     assert not result['allowed']
 
 
 def test_live_atr_cannot_inflate_room_and_missing_data_blocks():
-    f = _narrow_channel_frame(); f.loc[19, 'atr'] = 100.
-    assert not TradingEngine._channel_long_profit_room(f, 100.)['allowed']
+    f = phase_frame(target=105.9)
+    f.loc[19, 'atr'] = 100.
+    assert not TradingEngine._channel_long_profit_room(f, 105.8)['allowed']
     f.loc[18, 'atr'] = float('nan')
-    assert not TradingEngine._channel_long_profit_room(f, 100.)['allowed']
+    assert not TradingEngine._channel_long_profit_room(f, 105.8)['allowed']
 
 
-def test_declining_momentum_blocks_even_with_room(monkeypatch):
-    f = _narrow_channel_frame(); f['atr'] = 2.
+def test_declining_energy_alone_does_not_block_developing_move(monkeypatch):
+    f = phase_frame(late=False)
     monkeypatch.setattr(TradingEngine, '_channel_held_momentum_is_declining', staticmethod(lambda *a: True))
-    result = TradingEngine._channel_long_profit_room(f, 100.)
-    assert not result['allowed']
-    assert result['reason'] == 'KC_LONG_MOMENTUM_FADING'
+    result = TradingEngine._channel_long_profit_room(f, 106.1)
+    assert result['allowed'] and not result['checked']
+    assert result['reason'] == 'KC_TREND_ROOM_SKIPPED'
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('token', [None, 'reopen'])
 async def test_order_gate_rejects_no_room_before_open(monkeypatch, token):
-    f = _narrow_channel_frame()
+    f = phase_frame(target=105.9)
     e = _execution_engine(f, 'LONG', True); e.account.positions.clear()
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
     e._fresh_channel_entry_snapshot = AsyncMock(return_value={
-        'price': 100.3, 'kc_upper': 100.2, 'kc_lower': 99.8, 'frame': f})
+        'price': 105.8, 'kc_upper': 102., 'kc_lower': 98., 'frame': f})
     signal = {'side': 'LONG', 'entry_mode': 'CHANNEL_SWING', 'action': 'ENTER_MARKET',
               'profit_reentry_token': token}
-    assert not await e._place_structured_entry(SYMBOL, signal, 100.3)
+    assert not await e._place_structured_entry(SYMBOL, signal, 105.8)
     assert not e.account.events
     assert any('KC_PROFIT_ROOM_INSUFFICIENT' in msg for msg, _ in e.account.logs)
 

@@ -5,6 +5,25 @@ OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
 
 
+def two_closed_bodies_ready(frame, side):
+    """Require two completed directional bodies; the live candle never counts."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+            return False
+        sign = 1 if side == "LONG" else -1
+        for _, row in frame.iloc[-3:-1].iterrows():
+            opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
+            if not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed)):
+                return False
+            if not low <= min(opened, closed) <= max(opened, closed) <= high or high <= low:
+                return False
+            if sign * (closed - opened) <= 0 or abs(closed - opened) / (high - low) < .20:
+                return False
+        return True
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
 def outside_entry(frame, price):
     wait = {"action": "WAIT", "side": None, "reason": "KC_INSIDE_CHANNEL"}
     try:
@@ -83,9 +102,9 @@ def next_live_push_entry(frame, price):
             and not (ma15[0] < ma15[1] < ma15[2])
             and not (ma15[0] > ma15[1] > ma15[2])
         )
-        if long_break:
+        if long_break and two_closed_bodies_ready(frame, "LONG"):
             return {"action": "ENTER", "side": "LONG", "reason": "KC_NEXT_LIVE_PUSH_LONG"}
-        if short_break:
+        if short_break and two_closed_bodies_ready(frame, "SHORT"):
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_NEXT_LIVE_PUSH_SHORT"}
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return {**wait, "reason": "KC_NEXT_LIVE_PUSH_DATA_INVALID"}
@@ -129,9 +148,9 @@ def continuation_entry(frame, price):
             and float(confirmation["kc_lower"]) <= float(breakout["kc_lower"])
             and ma3[0] > ma3[1] >= ma3[2]
         )
-        if long_signal:
+        if long_signal and two_closed_bodies_ready(frame, "LONG"):
             return {"action": "ENTER", "side": "LONG", "reason": "KC_CONTINUATION_LONG"}
-        if short_signal:
+        if short_signal and two_closed_bodies_ready(frame, "SHORT"):
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_CONTINUATION_SHORT"}
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return {**wait, "reason": "KC_CONTINUATION_DATA_INVALID"}

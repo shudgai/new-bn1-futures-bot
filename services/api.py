@@ -215,7 +215,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"CK順勢：中軌三根收線同向＋即時同色K可進場／保留峰谷與外側入口／方向不明不開倉／新倉淨利空間檢查／獲利平倉後須後續K回踩CK內，再同色K、MA3與CK順向站回原側外軌（即時判斷，不等兩根K或收線，保留空間與動能檢查）；每幣每根1分鐘K最多開倉一次，平倉當根不再重開；異常K平倉後亦先等回踩／持倉MA3先順向再即時反向轉彎，不限CK位置、不論盈虧平倉／峰谷倉先越中軌再回中軌退場；最高浮盈回吐20%平倉；階梯式遇即時反色K收緊至10%；預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"CK外軌入口：最近兩根已收線同色實體K（各至少全長20%，多綠空紅），送單前重驗／保留既有突破與延續條件／初段不計算淨利空間；疑似末端才依未突破前高／前低扣費估算／獲利平倉後須後續K回踩CK內，再同色K、MA3與CK順向站回原側外軌（即時判斷；仍須兩根已收線同色實體，末端才檢查結構淨利空間）；每幣每根1分鐘K最多開倉一次，平倉當根不再重開；異常K平倉後亦先等回踩／MA3反向轉彎不單獨平倉／峰谷倉先越中軌再回中軌退場；最高浮盈回吐20%平倉；階梯式遇即時反色K收緊至10%；預估淨利1USDT啟動（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -624,19 +624,17 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                         room = engine._channel_profit_room(indicators, price, ticket["side"])
                         if not room["allowed"]:
                             entry_block = {"reason": room["reason"], "message": "已重新站出外軌，進場風控未通過",
-                                           "detail": f"預估剩餘淨空間 {room.get('net_room_pct', 0):.4f}%；空間不足、動能衰退或資料無效。"}
+                                           "detail": room["detail"]}
                         else:
                             entry_block = {"reason": "KC_REENTRY_READY", "message": "回踩後已重新站出外軌，等待送單檢查",
-                                           "detail": "即時評估，不等兩根 K 或收線；仍保留帳戶安全與每根 K 限次。"}
+                                           "detail": "即時評估；仍須兩根已收線同色實體，並保留帳戶安全與每根 K 限次。"}
             elif not ticket and decision.get("action") == "ENTER":
                 room = engine._channel_profit_room(indicators, price, decision["side"])
                 if not room["allowed"]:
                     entry_block = {
                         "reason": room["reason"],
                         "message": "已有方向訊號，進場風控未通過",
-                        "detail": (f"預估剩餘淨空間 {room.get('net_room_pct', 0):.4f}%；"
-                                   + ("連續動能衰退，暫不進場。" if "MOMENTUM_FADING" in room["reason"]
-                                      else "剩餘淨利空間不足或資料無效，暫不進場。")),
+                        "detail": room["detail"],
                     }
             if engine._channel_candle_entry_blocked(symbol):
                 entry_block = {"reason": "KC_ONE_ENTRY_PER_CANDLE", "message": "本根 K 已交易，等待下一根",

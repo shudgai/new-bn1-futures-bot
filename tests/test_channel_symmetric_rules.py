@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock
 from core.engine import TradingEngine
+from test_channel_late_entry_room import phase_frame
 from core.channel_profit_protection import directional_entry_ready, reentry_gate
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
@@ -65,18 +66,18 @@ def test_reentry_requires_new_two_closed_break_after_pullback(side,bad):
 @pytest.mark.parametrize('chased', [False,True])
 def test_directional_profit_room(side,chased,monkeypatch):
     monkeypatch.setattr('core.engine.NET_PROFIT_GUARANTEE_BUFFER', .006)
-    f=market(side); sign=1 if side=='LONG' else -1
-    price=float(f.iloc[-2]['close'])+sign*(1.95 if chased else .2)
+    f=phase_frame(side); sign=1 if side=='LONG' else -1
+    price=float(f.iloc[-1]['close'])+sign*(4.1 if chased else 0.)
     r=TradingEngine._channel_profit_room(f,price,side)
     assert r['allowed'] is (not chased),r
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_momentum_decline_blocks_both(side,monkeypatch):
+def test_energy_decline_alone_does_not_block_developing_move(side,monkeypatch):
     monkeypatch.setattr(TradingEngine,'_channel_held_momentum_is_declining',staticmethod(lambda f,s: s==side))
-    f=market(side)
-    r=TradingEngine._channel_profit_room(f,float(f.iloc[-2]['close']),side)
-    assert not r['allowed']
-    assert r['reason']==f'KC_{side}_MOMENTUM_FADING'
+    f=phase_frame(side,late=False)
+    r=TradingEngine._channel_profit_room(f,float(f.iloc[-1]['close']),side)
+    assert r['allowed'] and not r['checked']
+    assert r['reason']=='KC_TREND_ROOM_SKIPPED'
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_adverse_long_body_exits_before_middle(side):
@@ -107,7 +108,7 @@ async def test_real_losing_position_middle_and_retry(side,success):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('token',[None,'reopen'])
 async def test_final_order_rechecks_room_for_both(side,token,monkeypatch):
-    f=market(side); f['atr']=.01; price=float(f.iloc[-1]['close'])
+    f=phase_frame(side,target=105.9); price=float(f.iloc[-1]['close'])
     e=_execution_engine(f,side,True); e.account.positions.clear()
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS',[SYMBOL])
     e._fresh_channel_entry_snapshot=AsyncMock(return_value={'price':price,'kc_upper':102.,'kc_lower':98.,'frame':f})
@@ -119,14 +120,11 @@ async def test_final_order_rechecks_room_for_both(side,token,monkeypatch):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_nearby_support_or_resistance_caps_room(side):
-    f=market(side); sign=1 if side=='LONG' else -1
-    # Use a flat closed context with a confirmed nearby directional obstacle.
-    for key in ('open','close'): f[key]=100.
-    f['high'], f['low']=100.01,99.99
-    f.loc[15,'high' if side=='LONG' else 'low']=100.+sign*.03
-    result=TradingEngine._channel_profit_room(f,100.,side)
-    assert result['target']==pytest.approx(100.+sign*.03)
+    f=phase_frame(side,target=105.9)
+    result=TradingEngine._channel_profit_room(f,float(f.iloc[-1]['close']),side)
+    assert result['target']==pytest.approx(105.9 if side=='LONG' else 94.1)
     assert not result['allowed']
+
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_middle_slope_alone_blocks(side):

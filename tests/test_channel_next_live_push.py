@@ -19,6 +19,7 @@ def push_frame(side='LONG'):
     f = styled_frame('CHOPPY')
     f['open'] = f['close'] = 100.
     f['ma15'] = 100.
+    f.loc[9, ['open', 'close']] = [99.8, 100.]  # First completed directional body.
     f.loc[10, ['open', 'close']] = [101.5, 103.]
     f.loc[11, ['open', 'close']] = [103., 103.]  # Ticker, not stale close, pushes.
     f['high'] = f[['open', 'close']].max(axis=1) + .1
@@ -57,6 +58,8 @@ def test_half_breakout_body_is_enough(side):
     else:
         f.loc[10, ['open', 'close']] = [99.0, 97.0]
         price = 96.8
+    f['high'] = f[['open', 'close']].max(axis=1) + .1
+    f['low'] = f[['open', 'close']].min(axis=1) - .1
     result = TradingEngine._channel_swing_action(f, price)
     assert result['action'] == 'ENTER'
     assert result['side'] == side

@@ -76,6 +76,9 @@ async def test_confirmed_signal_fills_once_on_same_scan(setup_engine, side, held
     e, f = setup_engine(side, old)
     if held:
         confirm_break(f, side)
+        # setup_engine resets this candle's open/close to 100; its old trend
+        # high/low must be reset too now every new leg validates market data.
+        f.loc[66, ["high", "low"]] = [100.1, 99.9]
         # Successful reversal needs sustained directional energy, not fading volume.
         f.loc[66:68, "volume"] = [1., 10., 100.]
         f.loc[69, ["open", "close", "high", "low"]] = ([103.2, 103.25, 103.3, 103.1] if side == "LONG" else [96.8, 96.75, 96.9, 96.7])

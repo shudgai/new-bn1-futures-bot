@@ -1,6 +1,7 @@
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, next_live_push_entry, continuation_entry, outside_reentry, abnormal_pullback_ready
+from core.channel_entry_room import entry_room
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, next_live_push_entry, continuation_entry, outside_reentry, abnormal_pullback_ready, two_closed_bodies_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry, pivot_middle_exit
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2358,6 +2359,8 @@ class TradingEngine:
             lower = float(latest["kc_lower"])
         except (TypeError, ValueError, IndexError, KeyError):
             return None
+        if not two_closed_bodies_ready(frame, side):
+            return None
         if profit_reentry_token is not None:
             ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
             if (not ticket or ticket.get("token") != profit_reentry_token
@@ -2530,25 +2533,33 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
+            if not two_closed_bodies_ready(fresh_frame, side):
+                self.account.log(
+                    f"🛑 {symbol} {side} 最近兩根已收線同色實體不足，取消開倉",
+                    "WARNING",
+                )
+                return False
             if isinstance(fresh_frame, pd.DataFrame) and not fresh_frame.empty:
                 fresh_live = fresh_frame.iloc[-2]
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
-            breakout_signal = str(signal.get("signal_code") or "") in {
-                "KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT",
-                "KC_CLOSED_OUTSIDE_LONG", "KC_CLOSED_OUTSIDE_SHORT",
-                "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
-            }
-            if side in ("LONG", "SHORT") and (not breakout_signal or live_outer_entry):
+            if side in ("LONG", "SHORT"):
                 room = self._channel_profit_room(fresh_frame, planned_price, side)
                 if not room["allowed"]:
                     self.account.log(
                         f"🛑 {symbol} {side} 禁止追單：{room['reason']} "
-                        f"預估剩餘淨空間={room.get('net_room_pct', 0):.4f}%", "WARNING")
+                        + room.get("detail", "進場空間檢查未通過"), "WARNING")
                     return False
-                signal["profit_room_pct"] = room["net_room_pct"]
-                signal["estimated_profit_target"] = room["target"]
+                # A developing move has no price target or computed profit room.
+                # Clear cached estimates instead of carrying the old ceiling.
+                signal.pop("profit_room_pct", None)
+                signal.pop("estimated_profit_target", None)
+                signal["profit_room_checked"] = room.get("checked", True)
+                signal["entry_trend_stage"] = room.get("stage")
+                if room.get("checked", True):
+                    signal["profit_room_pct"] = room["net_room_pct"]
+                    signal["estimated_profit_target"] = room["target"]
             getattr(self, "tickers", {})[symbol] = planned_price
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         # Keep closed signal metadata for the order, but assess current market
@@ -3867,36 +3878,9 @@ class TradingEngine:
 
     @staticmethod
     def _channel_profit_room(frame, price, side="LONG"):
-        """Estimate remaining directional space after both fees and slippage."""
-        rejected = {"allowed": False, "reason": "KC_PROFIT_ROOM_DATA_INVALID"}
-        try:
-            if side not in ("LONG", "SHORT") or frame is None or len(frame) < 5:
-                return rejected
-            sign = 1 if side == "LONG" else -1
-            closed = frame.iloc[:-1]
-            atr = float(closed.iloc[-1]["atr"])
-            last_close = float(closed.iloc[-1]["close"])
-            highs = [float(v) for v in closed["high" if side == "LONG" else "low"].tail(20)]
-            if not all(math.isfinite(v) and v > 0 for v in [price, atr, last_close] + highs):
-                return rejected
-            target = last_close + sign * atr
-            peaks = [highs[i] for i in range(1, len(highs) - 1)
-                     if sign * highs[i] > sign * highs[i-1] and sign * highs[i] > sign * highs[i+1]
-                     and sign * (highs[i] - price) > 0]
-            if peaks:
-                target = sign * min(sign * target, min(sign * v for v in peaks))
-            if not math.isfinite(target) or target <= 0:
-                return rejected
-            entry_fill = price * (1 + sign * SLIPPAGE_PCT)
-            exit_fill = target * (1 - sign * SLIPPAGE_PCT)
-            net_room = (sign * (exit_fill - entry_fill) - (entry_fill + exit_fill) * TAKER_FEE_RATE) / (entry_fill * (1 + TAKER_FEE_RATE))
-            declining = TradingEngine._channel_held_momentum_is_declining(frame, side)
-            allowed = net_room > 0 and net_room >= NET_PROFIT_GUARANTEE_BUFFER and not declining
-            return {"allowed": allowed, "target": target, "net_room_pct": net_room * 100,
-                    "reason": f"KC_{side}_MOMENTUM_FADING" if declining else
-                    ("KC_PROFIT_ROOM_OK" if allowed else "KC_PROFIT_ROOM_INSUFFICIENT")}
-        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
-            return rejected
+        """Skip room estimates until a mature move weakens; then use structure."""
+        return entry_room(frame, price, side, TAKER_FEE_RATE, SLIPPAGE_PCT,
+                          NET_PROFIT_GUARANTEE_BUFFER)
 
     @staticmethod
     def _channel_long_profit_room(frame, price):
