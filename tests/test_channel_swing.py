@@ -145,8 +145,8 @@ def test_aligned_trend_can_enter_without_breakout_body_confirmation():
 
 def test_channel_live_waterfall_and_two_abnormal_bars_exit():
     df = _generate_macro_frame("UP", 70)
-    df.loc[69, ["open", "close"]] = [100.0, 101.0]
-    assert TradingEngine._channel_adverse_exit_reason(df, "SHORT", 101.0, 1.0) == "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
+    df.loc[69, ["open", "close"]] = [100.0, 101.5]
+    assert TradingEngine._channel_adverse_exit_reason(df, "SHORT", 101.5, 1.0) == "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
     df.loc[69, ["open", "close"]] = [100.0, 100.1]
     df.loc[67, ["open", "close"]] = [100.0, 100.6]
     df.loc[68, ["open", "close"]] = [100.6, 101.2]

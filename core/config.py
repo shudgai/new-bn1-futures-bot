@@ -204,6 +204,9 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
     0.0, float(os.getenv("RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR", "0.50"))
 )
 
+# 單根反向瀑布出口獨立尺度；不連動雙異常K或送單前異常攔截。
+CHANNEL_WATERFALL_BODY_ATR = 1.5
+
 # 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
 CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"
 DISABLE_CONTINUOUS_TREND_ENTRIES = os.getenv(

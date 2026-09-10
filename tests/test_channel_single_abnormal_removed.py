@@ -28,6 +28,11 @@ async def test_single_abnormal_holds_and_clears_stale_request(side,pending):
 @pytest.mark.parametrize('case',['waterfall','closed_waterfall','double'])
 def test_remaining_emergencies_still_trigger(side,case):
     f,price=market(side,case)
+    sign = -1 if side == 'LONG' else 1
+    if case == 'waterfall':
+        price = 100 + sign * 1.5
+    elif case == 'closed_waterfall':
+        f.loc[f.index[-2], 'close'] = 100 + sign * 1.5
     p=dict(side=side,entry_price=100.,open_timestamp=1.,channel_exception_exit_pending='EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL')
     reason=TradingEngine._channel_exception_exit(p,f,price)
     assert reason and reason!='EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL'

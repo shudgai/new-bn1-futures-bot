@@ -43,6 +43,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
+    CHANNEL_WATERFALL_BODY_ATR,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     PIVOT_STRONG_BODY_ATR_MULT,
     TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
@@ -6500,9 +6501,10 @@ class TradingEngine:
                       for _, row in frame.iloc[-3:-1].iterrows()]
             if not all(math.isfinite(body) for body in [adverse_live, *bodies]):
                 return None
-            if adverse_live >= threshold * 2.0:
+            waterfall_threshold = float(atr) * CHANNEL_WATERFALL_BODY_ATR
+            if adverse_live >= waterfall_threshold:
                 return "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
-            if bodies[-1] >= threshold * 2.0:
+            if bodies[-1] >= waterfall_threshold:
                 return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
             if all(body >= threshold for body in bodies):
                 return "EMERGENCY_EXIT_2_CANDLE_ADVERSE"

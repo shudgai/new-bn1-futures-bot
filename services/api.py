@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
+    CHANNEL_WATERFALL_BODY_ATR,
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
@@ -215,7 +216,7 @@ async def get_status(response: Response):
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"MA3穿越或延續於KC外軌入口：KC已收線方向向上，MA3由下往上穿上軌開多；向下，MA3由上往下穿下軌開空。MA3穿軌未成交，後續即時MA3與最新報價仍在同側軌外且顺向就可延續評估，不要求再次穿軌。不等兩根實體或即時K收線。一般新倉、重開與快取送單共用，不使用盤中峰谷或直接反手；只有價格在軌外但MA3未在軌外不開。保留最近兩根已收線CK中軌方向、持倉側外軌不逆向、即時MA3同向、CK衰退、反向異常與帳戶風控。扣雙邊費用與預估平倉滑點後，淨浮盈達1USDT啟動保護，最高淨浮盈回吐20%全平；已有更有利保護線與待平重試保留。正常平倉不等回調，下一根起軌外順向可立即重新評估；平倉當根禁開及每根限次保留，異常同向重開仍須回踩。CK最近四根已收線中軌的三次順向位移連續縮小時，進場後觀察MA3順向峰谷再明顯反向0.10ATR可平倉；不反手，正常平倉後下一根起可按MA3軌外延續重開。未衰退時MA3轉向不平倉，1U／20%鎖利獨立有效。保留大瀑布、雙反向異常K與帳戶硬止損。不恢復獲利空間攔截。每根限次與送單重驗保留（{len(DEFAULT_SYMBOLS)}幣）",
+        "strategy": f"MA3穿越或延續於KC外軌入口：KC已收線方向向上，MA3由下往上穿上軌開多；向下，MA3由上往下穿下軌開空。MA3穿軌未成交，後續即時MA3與最新報價仍在同側軌外且顺向就可延續評估，不要求再次穿軌。不等兩根實體或即時K收線。一般新倉、重開與快取送單共用，不使用盤中峰谷或直接反手；只有價格在軌外但MA3未在軌外不開。保留最近兩根已收線CK中軌方向、持倉側外軌不逆向、即時MA3同向、CK衰退、反向異常與帳戶風控。扣雙邊費用與預估平倉滑點後，淨浮盈達1USDT啟動保護，最高淨浮盈回吐20%全平；已有更有利保護線與待平重試保留。正常平倉不等回調，下一根起軌外順向可立即重新評估；平倉當根禁開及每根限次保留，異常同向重開仍須回踩。CK最近四根已收線中軌的三次順向位移連續縮小時，進場後觀察MA3順向峰谷再明顯反向0.10ATR可平倉；不反手，正常平倉後下一根起可按MA3軌外延續重開。未衰退時MA3轉向不平倉，1U／20%鎖利獨立有效。保留單根反向實體達{CHANNEL_WATERFALL_BODY_ATR:g}ATR的瀑布出口、雙反向異常K與帳戶硬止損。不恢復獲利空間攔截。每根限次與送單重驗保留（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
