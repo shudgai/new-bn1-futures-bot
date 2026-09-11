@@ -95,7 +95,10 @@ def protection(position, price, fee, slippage, frame=None):
     arm = float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT)
     step = float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT)
     ladder_lock = (float(math.floor(peak / step) * step - step) if peak >= arm and step > 0 else 0.0)
-    locked = max(float(state.get('locked_net', 0.0)), ladder_lock)
+    floor_arm = float(config.CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT)
+    floor_net = float(config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT)
+    floor_lock = floor_net if (floor_net > 0 and peak >= floor_arm > 0) else 0.0
+    locked = max(float(state.get('locked_net', 0.0)), ladder_lock, floor_lock)
     state['locked_net'] = locked
     state['armed'] = locked > 0.0
     if not state['armed']:

@@ -124,6 +124,9 @@ def active_exit_rule_lines() -> List[str]:
          if config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT >= 900
          else f"  1. 階梯鎖利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT:g}U 啟動，"
               f"鎖住峰值 − {config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT:g}U"),
+        (f"     保底停利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT:g}U 後，"
+         f"出場不得低於 +{config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT:g}U"
+         if config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT > 0 else "     保底停利：停用"),
         f"  2. CK 狹窄衰退＋MA3 峰谷反向：{_flag(config.CHANNEL_FADING_MA3_EXIT_ENABLED)}",
         f"  3. 單根瀑布反向實體 ≥ {config.CHANNEL_WATERFALL_BODY_ATR:g} ATR",
         f"  4. 雙已收線反向異常 K：各 ≥ {config.CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR:g} ATR",

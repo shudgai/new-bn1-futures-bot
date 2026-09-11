@@ -260,6 +260,15 @@ CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT = max(
     0.1, float(os.getenv("CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT", "2.0"))
 )
 
+# 保底停利：淨利峰值達 ARM 之後，出場價不得低於 FLOOR（含費用與滑點）。
+# 目的：讓 2U 等級的小利潤不會一路回吐成 -8.4U 硬止損；不像提早出場會砍掉大獲利。
+CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT = max(
+    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT", "2.0"))
+)
+CHANNEL_SWING_PROFIT_FLOOR_NET_USDT = max(
+    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_FLOOR_NET_USDT", "0.3"))
+)
+
 # Channel Swing 停損後冷卻：硬止損、瀑布或異常出場後，該幣在這段秒數內不得再開新倉。
 # 起因：2026-09-11 後段連續三筆在停損後 0.1~7.4 分鐘立刻反向再進場，全部再被停損，
 # 單一時段就吃掉當日 92% 的虧損。設 0 代表停用。
