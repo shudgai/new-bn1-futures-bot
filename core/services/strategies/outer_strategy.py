@@ -5,6 +5,7 @@ import math
 from typing import Dict, Any, Tuple
 import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
+from core.config import CHANNEL_TAIL_MAX_TREND_BARS
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
@@ -229,6 +230,31 @@ def live_body_breakout_side(frame, price):
     return None
 
 
+def channel_tail_entry_blocked(frame, side) -> bool:
+    """Block fresh entries once the CK middle has already run the same way too long.
+
+    Authorised 2026-09-11: skipping entries taken after a long one-way run moved the
+    live replay from +9.95 to +25.70 USDT and the worst trade from -11.34 to -9.17
+    (8, 10, 12 and 14 bars were all better than no filter; 12 sits mid-plateau).
+    """
+    if side not in ("LONG", "SHORT") or frame is None or len(frame) < CHANNEL_TAIL_MAX_TREND_BARS + 2:
+        return False
+    key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+    try:
+        closed = frame.iloc[:-1]
+        values = [float(v) for v in closed[key].iloc[-(CHANNEL_TAIL_MAX_TREND_BARS + 1):]]
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+    if (len(values) < CHANNEL_TAIL_MAX_TREND_BARS + 1
+            or not all(math.isfinite(v) and v > 0 for v in values)):
+        return False
+    sign = 1 if side == "LONG" else -1
+    run = 0
+    for previous, latest in zip(values, values[1:]):
+        run = run + 1 if sign * (latest - previous) > 0 else 0
+    return run >= CHANNEL_TAIL_MAX_TREND_BARS
+
+
 def aligned_entry(frame, price):
     """Live long-body breaks may precede CK confirmation; retain trend entries."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
@@ -245,6 +271,8 @@ def aligned_entry(frame, price):
         side = breakout_side or entry_trend_direction(frame)
         if side is None:
             return wait
+        if channel_tail_entry_blocked(frame, side):
+            return {**wait, "reason": "KC_TREND_TAIL_WAIT"}
             
         upper = float(frame.iloc[-1]['kc_upper'])
         lower = float(frame.iloc[-1]['kc_lower'])

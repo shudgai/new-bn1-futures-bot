@@ -636,3 +636,20 @@ def test_live_ma3_upper_cross_waits_for_close():
     df.loc[67:69, "ma3"] = [109.0, 108.8, 107.0]
     df.loc[67:69, "kc_upper"] = [108.5, 108.5, 108.5]
     assert TradingEngine._channel_swing_action(df, 107.0, "LONG")["action"] == "HOLD"
+
+
+def test_tail_entry_blocked_after_long_one_way_run():
+    """2026-09-11: no fresh entries once the CK middle has run 12 bars one way."""
+    import pandas as pd
+    from core.services.strategies.outer_strategy import channel_tail_entry_blocked
+
+    def frame(step, n=20):
+        mids = [100.0 + step * i * 0.01 for i in range(n)]
+        return pd.DataFrame({"kc_middle": mids, "ema_20": mids})
+
+    assert channel_tail_entry_blocked(frame(1), "LONG") is True
+    assert channel_tail_entry_blocked(frame(-1), "SHORT") is True
+    assert channel_tail_entry_blocked(frame(1), "SHORT") is False
+    assert channel_tail_entry_blocked(frame(-1), "LONG") is False
+    flipped = [100.0 + 0.01 * i for i in range(10)] + [100.09 - 0.01 * i for i in range(1, 6)]
+    assert channel_tail_entry_blocked(pd.DataFrame({"kc_middle": flipped}), "SHORT") is False

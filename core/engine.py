@@ -2296,6 +2296,7 @@ class TradingEngine:
             "KC_UPPER_MA3_REVERSAL_BLOCK_LONG": "MA3 已轉跌至 MA15 下方，不追上軌多單",
             "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT": "MA3 已轉升至 MA15 上方，不追下軌空單",
             "KC_UPPER_MATURE_TREND_WEAK": "漲勢已成熟且量能不足，不在末端追多",
+            "KC_TREND_TAIL_WAIT": "趨勢已連續同向走滿設定根數，末端不再開倉",
             "KC_LOWER_MATURE_TREND_WEAK": "跌勢已成熟且量能不足，不在末端追空",
             "KC_CLOSED_BODY_BREAK_LOW_VOLUME": "收盤實體突破量能不足，繼續找其他幣",
             "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",

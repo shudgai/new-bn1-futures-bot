@@ -217,6 +217,11 @@ CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR", "1.0"))
 )
 
+# 末端禁開：CK 中軌已連續同向走過這麼多根就不再進場（雙向）。
+CHANNEL_TAIL_MAX_TREND_BARS = max(
+    2, int(float(os.getenv("CHANNEL_TAIL_MAX_TREND_BARS", "12")))
+)
+
 # 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
 CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"
 DISABLE_CONTINUOUS_TREND_ENTRIES = os.getenv(
