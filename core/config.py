@@ -217,6 +217,11 @@ CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR", "1.0"))
 )
 
+# 進場當根順向實體上限（ATR 倍數）：過熱的大K不追，避免下一根反向異常K。
+CHANNEL_ENTRY_MAX_BODY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_ENTRY_MAX_BODY_ATR", "0.8"))
+)
+
 # 末端禁開：CK 中軌已連續同向走過這麼多根就不再進場（雙向）。
 CHANNEL_TAIL_MAX_TREND_BARS = max(
     2, int(float(os.getenv("CHANNEL_TAIL_MAX_TREND_BARS", "12")))

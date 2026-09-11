@@ -5,7 +5,7 @@ import math
 from typing import Dict, Any, Tuple
 import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
-from core.config import CHANNEL_TAIL_MAX_TREND_BARS
+from core.config import CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
@@ -292,6 +292,10 @@ def aligned_entry(frame, price):
                 return {**wait, "reason": "MOMENTUM_BLOCK_MASSIVE_GREEN"}
             if price >= lower:
                 return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+
+        # 進場當根順向實體過熱就別追：這種大K之後最容易接反向異常K。
+        if atr > 0 and body > atr * CHANNEL_ENTRY_MAX_BODY_ATR:
+            return {**wait, "reason": "KC_ENTRY_BODY_OVERHEAT_WAIT"}
 
         if not breakout_side:
             try:

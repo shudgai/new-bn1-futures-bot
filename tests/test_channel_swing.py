@@ -653,3 +653,43 @@ def test_tail_entry_blocked_after_long_one_way_run():
     assert channel_tail_entry_blocked(frame(-1), "LONG") is False
     flipped = [100.0 + 0.01 * i for i in range(10)] + [100.09 - 0.01 * i for i in range(1, 6)]
     assert channel_tail_entry_blocked(pd.DataFrame({"kc_middle": flipped}), "SHORT") is False
+
+
+def _overheat_frame(side, body_atr):
+    """Frame whose live body is body_atr x ATR beyond the outer rail."""
+    import pandas as pd
+    atr = 0.10
+    step = 0.05 if side == "LONG" else -0.05
+    mids = [100.0, 100.0, 100.0, 100.0 + step, 100.0 + 2 * step]
+    last = mids[-1]
+    upper = last - 0.02 if side == "LONG" else last + 0.02
+    lower = last - 0.10 if side == "LONG" else last + 0.10
+    if side == "LONG":
+        upper, lower = last - 0.02, last - 0.20
+    else:
+        upper, lower = last + 0.20, last + 0.02
+    open_price = last - (0.02 if side == "LONG" else -0.02)
+    price = open_price + (body_atr * atr if side == "LONG" else -body_atr * atr)
+    rows = []
+    for i in range(5):
+        rows.append(dict(open=last, high=last + 0.05, low=last - 0.05, close=last,
+                         kc_middle=mids[i], kc_upper=upper, kc_lower=lower,
+                         ma3=last, ma15=last, ema_20=mids[i], atr=atr, timestamp=float(i)))
+    rows.append(dict(open=open_price, high=max(open_price, price) + 0.01,
+                     low=min(open_price, price) - 0.01, close=price,
+                     kc_middle=mids[-1], kc_upper=upper, kc_lower=lower,
+                     ma3=last, ma15=last, ema_20=mids[-1], atr=atr, timestamp=5.0))
+    return pd.DataFrame(rows), price
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_entry_body_overheat_blocks_both_sides(side):
+    """2026-09-11: do not chase a live body already beyond 0.8 ATR (symmetric)."""
+    from core.services.strategies.outer_strategy import aligned_entry
+    from core.config import CHANNEL_ENTRY_MAX_BODY_ATR
+
+    hot_frame, hot_price = _overheat_frame(side, CHANNEL_ENTRY_MAX_BODY_ATR + 0.4)
+    assert aligned_entry(hot_frame, hot_price).get("reason") == "KC_ENTRY_BODY_OVERHEAT_WAIT"
+
+    cool_frame, cool_price = _overheat_frame(side, max(0.5, CHANNEL_ENTRY_MAX_BODY_ATR - 0.2))
+    assert aligned_entry(cool_frame, cool_price).get("reason") != "KC_ENTRY_BODY_OVERHEAT_WAIT"
