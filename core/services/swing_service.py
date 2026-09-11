@@ -312,3 +312,29 @@ def pivot_pullback_ready(frame: pd.DataFrame, side: str) -> bool:
 
 def detect_strict_pivot_prealert(live_frame: pd.DataFrame) -> Optional[str]:
     return None
+
+
+def volume_decay_exit_ready(
+    frame: pd.DataFrame, side: str, net_profitable: bool = True,
+    require_profit: bool = False,
+) -> bool:
+    """量能衰退＋MA3 一轉彎即平倉，避免讓虧損擴大。
+
+    2026-09-12 使用者指定：不要求獲利，否則只是把虧損擴大。
+    設 require_profit=True 可回復「只在獲利中才平倉」的舊行為。
+    """
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+            return False
+        if require_profit and not net_profitable:
+            return False
+        values = [float(v) for v in frame["ma3"].iloc[-3:-1]]
+        if not all(math.isfinite(v) for v in values):
+            return False
+        turned = values[-1] < values[-2] if side == "LONG" else values[-1] > values[-2]
+        if not turned:
+            return False
+        from core.strategy import has_volume_divergence
+        return bool(has_volume_divergence(frame, -1 if side == "LONG" else 1))
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False

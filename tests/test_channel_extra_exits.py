@@ -76,3 +76,37 @@ def test_volume_decay_detects_bottom_exhaustion_for_shorts():
 def test_volume_decay_detects_top_exhaustion_for_longs():
     assert has_volume_divergence(_volume_frame(recent_volume=20.0), -1) is True
     assert has_volume_divergence(_volume_frame(recent_volume=120.0), -1) is False
+
+
+def _decay_frame(recent_volume, ma3_before, ma3_last):
+    frame = _volume_frame(recent_volume)
+    frame["ma3"] = [100.0] * 20
+    frame.loc[frame.index[-3], "ma3"] = ma3_before
+    frame.loc[frame.index[-2], "ma3"] = ma3_last
+    return frame
+
+
+@pytest.mark.parametrize("side,ma3_before,ma3_last", [
+    ("LONG", 101.0, 100.5),   # 多單 MA3 轉下
+    ("SHORT", 100.0, 100.6),  # 空單 MA3 轉上
+])
+def test_volume_decay_exits_even_in_loss(side, ma3_before, ma3_last):
+    from core.services.swing_service import volume_decay_exit_ready
+
+    frame = _decay_frame(20.0, ma3_before, ma3_last)
+    assert volume_decay_exit_ready(frame, side, net_profitable=False) is True
+    assert volume_decay_exit_ready(frame, side, net_profitable=False, require_profit=True) is False
+
+
+def test_volume_decay_requires_ma3_to_turn():
+    from core.services.swing_service import volume_decay_exit_ready
+
+    flat = _decay_frame(20.0, 100.0, 100.0)
+    assert volume_decay_exit_ready(flat, "SHORT", net_profitable=False) is False
+
+
+def test_volume_decay_requires_shrinking_volume():
+    from core.services.swing_service import volume_decay_exit_ready
+
+    loud = _decay_frame(120.0, 100.0, 100.6)
+    assert volume_decay_exit_ready(loud, "SHORT", net_profitable=False) is False

@@ -260,9 +260,13 @@ CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT = max(
     0.1, float(os.getenv("CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT", "2.0"))
 )
 
-# 量能衰退平倉：持倉方向出現量縮背離（趨勢動能耗盡）且在獲利中即平倉。
+# 量能衰退平倉：持倉方向出現量縮背離且 MA3 一轉彎即平倉。
+# 2026-09-12 使用者指定：不要求獲利，否則只是把虧損擴大。設 REQUIRE_PROFIT=true 可回復舊行為。
 CHANNEL_VOLUME_DECAY_EXIT_ENABLED = os.getenv(
     "CHANNEL_VOLUME_DECAY_EXIT_ENABLED", "true"
+).lower() == "true"
+CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT = os.getenv(
+    "CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT", "false"
 ).lower() == "true"
 
 # 單根反向異常K即時平倉：MA3 已在持倉側外軌之外時，出現一根達門檻的反向實體即平倉，
