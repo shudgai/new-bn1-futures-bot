@@ -2383,10 +2383,13 @@ class TradingEngine:
         ):
             return False
         if live_price is not None and aligned_entry_ready(frame, live_price, entry_side):
+            decision = aligned_entry(frame, live_price)
+            is_breakout = decision.get("reason", "").startswith("KC_LIVE_BODY_BREAKOUT")
             try:
                 current_bar = float(frame.iloc[-1]['timestamp'])
                 exit_bar = float(peak_exit_info['exit_bar_id'])
-                return not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar)
+                blocked = not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar)
+                return blocked and not is_breakout
             except (TypeError, ValueError, KeyError, IndexError):
                 return True
         if peak_exit_info.get("require_new_closed_break") and peak_exit_info.get("allow_new_outer_signal"):
@@ -2486,16 +2489,13 @@ class TradingEngine:
     _channel_swing_action = staticmethod(channel_swing_action)
     _channel_ck_exit_reason = staticmethod(channel_ck_exit_reason)
     _channel_ck_exit_with_tolerance = staticmethod(channel_ck_exit_with_tolerance)
+    _channel_adverse_exit_reason = staticmethod(channel_adverse_exit_reason)
     _two_bar_structure_failure_exit = staticmethod(two_bar_structure_failure_exit)
     _adverse_kc_outer_breached = staticmethod(adverse_kc_outer_breached)
     _confirmed_outer_reversal = staticmethod(confirmed_outer_reversal)
     _range_swing_reverse_side = staticmethod(range_swing_reverse_side)
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
-
-    @staticmethod
-
-    @staticmethod
 
     async def _try_channel_stronger_symbol_takeover(
         self, candidate: dict, now_time: float, daily_halt: bool,
@@ -2918,8 +2918,6 @@ class TradingEngine:
         }
         self.rotation_event.set()
 
-    @staticmethod
-
     def _continuous_entry_amount(self) -> float:
         """Allocate configured wallet fraction while preserving a fee/risk buffer."""
         positions = getattr(self.account, "positions", {})
@@ -3109,14 +3107,15 @@ class TradingEngine:
                 or symbol in self.account.positions):
             return False
         if ticket.get("mode") == "next_breakout":
+            decision = self._channel_swing_action(frame, price)
+            is_breakout = decision.get("reason", "").startswith("KC_LIVE_BODY_BREAKOUT")
             try:
                 current_bar = float(frame.iloc[-1].get("timestamp", frame.index[-1]))
                 exit_bar = float(ticket["exit_bar_id"])
-                if not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar):
+                if not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar) and not is_breakout:
                     return False
             except (AttributeError, TypeError, ValueError, KeyError, IndexError):
                 return False
-            decision = self._channel_swing_action(frame, price)
             return decision.get("action") == "ENTER" and decision.get("side") == ticket["side"]
         if ticket.get('mode') == 'direct_reverse':
             return (self._ck_reverse_order_authorized(symbol, {'side': ticket['side'], 'profit_reentry_token': ticket['token']})
@@ -3226,8 +3225,11 @@ class TradingEngine:
             self.account.log(f"✅ [獲利保護重開] {symbol} {ticket['side']} 入口確認與安全檢查通過，已重開", "SUCCESS")
 
     @staticmethod
-    def _profit_pivot_is_new(ticket, frame):
+    def _profit_pivot_is_new(ticket, frame, price=None, decision=None):
         try:
+            # For strict breakouts, we can bypass the closed bar delay
+            if decision and decision.get("reason", "").startswith("KC_LIVE_BODY_BREAKOUT"):
+                return True
             # Confirmation on the closing candle becomes eligible only once
             # that candle has closed; already closed signals cannot be reused.
             confirmed = float(frame.iloc[-2].get("timestamp", frame.index[-2]))

@@ -1064,13 +1064,17 @@ class SuperTrendKeltnerStrategy:
 
             # --- K 線形態防護：過濾假突破 ---
             if side == "LONG" and candle_pattern.get("is_shooting_star"):
-                return eligibility_hold(
-                    f"MomentumCross_{side} 拒絕：出現流星線 (Shooting Star) 假突破"
-                )
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"MomentumCross_{side} 拒絕：出現流星線 (Shooting Star) 假突破",
+                    **common,
+                }
             if side == "SHORT" and candle_pattern.get("is_hammer"):
-                return eligibility_hold(
-                    f"MomentumCross_{side} 拒絕：出現錘頭線 (Hammer) 假突破"
-                )
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"MomentumCross_{side} 拒絕：出現錘頭線 (Hammer) 假突破",
+                    **common,
+                }
 
             return {
                 "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",

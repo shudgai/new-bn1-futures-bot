@@ -40,13 +40,14 @@ def test_peak_retracement_monotonic_and_survives_json_restart(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1
     peak = protection(p, 100 + sign * 5, .0005, .0001)
-    assert peak['peak_gross'] == 10.
-    assert peak['stop_price'] == pytest.approx(100 + sign * 4.413, rel=1e-3)
+    assert peak["peak_gross"] == 10.
+    assert peak["locked_net"] == pytest.approx(6.0)
+    locked_stop = peak["stop_price"]
     p = json.loads(json.dumps(p))
-    before = protection(p, 100 + sign * 4.5, .0005, .0001)
-    assert not before['triggered']
-    assert before['stop_price'] == peak['stop_price']
-    assert protection(p, 100 + sign * 4.0, .0005, .0001)['triggered']
+    before = protection(p, 100 + sign * 3.5, .0005, .0001)
+    assert not before["triggered"]
+    assert before["stop_price"] == locked_stop
+    assert protection(p, 100 + sign * 3.0, .0005, .0001)["triggered"]
     p['open_timestamp'] = 2.
     assert protection(p, 100., .0005, .0001) is None
     assert not p['channel_profit_protection']['armed']
@@ -196,18 +197,19 @@ def test_style_classification(side, style):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_smooth_trend_arms_twenty_percent_protection(side):
+def test_smooth_trend_arms_step_ladder_protection(side):
     p = position(side)
-    sign = 1 if side == 'LONG' else -1
-    f = styled_frame('SMOOTH', side)
+    sign = 1 if side == "LONG" else -1
+    f = styled_frame("SMOOTH", side)
     first = protection(p, 100 + sign * 5, .0005, .0001, f)
-    assert first['retracement_fraction'] == .12
-    assert p['channel_profit_protection']['armed']
-    result = protection(p, 100 + sign * 5, .0005, .0001, styled_frame('CHOPPY', side))
-    assert result['stop_price'] == pytest.approx(100 + sign * 4.413, rel=1e-3)
-    # Reclassification cannot remove or loosen the existing eight-dollar line.
-    result = protection(p, 100 + sign * 4.0, .0005, .0001, f)
-    assert result['triggered']
+    assert first["retracement_fraction"] == 0.0
+    assert first["locked_net"] == pytest.approx(6.0)
+    assert p["channel_profit_protection"]["armed"]
+    result = protection(p, 100 + sign * 5, .0005, .0001, styled_frame("CHOPPY", side))
+    assert result["stop_price"] == pytest.approx(first["stop_price"])
+    # Reclassification cannot remove or loosen the existing ladder line.
+    result = protection(p, 100 + sign * 3.0, .0005, .0001, f)
+    assert result["triggered"]
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -234,12 +236,12 @@ def test_stack_live_opposite_tightens_ten_dollar_peak_to_nine(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_first_opposite_tick_already_beyond_ten_percent_exits(side):
+def test_first_opposite_tick_beyond_ladder_floor_exits(side):
     p = position(side)
-    sign = 1 if side == 'LONG' else -1
-    f = styled_frame('STACKED', side)
+    sign = 1 if side == "LONG" else -1
+    f = styled_frame("STACKED", side)
     protection(p, 100 + sign * 5, .0005, .0001, f)
-    assert protection(p, 100 + sign * 4.4, .0005, .0001, f)['triggered']
+    assert protection(p, 100 + sign * 3.0, .0005, .0001, f)["triggered"]
 
 
 def test_pre_entry_stack_does_not_tighten_and_live_bar_cannot_complete_stack():

@@ -7,7 +7,10 @@ import pandas as pd
 from typing import Dict, Any, Optional, Tuple
 from core.interfaces.guard_interface import IGuardRule
 
-from core.config import RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR, CHANNEL_WATERFALL_BODY_ATR
+from core.config import (
+    RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR, CHANNEL_WATERFALL_BODY_ATR,
+    CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR,
+)
 from core.services.strategies.outer_strategy import (
     ck_direction, ck_entry_momentum_ready, live_ma3_direction_ready,
     live_adverse_entry_safe,
@@ -16,12 +19,20 @@ from core.services.strategies.outer_strategy import (
 def channel_adverse_exit_reason(
     frame: pd.DataFrame, side: str, price: float, atr: float
 ) -> Optional[str]:
-    """Keep waterfalls and two closed adverse bodies; a single abnormal body holds."""
+    """Crash-only waterfall plus a two-bar confirmation; ordinary single bars hold.
+
+    Authorised 2026-09-11. The single-bar threshold moved from 1.5 to 2.5 ATR and
+    the two-bar floor from 0.5 to 1.0 ATR: on the live 1m sample the old values
+    cost about 63 USDT and pushed the worst trade to -20.25, while these values
+    keep a crash guard for about 10 USDT of upside instead of about 25.
+    """
     if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
         return None
     try:
-        threshold = float(atr) * RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR
-        if not math.isfinite(threshold) or threshold <= 0:
+        threshold = float(atr) * CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR
+        waterfall = float(atr) * CHANNEL_WATERFALL_BODY_ATR
+        if (not math.isfinite(threshold) or threshold <= 0
+                or not math.isfinite(waterfall) or waterfall <= 0):
             return None
         direction = 1.0 if side == "SHORT" else -1.0
         adverse_live = direction * (float(price) - float(frame.iloc[-1]["open"]))
@@ -29,10 +40,9 @@ def channel_adverse_exit_reason(
                   for _, row in frame.iloc[-3:-1].iterrows()]
         if not all(math.isfinite(body) for body in [adverse_live, *bodies]):
             return None
-        waterfall_threshold = float(atr) * CHANNEL_WATERFALL_BODY_ATR
-        if adverse_live >= waterfall_threshold:
+        if adverse_live >= waterfall:
             return "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
-        if bodies[-1] >= waterfall_threshold:
+        if bodies[-1] >= waterfall:
             return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
         if all(body >= threshold for body in bodies):
             return "EMERGENCY_EXIT_2_CANDLE_ADVERSE"

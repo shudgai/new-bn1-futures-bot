@@ -13,6 +13,35 @@ from core.services.swing_service import channel_ck_exit_with_tolerance
 from core.services.strategies.pivot_strategy import PIVOT_CODES
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
+def create_exit_ticket(symbol: str, position: dict, channel_action: dict, frame: Any = None) -> dict:
+    """Build the post-exit reentry ticket for a Channel Swing pullback exit."""
+    try:
+        exit_bar_id = frame.iloc[-1].get("timestamp", frame.index[-1]) if frame is not None and not frame.empty else time.time() * 1000
+    except (AttributeError, IndexError, TypeError):
+        exit_bar_id = time.time() * 1000
+    side = str(position.get("side") or "").upper()
+    reason = channel_action.get("reason")
+    fading_exit = reason == FADING_EXIT_REASON
+    abnormal_exit = reason in {
+        "KC_LONG_LIVE_RED_LONG_EXIT", "KC_SHORT_LIVE_GREEN_LONG_EXIT",
+        "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL", "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
+        "EMERGENCY_EXIT_2_CANDLE_ADVERSE", "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL",
+    }
+    token = str(position.get("open_timestamp")) + ":" + str(time.time_ns())
+    return {
+        "symbol": symbol,
+        "token": token,
+        "phase": "closing",
+        "side": side,
+        "old_side": side,
+        "mode": "next_breakout" if fading_exit else "outer_cycle",
+        "requires_pullback": bool(abnormal_exit),
+        "close_reason": f"Channel Swing {reason}",
+        "close_requested_at_ms": int(time.time() * 1000),
+        "opened_at": position.get("open_timestamp"),
+        "exit_bar_id": exit_bar_id,
+    }
+
 async def process_single_symbol_runner(
     engine: Any, symbol: str, now_time: float, btc_1m_turn: str | None, daily_halt: bool,
     exit_frame: pd.DataFrame | None = None, exit_quote: float | None = None, exit_only: bool = False

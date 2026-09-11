@@ -1,11 +1,9 @@
-"""Tests for the 1-bar UNCLEAR CK exit tolerance gate.
+"""Tests for the disabled CK direction exit (2026-09-11).
 
-Covers all 5 edge cases identified in root-cause analysis:
-  1. REVERSED exits immediately (no grace period).
-  2. First UNCLEAR bar defers exit (returns None).
-  3. Second distinct closed bar still UNCLEAR → exits.
-  4. Same-bar multi-tick does NOT double-trigger.
-  5. Direction recovery between bars clears the flag.
+The single-bar CK reversal / UNCLEAR exit was removed: it closed seven live
+positions for -8.78 USDT while the step ladder plus crash guard ended the same
+seven at -5.12 USDT. Every evaluation must now return None and clear the legacy
+tolerance flag so stale state cannot resurrect the removed exit.
 """
 import pytest
 import pandas as pd
@@ -71,17 +69,19 @@ def _unclear_bar2():
 # Edge Case 1: REVERSED exits immediately (no grace period)
 # ---------------------------------------------------------------------------
 
-def test_reversed_exits_immediately_long():
+def test_reversed_no_longer_exits_long():
+    """2026-09-11: one CK middle-rail flip no longer closes a position."""
     pos = {"side": "LONG"}
     result = channel_ck_exit_with_tolerance(_reversed(), "LONG", pos)
-    assert result == "KC_CK_DIRECTION_REVERSED_EXIT"
+    assert result is None
     assert _UNCLEAR_BAR_KEY not in pos
 
 
-def test_reversed_exits_immediately_short():
+def test_reversed_no_longer_exits_short():
+    """2026-09-11: one CK middle-rail flip no longer closes a position."""
     pos = {"side": "SHORT"}
     result = channel_ck_exit_with_tolerance(_rising(), "SHORT", pos)
-    assert result == "KC_CK_DIRECTION_REVERSED_EXIT"
+    assert result is None
     assert _UNCLEAR_BAR_KEY not in pos
 
 
@@ -89,22 +89,22 @@ def test_reversed_exits_immediately_short():
 # Edge Case 2: First UNCLEAR bar defers exit (returns None)
 # ---------------------------------------------------------------------------
 
-def test_unclear_first_bar_defers():
+def test_unclear_never_records_tolerance_flag():
     pos = {}
     result = channel_ck_exit_with_tolerance(_unclear(), "LONG", pos)
-    assert result is None, "Should NOT exit on first UNCLEAR bar"
-    assert pos.get(_UNCLEAR_BAR_KEY) == 2000.0, "Must record last-closed bar_id"
+    assert result is None
+    assert _UNCLEAR_BAR_KEY not in pos
 
 
 # ---------------------------------------------------------------------------
 # Edge Case 3: Second distinct bar still UNCLEAR -> exit
 # ---------------------------------------------------------------------------
 
-def test_unclear_second_bar_triggers_exit():
+def test_unclear_second_bar_still_holds():
     pos = {_UNCLEAR_BAR_KEY: 2000.0}
     result = channel_ck_exit_with_tolerance(_unclear_bar2(), "LONG", pos)
-    assert result == "KC_CK_DIRECTION_UNCLEAR_EXIT"
-    assert _UNCLEAR_BAR_KEY not in pos, "Flag must be cleared after exit"
+    assert result is None
+    assert _UNCLEAR_BAR_KEY not in pos
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +115,8 @@ def test_same_bar_multi_tick_holds():
     pos = {_UNCLEAR_BAR_KEY: 2000.0}
     # _unclear() last-closed bar is 2000 -> same bar as recorded
     result = channel_ck_exit_with_tolerance(_unclear(), "LONG", pos)
-    assert result is None, "Same-bar tick must NOT trigger exit"
-    assert pos.get(_UNCLEAR_BAR_KEY) == 2000.0, "bar_id must stay unchanged"
+    assert result is None
+    assert _UNCLEAR_BAR_KEY not in pos
 
 
 # ---------------------------------------------------------------------------

@@ -210,7 +210,12 @@ RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
 )
 
 # 單根反向瀑布出口獨立尺度；不連動雙異常K或送單前異常攔截。
-CHANNEL_WATERFALL_BODY_ATR = 1.5
+CHANNEL_WATERFALL_BODY_ATR = 2.5
+
+# 雙已收線逆勢實體 K 的單根門檻；本輪由 0.5 提高到 1.0 ATR。
+CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR", "1.0"))
+)
 
 # 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
 CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"

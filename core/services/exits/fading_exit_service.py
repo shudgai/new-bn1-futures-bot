@@ -47,25 +47,7 @@ def fading_ma3_turn(position, frame, price):
     if state and state.get('identity') != identity:
         position.pop(STATE_KEY, None)
         state = None
-    if state and state.get('version') == 3 and state.get('pending'):
-        return True
-    fading = ck_momentum_fading(frame, position.get('side'))
-    if fading is None:
-        position.pop(STATE_KEY, None)
-        return False
-    observed = {k: position.get(k) for k in ('side', 'open_timestamp', 'entry_price')}
-    if state:
-        observed['channel_significant_ma3_turn'] = state
-    turned = significant_ma3_turn(observed, frame, price)
-    state = observed.get('channel_significant_ma3_turn')
-    if state is None:
-        position.pop(STATE_KEY, None)
-        return False
-    eligible = fading and ck_channel_narrow(frame)
-    if turned and not eligible:
-        state.update(pending=False, favorable=False)
-    position[STATE_KEY] = state
-    return bool(turned and eligible)
+    return False
 
 
 def next_breakout_ready(account, symbol, frame, price):

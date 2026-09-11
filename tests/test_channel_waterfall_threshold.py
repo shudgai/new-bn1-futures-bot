@@ -73,10 +73,10 @@ async def test_order_threshold_and_failed_close_retry(side, route, success, monk
         assert len(e.account.events) == 2
         assert e.account.events[0][3] == e.account.events[1][3]
 
-@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_existing_pending_exit_still_retries(side):
-    f, price = market(side, 'normal')
-    reason = 'EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL'
+    f, price = market(side, "normal")
+    reason = "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL"
     p = dict(side=side, entry_price=100., open_timestamp=1., channel_exception_exit_pending=reason)
     assert TradingEngine._channel_exception_exit(p, f, price) == reason
 

@@ -170,10 +170,34 @@ def ma3_outer_continuation_ready(frame, price, side):
 
 
 def entry_trend_direction(frame):
-    """Entry direction uses only the last two completed CK middle values."""
+    """Entry direction uses last two completed CK middle values, with a fast-track for V-shape reversals."""
     try:
         if frame is None or len(frame) < 3:
             return None
+            
+        # Fast-track for strong V-shape reversals (overrides slow CK)
+        try:
+            ma3 = float(frame['ma3'].iloc[-1])
+            ma15 = float(frame['ma15'].iloc[-1])
+            ma15_prev = float(frame['ma15'].iloc[-2])
+            upper = float(frame['kc_upper'].iloc[-1])
+            lower = float(frame['kc_lower'].iloc[-1])
+            upper_prev = float(frame['kc_upper'].iloc[-2])
+            lower_prev = float(frame['kc_lower'].iloc[-2])
+            close_price = float(frame['close'].iloc[-1])
+            open_price = float(frame['open'].iloc[-1])
+            
+            body = abs(close_price - open_price)
+            atr = float(frame['atr'].iloc[-2]) if 'atr' in frame.columns else 0.0
+            is_significant = atr > 0 and body >= 0.5 * atr
+            
+            if is_significant and close_price > open_price and ma3 > ma15 and ma15 > ma15_prev and upper > upper_prev:
+                return 'LONG'
+            if is_significant and close_price < open_price and ma3 < ma15 and ma15 < ma15_prev and lower < lower_prev:
+                return 'SHORT'
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+
         key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
         previous, latest = [float(v) for v in frame[key].iloc[-3:-1]]
         if not all(math.isfinite(v) and v > 0 for v in (previous, latest)):
@@ -222,6 +246,25 @@ def aligned_entry(frame, price):
         if side is None:
             return wait
             
+        upper = float(frame.iloc[-1]['kc_upper'])
+        lower = float(frame.iloc[-1]['kc_lower'])
+        
+        # Strict momentum safety check
+        open_price = float(frame.iloc[-1]['open'])
+        body = abs(price - open_price)
+        atr = float(frame.iloc[-2]['atr']) if 'atr' in frame.columns else 0.0
+        
+        if side == 'LONG':
+            if price < open_price and atr > 0 and body > atr * 0.5:
+                return {**wait, "reason": "MOMENTUM_BLOCK_MASSIVE_RED"}
+            if price <= upper:
+                return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+        if side == 'SHORT':
+            if price > open_price and atr > 0 and body > atr * 0.5:
+                return {**wait, "reason": "MOMENTUM_BLOCK_MASSIVE_GREEN"}
+            if price >= lower:
+                return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+
         if not breakout_side:
             try:
                 live_ma3 = float(frame.iloc[-1]['ma3'])

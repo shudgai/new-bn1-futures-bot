@@ -58,7 +58,7 @@ def trend_style(frame, side, opened_at=None):
 
 
 def protection(position, price, fee, slippage, frame=None):
-    """Arm at 0.5 USDT net, then close on a 20% drawdown of peak net profit."""
+    """Step ladder: arm at 4U net peak, locking peak-2U and climbing every 2U."""
     entry = float(position.get('entry_price') or 0)
     qty = float(position.get('qty') or 0)
     side = position.get('side')
@@ -73,23 +73,25 @@ def protection(position, price, fee, slippage, frame=None):
     if state.get('identity') != identity:
         state.clear()
         state['identity'] = identity
-    policy = 'net_peak_giveback_v1'
+    policy = 'fixed_net_steps_2u'
     if state.get('policy') != policy:
-        known = state.get('policy') == 'fixed_net_steps_v1'
-        peak = float(state.get('peak_net', net)) if known else net
-        floor = float(state.get('locked_net', 0.)) if known else 0.
-        pending = bool(state.get('pending')) if known else False
+        # Rebuild the ladder from the first observation under the new policy.
         state.clear()
-        state.update(identity=identity, policy=policy, peak_net=max(net, peak),
-                     locked_net=max(0., floor), pending=pending)
+        state.update(identity=identity, policy=policy, peak_net=net,
+                     locked_net=0., pending=False)
     state['peak_net'] = max(float(state.get('peak_net', net)), net)
     state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
-    state['armed'] = bool(state.get('armed')) or state['peak_net'] >= 0.5 - 1e-10 or state['locked_net'] > 0.
+
+    # 4U peak locks 2U, 6U locks 4U, and every further 2U moves the floor up one step.
+    peak = float(state['peak_net'])
+    ladder_lock = float(math.floor(peak / 2.0) * 2.0 - 2.0) if peak >= 4.0 else 0.0
+    locked = max(float(state.get('locked_net', 0.0)), ladder_lock)
+    state['locked_net'] = locked
+    state['armed'] = locked > 0.0
     if not state['armed']:
         return None
-    locked = max(float(state['locked_net']), state['peak_net'] * .88)  # 12% drawback (was 20%)
-    state['locked_net'] = locked
-    state['retracement_fraction'] = .12
+
+    state['retracement_fraction'] = 0.0
     if side == 'LONG':
         stop = (entry * (1 + fee) + locked / qty) / ((1 - slippage) * (1 - fee))
     else:
@@ -99,7 +101,7 @@ def protection(position, price, fee, slippage, frame=None):
     state['pending'] = bool(state.get('pending')) or net <= locked
     return {'triggered': state['pending'], 'stop_price': stop,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
-            'locked_net': locked, 'peak_net': state['peak_net'], 'retracement_fraction': .12}
+            'locked_net': locked, 'peak_net': state['peak_net'], 'retracement_fraction': 0.0}
 
 
 def abnormal_long_bar(frame, price):

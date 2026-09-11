@@ -85,7 +85,7 @@ from core.config import (
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
-from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
+from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair, compute_net_reward_risk
 from core.notifier import notify_email
 
 

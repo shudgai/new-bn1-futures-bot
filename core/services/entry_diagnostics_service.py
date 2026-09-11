@@ -43,7 +43,7 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             ticket = None
         if ticket and ticket.get('mode') == 'next_breakout':
             if not next_breakout_ready(engine.account, symbol, frame, price):
-                return result('KC_NEXT_BREAKOUT_WAIT', '等待下一根有效趨勢入口', '平倉當根不開；下一根起依已收線CK中軌方向與利潤空間重新評估。', **extra)
+                return result('KC_NEXT_BREAKOUT_WAIT', '等待下一根有效趨勢入口', '平倉當根不開 (除非發生強勢破軌)；下一根起依已收線CK中軌方向與利潤空間重新評估。', **extra)
             ticket = None
         if ticket and opposite_entry_releases(engine.account, symbol, frame, price):
             # Preview order validation without mutating persisted state.
