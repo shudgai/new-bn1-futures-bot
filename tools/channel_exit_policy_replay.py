@@ -91,13 +91,30 @@ def make_policies() -> List[Policy]:
             return level
         return stop
 
+    def trailing(retrace: float):
+        """2026-07-25 原版：有獲利就把停損墊高，只吐回 retrace 比例的峰值獲利。"""
+        def stop(peak: float, entry: float, qty: float):
+            if peak <= 0:
+                return None
+            return price_for_net("LONG", entry, qty, peak * (1 - retrace))
+        return stop
+
     return [
+        Policy("G 原版75%追蹤+硬止損2%", trailing(0.25), 0.02),
+        Policy("H 原版75%追蹤+硬止損1%", trailing(0.25), 0.01),
+        Policy("I 原版50%追蹤+硬止損2%", trailing(0.50), 0.02),
         Policy("A 現行 4U/-2U 硬止損2%", ladder(4.0, 2.0), 0.02),
         Policy("B 現行 + 硬止損1%", ladder(4.0, 2.0), 0.01),
         Policy("C 2U/-1U 硬止損1%", ladder(2.0, 1.0), 0.01),
         Policy("D 0.5U/回吐20% 硬止損2%", ratio(0.5, 0.20), 0.02),
         Policy("E 現行 + 保底2U->+0.3U", floor(ladder(4.0, 2.0), 2.0, 0.3), 0.02),
         Policy("F 2U/-1U 硬止損2%", ladder(2.0, 1.0), 0.02),
+        Policy("J 2U/-2U（現行）", ladder(2.0, 2.0), 0.02),
+        Policy("K 1U/-1U", ladder(1.0, 1.0), 0.02),
+        Policy("L 1U/-0.5U", ladder(1.0, 0.5), 0.02),
+        Policy("M 0.5U/-0.5U", ladder(0.5, 0.5), 0.02),
+        Policy("N 1U/回吐25%", ratio(1.0, 0.25), 0.02),
+        Policy("O 0.5U/回吐25%", ratio(0.5, 0.25), 0.02),
     ]
 
 
