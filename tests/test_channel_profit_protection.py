@@ -13,6 +13,12 @@ from test_channel_swing_execution import _execution_engine, SYMBOL
 from test_channel_symmetric_rules import market as confirmed_reentry_frame
 
 
+@pytest.fixture(autouse=True)
+def _no_reentry_cooldown(monkeypatch):
+    """本檔測平倉與重開機制；獲利重開冷卻另見 tests/test_channel_extra_exits.py。"""
+    monkeypatch.setattr("core.engine.CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", 0.0)
+
+
 @pytest.fixture
 def anyio_backend():
     return 'asyncio'
