@@ -237,17 +237,21 @@ def channel_tail_entry_blocked(frame, side) -> bool:
     live replay from +9.95 to +25.70 USDT and the worst trade from -11.34 to -9.17
     (8, 10, 12 and 14 bars were all better than no filter; 12 sits mid-plateau).
     """
-    if side not in ("LONG", "SHORT") or frame is None or len(frame) < CHANNEL_TAIL_MAX_TREND_BARS + 2:
+    if side not in ("LONG", "SHORT"):
         return False
+    # Fail closed: without enough warmup bars the run length cannot be measured,
+    # so refuse the entry instead of letting a tail entry through.
+    if frame is None or len(frame) < CHANNEL_TAIL_MAX_TREND_BARS + 2:
+        return True
     key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
     try:
         closed = frame.iloc[:-1]
         values = [float(v) for v in closed[key].iloc[-(CHANNEL_TAIL_MAX_TREND_BARS + 1):]]
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return False
+        return True
     if (len(values) < CHANNEL_TAIL_MAX_TREND_BARS + 1
             or not all(math.isfinite(v) and v > 0 for v in values)):
-        return False
+        return True
     sign = 1 if side == "LONG" else -1
     run = 0
     for previous, latest in zip(values, values[1:]):

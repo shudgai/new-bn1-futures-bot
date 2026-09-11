@@ -29,12 +29,20 @@ def anyio_backend():
     return 'asyncio'
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-@pytest.mark.parametrize('length', [5, 30, 70])
+@pytest.mark.parametrize('length', [30, 70])
 def test_available_ck_history_confirms_entry(setup_engine, side, length):
     _, f = setup_engine(side)
     price = confirm_entry(f, side)
     f = f.tail(length)
     assert TradingEngine._channel_swing_action(f, price)['side'] == side
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_too_short_ck_history_refuses_entry(setup_engine, side):
+    """2026-09-11: fewer warmup bars than the tail rule needs must not open."""
+    _, f = setup_engine(side)
+    price = confirm_entry(f, side)
+    assert TradingEngine._channel_swing_action(f.tail(5), price)['side'] is None
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('held', [False, True])
