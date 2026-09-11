@@ -334,7 +334,7 @@ def volume_decay_exit_ready(
         turned = values[-1] < values[-2] if side == "LONG" else values[-1] > values[-2]
         if not turned:
             return False
-        from core.strategy import has_volume_divergence
-        return bool(has_volume_divergence(frame, -1 if side == "LONG" else 1))
+        from core.strategy import has_real_volume_decay
+        return bool(has_real_volume_decay(frame, -1 if side == "LONG" else 1))
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False

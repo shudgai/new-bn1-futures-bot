@@ -2597,3 +2597,41 @@ def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
         return {"close": True, "reason": reason_text}
 
     return {"close": False, "reason": "MA3 尚未出現反向轉折"}
+
+
+def has_real_volume_decay(
+    df: pd.DataFrame,
+    want_dir: int,
+    lookback: int = VOLUME_DIVERGENCE_LOOKBACK_BARS,
+    max_ratio: float = VOLUME_DIVERGENCE_MAX_RATIO,
+) -> bool:
+    """真量能衰退：只用已收線K，且新極值必須是「低量創出」。
+
+    與 has_volume_divergence 的差別（避免假量能衰退）：
+      1. 排除未收線K：未完成的量天生偏小，會讓後段看起來像萎縮。
+      2. 用中位數比較前後半段：單一根爆量不會造成假的萎縮。
+      3. 後段至少 3/4 的量低於前段中位數，代表是持續萎縮而非單根雜訊。
+      4. 創新高／新低的那一根，量必須低於前段中位數（低量創極值＝動能耗盡）。
+    """
+    closed = df.iloc[:-1] if len(df) > lookback else df
+    if closed is None or len(closed) < lookback:
+        return False
+    window = closed.iloc[-lookback:]
+    half = lookback // 2
+    early, recent = window.iloc[:half], window.iloc[half:]
+    early_volume = float(early["volume"].median())
+    if not np.isfinite(early_volume) or early_volume <= 0:
+        return False
+    if float(recent["volume"].median()) > early_volume * max_ratio:
+        return False
+    if float((recent["volume"] < early_volume * 0.9).mean()) < 0.75:
+        return False
+    if want_dir == 1:
+        if float(recent["low"].min()) > float(early["low"].min()):
+            return False
+        extreme_index = recent["low"].idxmin()
+    else:
+        if float(recent["high"].max()) < float(early["high"].max()):
+            return False
+        extreme_index = recent["high"].idxmax()
+    return float(window.loc[extreme_index, "volume"]) < early_volume * 0.9

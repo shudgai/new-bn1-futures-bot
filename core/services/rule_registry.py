@@ -134,7 +134,7 @@ def active_exit_rule_lines() -> List[str]:
         f"（{config.LEVERAGE:g}x 槓桿 ≈ 價格逆向 {config.MAX_POSITION_MARGIN_LOSS_RATIO / config.LEVERAGE * 100:g}%）",
         f"  6. 量能衰退平倉：{_flag(config.CHANNEL_VOLUME_DECAY_EXIT_ENABLED)}"
         + ("（需在獲利中）" if config.CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT else "（不要求獲利）")
-        + "＋MA3 一轉彎即平倉",
+        + "＋MA3 一轉彎即平倉（真量能衰退，未收線K與單根爆量不列入判定）",
         f"  7. MA3 由持倉側外軌轉進軌內後，單根反向異常K ≥ "
         f"{config.CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR:g} ATR 即平倉："
         f"{_flag(config.CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED)}",

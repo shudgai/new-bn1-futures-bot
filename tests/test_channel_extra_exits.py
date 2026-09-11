@@ -4,7 +4,8 @@ import pytest
 
 from core.guards import abnormal_guard
 from core.guards.abnormal_guard import channel_adverse_exit_reason
-from core.strategy import has_volume_divergence
+from core.strategy import has_real_volume_decay
+from core.services.swing_service import volume_decay_exit_ready
 
 ATR = 1.0
 REASON = "EMERGENCY_EXIT_MA3_ENTERED_RAIL_ADVERSE_BAR"
@@ -58,55 +59,61 @@ def test_two_closed_bodies_still_exit_first():
     assert channel_adverse_exit_reason(frame, "SHORT", 100.1, ATR) == "EMERGENCY_EXIT_2_CANDLE_ADVERSE"
 
 
-def _volume_frame(recent_volume):
-    """20 根 K；後 10 根量能改變，且最後一根創新高／新低。"""
-    volumes = [100.0] * 10 + [recent_volume] * 10
-    lows = [90.0] * 20
-    highs = [110.0] * 20
-    lows[-1] = 89.0    # 空單方向：價格創新低
-    highs[-1] = 111.0  # 多單方向：價格創新高
-    return pd.DataFrame({"low": lows, "high": highs, "volume": volumes})
-
-
-def test_volume_decay_detects_bottom_exhaustion_for_shorts():
-    assert has_volume_divergence(_volume_frame(recent_volume=20.0), 1) is True
-    assert has_volume_divergence(_volume_frame(recent_volume=120.0), 1) is False
-
-
-def test_volume_decay_detects_top_exhaustion_for_longs():
-    assert has_volume_divergence(_volume_frame(recent_volume=20.0), -1) is True
-    assert has_volume_divergence(_volume_frame(recent_volume=120.0), -1) is False
+def _volume_frame(recent_volume, extreme_volume=None, rows=21):
+    """rows-1 根已收線 + 1 根未收線；倒數第二根（最後已收線）創新高／新低。"""
+    half = (rows - 1) // 2
+    volumes = [100.0] * half + [recent_volume] * (rows - half)
+    lows = [90.0] * rows
+    highs = [110.0] * rows
+    lows[-2] = 89.0    # 空單方向：最後已收線的價格創新低
+    highs[-2] = 111.0  # 多單方向：最後已收線的價格創新高
+    frame = pd.DataFrame({"low": lows, "high": highs, "volume": volumes})
+    if extreme_volume is not None:
+        frame.loc[frame.index[-2], "volume"] = extreme_volume
+    return frame
 
 
 def _decay_frame(recent_volume, ma3_before, ma3_last):
     frame = _volume_frame(recent_volume)
-    frame["ma3"] = [100.0] * 20
+    frame["ma3"] = [100.0] * len(frame)
     frame.loc[frame.index[-3], "ma3"] = ma3_before
     frame.loc[frame.index[-2], "ma3"] = ma3_last
     return frame
 
 
-@pytest.mark.parametrize("side,ma3_before,ma3_last", [
-    ("LONG", 101.0, 100.5),   # 多單 MA3 轉下
-    ("SHORT", 100.0, 100.6),  # 空單 MA3 轉上
-])
-def test_volume_decay_exits_even_in_loss(side, ma3_before, ma3_last):
-    from core.services.swing_service import volume_decay_exit_ready
-
-    frame = _decay_frame(20.0, ma3_before, ma3_last)
-    assert volume_decay_exit_ready(frame, side, net_profitable=False) is True
-    assert volume_decay_exit_ready(frame, side, net_profitable=False, require_profit=True) is False
+def test_real_volume_decay_accepts_genuine_shrinking_volume():
+    assert has_real_volume_decay(_volume_frame(20.0), 1) is True
+    assert has_real_volume_decay(_volume_frame(20.0), -1) is True
 
 
-def test_volume_decay_requires_ma3_to_turn():
-    from core.services.swing_service import volume_decay_exit_ready
-
-    flat = _decay_frame(20.0, 100.0, 100.0)
-    assert volume_decay_exit_ready(flat, "SHORT", net_profitable=False) is False
+def test_real_volume_decay_rejects_flat_or_rising_volume():
+    assert has_real_volume_decay(_volume_frame(100.0), 1) is False
+    assert has_real_volume_decay(_volume_frame(120.0), -1) is False
 
 
-def test_volume_decay_requires_shrinking_volume():
-    from core.services.swing_service import volume_decay_exit_ready
+def test_real_volume_decay_rejects_extreme_made_on_high_volume():
+    """創新極值那一根是爆量（高潮）而不是量縮 -> 不是真衰退。"""
+    assert has_real_volume_decay(_volume_frame(20.0, extreme_volume=200.0), 1) is False
 
-    loud = _decay_frame(120.0, 100.0, 100.6)
-    assert volume_decay_exit_ready(loud, "SHORT", net_profitable=False) is False
+
+def test_real_volume_decay_ignores_single_early_volume_spike():
+    """前段單一根爆量不得讓判定失真（舊版用平均值會被騙）。"""
+    from core.strategy import has_volume_divergence
+
+    frame = _volume_frame(100.0)          # 實際上量能沒有衰退
+    frame.loc[frame.index[5], "volume"] = 5000.0
+    assert has_volume_divergence(frame, 1) is True   # 舊版：被單根爆量騙了
+    assert has_real_volume_decay(frame, 1) is False  # 新版：中位數不受影響
+
+
+def test_real_volume_decay_ignores_the_unclosed_bar():
+    """未收線K的量天生偏小，不能當成衰退證據。"""
+    frame = _volume_frame(100.0)
+    frame.loc[frame.index[-1], "volume"] = 1.0
+    assert has_real_volume_decay(frame, 1) is False
+
+
+def test_volume_decay_exit_matches_the_strict_detector(monkeypatch):
+    frame = _decay_frame(20.0, 100.0, 100.6)
+    assert volume_decay_exit_ready(frame, "SHORT", net_profitable=False) is True
+    assert volume_decay_exit_ready(_decay_frame(100.0, 100.0, 100.6), "SHORT", net_profitable=False) is False
