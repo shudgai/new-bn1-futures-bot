@@ -86,6 +86,7 @@ from core.config import (
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
 from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair, compute_net_reward_risk
+from core.services.exits.profit_protection_service import locked_stop_price
 from core.notifier import notify_email
 
 
@@ -705,6 +706,88 @@ class BinanceTestnetAccount:
                         meta["channel_swing_emergency_sl"] = placed
                         self.position_meta[symbol] = meta
                         self.save_state()
+
+            # ── 停電保護往上移（做法 A）：階梯鎖利每往上跳一階，就把交易所那張
+            #    停電保護單換到「鎖利價」，這樣停電／斷網時鎖住的利潤也保得住。
+            #    換單沿用既有安全流程：先撤舊單再掛新單，失敗就把舊單掛回去。
+            if (
+                ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                and str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+                    == "CHANNEL_SWING"
+                and symbol not in self.pending_limit_orders
+                and float(pos.get("qty") or 0) > 0
+            ):
+                ladder_state = (
+                    pos.get("channel_profit_protection")
+                    or meta.get("channel_profit_protection")
+                    or {}
+                )
+                locked_net = float(ladder_state.get("locked_net") or 0.0)
+                recorded_stop = float(meta.get("channel_swing_emergency_sl") or 0.0)
+                if locked_net > 0:
+                    target_stop = 0.0
+                    try:
+                        target_stop = float(self.exchange.price_to_precision(
+                            symbol,
+                            locked_stop_price(
+                                entry_p, side, float(pos["qty"]), locked_net,
+                                TAKER_FEE_RATE, SLIPPAGE_PCT,
+                            ),
+                        ))
+                        min_step = entry_p * 0.00001
+                        improves = (
+                            target_stop > recorded_stop + min_step if side == "LONG"
+                            else recorded_stop <= 0.0 or target_stop < recorded_stop - min_step
+                        )
+                    except Exception:
+                        improves = False
+                    if improves and target_stop > 0:
+                        close_side_up = "sell" if side == "LONG" else "buy"
+                        try:
+                            await self._cancel_all_orders(symbol)
+                            await self._create_protection_order(
+                                symbol, close_side_up, "STOP_MARKET", pos["qty"], target_stop,
+                            )
+                            # _cancel_all_orders 會一起撤掉 TP；Channel Swing 通常沒有 TP，
+                            # 但若這個部位有 TP（例如手動單），換單後要把它掛回去。
+                            tp_up = float(meta.get("tp") or pos.get("tp") or 0.0)
+                            if tp_up > 0 and not DISABLE_TAKE_PROFIT:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_up, "TAKE_PROFIT_MARKET",
+                                        pos["qty"], tp_up,
+                                    )
+                                except Exception as tp_exc:
+                                    self.log(
+                                        f"⚠️ [停電保護] {symbol} 停損已上移，但 TP 重掛失敗："
+                                        f"{type(tp_exc).__name__}: {tp_exc}",
+                                        "WARNING",
+                                    )
+                            meta["channel_swing_emergency_sl"] = target_stop
+                            self.position_meta[symbol] = meta
+                            self.save_state()
+                            self.log(
+                                f"🔌 [停電保護] {symbol} 停損上移到 {target_stop}"
+                                f"（已鎖 {locked_net:.2f}U）",
+                                "WARNING",
+                            )
+                        except Exception as exc:
+                            restored = False
+                            if recorded_stop > 0:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_up, "STOP_MARKET",
+                                        pos["qty"], recorded_stop,
+                                    )
+                                    restored = True
+                                except Exception:
+                                    pass
+                            self.log(
+                                f"⚠️ [停電保護] {symbol} 停損上移失敗："
+                                f"{type(exc).__name__}: {exc}；"
+                                f"{'已恢復原停損' if restored else '原停損恢復失敗，下輪重試'}",
+                                "WARNING" if restored else "DANGER",
+                            )
 
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()

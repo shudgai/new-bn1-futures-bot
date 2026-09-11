@@ -371,3 +371,18 @@ def test_unknown_style_still_arms_twenty_percent_protection():
     assert result['retracement_fraction'] == .12
     assert result['stop_price'] == pytest.approx(104.413, rel=1e-3)
     assert protection(p, 104.0, .0005, .0001, f)['triggered']
+
+
+def test_locked_stop_price_matches_protection_stop():
+    """2026-09-11: the exchange stop reuses the exact ladder stop formula."""
+    from core.services.exits.profit_protection_service import locked_stop_price
+    p = position('LONG')
+    result = protection(p, 105., .0005, .0001)
+    assert result is not None
+    expected = locked_stop_price(100., 'LONG', 2., result['locked_net'], .0005, .0001)
+    assert result['stop_price'] == pytest.approx(expected, rel=1e-12)
+    p2 = position('SHORT')
+    result2 = protection(p2, 95., .0005, .0001)
+    assert result2 is not None
+    expected2 = locked_stop_price(100., 'SHORT', 2., result2['locked_net'], .0005, .0001)
+    assert result2['stop_price'] == pytest.approx(expected2, rel=1e-12)

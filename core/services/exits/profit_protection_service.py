@@ -57,6 +57,13 @@ def trend_style(frame, side, opened_at=None):
         return 'UNKNOWN'
 
 
+def locked_stop_price(entry, side, qty, locked_net, fee, slippage):
+    """Price at which the locked net amount is realised (shared with the exchange stop)."""
+    if side == "LONG":
+        return (entry * (1 + fee) + locked_net / qty) / ((1 - slippage) * (1 - fee))
+    return (entry * (1 - fee) - locked_net / qty) / ((1 + slippage) * (1 + fee))
+
+
 def protection(position, price, fee, slippage, frame=None):
     """Step ladder: arm at 4U net peak, locking peak-2U and climbing every 2U."""
     entry = float(position.get('entry_price') or 0)
@@ -92,10 +99,7 @@ def protection(position, price, fee, slippage, frame=None):
         return None
 
     state['retracement_fraction'] = 0.0
-    if side == 'LONG':
-        stop = (entry * (1 + fee) + locked / qty) / ((1 - slippage) * (1 - fee))
-    else:
-        stop = (entry * (1 - fee) - locked / qty) / ((1 + slippage) * (1 + fee))
+    stop = locked_stop_price(entry, side, qty, locked, fee, slippage)
     state['stop_price'] = stop
     state['net_floor_price'] = stop
     state['pending'] = bool(state.get('pending')) or net <= locked
