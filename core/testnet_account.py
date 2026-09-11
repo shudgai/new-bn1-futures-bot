@@ -1450,10 +1450,17 @@ class BinanceTestnetAccount:
             entry_mode = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper()
+            close_side = "sell" if pos["side"] == "LONG" else "buy"
             sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
+            # ── Channel Swing：sl_price 一律為 0，改用停電緊急保護單機制 ──
+            if entry_mode == "CHANNEL_SWING":
+                await self._place_channel_swing_emergency_stop(
+                    symbol, close_side, pos["qty"],
+                    pos["entry_price"], pos["side"], pos.get("leverage", 1)
+                )
+                continue
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
                 continue
-            close_side = "sell" if pos["side"] == "LONG" else "buy"
             sl_price = cap_stop_loss_to_margin_risk(
                 pos["entry_price"], pos["side"], sl_price, pos["leverage"]
             )
@@ -1588,6 +1595,45 @@ class BinanceTestnetAccount:
             "algoOrder", "fapiPrivate", "POST", params
         )
         return {"result": result, "callbackRate": callback_rate}
+
+    async def _place_channel_swing_emergency_stop(
+        self, symbol: str, close_side: str, qty: float,
+        entry_price: float, side: str, leverage: int
+    ):
+        """Channel Swing 停電緊急保護單：按保證金損失上限掛 STOP_MARKET。
+
+        與 hard_stop_service 採相同的 MAX_POSITION_MARGIN_LOSS_RATIO / leverage
+        公式計算觸發價，機器人正常平倉時 _cancel_all_orders 會先行撤單，
+        只有在伺服器斷線 / 停電超過 UPS 續航時才由 Binance 交易所端觸發。
+        回傳實際掛單的緊急停損價（float），失敗時記錄警告並回傳 None。
+        """
+        from core.config import MAX_POSITION_MARGIN_LOSS_RATIO
+        try:
+            if MAX_POSITION_MARGIN_LOSS_RATIO <= 0 or entry_price <= 0 or leverage <= 0:
+                return None
+            adverse_pct = MAX_POSITION_MARGIN_LOSS_RATIO / max(leverage, 1)
+            if side == "LONG":
+                raw_stop = entry_price * (1.0 - adverse_pct)
+            else:
+                raw_stop = entry_price * (1.0 + adverse_pct)
+            stop_price = float(self.exchange.price_to_precision(symbol, raw_stop))
+            if stop_price <= 0:
+                return None
+            await self._create_protection_order(
+                symbol, close_side, "STOP_MARKET", qty, stop_price
+            )
+            self.log(
+                f"🔌 [停電保護] {symbol} 已掛緊急停損 {stop_price} "
+                f"（保證金虧損上限 {MAX_POSITION_MARGIN_LOSS_RATIO*100:.0f}% / 槓桿 {leverage}x）",
+                "WARNING",
+            )
+            return stop_price
+        except Exception as exc:
+            self.log(
+                f"⚠️ {symbol} 停電緊急保護單建立失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+            return None
 
     async def _emergency_flatten(self, symbol: str, side: str, qty: float) -> None:
         close_side = "sell" if side == "LONG" else "buy"
@@ -1808,6 +1854,18 @@ class BinanceTestnetAccount:
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
                     )
+                # ── 停電緊急保護：Channel Swing 不掛一般 SL，但仍需在交易所端
+                #    留下一張緊急停損單，以防伺服器停電或網路中斷超過 UPS 續電
+                #    時間（約 30 分鐘）時，Binance 仍能自動平倉保護資產。
+                #    觸發條件與 hard_stop_service 相同：虧損達保證金的
+                #    MAX_POSITION_MARGIN_LOSS_RATIO（預設 10%）。
+                #    正常平倉流程的 _cancel_all_orders 會提前取消這張單。
+                if is_channel_swing and ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                    emergency_sl = await self._place_channel_swing_emergency_stop(
+                        symbol, close_side, qty, execution_price, side, leverage
+                    )
+                    if emergency_sl:
+                        entry_context["channel_swing_emergency_sl"] = emergency_sl
             except Exception:
                 await self._cancel_all_orders(symbol)
                 try:
