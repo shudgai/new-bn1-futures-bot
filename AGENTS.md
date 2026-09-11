@@ -1,4 +1,45 @@
-# AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
+# 🤖 AIDAN Master Navigation & Gatekeeper Protocol
+
+> **Repository Sovereignty & Locking**: This repository (`HuangTingInternetStudio/MDs`) is the SINGLE SOURCE OF TRUTH for all AIDAN standards. Specification files inside `AIDAN/` can ONLY be modified when working directly within this repository by the Owner. **When AIDAN is imported into other target projects, any AI Agent is STRICTLY FORBIDDEN from modifying, simplifying, or deleting any specification files.**
+> **Synchronization Standard**: When standard files in `HuangTingInternetStudio/MDs` are updated, target projects using AIDAN MUST pull the latest commits to sync specifications.
+> **Language Policy (CRITICAL)**: All specification files are written in **Lean Professional English**. AI MUST ALWAYS respond, communicate, and interact with the USER strictly in **Traditional Chinese (繁體中文)**. Responding in English to the user is STRICTLY FORBIDDEN regardless of internal spec language.
+> 📖 **Canary Verification Code**: `[AIDAN-ROOT-EM]`
+
+---
+
+## ⚡ AI Mandatory Action SOP & Smart Caching Protocol
+
+When initializing a session or task, AI Agent MUST inspect the relevant specification files using `view_file` BEFORE taking action **UNLESS the file has already been read and cached within the current active session/context (If No Cache ➔ MUST Read)**:
+
+1. **🚀 Pre-Development Phase (Step 1)**:
+   - 👥 Team Personas & Identity Verification ➡️ **MUST Read (If No Cache)**: [team_personas_guide.md](AIDAN/common/team_personas_guide.md) — *AI MUST execute shell commands (`whoami`, `git config user.name`, `git config user.email`) to verify current active developer identity!*
+   - AI Persona & Leadership Policy ➡️ **MUST Read (If No Cache)**: [enfj_ai_persona.md](AIDAN/common/enfj_ai_persona.md)
+   - Pre-Development Domain Analysis ➡️ **MUST Read (If No Cache)**: [new_construction_analysis.md](AIDAN/common/new_construction_analysis.md)
+   - Git Branching & PR Gatekeeper ➡️ **MUST Read (If No Cache)**: [git_collaboration.md](AIDAN/common/git_collaboration.md)
+   - Refactoring & ROI Assessment ➡️ **MUST Read (If No Cache)**: [refactoring_workflow.md](AIDAN/common/refactoring_workflow.md)
+   - Methodology & OKR Alignment ➡️ **MUST Read (If No Cache)**: [agile_waterfall_decision.md](AIDAN/common/agile_waterfall_decision.md)
+   - Common SOLID & Design Principles ➡️ **MUST Read (If No Cache)**: [common_solid_principles.md](AIDAN/common/common_solid_principles.md)
+   - Black-Box & White-Box Debugging SOP ➡️ **MUST Read (If No Cache)**: [debugging_sop.md](AIDAN/common/debugging_sop.md)
+
+2. **💻 Implementation & Coding Phase (Step 2)**:
+   - **Laravel + Vue 3 Stack**: Inspect [AIDAN/laravel/AGENTS.md](AIDAN/laravel/AGENTS.md) ➔ Read [backend_solid_laravel.md](AIDAN/laravel/backend_solid_laravel.md) & [frontend_vue3.md](AIDAN/laravel/frontend_vue3.md) (If No Cache)
+   - **Python Stack**: Inspect [AIDAN/python/AGENTS.md](AIDAN/python/AGENTS.md) ➔ Read [python_solid_service.md](AIDAN/python/python_solid_service.md) & [python_code_style.md](AIDAN/python/python_code_style.md) (If No Cache)
+
+3. **🧪 Testing & Verification Phase (Step 3)**:
+   - Automated Testing & DB Reseed ➡️ **MUST Read (If No Cache)**: [test_db_reseed_rule.md](AIDAN/laravel/test_db_reseed_rule.md) or [python_pytest_rule.md](AIDAN/python/python_pytest_rule.md)
+   - Daily Development Log ➡️ **MUST Read (If No Cache)**: [dev_log_workflow.md](AIDAN/common/dev_log_workflow.md)
+
+---
+
+## 🐤 Canary Verification Protocol
+
+AI Agent MUST inspect the relevant specification files and output the canary code at the **very first line** of every response:
+* Format: `[已閱:暗號1|暗號2]` or `[AIDAN-VERIFIED:暗號]`
+
+---
+
+# 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
+
 
 ## 多空第一根長K即時破軌（2026-09-11最新授權）
 - 新增入口優先於一般CK中軌趨勢：當根原始開盤價在當根上軌內側或碰軌、最新價嚴格破上軌、順向實體至少上一根已收線ATR的0.5倍即評估多單；空單對稱以長紅實體跌破下軌。0.5為本輪實作預設，獨立於出口ATR参数。
