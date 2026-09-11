@@ -6,11 +6,54 @@ from core.channel_outer_entry import ck_momentum_fading, aligned_entry
 
 STATE_KEY = 'channel_fading_ma3_turn'
 EXIT_REASON = 'CK_FADING_MA3_TURN_EXIT'
+IMMEDIATE_EXIT_REASON = 'MA3_IMMEDIATE_TURN_EXIT'
 
 
 # Relative closed-bar bandwidth avoids the fixed KC-width / current-ATR ratio.
 NARROW_LOOKBACK = 20
 NARROW_RATIO = 0.75
+
+
+def immediate_ma3_turn(position, frame, price):
+    """Exit on the first observed post-entry MA3 reversal, without lag gates."""
+    identity = [position.get('side'), position.get('open_timestamp'), position.get('entry_price')]
+    key = 'channel_immediate_ma3_turn'
+    state = position.get(key)
+    if state and state.get('identity') != identity:
+        position.pop(key, None)
+        state = None
+    if state and state.get('pending'):
+        return True
+    try:
+        side = position.get('side')
+        opened = float(position.get('open_timestamp') or 0.0)
+        if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 4:
+            return False
+        closes = [float(value) for value in frame['close'].iloc[-4:-1]]
+        price = float(price)
+        bar = float(frame.iloc[-1]['timestamp']) / 1000.0
+        if (not all(math.isfinite(value) and value > 0 for value in [opened, price, bar, *closes])
+                or opened >= bar + 60):
+            return False
+        ma = (closes[-2] + closes[-1] + price) / 3.0
+        sign = 1 if side == 'LONG' else -1
+        if not state:
+            position[key] = dict(identity=identity, last_ma=ma, favorable=False,
+                                 last_bar=bar, pending=False)
+            return False
+        previous = float(state.get('last_ma', ma))
+        slope = sign * (ma - previous)
+        state['last_ma'] = ma
+        state['last_bar'] = bar
+        if slope > abs(ma) * 1e-12:
+            state['favorable'] = True
+        elif state.get('favorable') and slope < -abs(ma) * 1e-12:
+            state['pending'] = True
+            return True
+        position[key] = state
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        position.pop(key, None)
+    return False
 
 
 def ck_channel_narrow(frame):

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 import pandas as pd
-from core.channel_fading_exit import fading_ma3_turn, next_breakout_ready, STATE_KEY, EXIT_REASON
+from core.channel_fading_exit import fading_ma3_turn, immediate_ma3_turn, next_breakout_ready, STATE_KEY, EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.channel_outer_entry import ck_momentum_fading, ck_entry_momentum_ready
 from test_channel_significant_ma3 import setup
 from test_channel_swing_execution import _execution_engine, SYMBOL
@@ -54,6 +54,29 @@ def test_invalid_ck_is_not_fading_and_live_ck_ignored(side):
     assert ck_momentum_fading(f,side) is None
     assert not ck_entry_momentum_ready(f,side)
     assert not fading_ma3_turn(p,f,100.)
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_immediate_ma3_turn_exits_without_fading_or_atr_gate(side):
+    sign = 1 if side == 'LONG' else -1
+    p = {'side': side, 'entry_price': 100., 'open_timestamp': 1200.}
+    rows = pd.DataFrame({
+        'timestamp': [1200000, 1260000, 1320000, 1380000, 1440000],
+        'close': [100., 101., 102., 103., 104.],
+        'open': [100., 100., 101., 102., 103.],
+        'atr': [100.] * 5,
+    })
+    first = 106. if sign == 1 else 98.
+    favorable = 108. if sign == 1 else 96.
+    adverse = 95. if sign == 1 else 105.
+    assert not immediate_ma3_turn(p, rows, first)
+    rows.loc[4, 'timestamp'] = 1500000
+    assert not immediate_ma3_turn(p, rows, favorable)
+    rows.loc[4, 'timestamp'] = 1560000
+    rows.loc[2, 'close'] = 104.
+    rows.loc[3, 'close'] = 108.
+    assert immediate_ma3_turn(p, rows, adverse)
+    assert p['channel_immediate_ma3_turn']['pending']
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_old_nonfading_turn_cannot_fire_later(side):

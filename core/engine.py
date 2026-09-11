@@ -1,4 +1,4 @@
-from core.channel_fading_exit import fading_ma3_turn, next_breakout_ready, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON
+from core.channel_fading_exit import fading_ma3_turn, immediate_ma3_turn, next_breakout_ready, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.channel_direct_reverse import authorized as reverse_authorized, quote_ready as reverse_quote_ready
 from core.channel_abnormal_release import opposite_entry_releases
 from core.channel_live_pivot import LivePivot
@@ -7920,6 +7920,7 @@ class TradingEngine:
                     existing_pos[FADING_STATE_KEY] = copy.deepcopy(meta[FADING_STATE_KEY])
                 before_turn = copy.deepcopy(existing_pos.get(FADING_STATE_KEY))
                 terminal_turn = fading_ma3_turn(existing_pos, channel_df, channel_price)
+                immediate_turn = immediate_ma3_turn(existing_pos, channel_df, channel_price)
                 after_turn = existing_pos.get(FADING_STATE_KEY)
                 if after_turn is None:
                     meta.pop(FADING_STATE_KEY, None)
@@ -7952,6 +7953,8 @@ class TradingEngine:
                     channel_action = {"action": "EXIT", "side": None, "reason": ck_exit}
                 if terminal_turn and not emergency and not (profit and profit["triggered"]):
                     channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
+                if immediate_turn and not emergency:
+                    channel_action = {"action": "EXIT", "side": None, "reason": IMMEDIATE_EXIT_REASON}
                 if changed:
                     self.account.save_state()
                 if channel_action.get("action") in {"EXIT", "REVERSE"}:
@@ -8027,10 +8030,12 @@ class TradingEngine:
                 }
                 ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
                 fading_exit = channel_action.get("reason") == FADING_EXIT_REASON
+                immediate_turn_exit = channel_action.get("reason") == IMMEDIATE_EXIT_REASON
                 ck_exit = channel_action.get("reason") in {
                     "KC_CK_DIRECTION_UNCLEAR_EXIT", "KC_CK_DIRECTION_REVERSED_EXIT",
                 }
-                pullback_exit = fading_exit or abnormal_exit or ma3_turn_exit or ck_exit or channel_exit_net_profitable
+                pullback_exit = (fading_exit or abnormal_exit or ma3_turn_exit
+                                 or immediate_turn_exit or ck_exit or channel_exit_net_profitable)
                 if pullback_exit:
                     tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
                                        "phase": "closing", "side": existing_pos["side"], "mode": "next_breakout" if fading_exit else "outer_cycle",
