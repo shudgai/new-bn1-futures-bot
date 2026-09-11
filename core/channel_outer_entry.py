@@ -1,7 +1,9 @@
 """Confirmed CK trend entries; legacy rail helpers remain for exit compatibility."""
 import math
 
-LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"}
+LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
+LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
+LIVE_BREAKOUT_BODY_ATR = 0.5
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}
 TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"} | ENTRY_TREND_CODES
@@ -176,8 +178,30 @@ def entry_trend_direction(frame):
         return None
 
 
+def live_body_breakout_side(frame, price):
+    """Current real body crosses an outer rail by quote, sized on closed ATR."""
+    try:
+        if frame is None or len(frame) < 2:
+            return None
+        row = frame.iloc[-1]
+        opened, upper, lower, atr, price = (
+            float(row['open']), float(row['kc_upper']), float(row['kc_lower']),
+            float(frame.iloc[-2]['atr']), float(price))
+        if (not all(math.isfinite(v) and v > 0 for v in (opened, upper, lower, atr, price))
+                or lower >= upper):
+            return None
+        threshold = atr * LIVE_BREAKOUT_BODY_ATR
+        if opened <= upper < price and price - opened >= threshold:
+            return 'LONG'
+        if price < lower <= opened and opened - price >= threshold:
+            return 'SHORT'
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        pass
+    return None
+
+
 def aligned_entry(frame, price):
-    """Enter with confirmed CK trend, independently of rail position or MA3."""
+    """Live long-body breaks may precede CK confirmation; retain trend entries."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -188,12 +212,14 @@ def aligned_entry(frame, price):
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        side = entry_trend_direction(frame)
+        breakout_side = live_body_breakout_side(frame, price)
+        side = breakout_side or entry_trend_direction(frame)
         if side is None:
             return wait
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
+        reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
+        return {"action": "ENTER", "side": side, "reason": reason}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return wait
 

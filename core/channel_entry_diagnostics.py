@@ -18,9 +18,9 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             raise ValueError('missing frame')
         bar = float(frame.iloc[-1]['timestamp'])
         if not math.isfinite(bar) or int(now // 60) != int(bar // 60000):
-            return result('KC_ENTRY_FRAME_WAIT', '等待本根行情資料', '送單前須以本根有效行情重驗破軌入口。')
-        side = entry_trend_direction(frame)
+            return result('KC_ENTRY_FRAME_WAIT', '等待本根行情資料', '送單前須以本根有效行情重驗趨勢或即時實體突破入口。')
         outer = aligned_entry(frame, price)
+        side = outer.get('side') or entry_trend_direction(frame)
         quoted = float(getattr(engine, '_channel_entry_quote_times', {}).get(symbol, float('nan')))
         fresh = math.isfinite(quoted) and 0 <= now - quoted <= 5
         room = engine._channel_profit_room(frame, price, side) if side else None

@@ -5,7 +5,7 @@ from core.channel_live_pivot import LivePivot
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
 import copy
-from core.channel_outer_entry import ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES, outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
+from core.channel_outer_entry import LIVE_BODY_BREAKOUT_CODES, ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES, outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
 from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
 from core.channel_intrabar_entry import IntrabarEntry
@@ -1563,7 +1563,7 @@ class TradingEngine:
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
         """Use an observed live turn, retaining the shared structured order gates."""
-        side = entry_trend_direction(frame)
+        side = aligned_entry(frame, price).get('side')
         pivot_ready = self._live_pivot_ready(symbol, frame, price, side)
         outer_ready = aligned_entry_ready(frame, price, side)
         if not pivot_ready and not outer_ready:
@@ -7130,7 +7130,8 @@ class TradingEngine:
                 self.account.log(f"⏸️ [真突破] {symbol} 帳戶風控暫停新倉，保留重試", "WARNING")
                 return False
             latest = frame.iloc[-2]
-            confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
+            confirmation_label = ("live body crossed KC outer rail" if decision["reason"] in LIVE_BODY_BREAKOUT_CODES else
+                                  "confirmed price pivot" if decision["reason"] in PIVOT_CODES else
                                   "live MA3 outside CK outer rail" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
                                   "confirmed CK middle trend" if decision["reason"] in TREND_CODES else
                                   "closed breakout continuation" if decision["reason"] in {"KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT"} else
