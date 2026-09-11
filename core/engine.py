@@ -97,7 +97,8 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
+    CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC,
+    CHANNEL_1H_TREND_FILTER_ENABLED, CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
     API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
@@ -1891,6 +1892,15 @@ class TradingEngine:
         # diagnostics, but those observations must never become an order.
         if symbol not in DEFAULT_SYMBOLS:
             return False
+        if CHANNEL_1H_TREND_FILTER_ENABLED:
+            trend_1h = getattr(self, "st_direction_1h_cache", {}).get(symbol)
+            side = str((signal or {}).get("side") or "").upper()
+            if trend_1h in (1, -1) and side in ("LONG", "SHORT"):
+                aligned = (side == "LONG" and trend_1h == 1) or (side == "SHORT" and trend_1h == -1)
+                if not aligned:
+                    self.account.log(
+                        f"⏸️ [1h 趨勢過濾] {symbol} 1h 方向 {trend_1h:+d} 與 {side} 不一致，不開新倉", "INFO")
+                    return False
         remaining = self._channel_stop_cooldown_remaining(symbol)
         if remaining > 0:
             self.account.log(
@@ -3180,6 +3190,14 @@ class TradingEngine:
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
+        cooldown = float(CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC or 0.0)
+        if cooldown > 0:
+            try:
+                requested = float(ticket.get("close_requested_at_ms") or 0.0) / 1000.0
+                if requested > 0 and (time.time() - requested) < cooldown:
+                    return False
+            except (TypeError, ValueError):
+                return False
         if ticket.get("mode") == "next_breakout":
             decision = self._channel_swing_action(frame, price)
             is_breakout = decision.get("reason", "").startswith("KC_LIVE_BODY_BREAKOUT")

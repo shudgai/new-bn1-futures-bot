@@ -1,4 +1,5 @@
 """量能衰退平倉與 MA3 轉進軌內後的單根反向異常K即時平倉。"""
+from types import SimpleNamespace
 import pandas as pd
 import pytest
 
@@ -117,3 +118,27 @@ def test_volume_decay_exit_matches_the_strict_detector(monkeypatch):
     frame = _decay_frame(20.0, 100.0, 100.6)
     assert volume_decay_exit_ready(frame, "SHORT", net_profitable=False) is True
     assert volume_decay_exit_ready(_decay_frame(100.0, 100.0, 100.6), "SHORT", net_profitable=False) is False
+
+
+def test_profit_reentry_cooldown_blocks_immediate_reopen(monkeypatch):
+    import time
+    from core.engine import TradingEngine
+
+    monkeypatch.setattr("core.engine.CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", 300)
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = SimpleNamespace(positions={}, log=lambda *args, **kwargs: None)
+    fresh = {"phase": "closed", "side": "LONG", "close_requested_at_ms": time.time() * 1000}
+    assert engine._profit_reentry_ready("X/USDT", fresh, None, 100.0) is False
+
+
+def test_profit_reentry_cooldown_can_be_disabled(monkeypatch):
+    import time
+    from core.engine import TradingEngine
+
+    monkeypatch.setattr("core.engine.CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", 0)
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.account = SimpleNamespace(positions={}, log=lambda *args, **kwargs: None,
+                                     save_state=lambda: None)
+    fresh = {"phase": "closed", "side": "LONG", "close_requested_at_ms": time.time() * 1000,
+             "mode": "ck_reverse"}
+    assert engine._profit_reentry_ready("X/USDT", fresh, None, 100.0) is False  # ck_reverse 一律不重開

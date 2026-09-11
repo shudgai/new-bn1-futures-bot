@@ -287,6 +287,16 @@ CHANNEL_SWING_PROFIT_FLOOR_NET_USDT = max(
     0.0, float(os.getenv("CHANNEL_SWING_PROFIT_FLOOR_NET_USDT", "0.3"))
 )
 
+# 1h 大週期趨勢過濾：1h SuperTrend 方向與進場方向不一致就不開新倉（快取未知時不擋）。
+CHANNEL_1H_TREND_FILTER_ENABLED = os.getenv(
+    "CHANNEL_1H_TREND_FILTER_ENABLED", "true"
+).lower() == "true"
+
+# 獲利保護平倉後的重開冷卻：避免「保護平倉 → 1 分鐘後重開 → 再被保護平倉」的成本損耗。
+CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC = max(
+    0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", "300"))
+)
+
 # Channel Swing 停損後冷卻：硬止損、瀑布或異常出場後，該幣在這段秒數內不得再開新倉。
 # 起因：2026-09-11 後段連續三筆在停損後 0.1~7.4 分鐘立刻反向再進場，全部再被停損，
 # 單一時段就吃掉當日 92% 的虧損。設 0 代表停用。
