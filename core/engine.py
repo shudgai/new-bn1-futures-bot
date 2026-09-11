@@ -2645,6 +2645,10 @@ class TradingEngine:
             self.account.save_state()
         # Migrate known normal profit tickets; unknown legacy closes stay conservative.
         reason = str(ticket.get("close_reason") or "")
+        if ticket.get("requires_pullback") and ("PROFIT_PROTECTION" in reason or
+                (not reason and "opened_at" in ticket)):
+            ticket["requires_pullback"] = False
+            self.account.save_state()
 
         if "exit_bar_id" not in ticket:
             # With no reliable close candle, begin observing from this candle.
