@@ -6,8 +6,9 @@ import time
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
@@ -15,6 +16,7 @@ from core.config import (
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
     TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
+    API_USERNAME, API_PASSWORD,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
@@ -33,7 +35,22 @@ def excel_text(value) -> str:
     return "" if value is None else f"'{value}"
 
 
-app = FastAPI(title="Binance Futures Bot 2.0")
+import secrets
+
+security = HTTPBasic()
+
+def get_current_username(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, API_USERNAME)
+    correct_password = secrets.compare_digest(credentials.password, API_PASSWORD)
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+app = FastAPI(title="Binance Futures Bot 2.0", dependencies=[Depends(get_current_username)])
 
 def visible_symbols():
     """輪替牌面加上所有未平倉幣種；持倉平掉前不得從介面消失。"""

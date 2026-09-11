@@ -9,6 +9,11 @@ PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "10000.0"))
 LEVERAGE = int(os.getenv("LEVERAGE", "5"))  # 預設槓桿：SYMBOL_LEVERAGE 未列出的幣種使用此值
 
+API_USERNAME = os.getenv("API_USERNAME", "admin")
+API_PASSWORD = os.getenv("API_PASSWORD")
+if API_PASSWORD is None:
+    raise RuntimeError("API_PASSWORD environment variable is not set. For security reasons, you must set API_USERNAME and API_PASSWORD in your .env file.")
+
 # --- 依市值/波動性分級槓桿 ---
 # 主流大市值幣波動小，給高槓桿；高波動迷因幣給低槓桿，控制風險一致性
 SYMBOL_LEVERAGE = {
