@@ -226,6 +226,10 @@ SCAN_1M_KLINE_LIMIT = max(60, int(float(os.getenv("SCAN_1M_KLINE_LIMIT", "500"))
 # 獲利重開票據的有效期限（秒）；逾期視為過期，回歸一般掃描。
 PROFIT_REENTRY_TICKET_TTL_SEC = max(60, int(float(os.getenv("PROFIT_REENTRY_TICKET_TTL_SEC", "3600"))))
 
+# Binance API 用量監控：每分鐘請求權重上限與警示門檻（讀回應標頭 X-MBX-USED-WEIGHT-1M）。
+API_WEIGHT_LIMIT_PER_MIN = max(1, int(float(os.getenv("API_WEIGHT_LIMIT_PER_MIN", "2400"))))
+API_WEIGHT_WARN_PCT = max(1.0, float(os.getenv("API_WEIGHT_WARN_PCT", "70")))
+
 # 進場當根順向實體上限（ATR 倍數）：過熱的大K不追，避免下一根反向異常K。
 CHANNEL_ENTRY_MAX_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ENTRY_MAX_BODY_ATR", "0.8"))

@@ -98,6 +98,7 @@ from core.config import (
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CHANNEL_WATERFALL_BODY_ATR, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
+    API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     PIVOT_STRONG_BODY_ATR_MULT,
@@ -1112,6 +1113,35 @@ class TradingEngine:
 
 
 
+
+    def api_weight_usage(self) -> dict:
+        """Binance 回報的每分鐘請求權重用量（取公開與下單連線中較新的一筆）。
+
+        標頭由 ccxt 存在 last_response_headers，例如 X-MBX-USED-WEIGHT-1M。
+        純讀取、不發任何請求，供儀表板顯示與超量警示。
+        """
+        used = 0
+        for ex in (getattr(self, "exchange", None), getattr(self, "execution_exchange", None)):
+            headers = getattr(ex, "last_response_headers", None) or {}
+            try:
+                items = headers.items()
+            except AttributeError:
+                continue
+            for key, value in items:
+                if str(key).lower() in ("x-mbx-used-weight-1m", "x-mbx-used-weight"):
+                    try:
+                        used = max(used, int(float(value)))
+                    except (TypeError, ValueError):
+                        pass
+        limit = API_WEIGHT_LIMIT_PER_MIN
+        percent = (used / limit * 100.0) if limit else 0.0
+        return {
+            "used_weight_1m": used,
+            "limit_per_min": limit,
+            "percent": round(percent, 1),
+            "warn_percent": API_WEIGHT_WARN_PCT,
+            "is_warning": percent >= API_WEIGHT_WARN_PCT,
+        }
 
     async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
         """Fetch klines from Binance with retries; empty payloads count as failures."""

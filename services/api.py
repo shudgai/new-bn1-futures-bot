@@ -325,6 +325,7 @@ async def get_status(response: Response):
         },
         "tickers": visible_tickers(),
         "ticker_updated_at": engine.last_ticker_success_ts,
+        "api_usage": engine.api_weight_usage(),
         "positions": positions_with_triggers(),
         "trades": engine.account.trades[:50],
         "total_trades": len(engine.account.trades),
