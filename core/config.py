@@ -1205,7 +1205,9 @@ DEFAULT_SYMBOLS[:] = [
 # --- 真實/測試網切換 ---
 # 預設 true：一律使用 Binance Testnet（set_sandbox_mode），不管 BINANCE_API_KEY
 # 是不是正式帳戶的金鑰都不會下真錢單。正式上線當天才手動改為 false，並確認
-# .env 裡的 BINANCE_API_KEY/BINANCE_SECRET 已換成正式帳戶的金鑰。
+# .env 裡的 BINANCE_API_KEY/BINANCE_SECRET 目前是 Binance「測試網」金鑰（實測
+# 正式 fapi 回 401、測試網回 200）。要切正式戶前必須改用全新的正式戶金鑰，
+# 且只勾合約權限並設定 IP 白名單。
 USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
 
 # --- 每日虧損熔斷 ---

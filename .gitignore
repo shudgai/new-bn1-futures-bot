@@ -10,6 +10,8 @@ env/
 # Environment variables (Sensitive API keys)
 .env
 .env.local
+.env.*
+!.env.example
 
 # Logs and runtime data
 data/binance-futures-bot.lock
