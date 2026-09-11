@@ -132,7 +132,11 @@ def active_exit_rule_lines() -> List[str]:
         f"  4. 雙已收線反向異常 K：各 ≥ {config.CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR:g} ATR",
         f"  5. 帳戶硬止損：保證金虧損 {config.MAX_POSITION_MARGIN_LOSS_RATIO * 100:g}%"
         f"（{config.LEVERAGE:g}x 槓桿 ≈ 價格逆向 {config.MAX_POSITION_MARGIN_LOSS_RATIO / config.LEVERAGE * 100:g}%）",
-        f"  6. 日虧損停機："
+        f"  6. 量能衰退平倉：{_flag(config.CHANNEL_VOLUME_DECAY_EXIT_ENABLED)}（獲利中且量縮背離即平倉）",
+        f"  7. MA3 在持倉側外軌外時，單根反向異常K ≥ "
+        f"{config.CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR:g} ATR 即平倉："
+        f"{_flag(config.CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED)}",
+        f"  8. 日虧損停機："
         + (f"{config.MAX_DAILY_LOSS_PCT:g}%" if config.MAX_DAILY_LOSS_PCT > 0 else "未啟用（0）"),
     ]
 

@@ -9,7 +9,8 @@ from core.interfaces.guard_interface import IGuardRule
 
 from core.config import (
     RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR, CHANNEL_WATERFALL_BODY_ATR,
-    CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR,
+    CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR, CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED,
+    CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR,
 )
 from core.services.strategies.outer_strategy import (
     ck_direction, ck_entry_momentum_ready, live_ma3_direction_ready,
@@ -46,6 +47,16 @@ def channel_adverse_exit_reason(
             return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
         if all(body >= threshold for body in bodies):
             return "EMERGENCY_EXIT_2_CANDLE_ADVERSE"
+        if CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED:
+            rail_key = "kc_upper" if side == "LONG" else "kc_lower"
+            if "ma3" in frame.columns and rail_key in frame.columns:
+                rail = float(frame.iloc[-2][rail_key])
+                ma3 = float(frame.iloc[-2]["ma3"])
+                outside = ma3 > rail if side == "LONG" else ma3 < rail
+                single = float(atr) * CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR
+                if (outside and math.isfinite(rail) and math.isfinite(ma3)
+                        and max(adverse_live, bodies[-1]) >= single > 0):
+                    return "EMERGENCY_EXIT_MA3_OUTSIDE_ADVERSE_BAR"
     except (TypeError, ValueError, KeyError, IndexError):
         return None
     return None

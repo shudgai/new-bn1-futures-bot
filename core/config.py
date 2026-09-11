@@ -260,6 +260,20 @@ CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT = max(
     0.1, float(os.getenv("CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT", "2.0"))
 )
 
+# 量能衰退平倉：持倉方向出現量縮背離（趨勢動能耗盡）且在獲利中即平倉。
+CHANNEL_VOLUME_DECAY_EXIT_ENABLED = os.getenv(
+    "CHANNEL_VOLUME_DECAY_EXIT_ENABLED", "true"
+).lower() == "true"
+
+# 單根反向異常K即時平倉：MA3 已在持倉側外軌之外時，出現一根達門檻的反向實體即平倉，
+# 不等第二根（使用者 2026-09-12 要求：等兩根利潤又被吃回去）。
+CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED = os.getenv(
+    "CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED", "true"
+).lower() == "true"
+CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR", "1.0"))
+)
+
 # 保底停利：淨利峰值達 ARM 之後，出場價不得低於 FLOOR（含費用與滑點）。
 # 目的：讓 2U 等級的小利潤不會一路回吐成 -8.4U 硬止損；不像提早出場會砍掉大獲利。
 CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT = max(

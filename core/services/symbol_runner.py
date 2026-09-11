@@ -11,7 +11,10 @@ from core.services.exits.fading_exit_service import fading_ma3_turn, STATE_KEY a
 from core.guards.abnormal_guard import channel_adverse_exit_reason
 from core.services.swing_service import channel_ck_exit_with_tolerance
 from core.services.strategies.pivot_strategy import PIVOT_CODES
-from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT, SCAN_1M_KLINE_LIMIT
+from core.config import (
+    TAKER_FEE_RATE, SLIPPAGE_PCT, SCAN_1M_KLINE_LIMIT, CHANNEL_VOLUME_DECAY_EXIT_ENABLED,
+)
+from core.strategy import has_volume_divergence
 
 def create_exit_ticket(symbol: str, position: dict, channel_action: dict, frame: Any = None) -> dict:
     """Build the post-exit reentry ticket for a Channel Swing pullback exit."""
@@ -206,8 +209,17 @@ async def process_single_symbol_runner(
                 channel_action = {"action": "EXIT", "side": None, "reason": emergency}
             elif ck_exit:
                 channel_action = {"action": "EXIT", "side": None, "reason": ck_exit}
+            volume_decay_exit = bool(
+                CHANNEL_VOLUME_DECAY_EXIT_ENABLED and not emergency
+                and channel_action.get("reason") != FADING_EXIT_REASON
+                and channel_exit_net_profitable
+                and has_volume_divergence(
+                    channel_df, -1 if existing_pos.get("side") == "LONG" else 1)
+            )
             if terminal_turn and not emergency and not (profit and profit["triggered"]):
                 channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
+            elif volume_decay_exit:
+                channel_action = {"action": "EXIT", "side": None, "reason": "VOLUME_DECAY_EXIT"}
             if changed:
                 engine.account.save_state()
             if channel_action.get("action") in {"EXIT", "REVERSE"}:
@@ -278,6 +290,7 @@ async def process_single_symbol_runner(
                 "KC_LONG_LIVE_RED_LONG_EXIT", "KC_SHORT_LIVE_GREEN_LONG_EXIT",
                 "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL", "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
                 "EMERGENCY_EXIT_2_CANDLE_ADVERSE", "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL",
+                "EMERGENCY_EXIT_MA3_OUTSIDE_ADVERSE_BAR",
             }
             ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
             fading_exit = channel_action.get("reason") == FADING_EXIT_REASON
