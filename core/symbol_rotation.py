@@ -18,6 +18,7 @@ from core.config import (
     AI_ADVISOR_URL,
     AI_ADVISOR_WEIGHT,
     DEFAULT_SYMBOLS,
+    MIN_SCORE_THRESHOLD,
     DIRECTIONAL_MIN_SCORE,
     DIRECTIONAL_SIDE_COUNT,
     SYMBOL_CANDIDATE_POOL,
@@ -28,6 +29,10 @@ from core.config import (
     SYMBOL_ROTATION_MAX_CHANGES,
     SYMBOL_MIN_LISTING_DAYS,
     SYMBOL_MAX_24H_CHANGE_PCT,
+    SYMBOL_MAX_FUNDING_RATE,
+    VOLATILITY_ROTATION_WEIGHT,
+    SYMBOL_MAX_ADX_RANGE,
+    SYMBOL_MIN_KC_WIDTH_PCT,
     SYMBOL_HISTORY_QUARANTINE_MIN_TRADES,
     SYMBOL_HISTORY_QUARANTINE_MAX_AVG_PNL,
     SYMBOL_HISTORY_QUARANTINE_MAX_STOP_RATE,
@@ -47,11 +52,45 @@ from core.config import (
     MAINSTREAM_SYMBOLS,
     WEAK_ENERGY_ADX_THRESHOLD,
     WEAK_ENERGY_LEVERAGE_CAP,
+    KELTNER_MIN_VOLUME_RATIO,
 )
 
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 SELECTION_FILE = os.path.join(DATA_DIR, "symbol_selection.json")
+
+# Keep a just-profited symbol off the board briefly while the bot finds a new setup.
+PROFIT_EXIT_SYMBOL_COOLDOWN_SEC = float(
+    os.getenv("PROFIT_EXIT_SYMBOL_COOLDOWN_SEC", "1800")
+)
+RESCAN_SYMBOL_COOLDOWN_SEC = float(
+    os.getenv("RESCAN_SYMBOL_COOLDOWN_SEC", "300")
+)
+MEME_SCAN_RESERVE = max(0, int(os.getenv("MEME_SCAN_RESERVE", "10")))
+MEME_MIN_VOLUME_FACTOR = min(1.0, max(0.05, float(
+    os.getenv("MEME_MIN_VOLUME_FACTOR", "0.25")
+)))
+TREND_SCAN_RESERVE = max(0, int(os.getenv("TREND_SCAN_RESERVE", "16")))
+MEME_BASES = frozenset({
+    "DOGE", "1000SHIB", "SHIB", "1000PEPE", "PEPE", "WIF",
+    "1000BONK", "BONK", "1000FLOKI", "FLOKI", "MEME", "DOGS",
+    "BRETT", "POPCAT", "PNUT", "PENGU", "TRUMP", "FARTCOIN",
+    "PUMP", "NEIRO", "1000SATS", "SATS",
+})
+
+
+def _trade_ts(trade: dict) -> float:
+    """從交易記錄中取出 Unix 時間戳（秒）。
+    支援 timestamp（秒）和 id（毫秒）兩種欄位，找不到時回傳 0.0。
+    """
+    ts = trade.get("timestamp")
+    if isinstance(ts, (int, float)) and ts > 0:
+        return float(ts)
+    trade_id = trade.get("id")
+    if isinstance(trade_id, (int, float)) and trade_id > 0:
+        return float(trade_id) / 1000.0
+    return 0.0
+
 
 
 class SymbolRotation:
@@ -68,9 +107,85 @@ class SymbolRotation:
         self.last_changes: List[dict] = []
         self.last_metrics: List[dict] = []
         self.direction_map: Dict[str, str] = {}
+        # The UI board stays compact, while the entry engine may scan every
+        # liquid/funding-safe contract considered by the latest deep rotation.
+        self.entry_scan_symbols: List[str] = []
+        self.fallback_symbols = list(DEFAULT_SYMBOLS)
         self.last_reason = "尚未執行"
         self.volatility_stats: Dict[str, dict] = {}
         self.atr_history: Dict[str, List[float]] = {}
+        # Pending forces a fresh scan; cooldown prevents immediate reselection.
+        self.next_rotation_exclusions: set[str] = set()
+        self.replacement_cooldowns: Dict[str, float] = {}
+        # Confirmed outer candidates stay on the two-symbol board until the
+        # immediately-adjacent confirmation candle resolves.
+        self.setup_protected_symbols: set[str] = set()
+        self._restore_profit_exit_cooldowns()
+
+    def set_setup_protected_symbols(self, symbols: Iterable[str]) -> None:
+        self.setup_protected_symbols = {
+            str(symbol).strip() for symbol in symbols if str(symbol).strip()
+        }
+
+    def _restore_profit_exit_cooldowns(self) -> None:
+        now_time = time.time()
+        for trade in getattr(self.account, "trades", []):
+            reason = str(trade.get("reason") or "")
+            if not str(trade.get("action") or "").startswith("CLOSE"):
+                continue
+            if not any(token in reason for token in (
+                "KC_UPPER_RED_REENTRY_EXIT",
+                "KC_LOWER_GREEN_REENTRY_EXIT",
+            )):
+                continue
+            symbol = str(trade.get("symbol") or "").strip()
+            cooldown_until = _trade_ts(trade) + PROFIT_EXIT_SYMBOL_COOLDOWN_SEC
+            if symbol and cooldown_until > now_time:
+                self.replacement_cooldowns[symbol] = cooldown_until
+                self.next_rotation_exclusions.add(symbol)
+
+    def request_replacement(self, symbol: str) -> None:
+        symbol = str(symbol or "").strip()
+        if not symbol:
+            return
+        self.next_rotation_exclusions.add(symbol)
+        cooldowns = getattr(self, "replacement_cooldowns", None)
+        if cooldowns is None:
+            cooldowns = {}
+            self.replacement_cooldowns = cooldowns
+        cooldowns[symbol] = time.time() + PROFIT_EXIT_SYMBOL_COOLDOWN_SEC
+        self.last_rotation_at = 0.0
+
+    def request_rescan(self, symbols: Iterable[str]) -> None:
+        """Force the next scan to use a different, one-cycle candidate board."""
+        protected = set(getattr(self.account, "positions", {}).keys())
+        protected.update(
+            getattr(self.account, "pending_limit_orders", {}).keys()
+        )
+        rescanned = {
+            str(symbol).strip() for symbol in symbols
+            if str(symbol).strip() and str(symbol).strip() not in protected
+        }
+        self.next_rotation_exclusions.update(rescanned)
+        cooldown_until = time.time() + RESCAN_SYMBOL_COOLDOWN_SEC
+        for symbol in rescanned:
+            self.replacement_cooldowns[symbol] = max(
+                self.replacement_cooldowns.get(symbol, 0.0), cooldown_until,
+            )
+        self.last_rotation_at = 0.0
+
+    def replacement_exclusions(self) -> set[str]:
+        now_time = time.time()
+        cooldowns = getattr(self, "replacement_cooldowns", None)
+        if cooldowns is None:
+            cooldowns = {}
+            self.replacement_cooldowns = cooldowns
+        expired = [symbol for symbol, until in cooldowns.items() if until <= now_time]
+        for symbol in expired:
+            cooldowns.pop(symbol, None)
+        return set(getattr(self, "next_rotation_exclusions", set())) | set(cooldowns)
+
+
 
     @staticmethod
     def _closed_trade_stats(trades: Iterable[dict]) -> Dict[str, dict]:
@@ -141,15 +256,50 @@ class SymbolRotation:
         trend_aligned: bool, st_5m_aligned: bool, st_1h_aligned: bool, atr_pct: float,
         volatility_excluded: bool, history_quarantined: bool,
     ) -> bool:
-        # 輪替名單是未來一段時間的「監控池」，不能要求輪替當下的 5m ST
-        # 也已經同向；否則 5m 尚未翻轉的幣會被整輪移除，等真正出現入場
-        # 訊號時反而不在掃描名單。輪替只保留 1h ST 與 ATR 健康門檻；
-        # 1h EMA、5m ST 和歷史績效留給實際進場與探索倉位重新判斷。
+        # 輪替只建立監控池：只需先確認 1h 同向與 ATR 落在可交易區間；
+        # 5m ST、趨勢對齊與歷史績效留給進場與倉位層決定，避免監控池
+        # 因為過嚴的多週期條件把還沒轉向的候選提早排除。
         return (
             st_1h_aligned
             and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
             and not volatility_excluded
         )
+
+    @staticmethod
+    def _kc_entry_setup(
+        price: float, kc_upper: float, kc_lower: float, atr: float, direction: str,
+    ) -> dict:
+        """Rank KC geography by how soon it can become an entry."""
+        values = (price, kc_upper, kc_lower, atr)
+        if (
+            not all(math.isfinite(float(value)) for value in values)
+            or atr <= 0.0
+            or kc_upper <= kc_lower
+        ):
+            return {"priority": 0, "score": 0.0, "distance_atr": math.inf}
+
+        side = str(direction or "").upper()
+        if side == "LONG":
+            if kc_upper <= price <= kc_upper + atr * 0.8:
+                distance = (price - kc_upper) / atr
+                return {"priority": 3, "score": 1.0 - (distance / 0.8) * 0.05, "distance_atr": distance}
+            if kc_lower - atr * 0.8 <= price <= kc_lower + atr * 0.5:
+                distance = abs(price - kc_lower) / atr
+                return {"priority": 2, "score": 0.66 - min(distance, 1.0) * 0.05, "distance_atr": distance}
+            if kc_upper - atr * 1.5 <= price < kc_upper:
+                distance = (kc_upper - price) / atr
+                return {"priority": 1, "score": 0.33 - min(distance / 1.5, 1.0) * 0.05, "distance_atr": distance}
+        elif side == "SHORT":
+            if kc_lower - atr * 0.8 <= price <= kc_lower:
+                distance = (kc_lower - price) / atr
+                return {"priority": 3, "score": 1.0 - (distance / 0.8) * 0.05, "distance_atr": distance}
+            if kc_upper - atr * 0.5 <= price <= kc_upper + atr * 0.8:
+                distance = abs(price - kc_upper) / atr
+                return {"priority": 2, "score": 0.66 - min(distance, 1.0) * 0.05, "distance_atr": distance}
+            if kc_lower < price <= kc_lower + atr * 1.5:
+                distance = (price - kc_lower) / atr
+                return {"priority": 1, "score": 0.33 - min(distance / 1.5, 1.0) * 0.05, "distance_atr": distance}
+        return {"priority": 0, "score": 0.0, "distance_atr": math.inf}
 
     def get_history_allocation_factor(self, symbol: str, side: str) -> float:
         """保留探索機會，同時限制樣本不足或負期望方向的試錯成本。"""
@@ -167,14 +317,22 @@ class SymbolRotation:
     def get_stop_cooldown_remaining(
         self, symbol: str, side: str, now: float = None,
     ) -> float:
-        """同幣同方向連續硬停損後的剩餘冷卻秒數。"""
+        """同幣同方向連續硬停損後的剩餘冷卻秒數。
+
+        只計算最近 CONSECUTIVE_STOP_COOLDOWN_SEC * 2 秒窗口內的止損，
+        避免很久以前的舊止損一直被算進 streak，封鎖久遠後的同方向進場。
+        """
         if CONSECUTIVE_STOP_COOLDOWN_SEC <= 0:
             return 0.0
+        _now = float(time.time() if now is None else now)
+        # 時間窗口：只看最近 max(冷卻時間*2, 24小時) 內的交易記錄
+        lookback_window = max(CONSECUTIVE_STOP_COOLDOWN_SEC * 2, 86400.0)
         closed = [
             trade for trade in self.account.trades
             if trade.get("symbol") == symbol
-            and trade.get("side") == side
+            and str(trade.get("side", "")).upper() == str(side or "").upper()
             and str(trade.get("action", "")).startswith("CLOSE")
+            and _trade_ts(trade) >= _now - lookback_window
         ]
         streak = 0
         latest_stop_at = 0.0
@@ -187,18 +345,18 @@ class SymbolRotation:
                 break
             streak += 1
             if latest_stop_at <= 0:
-                timestamp = trade.get("timestamp")
-                if isinstance(timestamp, (int, float)) and timestamp > 0:
-                    latest_stop_at = float(timestamp)
-                else:
-                    trade_id = trade.get("id")
-                    if isinstance(trade_id, (int, float)) and trade_id > 0:
-                        latest_stop_at = float(trade_id) / 1000.0
+                latest_stop_at = _trade_ts(trade)
         if streak < CONSECUTIVE_STOP_COOLDOWN_COUNT or latest_stop_at <= 0:
             return 0.0
-        elapsed = max(0.0, float(time.time() if now is None else now) - latest_stop_at)
+        elapsed = max(0.0, _now - latest_stop_at)
         return max(0.0, CONSECUTIVE_STOP_COOLDOWN_SEC - elapsed)
 
+
+
+    @staticmethod
+    def _is_meme_symbol(symbol: str) -> bool:
+        base = str(symbol or "").split("/", 1)[0].upper()
+        return base in MEME_BASES
 
     @staticmethod
     def market_candidates(
@@ -207,42 +365,90 @@ class SymbolRotation:
         normalized = SymbolRotation._normalize_tickers(tickers)
         allowed_crypto = None
         if markets:
-            allowed_crypto = {
-                market["symbol"].replace(":USDT", "")
-                for market in markets.values()
-                if market.get("active")
-                and market.get("swap")
-                and market.get("quote") == "USDT"
-                and market.get("info", {}).get("contractType") == "PERPETUAL"
-                and market.get("info", {}).get("underlyingType") == "COIN"
-            }
+            now_ms = time.time() * 1000
+            min_listing_ms = SYMBOL_MIN_LISTING_DAYS * 24 * 60 * 60 * 1000
+            allowed_crypto = set()
+            for market in markets.values():
+                if (
+                    market.get("active")
+                    and market.get("swap")
+                    and market.get("quote") == "USDT"
+                    and market.get("info", {}).get("contractType") == "PERPETUAL"
+                    and market.get("info", {}).get("underlyingType") == "COIN"
+                ):
+                    info = market.get("info", {})
+                    if "monitoring" in info.get("tags", []):
+                        continue
+                    onboard = info.get("onboardDate") or info.get("deliveryDate")
+                    if onboard and now_ms - int(onboard) < min_listing_ms:
+                        continue
+                    allowed_crypto.add(market["symbol"].replace(":USDT", ""))
+
         excluded_bases = {
-            "1000PEPE", "APT", "FET", "TAO", "WIF",
+            "BTC", "ETH", "BNB", "APT", "FET", "TAO",
             "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USDE",
             "USD1", "BUSD", "USTC",
         }
-        ranked = []
+        normal_ranked = []
+        meme_ranked = []
+        trend_ranked = []
+        meme_min_volume = SYMBOL_MIN_QUOTE_VOLUME * MEME_MIN_VOLUME_FACTOR
         for symbol, ticker in normalized.items():
             if not symbol.endswith("/USDT") or symbol in ENTRY_DISABLED_SYMBOLS:
                 continue
-            # 所有模式都可從主網全市場挑選；非紙上模式由 execution_symbols
-            # 再限制為執行交易所實際存在且可下單的合約交集。
             if execution_symbols is not None and symbol not in execution_symbols:
                 continue
             if allowed_crypto is not None and symbol not in allowed_crypto:
                 continue
-            base = symbol.split("/", 1)[0]
+            base = symbol.split("/", 1)[0].upper()
             quote_volume = float(ticker.get("quoteVolume") or 0.0)
             change_pct = abs(float(ticker.get("percentage") or 0.0))
             if (
                 base in excluded_bases
                 or base.endswith(("UP", "DOWN", "BULL", "BEAR"))
-                or quote_volume < SYMBOL_MIN_QUOTE_VOLUME or change_pct > SYMBOL_MAX_24H_CHANGE_PCT
+                or change_pct > SYMBOL_MAX_24H_CHANGE_PCT
             ):
                 continue
-            ranked.append((quote_volume, symbol))
-        ranked.sort(reverse=True)
-        return [symbol for _, symbol in ranked[:SYMBOL_MARKET_SCAN_LIMIT]]
+            if quote_volume >= SYMBOL_MIN_QUOTE_VOLUME:
+                normal_ranked.append((quote_volume, symbol))
+                trend_ranked.append((change_pct, quote_volume, symbol))
+            if (
+                SymbolRotation._is_meme_symbol(symbol)
+                and quote_volume >= meme_min_volume
+            ):
+                meme_ranked.append((quote_volume, symbol))
+
+        normal_ranked.sort(reverse=True)
+        meme_ranked.sort(reverse=True)
+        trend_ranked.sort(reverse=True)
+        meme_reserve = min(MEME_SCAN_RESERVE, SYMBOL_MARKET_SCAN_LIMIT)
+        trend_reserve = min(
+            TREND_SCAN_RESERVE,
+            max(0, SYMBOL_MARKET_SCAN_LIMIT - meme_reserve),
+        )
+        selected = [
+            symbol for _, symbol in normal_ranked[
+                :max(0, SYMBOL_MARKET_SCAN_LIMIT - meme_reserve - trend_reserve)
+            ]
+        ]
+        trend_added = 0
+        for _, _, symbol in trend_ranked:
+            if symbol not in selected:
+                selected.append(symbol)
+                trend_added += 1
+            if trend_added >= trend_reserve:
+                break
+        for _, symbol in meme_ranked:
+            if symbol not in selected:
+                selected.append(symbol)
+            if sum(SymbolRotation._is_meme_symbol(item) for item in selected) >= meme_reserve:
+                break
+        for _, symbol in normal_ranked:
+            if len(selected) >= SYMBOL_MARKET_SCAN_LIMIT:
+                break
+            if symbol not in selected:
+                selected.append(symbol)
+        return selected[:SYMBOL_MARKET_SCAN_LIMIT]
 
     def build_metrics(self, tickers: dict, candidates: List[str] = None) -> List[dict]:
         candidates = candidates or SYMBOL_CANDIDATE_POOL
@@ -320,30 +526,31 @@ class SymbolRotation:
             if symbol in ENTRY_DISABLED_SYMBOLS:
                 continue
             try:
-                raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="5m", limit=100)
+                raw_5m = await exchange.fetch_ohlcv(symbol, timeframe="3m", limit=100)
                 raw_1h = await exchange.fetch_ohlcv(symbol, timeframe="1h", limit=200)
                 columns = ["timestamp", "open", "high", "low", "close", "volume"]
-                df = drop_unclosed_candle(pd.DataFrame(raw_5m, columns=columns), "5m")
+                df = drop_unclosed_candle(pd.DataFrame(raw_5m, columns=columns), "3m")
                 df_1h = drop_unclosed_candle(pd.DataFrame(raw_1h, columns=columns), "1h")
                 if len(df) < 50 or len(df_1h) < 30:
                     continue
-                listing_cutoff = time.time() * 1000 - SYMBOL_MIN_LISTING_DAYS * 86400 * 1000
-                if float(df_1h.iloc[0]["timestamp"]) > listing_cutoff:
-                    continue
+                # 上市天數已在 market_candidates() 依 Binance onboardDate 過濾。
+                # 這裡只抓 200 根 1h K（約 8 天），不可再用首根 K 誤判上市天數。
 
                 computed = self.strategy.compute_indicators(df)
                 computed_1h = self.strategy.compute_indicators(df_1h)
                 curr = computed.iloc[-1]
                 st_direction_1h = int(computed_1h.iloc[-1]["st_direction"])
-                price = float(curr["close"])
+                ticker = normalized.get(symbol, {})
+                price = float(ticker.get("last") or curr["close"])
 
-                # 急升急降過濾：回看最近 N 根5分K，漲跌幅超標則跳過
+                # 近期方向加速度供迷因突發偵測使用；已超過急漲跌上限仍淘汰，避免追尾。
+                recent_change_pct = 0.0
                 if len(df) >= RAPID_MOVE_WINDOW + 1:
                     recent_close = float(df.iloc[-1]["close"])
                     past_close = float(df.iloc[-(RAPID_MOVE_WINDOW + 1)]["close"])
                     if past_close > 0:
-                        recent_change_pct = abs((recent_close - past_close) / past_close * 100.0)
-                        if recent_change_pct > RAPID_MOVE_THRESHOLD:
+                        recent_change_pct = (recent_close - past_close) / past_close * 100.0
+                        if abs(recent_change_pct) > RAPID_MOVE_THRESHOLD:
                             continue
 
                 atr = max(float(curr["atr"]), price * 0.0001)
@@ -355,10 +562,18 @@ class SymbolRotation:
                 )
                 st_direction = int(curr["st_direction"])
                 rsi = float(curr["rsi"])
+                adx = float(curr["adx"]) if "adx" in curr else 0.0
+                kc_middle = float(curr["kc_middle"]) if "kc_middle" in curr else price
+                kc_width_pct = (float(curr["kc_upper"]) - float(curr["kc_lower"])) / kc_middle if kc_middle > 0 else 0.0
                 vol_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
                 volume_ratio = float(curr["volume"]) / vol_ma if vol_ma > 0 else 0.0
+                is_meme = self._is_meme_symbol(symbol)
+                meme_burst_energy = bool(
+                    is_meme
+                    and volume_ratio >= max(KELTNER_MIN_VOLUME_RATIO, 1.5)
+                    and 0.35 <= abs(recent_change_pct) <= RAPID_MOVE_THRESHOLD
+                )
                 liquidity = (log_volumes[symbol] - low) / spread
-                ticker = normalized.get(symbol, {})
                 quote_volume = float(ticker.get("quoteVolume") or 0.0)
                 change_pct = float(ticker.get("percentage") or 0.0)
 
@@ -422,32 +637,45 @@ class SymbolRotation:
                     st_5m_aligned = st_direction == wanted_direction
                     st_1h_aligned = st_direction_1h == wanted_direction
                     st_aligned = st_5m_aligned and st_1h_aligned
-                    kc_target = float(curr["kc_upper"] if is_long else curr["kc_lower"])
-                    kc_distance_atr = abs(price - kc_target) / atr
-                    kc_score = max(0.0, 1.0 - kc_distance_atr / 2.0)
+                    kc_upper = float(curr["kc_upper"])
+                    kc_lower = float(curr["kc_lower"])
+                    kc_setup = self._kc_entry_setup(
+                        price, kc_upper, kc_lower, atr, direction,
+                    )
+                    entry_priority = int(kc_setup["priority"])
+                    kc_score = float(kc_setup["score"])
+                    kc_distance_atr = float(kc_setup["distance_atr"])
                     rsi_score = (
                         min(max((rsi - 45.0) / 15.0, 0.0), 1.0)
                         if is_long
                         else min(max((55.0 - rsi) / 15.0, 0.0), 1.0)
                     )
                     directional_change = change_pct if is_long else -change_pct
+                    meme_burst = bool(
+                        meme_burst_energy
+                        and ((is_long and recent_change_pct > 0.0)
+                             or (not is_long and recent_change_pct < 0.0))
+                    )
                     movement_score = max(0.0, 1.0 - abs(directional_change - 3.0) / 7.0)
-                    # 波動品質：用實測 ATR% 是否落在策略實際會用到的可交易區間
-                    # （MIN_ATR_PCT ~ MAX_ATR_PCT）中段來評分，跟 movement_score
-                    # （看瞬間 24h 漲跌）是兩個角度——這裡看的是這個幣種「持續性的
-                    # 5m 波動」跟策略實際下單門檻合不合拍，同一套公式跟
-                    # strategy.py 的 quality_bonus 一致，不重新發明。
-                    atr_mid = (MIN_ATR_PCT + MAX_ATR_PCT) / 2.0
-                    atr_half_range = (MAX_ATR_PCT - MIN_ATR_PCT) / 2.0
-                    volatility_quality = (
-                        max(0.0, 1.0 - abs(atr_pct - atr_mid) / atr_half_range)
-                        if atr_half_range > 0 else 0.0
+                    # 在合格 ATR 區間內，優先選波動較大的主流合約；超出上限
+                    # 仍會由 atr_eligible／volatility_excluded 淘汰，避免把極端
+                    # 拉砸幣誤選成「高波動機會」。
+                    volatility_priority = (
+                        min(max((atr_pct - MIN_ATR_PCT) / (MAX_ATR_PCT - MIN_ATR_PCT), 0.0), 1.0)
+                        if MAX_ATR_PCT > MIN_ATR_PCT else 0.0
                     )
                     stat = history.get(
                         (symbol, direction),
                         {"trades": 0, "avg_pnl": 0.0, "win_rate": 0.5, "stop_rate": 0.0},
                     )
                     overheat_penalty = min(max((abs(change_pct) - 15.0) / 15.0, 0.0), 1.0) * 15.0
+                    
+                    # 趨勢成熟度扣分 (Maturity Discount)
+                    # 針對 PUMP 等 MEME 幣，如果短時間內過度延伸，給予額外懲罰。多空鏡像適用。
+                    maturity_discount = 0.0
+                    if is_meme and abs(recent_change_pct) > 8.0:
+                        maturity_discount = min((abs(recent_change_pct) - 8.0) / 8.0, 1.0) * 25.0
+
                     if stat["trades"] >= 3:
                         pnl_score = (math.tanh(stat["avg_pnl"] / 1.5) + 1.0) / 2.0
                         history_score = (
@@ -458,24 +686,36 @@ class SymbolRotation:
                     else:
                         history_score = 0.50
                     quant_score = (
-                        (1.0 if trend_aligned else 0.0) * 20.0
-                        + (1.0 if st_aligned else 0.0) * 15.0
-                        + kc_score * 15.0
-                        + rsi_score * 10.0
+                        (1.0 if trend_aligned else 0.0) * 10.0
+                        + (1.0 if st_aligned else 0.0) * 10.0
+                        + kc_score * 30.0
+                        + rsi_score * 5.0
                         + min(volume_ratio / 0.8, 1.0) * 10.0
                         + liquidity * 15.0
                         + history_score * 10.0
                         + movement_score * 5.0
-                        + volatility_quality * 5.0
-                    ) - overheat_penalty
+                        + volatility_priority * VOLATILITY_ROTATION_WEIGHT
+                        + (12.0 if meme_burst else 0.0)
+                    ) - overheat_penalty - maturity_discount
                     results.append({
                         "symbol": symbol,
                         "direction": direction,
                         "quant_score": quant_score,
-                        "eligible": self._direction_is_eligible(
-                            trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
-                            volatility_excluded, history_quarantined,
+                        "eligible": (
+                            self._direction_is_eligible(
+                                trend_aligned, st_5m_aligned, st_1h_aligned, atr_pct,
+                                volatility_excluded, history_quarantined,
+                            )
+                        ) and (adx <= SYMBOL_MAX_ADX_RANGE) and (
+                            kc_width_pct >= SYMBOL_MIN_KC_WIDTH_PCT
+                        ) and entry_priority > 0 and (
+                            volume_ratio >= KELTNER_MIN_VOLUME_RATIO
                         ),
+                        "entry_priority": entry_priority,
+                        "is_meme": is_meme,
+                        "meme_burst": meme_burst,
+                        "recent_change_pct": recent_change_pct,
+                        "energy_eligible": volume_ratio >= KELTNER_MIN_VOLUME_RATIO,
                         "atr_eligible": atr_eligible,
                         "atr_pct": atr_pct,
                         "history_quarantined": history_quarantined,
@@ -501,29 +741,14 @@ class SymbolRotation:
             await asyncio.sleep(0.05)
         return results
 
-    @staticmethod
-    def _blend_ai_scores(metrics: List[dict], ai_ranking: List[str]) -> Dict[str, float]:
-        quant = {item["symbol"]: item["quant_score"] for item in metrics}
-        if not ai_ranking:
-            return quant
-        count = max(len(ai_ranking) - 1, 1)
-        ai_scores = {
-            symbol: 1.0 - (index / count)
-            for index, symbol in enumerate(ai_ranking)
-        }
-        return {
-            symbol: (
-                score * (1.0 - AI_ADVISOR_WEIGHT)
-                + ai_scores.get(symbol, 0.5) * AI_ADVISOR_WEIGHT
-            )
-            for symbol, score in quant.items()
-        }
 
     @staticmethod
     def choose_directional_symbols(
         current: List[str],
         held_positions: Dict[str, dict],
         metrics: List[dict],
+        setup_protected_symbols: Iterable[str] = (),
+        force_fresh: bool = False,
     ) -> tuple[List[str], Dict[str, str], List[dict]]:
         qualified = [
             item for item in metrics
@@ -538,7 +763,10 @@ class SymbolRotation:
         for direction in ("LONG", "SHORT"):
             side_ranked = sorted(
                 [item for item in qualified if item["direction"] == direction],
-                key=lambda item: item["final_score"],
+                key=lambda item: (
+                    int(item.get("entry_priority") or 0),
+                    item["final_score"],
+                ),
                 reverse=True,
             )
             for item in side_ranked:
@@ -556,7 +784,10 @@ class SymbolRotation:
         if len(selected_items) < SYMBOL_ROTATION_COUNT:
             mixed_backfill = sorted(
                 [item for item in qualified if item["symbol"] not in used_symbols],
-                key=lambda item: item["final_score"],
+                key=lambda item: (
+                    int(item.get("entry_priority") or 0),
+                    item["final_score"],
+                ),
                 reverse=True,
             )
             for item in mixed_backfill:
@@ -578,7 +809,13 @@ class SymbolRotation:
                     item for item in selected_items if item["symbol"] not in held_positions
                 ]
             if replaceable:
-                removed = min(replaceable, key=lambda item: item["final_score"])
+                removed = min(
+                    replaceable,
+                    key=lambda item: (
+                        int(item.get("entry_priority") or 0),
+                        item["final_score"],
+                    ),
+                )
                 selected_items.remove(removed)
                 used_symbols.discard(removed["symbol"])
             selected_items.append({
@@ -589,7 +826,80 @@ class SymbolRotation:
             })
             used_symbols.add(symbol)
 
+        # A confirmed outer setup only has the next adjacent candle to enter.
+        protected_setups = {
+            str(symbol).strip() for symbol in setup_protected_symbols
+            if str(symbol).strip() and str(symbol).strip() not in held_positions
+        }
+        protected_items = []
+        for protected_symbol in protected_setups:
+            if protected_symbol not in current:
+                continue
+            matching = [
+                item for item in metrics
+                if item.get("symbol") == protected_symbol
+            ]
+            protected_items.append(
+                max(
+                    matching,
+                    key=lambda item: item.get("final_score", 0.0),
+                )
+                if matching else {
+                    "symbol": protected_symbol, "direction": "BOTH",
+                    "entry_priority": 4, "final_score": 100.0,
+                }
+            )
+        protected_items.sort(
+            key=lambda item: (
+                int(item.get("entry_priority") or 0),
+                item.get("final_score", 0.0),
+            ),
+            reverse=True,
+        )
+        for protected in protected_items:
+            if protected["symbol"] in used_symbols:
+                continue
+            replaceable = [
+                item for item in selected_items
+                if item["symbol"] not in held_positions
+                and item["symbol"] not in protected_setups
+            ]
+            if len(selected_items) >= SYMBOL_ROTATION_COUNT:
+                if not replaceable:
+                    break
+                removed = min(
+                    replaceable,
+                    key=lambda item: (
+                        int(item.get("entry_priority") or 0),
+                        item.get("final_score", 0.0),
+                    ),
+                )
+                selected_items.remove(removed)
+                used_symbols.discard(removed["symbol"])
+            selected_items.append(protected)
+            used_symbols.add(protected["symbol"])
+
         desired_items = selected_items[:SYMBOL_ROTATION_COUNT]
+        if force_fresh:
+            selected = [item["symbol"] for item in desired_items]
+            directions = {item["symbol"]: item["direction"] for item in desired_items}
+            previous = [symbol for symbol in current if symbol not in held_positions]
+            removed = [symbol for symbol in previous if symbol not in selected]
+            incoming = [symbol for symbol in selected if symbol not in current]
+            changes = []
+            for index, outgoing in enumerate(removed):
+                replacement = incoming[index] if index < len(incoming) else ""
+                changes.append({
+                    "out": outgoing, "in": replacement,
+                    "direction": directions.get(replacement, ""),
+                })
+            for replacement in incoming[len(removed):]:
+                changes.append({
+                    "out": "", "in": replacement,
+                    "direction": directions.get(replacement, ""),
+                })
+            return selected, directions, changes
+
         desired_by_symbol = {item["symbol"]: item for item in desired_items}
         best_by_symbol = {}
         for item in metrics:
@@ -597,34 +907,96 @@ class SymbolRotation:
             if symbol not in best_by_symbol or item.get("final_score", 0.0) > best_by_symbol[symbol].get("final_score", 0.0):
                 best_by_symbol[symbol] = item
 
-        # 只保留本輪仍合格或已有持倉的幣；不合格幣立即退出，不再為了湊滿
-        # 固定數量留在牌面。空缺只由本輪完整合格的 desired_items 補上。
+        # 單槽的兩幣牌面必須真的是本輪最佳候選，不能沿用大牌面時
+        # 「等待立即可交易者才換幣」的舊名單黏著邏輯。
+        if SYMBOL_ROTATION_COUNT <= 2:
+            selected = [item["symbol"] for item in desired_items]
+            current_slice = list(current[:SYMBOL_ROTATION_COUNT])
+            removed = [
+                symbol for symbol in current_slice
+                if symbol not in selected and symbol not in held_positions
+            ]
+            incoming = [symbol for symbol in selected if symbol not in current_slice]
+            changes = []
+            for index, outgoing in enumerate(removed):
+                incoming_symbol = incoming[index] if index < len(incoming) else ""
+                incoming_item = desired_by_symbol.get(incoming_symbol, {})
+                changes.append({
+                    "out": outgoing,
+                    "in": incoming_symbol,
+                    "direction": incoming_item.get("direction", ""),
+                })
+            for incoming_symbol in incoming[len(removed):]:
+                incoming_item = desired_by_symbol.get(incoming_symbol, {})
+                changes.append({
+                    "out": "",
+                    "in": incoming_symbol,
+                    "direction": incoming_item.get("direction", ""),
+                })
+            directions = {
+                item["symbol"]: item["direction"] for item in desired_items
+            }
+            return selected, directions, changes
+
+        # 介面上的幣種要留足時間觀察。只有替代者已在 KC 可立即進場區
+        # (entry_priority=3) 才換出原本的觀察幣；其餘尚在等待型的候選留在
+        # 掃描池，避免牌面因分數短暫變動不停跳換。
+        immediate_incoming = [
+            item for item in desired_items
+            if (
+                item["symbol"] not in current[:SYMBOL_ROTATION_COUNT]
+                and int(item.get("entry_priority") or 0) >= 3
+            )
+        ]
+
+        # 先維持目前的非停用觀察幣與持倉；若有立即可交易的替代者，再只
+        # 換出等量的最低優先級觀察幣，而非一次清空整個介面。
         changes = []
         current_slice = list(current[:SYMBOL_ROTATION_COUNT])
         selected = [
             symbol for symbol in current_slice
             if symbol in held_positions
-            or (symbol in desired_by_symbol and symbol not in ENTRY_DISABLED_SYMBOLS)
+            or symbol not in ENTRY_DISABLED_SYMBOLS
         ]
         removed = [
             symbol for symbol in current_slice
             if symbol not in selected and symbol not in held_positions
         ]
+        incoming_pool = (
+            [item for item in desired_items if item["symbol"] not in selected]
+            if len(selected) < SYMBOL_ROTATION_COUNT
+            else immediate_incoming
+        )
         incoming_items = sorted(
-            [item for item in desired_items if item["symbol"] not in selected],
-            key=lambda item: item.get("final_score", 0.0),
+            incoming_pool,
+            key=lambda item: (
+                int(item.get("entry_priority") or 0),
+                item.get("final_score", 0.0),
+            ),
             reverse=True,
         )
         for incoming_item in incoming_items:
             if len(selected) >= SYMBOL_ROTATION_COUNT:
-                break
-            selected.append(incoming_item["symbol"])
-            if removed:
+                replaceable = [
+                    symbol for symbol in selected
+                    if symbol not in held_positions
+                ]
+                if not replaceable:
+                    break
+                outgoing = min(
+                    replaceable,
+                    key=lambda symbol: (
+                        int((best_by_symbol.get(symbol) or {}).get("entry_priority") or 0),
+                        float((best_by_symbol.get(symbol) or {}).get("final_score") or 0.0),
+                    ),
+                )
+                selected.remove(outgoing)
                 changes.append({
-                    "out": removed.pop(0),
+                    "out": outgoing,
                     "in": incoming_item["symbol"],
                     "direction": incoming_item["direction"],
                 })
+            selected.append(incoming_item["symbol"])
         for outgoing in removed:
             changes.append({"out": outgoing, "in": "", "direction": ""})
 
@@ -647,7 +1019,7 @@ class SymbolRotation:
         held = set(self.account.positions.keys())
         changes: List[dict] = []
         for symbol in list(DEFAULT_SYMBOLS):
-            if symbol in held:
+            if symbol in held or symbol in self.setup_protected_symbols:
                 continue
             if symbol in ENTRY_DISABLED_SYMBOLS:
                 reason = "已暫停新倉"
@@ -680,7 +1052,9 @@ class SymbolRotation:
             self._save()
         return changes
 
-    async def rotate(self, exchange, execution_symbols: set = None) -> List[dict]:
+    async def rotate(
+        self, exchange, execution_symbols: set = None, force_fresh: bool = False,
+    ) -> List[dict]:
         await exchange.load_markets()
         tickers = await exchange.fetch_tickers()
         active_usdt_perpetuals = sum(
@@ -691,7 +1065,32 @@ class SymbolRotation:
             and market.get("info", {}).get("contractType") == "PERPETUAL"
             and market.get("info", {}).get("underlyingType") == "COIN"
         )
-        candidates = self.market_candidates(tickers, exchange.markets, execution_symbols)
+        candidates = list(dict.fromkeys([
+            *self.market_candidates(tickers, exchange.markets, execution_symbols),
+            *(
+                symbol for symbol in DEFAULT_SYMBOLS
+                if execution_symbols is None or symbol in execution_symbols
+            ),
+        ]))
+        forced_exclusions = self.replacement_exclusions()
+        if forced_exclusions:
+            candidates = [
+                symbol for symbol in candidates if symbol not in forced_exclusions
+            ]
+        try:
+            funding_rates = await exchange.fetch_funding_rates()
+            valid_candidates = []
+            for symbol in candidates:
+                fr_info = funding_rates.get(symbol, {})
+                fr = abs(float(fr_info.get("fundingRate") or 0.0))
+                if fr <= SYMBOL_MAX_FUNDING_RATE:
+                    valid_candidates.append(symbol)
+                else:
+                    self.account.log(f"剔除 {symbol}: 資金費率偏離 ({fr*100:.3f}%)", "DEBUG")
+            candidates = valid_candidates
+        except Exception as e:
+            self.account.log(f"獲取資金費率失敗，略過資金費率過濾: {e}", "WARNING")
+
         market_metrics = self.build_metrics(tickers, candidates)
         quant_ranked = sorted(market_metrics, key=lambda item: item["quant_score"], reverse=True)
         ai_ranking = await self.ai.rank_symbols(quant_ranked)
@@ -724,6 +1123,27 @@ class SymbolRotation:
             item["symbol"] for item in directional
             if item.get("eligible") and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
         }
+        entry_ranked = sorted(
+            [
+                item for item in directional
+                if (
+                    item.get("atr_eligible")
+                    and item.get("energy_eligible")
+                    and not item.get("volatility_excluded")
+                    and not item.get("history_quarantined")
+                    and int(item.get("entry_priority") or 0) > 0
+                    and item.get("final_score", 0.0) >= DIRECTIONAL_MIN_SCORE
+                )
+            ],
+            key=lambda item: (
+                int(item.get("entry_priority") or 0),
+                float(item.get("final_score") or 0.0),
+            ),
+            reverse=True,
+        )
+        self.entry_scan_symbols = list(dict.fromkeys(
+            item["symbol"] for item in entry_ranked
+        ))
         score_low_count = len(eligible_symbols - qualified_symbols)
         other_rejected_count = max(
             0, len(analyzed_by_symbol) - atr_low_count - atr_high_count - len(eligible_symbols)
@@ -740,14 +1160,41 @@ class SymbolRotation:
             list(DEFAULT_SYMBOLS),
             self.account.positions,
             directional,
+            self.setup_protected_symbols,
+            force_fresh=force_fresh,
         )
+        if (
+            not force_fresh
+            and candidates
+            and unavailable_count >= len(candidates)
+            and not qualified_symbols
+        ):
+            selected = [
+                symbol for symbol in self.fallback_symbols
+                if symbol not in ENTRY_DISABLED_SYMBOLS
+                and symbol not in forced_exclusions
+            ][:SYMBOL_ROTATION_COUNT]
+            directions = {symbol: "BOTH" for symbol in selected}
+            changes = []
+
+        # 當沒有任何合格幣種時，放入指定的備用迷因幣
+        if not selected and not force_fresh:
+            for meme in ["1000PEPE/USDT", "1000BONK/USDT", "1000SHIB/USDT"]:
+                if meme not in ENTRY_DISABLED_SYMBOLS and meme not in forced_exclusions:
+                    selected.append(meme)
+                    directions[meme] = "BOTH"
+                    changes.append({"out": "", "in": meme, "direction": "BOTH"})
         # 持倉中的幣強制保留，即使已被輪替出去也不可移除
         for held_symbol in self.account.positions:
             if held_symbol not in selected:
                 selected.append(held_symbol)
                 directions[held_symbol] = "BOTH"
+        # 輪替評分仍同時比較多／空以挑選值得觀察的標的，但進場掃描
+        # 不鎖死單一方向：同一幣的 KC 多、空條件都要被偵測。
+        directions = {symbol: "BOTH" for symbol in selected}
         DEFAULT_SYMBOLS[:] = selected
         self.direction_map = directions
+        self.next_rotation_exclusions.difference_update(forced_exclusions)
         self.last_rotation_at = time.time()
         self.last_changes = changes
         selected_lookup = {(item["symbol"], item["direction"]): item for item in directional}
@@ -782,6 +1229,7 @@ class SymbolRotation:
             "ai": self.ai.status(),
             "metrics": self.last_metrics,
             "direction_map": self.direction_map,
+            "entry_scan_symbols": self.entry_scan_symbols,
             "trade_ai_analysis": self.trade_analysis.status(),
             "volatility_stats": self.volatility_stats,
         }
@@ -796,6 +1244,8 @@ class SymbolRotation:
             "ai": self.ai.status(),
             "top_metrics": self.last_metrics[:12],
             "direction_map": self.direction_map,
+            "entry_scan_symbols": self.entry_scan_symbols,
+            "entry_scan_count": len(self.entry_scan_symbols),
             "trade_ai_analysis": self.trade_analysis.status(),
             "volatility_stats": self.volatility_stats,
         }

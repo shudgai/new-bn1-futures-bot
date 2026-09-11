@@ -1,16 +1,20 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Binance Futures Bot 2.0 (Port 8006)</title>
+    <title>SOL Futures Bot (Port 8006)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
     <style>
         :root {
             --bg: #f4f6f9;
@@ -52,9 +56,13 @@
         .badge-status { cursor: pointer; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; transition: all 0.2s; }
         .badge-status.running { background: var(--up-bg); color: var(--up); border: 1px solid var(--up); }
         .badge-status.stopped { background: var(--down-bg); color: var(--down); border: 1px solid var(--down); }
+        .strategy-panel { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .strategy-description { font-size: 12px; font-weight: 700; color: var(--muted); overflow-wrap: anywhere; }
+        .strategy-toggle { display: none; }
+        .strategy-panel .badge-status { flex-shrink: 0; white-space: nowrap; }
 
         /* Main Container */
-        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+        .container { max-width: 1400px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 7fr 5fr; gap: 20px; }
         /* grid item 預設 min-width:auto，內容（例如coin-grid）撐開多寬，
            格子就不會縮小到比那個寬——手機版單欄時會把整個容器往外撐開
            造成橫向捲動，加 min-width:0 讓格子可以縮小到容器寬度內。 */
@@ -125,8 +133,17 @@
             .stats-grid, .stats-grid-6 { grid-template-columns: repeat(2, 1fr); }
             .coin-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
             .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+            .topbar .logo { flex-wrap: wrap; font-size: 17px; }
+            .strategy-panel { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+            .strategy-toggle { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+            .strategy-description { display: none; order: 3; width: 100%; max-height: 35vh; overflow-y: auto; line-height: 1.6; }
+            .strategy-description.expanded { display: block; }
             table { font-size: 12px; }
             th, td { padding: 8px; }
+            /* 手機版隱藏 AI 分析卡 */
+            .ai-analysis-card { display: none !important; }
+            /* 手機版專屬買賣快捷列 */
+            .mobile-manual-trade-bar { display: flex !important; }
         }
 
         .up { color: var(--up); font-weight: 700; }
@@ -157,33 +174,104 @@
         .input-group { margin-bottom: 12px; }
         .input-group label { display: block; font-size: 11px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
         .input-group input, .input-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono'; font-size: 13px; }
-    </style>
+    
+        /* Chart panel */
+        .chart-modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); z-index: 100;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .chart-modal {
+            background: #fff; width: 96%; max-width: 1800px; border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2); overflow: hidden;
+            display: flex; flex-direction: column;
+        }
+        .chart-modal-header {
+            padding: 16px 24px; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .chart-modal-title { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 12px; }
+        .market-mode-badge { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; font-size:13px; font-weight:800; white-space:nowrap; }
+        .market-mode-bull { background:#dcfce7; color:#15803d; }
+        .market-mode-bear { background:#fee2e2; color:#b91c1c; }
+        .market-mode-range { background:#fef3c7; color:#92400e; }
+        .market-mode-trend { background:#dbeafe; color:#1d4ed8; }
+        .market-mode-wait { background:#e2e8f0; color:#475569; }
+        .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
+        .chart-modal-body { padding: 16px; height: 560px; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
+        .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+        .chart-pane-header { height: 38px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 800; }
+        .chart-symbol-trend { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+        .chart-container { width: 100%; height: calc(100% - 38px); }
+        .chart-entry-notice {
+            min-height: 44px; padding: 6px 10px; background: #fffbeb;
+            color: #92400e; border-bottom: 1px solid #fde68a; font-size: 12px;
+        }
+        .chart-entry-notice strong { display: block; font-size: 13px; }
+        .chart-pane.has-entry-notice .chart-container { height: calc(100% - 96px); }
+        .chart-pane.has-entry-notice .chart-entry-notice { height: 58px; overflow: auto; }
+        .chart-status-overlay {
+            position: absolute; inset: 0; z-index: 2;
+            display: flex; justify-content: center; align-items: center;
+            pointer-events: none; background: rgba(255, 255, 255, 0.82);
+        }
+        .chart-modal:fullscreen {
+            width: 100vw; height: 100vh; margin: 0; padding: 14px;
+            border: 0; border-radius: 0; background: #fff;
+            display: flex; flex-direction: column;
+        }
+        .chart-modal:fullscreen .chart-modal-body {
+            flex: 1; height: auto !important; min-height: 0;
+        }
+        .chart-header-actions { display: flex; align-items: center; gap: 8px; }
+        .chart-fullscreen-btn {
+            width: auto; padding: 5px 9px; font-size: 11px;
+            background: var(--primary-bg); color: var(--primary);
+            border: 1px solid rgba(37, 99, 235, 0.25);
+        }
+        @media (max-width: 860px) {
+            .chart-modal { width: calc(100% - 20px); max-height: calc(100vh - 20px); }
+            .chart-modal-header { padding: 12px 14px; }
+            .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
+            .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
+            .chart-grid { grid-template-columns: 1fr; }
+        }
+        .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
+        .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
+        /* 桌面預設隱藏手機專屬快捷列 */
+        .mobile-manual-trade-bar { display: none; }
+</style>
 </head>
 <body>
     <div id="app">
         <!-- TOPBAR -->
         <div class="topbar">
             <div class="logo">
-                <span>🚀</span> Binance Bot 2.0
+                <span>🚀</span> SOL Bot
                 <span class="badge badge-port">PORT {{ bot.port }}</span>
                 <span v-if="bot.paper_trading" class="badge" style="background:#fef3c7; color:#92400e;">📝 紙上模擬（PAPER TRADING）</span>
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
             </div>
-            <div style="display:flex; align-items:center; gap:16px;">
-                <span style="font-size:12px; font-weight:700; color:var(--muted)">Strategy: {{ bot.strategy }}</span>
+            <div class="strategy-panel">
+                <button type="button" class="strategy-toggle" @click="strategyExpanded = !strategyExpanded" :aria-expanded="strategyExpanded" aria-controls="strategy-description">
+                    策略說明 <span class="collapse-arrow" :class="{ open: strategyExpanded }" aria-hidden="true">▶</span>
+                </button>
+                <span id="strategy-description" class="strategy-description" :class="{ expanded: strategyExpanded }">Strategy: {{ bot.strategy }}</span>
                 <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
-                    {{ bot.is_running ? '🟢 策略運行中' : '🔴 已停止' }}
+                    {{ bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復' }}
                 </div>
             </div>
         </div>
 
+        
         <!-- MAIN LAYOUT -->
         <div class="container">
             <!-- LEFT CONTENT -->
             <div>
                 <!-- COIN STRIP (ALPHABETICAL ORDER) -->
                 <div class="coin-grid">
-                    <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card">
+                    <div v-for="coin in sortedTickers" :key="coin.sym" class="coin-card" @click="openChartModal(coin.sym)">
                         <div class="coin-name">
                             {{ coin.name }}
                             <span :class="['coin-direction', coin.direction ? coin.direction.toLowerCase() : '']">{{ coin.direction === 'BOTH' ? '雙向' : '' }}</span>
@@ -200,14 +288,17 @@
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">總累計損益</div>
-                        <div :class="['stat-val', (bot.realized_pnl + bot.unrealized_pnl) > 0 ? 'up' : (bot.realized_pnl + bot.unrealized_pnl) < 0 ? 'down' : '']">
-                            {{ (bot.realized_pnl + bot.unrealized_pnl) > 0 ? '+' : '' }}{{ (bot.realized_pnl + bot.unrealized_pnl).toFixed(2) }}
+                        <div :class="['stat-val', (bot.realized_pnl + bot.estimated_net_unrealized_pnl) > 0 ? 'up' : (bot.realized_pnl + bot.estimated_net_unrealized_pnl) < 0 ? 'down' : '']">
+                            {{ (bot.realized_pnl + bot.estimated_net_unrealized_pnl) > 0 ? '+' : '' }}{{ (bot.realized_pnl + bot.estimated_net_unrealized_pnl).toFixed(2) }}
                         </div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">未實現損益</div>
+                        <div class="stat-label">未實現損益（即時）</div>
                         <div :class="['stat-val', bot.unrealized_pnl > 0 ? 'up' : bot.unrealized_pnl < 0 ? 'down' : '']">
                             {{ bot.unrealized_pnl > 0 ? '+' : '' }}{{ bot.unrealized_pnl.toFixed(2) }}
+                        </div>
+                        <div style="font-size:10px; color:var(--muted); margin-top:2px;">
+                            扣費後預估 {{ bot.estimated_net_unrealized_pnl > 0 ? '+' : '' }}{{ bot.estimated_net_unrealized_pnl.toFixed(2) }}
                         </div>
                     </div>
                     <div class="stat-box">
@@ -217,7 +308,7 @@
                         </div>
                     </div>
                     <div class="stat-box">
-                        <div class="stat-label">單次交易金額（固定）</div>
+                        <div class="stat-label">單槽帳戶開倉金額</div>
                         <div class="stat-val" style="color:var(--primary)">{{ bot.trade_amount }} USDT</div>
                     </div>
                     <div class="stat-box">
@@ -242,7 +333,8 @@
                                 <th>幣種</th>
                                 <th>入場價</th>
                                 <th>現價</th>
-                                <th>未實現損益（點擊平倉）</th>
+                                <th>淨損益（點擊平倉）</th>
+                                <th>開/平倉策略</th>
                                 <th>觸發</th>
                                 <th>數量</th>
                             </tr>
@@ -257,12 +349,12 @@
                                 <td style="font-weight:700;">{{ getCurrPrice(pos.symbol) ? formatPrice(getCurrPrice(pos.symbol)) : '-' }}</td>
                                 <td style="padding: 6px;">
                                     <div
-                                        :class="['btn', getPosUnrealizedPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']"
+                                        :class="['btn', getPosEstimatedNetPnl(pos) > 0 ? 'btn-pnl-success' : 'btn-pnl-danger']"
                                         style="padding: 6px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: none; cursor: pointer; white-space: nowrap;"
                                         title="點擊即可手動平倉此持倉"
                                         @click="closePos(pos.symbol)"
                                     >
-                                        <span>{{ getPosUnrealizedPnl(pos) > 0 ? '+' : '' }}{{ getPosUnrealizedPnl(pos).toFixed(2) }} USDT</span>
+                                        <span>{{ getPosEstimatedNetPnl(pos) > 0 ? '+' : '' }}{{ getPosEstimatedNetPnl(pos).toFixed(2) }} USDT</span>
                                         <span style="font-size: 10px; opacity: 0.95; font-weight: 600;">
                                             ({{ getPosRoePct(pos) > 0 ? '+' : '' }}{{ getPosRoePct(pos).toFixed(2) }}% / {{ getPosRoePctNoLeverage(pos) > 0 ? '+' : '' }}{{ getPosRoePctNoLeverage(pos).toFixed(2) }}%)
                                         </span>
@@ -271,6 +363,7 @@
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
                                 </td>
+                                <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
                                     <span :style="{color: pos.trigger && pos.trigger.ma_ok === false ? 'var(--down)' : 'var(--up)', fontWeight:700, fontSize:'14px'}">
                                         {{ pos.trigger && pos.trigger.ma_ok === false ? '✗' : '✓' }}
@@ -323,14 +416,14 @@
                                     <td :style="{
                                         color: t.action && t.action.startsWith('OPEN') ? 'var(--muted)' :
                                                (t.pnl > 0 ? 'var(--up)' : t.pnl < 0 ? 'var(--down)' : 'var(--muted)')
-                                    }">{{ t.action }}</td>
+                                    }">{{ formatTradeAction(t.action) }}</td>
                                     <td :style="{
                                         color: t.status === 'CLOSED' ? (t.pnl > 0 ? 'var(--up)' : 'var(--down)') :
                                                t.status === 'PARTIAL_CLOSED' ? 'var(--up)' :
                                                'var(--muted)',
                                         fontSize: '11px'
                                     }">{{ t.status }}</td>
-                                    <td>{{ t.price.toFixed(4) }}</td>
+                                    <td>{{ t.price }}</td>
                                     <td>{{ t.amount }}</td>
                                     <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
                                     <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">
@@ -389,42 +482,44 @@
             <div class="right-panel">
                 <!-- BOT START / STOP CONTROL -->
                 <div class="card bot-control-card">
-                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot">
-                        {{ bot.is_running ? '⏹️ 停止交易機器人' : '▶️ 啟動交易機器人' }}
+                    <button :class="['btn', bot.is_running ? 'btn-danger' : 'btn-success']" style="padding:12px; font-size:14px; font-weight:800;" @click="toggleBot" :disabled="isTogglingBot" :style="{ opacity: isTogglingBot ? 0.6 : 1, cursor: isTogglingBot ? 'not-allowed' : 'pointer' }">
+                        {{ isTogglingBot ? '處理中...' : (bot.is_running ? '🔄 重新啟動交易機器人' : '▶️ 啟動交易機器人') }}
+                    </button>
+                    <button class="btn" style="margin-top:8px; padding:8px; font-size:12px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #f59e0b;" @click="resetAccount" :disabled="isResetting" :style="{ opacity: isResetting ? 0.6 : 1, cursor: isResetting ? 'not-allowed' : 'pointer' }">
+                        🔄 重置帳戶（清空損益與記錄）
                     </button>
                 </div>
 
-                <!-- AI TRADE HISTORY ANALYSIS -->
-                <div class="card ai-analysis-card">
-                    <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
-                        <span><span class="collapse-arrow" :class="{ open: aiAnalysisExpanded }">▶</span> 🧠 AI 歷史交易分析</span>
-                        <span style="font-size:10px; color:var(--muted); text-transform:none;">
-                            {{ bot.trade_ai_analysis.status === 'ok' ? '已記錄' : '等待分析' }}
-                        </span>
-                    </div>
-                    <div v-show="aiAnalysisExpanded" style="font-size:12px; line-height:1.7; color:var(--muted);">
-                        <p style="color:var(--text); margin-bottom:8px;">
-                            {{ bot.trade_ai_analysis.summary || '尚未產生分析' }}
-                        </p>
-                        <p style="margin-bottom:6px;">
-                            已分析 {{ bot.trade_ai_analysis.trade_count || 0 }} 筆平倉交易
-                        </p>
-                        <div v-if="bot.trade_ai_analysis.weaknesses && bot.trade_ai_analysis.weaknesses.length">
-                            <b style="color:var(--down)">需改善：</b>
-                            <div v-for="(item, i) in bot.trade_ai_analysis.weaknesses.slice(0, 3)" :key="'w'+i">• {{ item }}</div>
-                        </div>
-                        <div v-if="bot.trade_ai_analysis.recommendations && bot.trade_ai_analysis.recommendations.length" style="margin-top:6px;">
-                            <b style="color:var(--primary)">AI 建議：</b>
-                            <div v-for="(item, i) in bot.trade_ai_analysis.recommendations.slice(0, 3)" :key="'r'+i">• {{ item }}</div>
+                <!-- MANUAL ORDER PANEL -->
+                <div v-if="bot.symbols && bot.symbols.length > 0" class="card">
+                    <div class="card-title">⚡ 手動開倉（交由機器人依 KC 收盤反手管理）</div>
+                    <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
+                        <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-success" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做多 (LONG)</button>
+                            <button class="btn btn-danger" style="padding:12px; font-size:14px;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder" :style="{ opacity: isPlacingOrder ? 0.6 : 1, cursor: isPlacingOrder ? 'not-allowed' : 'pointer' }">做空 (SHORT)</button>
                         </div>
                     </div>
                 </div>
+
+                <!-- 手機版專屬快捷買賣列（桌面隱藏，<=860px 才顯示）-->
+                <div v-if="bot.symbols && bot.symbols.length > 0" class="mobile-manual-trade-bar" style="gap:10px; margin-bottom:4px; flex-direction:column;">
+                    <div v-for="symbol in bot.symbols" :key="'mobile-manual-' + symbol" style="width:100%;">
+                        <div style="font-size:13px; font-weight:900; margin-bottom:5px;">{{ symbol }}</div>
+                        <div style="display:flex; gap:10px;">
+                            <button class="btn btn-success" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'LONG')" :disabled="isPlacingOrder">買進 LONG</button>
+                            <button class="btn btn-danger" style="padding:15px 0; font-size:15px; font-weight:900; border-radius:14px; flex:1;" @click="placeOrder(symbol, 'SHORT')" :disabled="isPlacingOrder">賣出 SHORT</button>
+                        </div>
+                    </div>
+                </div>
+
+
 
                 <!-- SYSTEM LOG CONSOLE -->
                 <div class="card system-log-card">
                     <div class="card-title">💻 系統日誌 (System Logs)</div>
                     <div class="console">
-                        <template v-for="(log, i) in bot.logs" :key="i">
+                        <template v-for="(log, i) in newestLogs" :key="i">
                             <div v-for="(line, j) in String(log.text || '').split('\n')" :key="i + '-' + j" class="log-item" :class="{ 'signal-progress-line': line.startsWith('• '), 'log-item-latest': line.startsWith('⚡') }">
                                 <span class="log-time">[{{ log.time }}]</span>
                                 <span>{{ line }}</span>
@@ -434,6 +529,42 @@
                 </div>
             </div>
         </div>
+    <!-- K 線圖：桌面顯示兩幣並排，手機維持點選幣種單圖 -->
+    <div v-if="chartModal.show" class="chart-modal-overlay" @click.self="closeChartModal">
+        <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" aria-label="K線圖">
+            <div class="chart-modal-header">
+                <div class="chart-modal-title">
+                    📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
+                </div>
+                <div class="chart-header-actions">
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
+                    <button class="btn chart-fullscreen-btn" @click.stop="toggleChartFullscreen">
+                        {{ chartFullscreen ? '退出全螢幕' : '全螢幕' }}
+                    </button>
+                    <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
+                </div>
+            </div>
+            <div class="chart-modal-body chart-grid" :style="(!chartFullscreen && chartModalHeight) ? { height: chartModalHeight + 'px' } : {}">
+                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': chartModal.states[symbol]?.entryBlock }">
+                    <div class="chart-pane-header">
+                        <span class="chart-symbol-trend">
+                            <span>{{ symbol }}</span>
+                            <span class="market-mode-badge" :class="'market-mode-' + (chartModal.states[symbol]?.ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
+                                {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[chartModal.states[symbol]?.ckTrend || 'wait'] }}
+                            </span>
+                        </span>
+                    </div>
+                    <div v-if="chartModal.states[symbol]?.entryBlock" class="chart-entry-notice" role="status">
+                        <strong>{{ chartModal.states[symbol].entryBlock.message }}</strong>
+                        <span>{{ chartModal.states[symbol].entryBlock.detail }}</span>
+                    </div>
+                    <div :id="'tv-chart-' + index" class="chart-container"></div>
+                    <div v-if="chartModal.states[symbol] && chartModal.states[symbol].loading" class="chart-status-overlay" style="color:var(--muted)">載入中...</div>
+                    <div v-else-if="chartModal.states[symbol] && chartModal.states[symbol].error" class="chart-status-overlay" style="color:var(--down)">{{ chartModal.states[symbol].error }}</div>
+                </section>
+            </div>
+        </div>
+    </div>
     </div>
 
     <script>
@@ -441,7 +572,23 @@
         createApp({
             data() {
                 return {
-                    bot: {
+                    
+                chartFullscreen: false,
+                chartModalHeight: localStorage.getItem('chartModalHeight') ? parseInt(localStorage.getItem('chartModalHeight')) : null,
+                chartModal: {
+                    show: false,
+                    symbol: "",
+                    symbols: [],
+                    states: {},
+                },
+                isProcessing: false,
+                strategyExpanded: false,
+                isTogglingBot: false,
+                isPlacingOrder: false,
+                isClosingPos: {},
+                isResetting: false,
+                isAnalyzing: false,
+                bot: {
                         is_running: false,
                         strategy: '',
                         environment: 'binance_testnet',
@@ -450,11 +597,13 @@
                         balance: 0,
                         realized_pnl: 0,
                         unrealized_pnl: 0,
+                        estimated_net_unrealized_pnl: 0,
                         leverage: 5,
                         leverage_map: {},
                         leverage_by_score: {},
-                        symbols: [],
+                        symbols: ['SOL/USDT'],
                         symbol_directions: {},
+                        market_modes: {},
                         volatility_stats: {},
                         tickers: {},
                         positions: [],
@@ -473,7 +622,7 @@
                         logs: []
                     },
                     manualOrder: {
-                        symbol: 'BTC/USDT',
+                        symbol: 'SOL/USDT',
                         amount: 50.0
                     },
                     exportDate: '',
@@ -482,6 +631,14 @@
                 }
             },
             computed: {
+                newestLogs() {
+                    if (!this.bot || !Array.isArray(this.bot.logs)) return [];
+                    // Persisted logs may not retain insertion order after a restart.
+                    // Always render the newest timestamp first.
+                    return this.bot.logs.slice().sort((a, b) => (
+                        Number(b.timestamp || 0) - Number(a.timestamp || 0)
+                    ));
+                },
                 sortedTickers() {
                     if (!this.bot || !Array.isArray(this.bot.symbols)) return [];
                     return this.bot.symbols
@@ -493,6 +650,23 @@
                         }))
                         .filter(item => item.price !== null && item.price !== undefined)
                         .sort((a, b) => a.name.localeCompare(b.name));
+                },
+                chartMarketMode() {
+                    const rawMode = String(
+                        ((this.bot.market_modes || {})[this.chartModal.symbol]) || 'WAIT'
+                    ).toUpperCase();
+                    return ['BULL', 'BEAR', 'RANGE', 'TREND'].includes(rawMode)
+                        ? rawMode
+                        : 'WAIT';
+                },
+                chartMarketLabel() {
+                    return {
+                        BULL: '牛市',
+                        BEAR: '熊市',
+                        RANGE: '盤整市',
+                        TREND: '趨勢確認中',
+                        WAIT: '等待判定',
+                    }[this.chartMarketMode];
                 },
                 sortedVolatility() {
                     const stats = this.bot.volatility_stats || {};
@@ -532,12 +706,327 @@
                 }
             },
             methods: {
+
+            openChartModal(symbol) {
+                this.destroyCharts();
+                const desktop = window.matchMedia('(min-width: 861px)').matches;
+                const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
+                const symbols = [symbol, ...available.filter(item => item !== symbol)]
+                    .filter(Boolean)
+                    .slice(0, desktop ? 2 : 1);
+                this.chartModal.symbol = symbol;
+                this.chartModal.symbols = symbols;
+                this.chartModal.states = Object.fromEntries(
+                    symbols.map(item => [item, { loading: true, error: '', entryBlock: null }])
+                );
+                this.chartModal.show = true;
+
+                // Wait for DOM to render the modal container
+                this.$nextTick(() => {
+                    symbols.forEach((item, index) => {
+                        try {
+                            this.initChart(item, index);
+                            this.fetchChartData(item);
+                        } catch (e) {
+                            this.chartModal.states[item].error = "圖表初始化失敗: " + e.message;
+                            this.chartModal.states[item].loading = false;
+                        }
+                    });
+                });
+            },
+            destroyCharts() {
+                Object.values(this._charts || {}).forEach(ctx => {
+                    if (ctx.abortController) ctx.abortController.abort();
+                    if (ctx.resizeObserver) ctx.resizeObserver.disconnect();
+                    try { if (ctx.chart) ctx.chart.remove(); } catch (e) {}
+                });
+                this._charts = {};
+            },
+            closeChartModal() {
+                try {
+                    const bodyEl = document.querySelector('.chart-modal-body');
+                    if (bodyEl && !this.chartFullscreen && !document.fullscreenElement) {
+                        localStorage.setItem('chartModalHeight', bodyEl.clientHeight);
+                        this.chartModalHeight = bodyEl.clientHeight;
+                    }
+                } catch(e) {}
+                try {
+                    if (document.fullscreenElement && this.$refs.chartCard && document.fullscreenElement === this.$refs.chartCard) {
+                        document.exitFullscreen().catch(() => {});
+                    }
+                } catch(e) {}
+                this.destroyCharts();
+                this.chartModal.show = false;
+                this.chartModal.symbols = [];
+                this.chartModal.states = {};
+                this.chartFullscreen = false;
+            },
+            async toggleChartFullscreen() {
+                const card = this.$refs.chartCard;
+                if (!card) return;
+                try {
+                    if (!document.fullscreenElement) {
+                        await card.requestFullscreen();
+                    } else {
+                        await document.exitFullscreen();
+                    }
+                } catch (e) {
+                    const state = this.chartModal.states[this.chartModal.symbol];
+                    if (state) state.error = "無法切換全螢幕: " + e.message;
+                }
+            },
+            initChart(symbol, index) {
+                const container = document.getElementById('tv-chart-' + index);
+                if (!container) return;
+                if (!window.LightweightCharts) {
+                    throw new Error('本機圖表元件未載入；交易功能不受影響，請重新整理頁面');
+                }
+
+                const chartTimeToDate = (time) => {
+                    if (typeof time === "number") return new Date(time * 1000);
+                    return new Date(Date.UTC(time.year, time.month - 1, time.day));
+                };
+                const taipeiDateTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei",
+                    year: "numeric", month: "2-digit", day: "2-digit",
+                    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+                });
+                const taipeiYearFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei", year: "numeric",
+                });
+                const taipeiMonthFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit",
+                });
+                const taipeiDayFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei", month: "2-digit", day: "2-digit",
+                });
+                const taipeiClockFormatter = new Intl.DateTimeFormat("zh-TW", {
+                    timeZone: "Asia/Taipei",
+                    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+                });
+                
+                const chart = LightweightCharts.createChart(container, {
+                    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#333' },
+                    grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    rightPriceScale: { borderColor: '#cccccc' },
+                    localization: {
+                        locale: 'zh-TW',
+                        timeFormatter: (time) =>
+                            taipeiDateTimeFormatter.format(chartTimeToDate(time)),
+                    },
+                    timeScale: {
+                        borderColor: '#cccccc',
+                        timeVisible: true,
+                        tickMarkFormatter: (time, tickMarkType) => {
+                            const date = chartTimeToDate(time);
+                            if (tickMarkType === 0) return taipeiYearFormatter.format(date);
+                            if (tickMarkType === 1) return taipeiMonthFormatter.format(date);
+                            if (tickMarkType === 2) return taipeiDayFormatter.format(date);
+                            return taipeiClockFormatter.format(date);
+                        },
+                    },
+                });
+                
+                const ctx = {
+                    chart,
+                    requestHasFit: false,
+                    fetchInFlight: false,
+                    abortController: null,
+                    resizeObserver: null,
+                    lastCandle: null,
+                    historySignature: null,
+                    markerSignature: null,
+                    failureCount: 0,
+                    nextRetryAt: 0,
+                };
+                ctx.candlestickSeries = chart.addCandlestickSeries({
+                    upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
+                    wickUpColor: '#10b981', wickDownColor: '#ef4444',
+                    lastValueVisible: false, priceLineVisible: false
+                });
+                ctx.ma3Series = chart.addLineSeries({ color: '#E91E63', lineWidth: 2, title: 'MA3' });
+                ctx.ma15Series = chart.addLineSeries({ color: '#8B6F47', lineWidth: 2, title: 'MA15' });
+
+                ctx.kcUpperSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC上軌' });
+                ctx.kcMiddleSeries = chart.addLineSeries({ color: '#64748b', lineWidth: 1, lineStyle: 2, title: 'KC中軌' });
+                ctx.kcLowerSeries = chart.addLineSeries({ color: '#06b6d4', lineWidth: 2, title: 'KC下軌' });
+                this._charts = this._charts || {};
+                this._charts[symbol] = ctx;
+
+                if (window.ResizeObserver) {
+                    ctx.resizeObserver = new ResizeObserver(entries => {
+                        const rect = entries[0]?.contentRect;
+                        if (rect && ctx.chart && rect.width > 0 && rect.height > 0) {
+                            ctx.chart.applyOptions({ width: rect.width, height: rect.height });
+                        }
+                    });
+                    ctx.resizeObserver.observe(container);
+                }
+            },
+            async fetchChartData(symbol) {
+                const ctx = (this._charts || {})[symbol];
+                const state = this.chartModal.states[symbol];
+                if (!symbol || !ctx || !state || !this.chartModal.symbols.includes(symbol)) return;
+                if (ctx.fetchInFlight) return;
+                if (Date.now() < (ctx.nextRetryAt || 0)) return;
+                ctx.fetchInFlight = true;
+                const controller = new AbortController();
+                ctx.abortController = controller;
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
+                try {
+                    const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&timeframe=1m&limit=200&include_live=true&_=${Date.now()}`, {
+                        cache: 'no-store', signal: controller.signal
+                    });
+                    if (!res.ok) throw new Error(`K 線服務暫時無法使用（HTTP ${res.status}）`);
+                    const json = await res.json();
+                    if (!Array.isArray(json.data) || json.data.length === 0) throw new Error('K 線資料為空');
+                    // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
+                    if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
+                    
+                    state.entryBlock = json.cache?.source === 'stale' ? null : (json.entry_block || null);
+                    state.ckTrend = json.cache?.source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
+                    const candles = [];
+                    const ma3 = [];
+                    const ma15 = [];
+
+                    const kcUpper = [];
+                    const kcMiddle = [];
+                    const kcLower = [];
+                    const tradeMarkers = [];
+                    
+                    json.data.forEach(d => {
+                        candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
+                        if (d.ma3 !== null && d.ma3 !== undefined) ma3.push({ time: d.time, value: d.ma3 });
+                        if (d.ma15 !== null) ma15.push({ time: d.time, value: d.ma15 });
+
+                        if (d.kc_upper !== null) kcUpper.push({ time: d.time, value: d.kc_upper });
+                        if (d.kc_middle !== null) kcMiddle.push({ time: d.time, value: d.kc_middle });
+                        if (d.kc_lower !== null) kcLower.push({ time: d.time, value: d.kc_lower });
+                        [...(d.trade_markers || [])]
+                            .sort((a, b) => Number(b.action.startsWith('CLOSE_')) - Number(a.action.startsWith('CLOSE_')))
+                            .forEach(trade => {
+                                const markerStyle = {
+                                    OPEN_LONG: { position: 'belowBar', color: '#2563eb', shape: 'arrowUp', text: '買入開多' },
+                                    OPEN_SHORT: { position: 'aboveBar', color: '#7c3aed', shape: 'arrowDown', text: '賣出開空' },
+                                    CLOSE_LONG: { position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: '賣出平多' },
+                                    CLOSE_SHORT: { position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: '買回平空' },
+                                }[trade.action];
+                                if (!markerStyle) return;
+                                tradeMarkers.push({
+                                    time: d.time, ...markerStyle,
+                                    size: 1,
+                                });
+                            });
+                    });
+                    
+                    const referencePrice = Number(candles[candles.length - 1]?.close || 0);
+                    const precision = referencePrice < 0.01 ? 8 : referencePrice < 1 ? 6 : referencePrice < 100 ? 4 : 2;
+                    const priceFormat = { type: 'price', precision, minMove: 10 ** -precision };
+                    [ctx.candlestickSeries, ctx.ma3Series, ctx.ma15Series,
+                     ctx.kcUpperSeries, ctx.kcMiddleSeries, ctx.kcLowerSeries]
+                        .forEach(series => series.applyOptions({ priceFormat }));
+
+                    // 只有歷史 K 棒真的前進時才整批重畫；同一根即時 K 棒只做
+                    // update，避免每次輪詢造成整張圖閃爍與視窗位置跳動。
+                    const previousBarTime = candles.length > 1 ? candles[candles.length - 2].time : 0;
+                    const historySignature = `${symbol}:${candles.length}:${previousBarTime}`;
+                    const fullRefresh = ctx.historySignature !== historySignature;
+                    if (fullRefresh) {
+                        ctx.candlestickSeries.setData(candles);
+                        ctx.ma3Series.setData(ma3);
+                        ctx.ma15Series.setData(ma15);
+
+                        ctx.kcUpperSeries.setData(kcUpper);
+                        ctx.kcMiddleSeries.setData(kcMiddle);
+                        ctx.kcLowerSeries.setData(kcLower);
+                        ctx.historySignature = historySignature;
+                    } else {
+                        ctx.candlestickSeries.update(candles[candles.length - 1]);
+                        [
+                            [ctx.ma3Series, ma3], [ctx.ma15Series, ma15],
+                            [ctx.kcUpperSeries, kcUpper],
+                            [ctx.kcMiddleSeries, kcMiddle], [ctx.kcLowerSeries, kcLower],
+                        ].forEach(([series, values]) => {
+                            if (values.length > 0) series.update(values[values.length - 1]);
+                        });
+                    }
+                    if (candles.length > 0) ctx.lastCandle = candles[candles.length - 1];
+                    const chartMarkers = tradeMarkers.sort((a, b) => a.time - b.time);
+                    const markerSignature = JSON.stringify(chartMarkers);
+                    if (ctx.markerSignature !== markerSignature) {
+                        ctx.candlestickSeries.setMarkers(chartMarkers);
+                        ctx.markerSignature = markerSignature;
+                    }
+                    
+                    if (!ctx.requestHasFit) {
+                        ctx.chart.timeScale().fitContent();
+                        ctx.requestHasFit = true;
+                    }
+                    ctx.failureCount = 0;
+                    ctx.nextRetryAt = 0;
+                    state.error = "";
+                    state.loading = false;
+                } catch (e) {
+                    if (this.chartModal.symbols.includes(symbol)) {
+                        state.entryBlock = null;
+                        state.ckTrend = 'wait';
+                        ctx.failureCount = (ctx.failureCount || 0) + 1;
+                        const retryDelay = Math.min(30000, 1000 * (2 ** Math.min(ctx.failureCount, 5)));
+                        ctx.nextRetryAt = Date.now() + retryDelay;
+                        const message = e.name === 'AbortError' ? 'K 線請求逾時，正在自動重試' : e.message;
+                        if (!ctx.lastCandle) state.error = message;
+                        console.warn('Chart refresh failed; trading UI remains active:', message);
+                        state.loading = false;
+                    }
+                } finally {
+                    clearTimeout(timeoutId);
+                    if (ctx.abortController === controller) ctx.abortController = null;
+                    ctx.fetchInFlight = false;
+                }
+            },
+
+                getClosedCkTrend(data) {
+                    const values = data.filter(bar => bar.is_live === false).slice(-3).map(bar => Number(bar.kc_middle));
+                    if (values.length !== 3 || values.some(value => !Number.isFinite(value) || value <= 0)) return 'wait';
+                    const [first, second, third] = values;
+                    if (first < second && second < third) return 'bull';
+                    if (first > second && second > third) return 'bear';
+                    return 'range';
+                },
+                getChartMarketMode(symbol) {
+                    const rawMode = String(
+                        ((this.bot.market_modes || {})[symbol]) || 'WAIT'
+                    ).toUpperCase();
+                    return ['BULL', 'BEAR', 'RANGE', 'TREND'].includes(rawMode)
+                        ? rawMode
+                        : 'WAIT';
+                },
+                getChartMarketLabel(symbol) {
+                    return {
+                        BULL: '牛市',
+                        BEAR: '熊市',
+                        RANGE: '盤整市',
+                        TREND: '趨勢確認中',
+                        WAIT: '等待判定',
+                    }[this.getChartMarketMode(symbol)];
+                },
                 getLeverage(symbol) {
                     return (this.bot.leverage_map && this.bot.leverage_map[symbol]) || this.bot.leverage;
                 },
                 downloadTrades() {
                     const url = this.exportDate ? '/api/export_trades?date=' + this.exportDate : '/api/export_trades';
                     window.location.href = url;
+                },
+                formatTradeAction(action) {
+                    return {
+                        OPEN_LONG: '買入開多',
+                        OPEN_SHORT: '賣出開空',
+                        CLOSE_LONG: '賣出平多',
+                        CLOSE_SHORT: '買回平空',
+                        PARTIAL_CLOSE_LONG: '部分賣出平多',
+                        PARTIAL_CLOSE_SHORT: '部分買回平空',
+                    }[action] || action || '-';
                 },
                 formatPrice(p) {
                     if (p === undefined || p === null) return '-';
@@ -562,25 +1051,32 @@
                         || null;
                 },
                 getPosUnrealizedPnl(pos) {
-                    const curr = this.getCurrPrice(pos.symbol);
+                    const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
                     if (!curr) return 0;
-                    if (pos.side === 'LONG') {
-                        return (curr - pos.entry_price) * pos.qty;
-                    } else {
-                        return (pos.entry_price - curr) * pos.qty;
-                    }
+                    return pos.side === 'LONG'
+                        ? (curr - pos.entry_price) * pos.qty
+                        : (pos.entry_price - curr) * pos.qty;
+                },
+                getPosEstimatedNetPnl(pos) {
+                    const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
+                    if (!curr) return 0;
+                    const raw = this.getPosUnrealizedPnl(pos);
+                    const feeRate = this.bot.taker_fee_rate || 0.0005;
+                    const slippage = this.bot.slippage_pct || 0.0001;
+                    return raw - (pos.entry_price + curr) * pos.qty * feeRate
+                        - curr * pos.qty * slippage;
                 },
                 getPosRoePct(pos) {
-                    const pnl = this.getPosUnrealizedPnl(pos);
+                    const pnl = this.getPosEstimatedNetPnl(pos);
                     if (!pos.margin || pos.margin === 0) return 0;
-                    // ROE% = 未實現損益 / 保證金 (已含槓桿效果)
+                    // 淨 ROE% = 扣費後淨損益 / 保證金 (已含槓桿效果)
                     return (pnl / pos.margin) * 100;
                 },
                 getPosRoePctNoLeverage(pos) {
-                    const pnl = this.getPosUnrealizedPnl(pos);
+                    const pnl = this.getPosEstimatedNetPnl(pos);
                     const leverage = pos.leverage || this.getLeverage(pos.symbol) || 1;
                     if (!pos.margin || pos.margin === 0) return 0;
-                    // 現貨% = 未實現損益 / (保證金 x 槓桿)，等同去除槓桿效果的實際價格漲跌幅
+                    // 淨現貨% = 扣費後淨損益 / (保證金 x 槓桿)
                     return (pnl / (pos.margin * leverage)) * 100;
                 },
                 // 開倉時就設好的固定 SL/TP，反推「如果打到止利/止損」的預估
@@ -603,26 +1099,42 @@
                 },
                 async fetchStatus() {
                     try {
-                        const res = await fetch('/api/status');
+                        const res = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
+                        const currentTickerTime = Number(this.bot?.ticker_updated_at || 0);
+                        const incomingTickerTime = Number(data.ticker_updated_at || 0);
+                        if (currentTickerTime > incomingTickerTime) {
+                            data.tickers = this.bot.tickers;
+                            data.positions = this.bot.positions;
+                            data.ticker_updated_at = currentTickerTime;
+                        }
                         this.bot = data;
                     } catch (e) {
                         console.error('Failed to fetch status', e);
                     }
                 },
                 async fetchPrices() {
-                    // 輕量端點：只更新潁價與持倉（每秒刷新）
                     try {
-                        const res = await fetch('/api/prices');
+                        const res = await fetch('/api/prices?_=' + Date.now(), { cache: 'no-store' });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
+                        const currentTickerTime = Number(this.bot?.ticker_updated_at || 0);
+                        const incomingTickerTime = Number(data.ticker_updated_at || 0);
+                        if (incomingTickerTime < currentTickerTime) return;
                         if (data.symbols) this.bot.symbols = data.symbols;
                         if (data.symbol_directions) this.bot.symbol_directions = data.symbol_directions;
-                        if (data.tickers) this.bot.tickers = data.tickers;
+                        if (data.market_modes) this.bot.market_modes = data.market_modes;
+                        if (data.tickers) {
+                            this.bot.tickers = data.tickers;
+                        }
                         if (data.positions) this.bot.positions = data.positions;
                         if (data.balance !== undefined) this.bot.balance = data.balance;
                         if (data.unrealized_pnl !== undefined) this.bot.unrealized_pnl = data.unrealized_pnl;
+                        if (data.estimated_net_unrealized_pnl !== undefined) this.bot.estimated_net_unrealized_pnl = data.estimated_net_unrealized_pnl;
+                        this.bot.ticker_updated_at = incomingTickerTime;
                     } catch (e) {
-                        // silent
+                        console.error('Failed to fetch live prices', e);
                     }
                 },
                 async authorizedFetch(url, options = {}) {
@@ -639,37 +1151,100 @@
                     return res;
                 },
                 async toggleBot() {
-                    const res = await this.authorizedFetch('/api/toggle', { method: 'POST' });
-                    if (!res) return;
-                    await this.fetchStatus();
+                    if (this.isTogglingBot) return;
+                    this.isTogglingBot = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/toggle', { method: 'POST' });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isTogglingBot = false;
+                    }
                 },
-                async placeOrder(side) {
-                    const res = await this.authorizedFetch('/api/manual_order', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            symbol: this.manualOrder.symbol,
-                            side: side,
-                            amount: this.manualOrder.amount
-                        })
-                    });
-                    if (!res) return;
-                    await this.fetchStatus();
+                async runAiTradeAnalysis() {
+                    if (this.isAnalyzing) return;
+                    this.isAnalyzing = true;
+                    try {
+                        const res = await this.authorizedFetch("/api/ai-trade-analysis", { method: "POST" });
+                        if (!res) return;
+                        const data = await res.json();
+                        if (data.analysis) this.bot.trade_ai_analysis = data.analysis;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isAnalyzing = false;
+                    }
+                },
+                async placeOrder(symbol, side) {
+                    if (this.isPlacingOrder) return;
+                    this.isPlacingOrder = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/manual_order', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                symbol: symbol,
+                                side: side,
+                                amount: 0
+                            })
+                        });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isPlacingOrder = false;
+                    }
                 },
                 async closePos(symbol) {
-                    const res = await this.authorizedFetch('/api/manual_close', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbol })
-                    });
-                    if (!res) return;
-                    await this.fetchStatus();
+                    if (this.isClosingPos[symbol]) return;
+                    this.$set ? this.$set(this.isClosingPos, symbol, true) : (this.isClosingPos[symbol] = true);
+                    try {
+                        const res = await this.authorizedFetch('/api/manual_close', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ symbol })
+                        });
+                        if (!res) return;
+                        await this.fetchStatus();
+                    } finally {
+                        this.isClosingPos[symbol] = false;
+                    }
+                },
+                async resetAccount() {
+                    const confirmed = window.confirm(
+                        '⚠️ 確定要重置帳戶嗎？\n\n這將清空所有：\n• 交易記錄\n• 損益數據\n• 當前持倉\n\n此操作無法復原！'
+                    );
+                    if (!confirmed) return;
+                    if (this.isResetting) return;
+                    this.isResetting = true;
+                    try {
+                        const res = await this.authorizedFetch('/api/reset_account', { method: 'POST' });
+                        if (!res) return;
+                        const data = await res.json();
+                        window.alert('✅ ' + (data.message || '帳戶已重置'));
+                        await this.fetchStatus();
+                    } finally {
+                        this.isResetting = false;
+                    }
                 }
             },
             mounted() {
+                document.addEventListener('fullscreenchange', () => {
+                    this.chartFullscreen = document.fullscreenElement === this.$refs.chartCard;
+                    this.$nextTick(() => {
+                        this.chartModal.symbols.forEach((symbol, index) => {
+                            const container = document.getElementById('tv-chart-' + index);
+                            const ctx = (this._charts || {})[symbol];
+                            if (container && ctx?.chart) {
+                                ctx.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+                            }
+                        });
+                    });
+                });
                 this.fetchStatus();
                 setInterval(this.fetchStatus, 3000);  // 完整狀態（logs/trades）每 3 秒
-                setInterval(this.fetchPrices, 1000);  // 現價與持倉每 1 秒
+                setInterval(this.fetchPrices, 500);   // 現價與持倉每 0.5 秒，提升即時反應感
+                setInterval(() => {
+                    this.chartModal.symbols.forEach(symbol => this.fetchChartData(symbol));
+                }, 5000); // 後端 K 線快取為 5 秒；現價仍由 0.5 秒輪詢增量更新
             }
         }).mount('#app');
     </script>

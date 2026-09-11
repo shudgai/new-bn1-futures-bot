@@ -1,0 +1,29 @@
+name: Channel Swing Guard
+
+on:
+  pull_request:
+    paths:
+      - "core/engine.py"
+      - "core/paper_account.py"
+      - "core/testnet_account.py"
+      - "tests/test_channel_swing.py"
+      - ".github/workflows/channel-swing-guard.yml"
+  push:
+    paths:
+      - "core/engine.py"
+      - "core/paper_account.py"
+      - "core/testnet_account.py"
+      - "tests/test_channel_swing.py"
+      - ".github/workflows/channel-swing-guard.yml"
+
+jobs:
+  channel-swing-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q tests/test_channel_swing.py

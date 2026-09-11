@@ -1,6 +1,10 @@
+from core.channel_entry_diagnostics import entry_diagnostics
+import asyncio
 import os
 import csv
 import io
+import time
+import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
@@ -8,11 +12,15 @@ from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.config import (
+    CHANNEL_WATERFALL_BODY_ATR,
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
-    TAKER_FEE_RATE,
+    TAKER_FEE_RATE, SLIPPAGE_PCT, MAX_SLOTS, CONTINUOUS_PIVOT_ONLY, PIVOT_LONG_ONLY,
+    CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION, get_effective_slot_count,
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
+from core.trade_history_analysis import TradeHistoryAnalyzer
+from services.ma3_pivot_analysis import analyze_ma3_pivots
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -20,17 +28,56 @@ def trade_date_str(trade: dict) -> str:
     """交易 id 是毫秒級 unix timestamp，trade['time'] 沒有年份無法拿來篩選日期，故用 id 換算台北時區日期"""
     return datetime.fromtimestamp(trade.get("id", 0) / 1000, TAIPEI_TZ).strftime("%Y-%m-%d")
 
+
+def excel_text(value) -> str:
+    """避免 Excel 將交易 ID/時間自動轉成科學記號或日期數值。"""
+    return "" if value is None else f"'{value}"
+
+
 app = FastAPI(title="Binance Futures Bot 2.0")
+
+def visible_symbols():
+    """輪替牌面加上所有未平倉幣種；持倉平掉前不得從介面消失。"""
+    return list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()]))
+
 
 def visible_tickers():
     """只回傳目前牌面與持倉，避免輪替後的舊價格快取留在介面。"""
-    symbols = list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()]))
     result = {}
-    for symbol in symbols:
+    for symbol in visible_symbols():
         price = engine.tickers.get(symbol) or engine.tickers.get(f"{symbol}:USDT")
+        if price is None:
+            position = engine.account.positions.get(symbol, {})
+            price = position.get("mark_price") or position.get("entry_price")
         if price is not None:
             result[symbol] = price
     return result
+
+
+def configured_trade_amount() -> float:
+    """Return the target size of one slot, independent of current occupancy."""
+    wallet_balance = engine.account.get_wallet_balance()
+    effective_slots = get_effective_slot_count(wallet_balance)
+    fraction = (
+        CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
+        if effective_slots == 1
+        else 1.0 / effective_slots
+        if effective_slots > 1
+        else 1.0
+    )
+    return min(TRADE_AMOUNT_USDT, wallet_balance * fraction)
+
+def estimated_net_unrealized_pnl() -> float:
+    """估算全部持倉此刻市價平倉後，扣雙邊手續費與平倉滑價的淨利。"""
+    total = 0.0
+    for pos in engine.account.positions.values():
+        entry = float(pos.get("entry_price") or 0.0)
+        mark = float(pos.get("mark_price") or entry)
+        qty = float(pos.get("qty") or 0.0)
+        raw = (mark - entry) * qty if pos.get("side") == "LONG" else (entry - mark) * qty
+        total += raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
+    return total
+
 
 def positions_with_triggers():
     """持倉列表附加手動平倉參考指標（跌破/站上均線、跌破前低/站上前高），
@@ -39,6 +86,11 @@ def positions_with_triggers():
     for symbol, pos in engine.account.positions.items():
         merged = dict(pos)
         merged["trigger"] = engine.position_triggers.get(symbol, {"active": False, "reasons": []})
+        entry = float(merged.get("entry_price") or 0.0)
+        mark = float(merged.get("mark_price") or entry)
+        qty = float(merged.get("qty") or 0.0)
+        raw = (mark - entry) * qty if merged.get("side") == "LONG" else (entry - mark) * qty
+        merged["estimated_net_unrealized_pnl"] = raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
         result.append(merged)
     return result
 
@@ -52,6 +104,17 @@ def active_leverage_by_score():
     }
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+BOT_PAUSED_FILE = os.path.join(os.path.dirname(WEB_DIR), "data", "bot_paused.flag")
+BOT_SUPERVISOR_INTERVAL_SECONDS = 5.0
+_bot_supervisor_task = None
+_bot_control_lock = asyncio.Lock()
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="web-static")
+
+# 圖表資料只供顯示，不能讓瀏覽器每秒的請求與交易循環爭用 Binance 額度。
+# 成功資料短暫快取；外部行情暫時失敗時則回傳最後一份資料，讓介面保持可用。
+KLINE_CACHE_TTL_SECONDS = 5.0
+_kline_cache = {}
+_kline_inflight = {}
 
 class ManualOrderRequest(BaseModel):
     symbol: str
@@ -61,19 +124,73 @@ class ManualOrderRequest(BaseModel):
 class ManualCloseRequest(BaseModel):
     symbol: str
 
+
+async def recover_bot_if_needed() -> bool:
+    """Keep trading running, including after a legacy manual pause."""
+    async with _bot_control_lock:
+        if os.path.exists(BOT_PAUSED_FILE):
+            os.remove(BOT_PAUSED_FILE)
+        main_task = getattr(engine, "task", None)
+        if engine.is_running and main_task is not None and not main_task.done():
+            return False
+
+        if engine.is_running:
+            failure = "主交易任務已結束"
+            if main_task is not None and main_task.done():
+                try:
+                    exc = main_task.exception()
+                except asyncio.CancelledError:
+                    exc = None
+                if exc:
+                    failure = f"主交易任務異常：{exc}"
+            engine.account.log(f"⚠️ [自動恢復] {failure}，正在重新啟動", "WARNING")
+            await engine.stop()
+        else:
+            engine.account.log("⚠️ [自動恢復] 偵測到機器人停止，正在重新啟動", "WARNING")
+        await engine.start()
+        engine.account.log("✅ [自動恢復] 機器人已重新啟動", "SUCCESS")
+        return True
+
+
+async def bot_supervisor_loop():
+    while True:
+        try:
+            # Check immediately after startup so an unexpectedly stopped bot
+            # is not left inactive for the first supervisor interval.
+            await recover_bot_if_needed()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            engine.account.log(f"⚠️ [自動恢復] 本次重啟失敗，稍後重試：{exc}", "WARNING")
+        await asyncio.sleep(BOT_SUPERVISOR_INTERVAL_SECONDS)
+
+
 @app.on_event("startup")
 async def startup_event():
-    await engine.start()
+    global _bot_supervisor_task
+    try:
+        await recover_bot_if_needed()
+    except Exception as exc:
+        engine.account.log(f"⚠️ [自動恢復] 啟動失敗，監督器將重試：{exc}", "WARNING")
+    if _bot_supervisor_task is None or _bot_supervisor_task.done():
+        _bot_supervisor_task = asyncio.create_task(bot_supervisor_loop())
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await engine.stop()
+    global _bot_supervisor_task
+    if _bot_supervisor_task is not None:
+        _bot_supervisor_task.cancel()
+        await asyncio.gather(_bot_supervisor_task, return_exceptions=True)
+        _bot_supervisor_task = None
+    # 程序真正關閉時才釋放交易所連線；網頁暫停機器人仍需保留行情連線，
+    # 否則再次啟動會重用已關閉的 ccxt instance。
+    await engine.stop(close_exchanges=True)
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
     index_file = os.path.join(WEB_DIR, "index.html")
     if os.path.exists(index_file):
-        return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+        return FileResponse(index_file, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return HTMLResponse("<h1>Binance Bot Web Dashboard Not Found</h1>")
 
 
@@ -93,18 +210,21 @@ def visible_system_logs():
     ][-50:]
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     unrealized = await engine.account.update_positions(engine.tickers)
     return {
         "is_running": engine.is_running,
-        "strategy": f"Keltner + SuperTrend 混合模式 ({len(DEFAULT_SYMBOLS)}幣雙向)",
+        "strategy": f"雙入口：當根綠K實體至少前根已收線ATR的0.5倍、開盤在上軌內側或碰軌且最新價嚴格破上軌評估多單；紅K對稱跌破下軌評估空單，不等收線、MA3或CK轉向。另保留CK趨勢入口：最近兩根已收線CK中軌上升評估多單、下降評估空單，持平或資料無效不開。不要求MA3或價格穿越、位於上下軌外，不等MA3方向、動能加速或當根同色。所有新倉、正常重開、掃描、逐報價與送單重新驗證相同趨勢條件。保留末端弱量雙向禁開、淨利空間、反向異常、每根限次、行情與帳戶風控。扣雙邊費用與預估平倉滑點後，淨浮盈達0.5USDT啟動保護，最高淨浮盈回吐20%全平；已有更有利保護線與待平重試保留。正常平倉不等回調，下一根起依CK中軌趨勢重新評估；平倉當根禁開及每根限次保留，異常同向重開仍須回踩。持倉須CK最近四根已收線中軌的三次順向位移連續縮小，且最新已收線相對軌寬不超過前20根中位數75%，進場後觀察MA3順向峰谷再明顯反向0.10ATR才可平倉；不反手，正常平倉後下一根起可按CK中軌趨勢重開。未衰退時MA3轉向不平倉，0.5U／20%鎖利獨立有效。保留單根反向實體達{CHANNEL_WATERFALL_BODY_ATR:g}ATR的瀑布出口、雙反向異常K與帳戶硬止損。所有新倉與重開先估算至已確認前高／前低的淨利空間，扣雙邊費用與預估滑點後須達設定門檻；空間不足或無可靠目標不開，後續重新評估。每根限次與送單重驗保留（{len(DEFAULT_SYMBOLS)}幣）",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
         "port": PORT,
-        "balance": round(engine.account.balance, 2),
+        "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
         "realized_pnl": round(engine.account.realized_pnl, 2),
         "unrealized_pnl": round(unrealized, 2),
+        "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
         "leverage": LEVERAGE,
         "leverage_map": {
             symbol: engine.symbol_rotation.get_dynamic_leverage(symbol, 100)
@@ -115,16 +235,28 @@ async def get_status():
             str(score): ("symbol_max" if cap is None else cap)
             for score, cap in SIGNAL_LEVERAGE_CAPS
         },
-        "trade_amount": TRADE_AMOUNT_USDT,
+        "max_slots": MAX_SLOTS,
+        "effective_slots": get_effective_slot_count(engine.account.get_wallet_balance()),
+        "trade_amount": round(configured_trade_amount(), 2),
         "pullback_outcome_stats": dict(engine.account.pullback_outcome_stats),
         "entry_filter_stats": dict(engine.account.entry_filter_stats),
         "entry_filter_last": dict(engine.account.entry_filter_last),
         "shadow_parameter_stats": dict(engine.account.shadow_parameter_stats),
         "shadow_parameter_last": dict(engine.account.shadow_parameter_last),
+        "btc_lead_shadow": engine.btc_lead_shadow_status(),
         "taker_fee_rate": TAKER_FEE_RATE,
-        "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
-        "symbol_directions": {symbol: "BOTH" for symbol in DEFAULT_SYMBOLS},
+        "slippage_pct": SLIPPAGE_PCT,
+        "symbols": visible_symbols(),
+        "symbol_directions": {
+            symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
+            for symbol in DEFAULT_SYMBOLS
+        },
+        "market_modes": {
+            symbol: engine._continuous_market_mode.get(symbol, "WAIT")
+            for symbol in visible_symbols()
+        },
         "symbol_rotation": engine.symbol_rotation.status(),
+        "market_surveillance": engine.market_surveillance_status(),
         "volatility_stats": {
             symbol: engine.symbol_rotation.volatility_stats[symbol]
             for symbol in DEFAULT_SYMBOLS
@@ -139,6 +271,7 @@ async def get_status():
             "retry_after_sec": engine.symbol_rotation.trade_analysis.retry_after_sec,
         },
         "tickers": visible_tickers(),
+        "ticker_updated_at": engine.last_ticker_success_ts,
         "positions": positions_with_triggers(),
         "trades": engine.account.trades[:50],
         "total_trades": len(engine.account.trades),
@@ -147,21 +280,91 @@ async def get_status():
     }
 
 @app.get("/api/prices")
-async def get_prices():
+async def get_prices(response: Response):
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    unrealized = await engine.account.update_positions(engine.tickers)
     return {
-        "symbols": list(dict.fromkeys([*DEFAULT_SYMBOLS, *engine.account.positions.keys()])),
+        "symbols": visible_symbols(),
+        "symbol_directions": {
+            symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
+            for symbol in DEFAULT_SYMBOLS
+        },
+        "market_modes": {
+            symbol: engine._continuous_market_mode.get(symbol, "WAIT")
+            for symbol in visible_symbols()
+        },
         "tickers": visible_tickers(),
+        "ticker_updated_at": engine.last_ticker_success_ts,
         "positions": positions_with_triggers(),
-        "unrealized_pnl": round(await engine.account.update_positions(engine.tickers), 2),
-        "balance": round(engine.account.balance, 2),
+        "unrealized_pnl": round(unrealized, 2),
+        "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
+        "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
+    }
+
+@app.get("/api/quant-analysis")
+async def get_quant_analysis():
+    """唯讀量化報表：比較目前進場方式的實際淨績效。"""
+    return TradeHistoryAnalyzer.build_quant_report(engine.account.trades)
+
+
+@app.get("/api/ma3-pivot-analysis")
+async def get_ma3_pivot_analysis(
+    symbol: str, timeframe: str = "1m", limit: int = 1000,
+    horizon_bars: int = 5, target_atr: float = 0.30, stop_atr: float = 0.25,
+):
+    """分析 MA3 V/倒V 的尖銳度，不影響任何下單決策。"""
+    if timeframe not in {"1m", "5m", "15m", "1h"}:
+        raise HTTPException(status_code=400, detail="timeframe 僅支援 1m、5m、15m、1h")
+    if not 50 <= limit <= 1500:
+        raise HTTPException(status_code=400, detail="limit 必須介於 50 到 1500")
+    try:
+        frame = await engine.fetch_klines(symbol.strip(), timeframe=timeframe, limit=limit)
+        if frame.empty:
+            raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
+        return {
+            "symbol": symbol.strip(), "timeframe": timeframe,
+            **analyze_ma3_pivots(frame, horizon_bars, target_atr, stop_atr),
+        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+
+@app.post("/api/ai-trade-analysis")
+async def run_ai_trade_analysis():
+    """要求自建 AI 立即重新分析已平倉交易；僅產生建議，不影響交易設定。"""
+    analyzer = engine.symbol_rotation.trade_analysis
+    analyzer.analysis["history_digest"] = ""
+    analyzer.analysis["updated_at"] = 0.0
+
+    if engine.is_running:
+        engine.request_trade_analysis()
+        return {
+            "status": "queued",
+            "message": "已交由自建 AI 重新分析，完成後會自動更新面板。",
+            "analysis": analyzer.status(),
+        }
+
+    await analyzer.analyze_if_changed(engine.account.trades)
+    return {
+        "status": analyzer.status().get("status", "completed"),
+        "message": "自建 AI 分析已完成。",
+        "analysis": analyzer.status(),
     }
 
 @app.post("/api/toggle")
 async def toggle_bot():
-    if engine.is_running:
-        await engine.stop()
-    else:
+    async with _bot_control_lock:
+        if os.path.exists(BOT_PAUSED_FILE):
+            os.remove(BOT_PAUSED_FILE)
+        if engine.is_running:
+            await engine.stop()
         await engine.start()
     return {"is_running": engine.is_running}
 
@@ -169,15 +372,35 @@ async def toggle_bot():
 async def manual_order(req: ManualOrderRequest):
     symbol = req.symbol.strip()
     side = req.side.upper()
-    amount = req.amount if req.amount > 0 else TRADE_AMOUNT_USDT
 
     if symbol not in engine.tickers:
         raise HTTPException(status_code=400, detail="幣種價格尚未載入")
+    if symbol in engine.account.positions:
+        raise HTTPException(status_code=400, detail=f"{symbol} 已有持倉")
 
     price = engine.tickers[symbol]
+
+    # 手動單使用 CHANNEL_SWING 管理，進場後不設 SL/TP；不應為了未使用的
+    # ATR 等待外部 K 線請求。交易所請求卡住時，原本會讓按鈕長時間無回應。
     atr = price * 0.015
-    sl = price - (atr * 1.5) if side == "LONG" else price + (atr * 1.5)
-    tp = price + (atr * 3.0) if side == "LONG" else price - (atr * 3.0)
+
+    from core.strategy import compute_sl_tp_distance, build_sl_tp_for_side
+    from core.config import get_leverage
+    leverage = get_leverage(symbol)
+    if req.amount > 0:
+        amount = req.amount
+    else:
+        slot_amount = max(0.0, float(engine._continuous_entry_amount()))
+        available = max(0.0, float(engine.account.get_available_balance()))
+        fee_safe_available = available / (
+            1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
+        )
+        amount = min(slot_amount, fee_safe_available)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="沒有可用交易槽位或餘額不足")
+
+    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
+    sl, tp = build_sl_tp_for_side(price, side, sl_dist, tp_dist)
 
     success = await engine.account.open_position(
         symbol=symbol,
@@ -186,10 +409,24 @@ async def manual_order(req: ManualOrderRequest):
         amount_usdt=amount,
         sl=sl,
         tp=tp,
-        reason="手動下單"
+        reason=f"手動開倉_{side}",
+        atr=atr,
+        leverage=leverage,
+        signal_score=100,
+        entry_context={
+            "entry_mode": "CHANNEL_SWING",
+            "wave_regime": "RANGE",
+            "market_mode": "RANGE",
+            "manual_entry": True,
+            "managed_by_bot": True,
+            "manual_favorable_rail_reached": False,
+            "channel_favorable_rail_reached": False,
+        },
     )
     if not success:
         raise HTTPException(status_code=400, detail="已有該幣種持倉或系統異常")
+    engine.release_manual_close_state(symbol)
+    engine._take_over_manual_position(symbol, engine.account.positions[symbol])
     return {"status": "success", "message": f"手動開倉 {side} {symbol}"}
 
 @app.get("/api/export_trades")
@@ -215,7 +452,10 @@ async def export_trades(date: str = None):
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for t in selected_trades:
-        writer.writerow({k: t.get(k, "") for k in fieldnames})
+        row = {k: t.get(k, "") for k in fieldnames}
+        row["id"] = excel_text(t.get("id"))
+        row["time"] = excel_text(t.get("time"))
+        writer.writerow(row)
 
     label = date if date else "all"
     filename = f"trade_history_{label}_{get_taipei_now_str('%Y%m%d_%H%M%S')}.csv"
@@ -231,10 +471,186 @@ async def export_trades(date: str = None):
 @app.post("/api/manual_close")
 async def manual_close(req: ManualCloseRequest):
     symbol = req.symbol.strip()
-    if symbol not in engine.account.positions:
-        raise HTTPException(status_code=400, detail="查無此持倉")
-    price = engine.tickers.get(symbol, engine.account.positions[symbol]["entry_price"])
-    success = await engine.account.close_position(symbol, price, "手動平倉", is_manual=True)
-    if not success:
-        raise HTTPException(status_code=502, detail="Binance Testnet 平倉失敗")
-    return {"status": "success", "message": f"手動平倉 {symbol}"}
+    if not symbol:
+        raise HTTPException(status_code=422, detail="缺少幣種")
+
+    # Closing is idempotent: a repeated click or an auto-exit racing this
+    # request must never submit a second reduce-only order or look like a
+    # server failure to the UI.
+    account = engine.account
+    if symbol in account.closing_lock:
+        return {"status": "closing", "message": f"{symbol} 平倉處理中"}
+    position = account.positions.get(symbol)
+    if position is None:
+        return {"status": "already_closed", "message": f"{symbol} 已平倉"}
+
+    price = engine.tickers.get(symbol)
+    if not price:
+        price = float(position.get("mark_price") or position.get("entry_price", 0.0))
+        
+    success = await account.close_position(symbol, price, "手動平倉", is_manual=True)
+    if success:
+        engine.release_manual_close_state(symbol)
+        account.log(
+            f"🤖 [手動平倉交棒] {symbol} 後續由機器人重新判斷趨勢與進場",
+            "INFO",
+        )
+        return {"status": "success", "message": f"手動平倉 {symbol}"}
+    if symbol in account.closing_lock or symbol not in account.positions:
+        return {"status": "closing", "message": f"{symbol} 平倉處理中"}
+    raise HTTPException(status_code=502, detail="平倉委託失敗，請稍後再試")
+
+
+@app.post("/api/reset_account")
+async def reset_account():
+    """清空帳戶所有狀態（損益、交易記錄、持倉），重新從初始餘額開始。"""
+    if hasattr(engine.account, "reset_state"):
+        engine.account.reset_state()
+        return {"status": "success", "message": "帳戶已重置，損益與交易記錄已清空"}
+    raise HTTPException(status_code=501, detail="此帳戶類型不支援重置")
+
+
+async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bool):
+    """取得K線、均線與策略使用的 Keltner Channel 提供給前端圖表"""
+    try:
+        df = await engine.fetch_klines(
+            symbol, timeframe=timeframe, limit=limit, keep_live=include_live
+        )
+        if df.empty:
+            raise HTTPException(status_code=400, detail="無法獲取 K 線資料")
+            
+        # 計算 MA
+        df['MA3'] = df['close'].rolling(window=3).mean()
+        df['MA15'] = df['close'].rolling(window=15).mean()
+        df['MA99'] = df['close'].rolling(window=99).mean()
+        indicators = engine.strategy.compute_indicators(df)
+        trade_markers = {}
+        for trade in engine.account.trades:
+            if trade.get("symbol") != symbol:
+                continue
+            action = str(trade.get("action") or "")
+            if action not in ("OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"):
+                continue
+            trade_timestamp = int(trade.get("id") or 0)
+            matching_bars = df.index[df["timestamp"] <= trade_timestamp]
+            if len(matching_bars) == 0:
+                continue
+            marker_index = matching_bars[-1]
+            trade_markers.setdefault(marker_index, []).append({
+                "action": action,
+                "reason": trade.get("reason") or "",
+                "price": trade.get("price"),
+            })
+        
+        prealert = engine.pivot_prealerts.get(symbol, {})
+        if prealert and time.time() - float(prealert.get("updated_at") or 0.0) < 180.0:
+            matching_bars = df.index[df["timestamp"] <= int(prealert.get("timestamp") or 0)]
+            if len(matching_bars) > 0:
+                trade_markers.setdefault(matching_bars[-1], []).append({
+                    "action": prealert.get("action"),
+                    "reason": "1m pivot pre-alert; no order sent",
+                    "price": None,
+                })
+
+        chop_markers = {}
+        for event in engine._channel_chop_events.get(symbol, []):
+            event_timestamp = int(event.get("timestamp") or 0)
+            matching_bars = df.index[df["timestamp"] <= event_timestamp]
+            if len(matching_bars) == 0:
+                continue
+            chop_markers.setdefault(matching_bars[-1], []).append({
+                "action": event.get("action"),
+                "reason": event.get("reason") or "",
+                "timestamp": event_timestamp,
+            })
+
+        channel_markers = {}
+        for event in engine._channel_signal_events.get(symbol, []):
+            event_timestamp = int(event.get("timestamp") or 0)
+            matching_bars = df.index[df["timestamp"] <= event_timestamp]
+            if len(matching_bars) == 0:
+                continue
+            channel_markers.setdefault(matching_bars[-1], []).append({
+                "action": event.get("action"),
+                "reason": event.get("reason") or "",
+                "label": event.get("label") or event.get("reason") or "",
+                "timestamp": event_timestamp,
+            })
+
+        # 準備資料
+        result = []
+        for index, row in df.iterrows():
+            # TradingView 需要的 time 是 unix timestamp (seconds)
+            time_sec = int(row['timestamp'] / 1000)
+            result.append({
+                "time": time_sec,
+                "open": row['open'],
+                "high": row['high'],
+                "low": row['low'],
+                "close": row['close'],
+                "ma3": None if pd.isna(row['MA3']) else row['MA3'],
+                "ma15": None if pd.isna(row['MA15']) else row['MA15'],
+                "ma99": None if pd.isna(row['MA99']) else row['MA99'],
+                "kc_upper": None if pd.isna(indicators.loc[index, 'kc_upper']) else indicators.loc[index, 'kc_upper'],
+                "kc_middle": None if pd.isna(indicators.loc[index, 'ema_20']) else indicators.loc[index, 'ema_20'],
+                "kc_lower": None if pd.isna(indicators.loc[index, 'kc_lower']) else indicators.loc[index, 'kc_lower'],
+                "trade_markers": trade_markers.get(index, []),
+                "chop_markers": chop_markers.get(index, []),
+                "channel_markers": channel_markers.get(index, []),
+                "is_live": bool(include_live and index == df.index[-1]),
+            })
+            
+        entry_block = None
+        if include_live and timeframe == "1m" and engine.is_running:
+            price = float(engine.tickers.get(symbol) or indicators.iloc[-1]["close"])
+            entry_block = entry_diagnostics(engine, symbol, indicators, price, time.time())
+        return {"symbol": symbol, "timeframe": timeframe, "data": result, "entry_block": entry_block}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/klines")
+async def get_klines(
+    response: Response,
+    symbol: str,
+    timeframe: str = "5m",
+    limit: int = 200,
+    include_live: bool = False,
+):
+    """圖表 K 線快取與 single-flight；圖表故障不得拖慢交易資料流。"""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    if timeframe not in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}:
+        raise HTTPException(status_code=400, detail="不支援的 K 線週期")
+    limit = max(20, min(int(limit), 500))
+    key = (symbol, timeframe, limit, bool(include_live))
+    now = time.monotonic()
+    cached = _kline_cache.get(key)
+    if cached and now - cached["saved_at"] < KLINE_CACHE_TTL_SECONDS:
+        return {
+            **cached["payload"],
+            "cache": {"source": "cache", "age_seconds": round(now - cached["saved_at"], 2)},
+        }
+
+    task = _kline_inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(_load_klines(symbol, timeframe, limit, include_live))
+        _kline_inflight[key] = task
+    try:
+        payload = await asyncio.shield(task)
+        saved_at = time.monotonic()
+        _kline_cache[key] = {"payload": payload, "saved_at": saved_at}
+        return {**payload, "cache": {"source": "live", "age_seconds": 0.0}}
+    except Exception:
+        cached = _kline_cache.get(key)
+        if cached:
+            age = time.monotonic() - cached["saved_at"]
+            return {
+                **cached["payload"],
+                "cache": {"source": "stale", "age_seconds": round(age, 2)},
+            }
+        raise
+    finally:
+        if task.done() and _kline_inflight.get(key) is task:
+            _kline_inflight.pop(key, None)

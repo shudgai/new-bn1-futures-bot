@@ -1,0 +1,3 @@
+[submodule ".aidan-specs"]
+	path = .aidan-specs
+	url = https://github.com/HuangTingInternetStudio/MDs.git

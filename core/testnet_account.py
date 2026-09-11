@@ -1,8 +1,11 @@
+from core.services.exits.hard_stop_service import enforce_hard_stop
 import asyncio
 import json
+import math
 import os
 import time
 import ccxt.async_support as ccxt
+import re
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -16,6 +19,8 @@ from core.config import (
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
     ENABLE_TRAILING_STOP,
+    ENABLE_EARLY_PROFIT_GUARD,
+    ENABLE_PROFIT_GIVEBACK_EXIT,
     EARLY_PROFIT_GUARD_TRIGGER_PCT,
     EARLY_PROFIT_GUARD_EXIT_PCT,
     BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
@@ -27,6 +32,14 @@ from core.config import (
     CONTRARIAN_TRAILING_TRIGGER_PCT,
     TRAILING_PULLBACK_PCT,
     NET_PROFIT_GUARANTEE_BUFFER,
+    ENABLE_PROFIT_BANK,
+    PROFIT_BANK_TRIGGER_PCT,
+    PROFIT_BANK_LOCK_PCT,
+    PROFIT_BANK_CAPTURE_RATIO,
+    get_profit_bank_capture_ratio,
+    PROFIT_BANK_MIN_STEP_PCT,
+    ENABLE_FIXED_PROFIT_LOCK_PCT, FIXED_PROFIT_LOCK_TRIGGER_PCT,
+    FIXED_PROFIT_LOCK_FLOOR_PCT,
     get_trailing_pullback_pct,
     PROFIT_ALERT_GIVEBACK_RATIO,
     PROFIT_ALERT_MIN_PEAK_PCT,
@@ -52,6 +65,8 @@ from core.config import (
     TRAILING_TIER3_TRIGGER_ATR_MULT,
     TRAILING_TIER2_LOCK_ATR_MULT,
     MAX_ACCEPTABLE_LOSS_PCT,
+    MAX_POSITION_MARGIN_LOSS_RATIO,
+    cap_stop_loss_to_margin_risk,
     MIN_SL_DISTANCE_PCT,
     STOP_LOSS_MULTIPLIER,
     ENABLE_DCA_LIMIT,
@@ -62,8 +77,15 @@ from core.config import (
     ENABLE_RAPID_ADVERSE_DROP,
     RAPID_ADVERSE_DROP_PCT,
     RAPID_DROP_COOLDOWN_SEC,
+    ENABLE_FIXED_PROFIT_LOCK_LADDER,
+    FIXED_PROFIT_LOCK_LADDER_STEP_PCT,
+    FIXED_PROFIT_LOCK_LADDER_FIRST_PCT,
+    ENABLE_PROFIT_LOCK_USDT,
+    OUTER_RUN_NET_GIVEBACK_USDT,
+    ENABLE_BOUNCE_TARGET_EXIT,
+    EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
-from core.strategy import compute_sl_tp_distance
+from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
 from core.notifier import notify_email
 
 
@@ -71,17 +93,26 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 STATE_FILE = os.path.join(DATA_DIR, "testnet_account.json")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 ENTRY_CONTEXT_KEYS = (
+    "channel_fading_ma3_turn",
+    "channel_reverse_wait_ck",
+    "channel_pivot_entry", "channel_pivot_middle_reached",
+    "channel_pivot_middle_exit_pending", "entry_kc_middle",
+    "channel_confirmation_bar_id",
+    "manual_entry", "managed_by_bot", "bot_last_managed_at",
     "btc_regime_at_entry", "btc_direction_1h_at_entry", "btc_score_penalty",
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
     "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
     "signal_candle_low", "signal_candle_high",
+    "channel_turn_low", "channel_turn_high",
     "profit_profile", "profit_room_pct",
     "bounce_capture_ratio", "bounce_target_pct",
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",
-    "dca_stage", "dca_base_price", "dca_original_amount",
+    "dca_stage", "dca_base_price", "dca_original_amount", "wave_regime",
+    "channel_entry_profile", "channel_entry_profile_basis",
+    "profit_lock_usdt_v2",
 )
 
 
@@ -111,6 +142,7 @@ class BinanceTestnetAccount:
         self.trades: List[dict] = []
         self.logs: List[dict] = []
         self.position_meta: Dict[str, dict] = {}
+        self.channel_profit_reentries: Dict[str, dict] = {}
         self.closing_lock: set = set()
         self.on_trade_closed: Optional[Callable[[], None]] = None
         self.last_sync_at = 0.0
@@ -126,6 +158,7 @@ class BinanceTestnetAccount:
         # 被網頁輪詢（跟主迴圈完全不同步、各自獨立呼叫 update_positions）
         # 觸發的，主迴圈的前後快照根本不會注意到，冷卻就完全不會生效。
         self.last_closed_at: Dict[str, float] = {}
+        self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         # 回踩漏斗事件與未成交原因；保存於既有 state，重啟後持續累積。
         self.pullback_outcome_stats: Dict[str, int] = {}
         # 初始開倉漏斗與各幣最新斷點；與交易狀態一起保存，重啟不歸零。
@@ -153,6 +186,7 @@ class BinanceTestnetAccount:
         self._last_ticker_prices: Dict[str, float] = {}
         # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
         self._rapid_drop_cooldown: Dict[str, float] = {}
+        self.tickers: Dict[str, float] = {}
         self._load_state()
 
     @staticmethod
@@ -180,6 +214,7 @@ class BinanceTestnetAccount:
             self.trades = data.get("trades", [])
             self.logs = data.get("logs", [])
             self.position_meta = data.get("position_meta", {})
+            self.channel_profit_reentries = data.get("channel_profit_reentries", {})
             self.daily_date = data.get("daily_date")
             self.daily_start_balance = float(data.get("daily_start_balance", 0.0))
             self.daily_start_realized_pnl = float(data.get("daily_start_realized_pnl", 0.0))
@@ -218,6 +253,7 @@ class BinanceTestnetAccount:
             "trades": self.trades,
             "logs": self.logs[-200:],
             "position_meta": self.position_meta,
+            "channel_profit_reentries": self.channel_profit_reentries,
             "daily_date": self.daily_date,
             "daily_start_balance": self.daily_start_balance,
             "daily_start_realized_pnl": self.daily_start_realized_pnl,
@@ -238,6 +274,14 @@ class BinanceTestnetAccount:
             pass
 
     def log(self, message: str, level: str = "INFO") -> None:
+        # 視覺層過濾：將 'Mandatory_Fail: KEY(...)' 顯示成括號內的中文說明，或移除前綴並替換下劃線
+        if isinstance(message, str) and "Mandatory_Fail:" in message:
+            m = re.search(r"Mandatory_Fail:\s*[A-Za-z0-9_]+\(([^)]*)\)", message)
+            if m:
+                message = message.replace(m.group(0), m.group(1))
+            else:
+                message = re.sub(r"Mandatory_Fail:\s*", "", message).replace("_", " ")
+
         self.logs.append({
             "time": get_taipei_time_short(),
             "timestamp": time.time(),
@@ -264,7 +308,8 @@ class BinanceTestnetAccount:
             return False, 0.0
         daily_pnl = self.realized_pnl - self.daily_start_realized_pnl
         loss_pct = max(0.0, -daily_pnl / self.daily_start_balance * 100.0)
-        hit = loss_pct >= MAX_DAILY_LOSS_PCT
+        # 0 或負數代表測試時明確停用每日熔斷。
+        hit = MAX_DAILY_LOSS_PCT > 0 and loss_pct >= MAX_DAILY_LOSS_PCT
         if hit and not self.daily_halt_logged:
             self.daily_halt_logged = True
             self.log(
@@ -277,6 +322,9 @@ class BinanceTestnetAccount:
 
     def get_available_balance(self) -> float:
         return max(0.0, self.available_balance)
+
+    def get_wallet_balance(self) -> float:
+        return self.balance
 
     async def initialize(self) -> None:
         if not self.credentials_configured():
@@ -348,6 +396,7 @@ class BinanceTestnetAccount:
             return self.unrealized_pnl
 
         previous = dict(self.positions)
+        close_generation = dict(getattr(self, "_close_generation", {}))
         balance_rows = await self.exchange.fapiPrivateV2GetBalance()
         usdt = next((row for row in balance_rows if row.get("asset") == "USDT"), {})
         self.balance = float(usdt.get("balance") or 0.0)
@@ -361,6 +410,12 @@ class BinanceTestnetAccount:
             if abs(signed_qty) <= 0:
                 continue
             symbol = self._clean_symbol(row.get("symbol", ""))
+            if close_generation.get(symbol, 0) != getattr(self, "_close_generation", {}).get(symbol, 0):
+                continue  # Discard a response that started before this close completed.
+            if symbol in self.closing_lock:
+                if symbol in self.positions:
+                    active[symbol] = self.positions[symbol]
+                continue  # Do not resurrect a just-closed position from a stale response.
             side = "LONG" if signed_qty > 0 else "SHORT"
             qty = abs(signed_qty)
             entry_price = float(row.get("entryPrice") or 0.0)
@@ -411,7 +466,8 @@ class BinanceTestnetAccount:
         self.last_sync_at = now
 
         for symbol, old_position in previous.items():
-            if symbol in active or symbol in self.closing_lock:
+            if (symbol in active or symbol in self.closing_lock
+                    or close_generation.get(symbol, 0) != getattr(self, "_close_generation", {}).get(symbol, 0)):
                 continue
             await self._record_external_close(symbol, old_position)
 
@@ -584,6 +640,7 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
     async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
+        self.tickers = ticker_prices
         await self.refresh()
 
         for symbol, pos in list(self.positions.items()):
@@ -609,6 +666,8 @@ class BinanceTestnetAccount:
             # 處理，避免兩邊搶著建立不一致的止損止盈單。
             if (
                 pos.get("sl", 0.0) <= 0
+                and str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+                    != "CHANNEL_SWING"
                 and symbol not in self._orphan_protection_attempted
                 and symbol not in self.pending_limit_orders
             ):
@@ -629,6 +688,22 @@ class BinanceTestnetAccount:
                 if dist_pct < 0.05:
                     self.log(f"🚨🚨🚨 [強平警戒] {symbol} {side} 距離強平價僅剩 {dist_pct:.2%}！強平價: {liq_p:.6g}, 當前價: {mark_p:.6g}", "DANGER")
 
+            # Backward compatibility for MomentumCross positions created
+            # before the signal carried an explicit trend profit profile.
+            entry_mode = pos.get("entry_mode") or meta.get("entry_mode")
+            profit_profile = pos.get("profit_profile") or meta.get("profit_profile")
+            bounce_target = float(
+                pos.get("bounce_target_pct") or meta.get("bounce_target_pct") or 0.0
+            )
+            if (
+                entry_mode == "MOMENTUM_CROSS"
+                and profit_profile in (None, "BOUNCE")
+                and bounce_target <= 0
+            ):
+                profit_profile = "TREND_EXTENSION"
+                pos["profit_profile"] = profit_profile
+                meta["profit_profile"] = profit_profile
+
             pnl_pct = (
                 (mark_p - entry_p) / entry_p
                 if side == "LONG" else (entry_p - mark_p) / entry_p
@@ -641,6 +716,91 @@ class BinanceTestnetAccount:
             if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
                 meta["highest_pnl_pct"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
+            wave_regime = str(
+                pos.get("wave_regime") or meta.get("wave_regime") or ""
+            ).upper()
+            is_structure_exit_mode = wave_regime in ("RANGE", "TREND")
+            is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
+            if await enforce_hard_stop(self, symbol, curr_p):
+                continue
+
+            # OUTER_RUN峰谷出現前完全不停利；峰谷出現後等待正式出場期間，
+            # 若最高淨利固定回吐1U，才以保護性例外提前平倉。
+            outer_run_active = bool(
+                pos.get("outer_run_active") or meta.get("outer_run_active")
+            )
+            if ENABLE_PROFIT_LOCK_USDT and not is_channel_swing and (
+                outer_run_active or is_structure_exit_mode
+            ):
+                qty = float(pos.get("qty") or 0.0)
+                notional_value = qty * entry_p
+                round_trip_fee = notional_value * TAKER_FEE_RATE * 2.0
+                estimated_net_usdt = (
+                    pnl_pct * notional_value - round_trip_fee
+                    - notional_value * SLIPPAGE_PCT
+                )
+                peak_net_key = "outer_run_peak_net_usdt"
+                peak_net_usdt = max(
+                    float(meta.get(peak_net_key) or estimated_net_usdt),
+                    estimated_net_usdt,
+                )
+                meta[peak_net_key] = peak_net_usdt
+                giveback_usdt = OUTER_RUN_NET_GIVEBACK_USDT
+                outer_run_protect = bool(
+                    not is_structure_exit_mode
+                    and outer_run_active
+                    and (
+                        pos.get("outer_run_pivot_protect_armed")
+                        or meta.get("outer_run_pivot_protect_armed")
+                    )
+                )
+                kc_structure_protect = False
+                if (
+                    (outer_run_protect or kc_structure_protect)
+                    and peak_net_usdt > 0.0
+                    and peak_net_usdt - estimated_net_usdt >= giveback_usdt
+                ):
+                    protect_scope = "OUTER_RUN" if outer_run_protect else "KC峰谷後"
+                    await self.close_position(
+                        symbol, mark_p,
+                        f"{protect_scope}最高淨利回吐{giveback_usdt:.2f}U保護平倉",
+                    )
+                    continue
+            exhaustion_grace = (
+                entry_mode in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
+                and now_ts - float(pos.get("open_timestamp") or meta.get("open_timestamp") or now_ts)
+                < EXHAUSTION_SNIPER_GRACE_SEC
+            )
+            if exhaustion_grace:
+                # 交易所的 1.2% STOP_MARKET 繼續有效；前三分鐘不移動保護線，
+                # 也不執行任何獲利／技術型出場。
+                continue
+            # RANGE／TREND 結構出場交由主引擎；Channel Swing 額外只保留大瀑布防護。
+            if is_structure_exit_mode or is_channel_swing:
+                # Channel Swing exits exclusively through confirmed opposite
+                # KC body break plus next closed-candle confirmation.
+                if ENABLE_RAPID_ADVERSE_DROP and not is_channel_swing:
+                    prev_p = self._last_ticker_prices.get(symbol)
+                    last_cd = self._rapid_drop_cooldown.get(symbol, 0.0)
+                    if prev_p and prev_p > 0 and (now_ts - last_cd) > RAPID_DROP_COOLDOWN_SEC:
+                        adverse_move = (
+                            (prev_p - mark_p) / prev_p
+                            if side == "LONG" else (mark_p - prev_p) / prev_p
+                        )
+                        if adverse_move >= RAPID_ADVERSE_DROP_PCT:
+                            self.log(
+                                f"⚡ [Channel Swing 大瀑布保護] {symbol} {side} "
+                                f"單次 ticker 急速逆向 {adverse_move:.3%}，立即平倉",
+                                "DANGER",
+                            )
+                            self._rapid_drop_cooldown[symbol] = now_ts
+                            self._last_ticker_prices[symbol] = mark_p
+                            await self.close_position(
+                                symbol, mark_p, "Channel Swing 急速逆向大瀑布保護平倉"
+                            )
+                            continue
+                    self._last_ticker_prices[symbol] = mark_p
+                continue
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
                 or meta.get("bounce_capture_ratio")
@@ -663,6 +823,38 @@ class BinanceTestnetAccount:
                     meta["bounce_capture_ratio"] = bounce_capture_ratio
                     meta["bounce_target_pct"] = bounce_target_pct
 
+            # 唯一獲利出場：峰值每跨一個 0.2% 階梯，鎖利線同步上移。
+            if (
+                ENABLE_FIXED_PROFIT_LOCK_LADDER
+                and FIXED_PROFIT_LOCK_LADDER_STEP_PCT > 0
+                and FIXED_PROFIT_LOCK_LADDER_FIRST_PCT > 0
+                and entry_p > 0
+            ):
+                completed_steps = math.floor(
+                    max(0.0, highest_pnl - FIXED_PROFIT_LOCK_LADDER_FIRST_PCT)
+                    / FIXED_PROFIT_LOCK_LADDER_STEP_PCT + 1e-12
+                )
+                lock_pct = (
+                    FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
+                    + completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT
+                    if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
+                    else 0.0
+                )
+                if lock_pct > 0:
+                    ladder_sl = entry_p * (1.0 + lock_pct if side == "LONG" else 1.0 - lock_pct)
+                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                    improves = (
+                        ladder_sl > current_sl + entry_p * 1e-12 if side == "LONG"
+                        else current_sl <= 0.0 or ladder_sl < current_sl - entry_p * 1e-12
+                    )
+                    if improves and await self.trail_stop_loss(symbol, ladder_sl, mark_profit_locked=True):
+                        meta["fixed_profit_lock_ladder"] = True
+                        meta["fixed_profit_lock_pct"] = lock_pct
+                        self.log(
+                            f"🔐 [固定階梯鎖利] {symbol} 峰值 {highest_pnl:.2%} → 鎖利 {lock_pct:.2%}",
+                            "SUCCESS",
+                        )
+
             profit_giveback_ratio = (
                 (highest_pnl - pnl_pct) / highest_pnl if highest_pnl > 0 else 0.0
             )
@@ -671,13 +863,14 @@ class BinanceTestnetAccount:
                 and pnl_pct > 0
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
-            if profit_alert:
+            if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
                 # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
                 await self.close_position(symbol, curr_p, "峰值回吐平倉")
                 continue
 
             if (
-                meta.get("profit_profile") == "BOUNCE"
+                ENABLE_BOUNCE_TARGET_EXIT
+                and meta.get("profit_profile") == "BOUNCE"
                 and bounce_target_pct > 0
                 and pnl_pct + 1e-12 >= bounce_target_pct
             ):
@@ -697,9 +890,107 @@ class BinanceTestnetAccount:
                 await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                 continue
 
+            # 第一階段在 +0.5% 鎖住；之後依峰值級距保留70%／80%／85%。沿用既有
+            # STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
+            fixed_pct_active = (
+                ENABLE_FIXED_PROFIT_LOCK_PCT
+                and bool(pos.get("outer_run_active") or meta.get("outer_run_active"))
+                and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
+                and highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT
+            )
+            profit_bank_active = (
+                ENABLE_PROFIT_BANK
+                and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT
+            )
+            if fixed_pct_active or profit_bank_active:
+                if fixed_pct_active:
+                    bank_lock_pct = FIXED_PROFIT_LOCK_FLOOR_PCT
+                else:
+                    bank_lock_pct = min(
+                        max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
+                        max(0.0, highest_pnl - SLIPPAGE_PCT),
+                    )
+                raw_bank_sl = entry_p * (
+                    1.0 + bank_lock_pct
+                    if side == "LONG" else 1.0 - bank_lock_pct
+                )
+                bank_sl = float(self.exchange.price_to_precision(symbol, raw_bank_sl))
+                min_step = entry_p * (
+                    0.00001 if fixed_pct_active else PROFIT_BANK_MIN_STEP_PCT
+                )
+                improves = (
+                    bank_sl > old_sl + min_step if side == "LONG"
+                    else old_sl <= 0.0 or bank_sl < old_sl - min_step
+                )
+                if improves:
+                    protection_installed = not ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                    close_side_bank = "sell" if side == "LONG" else "buy"
+                    tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                    if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                        try:
+                            await self._cancel_all_orders(symbol)
+                            await self._create_protection_order(
+                                symbol, close_side_bank, "STOP_MARKET", pos["qty"], bank_sl,
+                            )
+                            protection_installed = True
+                            if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_bank, "TAKE_PROFIT_MARKET",
+                                        pos["qty"], tp_price,
+                                    )
+                                except Exception as tp_exc:
+                                    self.log(
+                                        f"⚠️ [淨利入庫] {symbol} 入庫停損已建立，但 TP 重掛失敗："
+                                        f"{type(tp_exc).__name__}: {tp_exc}",
+                                        "WARNING",
+                                    )
+                        except Exception as exc:
+                            restored = False
+                            if old_sl > 0:
+                                try:
+                                    await self._create_protection_order(
+                                        symbol, close_side_bank, "STOP_MARKET", pos["qty"], old_sl,
+                                    )
+                                    if tp_price > 0 and not DISABLE_TAKE_PROFIT:
+                                        await self._create_protection_order(
+                                            symbol, close_side_bank, "TAKE_PROFIT_MARKET",
+                                            pos["qty"], tp_price,
+                                        )
+                                    restored = True
+                                except Exception:
+                                    pass
+                            self.log(
+                                f"⚠️ [淨利入庫] {symbol} 保護單建立失敗："
+                                f"{type(exc).__name__}: {exc}；"
+                                f"{'已恢復原停損' if restored else '原停損恢復失敗，下輪重試'}",
+                                "WARNING" if restored else "DANGER",
+                            )
+                    if protection_installed:
+                        meta["sl"] = bank_sl
+                        pos["sl"] = bank_sl
+                        meta["is_breakeven_moved"] = True
+                        pos["is_breakeven_moved"] = True
+                        if fixed_pct_active:
+                            meta["fixed_profit_lock_pct_armed"] = True
+                            pos["fixed_profit_lock_pct_armed"] = True
+                        else:
+                            meta["profit_bank_armed"] = True
+                            pos["profit_bank_armed"] = True
+                        old_sl = bank_sl
+                        label = (
+                            f"0.5%觸發／固定鎖{FIXED_PROFIT_LOCK_FLOOR_PCT:.1%}"
+                            if fixed_pct_active else "階梯移動停利"
+                        )
+                        self.log(
+                            f"📈 [{label}] {symbol} 峰值 {highest_pnl:.4%}，"
+                            f"已鎖 {bank_lock_pct:.4%}，保護線上移至 {bank_sl:.6g}",
+                            "SUCCESS",
+                        )
+
             # 結構反彈單專用的早期獲利保護。這層獨立於原生 Trailing，
             # 讓 Testnet 與紙上帳戶在小幅浮盈回吐時採取一致行為。
-            if meta.get("profit_profile") == "BOUNCE":
+            if ENABLE_EARLY_PROFIT_GUARD and meta.get("profit_profile") == "BOUNCE":
                 round_trip_cost_pct = 2 * TAKER_FEE_RATE + SLIPPAGE_PCT
                 early_guard_trigger = max(
                     BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT,
@@ -787,6 +1078,23 @@ class BinanceTestnetAccount:
                         await self.close_position(symbol, curr_p, "急速逆向閃崩觸發平倉")
                         continue
 
+            # 動態本金防線：以實際投入保證金為基準，未來本金放大時自動縮放。
+            margin_used = float(pos.get("margin") or 0.0)
+            leverage = float(pos.get("leverage") or 1.0)
+            if margin_used <= 0:
+                margin_used = abs(entry_p * float(pos.get("qty") or 0.0)) / max(leverage, 1.0)
+            max_margin_loss_usdt = margin_used * MAX_POSITION_MARGIN_LOSS_RATIO
+            current_loss_usdt = max(0.0, -pnl_pct * margin_used * leverage)
+            if max_margin_loss_usdt > 0 and current_loss_usdt >= max_margin_loss_usdt:
+                self.log(
+                    f"🚨 [動態本金防線] {symbol} {side} 毛虧損 "
+                    f"{current_loss_usdt:.2f}U 已達本金上限 {max_margin_loss_usdt:.2f}U "
+                    f"({MAX_POSITION_MARGIN_LOSS_RATIO:.0%})，強制市價平倉",
+                    "DANGER",
+                )
+                await self.close_position(symbol, curr_p, "動態本金最大虧損門檻觸發")
+                continue
+
             # 災難性硬防線止損 (不論是否關閉止損，一旦價格虧損超過此負值門檻即強制平倉)
             if MAX_ACCEPTABLE_LOSS_PCT < 0:
                 current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
@@ -823,7 +1131,9 @@ class BinanceTestnetAccount:
                     continue
 
             # ── 移動停利 / 原生 Trailing Stop 三階段升級 ──
-            if ENABLE_TRAILING_STOP:
+            if ENABLE_TRAILING_STOP and bool(
+                pos.get("outer_run_active") or meta.get("outer_run_active")
+            ):
                 atr_value = meta.get("atr", entry_p * 0.015)
                 atr_pct = atr_value / entry_p if entry_p > 0 else 0.015
                 highest_pnl = meta.get("highest_pnl_pct", pnl_pct)
@@ -903,9 +1213,15 @@ class BinanceTestnetAccount:
 
                     # 2. 後段：升級至交易所原生毫秒級 Trailing Stop (達 Tier 2 或 Tier 3)
                     target_tier = 0
-                    if profit_in_atr >= TRAILING_TIER3_TRIGGER_ATR_MULT and current_tier < 3:
+                    
+                    # 猴市時，提早啟動鎖利與極致追蹤
+                    is_range_mode = (meta.get("market_mode") == "RANGE" or pos.get("market_mode") == "RANGE")
+                    tier3_trigger = TRAILING_TIER3_TRIGGER_ATR_MULT * (0.6 if is_range_mode else 1.0)
+                    tier2_trigger = TRAILING_TIER2_TRIGGER_ATR_MULT * (0.6 if is_range_mode else 1.0)
+                    
+                    if profit_in_atr >= tier3_trigger and current_tier < 3:
                         target_tier = 3
-                    elif profit_in_atr >= TRAILING_TIER2_TRIGGER_ATR_MULT and current_tier < 2:
+                    elif profit_in_atr >= tier2_trigger and current_tier < 2:
                         target_tier = 2
 
                     retry_after = float(meta.get("native_trailing_retry_after", 0.0) or 0.0)
@@ -946,6 +1262,7 @@ class BinanceTestnetAccount:
                                 tier=target_tier,
                                 highest_pnl=highest_pnl,
                                 activation_price=mark_p,  # 從當前標記價開始即時追蹤
+                                is_range_mode=is_range_mode,
                             )
                             actual_callback = result.get("callbackRate", callback_rate)
                             meta["native_trailing_tier"] = target_tier
@@ -1005,8 +1322,11 @@ class BinanceTestnetAccount:
                     )
                     initial_risk = float(pos.get("initial_risk") or meta.get("initial_risk") or 0.0)
                     risk_pct = initial_risk / entry_p if entry_p > 0 else 0.0
+                    # 有明確 initial_risk 的新單直接用 R 倍數啟動。
+                    # 固定百分比只供缺少風險資料的舊單使用，否則窄止損單
+                    # 會在 1.5R 已分批後，剩餘倉仍未獲 trailing 保護。
                     trailing_trigger = (
-                        max(configured_trigger, risk_pct * TRAILING_TRIGGER_R_MULT)
+                        risk_pct * TRAILING_TRIGGER_R_MULT
                         if risk_pct > 0 else configured_trigger
                     )
                     trailing_callback = (
@@ -1085,6 +1405,9 @@ class BinanceTestnetAccount:
         else:
             sl_price = float(self.exchange.price_to_precision(symbol, entry_p + sl_distance)) if not DISABLE_STOP_LOSS else 0.0
             tp_price = float(self.exchange.price_to_precision(symbol, entry_p - tp_distance)) if not DISABLE_TAKE_PROFIT else 0.0
+        if not DISABLE_STOP_LOSS:
+            sl_price = cap_stop_loss_to_margin_risk(entry_p, side, sl_price, pos["leverage"])
+            sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
         close_side = "sell" if side == "LONG" else "buy"
         try:
             await self._cancel_all_orders(symbol)
@@ -1121,17 +1444,28 @@ class BinanceTestnetAccount:
         """
         if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
             return
+        channel_swing_cleared = False
         for symbol, pos in list(self.positions.items()):
             meta = self.position_meta.get(symbol, {})
+            entry_mode = str(
+                pos.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper()
             sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
                 continue
             close_side = "sell" if pos["side"] == "LONG" else "buy"
+            sl_price = cap_stop_loss_to_margin_risk(
+                pos["entry_price"], pos["side"], sl_price, pos["leverage"]
+            )
+            sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
             try:
                 await self._cancel_all_orders(symbol)
-                await self._create_protection_order(
+                order = await self._create_protection_order(
                     symbol, close_side, "STOP_MARKET", pos["qty"], sl_price,
                 )
+                if meta.get("channel_cross_lock"):
+                    meta["channel_lock_algo_id"] = order.get("algoId") or order.get("id")
+                    self.save_state()
                 tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
                 if tp_price > 0 and not DISABLE_TAKE_PROFIT:
                     await self._create_protection_order(
@@ -1146,6 +1480,8 @@ class BinanceTestnetAccount:
                     f"🚨 {symbol} 啟動時重建交易所硬停損失敗：{type(exc).__name__}: {exc}",
                     "DANGER",
                 )
+        if channel_swing_cleared:
+            self.save_state()
 
     async def _ensure_markets(self) -> None:
         if not self._markets_loaded:
@@ -1184,7 +1520,7 @@ class BinanceTestnetAccount:
         return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
 
     @staticmethod
-    def _compute_callback_rate(atr_pct: float, tier: int, highest_pnl: float = None) -> float:
+    def _compute_callback_rate(atr_pct: float, tier: int, highest_pnl: float = None, is_range_mode: bool = False) -> float:
         """根據進場時的 ATR% 與最高浮盈動態計算 Binance TRAILING_STOP_MARKET 的 callbackRate (%)。
 
         公式：base = atr_pct * 100 * NATIVE_TRAILING_ATR_RATE_FACTOR
@@ -1194,6 +1530,9 @@ class BinanceTestnetAccount:
         確保即使在小浮盈觸發時，扣除雙邊手續費與滑價後依然維持保本或微利，絕不轉虧。
         """
         base = atr_pct * 100.0 * NATIVE_TRAILING_ATR_RATE_FACTOR
+        if is_range_mode:
+            base *= 0.5  # 猴市時回調比例直接減半，把利潤鎖得更緊
+            
         if tier == 1:
             rate = max(NATIVE_TRAILING_TIER1_CALLBACK_MIN,
                        min(NATIVE_TRAILING_TIER1_CALLBACK_MAX, base))
@@ -1204,9 +1543,9 @@ class BinanceTestnetAccount:
             rate = max(NATIVE_TRAILING_TIER3_CALLBACK_MIN,
                        min(NATIVE_TRAILING_TIER3_CALLBACK_MAX, base))
 
-        # ── 安全閥：回調幅度限制在最高浮盈的 40% 以內 ──
+        # ── 安全閥：回調幅度限制在最高浮盈的 40% 以內 (猴市限制在 30%) ──
         if highest_pnl is not None and highest_pnl > 0:
-            max_allowed_callback = highest_pnl * 100.0 * 0.4
+            max_allowed_callback = highest_pnl * 100.0 * (0.3 if is_range_mode else 0.4)
             rate = min(rate, max_allowed_callback)
 
         # Binance 限制：0.1 ~ 5.0，最多 1 位小數
@@ -1221,6 +1560,7 @@ class BinanceTestnetAccount:
         tier: int,
         highest_pnl: float = None,
         activation_price: float = None,
+        is_range_mode: bool = False,
     ) -> dict:
         """下 Binance 原生 TRAILING_STOP_MARKET 訂單。
 
@@ -1229,7 +1569,7 @@ class BinanceTestnetAccount:
 
         activation_price（可選）：當標記價格達到此價位後才開始追蹤。
         """
-        callback_rate = self._compute_callback_rate(atr_pct, tier, highest_pnl=highest_pnl)
+        callback_rate = self._compute_callback_rate(atr_pct, tier, highest_pnl=highest_pnl, is_range_mode=is_range_mode)
         params = {
             "algoType": "CONDITIONAL",
             "symbol": self._raw_symbol(symbol),
@@ -1284,7 +1624,11 @@ class BinanceTestnetAccount:
     ) -> bool:
         """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
         訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
-        if symbol in self.positions or symbol in self.closing_lock:
+        if (
+            symbol in self.positions
+            or symbol in self.pending_limit_orders
+            or symbol in self.closing_lock
+        ):
             return False
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
@@ -1305,6 +1649,15 @@ class BinanceTestnetAccount:
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 下單金額為 0，拒絕開倉", "WARNING")
             return False
+        entry_mode = str(dict(entry_context or {}).get("entry_mode") or "").upper()
+        if entry_mode == "CHANNEL_SWING":
+            tp = 0.0
+        else:
+            try:
+                validate_sl_tp_pair(price, side, sl, tp)
+            except ValueError as exc:
+                self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
+                return False
         await self._ensure_markets()
         leverage = leverage or (
             get_signal_leverage(symbol, signal_score)
@@ -1388,6 +1741,16 @@ class BinanceTestnetAccount:
                 key: value for key, value in dict(entry_context or {}).items()
                 if key in ENTRY_CONTEXT_KEYS
             }
+            is_channel_swing = str(entry_context.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+            if is_channel_swing:
+                tp = 0.0
+            else:
+                try:
+                    validate_sl_tp_pair(execution_price, side, sl, tp)
+                except ValueError as exc:
+                    self.log(f"🛑 {symbol} 進場後 SL/TP 驗證失敗：{exc}", "WARNING")
+                    return False
+            is_exhaustion_sniper = entry_context.get("entry_mode") in ("EXHAUSTION_SNIPER", "PIVOT_TURN")
             sl_distance = abs(price_ref - sl)
             tp_distance = abs(tp - price_ref)
             adjusted_sl = (
@@ -1398,8 +1761,16 @@ class BinanceTestnetAccount:
                 execution_price + tp_distance if side == "LONG"
                 else execution_price - tp_distance
             )
+            if is_exhaustion_sniper:
+                adjusted_sl = execution_price * (
+                    1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT
+                    if side == "LONG"
+                    else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT
+                )
             # Ensure SL sits on correct side and respect a minimum distance
-            if not DISABLE_STOP_LOSS:
+            if is_channel_swing and (DISABLE_STOP_LOSS or sl <= 0):
+                sl_price = 0.0
+            elif not DISABLE_STOP_LOSS or is_exhaustion_sniper:
                 atr_value = atr if atr > 0 else execution_price * 0.015
                 min_dist = max(price_ref * MIN_SL_DISTANCE_PCT, atr_value * STOP_LOSS_MULTIPLIER)
                 if side == "LONG":
@@ -1411,7 +1782,14 @@ class BinanceTestnetAccount:
                 sl_price = float(self.exchange.price_to_precision(symbol, adjusted_sl))
             else:
                 sl_price = 0.0
-            tp_price = float(self.exchange.price_to_precision(symbol, adjusted_tp)) if not DISABLE_TAKE_PROFIT else 0.0
+            if not is_channel_swing and not DISABLE_STOP_LOSS and not is_exhaustion_sniper:
+                sl_price = cap_stop_loss_to_margin_risk(execution_price, side, sl_price, leverage)
+                sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
+            structure_exit_only = str(entry_context.get("wave_regime") or "").upper() in ("RANGE", "TREND")
+            tp_price = (
+                float(self.exchange.price_to_precision(symbol, adjusted_tp))
+                if not DISABLE_TAKE_PROFIT and not structure_exit_only else 0.0
+            )
             if entry_context.get("initial_sl") is not None:
                 entry_context["initial_sl"] = sl_price
                 entry_context["initial_risk"] = abs(execution_price - sl_price)
@@ -1422,11 +1800,11 @@ class BinanceTestnetAccount:
                 # 兩邊可能疊出重複的止損止盈單。先清一次掛單，確保接下來建的
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
-                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
+                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS and sl_price > 0:
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )
-                if not DISABLE_TAKE_PROFIT:
+                if not DISABLE_TAKE_PROFIT and not structure_exit_only:
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
                     )
@@ -1481,6 +1859,11 @@ class BinanceTestnetAccount:
                 "reason": reason,
                 "sl": sl_price,
                 "tp": tp_price,
+                # monitoring fields
+                **({
+                    "projected_net_rr": (lambda rp: (compute_net_reward_risk(execution_price, sl_price, rp)[0] if rp and rp > 0 else None))(float(entry_context.get("bounce_target_pct") or entry_context.get("profit_room_pct") or 0.0)),
+                    "profit_room_pct": float(entry_context.get("profit_room_pct") or entry_context.get("bounce_target_pct") or 0.0),
+                } if entry_context else {}),
                 "exchange_order_id": entry_order_id,
                 **entry_context,
             })
@@ -1515,7 +1898,7 @@ class BinanceTestnetAccount:
         signal_score: int = None,
         post_only: bool = True,
         entry_context: dict = None,
-        timeframe: str = "5m",
+        timeframe: str = "3m",
     ) -> bool:
         """反轉確認後掛短效限價單；預設 GTX/Post-Only，避免確認後又追價。
         post_only=False 代表要求立即成交，改走 open_position() 市價單，不建立
@@ -1536,8 +1919,22 @@ class BinanceTestnetAccount:
             amount_usdt = amount_usdt / 3.0
 
         if symbol in self.positions:
-            # 只有在非 DCA 首次進場（也就是 DCA 2、3 階加倉）時，才允許在已有持倉時繼續掛單
-            if not is_dca_call:
+            held = self.positions[symbol]
+            held_mode = str(
+                held.get("entry_mode")
+                or self.position_meta.get(symbol, {}).get("entry_mode")
+                or ""
+            ).upper()
+            dca_stage = entry_ctx.get("dca_stage")
+            valid_dca_top_up = bool(
+                ENABLE_DCA_LIMIT
+                and is_dca_call
+                and isinstance(dca_stage, (int, float))
+                and int(dca_stage) >= 2
+                and str(held.get("side") or "").upper() == str(side or "").upper()
+                and held_mode != "CHANNEL_SWING"
+            )
+            if not valid_dca_top_up:
                 return False
         elif symbol in self.closing_lock or symbol in self.pending_limit_orders:
             return False
@@ -1583,6 +1980,11 @@ class BinanceTestnetAccount:
         # 拖垮整個主迴圈，這裡提前擋掉。
         if amount_usdt <= 0:
             self.log(f"🛑 {symbol} 掛單金額為 0，拒絕掛單", "WARNING")
+            return False
+        try:
+            validate_sl_tp_pair(target_price, side, sl, tp)
+        except ValueError as exc:
+            self.log(f"🛑 {symbol} 進場前 SL/TP 驗證失敗：{exc}", "WARNING")
             return False
         await self._ensure_markets()
         # 現價 Post-Only 必須留在 maker 一側：多單最多掛最佳買價，空單
@@ -1801,9 +2203,15 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        position = self.positions[symbol]
+        meta = self.position_meta.get(symbol, {})
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
         if DISABLE_STOP_LOSS and not is_manual:
-            self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
+            reject_key = (symbol, close_reason)
+            now_ts = time.time()
+            if now_ts - self._auto_close_reject_logged_at.get(reject_key, 0.0) >= 30.0:
+                self._auto_close_reject_logged_at[reject_key] = now_ts
+                self.log(f"⏸️ [自動停損已停用] 拒絕自動平倉 {symbol} ({close_reason})", "INFO")
             return False
         if not is_manual and ONLY_CLOSE_ON_PROFIT:
             position = self.positions[symbol]
@@ -1834,7 +2242,8 @@ class BinanceTestnetAccount:
                 return False
         # ✅ 修正：若是手動平倉，直接跳過自動冷卻計時器，避免用戶手動平倉卡住
         _now = time.time()
-        if not is_manual and _now < self._close_retry_after.get(symbol, 0.0):
+        strategy_close = str(close_reason).startswith("Channel Swing ")
+        if (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = _now
@@ -1879,7 +2288,17 @@ class BinanceTestnetAccount:
             })
             self.position_meta.pop(symbol, None)
             self.positions.pop(symbol, None)
-            await self.refresh(force=True)
+            self.pending_limit_orders.pop(symbol, None)
+            generations = getattr(self, "_close_generation", None)
+            if generations is None:
+                generations = self._close_generation = {}
+            generations[symbol] = generations.get(symbol, 0) + 1
+            self._close_retry_after.pop(symbol, None)
+            self.save_state()
+            try:
+                await self.refresh(force=True)
+            except Exception as refresh_error:
+                self.log(f"⚠️ {symbol} 已成交平倉，帳戶同步稍後重試：{refresh_error}", "WARNING")
             self.log(
                 f"🏁 Binance Testnet 平倉 [{position['side']}] {symbol} @ "
                 f"{execution_price:.6f} | 淨損益: {net_pnl:+.2f} USDT ({close_reason})",
@@ -1900,9 +2319,6 @@ class BinanceTestnetAccount:
                 "DANGER",
             )
             return False
-        else:
-            # 平倉成功，清除冷卻記錄
-            self._close_retry_after.pop(symbol, None)
         finally:
             self.closing_lock.discard(symbol)
 
@@ -1910,6 +2326,8 @@ class BinanceTestnetAccount:
         self, symbol: str, current_price: float, close_reason: str, fraction: float = 0.5
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        if not 0.0 < float(fraction) < 1.0:
             return False
         self.closing_lock.add(symbol)
         position = dict(self.positions[symbol])
@@ -1922,6 +2340,7 @@ class BinanceTestnetAccount:
 
             # 1. 撤銷所有現有止損止盈單
             await self._cancel_all_orders(symbol)
+            self.pending_limit_orders.pop(symbol, None)
 
             # 2. 市價單平倉一半
             close_side = "sell" if position["side"] == "LONG" else "buy"
@@ -2017,6 +2436,37 @@ class BinanceTestnetAccount:
         finally:
             self.closing_lock.discard(symbol)
 
+    async def clear_channel_profit_lock(self, symbol: str) -> bool:
+        if symbol not in self.positions or symbol in self.closing_lock:
+            return False
+        pos = self.positions[symbol]
+        meta = self.position_meta.setdefault(symbol, {})
+        if not meta.get("channel_cross_lock"):
+            return False
+        order_id = meta.get("channel_lock_algo_id")
+        restored = float(meta.get("channel_pre_lock_sl") or pos.get("initial_sl") or meta.get("initial_sl") or 0.0)
+        try:
+            # Restore the original protection before removing the temporary lock.
+            if order_id and restored > 0 and not meta.get("channel_restored_stop_id"):
+                order = await self._create_protection_order(
+                    symbol, "sell" if pos["side"] == "LONG" else "buy",
+                    "STOP_MARKET", pos["qty"], restored,
+                )
+                meta["channel_restored_stop_id"] = order.get("algoId") or order.get("id")
+                self.save_state()
+            if order_id:
+                await self.exchange.request("algoOrder", "fapiPrivate", "DELETE", {"algoId": order_id})
+        except Exception as exc:
+            self.log(f"⚠️ {symbol} 解除鎖損益失敗，保留 SL 待重試：{exc}", "WARNING")
+            return False
+        for source in (pos, meta):
+            source["sl"] = restored
+            source["is_breakeven_moved"] = False
+            for key in ("channel_cross_lock", "channel_pre_lock_sl", "channel_lock_algo_id", "channel_restored_stop_id"):
+                source.pop(key, None)
+        self.save_state()
+        return True
+
     async def trail_stop_loss(
         self, symbol: str, new_sl_price: float, mark_profit_locked: bool = True
     ) -> bool:
@@ -2031,18 +2481,50 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        current_sl = float(position.get("sl") or meta.get("sl") or 0.0)
+        if not math.isfinite(new_sl_price) or new_sl_price <= 0:
+            return False
+        if current_sl > 0 and ((position["side"] == "LONG" and new_sl_price <= current_sl)
+                               or (position["side"] == "SHORT" and new_sl_price >= current_sl)):
+            return False
+        tp_price = float(meta.get("tp") or position.get("tp") or 0.0)
+        entry_price = float(position.get("entry_price") or meta.get("entry_price") or 0.0)
+        if tp_price > 0 and entry_price > 0:
+            try:
+                validate_sl_tp_pair(
+                    entry_price, position["side"], new_sl_price, tp_price,
+                    allow_profit_lock=True,
+                )
+            except ValueError:
+                self.log(
+                    f"🛑 {symbol} 移動止損更新失敗：SL/TP 方向或風報比不合法，忽略更新（SL={new_sl_price}，TP={tp_price}）",
+                    "WARNING",
+                )
+                return False
         close_side = "sell" if position["side"] == "LONG" else "buy"
         qty = position["qty"]
         try:
             new_sl_price = float(self.exchange.price_to_precision(symbol, new_sl_price))
+            is_channel_swing = str(
+                position.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper() == "CHANNEL_SWING"
+            if is_channel_swing and mark_profit_locked:
+                meta["sl"] = new_sl_price
+                meta["is_breakeven_moved"] = True
+                position["sl"] = new_sl_price
+                position["is_breakeven_moved"] = True
+                self.position_meta[symbol] = meta
+                self.positions[symbol] = position
+                self.save_state()
+                return True
             # 取消所有現有保護單
             await self._cancel_all_orders(symbol)
             # 重新掛新止損單
-            await self._create_protection_order(
+            stop_order = await self._create_protection_order(
                 symbol, close_side, "STOP_MARKET", qty, new_sl_price,
             )
+            meta["channel_lock_algo_id"] = stop_order.get("algoId") or stop_order.get("id")
             # 如果止利仍啟用，同步重建止利單
-            tp_price = meta.get("tp", 0.0)
             if tp_price > 0 and not DISABLE_TAKE_PROFIT:
                 await self._create_protection_order(
                     symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price

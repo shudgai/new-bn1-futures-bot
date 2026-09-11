@@ -12,6 +12,7 @@ env/
 .env.local
 
 # Logs and runtime data
+data/binance-futures-bot.lock
 *.log
 data/paper_account.json
 data/ai_trade_analysis.json

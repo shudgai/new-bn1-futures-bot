@@ -1,3 +1,4 @@
+import math
 import os
 from dotenv import load_dotenv, find_dotenv
 
@@ -20,50 +21,32 @@ SYMBOL_LEVERAGE = {
 }
 
 def get_leverage(symbol: str) -> int:
-    return SYMBOL_LEVERAGE.get(symbol, LEVERAGE)
+    return LEVERAGE
 
 # 訊號品質必須同時限制槓桿，避免最低門檻訊號仍套用 ETH 10x 等幣種上限。
 SIGNAL_LEVERAGE_CAPS = [
-    (90, None),  # 滿分訊號：可使用該幣種原始上限
-    (80, 6),     # 次高分：最高 6x
-    (70, 3),     # 最低合格分：最高 3x
+    (90, LEVERAGE),
+    (80, LEVERAGE),
+    (70, LEVERAGE),
 ]
 
 def get_signal_leverage(symbol: str, score: int) -> int:
-    symbol_leverage = get_leverage(symbol)
-    for threshold, cap in SIGNAL_LEVERAGE_CAPS:
-        if score >= threshold:
-            return symbol_leverage if cap is None else min(symbol_leverage, cap)
-    return 1
+    return LEVERAGE
 
 # --- 依實測 ATR% 分級槓桿（取代上面 SYMBOL_LEVERAGE 用市值猜的假設）---
-# SYMBOL_LEVERAGE 是憑「市值大小」猜這個幣波動小/大，本身沒有實測依據。
-# core/symbol_rotation.py 現在會用已經在抓的 5m K 線順便記錄每個幣種的
-# 實際 ATR%，有資料後改用這裡的門檻決定槓桿上限：波動越小給越高槓桿，
-# 波動越大給越低槓桿，跟策略本身的 MIN_ATR_PCT(0.15%)~MAX_ATR_PCT(0.6%)
-# 可交易區間對齊。還沒累積到資料的幣種，get_dynamic_leverage() 會退回
-# 上面的 SYMBOL_LEVERAGE 靜態表，行為不變。
-# 上限從 10x/8x/6x 降到 6x/5x/4x：實測 DOT/USDT ATR%=0.22%（落在 <0.30%
-# 這一級）用 8x 進場，止損觸發轉市價單滑價 0.66%，換算成 8x 槓桿的虧損
-# 放大到 -2.30 USDT（若沒放大槓桿只會是這個數字的一小部分）。「波動率
-# 低」不代表「不會有快速的價格跳動」，尤其測試網流動性淺、滑價風險本來
-# 就比實盤高，槓桿倍數再放大會把同樣的滑價百分比換算成更大的金額損失。
 ATR_LEVERAGE_TIERS = [
-    (0.002, 6),    # 實測 ATR% < 0.20% → 6x（原10x）
-    (0.003, 5),    # < 0.30% → 5x（原8x）
-    (0.0045, 4),   # < 0.45% → 4x（原6x）
-    (0.006, 3),    # < 0.60%（MAX_ATR_PCT 邊界）→ 3x
+    (0.002, LEVERAGE),
+    (0.003, LEVERAGE),
+    (0.0045, LEVERAGE),
+    (0.006, LEVERAGE),
 ]
 
 def get_atr_based_leverage(atr_pct: float) -> int:
-    for threshold, lev in ATR_LEVERAGE_TIERS:
-        if atr_pct < threshold:
-            return lev
-    return 3
+    return LEVERAGE
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
-MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "1.0"))
+MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "0.50"))
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
@@ -76,7 +59,27 @@ BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
 # 時，依評分排序只挑最優的填滿槽位（沿用既有的評分排序邏輯），
 # 每筆金額仍依可用餘額動態計算，不固定死。MAX_SLOTS <= 0 表示不限制
 # 筆數，只受可用餘額約束（回到原本的行為）。
-MAX_SLOTS = int(os.getenv("MAX_SLOTS", "5"))
+MAX_SLOTS = int(os.getenv("MAX_SLOTS", "1"))
+CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION = min(
+    1.0, max(0.1, float(os.getenv("CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION", "0.80")))
+)
+MAX_SLOT_TRADE_USDT = 1000.0
+
+def get_effective_slot_count(wallet_balance: float, configured_max: int = None) -> int:
+    """Return the configured slot cap; each new slot scales its margin instead.
+
+    槽位數不再因損益低於門檻而突然縮減；當餘額不足時，
+    _continuous_entry_amount 會把資金平均分配到固定槽數，低於最低下單額
+    就拒絕新倉，但不會讓已設定的三幣獨立模式退回單槽。
+    """
+    slot_cap = MAX_SLOTS if configured_max is None else int(configured_max)
+    if slot_cap <= 0:
+        return 0
+    return slot_cap
+
+# 同一方向的已持倉與掛單合計上限；0 代表不限制。避免小幣在同一波
+# 大盤行情中全部同向進場，反轉時同時承受損失。
+MAX_SAME_SIDE_POSITIONS = max(0, int(os.getenv("MAX_SAME_SIDE_POSITIONS", "15")))
 # MIN_TRADE_USDT: 每筆最低開倉金額，低於此金額不開新倉
 MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # TEST_BUDGET_CAP_USDT：測試階段用，把「可用預算」暫時封頂在這個金額，
@@ -86,11 +89,23 @@ MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "5.0"))
 # 不用再改程式碼。
 TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # STOP_LOSS_MULTIPLIER / TAKE_PROFIT_MULTIPLIER
-# 調整為 1.4 ATR 止損、4.0 ATR 止盈，讓每筆部位有更大的獲利空間。
-# R:R = TAKE_PROFIT_MULTIPLIER(4.0) / STOP_LOSS_MULTIPLIER(1.4) = 2.86：1
-STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "2.0"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.0"))
+# 先調整成更接近常見的保守交易配置：1.5 ATR 止損、2.8 ATR 止盈，
+# 讓策略有足夠空間抓正常波段，但不至於把每筆單都收得過早。
+# R:R = TAKE_PROFIT_MULTIPLIER(3.5) / STOP_LOSS_MULTIPLIER(2.0) = 1.75：1
+STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.5"))
+# 所有「有固定 TP」的初始訂單都必須通過這個毛風報比硬下限；淨風報比
+# 仍由下方 MIN_NET_REWARD_RISK（含手續費）採用更嚴格的門檻。
+MIN_REWARD_RISK_RATIO = float(os.getenv("MIN_REWARD_RISK_RATIO", "1.5"))
 DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "false").lower() == "true"
+# 正數時，所有新倉使用固定的無槓桿 TP 百分比（0.002 = 0.2%）；0 維持 ATR 動態 TP。
+FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0.002")))
+# 唯一獲利出場：峰值每跨一個階梯，鎖利線維持落後一階。
+ENABLE_FIXED_PROFIT_LOCK_LADDER = os.getenv("ENABLE_FIXED_PROFIT_LOCK_LADDER", "false").lower() == "true"
+FIXED_PROFIT_LOCK_LADDER_STEP_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_STEP_PCT", "0.002")))
+FIXED_PROFIT_LOCK_LADDER_FIRST_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_FIRST_PCT", "0.003")))
+ENABLE_BOUNCE_TARGET_EXIT = os.getenv("ENABLE_BOUNCE_TARGET_EXIT", "true").lower() == "true"
+ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT = os.getenv("ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT", "true").lower() == "true"
 import sys
 IS_TESTING = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 if IS_TESTING:
@@ -103,12 +118,12 @@ if IS_TESTING:
     BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = 65.0
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO = 0.0
 else:
-    # 使用者要求：僅允許手動停損，預設關閉自動停損與自動平倉相關功能
-    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "true").lower() == "true"
+    # 先恢復自動停損，避免策略在沒有真正保護機制時一直被動平倉或長時間拖垮。
+    DISABLE_STOP_LOSS = os.getenv("DISABLE_STOP_LOSS", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT = os.getenv("ONLY_CLOSE_ON_PROFIT", "false").lower() == "true"
     ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT = float(os.getenv("ONLY_CLOSE_ON_PROFIT_MIN_NET_USDT", "0.1"))
-    ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "true").lower() == "true"
-    BOTTOM_FILTER_ENABLED = os.getenv("BOTTOM_FILTER_ENABLED", "true").lower() == "true"
+    ENABLE_24H_TIME_FILTER = os.getenv("ENABLE_24H_TIME_FILTER", "false").lower() == "true"
+    BOTTOM_FILTER_ENABLED = os.getenv("BOTTOM_FILTER_ENABLED", "false").lower() == "true"
     BOTTOM_OVERSOLD_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERSOLD_RSI_15M_LIMIT", "35.0"))
     BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERBOUGHT_RSI_15M_LIMIT", "65.0"))
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO = float(os.getenv("CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO", "3.0"))
@@ -124,49 +139,135 @@ ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
 # 將最大可接受虧損設為非常低（負值代表幾乎不會被硬性觸發），
 # 以避免程式自動按本地最大虧損門檻平倉。
-MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-1.0"))
+# 允許的最大虧損設為 -15%（= 15% 虧損時拋出硬性平倉），避免長時間拖著
+# 讓策略在正常回檔中被動損失過多資金，同時仍保留一個安全底線。
+MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE_LOSS_PCT", "-0.15"))
+# 單筆動態金額防線：最大毛虧損不得超過該筆實際投入保證金的比例。
+# 使用比例而非固定 USDT，未來本金變動時不必重新修改程式。
+MAX_POSITION_MARGIN_LOSS_RATIO = max(
+    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.10"))
+)
+
+
+def cap_stop_loss_to_margin_risk(
+    entry_price: float, side: str, stop_price: float, leverage: float
+) -> float:
+    """把初始止損收緊至保證金風險上限；既有更緊的止損保持不變。"""
+    if MAX_POSITION_MARGIN_LOSS_RATIO <= 0 or entry_price <= 0 or leverage <= 0:
+        return stop_price
+    adverse_price_pct = MAX_POSITION_MARGIN_LOSS_RATIO / leverage
+    risk_stop = (
+        entry_price * (1.0 - adverse_price_pct)
+        if side == "LONG"
+        else entry_price * (1.0 + adverse_price_pct)
+    )
+    if stop_price <= 0:
+        return risk_stop
+    return max(stop_price, risk_stop) if side == "LONG" else min(stop_price, risk_stop)
+
+
 ENABLE_TREND_FOLLOW_EXIT = os.getenv("ENABLE_TREND_FOLLOW_EXIT", "false").lower() == "true"
 ENABLE_STRONG_TRIGGER_AUTO_CLOSE = os.getenv("ENABLE_STRONG_TRIGGER_AUTO_CLOSE", "false").lower() == "true"
-MA7_EXIT_TIMEFRAME = os.getenv("MA7_EXIT_TIMEFRAME", "1m")
-# MA7 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
-# 「非結構性」出場需要先持倉滿10分鐘，且逆向幅度達0.20%或0.5倍 MA7_EXIT_TIMEFRAME ATR
+MA5_EXIT_TIMEFRAME = os.getenv("MA5_EXIT_TIMEFRAME", "1m")
+# MA5 單獨反轉容易在進場後 4~8 分鐘因正常震盪砍倉。只有這一種
+# 「非結構性」出場需要先持倉滿10分鐘，且逆向幅度達0.20%或0.5倍 MA5_EXIT_TIMEFRAME ATR
 # （取較大者）才執行；EMA20緩衝帶＋前低/前高同時失守仍立即退出。
-MA7_EXIT_MIN_HOLD_SEC = float(os.getenv("MA7_EXIT_MIN_HOLD_SEC", "600"))
-MA7_EXIT_MIN_ADVERSE_PCT = float(os.getenv("MA7_EXIT_MIN_ADVERSE_PCT", "0.002"))
-MA7_EXIT_MIN_ADVERSE_ATR_MULT = float(os.getenv("MA7_EXIT_MIN_ADVERSE_ATR_MULT", "0.5"))
+MA5_EXIT_MIN_HOLD_SEC = float(os.getenv("MA5_EXIT_MIN_HOLD_SEC", "600"))
+MA5_EXIT_MIN_ADVERSE_PCT = float(os.getenv("MA5_EXIT_MIN_ADVERSE_PCT", "0.002"))
+MA5_EXIT_MIN_ADVERSE_ATR_MULT = float(os.getenv("MA5_EXIT_MIN_ADVERSE_ATR_MULT", "0.5"))
 # 單根 K 線在 EMA20 錯誤側停留，並不是新增第二根收盤確認；舊邏輯
 # 還可能把止損移到市價後方而等同立即平倉。預設停用，保留開關供影子測試。
 ENABLE_SOFT_WARNING_TIGHTEN = os.getenv("ENABLE_SOFT_WARNING_TIGHTEN", "false").lower() == "true"
 # 盤中投影在 08/01~08/02 的 7 筆樣本中佔 4 筆，全部都在尚未收線時用極小
-# MA7 斜率搶跑，之後不是碰 SL 就是被 5m 反向防線關倉。預設只接受已收盤
+# MA5 斜率搶跑，之後不是碰 SL 就是被 5m 反向防線關倉。預設只接受已收盤
 # 訊號；若日後影子測試重新開啟，投影也必須有較明顯的 ATR 幅度。
-MA7_EARLY_ENTRY_ENABLED = os.getenv("MA7_EARLY_ENTRY_ENABLED", "false").lower() == "true"
-MA7_EARLY_MIN_ATR_MULT = float(os.getenv("MA7_EARLY_MIN_ATR_MULT", "0.05"))
-MA7_EARLY_CONFIRM_SCANS = int(os.getenv("MA7_EARLY_CONFIRM_SCANS", "2"))
-# 已收盤 MA7 必須在峰谷後連續兩根同向，且峰谷到最新值至少移動此 ATR
+MA5_EARLY_ENTRY_ENABLED = os.getenv("MA5_EARLY_ENTRY_ENABLED", "true").lower() == "true"
+MA5_EARLY_MIN_ATR_MULT = float(os.getenv("MA5_EARLY_MIN_ATR_MULT", "0.05"))
+MA5_EARLY_CONFIRM_SCANS = int(os.getenv("MA5_EARLY_CONFIRM_SCANS", "2"))
+# 已收盤 MA5 必須在峰谷後連續兩根同向，且峰谷到最新值至少移動此 ATR
 # 倍數；排除 BABY/NEAR 等只有最後幾個小數位變化的假轉彎。
-MA7_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA7_REVERSAL_MIN_ATR_MULT", "0.10"))
+MA5_REVERSAL_MIN_ATR_MULT = float(os.getenv("MA5_REVERSAL_MIN_ATR_MULT", "0.10"))
 # 爆量微拐幅快速入口：仍只使用已收盤K棒，但峰谷後第一根確認即可進場。
 # 必須同時有 1.5 倍均量，且拐幅限制在 0.02~0.20 ATR；一般低量訊號仍走
 # 上面的兩根收線確認。這只放鬆觸發時機，不改 SL/TP、槓桿或倉位風控。
-MA7_FAST_ENTRY_ENABLED = os.getenv("MA7_FAST_ENTRY_ENABLED", "true").lower() == "true"
-MA7_FAST_MIN_ATR_MULT = float(os.getenv("MA7_FAST_MIN_ATR_MULT", "0.02"))
-MA7_FAST_MAX_ATR_MULT = float(os.getenv("MA7_FAST_MAX_ATR_MULT", "0.20"))
-MA7_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA7_FAST_MIN_VOLUME_RATIO", "1.5"))
-# 低波動時 MA7 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
+MA5_FAST_ENTRY_ENABLED = os.getenv("MA5_FAST_ENTRY_ENABLED", "true").lower() == "true"
+MA5_FAST_MIN_ATR_MULT = float(os.getenv("MA5_FAST_MIN_ATR_MULT", "0.02"))
+MA5_FAST_MAX_ATR_MULT = float(os.getenv("MA5_FAST_MAX_ATR_MULT", "0.20"))
+MA5_FAST_MIN_VOLUME_RATIO = float(os.getenv("MA5_FAST_MIN_VOLUME_RATIO", "1.5"))
+
+# 連續峰谷模式的即時反手：只適用於正在形成中的 1m 大實體 K 突破
+# MA3，避免一般小轉折在未收線時被過早反手。
+RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED = os.getenv(
+    "RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED", "true"
+).lower() == "true"
+RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR = max(
+    0.0, float(os.getenv("RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR", "0.50"))
+)
+
+# 單根反向瀑布出口獨立尺度；不連動雙異常K或送單前異常攔截。
+CHANNEL_WATERFALL_BODY_ATR = 1.5
+
+# 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
+CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"
+DISABLE_CONTINUOUS_TREND_ENTRIES = os.getenv(
+    "DISABLE_CONTINUOUS_TREND_ENTRIES", "true"
+).lower() == "true"
+
+# 連續峰谷模式的空倉市價進場，最大允許離 MA3 的順向距離；超過代表
+# 已在大 K 尾端，等待回踩而非追價。持倉中的急速反手不受此限制。
+MA3_MARKET_ENTRY_MAX_DISTANCE_ATR = max(
+    0.0, float(os.getenv("MA3_MARKET_ENTRY_MAX_DISTANCE_ATR", "0.30"))
+)
+
+# 順勢市價單須與 KC 中軌保持的最小距離；不要求突破外軌。
+TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR = max(
+    0.0, float(os.getenv("TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR", "0.15"))
+)
+# 連續模式送出市價單前的最後防追價門檻。價格進入 KC 中軌至外軌的
+# 此比例後，LONG 視為太接近高點、SHORT 視為太接近低點，等待回踩。
+CONTINUOUS_ENTRY_OUTER_ZONE_RATIO = min(
+    1.0, max(0.0, float(os.getenv("CONTINUOUS_ENTRY_OUTER_ZONE_RATIO", "0.70")))
+)
+# 異常拉砸保護只阻止新倉：既有部位仍完全依各策略原本的出場規則管理。
+ABNORMAL_MARKET_GUARD_ENABLED = os.getenv(
+    "ABNORMAL_MARKET_GUARD_ENABLED", "true"
+).lower() == "true"
+ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR = max(
+    0.0, float(os.getenv("ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR", "4.0"))
+)
+ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT = max(
+    0.0, float(os.getenv("ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT", "0.025"))
+)
+ABNORMAL_MARKET_ADVERSE_MOVE_PCT = max(
+    0.0, float(os.getenv("ABNORMAL_MARKET_ADVERSE_MOVE_PCT", "0.012"))
+)
+# 啟用後，連續模式的技術性結構失效只記錄、不平倉；僅在價格真正
+# 越過持倉不利方向的 KC 外軌時自動平倉（手動平倉仍可用）。
+CONTINUOUS_OUTER_RAIL_EXIT_ONLY = os.getenv(
+    "CONTINUOUS_OUTER_RAIL_EXIT_ONLY", "false"
+).lower() == "true"
+# 低波動時 MA5 入口會依近 6 小時平均 ATR 動態放寬，但仍保留絕對下限，
 # 避免把幾乎沒有波動的價格雜訊誤認成有效轉彎。
-MA7_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA7_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
-# MA7仍在回撤/反彈時，不等拐頭便預掛在KC邊緣附近。偏移量讓限價位
+MA5_DYNAMIC_ATR_FLOOR_PCT = float(os.getenv("MA5_DYNAMIC_ATR_FLOOR_PCT", "0.0006"))
+# MA5仍在回撤/反彈時，不等拐頭便預掛在KC邊緣附近。偏移量讓限價位
 # 稍微留在通道內側，同時由策略端保證LONG低於現價、SHORT高於現價。
-MA7_BOTTOM_ENTRY_ENABLED = os.getenv("MA7_BOTTOM_ENTRY_ENABLED", "false").lower() == "true"
-MA7_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA7_BOTTOM_OFFSET_ATR_MULT", "0.05"))
+MA5_BOTTOM_ENTRY_ENABLED = os.getenv("MA5_BOTTOM_ENTRY_ENABLED", "false").lower() == "true"
+MA5_BOTTOM_OFFSET_ATR_MULT = float(os.getenv("MA5_BOTTOM_OFFSET_ATR_MULT", "0.05"))
 # 底點/頂點預掛是在轉彎前承接，成交後需要時間消化正常回撤。寬限期內
-# 屏蔽MA7、5m結構、15m EMA軟退出與軟性收緊；交易所原始SL仍持續有效。
-MA7_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA7_BOTTOM_MIN_HOLD_SEC", "1800"))
-# --- 無 MA7 的結構化進出場 ---
+# 屏蔽MA5、5m結構、15m EMA軟退出與軟性收緊；交易所原始SL仍持續有效。
+MA5_BOTTOM_MIN_HOLD_SEC = float(os.getenv("MA5_BOTTOM_MIN_HOLD_SEC", "1800"))
+# --- 無 MA5 的結構化進出場 ---
 STRUCTURED_ENTRY_ENABLED = os.getenv("STRUCTURED_ENTRY_ENABLED", "true").lower() == "true"
-# Momentum Cross 提供較高的開倉頻率；預設關閉以降低低品質訊號。
-ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "false").lower() == "true"
+# Momentum Cross 提供較高的開倉頻率；為了提高成交率，預設開啟（可由 env 控制）
+ENABLE_MOMENTUM_CROSS_ENTRY = os.getenv("ENABLE_MOMENTUM_CROSS_ENTRY", "true").lower() == "true"
+# MomentumCross 不在交叉當根追價：下一根已收盤 K 棒必須沿訊號方向續走，
+# 且到最近結構高／低點仍保有足以覆蓋成本與鎖利目標的空間。
+MOMENTUM_CROSS_REQUIRE_CONTINUATION = os.getenv(
+    "MOMENTUM_CROSS_REQUIRE_CONTINUATION", "true"
+).lower() == "true"
+MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT = max(
+    0.0, float(os.getenv("MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT", "0.0035"))
+)
 # 08/06實績：BREAKOUT改限價回踩進場後掛單成交率極低（0/6），先專心用
 # SUPPORT_PULLBACK，停用 BREAKOUT 訊號產生。
 ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "true"
@@ -176,7 +277,13 @@ ENABLE_BREAKOUT_ENTRY = os.getenv("ENABLE_BREAKOUT_ENTRY", "false").lower() == "
 BREAKOUT_ENTRY_SCORE = int(os.getenv("BREAKOUT_ENTRY_SCORE", "79"))
 STRUCTURED_VOLUME_MIN_RATIO = float(os.getenv("STRUCTURED_VOLUME_MIN_RATIO", "1.0"))
 STRUCTURED_SWING_LOOKBACK = int(os.getenv("STRUCTURED_SWING_LOOKBACK", "20"))
-STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "0.40"))
+STRUCTURED_SUPPORT_NEAR_ATR = float(os.getenv("STRUCTURED_SUPPORT_NEAR_ATR", "4.00"))
+# PRICE_NEAR_SUPPORT_PCT：evaluate_signal() 的強制條件。
+# 做多要求現價在最近 24 根 K 棒最低支撐位的此比例以內；
+# 做空要求現價在最近 24 根 K 棒最高壓力位的此比例以內。
+# 原本硬編碼為 3%，在趨勢延伸或中段盤整時幾乎永遠封鎖進場。
+# 設為 0 或負值則完全停用此條件（不建議，除非搭配其他進場過濾）。
+PRICE_NEAR_SUPPORT_PCT = float(os.getenv("PRICE_NEAR_SUPPORT_PCT", "0.08"))
 STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC = float(os.getenv("STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC", "300"))
 STRUCTURED_RSI_LONG_TRIGGER = float(os.getenv("STRUCTURED_RSI_LONG_TRIGGER", "51"))
 STRUCTURED_RSI_SHORT_TRIGGER = float(os.getenv("STRUCTURED_RSI_SHORT_TRIGGER", "49"))
@@ -186,8 +293,8 @@ SUPPORT_PULLBACK_RSI_LONG_MIN = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MIN",
 SUPPORT_PULLBACK_RSI_SHORT_MAX = float(os.getenv("SUPPORT_PULLBACK_RSI_SHORT_MAX", "49"))
 # 回踩反轉不是追價策略；RSI 已進入極端區時繼續順勢進場，通常是在低點追空
 # 或高點追多。上下限同時存在，讓 RSI 必須落在健康動能區間。
-SUPPORT_PULLBACK_RSI_LONG_MAX = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MAX", "62"))
-SUPPORT_PULLBACK_RSI_SHORT_MIN = float(os.getenv("SUPPORT_PULLBACK_RSI_SHORT_MIN", "38"))
+SUPPORT_PULLBACK_RSI_LONG_MAX = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MAX", "75"))
+SUPPORT_PULLBACK_RSI_SHORT_MIN = float(os.getenv("SUPPORT_PULLBACK_RSI_SHORT_MIN", "25"))
 SUPPORT_PULLBACK_MIN_BODY_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_MIN_BODY_ATR_MULT", "0.10"))
 SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT = float(os.getenv("SUPPORT_PULLBACK_MAKER_OFFSET_ATR_MULT", "0.05"))
 SUPPORT_PULLBACK_MIN_VOLUME_RATIO = float(os.getenv("SUPPORT_PULLBACK_MIN_VOLUME_RATIO", "0.30"))
@@ -206,10 +313,9 @@ PAPER_SUPPORT_PULLBACK_REQUIRE_RECLAIM = os.getenv(
 TREND_EXTENSION_MIN_ROOM_PCT = float(os.getenv("TREND_EXTENSION_MIN_ROOM_PCT", "0.012"))
 TREND_EXTENSION_MIN_VOLUME_RATIO = float(os.getenv("TREND_EXTENSION_MIN_VOLUME_RATIO", "0.60"))
 TREND_EXTENSION_MIN_BODY_ATR_MULT = float(os.getenv("TREND_EXTENSION_MIN_BODY_ATR_MULT", "0.20"))
-# 支撐/壓力回踩至少保留 1% 至前高/前低；避免只有交易成本等級空間仍開倉。
-MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0100"))
-# 低空間例外已關閉：若獲利空間不足 1%，直接拒絕進場，不再允許小倉嘗試。
-# 這樣能避免「看起來很強、但實際沒有足夠承接空間」的低價值交易被開倉。
+# 只要求扣除成本後仍有正的預估淨獲利空間；0 表示不再額外要求固定百分比。
+MIN_ENTRY_PROFIT_ROOM_PCT = float(os.getenv("MIN_ENTRY_PROFIT_ROOM_PCT", "0.0"))
+# 淨空間為負仍直接拒絕，正的淨空間則交由其他方向與動能條件判斷。
 # 實驗模式可停用 BOUNCE 淨風報比攔截，保留門檻方便之後用實績重新啟用。
 STRUCTURED_NET_RR_FILTER_ENABLED = os.getenv(
     "STRUCTURED_NET_RR_FILTER_ENABLED", "true"
@@ -218,15 +324,62 @@ STRUCTURED_MIN_NET_REWARD_RISK = float(os.getenv("STRUCTURED_MIN_NET_REWARD_RISK
 STRUCTURED_NET_RR_HARD_FLOOR = float(
     os.getenv("STRUCTURED_NET_RR_HARD_FLOOR", "0.5")
 )
-BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.75"))
-BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.80"))
+BOUNCE_CAPTURE_MIN_RATIO = float(os.getenv("BOUNCE_CAPTURE_MIN_RATIO", "0.80"))
+BOUNCE_CAPTURE_MAX_RATIO = float(os.getenv("BOUNCE_CAPTURE_MAX_RATIO", "0.85"))
 # 反彈單若長時間連交易成本等級的順向波動都沒有，代表承接／反壓並未延續；
 # 在仍處於虧損時提早退出，不等待完整硬停損。
-# 預設延長至 7200 秒（2 小時），並放寬最小 MFE 要求
-BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "7200")))
+# BOUNCE_NO_FOLLOW_THROUGH_SEC: 若大於 0，當反彈在此時間內未出現足夠的
+# 有利波動（MFE）則提前平倉；設為 0 可關閉此機制。
+BOUNCE_NO_FOLLOW_THROUGH_SEC = max(0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_SEC", "0")))
 BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT = max(
     0.0, float(os.getenv("BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT", "0.001"))
 )
+
+ENABLE_CONTINUOUS_REVERSE_MODE = os.getenv("ENABLE_CONTINUOUS_REVERSE_MODE", "true").lower() == "true"
+CONTINUOUS_REVERSE_TIMEFRAME = os.getenv("CONTINUOUS_REVERSE_TIMEFRAME", "1m")
+CONTINUOUS_PIVOT_ONLY = os.getenv("CONTINUOUS_PIVOT_ONLY", "false").lower() == "true"
+PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR = max(0.0, float(os.getenv("PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR", "0.35")))
+PIVOT_LONG_ONLY = os.getenv("PIVOT_LONG_ONLY", "true").lower() == "true"
+PIVOT_MIN_KC_WIDTH_PCT = max(0.0, float(os.getenv("PIVOT_MIN_KC_WIDTH_PCT", "0.01")))
+# 峰谷轉向開倉的幾何品質門檻，皆以 KC 全通道寬度計算。
+# 弧度過小或峰谷貼近 KC/MA15 時，只允許既有出場，不開反向新倉。
+PIVOT_MIN_ARC_KC_WIDTH_PCT = max(
+    0.0, float(os.getenv("PIVOT_MIN_ARC_KC_WIDTH_PCT", "0.25"))
+)
+PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT = max(
+    0.0, float(os.getenv("PIVOT_MIN_LINE_DISTANCE_KC_WIDTH_PCT", "0.20"))
+)
+# Channel Swing 只採用緊接的第二根已收盤 K；突破候選順向極值即確認，不再要求站回固定 KC 比例。
+CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO = max(
+    0.0, float(os.getenv("CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO", "0.10"))
+)
+CHANNEL_SWING_TURN_LOOKBACK_BARS = max(2, int(
+    os.getenv("CHANNEL_SWING_TURN_LOOKBACK_BARS", "60")
+))
+# 強反轉收盤 K 若已深入下一個 KC 區間，可直接解除 MA15／KC 中軌附近的
+# 盤旋等待，不必再多等一根 K。三個門檻分別是：收盤深入下一區間比例、
+# K 棒實體位於下一區間的比例，以及實體相對 ATR 的最小倍數。
+PIVOT_STRONG_RAIL_PENETRATION_RATIO = min(
+    1.0, max(0.0, float(os.getenv("PIVOT_STRONG_RAIL_PENETRATION_RATIO", "0.50")))
+)
+PIVOT_STRONG_BODY_IN_NEXT_ZONE_RATIO = min(
+    1.0, max(0.0, float(os.getenv("PIVOT_STRONG_BODY_IN_NEXT_ZONE_RATIO", "0.60")))
+)
+PIVOT_STRONG_BODY_ATR_MULT = max(
+    0.0, float(os.getenv("PIVOT_STRONG_BODY_ATR_MULT", "0.80"))
+)
+# 1 分鐘策略平倉後只冷靜一根完整 K，避免秒進秒出但保留趨勢續段。
+CONTINUOUS_REENTRY_COOLDOWN_SEC = max(
+    0.0, float(os.getenv("CONTINUOUS_REENTRY_COOLDOWN_SEC", "60"))
+)
+# MA2/MA5 拐點策略於同幣、同方向硬停損後的冷卻時間；避免劇烈行情中
+# 立刻重新接刀／摸頂。設為 0 可關閉。
+MA5_STOP_LOSS_COOLDOWN_SEC = max(
+    0.0, float(os.getenv("MA5_STOP_LOSS_COOLDOWN_SEC", "0"))
+)
+# Require a confirmed MA2/MA3 breakout before opening a pivot entry.
+MA2_CONFIRMATION_ENTRY_ENABLED = os.getenv("MA2_CONFIRMATION_ENTRY_ENABLED", "false").lower() == "true"
+MA2_CONFIRMATION_LOOKBACK_BARS = max(2, int(os.getenv("MA2_CONFIRMATION_LOOKBACK_BARS", "2")))
 
 def get_bounce_capture_ratio(score: int) -> float:
     progress = min(1.0, max(0.0, (float(score or 75) - 75.0) / 16.0))
@@ -239,9 +392,10 @@ PAPER_MAKER_FILL_PENETRATION_PCT = float(os.getenv("PAPER_MAKER_FILL_PENETRATION
 # MAKER 限價單不能掛太靠近當前價（幾乎等於市價），也不能掛太深（幾乎等於極端回踩）。
 # 以 ATR 動態調整：ATR 越大、允許的回踩範圍越寬；ATR 小則更保守，避免市場波動小卻仍把限價掛太深。
 # 週期係數：5m 最保守，15m 中等，1h 可放寬，避免短週期雜訊導致進場過深。
+# 優化：從 2.5 ATR 降至 1.8 ATR，大幅提高掛單成交機率，讓利潤有機會跑上去。
 MAKER_LIMIT_ORDER_MIN_OFFSET_PCT = float(os.getenv("MAKER_LIMIT_ORDER_MIN_OFFSET_PCT", "0.0005"))
 MAKER_LIMIT_ORDER_MAX_OFFSET_PCT = float(os.getenv("MAKER_LIMIT_ORDER_MAX_OFFSET_PCT", "0.0080"))
-MAKER_LIMIT_ORDER_ATR_MULT = float(os.getenv("MAKER_LIMIT_ORDER_ATR_MULT", "2.5"))
+MAKER_LIMIT_ORDER_ATR_MULT = float(os.getenv("MAKER_LIMIT_ORDER_ATR_MULT", "1.8"))
 MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS = {
     "5m": float(os.getenv("MAKER_LIMIT_ORDER_5M_FACTOR", "1.00")),
     "15m": float(os.getenv("MAKER_LIMIT_ORDER_15M_FACTOR", "1.25")),
@@ -249,7 +403,7 @@ MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS = {
 }
 
 
-def get_maker_limit_offset_pct(price: float, atr: float, timeframe: str = "5m") -> float:
+def get_maker_limit_offset_pct(price: float, atr: float, timeframe: str = "3m") -> float:
     if price <= 0:
         return MAKER_LIMIT_ORDER_MIN_OFFSET_PCT
     factor = MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS.get(str(timeframe).lower(), MAKER_LIMIT_ORDER_TIMEFRAME_FACTORS["5m"])
@@ -269,8 +423,8 @@ BREAKOUT_RR_CLOSE_FRACTION = float(os.getenv("BREAKOUT_RR_CLOSE_FRACTION", "0.5"
 STRUCTURED_EXIT_INTERVAL_SEC = float(os.getenv("STRUCTURED_EXIT_INTERVAL_SEC", "15"))
 # BREAKOUT 突破後限價回踩目標：在 EMA20 + BREAKOUT_PULLBACK_ATR_MULT * ATR 處掛單
 # 等待市場回踩回到中軌附近再進場，避免在突破高點直接市價追買
-# 1.0 ATR 表示限價設在 EMA20 上方 1 個 ATR，回踩更深、進場更有利。
-BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "1.0"))
+# 優化：從 1.0 ATR → 0.7 ATR，讓成交更容易、進場更快成交
+BREAKOUT_PULLBACK_ATR_MULT = float(os.getenv("BREAKOUT_PULLBACK_ATR_MULT", "0.7"))
 # BREAKOUT 回踩掛單最長等候時間：超過此時間沒有回踩就撤單
 # 突破动能強勁時幾乎不回踩，此時單子成交未必是好做法；分析後可調整
 BREAKOUT_PULLBACK_TIMEOUT_SEC = float(os.getenv("BREAKOUT_PULLBACK_TIMEOUT_SEC", "300"))
@@ -281,13 +435,13 @@ ENABLE_TRAILING_SL = os.getenv("ENABLE_TRAILING_SL", "false").lower() == "true"
 # 移動止損的 ATR 倍數（預設 3 倍 ATR，動態適應市場波動範圍）
 TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
 # 扣除進出場 taker 手續費後，止盈淨利 / 止損淨虧損不得低於此值。
-MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "2.0"))
+MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.5"))
 ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 # 關閉整體移動停利/移動止損機制，僅保留手動平倉行為
-ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true"
+ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true" # 2026-09-08 User turned off trailing stop
 # 觸發門檻改用每筆進場 ATR：2.0 ATR 保本、3.5 ATR 轉 runner 並鎖住
 # 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早補保本掃掉剛起跑的部位。
 TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.0"))
@@ -322,6 +476,11 @@ NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALL
 # 正在被侵蝕，與其等它繼續吐回去，不如把握警訊後難得的一次反彈把獲利
 # 鎖住；BinanceTestnetAccount 目前這個旗標仍是純顯示，不會自動平倉。
 PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
+# 峰值回吐原本會直接平倉，會和正式 trailing 競爭並截短贏單；預設只保留
+# trailing。需要做舊策略對照時才顯式開啟。
+ENABLE_PROFIT_GIVEBACK_EXIT = os.getenv(
+    "ENABLE_PROFIT_GIVEBACK_EXIT", "false"
+).lower() == "true"
 # 小於0.5%的歷史峰值不啟動「回吐後反彈平倉」，避免剛蓋過手續費就把
 # 部位關掉；平倉當下另要求至少保留0.10%無槓桿淨空間。
 PROFIT_ALERT_MIN_PEAK_PCT = float(os.getenv("PROFIT_ALERT_MIN_PEAK_PCT", "0.005"))
@@ -342,7 +501,15 @@ MIN_SL_DISTANCE_PCT = float(os.getenv("MIN_SL_DISTANCE_PCT", "0.0020"))
 MAX_SL_DISTANCE_PCT = float(os.getenv("MAX_SL_DISTANCE_PCT", "0.05"))
 # SL_ONLY_AFTER_PEAK_PCT：本地止損僅在部位曾達到此峰值比例後才允許平倉（小數，0.01=1%）。
 # 預設 0 表示不啟用此行為，維持相容性。
-SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.0"))
+SL_ONLY_AFTER_PEAK_PCT = float(os.getenv("SL_ONLY_AFTER_PEAK_PCT", "0.002"))
+
+# Exhaustion Sniper 專用規格；不影響其他 entry_mode。
+EXHAUSTION_SNIPER_LOOKBACK_BARS = max(1, int(os.getenv("EXHAUSTION_SNIPER_LOOKBACK_BARS", "3")))
+EXHAUSTION_SNIPER_VOLUME_RATIO = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_VOLUME_RATIO", "1.5")))
+EXHAUSTION_SNIPER_RSI_LONG_MAX = float(os.getenv("EXHAUSTION_SNIPER_RSI_LONG_MAX", "40"))
+EXHAUSTION_SNIPER_RSI_SHORT_MIN = float(os.getenv("EXHAUSTION_SNIPER_RSI_SHORT_MIN", "60"))
+EXHAUSTION_SNIPER_STOP_LOSS_PCT = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_STOP_LOSS_PCT", "0.012")))
+EXHAUSTION_SNIPER_GRACE_SEC = max(0.0, float(os.getenv("EXHAUSTION_SNIPER_GRACE_SEC", "180")))
 # DISASTER_STOP_MULTIPLIER：額外的止損寬鬆倍數（乘以 STOP_LOSS_MULTIPLIER）
 # 原本 1.5 表示 1.5x ATR × 1.5 = 2.25 ATR，現改為 1.0 表示只用 STOP_LOSS_MULTIPLIER 的基礎值
 # 這樣搭配 STOP_LOSS_MULTIPLIER=2.5 時，總止損距離為 2.5 ATR（不再額外放寬）
@@ -361,6 +528,10 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
 ENABLE_RAPID_ADVERSE_DROP = os.getenv("ENABLE_RAPID_ADVERSE_DROP", "false").lower() == "true"
 RAPID_ADVERSE_DROP_PCT    = float(os.getenv("RAPID_ADVERSE_DROP_PCT", "0.004"))
 RAPID_DROP_COOLDOWN_SEC   = float(os.getenv("RAPID_DROP_COOLDOWN_SEC", "30"))
+RAPID_ADVERSE_SPEED_PCT = float(os.getenv("RAPID_ADVERSE_SPEED_PCT", "0.008"))
+RAPID_ADVERSE_SPEED_WINDOW_SEC = max(1.0, float(os.getenv("RAPID_ADVERSE_SPEED_WINDOW_SEC", "10")))
+PIVOT_FAILURE_BUFFER_ATR = max(0.0, float(os.getenv("PIVOT_FAILURE_BUFFER_ATR", "1.0")))
+PIVOT_FAILURE_MIN_PCT = max(0.0, float(os.getenv("PIVOT_FAILURE_MIN_PCT", "0.004")))
 
 # --- BTC 大盤方向守門員 ---
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為
@@ -377,15 +548,49 @@ BTC_REGIME_SCORE_PENALTY = max(0, int(os.getenv("BTC_REGIME_SCORE_PENALTY", "6")
 BTC_REGIME_ALLOCATION_FACTOR = min(
     1.0, max(0.0, float(os.getenv("BTC_REGIME_ALLOCATION_FACTOR", "0.5")))
 )
+# BTC 1m 強脈衝只守新倉方向：明確急漲時擋空、明確急跌時擋多；
+# 中性行情不干預個幣自身的 KC 外軌谷峰。
+BTC_1M_PULSE_FILTER_ENABLED = os.getenv(
+    "BTC_1M_PULSE_FILTER_ENABLED", "true"
+).lower() == "true"
+BTC_1M_PULSE_LOOKBACK_BARS = max(2, int(
+    os.getenv("BTC_1M_PULSE_LOOKBACK_BARS", "3")
+))
+BTC_1M_PULSE_MIN_ATR = max(0.0, float(
+    os.getenv("BTC_1M_PULSE_MIN_ATR", "0.50")
+))
+# BTC 插針緊急平倉：在 BTC_FLASH_CRASH_WINDOW_SEC 秒內急跌幅度 >=
+# BTC_FLASH_CRASH_DROP_PCT (%) 時，視為插針事件，立即市價平掉所有多單；
+# 空單則不受影響（BTC 急跌對空單有利）。
+# 設定原則：
+#   WINDOW_SEC 建議 3~8 秒（比一根 1m K 短很多，避免誤判正常回落）
+#   DROP_PCT 建議 0.35~0.8（Testnet 幣價低，可以設低一些）
+# 設 0 可停用（BTC_FLASH_CRASH_DROP_PCT=0）。
+BTC_FLASH_CRASH_WINDOW_SEC = max(1.0, float(
+    os.getenv("BTC_FLASH_CRASH_WINDOW_SEC", "5.0")
+))
+BTC_FLASH_CRASH_DROP_PCT = max(0.0, float(
+    os.getenv("BTC_FLASH_CRASH_DROP_PCT", "0.5")
+))
+# BTC 同幅度急拉時，鏡像平掉所有空單；0 代表停用。
+BTC_FLASH_CRASH_PUMP_PCT = max(0.0, float(
+    os.getenv("BTC_FLASH_CRASH_PUMP_PCT", "0.5")
+))
+# 全市場閃崩／急拉後，暫停任何新倉與既有掛單成交的秒數。
+MARKET_CRASH_ENTRY_COOLDOWN_SEC = max(0.0, float(
+    os.getenv("MARKET_CRASH_ENTRY_COOLDOWN_SEC", "180")
+))
 # SYMBOL_1H_ST_FILTER_ENABLED：個幣 1h SuperTrend 方向過濾。
 # 要求 5m SuperTrend 方向必須與該幣自己的 1h SuperTrend 方向一致才允許開倉。
 # 這比「price vs EMA50」更準確，因為 1h SuperTrend 翻轉需要較長時間確認。
 # 曾經允許高分訊號繞過此過濾（SYMBOL_1H_ST_FILTER_BYPASS_SCORE），但實測
 # 繞過後逆勢進場的勝率明顯偏低，已取消繞過機制，不論分數高低一律要求
-# 順著1H大方向。已禁用此過濾以增加開倉機會。
+# 順著1H大方向。為了改善「一進場就吃虧損」的問題，已重新啟用此大週期過濾。
 SYMBOL_1H_ST_FILTER_ENABLED = os.getenv("SYMBOL_1H_ST_FILTER_ENABLED", "false").lower() == "true"
+# ENABLE_MACD_DIVERGENCE_FILTER：是否啟用 MACD 背離擋單
+ENABLE_MACD_DIVERGENCE_FILTER = os.getenv("ENABLE_MACD_DIVERGENCE_FILTER", "false").lower() == "true"
 # ENABLE_1H_EMA50_FILTER：是否啟用 1h EMA50 大週期趨勢過濾
-ENABLE_1H_EMA50_FILTER = os.getenv("ENABLE_1H_EMA50_FILTER", "true").lower() == "true"
+ENABLE_1H_EMA50_FILTER = os.getenv("ENABLE_1H_EMA50_FILTER", "false").lower() == "true"
 # 結構進場允許價格在 1h EMA50 附近小幅穿越，避免微小報價雜訊造成方向反覆拒單。
 STRUCTURED_1H_EMA50_TOLERANCE_PCT = float(
     os.getenv("STRUCTURED_1H_EMA50_TOLERANCE_PCT", "0.002")
@@ -400,7 +605,8 @@ MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE_THRESHOLD", "71"))
 # STRONG_BREAKOUT_SCORE_THRESHOLD 保留給報表；90+ 試行現價 Post-Only 限價，
 # 仍不使用市價單，其餘達標訊號依分數等待回踩。
 STRONG_BREAKOUT_SCORE_THRESHOLD = int(os.getenv("STRONG_BREAKOUT_SCORE_THRESHOLD", "78"))
-MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "81"))
+# 收緊入場最低分數，從 75 提高到 80，嚴格過濾低品質/勝率不高的訊號
+MIN_OPEN_SIGNAL_SCORE = int(os.getenv("MIN_OPEN_SIGNAL_SCORE", "80"))
 # 最近交易權重最高；第 n 筆歷史交易權重為 decay**n（交易紀錄本身為新到舊）。
 HISTORY_RECENCY_DECAY = min(1.0, max(0.1, float(os.getenv("HISTORY_RECENCY_DECAY", "0.8"))))
 # 舊版 StrongBreakout 的 EMA50 限制保留作相容設定，目前不再用來分流市價單。
@@ -453,7 +659,9 @@ PULLBACK_SCORE_THRESHOLD = int(os.getenv("PULLBACK_SCORE_THRESHOLD", "48"))
 KELTNER_ATR_MULTIPLIER = float(os.getenv("KELTNER_ATR_MULTIPLIER", "1.5"))
 # KELTNER_BREAKOUT_MARGIN_PCT 改為 0.0：close 超過 KC 上軌即算突破，不再要求額外距離（避免進場點過熱）
 KELTNER_BREAKOUT_MARGIN_PCT = float(os.getenv("KELTNER_BREAKOUT_MARGIN_PCT", "0.0"))
-KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.8"))  # 量能門檻提高至 0.8 倍均量，確保是真實突破
+KELTNER_MIN_VOLUME_RATIO = float(os.getenv("KELTNER_MIN_VOLUME_RATIO", "0.5"))  # 放寬量能門檻
+# Channel Swing 新倉需有至少 1 倍均量，避免外軌弱量 K 直接反手追價。
+CHANNEL_SWING_ENTRY_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("CHANNEL_SWING_ENTRY_MIN_VOLUME_RATIO", "1.0")))
 # BREAKOUT_CONFIRM_BARS：KC 突破需要「收盤確認」的防假突破機制。
 BREAKOUT_CONFIRM_BARS = int(os.getenv("BREAKOUT_CONFIRM_BARS", "1"))
 # POST_BREAKOUT_VOL_SUSTAIN_RATIO：突破後量能持續性確認，用於 confirm_pullback_entry()。
@@ -480,13 +688,14 @@ TREND_AGREE_EMA_MARGIN_PCT = float(os.getenv("TREND_AGREE_EMA_MARGIN_PCT", "0.00
 # 1. ADX_MANDATORY_MIN（硬性底線）：ADX 低於此值直接 HOLD，連評分都不進入。
 #    盤整期 ADX 常落在 10~17，12 以下可確認為「完全無趨勢」，假突破最高發。
 #    設 12 而非直接用 ADX_QUALITY_MIN(15) 是刻意保守——只擋極端無動能場景，
-#    不大幅壓縮訊號數量；後續實測再視情況調高。
+#    不大幅壓縮訊號數量；後續實測再視情況調高。已提高到 12.0 減少假突破。
 # 2. ADX_QUALITY_MIN/FULL（軟性加分）：12~30 區間內按比例加分，越高越好，
 #    但不到最低門檻就加 0 分；超出 ADX_QUALITY_FULL 視為滿分。
 # 3. ADX_DECLINE 衰退擋單：ADX 現在比 N 根前低且已低於 ADX_QUALITY_MIN，
 #    代表動能在退潮，硬性擋單（見下方）。
 ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
-ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "10.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_MANDATORY_MIN = float(os.getenv("ADX_MANDATORY_MIN", "12.0"))  # 硬性最低 ADX 門檻，低於此直接 HOLD
+ADX_STRONG_TREND_MIN = float(os.getenv("ADX_STRONG_TREND_MIN", "10.0"))  # 明確單邊趨勢門檻
 ADX_QUALITY_MIN = float(os.getenv("ADX_QUALITY_MIN", "15"))
 ADX_QUALITY_FULL = float(os.getenv("ADX_QUALITY_FULL", "30"))
 # WEAK_ENERGY_ADX_THRESHOLD：進場當下 ADX 低於這個門檻（動能偏弱/中等，
@@ -510,7 +719,7 @@ ADX_DECLINE_MIN_DROP = float(os.getenv("ADX_DECLINE_MIN_DROP", "2.0"))
 ADX_DECLINE_MIN_DROP_RATIO = float(os.getenv("ADX_DECLINE_MIN_DROP_RATIO", "0.08"))
 # KC_TOUCH_LOOKBACK_BARS：KC回踩觸碰確認原本只認前3根已收盤K棒（防止拿
 # 很久以前的回調來當現在的轉彎），只允許有時效的 KC 回踩支持當前
-# 剛確立的 MA7 局部峰谷。
+# 剛確立的 MA5 局部峰谷。
 KC_TOUCH_LOOKBACK_BARS = int(os.getenv("KC_TOUCH_LOOKBACK_BARS", "6"))
 # ADX_DECLINE_LOOKBACK_BARS_1H：同一套「ADX 現在比 N 根K棒前低，且已經
 # 低於 ADX_QUALITY_MIN」邏輯，但改看 1h K線——5分K的新鮮度/ADX檢查只能
@@ -524,10 +733,10 @@ ADX_DECLINE_LOOKBACK_BARS_1H = int(os.getenv("ADX_DECLINE_LOOKBACK_BARS_1H", "6"
 EMA_EXTENSION_MAX_ATR_MULT = float(os.getenv("EMA_EXTENSION_MAX_ATR_MULT", "2.5"))
 
 # --- 動態 RSI 濾網 ---
-RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "51"))
-RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "49"))
-RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "75"))
-RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "25"))
+RSI_LONG_THRESHOLD = int(os.getenv("RSI_LONG_THRESHOLD", "48"))
+RSI_SHORT_THRESHOLD = int(os.getenv("RSI_SHORT_THRESHOLD", "52"))
+RSI_LONG_MAX = float(os.getenv("RSI_LONG_MAX", "80"))
+RSI_SHORT_MIN = float(os.getenv("RSI_SHORT_MIN", "20"))
 
 # --- 大週期趨勢總指揮 ---
 TREND_FILTER_TIMEFRAME = os.getenv("TREND_FILTER_TIMEFRAME", "1h")
@@ -538,31 +747,38 @@ TREND_FILTER_EMA_PERIOD = int(os.getenv("TREND_FILTER_EMA_PERIOD", "50"))
 # PaperAccount（純本地模擬，沒有真實交易所可掛原生Trailing）固定用這套。---
 # 小幅獲利曾達0.30%後，若回落至0.20%便平倉；執行時仍以雙邊費用加
 # 預估滑點作最低安全線，避免鎖到帳面獲利、實際淨虧。
-EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.003"))
-EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.002"))
+# 優化：從 0.6% / 0.3% → 0.8% / 0.5%，讓利潤跑更上去再平倉
+EARLY_PROFIT_GUARD_TRIGGER_PCT = float(os.getenv("EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.008"))
+EARLY_PROFIT_GUARD_EXIT_PCT = float(os.getenv("EARLY_PROFIT_GUARD_EXIT_PCT", "0.005"))
+# 小利保護常在尚未達到 1R 前結束交易，造成平均贏單小於完整停損；改為
+# opt-in，預設讓 1.5R trailing 接手並鎖住約 1R。
+ENABLE_EARLY_PROFIT_GUARD = os.getenv(
+    "ENABLE_EARLY_PROFIT_GUARD", "false"
+).lower() == "true"
 # 結構反彈單的獲利窗口通常較短，較一般單提早保護；退出線仍必須高於
 # 雙邊手續費與預估滑價，避免帳面小利實際淨虧。
+# 優化：反彈單也調寬，從 0.45% / 0.35% → 0.60% / 0.45%
 BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0023")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_TRIGGER_PCT", "0.0060")
 )
 BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT = float(
-    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0020")
+    os.getenv("BOUNCE_EARLY_PROFIT_GUARD_EXIT_PCT", "0.0045")
 )
-TREND_EXTENSION_GUARD_TRIGGER_PCT = float(os.getenv("TREND_EXTENSION_GUARD_TRIGGER_PCT", "0.0045"))
-TREND_EXTENSION_GUARD_EXIT_PCT = float(os.getenv("TREND_EXTENSION_GUARD_EXIT_PCT", "0.0030"))
+TREND_EXTENSION_GUARD_TRIGGER_PCT = float(os.getenv("TREND_EXTENSION_GUARD_TRIGGER_PCT", "0.0065"))
+TREND_EXTENSION_GUARD_EXIT_PCT = float(os.getenv("TREND_EXTENSION_GUARD_EXIT_PCT", "0.0045"))
 TREND_EXTENSION_MIN_CAPTURE_RATIO = float(os.getenv("TREND_EXTENSION_MIN_CAPTURE_RATIO", "0.70"))
-TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0060"))
-TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0005"))
+TRAILING_TRIGGER_PCT = float(os.getenv("TRAILING_TRIGGER_PCT", "0.0080"))
+TRAILING_CALLBACK_PCT = float(os.getenv("TRAILING_CALLBACK_PCT", "0.0008"))
 # 有 initial_risk 的策略單改用 R 倍數啟動移動停利。到 1.5R 才開始保護，
 # 回吐空間保留 0.5R，因此啟動後至少鎖住約 1R；避免舊設定在 +1R 啟動、
 # 回吐 0.75R 後只留下約 +0.25R，形成平均贏單遠小於完整 -1R 止損。
 TRAILING_TRIGGER_R_MULT = float(os.getenv("TRAILING_TRIGGER_R_MULT", "1.5"))
 TRAILING_CALLBACK_R_MULT = float(os.getenv("TRAILING_CALLBACK_R_MULT", "0.5"))
-# CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA7_ContrarianBottomBuy）
+# CONTRARIAN_TRAILING_TRIGGER_PCT：逆勢承接底部買點（MA5_ContrarianBottomBuy）
 # 專用、更早啟動的移動停利觸發門檻。
 CONTRARIAN_TRAILING_TRIGGER_PCT = float(os.getenv("CONTRARIAN_TRAILING_TRIGGER_PCT", "0.0060"))
 # CONTRARIAN_POSITION_SIZE_MULTIPLIER：逆勢承接單的信心水準本來就比一般
-# 順勢MA7拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
+# 順勢MA5拐頭低（是在跟SuperTrend/1h趨勢對作），用比較小的倉位承接，
 # 就算反彈失敗被打回原趨勢方向，虧損金額也比較小。
 CONTRARIAN_POSITION_SIZE_MULTIPLIER = float(os.getenv("CONTRARIAN_POSITION_SIZE_MULTIPLIER", "0.5"))
 # TRAILING_MODE: 正式移動停利初期的峰值鎖定比例
@@ -590,11 +806,10 @@ SPEED_SLOW_THRESHOLD = float(os.getenv("SPEED_SLOW_THRESHOLD", "0.0001"))  # 0.0
 # ATR），讓利潤有更多空間往上跑，不要一點漲幅就被鎖死出場。
 # (最低利潤%, 最低鎖倉比例) — 從高到低匹配，命中即停
 _PROFIT_TIER_FLOOR = [
-    (0.0300, 0.95),  # ≥3.00% 無槓桿利潤 → 至少鎖 95%
-    (0.0200, 0.88),  # ≥2.00% → 至少鎖 88%
-    (0.0150, 0.82),  # ≥1.50% → 至少鎖 82%
-    (0.0100, 0.80),  # ≥1.00% → 至少鎖 80%
-    (0.0060, 0.70),  # ≥0.60% → 至少鎖 70%
+    (0.0110, 0.95),  # ≥1.10% 無槓桿利潤 → 至少鎖 95%
+    (0.0081, 0.90),  # ≥0.81% → 至少鎖 90%
+    (0.0051, 0.80),  # ≥0.51% → 至少鎖 80%
+    (0.0030, 0.70),  # ≥0.30% → 至少鎖 70%
 ]
 
 # --- 分批止盈參數 ---
@@ -649,7 +864,100 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
 SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0001"))     # 0.01% 市價單估計滑點預留（單邊）
 
-# --- 急升急降過濾：排除短期劇烈波動的幣種 ---
+# 階梯式移動停利：峰值達 0.35% 後，至少鎖住 0.25% 價格利潤；
+# 峰值繼續擴大時保留至少 70%，保護線只往有利方向移動。
+ENABLE_PROFIT_BANK = os.getenv("ENABLE_PROFIT_BANK", "true").lower() == "true"
+PROFIT_BANK_TRIGGER_PCT = max(
+    float(os.getenv("PROFIT_BANK_TRIGGER_PCT", "0.0035")),
+    NET_PROFIT_GUARANTEE_BUFFER + SLIPPAGE_PCT,
+)
+PROFIT_BANK_LOCK_PCT = max(
+    float(os.getenv("PROFIT_BANK_LOCK_PCT", "0.0025")),
+    2 * TAKER_FEE_RATE + SLIPPAGE_PCT + 0.0001,
+)
+PROFIT_BANK_CAPTURE_RATIO = min(
+    0.95, max(0.50, float(os.getenv("PROFIT_BANK_CAPTURE_RATIO", "0.70")))
+)
+_PROFIT_BANK_CAPTURE_TIERS = [
+    (0.0110, 0.90),  # 峰值 >= 1.10%：保留 90%
+    (0.0081, 0.80),  # 峰值 >= 0.81%：保留 80%
+    (0.0030, 0.70),  # 峰值 >= 0.30%：保留 70%
+]
+
+def get_profit_bank_capture_ratio(
+    peak_profit_pct: float, base_capture_ratio: float = None,
+) -> float:
+    """利潤越高鎖得越緊，回傳應保留的峰值比例。"""
+    base = PROFIT_BANK_CAPTURE_RATIO if base_capture_ratio is None else min(
+        0.95, max(0.50, float(base_capture_ratio))
+    )
+    for threshold, capture_ratio in _PROFIT_BANK_CAPTURE_TIERS:
+        if peak_profit_pct + 1e-12 >= threshold:
+            return max(base, capture_ratio)
+    return base
+# Testnet 每次至少再推進 0.02% 才撤換交易所保護單，避免報價每跳都重掛。
+PROFIT_BANK_MIN_STEP_PCT = max(
+    0.0, float(os.getenv("PROFIT_BANK_MIN_STEP_PCT", "0.0002"))
+)
+# 最低鎖利必須低於首次啟動峰值，預留至少一份滑價距離。
+PROFIT_BANK_LOCK_PCT = min(
+    PROFIT_BANK_LOCK_PCT, max(0.0, PROFIT_BANK_TRIGGER_PCT - SLIPPAGE_PCT)
+)
+
+# ---------------------------------------------------------------------------
+# 固定 USDT 金額鎖利（Profit Lock in USDT）
+# 理念：當未實現利潤達到 PROFIT_LOCK_TRIGGER_USDT（如 4 USDT），
+#       把止損移到「至少鎖住 PROFIT_LOCK_FLOOR_USDT」的位置，
+#       讓持倉繼續跑，利潤再增加時止損跟著推移（只往有利方向）。
+#       最終出場時至少保留 PROFIT_LOCK_FLOOR_USDT 的已實現利潤。
+# 與百分比制 PROFIT_BANK 並存，兩套都啟用時各自獨立計算，止損取
+# 「更有利」的那個值（只往有利方向移動，永不放寬）。
+# ---------------------------------------------------------------------------
+ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "true").lower() == "true"
+PROFIT_LOCK_FEE_MULTIPLIER = max(0.0, float(os.getenv("PROFIT_LOCK_FEE_MULTIPLIER", "2.0")))
+PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "1.0")))
+PROFIT_LOCK_TREND_LADDER_STEP_USDT = max(
+    0.01, float(os.getenv("PROFIT_LOCK_TREND_LADDER_STEP_USDT", "2.0"))
+)
+# Channel Swing 鎖利線允許的 ATR 回撤緩衝，仍不低於手續費保護底線。
+PROFIT_LOCK_ATR_BUFFER_MULTIPLIER = max(
+    0.0, float(os.getenv("PROFIT_LOCK_ATR_BUFFER_MULTIPLIER", "0.2"))
+)
+PROFIT_LOCK_GIVEBACK_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_GIVEBACK_USDT", "0.8")))
+PROFIT_LOCK_BASE_MARGIN_USDT = max(
+    0.01, float(os.getenv("PROFIT_LOCK_BASE_MARGIN_USDT", "150.0"))
+)
+# OUTER_RUN 專用最高淨利回吐：不論單筆保證金或部位金額，一律固定 1U。
+OUTER_RUN_NET_GIVEBACK_USDT = max(
+    0.0, float(os.getenv("OUTER_RUN_NET_GIVEBACK_USDT", "1.0"))
+)
+# 觸發門檻：未實現利潤達到此值（USDT）時開始鎖利
+PROFIT_LOCK_TRIGGER_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_TRIGGER_USDT", "4.0")))
+# 鎖利地板：止損移動後保證至少保留此值（USDT）的利潤；0 代表由手續費倍數決定。
+PROFIT_LOCK_FLOOR_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_FLOOR_USDT", "0.0")))
+# 追蹤回撤：峰值利潤繼續擴大時，允許最多回撤峰值利潤的幾成（0~1）
+# 例如 0.25 = 峰值 10 USDT 時，止損在 10*(1-0.25)=7.5 USDT 利潤處
+# 但永不低於 PROFIT_LOCK_FLOOR_USDT
+PROFIT_LOCK_TRAIL_RATIO = max(0.0, float(os.getenv("PROFIT_LOCK_TRAIL_RATIO", "0.25")))
+# 最小推進步距（USDT），避免止損每次報價波動都重算重掛
+PROFIT_LOCK_MIN_STEP_USDT = max(0.0, float(os.getenv("PROFIT_LOCK_MIN_STEP_USDT", "0.5")))
+
+# ---------------------------------------------------------------------------
+# 固定百分比鎖利（Fixed Profit Lock by Unlevered %)
+# 理念：無槓桿利潤達到 FIXED_PROFIT_LOCK_TRIGGER_PCT（目前 0.5%），
+#       立即先鎖住 FIXED_PROFIT_LOCK_FLOOR_PCT。
+#       保護線只往有利方向移動。
+#       地板止損只往有利方向移動，不會被收緊後放寬。
+# 與 ENABLE_TRAILING_STOP（移動停利）並行：兩套都啟用時同時運作，
+# 止損取「對持倉更有利（更高/更低）」的那個值。
+# ---------------------------------------------------------------------------
+ENABLE_FIXED_PROFIT_LOCK_PCT = os.getenv("ENABLE_FIXED_PROFIT_LOCK_PCT", "true").lower() == "true"
+# 觸發門檻：無槓桿利潤達到此值（小數，0.005=0.5%）時啟動鎖利
+FIXED_PROFIT_LOCK_TRIGGER_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_TRIGGER_PCT", "0.006")))
+# 鎖利地板：止損移動後保證至少鎖住此比例（無槓桿）的利潤
+# 第一階段與觸發門檻相同；正式環境由 .env 設為 0.5%
+FIXED_PROFIT_LOCK_FLOOR_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_FLOOR_PCT", "0.006")))
+# --- 急升急降過濾# --- 急升急降過濾：排除短期劇烈波動的幣種 ---
 # RAPID_MOVE_WINDOW: 回看幾根5分K（3根=15分鐘）
 RAPID_MOVE_WINDOW = int(os.getenv("RAPID_MOVE_WINDOW", "3"))
 # RAPID_MOVE_THRESHOLD: 窗口內漲跌幅超過此值（%）則排除
@@ -661,7 +969,7 @@ RAPID_MOVE_THRESHOLD = float(os.getenv("RAPID_MOVE_THRESHOLD", "5.0"))
 # 幣種本身波動率越高，同樣的倉位金額下止損被觸發時虧的錢就越大，
 # 而移動止利鎖住的獲利卻不會跟著等比放大，造成贏小賠大。
 # 探索模式以半倉收集樣本，ATR 上限放寬至 0.8%；仍排除更極端的高波動幣。
-MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.008"))
+MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "0.004"))
 # MIN_ATR_PCT：探索池下限放寬至 0.05%，讓 ETH、XRP、LINK 等主流幣
 # 留在監控範圍；更低波動仍視為缺乏足夠價格空間。
 MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
@@ -683,15 +991,9 @@ MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT", "0.0005"))
 # 假突破」，跟 MIN_ATR_PCT 原本要防的雜訊盤整不是同一種情況，故允許
 # 繞過波動過低限制（僅此一項，ATR過高/其餘過濾條件不受影響）。
 MAINSTREAM_SYMBOLS = {
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
-    "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
-    "BCH/USDT", "LTC/USDT", "ARB/USDT", "ATOM/USDT", "NEAR/USDT",
-    "TRX/USDT", "ETC/USDT", "FIL/USDT", "OP/USDT", "UNI/USDT",
-    "AAVE/USDT", "XLM/USDT", "HBAR/USDT", "INJ/USDT", "SUI/USDT",
-    "SEI/USDT", "RENDER/USDT", "WLD/USDT", "1000SHIB/USDT", "GALA/USDT",
-    "SAND/USDT", "MANA/USDT", "APE/USDT", "CRV/USDT", "LDO/USDT",
-    "ZEC/USDT", "ONDO/USDT", "ENA/USDT", "ORDI/USDT", "XMR/USDT",
-    "CFX/USDT", "COTI/USDT",
+    "AAVE/USDT", "ADA/USDT", "AVAX/USDT", "BCH/USDT", "DOGE/USDT",
+    "DOT/USDT", "ETC/USDT", "LINK/USDT", "LTC/USDT", "NEAR/USDT",
+    "SOL/USDT", "SUI/USDT", "TRX/USDT", "UNI/USDT", "XRP/USDT",
 }
 # VOLUME_DIVERGENCE_LOOKBACK_BARS：拆成前後兩段各半，比較兩段的量能與
 # 價格極值。
@@ -734,31 +1036,76 @@ def get_position_multiplier(score: int) -> float:
     return 0.0
 
 # --- 動態幣種輪替與本機 AI 輔助 ---
-# 12→16→18→24 幣：想增加開倉機會時，擴大掃描範圍（讓更多幣種有機會出現達標
-# 訊號），而不是放寬同一批幣的評分門檻（那樣會直接增加假突破機率）。
-# API 負擔：報價是一次批次拿全部幣種，不隨幣數增加；K 線只對還沒進場/
-# 待命/冷卻的幣種才逐一抓，18 幣比 16 幣每輪只多 2 次請求，遠低於
-# Binance 合約 API 額度，ccxt 也開了 enableRateLimit 自動節流。
-SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "24"))
-SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "900"))
+# 單槽模式只監控當輪最強的一多一空，避免大名單中的次級訊號搶先進場。
+# 全市場掃描範圍不變，只縮小最終監控牌面。
+SYMBOL_ROTATION_COUNT = int(os.getenv("SYMBOL_ROTATION_COUNT", "15"))
+SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() == "true"
+ENABLE_SYMBOL_ROTATION = os.getenv("ENABLE_SYMBOL_ROTATION", "true").lower() == "true"
+SYMBOL_ROTATION_INTERVAL_SEC = int(os.getenv("SYMBOL_ROTATION_INTERVAL_SEC", "300"))
 # UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC：完整輪替（含AI+全池K線）最壞情況要
-# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設15分鐘）才會換牌，尚未持倉的候選觀察
+# 等 SYMBOL_ROTATION_INTERVAL_SEC（預設5分鐘）才會換牌，尚未持倉的候選觀察
 # 名單如果在這段期間變得明顯不健康（流動性枯竭、24h暴漲暴跌、波動率長期
 # 偏離可交易區間），不用等到下一次整點輪替才處理——只用當下 ticker 資料
 # 判斷（不用額外呼叫 AI/抓K線，成本很低），每隔這個秒數就檢查一次，發現
 # 就立刻換掉。已經有持倉的幣種不受影響，維持只等SL/TP/24h時間過濾出場。
 UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC = int(os.getenv("UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC", "300"))
-# 跟著 SYMBOL_ROTATION_COUNT 等比放大（24→12 是 1:2），維持多空對稱席次。
-DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "12"))
+# 兩檔觀察名單各保留 1 檔最強多勢／空勢候選。
+DIRECTIONAL_SIDE_COUNT = int(os.getenv("DIRECTIONAL_SIDE_COUNT", "8"))
 # 輪替候選池常因 ATR 與方向分數雙重過濾只剩個位數，監控分數降到40；真正進場仍需 MIN_OPEN_SIGNAL_SCORE，
 # 因此只會增加持續觀察的幣，不會讓40分訊號直接下單。
 DIRECTIONAL_MIN_SCORE = float(os.getenv("DIRECTIONAL_MIN_SCORE", "40"))
-SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "100"))
-SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "35000000"))
+SYMBOL_MARKET_SCAN_LIMIT = int(os.getenv("SYMBOL_MARKET_SCAN_LIMIT", "40"))
+SYMBOL_MIN_QUOTE_VOLUME = float(os.getenv("SYMBOL_MIN_QUOTE_VOLUME", "50000000"))
+# 全市場 WebSocket 只做低成本速度雷達；每個方向只有少量候選進入完整
+# K 線/KC 驗證，避免掃描 Binance 全部合約時放大 REST 請求量。
+FULL_MARKET_SURVEILLANCE_ENABLED = os.getenv(
+    "FULL_MARKET_SURVEILLANCE_ENABLED", "true"
+).lower() == "true"
+FULL_MARKET_SURVEILLANCE_SIDE_COUNT = max(
+    1, int(os.getenv("FULL_MARKET_SURVEILLANCE_SIDE_COUNT", "3"))
+)
+FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC = max(
+    5, float(os.getenv("FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC", "10"))
+)
+FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC = max(
+    FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
+    float(os.getenv("FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC", "45")),
+)
+FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT = max(
+    0.0, float(os.getenv("FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT", "0.08"))
+)
+# 穩定趨勢雷達使用較長的全市場 WebSocket 價格窗；只擴大候選覆蓋，
+# 真正下單仍須通過完整 K 線、KC、CHOP 與執行安全檢查。
+FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT = max(
+    1, int(os.getenv("FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT", "3"))
+)
+FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC = max(
+    FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC,
+    float(os.getenv("FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC", "300")),
+)
+FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT = max(
+    0.0, float(os.getenv("FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT", "0.20"))
+)
+FULL_MARKET_SURVEILLANCE_STEADY_MIN_EFFICIENCY = min(
+    1.0, max(0.0, float(os.getenv("FULL_MARKET_SURVEILLANCE_STEADY_MIN_EFFICIENCY", "0.55")))
+)
+FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC = max(
+    0.0, float(os.getenv("FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC", "180"))
+)
 SYMBOL_ROTATION_MIN_SCORE_GAP = float(os.getenv("SYMBOL_ROTATION_MIN_SCORE_GAP", "5.0"))
 SYMBOL_ROTATION_MAX_CHANGES = int(os.getenv("SYMBOL_ROTATION_MAX_CHANGES", "3"))
-SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "7"))
+SYMBOL_MIN_LISTING_DAYS = int(os.getenv("SYMBOL_MIN_LISTING_DAYS", "14"))
 SYMBOL_MAX_24H_CHANGE_PCT = float(os.getenv("SYMBOL_MAX_24H_CHANGE_PCT", "50.0"))
+SYMBOL_MAX_FUNDING_RATE = float(os.getenv("SYMBOL_MAX_FUNDING_RATE", "0.0001"))
+# 輪替排序偏好「安全範圍內較高 ATR」的權重；ATR 超出 MAX_ATR_PCT 的幣仍
+# 會被原本的資格檢查淘汰，不會因追求波動而納入極端標的。
+VOLATILITY_ROTATION_WEIGHT = max(
+    0.0, float(os.getenv("VOLATILITY_ROTATION_WEIGHT", "25.0"))
+)
+# 以價格比例表示；0.0003 = 0.03%，不是 3%。
+SYMBOL_MIN_KC_WIDTH_PCT = float(os.getenv("SYMBOL_MIN_KC_WIDTH_PCT", "0.0003"))
+# Channel Swing 可接受強趨勢；100 僅排除異常值，不把高 ADX 強勢幣踢掉。
+SYMBOL_MAX_ADX_RANGE = float(os.getenv("SYMBOL_MAX_ADX_RANGE", "100.0"))
 # 最近 20 筆中樣本已足且持續負期望的幣，先退出新倉輪替；這不是永久黑名單，
 # 新資料改善或調整環境變數後即可重新入選。
 SYMBOL_HISTORY_QUARANTINE_MIN_TRADES = int(os.getenv("SYMBOL_HISTORY_QUARANTINE_MIN_TRADES", "8"))
@@ -786,10 +1133,9 @@ AI_ADVISOR_WEIGHT = float(os.getenv("AI_ADVISOR_WEIGHT", "0.05"))
 # 高流動性候選池。已退場或近期反覆停損的
 # TAO/FET/APT/WIF/1000PEPE/ETH 不放回自動候選池。
 SYMBOL_CANDIDATE_POOL = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "NEAR/USDT", "AVAX/USDT",
-    "SUI/USDT", "ONDO/USDT", "AAVE/USDT", "LINK/USDT", "LTC/USDT",
-    "DOGE/USDT", "BCH/USDT", "UNI/USDT", "OP/USDT", "ARB/USDT",
-    "BNB/USDT",
+    "AAVE/USDT", "ADA/USDT", "AVAX/USDT", "BCH/USDT", "DOGE/USDT",
+    "DOT/USDT", "ETC/USDT", "LINK/USDT", "LTC/USDT", "NEAR/USDT",
+    "SOL/USDT", "SUI/USDT", "TRX/USDT", "UNI/USDT", "XRP/USDT",
 ]
 
 # 實績已確認為負期望的幣種暫停新倉；既有持倉仍由原 SL/TP 管理。
@@ -797,7 +1143,7 @@ ENTRY_DISABLED_SYMBOLS = {
     symbol.strip()
     for symbol in os.getenv(
         "ENTRY_DISABLED_SYMBOLS",
-        "BNB/USDT,HYPE/USDT,SUI/USDT,SOL/USDT",
+        "",
     ).split(",")
     if symbol.strip()
 }
@@ -812,7 +1158,12 @@ SYMBOL_CANDIDATE_POOL[:] = [
 # 這只是啟動後第一次幣種輪替（約 30 秒內）之前的起始清單，之後會被
 # SymbolRotation.rotate() 依 SYMBOL_ROTATION_COUNT（24）覆寫，這裡先湊到
 # 24 檔只是讓開機當下的訊號掃描範圍跟輪替後一致。
-DEFAULT_SYMBOLS = sorted(MAINSTREAM_SYMBOLS)
+_env_symbols = os.getenv("DEFAULT_SYMBOLS", os.getenv("SYMBOLS", "")).strip()
+if _env_symbols:
+    DEFAULT_SYMBOLS = [s.strip() for s in _env_symbols.split(",") if s.strip()]
+else:
+    DEFAULT_SYMBOLS = sorted(MAINSTREAM_SYMBOLS)
+
 DEFAULT_SYMBOLS[:] = [
     symbol for symbol in DEFAULT_SYMBOLS if symbol not in ENTRY_DISABLED_SYMBOLS
 ]
@@ -825,8 +1176,9 @@ USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() == "true"
 
 # --- 每日虧損熔斷 ---
 # 當日已實現虧損達帳戶餘額（今日起始值）的此比例時，暫停開新倉；
-# 既有持倉的止損/止利仍正常運作，不受影響。隔天（台北時區）自動重置。
-MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0"))
+# 既有持倉的止損/止利仍正常運作，不受影響。設為 0 或負數可停用，供測試使用。
+# 隔天（台北時區）自動重置。
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "5.0"))
 
 # --- Email 警報 ---
 # 用 SMTP 寄送重大事件（開倉/平倉失敗、每日熔斷觸發等 DANGER 等級事件）。
@@ -844,4 +1196,35 @@ ENABLE_DCA_LIMIT = os.getenv("ENABLE_DCA_LIMIT", "false").lower() == "true"
 DCA_STAGE_DEPTHS = [float(d) for d in os.getenv("DCA_STAGE_DEPTHS", "0.03,0.05").split(",") if d.strip()]
 DCA_LIMIT_TIMEOUT_SEC = float(os.getenv("DCA_LIMIT_TIMEOUT_SEC", "14400.0"))
 
+# ====== 【改進方案】高分值陷阱保護 ======
+# 信號分數 95+ 時表現極差（勝率 33.33%，淨損 -19.4023），
+# 可能源於極端波動或流動性枯竭。在高分值時施加嚴格的 ATR_PCT 上限。
+HIGH_SCORE_ATR_LIMIT_PCT = float(os.getenv("HIGH_SCORE_ATR_LIMIT_PCT", "0.003"))
+HIGH_SCORE_THRESHOLD = int(os.getenv("HIGH_SCORE_THRESHOLD", "95"))
 
+# ====== 【改進方案】強化多頭過濾 ======
+# LONG 交易勝率 (53.42%) 與止損率 (24.66%) 均顯著遜於 SHORT。
+# 提高多頭進場的量能與 RSI 門檻，降低虛假突破的風險。
+KELTNER_MIN_WIDTH_ATR_MULT_LONG = float(os.getenv("KELTNER_MIN_WIDTH_ATR_MULT_LONG", "1.5"))
+SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG = float(os.getenv("SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG", "0.40"))
+SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED = float(os.getenv("SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED", "55"))
+
+# ====== 【改進方案】動態反彈確認進場 (Trailing Entry) ======
+# 解決「進場點位不夠漂亮，一進場就吃虧損」的問題。
+# 確認反彈幅度後才進場，避免在暴跌中接飛刀。
+ENABLE_TRAILING_ENTRY = os.getenv("ENABLE_TRAILING_ENTRY", "true").lower() == "true"
+TRAILING_REVERSAL_ATR_MULT = float(os.getenv("TRAILING_REVERSAL_ATR_MULT", "0.15"))
+TRAILING_ENTRY_TYPE = os.getenv("TRAILING_ENTRY_TYPE", "MARKET") # 可選 "MARKET" 或是 "LIMIT_CHASE" (暫定使用 MARKET 以確保進場)
+
+# ====== 【Simple MA5 Strategy】 ======
+TARGET_PERCENTAGE = float(os.getenv("TARGET_PERCENTAGE", "0.50"))
+MAX_NOTIONAL_USDT = float(os.getenv("MAX_NOTIONAL_USDT", "75.0"))
+MA5_ENTRY_ATR_CHANGE_MIN_RATIO = float(os.getenv("MA5_ENTRY_ATR_CHANGE_MIN_RATIO", "0.15"))
+MA5_EXIT_ATR_CHANGE_MIN_RATIO = float(os.getenv("MA5_EXIT_ATR_CHANGE_MIN_RATIO", "0.25"))
+FIXED_STOP_LOSS_PCT = float(os.getenv("FIXED_STOP_LOSS_PCT", "0.15"))
+TRAILING_STOP_ACTIVATION_PCT = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.0035"))
+TRAILING_STOP_RETAIN_PCT = float(os.getenv("TRAILING_STOP_RETAIN_PCT", "0.6"))
+MA5_MIN_ATR_PCT = float(os.getenv("MA5_MIN_ATR_PCT", "0.0005"))
+MA5_MAX_CANDLE_AMPLITUDE_MULT = float(os.getenv("MA5_MAX_CANDLE_AMPLITUDE_MULT", "3.0"))
+MA5_MAX_CLOSE_CHANGE_MULT = float(os.getenv("MA5_MAX_CLOSE_CHANGE_MULT", "3.0"))
+MA5_MARK_PRICE_DEV_PCT = float(os.getenv("MA5_MARK_PRICE_DEV_PCT", "0.005"))

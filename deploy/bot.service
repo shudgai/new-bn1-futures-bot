@@ -8,6 +8,8 @@ Type=simple
 ExecStart=/bin/bash -lc 'cd "/home/shudgai999/project/new bn" && ./start.sh'
 Restart=on-failure
 RestartSec=5
+RestartPreventExitStatus=73 74
+KillMode=control-group
 # 若想用 systemd 管理環境變數，可改用 EnvironmentFile=/etc/default/binance-bot
 Environment=PORT=8006
 Environment=TRADE_AMOUNT_USDT=50.0

@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from core.config import (
     STOP_LOSS_MULTIPLIER, TAKE_PROFIT_MULTIPLIER, TAKER_FEE_RATE, MIN_NET_REWARD_RISK,
+    MIN_REWARD_RISK_RATIO,
     SLIPPAGE_PCT,
     KELTNER_BREAKOUT_MARGIN_PCT, KELTNER_MIN_VOLUME_RATIO, FRESHNESS_DECAY_BARS,
     ENTRY_FRESHNESS_SCORE_MAX,
@@ -21,14 +22,16 @@ from core.config import (
     BTC_REGIME_FILTER_ENABLED, BTC_REGIME_ALLOW_CONTRARY,
     BTC_REGIME_FLIP_BUFFER_BARS, BTC_REGIME_SCORE_PENALTY,
     BTC_REGIME_ALLOCATION_FACTOR,
-    MA7_EARLY_ENTRY_ENABLED, MA7_EARLY_MIN_ATR_MULT, MA7_REVERSAL_MIN_ATR_MULT,
-    MA7_FAST_ENTRY_ENABLED, MA7_FAST_MIN_ATR_MULT, MA7_FAST_MAX_ATR_MULT,
-    MA7_FAST_MIN_VOLUME_RATIO, MA7_DYNAMIC_ATR_FLOOR_PCT,
-    MA7_BOTTOM_ENTRY_ENABLED, MA7_BOTTOM_OFFSET_ATR_MULT,
+    MA5_EARLY_ENTRY_ENABLED, MA5_EARLY_MIN_ATR_MULT, MA5_REVERSAL_MIN_ATR_MULT,
+    MA5_FAST_ENTRY_ENABLED, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
+    MA5_FAST_MIN_VOLUME_RATIO, MA5_DYNAMIC_ATR_FLOOR_PCT,
+    MA5_BOTTOM_ENTRY_ENABLED, MA5_BOTTOM_OFFSET_ATR_MULT,
+    MA2_CONFIRMATION_LOOKBACK_BARS,
     BOTTOM_FILTER_ENABLED, BOTTOM_OVERSOLD_RSI_15M_LIMIT, BOTTOM_OVERBOUGHT_RSI_15M_LIMIT,
     STRUCTURED_VOLUME_MIN_RATIO, STRUCTURED_SWING_LOOKBACK,
     STRUCTURED_SUPPORT_NEAR_ATR, STRUCTURED_RSI_LONG_TRIGGER,
     STRUCTURED_RSI_SHORT_TRIGGER, ENABLE_MOMENTUM_CROSS_ENTRY, ENABLE_BREAKOUT_ENTRY,
+    MOMENTUM_CROSS_REQUIRE_CONTINUATION, MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT,
     BREAKOUT_ENTRY_SCORE,
     ENABLE_1H_EMA50_FILTER, STRUCTURED_1H_EMA50_TOLERANCE_PCT,
     SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_SHORT_MAX,
@@ -39,13 +42,136 @@ from core.config import (
     TREND_EXTENSION_MIN_ROOM_PCT, TREND_EXTENSION_MIN_VOLUME_RATIO,
     TREND_EXTENSION_MIN_BODY_ATR_MULT, MIN_ENTRY_PROFIT_ROOM_PCT,
     get_bounce_capture_ratio,
+    HIGH_SCORE_ATR_LIMIT_PCT, HIGH_SCORE_THRESHOLD,
+    KELTNER_MIN_WIDTH_ATR_MULT_LONG, SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG,
+    SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED,
+    EXHAUSTION_SNIPER_LOOKBACK_BARS, EXHAUSTION_SNIPER_VOLUME_RATIO,
+    EXHAUSTION_SNIPER_RSI_LONG_MAX, EXHAUSTION_SNIPER_RSI_SHORT_MIN,
+    EXHAUSTION_SNIPER_STOP_LOSS_PCT,
 )
-from core.indicators import bars_since_supertrend_flip
+import core.config as _core_config
+
+# Ensure runtime config edits are respected when this module is reloaded during tests
+STRUCTURED_SUPPORT_NEAR_ATR = getattr(_core_config, "STRUCTURED_SUPPORT_NEAR_ATR", STRUCTURED_SUPPORT_NEAR_ATR)
+from core.indicators import (
+    bars_since_supertrend_flip,
+    evaluate_minimum_kc_wave,
+    get_dynamic_adx_floor,
+)
 from core.config import (
     ADX_DECLINE_LOOKBACK_BARS, ADX_DECLINE_MIN_DROP, ADX_DECLINE_MIN_DROP_RATIO,
     KC_TOUCH_LOOKBACK_BARS,
     MAINSTREAM_SYMBOLS, VOLUME_DIVERGENCE_LOOKBACK_BARS, VOLUME_DIVERGENCE_MAX_RATIO,
+    PRICE_NEAR_SUPPORT_PCT,
 )
+
+
+def check_ma3_trend(df: pd.DataFrame, lookback: int = 3) -> int:
+    """檢查MA3的趨勢方向。
+    返回值：
+    - 1: MA3上升趨勢（適合LONG）
+    - -1: MA3下降趨勢（適合SHORT）
+    - 0: MA3平盤或資料不足
+    """
+    if df is None or len(df) < lookback + 1:
+        return 0
+    
+    if "ma3" not in df.columns:
+        return 0
+    
+    ma3_values = df["ma3"].tail(lookback + 1).values
+    # 過濾NaN值
+    ma3_values = ma3_values[~np.isnan(ma3_values)]
+    
+    if len(ma3_values) < 2:
+        return 0
+    
+    # 檢查最近幾根是否持續上升或下降
+    ma3_diffs = np.diff(ma3_values)
+    
+    # 計算上升和下降的根數
+    uptrend_count = np.sum(ma3_diffs > 0)
+    downtrend_count = np.sum(ma3_diffs < 0)
+    
+    # 如果上升根數明顯多於下降，認為是上升趨勢
+    if uptrend_count > downtrend_count:
+        return 1
+    # 如果下降根數明顯多於上升，認為是下降趨勢
+    elif downtrend_count > uptrend_count:
+        return -1
+    else:
+        return 0
+
+
+def detect_strong_green_candle_burst(df: pd.DataFrame) -> dict:
+    """檢測強勢多單訊號：綠K（多K）從中軌衝到外軌外。
+    
+    返回值：
+    {
+        "detected": bool,  # 是否偵測到強勢多單
+        "side": "LONG",    # 訊號方向（恆為LONG）
+        "price": float,    # 當前價格
+        "kc_upper": float, # 上軌價格
+        "kc_middle": float,# 中軌價格
+        "reason": str,     # 詳細原因
+    }
+    """
+    result = {
+        "detected": False,
+        "side": None,
+        "price": None,
+        "kc_upper": None,
+        "kc_middle": None,
+        "in_outer_rail": False,
+        "reason": "未偵測到強勢多單",
+    }
+    
+    if df is None or len(df) < 2:
+        return result
+    
+    # 檢查必要欄位
+    required = {"open", "close", "high", "kc_upper", "ema_20"}
+    if not required.issubset(df.columns):
+        return result
+    
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    candle_open = float(curr.get("open", 0))
+    candle_close = float(curr.get("close", 0))
+    candle_high = float(curr.get("high", 0))
+    kc_upper = float(curr.get("kc_upper", 0))
+    kc_middle = float(curr.get("ema_20", 0))  # 中軌 = EMA20
+    
+    # 檢查是否是綠K（收盤 > 開盤）
+    is_green_candle = candle_close > candle_open
+    if not is_green_candle:
+        return result
+    
+    # 檢查前一根K是否在中軌附近或下方
+    prev_close = float(prev.get("close", 0))
+    prev_below_middle = prev_close <= kc_middle * 1.01  # 允許1%誤差範圍
+    
+    # 檢查當前K的高點是否衝到外軌上方
+    broke_upper = candle_high > kc_upper
+    
+    # 檢查是否在外軌以上（用於多單持有決策）
+    is_in_outer_rail = candle_close > kc_upper
+    
+    if is_green_candle and broke_upper:
+        # 確認是從中軌附近衝出來的
+        if prev_below_middle or candle_open <= kc_middle * 1.01:
+            result.update({
+                "detected": True,
+                "side": "LONG",
+                "price": candle_close,
+                "kc_upper": kc_upper,
+                "kc_middle": kc_middle,
+                "in_outer_rail": is_in_outer_rail,
+                "reason": f"強勢多單信號：綠K從中軌衝到外軌外 (high={candle_high:.4f}>${kc_upper:.4f})",
+            })
+    
+    return result
 
 
 def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
@@ -73,11 +199,13 @@ def has_volume_divergence(df: pd.DataFrame, want_dir: int) -> bool:
     return float(recent['high'].max()) >= float(early['high'].max())
 
 def detect_macd_divergence(df: pd.DataFrame, side: str, lookback: int = 30) -> bool:
+    if not getattr(_core_config, "ENABLE_MACD_DIVERGENCE_FILTER", True):
+        return False
     if len(df) < lookback + 5:
         return False
     closes = df['close'].values
     macd_hists = df['macd_hist'].values
-    
+
     if side == "LONG":
         # Bullish divergence: price is making new lows but MACD hist is rising
         min_price_idx = -lookback + np.argmin(closes[-lookback:-3])
@@ -89,6 +217,120 @@ def detect_macd_divergence(df: pd.DataFrame, side: str, lookback: int = 30) -> b
         if closes[-1] >= closes[max_price_idx] * 0.99 and macd_hists[-1] < macd_hists[max_price_idx] - 1e-6:
             return True
     return False
+
+
+def is_tail_end_rebound_guard(
+    df: pd.DataFrame,
+    side: str,
+    price: float,
+    atr: float,
+    volume_ratio: float,
+    recent_bars: int = 8,
+    near_extreme_pct: float = 0.015,
+    weak_volume_ratio: float = 0.90,
+) -> bool:
+    """拒絕反彈尾段的最後一口：價格已接近最近極值，但量能弱且沒有延續。
+
+    這正是你前面那幾筆最典型的敗因：價格只是回到前高/前低附近，並沒有
+    形成確實的突破或持續動能，最後一筆反彈很容易在沒有延續時直接回吐，
+    把前面已獲利的部位整個吞掉。
+    """
+    if df is None or len(df) < recent_bars:
+        return False
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        return False
+    atr = float(atr or 0.0)
+    if atr <= 0:
+        return False
+
+    recent = df.iloc[-recent_bars:]
+    if side == "LONG":
+        recent_high = float(recent["high"].max())
+        prev_high = float(recent.iloc[:-1]["high"].max()) if len(recent) > 1 else recent_high
+        last_close = float(recent["close"].iloc[-1])
+        close_recent = float(recent["close"].iloc[-3]) if len(recent) >= 3 else last_close
+        near_extreme = price >= recent_high * (1.0 - near_extreme_pct)
+        no_follow_through = (
+            float(recent["high"].iloc[-1]) <= prev_high * 1.002
+            and last_close <= close_recent + 0.25 * atr
+        )
+        weak_flow = volume_ratio < weak_volume_ratio
+        return near_extreme and no_follow_through and weak_flow
+
+    recent_low = float(recent["low"].min())
+    prev_low = float(recent.iloc[:-1]["low"].min()) if len(recent) > 1 else recent_low
+    last_close = float(recent["close"].iloc[-1])
+    close_recent = float(recent["close"].iloc[-3]) if len(recent) >= 3 else last_close
+    near_extreme = price <= recent_low * (1.0 + near_extreme_pct)
+    no_follow_through = (
+        float(recent["low"].iloc[-1]) >= prev_low * 0.998
+        and last_close >= close_recent - 0.25 * atr
+    )
+    weak_flow = volume_ratio < weak_volume_ratio
+    return near_extreme and no_follow_through and weak_flow
+
+
+def evaluate_entry_quality_gate(
+    side: str,
+    price: float,
+    atr: float,
+    volume_ratio: float,
+    score: int,
+    df: pd.DataFrame | None = None,
+    min_rr: float = MIN_NET_REWARD_RISK,
+    min_volume_ratio: float = KELTNER_MIN_VOLUME_RATIO,
+):
+    """進場品質檢查：只攔截真正高風險、低價值的進場型態，而不是一刀切封死所有交易。
+
+    目標是保留正常趨勢/高品質交易，同時排除以下高虧損潛力的情況：
+      - 尾段反彈、接近極值
+      - 量能弱
+      - 盈虧比低
+      - 高分值但無真動能
+    """
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        return {"blocked": False, "reason": "side invalid"}
+
+    price = float(price or 0.0)
+    atr = float(atr or 0.0)
+    if price <= 0 or atr <= 0:
+        return {"blocked": False, "reason": "price/atr invalid", "kind": "skip"}
+
+    volume_ratio = float(volume_ratio or 0.0)
+    if volume_ratio < float(min_volume_ratio):
+        # 低量能不一定全都該擋，但當它連同尾端反彈、RR 低等條件同時出現時，
+        # 才判定為高風險進場；否則讓正常趨勢進場仍可存在。
+        if score >= 80 and df is not None and is_tail_end_rebound_guard(
+            df=df, side=side, price=price, atr=atr, volume_ratio=volume_ratio
+        ):
+            return {
+                "blocked": True,
+                "reason": f"量能不足且接近尾端反彈：{volume_ratio:.2f}x < {float(min_volume_ratio):.2f}x，拒絕開倉（分數 {score}）",
+                "kind": "volume_tailend",
+            }
+        return {"blocked": False, "reason": "weak volume but not tail-end risk", "kind": "volume_soft_skip"}
+
+    sl_distance = max(atr * STOP_LOSS_MULTIPLIER, price * MIN_SL_DISTANCE_PCT)
+    tp_distance = max(atr * TAKE_PROFIT_MULTIPLIER, sl_distance * min_rr)
+    sl_price = price - sl_distance if side == "LONG" else price + sl_distance
+    reward_pct = tp_distance / price
+    net_rr, _, _ = compute_net_reward_risk(price, sl_price, reward_pct)
+    if net_rr < float(min_rr):
+        # 低 RR 只在分數高且進場風險明確的情況下攔截；正常高品質價值交易不被一刀切。
+        if score >= 80 and df is not None and is_tail_end_rebound_guard(
+            df=df, side=side, price=price, atr=atr, volume_ratio=volume_ratio
+        ):
+            return {
+                "blocked": True,
+                "reason": f"盈虧比不足且接近尾端反彈：淨風報比 {net_rr:.2f}:1 < {float(min_rr):.2f}:1，拒絕開倉（分數 {score}）",
+                "kind": "rr_tailend",
+            }
+        return {"blocked": False, "reason": "low RR but not tail-end risk", "kind": "rr_soft_skip"}
+
+    return {"blocked": False, "reason": "quality ok", "kind": "pass"}
+
 
 def compute_pullback_target(
     kc_edge: float, ema_20: float, atr: float, side: str, score: int
@@ -146,6 +388,98 @@ def classify_btc_regime(
     return context
 
 
+def build_sl_tp_for_side(
+    price: float,
+    side: str,
+    sl_distance: float,
+    tp_distance: float = None,
+) -> tuple[float, float]:
+    """依方向計算真正的 SL/TP 價格，並強制保證：
+    - LONG: SL < price < TP
+    - SHORT: TP < price < SL
+    - 啟用固定 TP 時，TP 嚴格使用設定百分比；否則維持最低風報比。
+    """
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        raise ValueError(f"Unsupported side: {side}")
+
+    sl_distance = float(abs(sl_distance or 0.0))
+    fixed_tp_pct = float(getattr(_core_config, "FIXED_TAKE_PROFIT_PCT", 0.0))
+    tp_distance = (
+        price * fixed_tp_pct if fixed_tp_pct > 0
+        else max(float(abs(tp_distance if tp_distance is not None else sl_distance)),
+                 sl_distance * MIN_REWARD_RISK_RATIO)
+    )
+
+    if side == "LONG":
+        sl, tp = price - sl_distance, price + tp_distance
+    else:
+        sl, tp = price + sl_distance, price - tp_distance
+    validate_sl_tp_pair(price, side, sl, tp)
+    return sl, tp
+
+
+def validate_sl_tp_pair(
+    price: float,
+    side: str,
+    sl: float,
+    tp: float,
+    *,
+    allow_profit_lock: bool = False,
+) -> None:
+    """驗證保護價。
+
+    初始訂單強制套用毛風報比下限；追蹤停損已越過成本價時沒有下行風險，
+    呼叫端可用 ``allow_profit_lock=True`` 驗證價位順序而不套用初始 R:R。
+    """
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"}:
+        raise ValueError(f"Unsupported side: {side}")
+    price = float(price)
+    sl = float(sl)
+    tp = float(tp)
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError(f"Invalid price for SL/TP validation: {price!r}")
+
+    # allow_profit_lock=True 代表追蹤停損可能已經越過成本價（例如鎖利），
+    # 此時 sl 在 LONG 高於現價、SHORT 低於現價都是正常狀態，不能套用
+    # 「初始下單」才成立的 sl 必須在價格不利側的檢查，否則這個參數形同虛設。
+    if sl != 0.0 and not allow_profit_lock:
+        if side == "LONG" and not (sl < price):
+            raise ValueError(f"LONG SL invalid: price={price}, sl={sl}")
+        if side == "SHORT" and not (sl > price):
+            raise ValueError(f"SHORT SL invalid: price={price}, sl={sl}")
+
+    # tp=0 代表不設固定止盈，由 trailing 或動態指標出場。
+    if tp == 0.0:
+        return
+
+    if not all(math.isfinite(value) for value in (sl, tp)):
+        raise ValueError(f"Non-finite SL/TP: sl={sl!r}, tp={tp!r}")
+
+    if allow_profit_lock:
+        if side == "LONG" and not (sl < tp):
+            raise ValueError(f"LONG trailing SL must remain below TP: sl={sl}, tp={tp}")
+        if side == "SHORT" and not (tp < sl):
+            raise ValueError(f"SHORT trailing SL must remain above TP: sl={sl}, tp={tp}")
+        return
+
+    if side == "LONG":
+        if not (sl < price < tp):
+            raise ValueError(f"LONG SL/TP invalid: price={price}, sl={sl}, tp={tp}")
+        gross_rr = abs(tp - price) / max(abs(price - sl), 1e-12)
+    else:
+        if not (tp < price < sl):
+            raise ValueError(f"SHORT SL/TP invalid: price={price}, sl={sl}, tp={tp}")
+        gross_rr = abs(price - tp) / max(abs(sl - price), 1e-12)
+    fixed_tp_pct = float(getattr(_core_config, "FIXED_TAKE_PROFIT_PCT", 0.0))
+    if fixed_tp_pct <= 0 and gross_rr + 1e-12 < MIN_REWARD_RISK_RATIO:
+        raise ValueError(
+            f"{side} reward/risk {gross_rr:.3f}:1 below minimum "
+            f"{MIN_REWARD_RISK_RATIO:.3f}:1"
+        )
+
+
 def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
     """算出止損/止盈距離，並套用 MIN_SL_DISTANCE_PCT 下限，避免低波動期間
     ATR 太小導致止損距離縮到容易被雜訊掃出的地步。回傳 (sl_distance, tp_distance)。
@@ -162,6 +496,9 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
         sl_distance = min(sl_distance, price * float(MAX_SL_DISTANCE_PCT))
     except Exception:
         pass
+    fixed_tp_pct = float(getattr(_core_config, "FIXED_TAKE_PROFIT_PCT", 0.0))
+    if fixed_tp_pct > 0:
+        return sl_distance, price * fixed_tp_pct
     configured_tp_distance = base_sl_distance * (
         TAKE_PROFIT_MULTIPLIER / max(STOP_LOSS_MULTIPLIER, 1e-9)
     )
@@ -171,9 +508,8 @@ def compute_sl_tp_distance(price: float, atr: float) -> tuple[float, float]:
         MIN_NET_REWARD_RISK * net_risk_per_unit + 2 * price * fee_rate
     ) / max(1 - fee_rate, 1e-9)
     tp_distance = max(configured_tp_distance, min_tp_distance)
-    # 確保止盈距離不小於止損距離，避免出現「停損大於停利」的情形。
-    if tp_distance < sl_distance:
-        tp_distance = sl_distance
+    # 即使環境誤把 ATR 倍數設反，仍維持初始毛風報比硬下限。
+    tp_distance = max(tp_distance, sl_distance * MIN_REWARD_RISK_RATIO)
     return sl_distance, tp_distance
 
 
@@ -202,273 +538,156 @@ def compute_net_reward_risk(
     return ratio, net_reward, net_risk
 
 
-def detect_ma7_reversal(
+def check_exhaustion_entry_filters(df: pd.DataFrame, side: str) -> dict:
+    """最近三根已收盤K中，同一根須同時通過KC、RSI與1.5倍量能。"""
+    wanted_side = str(side).upper()
+    required = {"high", "low", "volume", "vol_ma_20", "kc_upper", "kc_lower", "rsi"}
+    if df is None or len(df) < EXHAUSTION_SNIPER_LOOKBACK_BARS or not required.issubset(df.columns):
+        return {"passed": False, "reason": "KC／RSI／量能資料不足"}
+    recent = df.iloc[-EXHAUSTION_SNIPER_LOOKBACK_BARS:]
+    edge_seen = False
+    rsi_seen = False
+    for age, (_, candle) in enumerate(recent.iloc[::-1].iterrows()):
+        edge = (
+            float(candle["low"]) <= float(candle["kc_lower"])
+            if wanted_side == "LONG"
+            else float(candle["high"]) >= float(candle["kc_upper"])
+        )
+        if not edge:
+            continue
+        edge_seen = True
+        rsi = float(candle["rsi"])
+        rsi_ok = (
+            rsi < EXHAUSTION_SNIPER_RSI_LONG_MAX
+            if wanted_side == "LONG"
+            else rsi > EXHAUSTION_SNIPER_RSI_SHORT_MIN
+        )
+        if not rsi_ok:
+            continue
+        rsi_seen = True
+        volume_ma = float(candle["vol_ma_20"]) if not pd.isna(candle["vol_ma_20"]) else 0.0
+        volume_ratio = float(candle["volume"]) / volume_ma if volume_ma > 0 else 0.0
+        if volume_ratio <= EXHAUSTION_SNIPER_VOLUME_RATIO:
+            continue
+        return {
+            "passed": True, "reason": "KC＋RSI＋1.5倍量能通過",
+            "extreme_age_bars": age, "extreme_rsi": rsi,
+            "extreme_volume_ratio": volume_ratio,
+        }
+    if not edge_seen:
+        reason = f"最近{EXHAUSTION_SNIPER_LOOKBACK_BARS}根未觸及KC極端"
+    elif not rsi_seen:
+        reason = "KC極端K的RSI未達門檻"
+    else:
+        reason = f"同一根極端K量能未大於{EXHAUSTION_SNIPER_VOLUME_RATIO:g}x"
+    return {"passed": False, "reason": reason}
+
+
+def detect_ma5_reversal(
     df: pd.DataFrame,
     side: str,
     ema_50_1h: float = None,
     st_direction_1h: int = None,
     btc_st_direction_1h: int = 0,
     btc_st_flip_age: int = 999,
+    btc_1m_turn: str = None,
     symbol: str = None,
     parameter_overrides: dict = None,
     indicators_precomputed: bool = False,
     live_price: float = None,
+    require_strict_v: bool = False,
 ) -> dict:
-    """1m MA7 回撤底部預掛與谷底（多單）/峰頂（空單）拐頭偵測。
-
-    觸發條件（以多單為例）：
-      ma7[-3] > ma7[-2] and ma7[-1] > ma7[-2]
-    即前一根 MA7 低於兩根前（確立谷底），且當前 MA7 已向上翻。
-
-    需同時通過：
-      - SuperTrend 方向對齊
-      - 1h ST 方向對齊（若啟用）
-      - ADX / ATR / RSI 基礎品質過濾
-      - BTC 大盤守門員
-      - KC 位置驗證：現價在 EMA20 同側（不能整個跑到通道另一邊）
-
-    回傳 {"detected": True/False, "reason": str, ...}
-    """
-    if len(df) < 20:
-        return {"detected": False, "reason": "K線資料不足"}
-
-    if not indicators_precomputed:
-        df = SuperTrendKeltnerStrategy().compute_indicators(df)
-
-    overrides = dict(parameter_overrides or {})
-    atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
-    rsi_long_max = float(overrides.get("rsi_long_max", RSI_LONG_MAX))
-    rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
-
-    curr = df.iloc[-1]
-    closed_price = (
-        curr['close_price_spike_filtered']
-        if ('close_price_spike_filtered' in curr and not pd.isna(curr['close_price_spike_filtered']))
-        else curr['close']
-    )
-    price = float(live_price) if live_price is not None and float(live_price) > 0 else float(closed_price)
-    atr = curr['atr'] if not np.isnan(curr['atr']) else price * 0.015
-    rsi = curr['rsi']
-    adx = curr['adx'] if not np.isnan(curr['adx']) else 0.0
-    vol = curr['volume']
-    vol_ma_20 = curr['vol_ma_20'] if not np.isnan(curr['vol_ma_20']) else 0
-    ema_20 = curr['ema_20'] if not pd.isna(curr['ema_20']) else price
-    kc_upper = curr['kc_upper']
-    kc_lower = curr['kc_lower']
-    st_dir = int(curr['st_direction'])
-    want_dir = 1 if str(side).upper() == "LONG" else -1
-
-    # 提前計算品質分數（用於狀態待命時顯示預估分數，上限 89 避免誤觸 CURRENT_MAKER 路徑）
-    score = 65  # 固定評分基準；不得隨開倉門檻上調而灌高訊號分數
-    if vol_ma_20 > 0 and vol >= vol_ma_20 * KELTNER_MIN_VOLUME_RATIO:
-        score += 10  # 量能確認
-    if want_dir == 1 and rsi >= RSI_LONG_THRESHOLD:
-        score += 5
-    elif want_dir == -1 and rsi <= RSI_SHORT_THRESHOLD:
-        score += 5
-    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
-    score += round(min(max(adx_ratio, 0.0), 1.0) * 9)  # ADX 品質最多 +9
-    score = min(score, 89)
+    """偵測 1m Exhaustion Sniper；傳入資料必須只包含已收盤 K。"""
+    wanted_side = str(side).upper()
 
     def _no(reason: str) -> dict:
-        return {"detected": False, "reason": reason, "side": side, "score": score}
+        return {"detected": False, "reason": reason, "side": wanted_side, "score": 0}
 
-    # SuperTrend 方向對齊
-    if st_dir != want_dir:
-        return _no(f"SuperTrend方向不符（{st_dir}≠{want_dir}）")
+    required = {"open", "high", "low", "close", "volume", "kc_upper", "kc_lower", "rsi"}
+    if len(df) < 20 or not required.issubset(df.columns):
+        return _no("Exhaustion Sniper 指標資料不足")
 
-    # 1h SuperTrend 方向檢查已禁用，允許逆勢進場以增加開倉機會
+    work = df.copy()
+    if "ma3" not in work.columns:
+        work["ma3"] = work["close"].rolling(window=3).mean()
+    if "vol_ma_20" not in work.columns:
+        work["vol_ma_20"] = work["volume"].rolling(window=20).mean()
+    if len(work["ma3"].dropna()) < 3:
+        return _no("MA3資料不足")
 
-    # BTC 大盤守門員
-    btc_regime = classify_btc_regime(
-        st_dir, btc_st_direction_1h, btc_st_flip_age, symbol=symbol,
+    ma3_curr = float(work["ma3"].iloc[-1])
+    ma3_prev = float(work["ma3"].iloc[-2])
+    ma3_prev2 = float(work["ma3"].iloc[-3])
+    is_long = wanted_side == "LONG"
+    strict_turn = (
+        ma3_prev2 > ma3_prev and ma3_curr > ma3_prev
+        if is_long
+        else ma3_prev2 < ma3_prev and ma3_curr < ma3_prev
     )
-    if btc_regime["hard_block"]:
-        if btc_regime["mode"] == "CONTRARY":
-            return _no("BTC 1h方向背離，禁止逆大盤進場")
-        return _no(f"BTC_JustFlipped({btc_st_flip_age}bars)")
+    if not strict_turn:
+        return _no("MA3 尚未形成嚴格V型反轉" if is_long else "MA3 尚未形成嚴格倒V型反轉")
 
-    # 1h EMA50 方向檢查已禁用，允許逆勢進場
+    recent = work.iloc[-EXHAUSTION_SNIPER_LOOKBACK_BARS:]
+    edge_seen = False
+    rsi_seen = False
+    event = None
+    event_age = None
+    for age, (_, candle) in enumerate(recent.iloc[::-1].iterrows()):
+        edge = (
+            float(candle["low"]) <= float(candle["kc_lower"])
+            if is_long
+            else float(candle["high"]) >= float(candle["kc_upper"])
+        )
+        if not edge:
+            continue
+        edge_seen = True
+        rsi = float(candle["rsi"])
+        rsi_ok = rsi < EXHAUSTION_SNIPER_RSI_LONG_MAX if is_long else rsi > EXHAUSTION_SNIPER_RSI_SHORT_MIN
+        if not rsi_ok:
+            continue
+        rsi_seen = True
+        volume_ma = float(candle["vol_ma_20"]) if not pd.isna(candle["vol_ma_20"]) else 0.0
+        volume_ratio = float(candle["volume"]) / volume_ma if volume_ma > 0 else 0.0
+        if volume_ratio <= EXHAUSTION_SNIPER_VOLUME_RATIO:
+            continue
+        event = candle
+        event_age = age
+        break
 
-    # ADX 硬性最低門檻 (動態調整：若 1h 趨勢對齊，放寬至 8.0)
-    dynamic_adx_min = ADX_MANDATORY_MIN
-    if st_direction_1h == want_dir:
-        dynamic_adx_min = max(8.0, ADX_MANDATORY_MIN - 2.0)
-    if adx < dynamic_adx_min:
-        return _no(f"ADX太低({adx:.1f}<{dynamic_adx_min})")
+    if event is None:
+        if not edge_seen:
+            return _no(f"最近{EXHAUSTION_SNIPER_LOOKBACK_BARS}根未觸及Keltner極端邊界")
+        if not rsi_seen:
+            threshold = EXHAUSTION_SNIPER_RSI_LONG_MAX if is_long else EXHAUSTION_SNIPER_RSI_SHORT_MIN
+            operator = "<" if is_long else ">"
+            return _no(f"Keltner極端K的RSI未達{operator}{threshold:g}")
+        return _no(f"同一根極端K的量能未大於{EXHAUSTION_SNIPER_VOLUME_RATIO:g}x")
 
-    # SuperTrend 翻轉後已過根數 — 防趨勢尾部進場
-    # FRESHNESS_DECAY_BARS 是新鮮度衰減到 0 的根數上限，若超過其 70%
-    # 代表這根 ST 翻轉已相當陳舊，MA7 拐頭很可能只是尾部震盪，不再進場。
-    st_flip_age = bars_since_supertrend_flip(df['st_direction'])
-    max_allowed_flip_age = int(FRESHNESS_DECAY_BARS * 0.70)
-    if st_flip_age > max_allowed_flip_age:
-        return _no(f"SuperTrend翻轉過舊({st_flip_age}根>{max_allowed_flip_age}根)，趨勢尾部不進場")
-
-    # ADX 衰退且已低於能量門檻 — 動能退潮，硬性擋單（與主路徑 ADX_DECLINING_EXHAUSTED 對齊）。
-    # 絕對門檻原本用 ADX_QUALITY_MIN(15)，但實測 ONDO/USDT 這筆 ADX 從
-    # 36.3 一路衰退到 20 左右進場，衰退幅度很明顯（跌43%）卻因為還沒
-    # 低於15分而完全沒被擋到，進場後就遇到窄幅雜訊盤整停損。改用
-    # WEAK_ENERGY_ADX_THRESHOLD(22)，跟槓桿封頂門檻共用同一套「能量」
-    # 標準，衰退到這個中等能量區間就直接擋單，不再只是降槓桿了事。
-    adx_lookback_idx = len(df) - 1 - ADX_DECLINE_LOOKBACK_BARS
-    adx_prior = df['adx'].iloc[adx_lookback_idx] if adx_lookback_idx >= 0 else float('nan')
-    adx_drop = (float(adx_prior) - float(adx)) if not math.isnan(float(adx_prior)) else 0.0
-    adx_declining_exhausted = (
-        not math.isnan(float(adx_prior))
-        and adx_drop >= max(ADX_DECLINE_MIN_DROP, float(adx_prior) * ADX_DECLINE_MIN_DROP_RATIO)
-        and adx < WEAK_ENERGY_ADX_THRESHOLD
-    )
-    if adx_declining_exhausted:
-        return _no(f"ADX動能衰退({adx:.1f}<{WEAK_ENERGY_ADX_THRESHOLD},跌{adx_drop:.1f})，趨勢尾部不進場")
-
-    # ATR 波動範圍
-    atr_pct = atr / price if price > 0 else 0
-    if atr_pct > MAX_ATR_PCT:
-        return _no(f"ATR過高({atr_pct:.2%})")
-    
-    # 計算最近 6 小時（72 根 5m K棒）的平均 ATR% 作為動態底線參考。
-    # 絕對下限由設定控制，讓低波動期可適度放寬，但仍排除幾乎無波動的雜訊。
-    atr_pct_series = df['atr'] / df['close']
-    rolling_atr_pct = float(atr_pct_series.rolling(window=72, min_periods=12).mean().iloc[-1])
-    dynamic_atr_min = min(
-        atr_min_pct,
-        max(MA7_DYNAMIC_ATR_FLOOR_PCT, rolling_atr_pct * 0.7),
-    )
-    is_contrarian_bottom_buy = False
-    if atr_pct < dynamic_atr_min:
-        # 主流幣量縮背離例外：波動雖低，但價格仍創新高/新低、量能卻明顯
-        # 萎縮，代表主力收手動能耗盡準備反轉，不是無動能的雜訊盤整，
-        # 允許繞過波動過低限制（僅此一項，其餘過濾條件不受影響）。
-        if symbol in MAINSTREAM_SYMBOLS and has_volume_divergence(df, want_dir):
-            pass
-        else:
-            # 逆勢承接（MA7_ContrarianBottomBuy）已停用：實測17%勝率、
-            # 12筆虧損7.18U，就算加上量能確認/縮小倉位/2根K棒確認等風控，
-            # 依然是跟1h趨勢對作，方向判斷本身不準的問題無法靠風控修正。
-            # 保留 is_contrarian_bottom_buy 相關的下游程式碼（分數/倉位/
-            # 移動停利觸發門檻），未來若要重新啟用只需在這裡恢復翻轉邏輯。
-            return _no(f"ATR過低({atr_pct:.2%}<{dynamic_atr_min:.2%})")
-
-    # RSI 過熱/過冷
-    if want_dir == 1 and rsi > rsi_long_max:
-        return _no(f"RSI過熱({rsi:.1f}>{rsi_long_max:.1f})")
-    if want_dir == -1 and rsi < rsi_short_min:
-        return _no(f"RSI過冷({rsi:.1f}<{rsi_short_min:.1f})")
-
-    # ── 結合方案：突破 Keltner 通道 (KC) + MACD/RSI 動能指標偏強 ──
-    # 1. 價格突破 KC 軌道
-    is_breakout = False
-    if want_dir == 1:
-        if price > kc_upper:
-            is_breakout = True
-        else:
-            return _no(f"價格未突破KC上軌（{price:.6g}<={kc_upper:.6g}）")
-    else:
-        if price < kc_lower:
-            is_breakout = True
-        else:
-            return _no(f"價格未突破KC下軌（{price:.6g}>={kc_lower:.6g}）")
-
-    # 2. MACD 零軸上方黃金交叉 / 多頭動能確認
-    if 'macd_line' not in df.columns:
-        return _no("MACD指標未計算")
-    macd_line = float(curr['macd_line'])
-    macd_signal = float(curr['macd_signal'])
-    macd_hist = float(curr['macd_hist'])
-
-    macd_ok = False
-    if want_dir == 1:
-        # MACD 黃金交叉且柱狀體為正
-        if macd_line > macd_signal and macd_hist > 0:
-            macd_ok = True
-        else:
-            return _no(f"MACD未呈現多頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
-    else:
-        # MACD 死亡交叉且柱狀體為負
-        if macd_line < macd_signal and macd_hist < 0:
-            macd_ok = True
-        else:
-            return _no(f"MACD未呈現空頭動能（DIF={macd_line:.6g}, DEA={macd_signal:.6g}, HIST={macd_hist:.6g}）")
-
-    # 3. RSI 突破 50 (多頭動能確認)
-    rsi_ok = False
-    if want_dir == 1:
-        if rsi >= 50.0:
-            rsi_ok = True
-        else:
-            return _no(f"RSI低於50（RSI={rsi:.1f}）")
-    else:
-        if rsi <= 50.0:
-            rsi_ok = True
-        else:
-            return _no(f"RSI高於50（RSI={rsi:.1f}）")
-
-    # 4. 成交量放大 (Volume Ratio >= 1.0)
-    volume_ratio = float(vol / vol_ma_20) if vol_ma_20 > 0 else 0.0
-    if volume_ratio < 1.0:
-        return _no(f"成交量未放大（Volume Ratio={volume_ratio:.2f}<1.0）")
-
-    # 所有核心條件均通過！開始設定訊號評分
-    score = 72  # 基礎分高於 MIN_SCORE_THRESHOLD (71)
-    if volume_ratio >= 1.5:
-        score += 10
-    if want_dir == 1 and rsi >= 58.0:
-        score += 7
-    elif want_dir == -1 and rsi <= 42.0:
-        score += 7
-    adx_ratio = (adx - ADX_MANDATORY_MIN) / max(ADX_QUALITY_FULL - ADX_MANDATORY_MIN, 1.0)
-    score += round(min(max(adx_ratio, 0.0), 1.0) * 10)  # ADX 品質最多 +10
-    score = min(score, 89)
-
-    # 計算結構性止損位（參考過去 6 根已收盤 K 棒的波段高低點與 KC 軌道，外加 0.05 * ATR 緩衝避免精準掃單）
-    past_6_bars = df.iloc[-7:-1]
-    if want_dir == 1:
-        swing_low = float(past_6_bars['low'].min())
-        kc_lower_val = float(past_6_bars['kc_lower'].min())
-        structural_sl = min(swing_low, kc_lower_val) - 0.05 * atr
-    else:
-        swing_high = float(past_6_bars['high'].max())
-        kc_upper_val = float(past_6_bars['kc_upper'].max())
-        structural_sl = max(swing_high, kc_upper_val) + 0.05 * atr
-
-    # 為了向下相容，填入對應的 MA7 變數
-    ma7_series = df['ma7'].dropna()
-    ma7_curr = float(ma7_series.iloc[-1]) if len(ma7_series) > 0 else price
-    ma7_prev = float(ma7_series.iloc[-2]) if len(ma7_series) > 1 else price
-    ma7_prev2 = float(ma7_series.iloc[-3]) if len(ma7_series) > 2 else price
-
-    direction_note = "突破KC上軌+MACD金叉+RSI>=50" if want_dir == 1 else "跌破KC下軌+MACD死叉+RSI<=50"
+    price = float(live_price) if live_price and live_price > 0 else float(work["close"].iloc[-1])
+    atr = float(work["atr"].iloc[-1]) if "atr" in work.columns and not pd.isna(work["atr"].iloc[-1]) else price * 0.015
+    event_vol_ma = float(event["vol_ma_20"])
+    event_volume_ratio = float(event["volume"]) / event_vol_ma
+    stop = price * (1.0 - EXHAUSTION_SNIPER_STOP_LOSS_PCT if is_long else 1.0 + EXHAUSTION_SNIPER_STOP_LOSS_PCT)
     return {
         "detected": True,
-        "side": side,
-        "score": score,
-        "price": float(price),
-        "atr": float(atr),
-        "ema_20": float(ema_20),
-        "kc_upper": float(kc_upper),
-        "kc_lower": float(kc_lower),
-        "ma7_curr": ma7_curr,
-        "ma7_prev": ma7_prev,
-        "ma7_prev2": ma7_prev2,
-        "ma7_projected": None,
-        "early_projection": False,
-        "fast_entry": False,
-        "pullback_bottom_order": False,
-        "entry_mode": "BREAKOUT_MOMENTUM",
+        "side": wanted_side,
+        "score": 100,
+        "price": price,
+        "atr": atr,
+        "entry_mode": "EXHAUSTION_SNIPER",
+        "profit_profile": "TREND_EXTENSION",
+        "action": "ENTER_MARKET",
         "target_price": None,
-        "volume_ratio": volume_ratio,
-        "rsi": float(rsi),
-        "adx": float(adx),
-        "btc_regime_mode": btc_regime["mode"],
-        "btc_allocation_factor": btc_regime["allocation_factor"],
-        "structural_sl": structural_sl,
-        "is_contrarian_bottom_buy": False,
+        "structural_sl": stop,
+        "signal_candle_low": float(work["low"].iloc[-1]),
+        "signal_candle_high": float(work["high"].iloc[-1]),
+        "extreme_age_bars": event_age,
+        "extreme_rsi": float(event["rsi"]),
+        "extreme_volume_ratio": event_volume_ratio,
+        "is_contrarian_bottom_buy": is_long,
         "reason": (
-            f"Breakout_Momentum_{side}｜"
-            f"價格突破通道｜MACD黃金交叉｜RSI強勢｜"
-            + f"Volume Ratio={volume_ratio:.2f}｜"
-            + f"{direction_note}｜score={score}"
+            f"Exhaustion_Sniper_{wanted_side}｜KC極端+RSI={float(event["rsi"]):.1f}"
+            f"+量能={event_volume_ratio:.2f}x｜MA3嚴格V轉"
         ),
     }
 
@@ -511,8 +730,10 @@ class SuperTrendKeltnerStrategy:
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 
-        # MA7
-        df['ma7'] = close.rolling(window=7).mean()
+        # MA3 負責快速峰谷轉折，MA5 負責中短線方向。
+        df['ma3'] = close.rolling(window=3).mean()
+        df['ma5'] = close.rolling(window=5).mean()
+        df['ma15'] = close.rolling(window=15).mean()
 
         # 成交量均線
         df['vol_ma_20'] = volume.rolling(window=20).mean()
@@ -622,25 +843,55 @@ class SuperTrendKeltnerStrategy:
         symbol: str = None, indicators_precomputed: bool = False,
         is_dca_check: bool = False,
     ) -> dict:
-        """Three closed-bar entries without MA7: breakout, support pullback, momentum cross."""
+        """Three closed-bar entries without MA5: breakout, support pullback, momentum cross."""
         if len(df) < max(65, STRUCTURED_SWING_LOOKBACK + 2):
             return {"action": "HOLD", "reason": "5m K線資料不足"}
         if not indicators_precomputed:
             df = self.compute_indicators(df)
         curr, prev = df.iloc[-1], df.iloc[-2]
+
+        from core.indicators import analyze_candle_pattern
+        candle_pattern = analyze_candle_pattern(curr)
+
         direction = int(curr["st_direction"])
         side = "LONG" if direction == 1 else "SHORT"
+
+
         price = float(curr["close"])
+        volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
+        quality_gate = evaluate_entry_quality_gate(
+            side=side,
+            price=price,
+            atr=float(curr["atr"]),
+            volume_ratio=volume_ratio,
+            score=85,
+            df=df,
+            min_volume_ratio=KELTNER_MIN_VOLUME_RATIO,
+        )
+        if quality_gate["blocked"]:
+            return {
+                "action": "HOLD",
+                "side": side,
+                "score": 0,
+                "reason": quality_gate["reason"],
+                "btc_regime_mode": "ALIGNED",
+                "btc_allocation_factor": 1.0,
+                "volume_ratio": volume_ratio,
+                "price": price,
+            }
         atr = float(curr["atr"]) if not pd.isna(curr["atr"]) else price * 0.015
         volume = float(curr["volume"])
         volume_ma = float(curr["vol_ma_20"]) if not pd.isna(curr["vol_ma_20"]) else 0.0
         volume_ratio = volume / volume_ma if volume_ma > 0 else 0.0
         aligned = st_direction_1h in (None, direction)
         btc_contrary = bool(
-            btc_st_direction_1h and int(btc_st_direction_1h) != direction
+            BTC_REGIME_FILTER_ENABLED
+            and btc_st_direction_1h in (-1, 1)
+            and btc_st_direction_1h != direction
         )
+        # 結構單不因 BTC 反向完全消失，但必須同步降分與半倉。
         btc_score_penalty = BTC_REGIME_SCORE_PENALTY if btc_contrary else 0
-        btc_allocation_factor = BTC_REGIME_ALLOCATION_FACTOR if btc_contrary else 1.0
+        btc_allocation_factor = 0.5 if btc_contrary else 1.0
         common = {
             "side": side, "price": price, "atr": atr,
             "signal_candle_low": float(curr["low"]),
@@ -652,19 +903,39 @@ class SuperTrendKeltnerStrategy:
         }
 
         if side == "LONG":
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            bearish_divergence = detect_macd_divergence(df, "SHORT")
-            if recent_high_distance_pct <= 0.006 and bearish_divergence:
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            bearish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bearish_divergence = detect_macd_divergence(df, "SHORT")
+            if recent_high_distance_pct <= 0.015 and bearish_divergence:
+                # 拒絕在接近前高點時遇到 MACD 頂背離還繼續做多 (避免接頂)
                 return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"Mandatory_Fail: Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)",
-                    **common,
+                    "action": "HOLD",
+                    "reason": f"Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)",
+                    "side": side,
+                    "score": 0,
+                    "btc_regime_mode": "ALIGNED",
+                    "btc_allocation_factor": 1.0,
+                    "volume_ratio": volume_ratio,
+                    "price": price,
                 }
         elif side == "SHORT":
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            recent_peak_near = recent_high_distance_pct <= 0.006
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            recent_peak_near = recent_high_distance_pct <= 0.015
             prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
             close_broke_prev = float(curr.get("close", price)) < prev_close
             reversal_confirmed = bool(
@@ -676,20 +947,146 @@ class SuperTrendKeltnerStrategy:
                 )
             )
             if recent_peak_near and not reversal_confirmed:
-                return {
-                    "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"Mandatory_Fail: Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)",
-                    **common,
-                }
-            recent_low = float(df.iloc[-25:-1]["low"].min()) if len(df) >= 25 else float(df["low"].min())
+                curr = curr.copy()
+                curr['eligibility_note'] = (
+                    f"Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
+                )
+            if "low" in df.columns and len(df) >= 25:
+                recent_low = float(df.iloc[-25:-1]["low"].min())
+            elif "low" in df.columns:
+                recent_low = float(df["low"].min())
+            else:
+                recent_low = price
             recent_low_distance_pct = abs(price - recent_low) / max(abs(recent_low), 1e-12)
-            bullish_divergence = detect_macd_divergence(df, "LONG")
-            if recent_low_distance_pct <= 0.006 and bullish_divergence:
+            bullish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bullish_divergence = detect_macd_divergence(df, "LONG")
+            if recent_low_distance_pct <= 0.015 and bullish_divergence:
+                # 拒絕在接近前低點時遇到 MACD 底背離還繼續做空 (避免接底)
+                return {
+                    "action": "HOLD",
+                    "reason": f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)",
+                    "side": side,
+                    "score": 0,
+                    "btc_regime_mode": "ALIGNED",
+                    "btc_allocation_factor": 1.0,
+                    "volume_ratio": volume_ratio,
+                    "price": price,
+                }
+
+        # MomentumCross 只把交叉視為候選訊號。正式進場延後一根已收盤 K 棒，
+        # 要求收盤價沿訊號方向續走且交叉仍有效，避免沒有延續便立即追價。
+        pre_cross = df.iloc[-3]
+        macd_hist_cross = (
+            float(pre_cross["macd_hist"]) <= 0 < float(prev["macd_hist"])
+            if side == "LONG" else float(pre_cross["macd_hist"]) >= 0 > float(prev["macd_hist"])
+        )
+        macd_line_cross = (
+            float(pre_cross["macd_line"]) <= float(pre_cross["macd_signal"])
+            and float(prev["macd_line"]) > float(prev["macd_signal"])
+            and float(prev["macd_line"]) >= 0
+            if side == "LONG" else
+            float(pre_cross["macd_line"]) >= float(pre_cross["macd_signal"])
+            and float(prev["macd_line"]) < float(prev["macd_signal"])
+            and float(prev["macd_line"]) <= 0
+        )
+        rsi_cross = (
+            float(pre_cross["rsi"]) < 50 and float(prev["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
+            if side == "LONG" else
+            float(pre_cross["rsi"]) > 50 and float(prev["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
+        )
+        if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
+            trigger_still_valid = (
+                (macd_hist_cross and (
+                    float(curr["macd_hist"]) > 0 if side == "LONG"
+                    else float(curr["macd_hist"]) < 0
+                ))
+                or (macd_line_cross and (
+                    float(curr["macd_line"]) > float(curr["macd_signal"])
+                    if side == "LONG" else
+                    float(curr["macd_line"]) < float(curr["macd_signal"])
+                ))
+                or (rsi_cross and (
+                    float(curr["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
+                    if side == "LONG" else
+                    float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
+                ))
+            )
+            continuation_confirmed = (
+                price > float(prev["close"])
+                and price > float(curr["open"])
+                and trigger_still_valid
+                if side == "LONG" else
+                price < float(prev["close"])
+                and price < float(curr["open"])
+                and trigger_still_valid
+            )
+            if MOMENTUM_CROSS_REQUIRE_CONTINUATION and not continuation_confirmed:
+                signal_close = float(prev["close"])
+                direction_word = "高於" if side == "LONG" else "低於"
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"Mandatory_Fail: Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)",
+                    "momentum_continuation_confirmed": False,
+                    "reason": (
+                        f"MomentumCross_{side} 等待價格延續：收盤 {price:.6g} 尚未"
+                        f"{direction_word}訊號棒收盤 {signal_close:.6g}，或交叉已失效"
+                    ),
                     **common,
                 }
+
+            momentum_swing = df.iloc[-(STRUCTURED_SWING_LOOKBACK + 1):-1]
+            momentum_prior_high = float(momentum_swing["high"].max())
+            momentum_prior_low = float(momentum_swing["low"].min())
+            profit_room_pct = (
+                max(0.0, (momentum_prior_high - price) / price)
+                if side == "LONG" else
+                max(0.0, (price - momentum_prior_low) / price)
+            )
+            if profit_room_pct < MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "momentum_continuation_confirmed": continuation_confirmed,
+                    "profit_room_pct": profit_room_pct,
+                    "reason": (
+                        f"MomentumCross_{side} 預估獲利空間不足：目前"
+                        f"{profit_room_pct:.2%}<最低"
+                        f"{MOMENTUM_CROSS_MIN_PROFIT_ROOM_PCT:.2%}，拒絕進場"
+                    ),
+                    **common,
+                }
+
+            triggers = []
+            if macd_hist_cross or macd_line_cross:
+                triggers.append("MACD交叉")
+            if rsi_cross:
+                triggers.append("RSI穿越50")
+            trigger_text = "+".join(triggers)
+
+            # --- K 線形態防護：過濾假突破 ---
+            if side == "LONG" and candle_pattern.get("is_shooting_star"):
+                return eligibility_hold(
+                    f"MomentumCross_{side} 拒絕：出現流星線 (Shooting Star) 假突破"
+                )
+            if side == "SHORT" and candle_pattern.get("is_hammer"):
+                return eligibility_hold(
+                    f"MomentumCross_{side} 拒絕：出現錘頭線 (Hammer) 假突破"
+                )
+
+            return {
+                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
+                "score": 80 - btc_score_penalty,
+                "momentum_continuation_confirmed": continuation_confirmed,
+                "profit_room_pct": profit_room_pct,
+                # MomentumCross follows an aligned 5m/1h trend. Treating it as
+                # a BOUNCE position makes the short-window bounce guard close it
+                # before the R-based trailing exit has a chance to run.
+                "profit_profile": "TREND_EXTENSION",
+                "reason": (
+                    f"MomentumCross_{side}｜{trigger_text}｜價格延續確認｜"
+                    f"預估空間{profit_room_pct:.2%}"
+                ), **common,
+            }
+
 
         # 1h EMA50 大週期趨勢過濾：開倉方向必須與 1h EMA50 大趨勢同向
         if ENABLE_1H_EMA50_FILTER and not is_dca_check and ema_50_1h is not None and ema_50_1h > 0:
@@ -707,24 +1104,27 @@ class SuperTrendKeltnerStrategy:
                 }
 
         # 計算支撐與壓力區（基於最近 24 根已收盤 of 5m K棒）
-        if not is_dca_check and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+        # PRICE_NEAR_SUPPORT_PCT=0 則停用此條件（與 evaluate_signal 保持一致）
+        _sp_near_pct = float(getattr(_core_config, 'PRICE_NEAR_SUPPORT_PCT', PRICE_NEAR_SUPPORT_PCT))
+        if not is_dca_check and _sp_near_pct > 0 and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
             past_24_bars = df.iloc[-25:-1]
             support_level = float(past_24_bars['low'].min())
             resistance_level = float(past_24_bars['high'].max())
 
-            # 做多：必須在支撐位 3% 內
-            if side == "LONG" and price > support_level * 1.03:
+            # 做多：必須在支撐位 N% 內
+            if side == "LONG" and price > support_level * (1.0 + _sp_near_pct):
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"價格不在支撐區3%內（當前 {price:.6g} > 支撐 {support_level:.6g}*1.03）", **common
+                    "reason": f"價格不在支撐區{_sp_near_pct:.0%}內（當前 {price:.6g} > 支撐 {support_level:.6g}*{1.0+_sp_near_pct:.3f}）", **common
                 }
 
-            # 做空：必須在壓力位 3% 內
-            if side == "SHORT" and price < resistance_level * 0.97:
+            # 做空：必須在壓力位 N% 內
+            if side == "SHORT" and price < resistance_level * (1.0 - _sp_near_pct):
                 return {
                     "action": "HOLD", "side": side, "score": 0,
-                    "reason": f"價格不在壓力區3%內（當前 {price:.6g} < 壓力 {resistance_level:.6g}*0.97）", **common
+                    "reason": f"價格不在壓力區{_sp_near_pct:.0%}內（當前 {price:.6g} < 壓力 {resistance_level:.6g}*{1.0-_sp_near_pct:.3f}）", **common
                 }
+
 
         swing = df.iloc[-(STRUCTURED_SWING_LOOKBACK + 1):-1]
         prior_high = float(swing["high"].max())
@@ -739,27 +1139,29 @@ class SuperTrendKeltnerStrategy:
 
             # 爆量只代表突破候選，不代表可直接追價。實績顯示「量能 >= 2x
             # 就給 95 分並市價進場」會在短線耗竭點取得最大倉位；所有突破
-            # 統一等待 EMA20 附近回踩，以 Maker 限價單成交。
-            ema20 = float(curr["ema_20"])
+            # 統一等待 EMA30 附近回踩，以 Maker 限價單成交。
+            ema30 = float(curr["ema_20"])
             from core.config import BREAKOUT_PULLBACK_ATR_MULT
             if side == "LONG":
-                pullback_target = ema20 + BREAKOUT_PULLBACK_ATR_MULT * atr
+                pullback_target = ema30 + BREAKOUT_PULLBACK_ATR_MULT * atr
                 pullback_target = min(pullback_target, price * 0.9995)
             else:
-                pullback_target = ema20 - BREAKOUT_PULLBACK_ATR_MULT * atr
+                pullback_target = ema30 - BREAKOUT_PULLBACK_ATR_MULT * atr
                 pullback_target = max(pullback_target, price * 1.0005)
             return {
                 "action": "ENTER_LIMIT", "entry_mode": "BREAKOUT",
-                "score": BREAKOUT_ENTRY_SCORE - btc_score_penalty,
+                "score": 100,
                 "target_price": pullback_target,
-                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜爆量不追價｜等回踩@{pullback_target:.6g}",
+                "signal_candle_low": float(curr["low"]),
+                "signal_candle_high": float(curr["high"]),
+                "reason": f"Breakout_{side}｜突破{trigger}｜量能{volume_ratio:.2f}x｜等待EMA30回踩Maker",
                 "prior_high": prior_high, "prior_low": prior_low, **common,
             }
 
-        ema20 = float(curr["ema_20"])
+        ema30 = float(curr["ema_20"])
         ema60_series = df["close"].ewm(span=60, adjust=False).mean()
         ema60 = float(ema60_series.iloc[-1])
-        supports = [("5m EMA20", ema20), ("5m EMA60", ema60)]
+        supports = [("5m EMA30", ema30), ("5m EMA60", ema60)]
         if ema_50_1h is not None:
             supports.append(("1h EMA50", float(ema_50_1h)))
         support_name, support_price = min(supports, key=lambda item: abs(price - item[1]))
@@ -775,7 +1177,7 @@ class SuperTrendKeltnerStrategy:
             row_price = float(row["close"])
             row_atr = float(row["atr"]) if not pd.isna(row["atr"]) else atr
             row_supports = [
-                ("5m EMA20", float(row["ema_20"])),
+                ("5m EMA30", float(row["ema_20"])),
                 ("5m EMA60", float(ema60_series.iloc[row_pos])),
             ]
             if ema_50_1h is not None:
@@ -864,6 +1266,39 @@ class SuperTrendKeltnerStrategy:
             if side == "LONG"
             else SUPPORT_PULLBACK_RSI_SHORT_MIN <= rsi <= SUPPORT_PULLBACK_RSI_SHORT_MAX and rsi < previous_rsi
         )
+
+        # 【改進方案】強化多頭過濾：LONG 交易勝率 (53.42%) 與止損率 (24.66%) 均顯著遜於 SHORT
+        if side == "LONG":
+            # 提高多頭的量能要求（防止虛假突破）
+            min_volume_ratio_long = max(SUPPORT_PULLBACK_MIN_VOLUME_RATIO, SUPPORT_PULLBACK_MIN_VOLUME_RATIO_LONG)
+            volume_healthy_long = volume_ma > 0 and volume_ratio >= min_volume_ratio_long
+            if not volume_healthy_long:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"多頭交易量能不足：{volume_ratio:.2f}x < {min_volume_ratio_long:.2f}x，避免虛假突破",
+                    **common,
+                }
+
+            # 提高多頭的 RSI 進場門檻（防止追高）
+            rsi_long_min_enhanced = max(SUPPORT_PULLBACK_RSI_LONG_MIN, SUPPORT_PULLBACK_RSI_LONG_MIN_ENHANCED)
+            if rsi < rsi_long_min_enhanced:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"多頭交易 RSI 門檻提高：{rsi:.1f} < {rsi_long_min_enhanced:.1f}，等待更強勢信號",
+                    **common,
+                }
+
+            # 檢查 Keltner Channel 寬度（避免在通道極窄時進場）
+            kc_width = float(curr["kc_upper"]) - float(curr["kc_lower"])
+            kc_width_atr_mult = kc_width / max(atr, 1e-12)
+            min_kc_width_long = KELTNER_MIN_WIDTH_ATR_MULT_LONG * atr
+            if kc_width < min_kc_width_long:
+                return {
+                    "action": "HOLD", "side": side, "score": 0,
+                    "reason": f"多頭 Keltner 通道過窄保護：{kc_width_atr_mult:.2f}x ATR < {KELTNER_MIN_WIDTH_ATR_MULT_LONG:.2f}x，通道擴張才進場",
+                    **common,
+                }
+
         adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 0.0
         atr_pct = atr / price if price > 0 else 0.0
         quality_ok = ADX_QUALITY_MIN <= adx and MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
@@ -933,9 +1368,27 @@ class SuperTrendKeltnerStrategy:
             readiness_score = min(readiness_score, 99)
 
         if prerequisites_ready:
+            # 【改進方案】高分值陷阱保護：95+ 分信號在極端波動時表現極差
+            if readiness_score >= HIGH_SCORE_THRESHOLD:
+                atr_pct = atr / price if price > 0 else 0.0
+                if atr_pct > HIGH_SCORE_ATR_LIMIT_PCT:
+                    return {
+                        "action": "HOLD", "side": side, "score": 0,
+                        "readiness_score": readiness_score,
+                        "readiness_components": readiness_components,
+                        "reason": (
+                            f"高分值信號波動過大保護：準備度 {readiness_score}/100 但 ATR% "
+                            f"{atr_pct:.4f} > 限制 {HIGH_SCORE_ATR_LIMIT_PCT:.4f}，"
+                            f"避免在極端行情進場"
+                        ),
+                        **common
+                    }
+
             if BOTTOM_FILTER_ENABLED:
                 rsi_15m = float(curr["rsi_15m"]) if "rsi_15m" in curr and not pd.isna(curr["rsi_15m"]) else rsi
-                macd_div = detect_macd_divergence(df, side)
+                macd_div = False
+                if "macd_hist" in df.columns and "close" in df.columns:
+                    macd_div = detect_macd_divergence(df, side)
                 is_bottom_ok = False
                 if side == "LONG":
                     is_bottom_ok = (rsi_15m <= BOTTOM_OVERSOLD_RSI_15M_LIMIT) or macd_div
@@ -975,9 +1428,17 @@ class SuperTrendKeltnerStrategy:
             )
             rsi_score = round(min(rsi_strength / 8.0, 1.0) * 4)
             adx_score = round(min(max(adx - ADX_QUALITY_MIN, 0.0) / 18.0, 1.0) * 4)
+
+            # --- K 線反轉形態加分 ---
+            pattern_score = 0
+            if side == "LONG" and candle_pattern.get("is_hammer"):
+                pattern_score = 5
+            elif side == "SHORT" and candle_pattern.get("is_shooting_star"):
+                pattern_score = 5
+
             score = max(
                 0,
-                min(91, 75 + body_score + support_score + rsi_score + adx_score)
+                min(91, 75 + body_score + support_score + rsi_score + adx_score + pattern_score)
                 - btc_score_penalty,
             )
             profit_room_pct = (
@@ -1058,57 +1519,6 @@ class SuperTrendKeltnerStrategy:
                 **common,
             }
 
-        macd_hist_cross = (
-            float(prev["macd_hist"]) <= 0 < float(curr["macd_hist"])
-            if side == "LONG" else float(prev["macd_hist"]) >= 0 > float(curr["macd_hist"])
-        )
-        macd_line_cross = (
-            float(prev["macd_line"]) <= float(prev["macd_signal"])
-            and float(curr["macd_line"]) > float(curr["macd_signal"])
-            and float(curr["macd_line"]) >= 0
-            if side == "LONG" else
-            float(prev["macd_line"]) >= float(prev["macd_signal"])
-            and float(curr["macd_line"]) < float(curr["macd_signal"])
-            and float(curr["macd_line"]) <= 0
-        )
-        rsi_cross = (
-            float(prev["rsi"]) < 50 and float(curr["rsi"]) >= STRUCTURED_RSI_LONG_TRIGGER
-            if side == "LONG" else
-            float(prev["rsi"]) > 50 and float(curr["rsi"]) <= STRUCTURED_RSI_SHORT_TRIGGER
-        )
-        if ENABLE_MOMENTUM_CROSS_ENTRY and aligned and (macd_hist_cross or macd_line_cross or rsi_cross):
-            if side == "SHORT":
-                recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-                prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
-                close_broke_prev = float(curr.get("close", price)) < prev_close
-                reversal_confirmed = bool(
-                    close_broke_prev
-                    and float(curr.get("close", price)) < float(curr.get("open", price))
-                    and (
-                        float(curr.get("rsi", 50.0)) < 50.0
-                        or float(curr.get("macd_hist", 0.0)) < 0.0
-                    )
-                )
-                if recent_high_distance_pct <= 0.006 and not reversal_confirmed:
-                    return {
-                        "action": "HOLD",
-                        "side": side,
-                        "score": 0,
-                        "reason": f"MomentumCross_{side}｜近期高點附近未確認反轉（距前高{recent_high_distance_pct:.2%}，需先跌破前一根收盤與確認反轉）",
-                        **common,
-                    }
-            triggers = []
-            if macd_hist_cross or macd_line_cross:
-                triggers.append("MACD交叉")
-            if rsi_cross:
-                triggers.append("RSI穿越50")
-            return {
-                "action": "ENTER_MARKET", "entry_mode": "MOMENTUM_CROSS",
-                "score": 80 - btc_score_penalty,
-                "reason": f"MomentumCross_{side}｜{'+'.join(triggers)}", **common,
-            }
-
         missing = []
         if not aligned:
             missing.append("5m/1h趨勢同向")
@@ -1173,17 +1583,108 @@ class SuperTrendKeltnerStrategy:
         parameter_overrides: dict = None,
         indicators_precomputed: bool = False,
     ) -> dict:
-        if len(df) < 50:
+        if len(df) < 5:
             return {
                 "action": "HOLD", "reason": "Not enough data",
                 "eligible": False, "score_stage": "ELIGIBILITY",
             }
-
         if not indicators_precomputed:
             df = self.compute_indicators(df)
+
+        # (已停用) 原本的「強勢多單訊號（綠K衝外軌）」會導致在上軌追多，
+        # 違背了使用者「多單要在下軌買，空單要在上軌買」的核心邏輯，因此全面移除。
+
         curr = df.iloc[-1]
+
+        live_price = float(curr['close'])
+        
+        # User Rule: 開倉都要在突破上下軌才開倉，其他位子不要開倉
+        if live_price <= curr['kc_upper'] and live_price >= curr['kc_lower']:
+            return {
+                "action": "HOLD",
+                "reason": "User Rule: 價格未突破上下軌，不允許開倉",
+                "eligible": False,
+                "score_stage": "ELIGIBILITY"
+            }
+
+        sig = detect_simple_ma5_signal(df, live_price=live_price)
+        
+        if sig.get("detected"):
+            side = sig["side"]
+            rsi = float(curr.get("rsi", 50.0))
+            volume_ratio = float(curr.get("volume", 0) / curr.get("vol_ma_20", 1)) if curr.get("vol_ma_20") else 1.0
+
+            is_valid_kc = False
+            # 必須是這波轉折的K線(近7根內)真正碰到極端軌道，才算有效轉向
+            if side == "LONG":
+                is_valid_kc = any(float(df.iloc[-i]['low']) <= float(df.iloc[-i]['kc_lower']) for i in range(1, 8) if i <= len(df))
+            else:
+                is_valid_kc = any(float(df.iloc[-i]['high']) >= float(df.iloc[-i]['kc_upper']) for i in range(1, 8) if i <= len(df))
+                
+            if not is_valid_kc:
+                return {
+                    "action": "HOLD",
+                    "reason": "MA3 出現轉折，但近7根轉折點並未觸及 KC 通道極端值，避免盤整假突破",
+                    "eligible": False,
+                    "score_stage": "ELIGIBILITY",
+                }
+
+            return {
+                "action": "ENTER_MARKET",
+                "side": side,
+                "reason": sig["reason"] + " (確認觸及KC邊界)",
+                "price": sig["price"],
+                "score": 100,
+                "eligible": True,
+                "score_stage": "FINAL",
+                "profit_profile": "TREND_EXTENSION",
+                "entry_mode": "MA3_PIVOT",
+                "fast_entry": True,
+                "diagnostics": {
+                    "price": sig["price"],
+                    "atr": float(curr.get("atr", 0.0)),
+                    "atr_pct": float(curr.get("atr", 0.0) / curr['close']) if curr['close'] > 0 else 0.0,
+                    "rsi": rsi,
+                    "adx": float(curr.get("adx", 0.0)) if not pd.isna(curr.get("adx")) else 0.0,
+                    "volume_ratio": volume_ratio,
+                    "candle_pattern": "None",
+                }
+            }
+        prev = df.iloc[-2] if len(df) >= 2 else None
+
+        from core.indicators import analyze_candle_pattern
+        candle_pattern = analyze_candle_pattern(curr)
+        pattern_name = candle_pattern.get("pattern_name", "None")
+
         overrides = dict(parameter_overrides or {})
         volume_min_ratio = float(overrides.get("volume_min_ratio", KELTNER_MIN_VOLUME_RATIO))
+        volume_ratio = float(curr["volume"] / curr["vol_ma_20"]) if float(curr["vol_ma_20"]) > 0 else 0.0
+        st_dir = int(curr['st_direction'])
+        quality_gate = evaluate_entry_quality_gate(
+            side="LONG" if st_dir == 1 else "SHORT",
+            price=float(curr['close']),
+            atr=float(curr['atr']),
+            volume_ratio=volume_ratio,
+            score=85,
+            df=df,
+            min_volume_ratio=volume_min_ratio,
+        )
+        if quality_gate["blocked"]:
+            return {
+                "action": "HOLD",
+                "reason": quality_gate["reason"],
+                "eligible": False,
+                "score_stage": "ELIGIBILITY",
+                "diagnostics": {
+                    "price": float(curr['close']),
+                    "atr": float(curr['atr']),
+                    "atr_pct": float(curr['atr'] / curr['close']) if float(curr['close']) > 0 else 0.0,
+                    "rsi": float(curr['rsi']),
+                    "adx": float(curr['adx']) if not pd.isna(curr['adx']) else 0.0,
+                    "volume_ratio": volume_ratio,
+                    "candle_pattern": pattern_name,
+                },
+            }
         atr_min_pct = float(overrides.get("atr_min_pct", MIN_ATR_PCT))
         rsi_long_max = float(overrides.get("rsi_long_max", RSI_LONG_MAX))
         rsi_short_min = float(overrides.get("rsi_short_min", RSI_SHORT_MIN))
@@ -1216,6 +1717,7 @@ class SuperTrendKeltnerStrategy:
                 "st_direction_1h": int(st_direction_1h) if st_direction_1h is not None else None,
                 "btc_direction_1h": int(btc_st_direction_1h or 0),
                 "btc_flip_age": int(btc_st_flip_age),
+                "candle_pattern": pattern_name,
             }
 
         def eligibility_hold(reason: str) -> dict:
@@ -1230,18 +1732,25 @@ class SuperTrendKeltnerStrategy:
         st_dir = curr['st_direction']
 
         # 計算支撐與壓力區（基於最近 24 根已收盤的 5m K棒）
-        if symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
+        # PRICE_NEAR_SUPPORT_PCT：做多要求現價在支撐位 N% 以內；做空要求現價在壓力位 N% 以內。
+        # 設為 0（或負值）則完全停用此條件。預設 8%，比原本 3% 寬鬆，避免趨勢延伸時永遠進不了場。
+        _near_pct = float(getattr(_core_config, 'PRICE_NEAR_SUPPORT_PCT', PRICE_NEAR_SUPPORT_PCT))
+        if _near_pct > 0 and symbol is not None and 'low' in df.columns and 'high' in df.columns and len(df) >= 25:
             past_24_bars = df.iloc[-25:-1]
             support_level = float(past_24_bars['low'].min())
             resistance_level = float(past_24_bars['high'].max())
 
-            # 做多：必須在支撐位 3% 內
-            if st_dir == 1 and price > support_level * 1.03:
-                return eligibility_hold(f"Mandatory_Fail: Price_Not_Near_Support({price:.6g}>{support_level:.6g}*1.03)")
+            # 做多：必須在支撐位 N% 內
+            if st_dir == 1 and price > support_level * (1.0 + _near_pct):
+                return eligibility_hold(
+                    f"Mandatory_Fail: Price_Not_Near_Support({price:.6g}>{support_level:.6g}*{1.0+_near_pct:.3f})"
+                )
 
-            # 做空：必須在壓力位 3% 內
-            if st_dir == -1 and price < resistance_level * 0.97:
-                return eligibility_hold(f"Mandatory_Fail: Price_Not_Near_Resistance({price:.6g}<{resistance_level:.6g}*0.97)")
+            # 做空：必須在壓力位 N% 內
+            if st_dir == -1 and price < resistance_level * (1.0 - _near_pct):
+                return eligibility_hold(
+                    f"Mandatory_Fail: Price_Not_Near_Resistance({price:.6g}<{resistance_level:.6g}*{1.0-_near_pct:.3f})"
+                )
 
         # 層 A：BTC 大盤風險調整。剛翻轉仍暫停；方向相反改為扣分與縮倉，
         # 讓真正相對強勢的個幣仍可在通過其餘品質與回踩確認後進場。
@@ -1269,17 +1778,34 @@ class SuperTrendKeltnerStrategy:
         # 近期高/低點附近不允許直接反手開倉：若價格仍站在最近極值附近，
         # 但 MACD 仍顯示相反方向背離，直接拒絕開單，避免大幅反向追單。
         if st_dir == 1:
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            bearish_divergence = detect_macd_divergence(df, "SHORT")
-            if recent_high_distance_pct <= 0.006 and bearish_divergence:
-                return eligibility_hold(
-                    f"Mandatory_Fail: Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)"
-                )
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            bearish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bearish_divergence = detect_macd_divergence(df, "SHORT")
+            if recent_high_distance_pct <= 0.015 and bearish_divergence:
+                # 不再做硬性擋單，改為在分數/診斷中標記為品質下降，讓 scoring 決定是否開倉
+                # 將理由加入診斷以便日誌觀察
+                curr_reason = f"Bearish_MACD_Divergence_Near_Recent_High(距離前高{recent_high_distance_pct:.2%}, MACD 背離顯示空頭仍強，拒絕做多)"
+                # attach to diagnostics via an ad-hoc key
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
         elif st_dir == -1:
-            recent_high = float(df.iloc[-25:-1]["high"].max()) if len(df) >= 25 else float(df["high"].max())
-            recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
-            recent_peak_near = recent_high_distance_pct <= 0.006
+            if "high" in df.columns and len(df) >= 25:
+                recent_high = float(df.iloc[-25:-1]["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            elif "high" in df.columns:
+                recent_high = float(df["high"].max())
+                recent_high_distance_pct = abs(recent_high - price) / max(abs(recent_high), 1e-12)
+            else:
+                recent_high_distance_pct = 1.0
+            recent_peak_near = recent_high_distance_pct <= 0.015
             prev_close = float(prev.get("close", price)) if prev is not None and not pd.isna(prev.get("close", price)) else price
             close_broke_prev = float(curr.get("close", price)) < prev_close
             reversal_confirmed = bool(
@@ -1291,16 +1817,23 @@ class SuperTrendKeltnerStrategy:
                 )
             )
             if recent_peak_near and not reversal_confirmed:
-                return eligibility_hold(
-                    f"Mandatory_Fail: Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
-                )
-            recent_low = float(df.iloc[-25:-1]["low"].min()) if len(df) >= 25 else float(df["low"].min())
+                curr_reason = f"Near_Recent_High_No_Reversal_Confirmation(距離前高{recent_high_distance_pct:.2%}, 近期高點附近須先跌破前一根收盤與確認反轉)"
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
+            if "low" in df.columns and len(df) >= 25:
+                recent_low = float(df.iloc[-25:-1]["low"].min())
+            elif "low" in df.columns:
+                recent_low = float(df["low"].min())
+            else:
+                recent_low = price
             recent_low_distance_pct = abs(price - recent_low) / max(abs(recent_low), 1e-12)
-            bullish_divergence = detect_macd_divergence(df, "LONG")
-            if recent_low_distance_pct <= 0.006 and bullish_divergence:
-                return eligibility_hold(
-                    f"Mandatory_Fail: Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
-                )
+            bullish_divergence = False
+            if "macd_hist" in df.columns and "close" in df.columns:
+                bullish_divergence = detect_macd_divergence(df, "LONG")
+            if recent_low_distance_pct <= 0.015 and bullish_divergence:
+                curr_reason = f"Bullish_MACD_Divergence_Near_Recent_Low(距離近期低點{recent_low_distance_pct:.2%}, MACD 背離顯示多頭仍可反彈，拒絕空單)"
+                curr = curr.copy()
+                curr['eligibility_note'] = curr_reason
 
         # 層 C：1h EMA50 輔助確認（第三道防線）
         # 1h SuperTrend 覆蓋不到的邊緣情況（如剛翻轉尚未展開），
@@ -1311,8 +1844,11 @@ class SuperTrendKeltnerStrategy:
         # 盤整期假突破發生率最高，直接 HOLD 不進入評分系統。
         # 注意：ADX 衰退擋單（D2，見下方）是另一種機制，兩者互補不衝突：
         # 這裡擋「太低」，D2 擋「方向沒變但動能在退潮」。
-        if adx < ADX_MANDATORY_MIN:
-            return eligibility_hold(f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{ADX_MANDATORY_MIN})")
+        adx_floor, strong_trend = get_dynamic_adx_floor(df, st_dir)
+        # --- 使用者要求：解除 ADX 限制，不再因為 ADX 過低而阻擋開倉 ---
+        # if adx < adx_floor:
+        #     adx_mode = "Strong_Trend" if strong_trend else "Range"
+        #     return eligibility_hold(f"Mandatory_Fail: ADX_Too_Low({adx:.1f}<{adx_floor:.1f};mode={adx_mode})")
 
         # 波動率過濾：ATR 佔價格比例太高或太低都不開倉。
         # 太高：SL/TP 用 ATR 倍數算出來的停損距離會被放大，同樣倉位金額下
@@ -1353,6 +1889,12 @@ class SuperTrendKeltnerStrategy:
 
         kc_breakout_passed = False
         if st_dir == 1 and price >= (kc_upper + kc_breakout_buffer) and closed_confirmed:
+            # LONG 進場前檢查 MA3 趨勢：MA3 必須上升才允許開多單
+            ma3_trend = check_ma3_trend(df, lookback=3)
+            if ma3_trend != 1:  # MA3 不是上升趨勢
+                return eligibility_hold(
+                    f"LONG_Rejected_By_MA3_Trend: MA3趨勢向下或平盤，不開多單 (ma3_trend={ma3_trend})"
+                )
             score += 30
             kc_breakout_passed = True
             score_details.append("KC_Breakout_Pass")
@@ -1408,14 +1950,14 @@ class SuperTrendKeltnerStrategy:
             not pd.isna(adx_prior)
             and adx_drop >= max(ADX_DECLINE_MIN_DROP, adx_prior * ADX_DECLINE_MIN_DROP_RATIO)
         )
-        adx_declining_exhausted = adx_declining and adx < WEAK_ENERGY_ADX_THRESHOLD
+        adx_declining_exhausted = False  # --- 使用者要求：解除 ADX 限制，不再因為衰退阻擋開倉 ---
 
-        # D3. 價格乖離檢查：價格距離 EMA20 太遠（用 ATR 正規化衡量），代表
+        # D3. 價格乖離檢查：價格距離 EMA30 太遠（用 ATR 正規化衡量），代表
         # 這波已經漲/跌很多才追進場，均值回歸風險高，容易一進場就被拉回。
         # 跟 KC 突破（E4/A）是兩件事——KC 突破只要求價格超出通道邊界一點，
         # 這裡抓的是「超出太多」的極端情況。
-        ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
-        price_overextended = ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT
+        ema30_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
+        price_overextended = ema30_distance_atr > EMA_EXTENSION_MAX_ATR_MULT
 
         # E. 品質細分加分（0~12分）：讓同樣達標 70/80 分的訊號能再分出優劣，
         # 用於同一輪多個候選訊號時挑選最優的下單，而不是隨機/先到先進場。
@@ -1521,11 +2063,11 @@ class SuperTrendKeltnerStrategy:
                 f"Mandatory_Fail: ADX_Declining_Exhaustion({adx:.1f}<{adx_prior:.1f}) | Score({score}) | {', '.join(score_details)}"
             )
 
-        # 額外防線：價格已經乖離 EMA20 太遠（見上面 D3），代表這波已經漲/
+        # 額外防線：價格已經乖離 EMA30 太遠（見上面 D3），代表這波已經漲/
         # 跌很多才追進場，均值回歸風險高，不管總分靠其他項目湊得多高。
         if score >= MIN_SCORE_THRESHOLD and price_overextended:
             return scored_hold(
-                f"Mandatory_Fail: Price_Overextended({ema20_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}"
+                f"Mandatory_Fail: Price_Overextended({ema30_distance_atr:.1f}x_ATR) | Score({score}) | {', '.join(score_details)}"
             )
 
         # 額外防線：大週期（1h）本身的動能也在衰退（見 engine.py
@@ -1583,19 +2125,33 @@ class SuperTrendKeltnerStrategy:
                     "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
                 }
             else:  # SHORT
+                # 改進：空單確認後直接進場，不必等紅K回到中軌
+                # 若分數足夠高（>=80），允許直接市價進場；否則仍等待回調
                 dist = (kc_lower - price) / kc_lower
-                return {
-                    "action": "WAIT_PULLBACK", "side": "SHORT",
-                    "price": price, "atr": atr,
-                    "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
-                    "target_zone": pullback_target, "ema_20": ema_20,
-                    "pullback_depth": pullback_depth,
-                    "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
-                    "entry_mode": entry_mode,
-                    "confirmation_reason": confirmation_reason,
-                    **btc_context,
-                    "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
-                }
+                if score >= 80:  # SHORT 直接進場條件：分數足夠高
+                    return {
+                        "action": "ENTER_MARKET", "side": "SHORT",
+                        "entry_mode": "SHORT_FAST_ENTRY",
+                        "price": price, "atr": atr,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                        "ema_20": ema_20,
+                        "reason": f"SHORT_FastEntry({score}) | dist={dist:.2%} | 確認空單無需等待回調 | {', '.join(score_details)}{downgrade_note}",
+                        **btc_context,
+                    }
+                else:
+                    # 分數低於 80 時，仍需等待回調
+                    return {
+                        "action": "WAIT_PULLBACK", "side": "SHORT",
+                        "price": price, "atr": atr,
+                        "kc_upper": kc_upper, "kc_lower": kc_lower, "score": score,
+                        "target_zone": pullback_target, "ema_20": ema_20,
+                        "pullback_depth": pullback_depth,
+                        "pullback_distance_atr": pullback_distance / max(atr, 1e-12),
+                        "entry_mode": entry_mode,
+                        "confirmation_reason": confirmation_reason,
+                        **btc_context,
+                        "reason": f"Pullback_WAIT({score}) | dist={dist:.2%} | Target={pullback_target:.4f} | {', '.join(score_details)}{downgrade_note}"
+                    }
 
         return scored_hold(f"Score_Low({score}) | {', '.join(score_details)}")
 
@@ -1655,30 +2211,30 @@ class SuperTrendKeltnerStrategy:
                 "reason": "大週期(1h)動能已在衰退 1h_Trend_Declining",
             }
 
-        # 價格乖離 EMA20 太遠：等回踩的這段時間裡價格可能又衝更遠，均值
+        # 價格乖離 EMA30 太遠：等回踩的這段時間裡價格可能又衝更遠，均值
         # 回歸風險比登記當下更高，一樣取消。
-        ema20_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
-        if ema20_distance_atr > EMA_EXTENSION_MAX_ATR_MULT:
+        ema30_distance_atr = abs(price - ema_20) / atr if atr > 0 else 0.0
+        if ema30_distance_atr > EMA_EXTENSION_MAX_ATR_MULT:
             return {
                 "status": "CANCEL",
-                "reason": f"價格乖離EMA20過大 Price_Overextended({ema20_distance_atr:.1f}x_ATR)",
+                "reason": f"價格乖離EMA30過大 Price_Overextended({ema30_distance_atr:.1f}x_ATR)",
             }
 
-        # 回踩跌破/突破 EMA20：健康的回調應該只是往 EMA20 靠近，不會真的
-        # 穿越到對面——多單回踩時價格已經跌破 EMA20（或空單回踩時已經站
-        # 上 EMA20），代表這已經不是「回調」，而是價格真的穿越均線在反轉。
-        # 跟上面「乖離過大」是兩個不同方向的風險：那個抓「離 EMA20 太遠」
-        # （不管在哪一側），這個抓「跑到 EMA20 錯的那一側」，兩種情況都
+        # 回踩跌破/突破 EMA30：健康的回調應該只是往 EMA30 靠近，不會真的
+        # 穿越到對面——多單回踩時價格已經跌破 EMA30（或空單回踩時已經站
+        # 上 EMA30），代表這已經不是「回調」，而是價格真的穿越均線在反轉。
+        # 跟上面「乖離過大」是兩個不同方向的風險：那個抓「離 EMA30 太遠」
+        # （不管在哪一側），這個抓「跑到 EMA30 錯的那一側」，兩種情況都
         # 可能發生、必須分開判斷，缺一不可。
         if side == "LONG" and price < ema_20:
             return {
                 "status": "CANCEL",
-                "reason": f"回踩跌破EMA20，疑似真反轉 EMA20_Breached(price={price:.6f}<ema20={ema_20:.6f})",
+                "reason": f"回踩跌破EMA30，疑似真反轉 EMA30_Breached(price={price:.6f}<ema30={ema_20:.6f})",
             }
         if side == "SHORT" and price > ema_20:
             return {
                 "status": "CANCEL",
-                "reason": f"回踩突破EMA20，疑似真反轉 EMA20_Breached(price={price:.6f}>ema20={ema_20:.6f})",
+                "reason": f"回踩突破EMA30，疑似真反轉 EMA30_Breached(price={price:.6f}>ema30={ema_20:.6f})",
             }
 
         # 距離原始突破過了多久：方向沒反轉不代表這個突破還「新鮮」——等回踩
@@ -1845,3 +2401,195 @@ class SuperTrendKeltnerStrategy:
             "btc_score_penalty": btc_regime["score_penalty"],
             "btc_allocation_factor": btc_regime["allocation_factor"],
         }
+
+
+def detect_simple_ma5_signal(df: pd.DataFrame, live_price: float = None) -> dict:
+    """
+    不看任何K線圖，只看MA3的線。
+    只要 MA3 呈尖端 (V/倒V) 或 小梯形，就轉向。
+    若 MA3 呈大V括弧 (較寬的轉折)，且近4根內有2根以上同色K線，也轉向。
+    """
+    if len(df) < 5:
+        return {"detected": False, "reason": "Data too short"}
+
+    # 取消所有K線限制，直接計算 MA3
+    if 'ma3' not in df.columns:
+        df['ma3'] = df['close'].rolling(window=3).mean()
+    ma3_series = df['ma3'].dropna()
+    if len(ma3_series) < 5:
+        return {"detected": False, "reason": "MA3 not ready"}
+
+    # 為了滿足「一有轉折立刻開倉」的需求，改回使用正在跳動的即時 K 線 (iloc[-1])
+    ma3_curr = float(ma3_series.iloc[-1])
+    ma3_prev = float(ma3_series.iloc[-2])
+    ma3_prev2 = float(ma3_series.iloc[-3])
+    ma3_prev3 = float(ma3_series.iloc[-4])
+    ma3_prev4 = float(ma3_series.iloc[-5])
+
+    price = float(live_price) if live_price is not None and float(live_price) > 0 else float(df['close'].iloc[-1])
+    if price <= 0:
+        return {"detected": False, "reason": "Invalid price"}
+
+    c1 = df.iloc[-1]
+    c2 = df.iloc[-2]
+    c3 = df.iloc[-3]
+    c4 = df.iloc[-4]
+    greens = sum([1 for c in [c1, c2, c3, c4] if float(c['close']) > float(c['open'])])
+    reds = sum([1 for c in [c1, c2, c3, c4] if float(c['close']) < float(c['open'])])
+
+    is_valley = False
+    is_peak = False
+    valley_reason = ""
+    peak_reason = ""
+
+    c1_is_green = float(c1['close']) >= float(c1['open'])
+    c1_is_red = float(c1['close']) <= float(c1['open'])
+
+    # 1. 尖端 (V 型谷底)
+    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
+        is_valley = True
+        valley_reason = "MA3 尖端谷底"
+    # 2. 小梯形 (底平緩：左側下降，底部平/微升降，右側上升)
+    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
+        is_valley = True
+        valley_reason = "MA3 小梯形谷底"
+    # 3. 大V括弧 + 2根以上綠K
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
+        is_valley = True
+        valley_reason = f"MA3 大V括弧谷底 (附{greens}根綠K)"
+    # 4. 提早試單：K線出現反轉跡象 (突破MA3 或 吞噬上一根紅K)
+    elif MA5_EARLY_ENTRY_ENABLED and c1_is_green and (
+        (float(c1['close']) > ma3_curr and float(c2['close']) < ma3_prev) or 
+        (float(c2['close']) < float(c2['open']) and float(c1['close']) > float(c2['open']))
+    ):
+        is_valley = True
+        valley_reason = "K線提早反轉跡象(突破MA3或吞噬)"
+
+    # 1. 尖端 (倒 V 型峰頂)
+    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
+        is_peak = True
+        peak_reason = "MA3 尖端峰頂"
+    # 2. 小梯形 (頂平緩：左側上升，頂部平/微升降，右側下降)
+    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
+        is_peak = True
+        peak_reason = "MA3 小梯形峰頂"
+    # 3. 大V括弧 + 2根以上紅K
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
+        is_peak = True
+        peak_reason = f"MA3 大V括弧峰頂 (附{reds}根紅K)"
+    # 4. 提早試單：K線出現反轉跡象 (跌破MA3 或 吞噬上一根綠K)
+    elif MA5_EARLY_ENTRY_ENABLED and c1_is_red and (
+        (float(c1['close']) < ma3_curr and float(c2['close']) > ma3_prev) or
+        (float(c2['close']) > float(c2['open']) and float(c1['close']) < float(c2['open']))
+    ):
+        is_peak = True
+        peak_reason = "K線提早反轉跡象(跌破MA3或吞噬)"
+
+    # 這裡的 signal_score 隨便給 100 即可，不用看 K 線實體比例
+    signal_score = 100
+    atr14 = price * 0.015 # 給個默認 atr，因為取消了原始計算
+
+    if is_valley:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "TROUGH_TURN")
+        if not full_wave["passed"]:
+            return {"detected": False, "reason": full_wave["reason"]}
+        return {
+            "detected": True,
+            "side": "LONG",
+            "score": signal_score,
+            "price": price,
+            "atr": atr14,
+            "reason": valley_reason,
+        }
+    elif is_peak:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "PEAK_TURN")
+        if not full_wave["passed"]:
+            return {"detected": False, "reason": full_wave["reason"]}
+        return {
+            "detected": True,
+            "side": "SHORT",
+            "score": signal_score,
+            "price": price,
+            "atr": atr14,
+            "reason": peak_reason,
+        }
+
+    return {"detected": False, "reason": "No MA3 valley/peak"}
+
+
+def check_simple_ma5_exit(df: pd.DataFrame, position: dict) -> dict:
+    """
+    不看任何K線圖，只看MA3的線。
+    只要 MA3 呈尖端 (V/倒V)、小梯形、或大V括弧，就平倉並轉向。
+    Long: 當 MA3 出現峰頂 (Peak) 時平倉。
+    Short: 當 MA3 出現谷底 (Valley) 時平倉。
+    """
+    if len(df) < 5:
+        return {"close": False, "reason": "Data too short"}
+
+    if 'ma3' not in df.columns:
+        df['ma3'] = df['close'].rolling(window=3).mean()
+    ma3_series = df['ma3'].dropna()
+    if len(ma3_series) < 5:
+        return {"close": False, "reason": "MA3 not ready"}
+
+    # 為了滿足「一有轉折立刻平倉」的需求，改回使用正在跳動的即時 K 線 (iloc[-1])
+    ma3_curr = float(ma3_series.iloc[-1])
+    ma3_prev = float(ma3_series.iloc[-2])
+    ma3_prev2 = float(ma3_series.iloc[-3])
+    ma3_prev3 = float(ma3_series.iloc[-4])
+    ma3_prev4 = float(ma3_series.iloc[-5])
+
+    c1 = df.iloc[-1]
+    c2 = df.iloc[-2]
+    c3 = df.iloc[-3]
+    c4 = df.iloc[-4]
+    greens = sum([1 for c in [c1, c2, c3, c4] if float(c['close']) > float(c['open'])])
+    reds = sum([1 for c in [c1, c2, c3, c4] if float(c['close']) < float(c['open'])])
+
+    side = position.get("side")
+    is_valley = False
+    is_peak = False
+    reason_text = ""
+
+    c1_is_green = float(c1['close']) >= float(c1['open'])
+    c1_is_red = float(c1['close']) <= float(c1['open'])
+
+    # 1. 尖端 (V 型谷底)
+    if ma3_prev2 > ma3_prev and ma3_curr > ma3_prev:
+        is_valley = True
+        reason_text = "MA3 尖端谷底向上轉折，空單平倉"
+    # 2. 小梯形 (底平緩)
+    elif ma3_prev3 > ma3_prev2 and ma3_curr > ma3_prev and (ma3_prev >= ma3_prev2):
+        is_valley = True
+        reason_text = "MA3 小梯形谷底向上轉折，空單平倉"
+    # 3. 大V括弧 + 2根以上綠K
+    elif ma3_curr > ma3_prev and ma3_prev4 > ma3_prev3 and greens >= 2:
+        is_valley = True
+        reason_text = f"MA3 大V括弧谷底(附{greens}根綠K)向上轉折，空單平倉"
+
+    # 1. 尖端 (倒 V 型峰頂)
+    if ma3_prev2 < ma3_prev and ma3_curr < ma3_prev:
+        is_peak = True
+        reason_text = "MA3 尖端峰頂向下轉折，多單平倉"
+    # 2. 小梯形 (頂平緩)
+    elif ma3_prev3 < ma3_prev2 and ma3_curr < ma3_prev and (ma3_prev <= ma3_prev2):
+        is_peak = True
+        reason_text = "MA3 小梯形峰頂向下轉折，多單平倉"
+    # 3. 大V括弧 + 2根以上紅K
+    elif ma3_curr < ma3_prev and ma3_prev4 < ma3_prev3 and reds >= 2:
+        is_peak = True
+        reason_text = f"MA3 大V括弧峰頂(附{reds}根紅K)向下轉折，多單平倉"
+
+    if side == "LONG" and is_peak:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "PEAK_TURN")
+        if not full_wave["passed"]:
+            return {"close": False, "reason": full_wave["reason"]}
+        return {"close": True, "reason": reason_text}
+    elif side == "SHORT" and is_valley:
+        full_wave = evaluate_minimum_kc_wave(df, -2, "TROUGH_TURN")
+        if not full_wave["passed"]:
+            return {"close": False, "reason": full_wave["reason"]}
+        return {"close": True, "reason": reason_text}
+
+    return {"close": False, "reason": "MA3 尚未出現反向轉折"}
