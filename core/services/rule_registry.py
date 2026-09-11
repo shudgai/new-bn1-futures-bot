@@ -104,10 +104,11 @@ def active_entry_rule_lines() -> List[str]:
         "  1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或無效不開",
         f"     走平禁開：中軌位移 ÷ 軌寬 < {config.CHANNEL_FLAT_MIDDLE_RATIO:g} 即不開"
         "（V 型快通道與即時破軌入口同樣適用）",
-        "  2. 即時破軌入口：當根原始開盤在軌內或碰軌、最新價嚴格破同側外軌、"
-        f"順向實體 ≥ {0.5:g} ATR",
-        "  共用過濾：末端禁開（連續同向 "
-        f"{config.CHANNEL_TAIL_MAX_TREND_BARS} 根）、當根實體過熱 > {config.CHANNEL_ENTRY_MAX_BODY_ATR:g} ATR、"
+        f"  2. 即時長K破軌入口：{_flag(config.CHANNEL_LIVE_BODY_BREAKOUT_ENABLED)}",
+        "  共用過濾："
+        + ("末端禁開已停用（漲勢延續可再進場）、" if config.CHANNEL_TAIL_MAX_TREND_BARS <= 0
+           else f"末端禁開（連續同向 {config.CHANNEL_TAIL_MAX_TREND_BARS} 根）、")
+        + f"當根實體過熱 > {config.CHANNEL_ENTRY_MAX_BODY_ATR:g} ATR、"
         f"前一根大K > {config.CHANNEL_ENTRY_MAX_PREV_BODY_ATR:g} ATR 不追、"
         f"淨利空間 ≥ {config.NET_PROFIT_GUARANTEE_BUFFER * 100:g}%、反向異常攔截、每根限次",
         f"  獲利重開票據有效期 {config.PROFIT_REENTRY_TICKET_TTL_SEC} 秒",
@@ -117,8 +118,10 @@ def active_entry_rule_lines() -> List[str]:
 def active_exit_rule_lines() -> List[str]:
     """Describe the exits that can actually close a position right now."""
     return [
-        f"  1. 階梯鎖利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT:g}U 啟動，"
-        f"鎖住峰值 − {config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT:g}U",
+        ("  1. 階梯鎖利：停用（門檻設定為 999U，由峰谷出口負責）"
+         if config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT >= 900
+         else f"  1. 階梯鎖利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT:g}U 啟動，"
+              f"鎖住峰值 − {config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT:g}U"),
         f"  2. CK 狹窄衰退＋MA3 峰谷反向：{_flag(config.CHANNEL_FADING_MA3_EXIT_ENABLED)}",
         f"  3. 單根瀑布反向實體 ≥ {config.CHANNEL_WATERFALL_BODY_ATR:g} ATR",
         f"  4. 雙已收線反向異常 K：各 ≥ {config.CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR:g} ATR",

@@ -246,6 +246,11 @@ CHANNEL_FLAT_MIDDLE_RATIO = max(
     0.0, float(os.getenv("CHANNEL_FLAT_MIDDLE_RATIO", "0.05"))
 )
 
+# 即時長K破軌入口開關：停用後只保留 CK 中軌趨勢入口。
+CHANNEL_LIVE_BODY_BREAKOUT_ENABLED = os.getenv(
+    "CHANNEL_LIVE_BODY_BREAKOUT_ENABLED", "true"
+).lower() == "true"
+
 # 現行獲利保護：淨利峰值達 ARM 才啟動，鎖住「峰值 − LOCK_OFFSET」。
 # 這兩個值原本寫死在 profit_protection_service，現在集中到設定，啟動看板才印得出真正的規則。
 CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT = max(
@@ -261,9 +266,8 @@ CHANNEL_FADING_MA3_EXIT_ENABLED = os.getenv(
 ).lower() == "true"
 
 # 末端禁開：CK 中軌已連續同向走過這麼多根就不再進場（雙向）。
-CHANNEL_TAIL_MAX_TREND_BARS = max(
-    2, int(float(os.getenv("CHANNEL_TAIL_MAX_TREND_BARS", "12")))
-)
+# 末端禁開：連續同向走滿這麼多根就不進場；設 0 表示停用（漲勢延續仍可再進場）。
+CHANNEL_TAIL_MAX_TREND_BARS = int(float(os.getenv("CHANNEL_TAIL_MAX_TREND_BARS", "12")))
 
 # 啟用後只接受 MA3/MA15 同向延續訊號；峰谷、KC 中軌與急速反手僅可平倉，不可反向開倉。
 CONTINUOUS_TREND_ONLY = os.getenv("CONTINUOUS_TREND_ONLY", "false").lower() == "true"

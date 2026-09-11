@@ -7,7 +7,7 @@ import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
 from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
-    CHANNEL_FLAT_MIDDLE_RATIO,
+    CHANNEL_FLAT_MIDDLE_RATIO, CHANNEL_LIVE_BODY_BREAKOUT_ENABLED,
 )
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
@@ -269,7 +269,7 @@ def channel_tail_entry_blocked(frame, side) -> bool:
     live replay from +9.95 to +25.70 USDT and the worst trade from -11.34 to -9.17
     (8, 10, 12 and 14 bars were all better than no filter; 12 sits mid-plateau).
     """
-    if side not in ("LONG", "SHORT"):
+    if side not in ("LONG", "SHORT") or CHANNEL_TAIL_MAX_TREND_BARS <= 0:
         return False
     # Fail closed: without enough warmup bars the run length cannot be measured,
     # so refuse the entry instead of letting a tail entry through.
@@ -303,7 +303,7 @@ def aligned_entry(frame, price):
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        breakout_side = live_body_breakout_side(frame, price)
+        breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
         side = breakout_side or entry_trend_direction(frame)
         if side is None:
             return wait
