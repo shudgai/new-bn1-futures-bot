@@ -3437,7 +3437,7 @@ class TradingEngine:
                     # 固定幣種模式只掃 DEFAULT_SYMBOLS 與既有持倉。
                     wallet_balance = float(self.account.get_wallet_balance())
 
-                    active_trade_symbols = ["龙虾/USDT", "1000PEPE/USDT"]
+                    active_trade_symbols = list(DEFAULT_SYMBOLS)
 
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
                     # 輪替模式使用市場短名單 + active_trade_symbols + 已達標候選；
