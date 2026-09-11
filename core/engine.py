@@ -1416,7 +1416,7 @@ class TradingEngine:
         ranked_short = []
         steady_ranked_long = []
         steady_ranked_short = []
-        
+
         btc_1h_dir = getattr(self, "st_direction_1h_cache", {}).get("BTC/USDT", 0)
         steady_candidates = getattr(self, "_market_steady_candidates", {})
 
@@ -1450,18 +1450,18 @@ class TradingEngine:
             long_move_pct = (
                 (last / long_ref - 1.0) * 100.0 if long_ref else short_move_pct
             )
-            
+
             # 5分鐘穩定趨勢計算
             steady_ref = self._sample_reference_price(
                 samples, now - FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC,
             )
             steady_move_pct = (last / steady_ref - 1.0) * 100.0 if steady_ref else 0.0
-            
+
             if steady_move_pct >= FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT and btc_1h_dir >= 0:
                 steady_ranked_long.append((steady_move_pct, symbol))
             elif steady_move_pct <= -FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT and btc_1h_dir <= 0:
                 steady_ranked_short.append((abs(steady_move_pct), symbol))
-            
+
             score = 0.75 * short_move_pct + 0.25 * long_move_pct
             if max(abs(short_move_pct), abs(long_move_pct)) < FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT:
                 continue
@@ -1475,10 +1475,10 @@ class TradingEngine:
         ranked_short.sort(reverse=True)
         steady_ranked_long.sort(reverse=True)
         steady_ranked_short.sort(reverse=True)
-        
+
         selected_long = ranked_long[:FULL_MARKET_SURVEILLANCE_SIDE_COUNT]
         selected_short = ranked_short[:FULL_MARKET_SURVEILLANCE_SIDE_COUNT]
-        
+
         # 穩定趨勢保留機制
         for _, symbol in steady_ranked_long[:FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT]:
             steady_candidates[symbol] = {
@@ -1490,23 +1490,23 @@ class TradingEngine:
                 "direction": "SHORT",
                 "retained_until": now + FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC
             }
-            
+
         # 清除過期的穩定趨勢候選
         expired = [s for s, d in steady_candidates.items() if now > d.get("retained_until", 0)]
         for s in expired:
             del steady_candidates[s]
-            
+
         # 合併爆發名單與穩定趨勢名單
         self.market_prebreakout_symbols = list(dict.fromkeys([
             row[2] for row in [*selected_long, *selected_short]
         ] + list(steady_candidates.keys())))
-        
+
         self.market_prebreakout_directions = {
             **{row[2]: "LONG" for row in selected_long},
             **{row[2]: "SHORT" for row in selected_short},
             **{s: d["direction"] for s, d in steady_candidates.items()}
         }
-        
+
         # 每輪整批替換，避免已離開即時雷達的舊幣仍帶著過期高分。
         self._market_surveillance_scores = {
             row[2]: float(row[0]) for row in [*ranked_long, *ranked_short]
@@ -2264,11 +2264,203 @@ class TradingEngine:
     _channel_mature_outer_trend_is_weak = staticmethod(channel_mature_outer_trend_is_weak)
     _channel_terminal_market = staticmethod(channel_terminal_market)
     _record_channel_chop_event = staticmethod(record_channel_chop_event)
-    _record_channel_signal_event = staticmethod(record_channel_signal_event)
+    def _record_channel_signal_event(
+        self, symbol: str, reason: str, frame: pd.DataFrame,
+    ) -> None:
+        """Record visible Channel Swing state transitions without log spam."""
+        reason_name = str(reason or "").strip()
+        if not reason_name:
+            return
+        labels = {
+            "KC data unavailable": "KC資料不足",
+            "KC data invalid": "KC資料無效",
+            "KC channel invalid": "KC通道無效",
+            "WAIT_CLOSED_BODY_ADJACENT_BREAK": "等待已收盤外軌K的下一根突破",
+            "WAIT_ADJACENT_OUTER_CANDIDATE": "等待緊接的外軌候選K",
+            "WAIT_CLOSE_GREEN": "觸下軌，等待綠K收盤",
+            "WAIT_CLOSE_RED": "觸上軌，等待紅K收盤",
+            "WAIT_BREAK_HIGH": "多方候選成立，等待下一根破高",
+            "WAIT_BREAK_LOW": "空方候選成立，等待下一根破低",
+            "CANCEL_LONG": "多方候選先破低，已取消",
+            "CANCEL_SHORT": "空方候選先破高，已取消",
+            "V_TOO_CLOSE_KC": "V線離KC外軌太近",
+            "KC_WIDTH_TOO_NARROW": "KC寬度不足設定門檻",
+            "CHOP_WAIT_NO_ENTRY": "CHOP_WAIT阻擋一般峰谷進場",
+            "CHOP_WAIT_NO_MOMENTUM": "CHOP_WAIT等待有效動能",
+            "WAIT_CHOP_MOMENTUM_BREAK": "CHOP動能候選等待下一根確認",
+            "CANCEL_CHOP_BREAKOUT": "CHOP動能突破候選已取消",
+            "WAIT_DYNAMIC_TREND": "上軌外多方趨勢品質不足",
+            "WAIT_DYNAMIC_DOWNTREND": "下軌外空方趨勢品質不足",
+            "KC_UPPER_EXTENSION_LATE": "上漲延伸過大，不追多",
+            "KC_LOWER_EXTENSION_LATE": "下跌延伸過大，不追空",
+            "KC_UPPER_MA3_REVERSAL_BLOCK_LONG": "MA3 已轉跌至 MA15 下方，不追上軌多單",
+            "KC_LOWER_MA3_REVERSAL_BLOCK_SHORT": "MA3 已轉升至 MA15 上方，不追下軌空單",
+            "KC_UPPER_MATURE_TREND_WEAK": "漲勢已成熟且量能不足，不在末端追多",
+            "KC_LOWER_MATURE_TREND_WEAK": "跌勢已成熟且量能不足，不在末端追空",
+            "KC_CLOSED_BODY_BREAK_LOW_VOLUME": "收盤實體突破量能不足，繼續找其他幣",
+            "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",
+            "WAIT_DOWNTREND_BREAK": "下軌空方動能等待下一根破低",
+            "WAIT_TREND_RETEST": "多方過熱，等待回踩上軌",
+            "WAIT_DOWNTREND_RETEST": "空方過熱，等待回抽下軌",
+            "WAIT_TREND_RETEST_BREAK": "上軌回踩成立，等待破高",
+            "WAIT_DOWNTREND_RETEST_BREAK": "下軌回抽成立，等待破低",
+            "CANCEL_TREND_CONFIRM": "多方趨勢候選確認失敗",
+            "CANCEL_TREND_CONFIRM_EXPIRED": "多方趨勢候選逾時",
+            "CANCEL_TREND_RETEST": "多方回踩候選已取消",
+            "CANCEL_DOWNTREND_CONFIRM": "空方趨勢候選確認失敗",
+            "CANCEL_DOWNTREND_CONFIRM_EXPIRED": "空方趨勢候選逾時",
+            "CANCEL_DOWNTREND_RETEST": "空方回抽候選已取消",
+        }
+        label = labels.get(reason_name, reason_name)
+        cancel_reason = (
+            reason_name.startswith("CANCEL_")
+            or reason_name in ("CANCEL_LONG", "CANCEL_SHORT")
+        )
+        block_reason = (
+            reason_name in (
+                "KC data unavailable", "KC data invalid", "KC channel invalid",
+                "V_TOO_CLOSE_KC",
+                "KC_WIDTH_TOO_NARROW", "CHOP_WAIT_NO_ENTRY",
+            )
+            or reason_name.endswith("_DATA_INVALID")
+        )
+        action = (
+            "CHANNEL_CANCEL" if cancel_reason
+            else "CHANNEL_BLOCK" if block_reason
+            else "CHANNEL_WAIT"
+        )
+        try:
+            timestamp_ms = int(float(frame.iloc[-1]["timestamp"]))
+        except (TypeError, ValueError, IndexError, KeyError):
+            timestamp_ms = int(time.time() * 1000)
+        events = self._channel_signal_events.setdefault(symbol, [])
+        if events and int(events[-1].get("timestamp") or 0) == timestamp_ms:
+            if events[-1].get("reason") == reason_name:
+                return
+            events[-1] = {
+                "timestamp": timestamp_ms, "action": action,
+                "reason": reason_name, "label": label,
+            }
+        elif events and events[-1].get("reason") == reason_name:
+            return
+        else:
+            events.append({
+                "timestamp": timestamp_ms, "action": action,
+                "reason": reason_name, "label": label,
+            })
+            del events[:-100]
+        level = "WARNING" if action != "CHANNEL_WAIT" else "INFO"
+        self.account.log(
+            f"🧭 [Channel Swing狀態] {symbol} {label}",
+            level,
+        )
+
     _channel_chop_state = staticmethod(channel_chop_state)
     _channel_chop_breakout_action = staticmethod(channel_chop_breakout_action)
     _channel_entry_reuses_exit_bar = staticmethod(channel_entry_reuses_exit_bar)
-    _channel_peak_exit_reentry_blocked = staticmethod(channel_peak_exit_reentry_blocked)
+    @staticmethod
+    def _channel_peak_exit_reentry_blocked(
+        action: str,
+        has_position: bool,
+        entry_side: str | None,
+        frame: "pd.DataFrame",
+        peak_exit_info: dict | None,
+        symbol: str,
+        max_bars: int = 3,
+        live_price: float | None = None,
+    ) -> bool:
+        """三點峰谷平倉後，在價格仍位於外軌一側時封鎖同方向重開倉。
+
+        解鎖條件（滿足任一即可）：
+        1. 至少有一根已收盤 K 的收盤價回到 KC 通道內（確認轉折）。
+        2. 自峰谷平倉後，已過了 max_bars 根已收盤 K。
+        """
+        if not (
+            action == "ENTER"
+            and not has_position
+            and entry_side
+            and isinstance(peak_exit_info, dict)
+        ):
+            return False
+        if live_price is not None and aligned_entry_ready(frame, live_price, entry_side):
+            try:
+                current_bar = float(frame.iloc[-1]['timestamp'])
+                exit_bar = float(peak_exit_info['exit_bar_id'])
+                return not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar)
+            except (TypeError, ValueError, KeyError, IndexError):
+                return True
+        if peak_exit_info.get("require_new_closed_break") and peak_exit_info.get("allow_new_outer_signal"):
+            try:
+                exit_bar = float(peak_exit_info["exit_bar_id"])
+                live_bar = float(frame.iloc[-1].get("timestamp", frame.index[-1]))
+                breakout_bar = float(frame.iloc[-3].get("timestamp", frame.index[-3]))
+                price = float(frame.iloc[-1]["close"]) if live_price is None else live_price
+                if entry_side == "SHORT" and three_closed_short_breakout_ready(frame, price):
+                    breakout_bar = float(frame.iloc[-4].get("timestamp", frame.index[-4]))
+                decision = TradingEngine._channel_swing_action(frame, price)
+                reason = str(decision.get("reason", ""))
+                if reason in TREND_CODES or reason.startswith("KC_NEXT_LIVE_PUSH_"):
+                    signal_bar = float(frame.iloc[-2].get("timestamp", frame.index[-2]))
+                elif reason.startswith("LIVE_"):
+                    signal_bar = live_bar
+                else:
+                    signal_bar = breakout_bar
+                opposite = str(peak_exit_info.get("side", "")).upper() != str(entry_side).upper()
+                # Closing a short during the breakout bar does not invalidate
+                # that bar's subsequent closed confirmation for a new long.
+                fresh = signal_bar > exit_bar or (
+                    opposite and signal_bar == exit_bar and live_bar > exit_bar)
+                return not (fresh and decision.get("action") == "ENTER" and decision.get("side") == entry_side)
+            except (TypeError, ValueError, KeyError, IndexError):
+                return True
+        if peak_exit_info.get("require_new_closed_break"):
+            try:
+                price = float(frame.iloc[-1]["close"]) if live_price is None else live_price
+                decision = aligned_entry(frame, price)
+                if decision.get("reason") in TREND_CODES and decision.get("side") == entry_side:
+                    signal_time = float(frame.iloc[-2].get("timestamp", frame.index[-2]))
+                    exit_time = float(peak_exit_info["exit_bar_id"])
+                    return not (math.isfinite(signal_time) and math.isfinite(exit_time) and signal_time > exit_time)
+                breakout, confirmation = frame.iloc[-3], frame.iloc[-2]
+                price = float(frame.iloc[-1]["close"]) if live_price is None else live_price
+                three_short = entry_side == "SHORT" and three_closed_short_breakout_ready(frame, price)
+                offset = -4 if three_short else -3
+                breakout = frame.iloc[offset]
+                breakout_id = breakout.get("timestamp", frame.index[offset])
+                breakout_time, exit_time = float(breakout_id), float(peak_exit_info["exit_bar_id"])
+                if not all(math.isfinite(value) for value in (breakout_time, exit_time)) or breakout_time <= exit_time:
+                    return True
+                if entry_side == "LONG":
+                    return not (float(breakout["open"]) <= float(breakout["kc_upper"]) < float(breakout["close"])
+                                and float(confirmation["close"]) > max(float(confirmation["open"]), float(confirmation["kc_upper"])))
+                if entry_side == "SHORT":
+                    return not (float(breakout["open"]) >= float(breakout["kc_lower"]) > float(breakout["close"])
+                                and float(confirmation["close"]) < min(float(confirmation["open"]), float(confirmation["kc_lower"])))
+            except (TypeError, ValueError, KeyError, IndexError):
+                pass
+            return True
+        exited_side = str(peak_exit_info.get("side") or "").upper()
+        if exited_side != str(entry_side or "").upper():
+            # 反向開倉不受峰谷冷卻限制
+            return False
+        bar_count = int(peak_exit_info.get("bar_count") or 0)
+        if bar_count >= max_bars:
+            return False
+        # 若最近一根已收盤 K 已回到 KC 通道內，解除封鎖
+        try:
+            required = {"close", "kc_upper", "kc_lower"}
+            if frame is not None and len(frame) >= 2 and required.issubset(frame.columns):
+                last_closed = frame.iloc[-2]
+                close_val = float(last_closed["close"])
+                upper_val = float(last_closed["kc_upper"])
+                lower_val = float(last_closed["kc_lower"])
+                if lower_val < close_val < upper_val:
+                    # 已收盤 K 回到通道內，解除封鎖
+                    return False
+        except (TypeError, ValueError, KeyError, IndexError):
+            pass
+        return True
+
     _channel_peak_reversal_action = staticmethod(channel_peak_reversal_action)
     _channel_entry_min_profit_ok = staticmethod(channel_entry_min_profit_ok)
     _channel_peak_exit_entry_gate = staticmethod(channel_peak_exit_entry_gate)
@@ -2300,6 +2492,297 @@ class TradingEngine:
     _range_swing_reverse_side = staticmethod(range_swing_reverse_side)
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
+
+    @staticmethod
+
+    @staticmethod
+
+    async def _try_channel_stronger_symbol_takeover(
+        self, candidate: dict, now_time: float, daily_halt: bool,
+    ) -> tuple[bool, bool]:
+        """Close one stalled Channel Swing position before opening a stronger symbol."""
+        positions = getattr(self.account, "positions", {})
+        pending = getattr(self.account, "pending_limit_orders", {})
+        signal_code = str(
+            candidate.get("signal_code") or candidate.get("reason") or ""
+        )
+        confirmed_takeover_signals = {
+            "KC_UPPER_TREND_CONFIRMED_LONG",
+            "KC_LOWER_TREND_CONFIRMED_SHORT",
+            "KC_UPPER_RETEST_BREAK_LONG",
+            "KC_LOWER_RETEST_BREAK_SHORT",
+            "KC_CLOSED_BODY_HIGH_BREAK_LONG",
+            "KC_CLOSED_BODY_LOW_BREAK_SHORT",
+        }
+        if (
+            daily_halt
+            or not positions
+            or pending
+            or str(candidate.get("entry_mode") or "").upper() != "CHANNEL_SWING"
+            or int(candidate.get("priority") or 0) < 4
+            or signal_code not in confirmed_takeover_signals
+        ):
+            return False, False
+
+        candidate_side = str(candidate.get("side") or "").upper()
+        if candidate_side not in ("LONG", "SHORT"):
+            return False, False
+
+        held_candidates = [
+            (symbol, position) for symbol, position in positions.items()
+            if str(position.get("entry_mode") or "").upper() == "CHANNEL_SWING"
+        ]
+        if not held_candidates:
+            return False, False
+        held_symbol, held_position = min(
+            held_candidates,
+            key=lambda item: (
+                str(item[1].get("side") or "").upper() != candidate_side,
+                float(
+                    item[1].get("channel_confirmed_energy_score")
+                or item[1].get("channel_energy_score")
+                    or 0.0
+                ),
+            ),
+        )
+        candidate_energy = self._channel_confirmed_candidate_energy(candidate)
+        held_energy = max(
+            0.0,
+            float(
+                held_position.get("channel_confirmed_energy_score")
+                or held_position.get("channel_energy_score")
+                or 0.0
+            ),
+        )
+        new_symbol = str(candidate.get("symbol") or "")
+        if (
+            not new_symbol
+            or new_symbol == held_symbol
+            or str(held_position.get("entry_mode") or "").upper() != "CHANNEL_SWING"
+        ):
+            return False, False
+
+        opened_at = float(held_position.get("open_timestamp") or now_time)
+        age_sec = max(0.0, float(now_time) - opened_at)
+        held_mark = float(
+            self.tickers.get(held_symbol)
+            or held_position.get("mark_price")
+            or held_position.get("entry_price")
+            or 0.0
+        )
+        net_pnl = self._channel_takeover_net_pnl(held_position, held_mark)
+        side = candidate_side
+        candidate_price = float(
+            candidate.get("live_price") or candidate.get("price") or 0.0
+        )
+        candidate_outside = self._channel_price_is_outside_for_side(
+            candidate_price, side,
+            float(candidate.get("kc_upper") or 0.0),
+            float(candidate.get("kc_lower") or 0.0),
+        )
+        held_momentum_declining = bool(
+            held_position.get("channel_momentum_declining")
+        )
+
+        held_side = str(held_position.get("side") or "").upper()
+        held_kc_upper = float(held_position.get("channel_kc_upper") or float("inf"))
+        held_kc_lower = float(held_position.get("channel_kc_lower") or 0.0)
+        held_outside = False
+        if held_side == "LONG" and held_mark >= held_kc_upper:
+            held_outside = True
+        elif held_side == "SHORT" and held_mark <= held_kc_lower:
+            held_outside = True
+
+        if held_outside:
+            # 如果目前持倉幣種還在 KC 外側（代表趨勢還很強），不允許被強勢換倉
+            return False, False
+
+        if not candidate_outside or not held_momentum_declining:
+            return False, False
+        energy_takeover = bool(
+            candidate_energy >= 1.00
+            and float(candidate.get("confirmed_trend_quality") or 0.0) >= 0.75
+            and float(candidate.get("confirmed_volume_ratio") or 0.0) >= 1.00
+            and candidate_energy >= max(
+                held_energy * 2.00, held_energy + 0.75,
+            )
+        )
+        if not energy_takeover:
+            return False, False
+        fresh_snapshot = None
+        candidate_bar_id = candidate.get("candidate_bar_id")
+        if candidate_bar_id is not None:
+            invalid_candidate_key = (new_symbol, side, candidate_bar_id)
+            invalid_candidates = getattr(
+                self, "_channel_invalid_entry_candidates", set(),
+            )
+            if invalid_candidate_key in invalid_candidates:
+                return True, False
+            fresh_snapshot = await self._fresh_channel_entry_snapshot(
+                new_symbol, side, candidate_bar_id,
+            )
+            if fresh_snapshot is None:
+                if not hasattr(self, "_channel_invalid_entry_candidates"):
+                    self._channel_invalid_entry_candidates = set()
+                self._channel_invalid_entry_candidates.add(invalid_candidate_key)
+                return True, False
+            candidate_price = float(fresh_snapshot["price"])
+            candidate["kc_upper"] = float(fresh_snapshot["kc_upper"])
+            candidate["kc_lower"] = float(fresh_snapshot["kc_lower"])
+
+        if not await self._execution_price_is_safe(new_symbol, side):
+            return True, False
+
+        planned_price = candidate_price
+        if planned_price <= 0.0:
+            return True, False
+        atr = max(float(candidate.get("atr") or 0.0), planned_price * 1e-6)
+        if not self._abnormal_market_entry_allowed(
+            new_symbol, side, planned_price, atr,
+            float(candidate.get("signal_candle_open") or planned_price),
+            float(candidate.get("signal_candle_high") or planned_price),
+            float(candidate.get("signal_candle_low") or planned_price),
+            float(candidate.get("signal_candle_close") or planned_price),
+        ):
+            return True, False
+
+        self.account.log(
+            f"🔄 [強勢換倉] {held_symbol} 已持有 {age_sec / 60.0:.1f} 分鐘、"
+            f"估算淨損益 {net_pnl:.3f}U、能量 {held_energy:.2f}；"
+            "舊倉已由三根收盤K確認動能連續衰退；"
+            f"新幣能量 {candidate_energy:.2f}，"
+            f"{new_symbol} {side} 出現 confirmed 強訊號，"
+            "先平舊倉再切換", "WARNING",
+        )
+        closed = await self.account.close_position(
+            held_symbol, held_mark,
+            f"Channel Swing stronger-symbol takeover -> {new_symbol} {side}",
+            is_manual=True,
+        )
+        if not closed:
+            return True, False
+
+        request_replacement = getattr(self.symbol_rotation, "request_replacement", None)
+        if callable(request_replacement):
+            request_replacement(held_symbol)
+        rotation_event = getattr(self, "rotation_event", None)
+        if rotation_event is not None:
+            rotation_event.set()
+
+        opened = (
+            await self._place_structured_entry(
+                new_symbol, candidate, planned_price, fresh_snapshot,
+            )
+            if fresh_snapshot is not None
+            else await self._place_structured_entry(
+                new_symbol, candidate, planned_price,
+            )
+        )
+        if opened:
+            self.account.log(
+                f"✅ [強勢換倉] {held_symbol} → {new_symbol} {side} 完成", "SUCCESS",
+            )
+        else:
+            self.account.log(
+                f"⚠️ [強勢換倉] {held_symbol} 已平倉，但 {new_symbol} 最終安全檢查"
+                "未通過，維持空手等待", "WARNING",
+            )
+        return True, bool(opened)
+
+
+    @staticmethod
+    def _entry_scan_symbol_snapshot(
+        default_symbols: list[str], broad_symbols: list[str],
+        positions: dict, pending_orders: dict, entry_scan_allowed: bool,
+        max_slots: int,
+    ) -> list[str]:
+        """Scan the safe pool with capacity, or the active board for takeover."""
+        committed = len(positions) + len(pending_orders)
+        has_capacity = max_slots <= 0 or committed < max_slots
+        if (
+            entry_scan_allowed
+            and not pending_orders
+            and (has_capacity or bool(positions))
+        ):
+            entry_symbols = list(broad_symbols)
+        else:
+            entry_symbols = []
+        return list(dict.fromkeys([
+            *positions.keys(), *pending_orders.keys(), *entry_symbols,
+        ]))
+
+
+    @staticmethod
+    def _candidate_board_refresh_needed(
+        opened_any: bool, position_count: int, pending_count: int,
+        max_slots: int, seconds_since_refresh: float,
+    ) -> bool:
+        """Refresh after a fill, or while capacity remains without a new fill."""
+        if opened_any:
+            return True
+        committed = max(0, int(position_count)) + max(0, int(pending_count))
+        has_capacity = max_slots <= 0 or committed < max_slots
+        return has_capacity and seconds_since_refresh >= 15.0
+
+
+    @staticmethod
+    def _is_continuous_wave_position(position: dict, meta: dict | None = None) -> bool:
+        """是否為應交由連續峰谷主循環管理出場的持倉。"""
+        meta = meta or {}
+        entry_mode = str(
+            position.get("entry_mode") or meta.get("entry_mode") or ""
+        ).upper()
+        reason = str(position.get("reason") or meta.get("reason") or "").upper()
+        return bool(
+            entry_mode in ("MA3_MA15_MARKET", "STRONG_LONG_BURST", "CHANNEL_SWING")
+            or any(token in reason for token in (
+                "TROUGH_TURN", "PEAK_TURN", "RANGE_SWING_REVERSE",
+                "KC_MIDDLE_PEAK_REVERSE", "KC_MIDDLE_TROUGH_REVERSE",
+                "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT",
+            ))
+        )
+
+
+    def _take_over_manual_position(self, symbol: str, position: dict) -> bool:
+        """Adopt a manually opened position into the Channel Swing manager."""
+        meta = self.account.position_meta.setdefault(symbol, {})
+        entry_mode = str(
+            position.get("entry_mode") or meta.get("entry_mode") or ""
+        ).upper()
+        reason = str(position.get("reason") or meta.get("reason") or "")
+        is_manual = (
+            entry_mode == "MANUAL"
+            or position.get("manual_entry") or meta.get("manual_entry")
+            or "手動開倉" in reason
+            or "MANUAL" in reason.upper()
+        )
+        if not is_manual:
+            return False
+        if entry_mode == "CHANNEL_SWING":
+            changed = not (
+                position.get("managed_by_bot") is True
+                and meta.get("managed_by_bot") is True
+            )
+            if changed:
+                position["manual_entry"] = True
+                position["managed_by_bot"] = True
+                meta["manual_entry"] = True
+                meta["managed_by_bot"] = True
+                self.account.save_state()
+            return changed
+        position["entry_mode"] = "CHANNEL_SWING"
+        position["manual_entry"] = True
+        position["managed_by_bot"] = True
+        meta["entry_mode"] = "CHANNEL_SWING"
+        meta["manual_entry"] = True
+        meta["managed_by_bot"] = True
+        self.account.save_state()
+        self.account.log(
+            f"🤖 [手動倉接管] {symbol} {position.get('side')} 已交由 Channel Swing 管理",
+            "INFO",
+        )
+        return True
+
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False):
         """Submit on this scan, retaining every structured-order account safety check."""
@@ -2763,7 +3246,34 @@ class TradingEngine:
     @staticmethod
     def _channel_exception_exit(position, frame, price):
         """Use the full live body, including entry-bar abnormalities, and retry exits."""
-        return channel_exception_exit(position, frame, price, TradingEngine._channel_adverse_exit_reason)
+        pending = position.get("channel_exception_exit_pending")
+        if pending in {"EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
+                       "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL", "EMERGENCY_EXIT_2_CANDLE_ADVERSE"}:
+            return pending
+        try:
+            if frame is None or len(frame) < 3:
+                return None
+            opened = float(position.get("open_timestamp") or 0)
+            entry = float(position.get("entry_price") or 0)
+            if not all(math.isfinite(v) and v > 0 for v in (opened, entry, float(price))):
+                return None
+            recent = frame.iloc[-3:].copy()
+            for idx, row in recent.iloc[:-1].iterrows():
+                bar = float(row["timestamp"]) / 1000
+                if not math.isfinite(bar) or bar <= 0:
+                    return None
+                if bar < opened:
+                    # Never attribute a completed pre-entry candle to this holding.
+                    recent.loc[idx, "open"] = float(row["close"])
+            live_bar = float(recent.iloc[-1]["timestamp"]) / 1000
+            if not math.isfinite(live_bar) or live_bar <= 0 or opened >= live_bar + 60:
+                return None
+            # The live candle can already be abnormal when the order fills.
+            # Keep its actual open instead of restarting the body at entry.
+            return TradingEngine._channel_adverse_exit_reason(
+                recent, position.get("side"), float(price), float(frame.iloc[-2]["atr"]))
+        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
+            return None
 
     async def _process_single_symbol_locked(
         self, symbol, now_time, btc_1m_turn, daily_halt,
@@ -2860,9 +3370,9 @@ class TradingEngine:
                     # 空槽掃描新候選；輪替開啟時才併入全市場 shortlist。
                     # 固定幣種模式只掃 DEFAULT_SYMBOLS 與既有持倉。
                     wallet_balance = float(self.account.get_wallet_balance())
-                    
+
                     active_trade_symbols = ["龙虾/USDT", "1000PEPE/USDT"]
-                        
+
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
                     # 輪替模式使用市場短名單 + active_trade_symbols + 已達標候選；
                     # 固定模式則嚴格以 active_trade_symbols 作為新倉掃描白名單。

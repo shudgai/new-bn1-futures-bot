@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Tuple
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.outer_strategy import aligned_entry, LIVE_OUTER_CODES, ENTRY_TREND_CODES, OUTER_CODES, TREND_CODES
 from core.services.exits.profit_protection_service import protection
-from core.services.exits.fading_exit_service import fading_ma3_turn, FADING_STATE_KEY, FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
+from core.services.exits.fading_exit_service import fading_ma3_turn, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.guards.abnormal_guard import channel_adverse_exit_reason
 from core.services.swing_service import channel_ck_exit_with_tolerance
 from core.services.strategies.pivot_strategy import PIVOT_CODES
@@ -272,7 +272,10 @@ async def process_single_symbol_runner(
                 if not hasattr(engine, "_channel_swing_peak_exit_info"):
                     engine._channel_swing_peak_exit_info = {}
                 last_bar = channel_df.iloc[-1].get("timestamp", channel_df.index[-1]) if channel_df is not None and not channel_df.empty else time.time() * 1000
-                record_peak_exit_info(engine._channel_swing_peak_exit_info, symbol, existing_pos.get("side"), last_bar)
+                engine._channel_swing_peak_exit_info[symbol] = {
+                    "side": existing_pos.get("side"), "exit_bar_id": last_bar,
+                    "require_new_closed_break": True, "allow_new_outer_signal": True,
+                }
                 getattr(engine, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
                 getattr(engine, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                 engine.account.log(

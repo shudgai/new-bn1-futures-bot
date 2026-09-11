@@ -35,7 +35,7 @@ def frame(side="LONG", mature=True):
 
 def test_mature_long_outer_entry_blocks_first_favorable_live_candle(monkeypatch):
     monkeypatch.setattr(
-        "core.engine.aligned_entry",
+        "core.services.swing_service.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
     )
     result = TradingEngine._channel_swing_action(frame("LONG"), 112.0)
@@ -44,7 +44,7 @@ def test_mature_long_outer_entry_blocks_first_favorable_live_candle(monkeypatch)
 
 def test_mature_short_outer_entry_blocks_first_favorable_live_candle(monkeypatch):
     monkeypatch.setattr(
-        "core.engine.aligned_entry",
+        "core.services.swing_service.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"},
     )
     result = TradingEngine._channel_swing_action(frame("SHORT"), 88.0)
@@ -53,7 +53,7 @@ def test_mature_short_outer_entry_blocks_first_favorable_live_candle(monkeypatch
 
 def test_non_mature_entry_is_not_blocked_by_trend_end_guard(monkeypatch):
     monkeypatch.setattr(
-        "core.engine.aligned_entry",
+        "core.services.swing_service.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
     )
     result = TradingEngine._channel_swing_action(frame("LONG", mature=False), 112.0)
@@ -63,7 +63,7 @@ def test_non_mature_entry_is_not_blocked_by_trend_end_guard(monkeypatch):
 
 def test_confirmed_volume_recovery_releases_mature_guard(monkeypatch):
     monkeypatch.setattr(
-        "core.engine.aligned_entry",
+        "core.services.swing_service.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"},
     )
     recovered = frame("SHORT")
@@ -75,7 +75,7 @@ def test_confirmed_volume_recovery_releases_mature_guard(monkeypatch):
 
 def test_mature_edge_blocks_first_favorable_live_candle(monkeypatch):
     monkeypatch.setattr(
-        "core.engine.aligned_entry",
+        "core.services.swing_service.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
     )
     first = frame("LONG")
@@ -85,7 +85,7 @@ def test_mature_edge_blocks_first_favorable_live_candle(monkeypatch):
 
 def test_mature_edge_blocks_after_two_adverse_closed_candles(monkeypatch):
     monkeypatch.setattr(
-        "core.engine.aligned_entry",
+        "core.services.swing_service.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
     )
     blocked = frame("LONG")
@@ -98,7 +98,7 @@ def test_mature_edge_blocks_after_two_adverse_closed_candles(monkeypatch):
 @pytest.mark.parametrize("trend", ["LONG", "SHORT"])
 @pytest.mark.parametrize("entry", ["LONG", "SHORT"])
 def test_terminal_market_blocks_both_directions(trend, entry, monkeypatch):
-    monkeypatch.setattr("core.engine.aligned_entry", lambda *a: {"action": "ENTER", "side": entry})
+    monkeypatch.setattr("core.services.swing_service.aligned_entry", lambda *a: {"action": "ENTER", "side": entry})
     f = frame(trend)
     assert TradingEngine._channel_swing_action(f, 100.)["reason"] == "KC_TREND_END_WAIT"
     f.loc[f.index[-1], ["volume", "ma3", "ma15", "kc_upper", "kc_lower"]] = [10000., 1000., 0., 10000., 1.]

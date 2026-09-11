@@ -56,15 +56,69 @@ def significant_ma3_turn(position, frame, price):
 def channel_macro_market_mode(symbol: str) -> str:
     return "TRENDING"
 
-def channel_mature_outer_trend_is_weak(frame: pd.DataFrame, side: str) -> bool:
-    if frame is None or len(frame) < 5:
+def channel_mature_outer_trend_is_weak(
+    frame: pd.DataFrame, side: str,
+) -> bool:
+    """Reject a first outer touch when the directional run is already mature and weak."""
+    required = {
+        "close", "ma3", "ma15", "atr", "volume",
+        "kc_upper", "kc_lower",
+    }
+    if frame is None or len(frame) < 5 or not required.issubset(frame.columns):
         return False
-    recent = frame.iloc[-5:]
-    vols = recent["volume"].astype(float).tolist()
-    return vols[-1] < vols[-2] < vols[-3]
+    requested = str(side or "").upper()
+    if requested not in ("LONG", "SHORT"):
+        return False
+    try:
+        closed = frame.iloc[:-1].tail(4)
+        ma3 = closed["ma3"].astype(float).tolist()
+        ma15 = closed["ma15"].astype(float).tolist()
+        upper = closed["kc_upper"].astype(float).tolist()
+        lower = closed["kc_lower"].astype(float).tolist()
+    except (TypeError, ValueError, IndexError, KeyError):
+        return False
+    values = ma3 + ma15 + upper + lower
+    if len(ma3) < 4 or not all(math.isfinite(value) for value in values):
+        return False
 
-def channel_terminal_market(frame: pd.DataFrame) -> bool:
-    return False
+    if requested == "LONG":
+        aligned = all(fast > slow for fast, slow in zip(ma3, ma15))
+        rail_steps = sum(
+            now_upper > prior_upper and now_lower > prior_lower
+            for prior_upper, now_upper, prior_lower, now_lower in zip(
+                upper, upper[1:], lower, lower[1:],
+            )
+        )
+        mature = aligned and rail_steps >= 2 and upper[-1] > upper[0]
+    else:
+        aligned = all(fast < slow for fast, slow in zip(ma3, ma15))
+        rail_steps = sum(
+            now_upper < prior_upper and now_lower < prior_lower
+            for prior_upper, now_upper, prior_lower, now_lower in zip(
+                upper, upper[1:], lower, lower[1:],
+            )
+        )
+        mature = aligned and rail_steps >= 2 and lower[-1] < lower[0]
+    if not mature:
+        return False
+
+    confirmed_frame = frame.iloc[:-1]
+    # Invalid volume is not evidence of a terminal market.
+    try:
+        volumes = confirmed_frame["volume"].astype(float)
+        mean = (float(confirmed_frame["vol_ma_20"].iloc[-1])
+                if "vol_ma_20" in confirmed_frame else float(volumes.iloc[:-1].tail(20).mean()))
+        latest = float(volumes.iloc[-1])
+        if not all(math.isfinite(v) for v in (latest, mean)) or latest < 0 or mean <= 0:
+            return False
+    except (TypeError, ValueError, KeyError, IndexError):
+        return False
+    return latest / mean < 1.50
+
+def channel_terminal_market(frame):
+    """A mature weak run blocks entries on BOTH sides."""
+    return any(channel_mature_outer_trend_is_weak(frame, side)
+               for side in ("LONG", "SHORT"))
 
 def record_channel_chop_event(symbol: str, chop_info: dict) -> None:
     pass

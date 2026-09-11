@@ -2,7 +2,7 @@
 import pytest
 from core.services.strategies.outer_strategy import aligned_entry, live_body_breakout_side
 from core.engine import TradingEngine
-from core.channel_entry_diagnostics import entry_diagnostics
+from core.services.entry_diagnostics_service import entry_diagnostics
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -61,7 +61,7 @@ def test_closed_atr_body_threshold(side,body,expected):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('route',['fresh','cached','reentry','scan','quote'])
+@pytest.mark.parametrize('route',['fresh','cached','reentry','scan','quote','runner'])
 async def test_actual_order_paths_accept_first_break(side,route,monkeypatch):
     f,price=breakout_frame(side,.00003)
     e=_execution_engine(f,side,True);e.account.positions.clear();e.account.save_state=lambda:None
@@ -78,7 +78,11 @@ async def test_actual_order_paths_accept_first_break(side,route,monkeypatch):
         signal['profit_reentry_token']='new'
         e.account.channel_profit_reentries={SYMBOL:dict(side=side,token='new',phase='closed',mode='outer_cycle',requires_pullback=False,exit_bar_id=float(f.iloc[-2]['timestamp']))}
     snapshot=dict(frame=f.copy(),price=price,kc_upper=float(f.iloc[-1]['kc_upper']),kc_lower=float(f.iloc[-1]['kc_lower']))
-    if route=='scan': result=await e._execute_confirmed_channel_break(SYMBOL,f,price,side)
+    if route=='runner':
+        from core.services.symbol_runner import process_single_symbol_runner
+        await process_single_symbol_runner(e,SYMBOL,now,None,False)
+        result=bool(e.account.events)
+    elif route=='scan': result=await e._execute_confirmed_channel_break(SYMBOL,f,price,side)
     elif route=='quote': result=await e._try_live_pivot_entry(SYMBOL,f,price)
     else: result=await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot if route=='cached' else None)
     assert result,e.account.logs

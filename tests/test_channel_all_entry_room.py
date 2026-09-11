@@ -56,7 +56,7 @@ def test_live_extreme_cannot_supply_target(side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_pepe_diagnostics_room_recovery_is_read_only(side):
-    from core.channel_entry_diagnostics import entry_diagnostics
+    from core.services.entry_diagnostics_service import entry_diagnostics
     from core.engine import TradingEngine
     from types import SimpleNamespace
     f = closed_outer_entry_frame(side)

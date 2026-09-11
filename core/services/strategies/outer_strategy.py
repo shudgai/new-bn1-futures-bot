@@ -206,7 +206,7 @@ def live_body_breakout_side(frame, price):
 
 
 def aligned_entry(frame, price):
-    """Closed KC direction with live MA3 outside; missed crosses may continue."""
+    """Live long-body breaks may precede CK confirmation; retain trend entries."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -217,20 +217,14 @@ def aligned_entry(frame, price):
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        side = ck_direction(frame)
-        if not aligned_direction(frame, side):
+        breakout_side = live_body_breakout_side(frame, price)
+        side = breakout_side or entry_trend_direction(frame)
+        if side is None:
             return wait
-        if not live_ma3_direction_ready(frame, price, side):
-            return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
-        if not live_candle_color_ready(frame, price, side):
-            return {**wait, "reason": "KC_LIVE_CANDLE_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        if ma3_outer_cross_ready(frame, price, side):
-            return {"action": "ENTER", "side": side, "reason": "KC_LIVE_OUTER_" + side}
-        if ma3_outer_continuation_ready(frame, price, side):
-            return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
-        return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}
+        reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
+        return {"action": "ENTER", "side": side, "reason": reason}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return wait
 

@@ -36,11 +36,7 @@ def entry_room(
         last = pushes[-3:]
         weakening = last[0] > last[1] > last[2] and last[0] > 0 and last[2] <= .5 * last[0]
         mature = sum(v > 0 for v in pushes) >= 4 and extension >= 3.
-        if not (mature and weakening):
-            return dict(allowed=True, checked=False, stage="developing",
-                        reason="KC_TREND_ROOM_SKIPPED",
-                        detail="尚未符合末端衰退條件，不計算淨利空間。",
-                        extension_atr=extension)
+        # All entries must pass target and net-room checks, including early trends.
         extremes = [row[1] if side == "LONG" else row[2] for row in rows]
         targets = [
             value for i, value in enumerate(extremes[1:-1], start=1)

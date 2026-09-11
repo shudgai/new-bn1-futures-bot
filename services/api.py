@@ -616,9 +616,13 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "is_live": bool(include_live and index == df.index[-1]),
             })
             
-        if include_live and timeframe == "1m" and engine.is_running:
+        diagnostics = None
+        if include_live and timeframe == "1m":
+            from core.services.entry_diagnostics_service import entry_diagnostics
             price = float(engine.tickers.get(symbol) or indicators.iloc[-1]["close"])
-        return {"symbol": symbol, "timeframe": timeframe, "data": result}
+            diagnostics = entry_diagnostics(engine, symbol, indicators, price, time.time())
+        return {"symbol": symbol, "timeframe": timeframe, "data": result,
+                "entry_diagnostics": diagnostics}
     except HTTPException:
         raise
     except Exception as e:
