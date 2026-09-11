@@ -161,7 +161,13 @@ async def process_single_symbol_runner(
                 return signal_progress, detected_candidates
             previous_protection = copy.deepcopy(existing_pos.get("channel_profit_protection"))
             profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
+            # 交易所帳戶（testnet/實盤）每次 refresh() 都會用交易所資料重建 position
+            # 字典，寫在 position 上的階梯狀態會被清掉（峰值歸零 → 階梯永遠不觸發）。
+            # 這裡把狀態同步回 position_meta，跨 refresh 與重啟都能保留。
             if previous_protection != existing_pos.get("channel_profit_protection"):
+                engine.account.position_meta.setdefault(symbol, {})[
+                    "channel_profit_protection"
+                ] = copy.deepcopy(existing_pos.get("channel_profit_protection"))
                 engine.account.save_state()
 
             meta = engine.account.position_meta.setdefault(symbol, {})
