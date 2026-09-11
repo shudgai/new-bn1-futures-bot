@@ -182,6 +182,8 @@ def aligned_entry(frame, price):
             return {**wait, "reason": "KC_MOMENTUM_FADE_WAIT"}
         if not live_ma3_direction_ready(frame, price, side):
             return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
+        if not live_candle_color_ready(frame, price, side):
+            return {**wait, "reason": "KC_LIVE_CANDLE_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
         if ma3_outer_cross_ready(frame, price, side):
@@ -207,6 +209,20 @@ def live_ma3_direction_ready(frame, price, side):
             return False
         # Shared closes cancel; avoid rounding a flat MA into a slope.
         return (1 if side == "LONG" else -1) * (price - closes[0]) > 0
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def live_candle_color_ready(frame, price, side):
+    """Require a green live body for longs and a red live body for shorts."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or frame.empty:
+            return False
+        opened = float(frame.iloc[-1]["open"])
+        price = float(price)
+        if not all(math.isfinite(value) and value > 0 for value in (opened, price)):
+            return False
+        return (1 if side == "LONG" else -1) * (price - opened) > 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 

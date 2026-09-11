@@ -57,3 +57,14 @@ def test_non_mature_entry_is_not_blocked_by_trend_end_guard(monkeypatch):
     )
     result = TradingEngine._channel_swing_action(frame("LONG", mature=False), 112.0)
     assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"}
+
+
+def test_confirmed_volume_recovery_releases_mature_guard(monkeypatch):
+    monkeypatch.setattr(
+        "core.engine.aligned_entry",
+        lambda frame, price: {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"},
+    )
+    recovered = frame("SHORT")
+    recovered.loc[recovered.index[-2], "volume"] = 2.0
+    result = TradingEngine._channel_swing_action(recovered, 88.0)
+    assert result == {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"}

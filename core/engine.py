@@ -7,7 +7,7 @@ import asyncio
 import copy
 from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, ck_entry_momentum_ready, LIVE_OUTER_CODES
+from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, live_candle_color_ready, ck_entry_momentum_ready, LIVE_OUTER_CODES
 from core.channel_intrabar_entry import IntrabarEntry
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -2730,6 +2730,12 @@ class TradingEngine:
             fresh_frame = fresh_snapshot.get("frame")
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
             planned_price = float(entry_quote)
+            if not live_candle_color_ready(fresh_frame, planned_price, side):
+                self.account.log(
+                    f"⏳ {symbol} {side} KC_LIVE_CANDLE_DIRECTION_WAIT：多單需綠K、空單需紅K，取消開倉",
+                    "INFO",
+                )
+                return False
             if not live_adverse_entry_safe(fresh_frame, entry_quote, side):
                 self.account.log(f"🛑 {symbol} {side} KC_LIVE_ADVERSE_ENTRY_WAIT：當根反向異常風險，取消開倉", "WARNING")
                 return False
@@ -2969,7 +2975,8 @@ class TradingEngine:
                                or not self._ck_reverse_order_authorized(symbol, signal)):
                 return False
             latest_price = float(getattr(self, "tickers", {}).get(symbol) or planned_price)
-            if ((not ck_reverse and not ck_entry_momentum_ready(fresh_frame, side))
+            if (not live_candle_color_ready(fresh_frame, latest_price, side)
+                    or (not ck_reverse and not ck_entry_momentum_ready(fresh_frame, side))
                     or latest_price != planned_price
                     or not (self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, live_pivot=True) if live_pivot else
                             self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, ck_reverse=True)
@@ -5490,6 +5497,10 @@ class TradingEngine:
             confirmed_frame, confirmed_price, requested,
         )
         volume_ratio = TradingEngine._channel_volume_ratio(confirmed_frame)
+        # A fresh confirmed volume pulse resumes evaluation.  CK direction,
+        # momentum, MA3 and rail checks remain enforced by aligned_entry().
+        if volume_ratio >= 1.50:
+            return False
         exceptional_energy = bool(
             quality >= 1.25
             and volume_ratio >= 1.50
