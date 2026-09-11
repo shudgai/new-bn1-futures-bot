@@ -97,7 +97,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CHANNEL_WATERFALL_BODY_ATR, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
+    CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
     API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
@@ -598,6 +598,18 @@ class TradingEngine:
         self.start_market_data()
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
+
+    def _channel_stop_cooldown_remaining(self, symbol: str) -> float:
+        """停損後冷卻剩餘秒數；0 代表未設定或已冷卻完畢。"""
+        from core import config as config_module
+        seconds = float(getattr(config_module, "CHANNEL_STOP_LOSS_COOLDOWN_SEC", 0.0) or 0.0)
+        if seconds <= 0:
+            return 0.0
+        last = float((getattr(self.account, "last_stop_at", {}) or {}).get(symbol, 0.0) or 0.0)
+        if last <= 0:
+            return 0.0
+        remaining = seconds - (time.time() - last)
+        return remaining if remaining > 0 else 0.0
 
     def _announce_active_rules(self) -> None:
         """Log the single rule set this process actually applies (read-only)."""
@@ -1878,6 +1890,13 @@ class TradingEngine:
         # surveillance may inspect other contracts for crash protection and
         # diagnostics, but those observations must never become an order.
         if symbol not in DEFAULT_SYMBOLS:
+            return False
+        remaining = self._channel_stop_cooldown_remaining(symbol)
+        if remaining > 0:
+            self.account.log(
+                f"⏸️ [停損後冷卻] {symbol} 距上次停損不足 "
+                f"{CHANNEL_STOP_LOSS_COOLDOWN_SEC / 60:.0f} 分鐘（剩 {remaining / 60:.1f} 分），暫不開新倉",
+                "INFO")
             return False
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:

@@ -46,12 +46,14 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 **開倉入口（只有兩條）**
 1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平、走平或資料無效不開。
-2. 即時破軌入口：當根原始開盤在軌內側或碰軌、最新價嚴格破同側外軌、順向實體至少前一已收線 ATR 的 0.5 倍。
-- **KC 走平禁開（2026-09-12 新增）**：最近兩根已收線中軌位移 ÷ 軌寬 < `CHANNEL_FLAT_MIDDLE_RATIO`（預設 0.10）即視為走平，多空對稱不開倉，並同時套用於趨勢入口、V 型快通道與即時破軌三條路徑。使用軌寬相對值而非固定百分比，避免低價幣被絕對門檻誤擋。門檻由 30 天（2026-08-09~09-08）1 分鐘回放選定：不擋走平時兩幣合計 -2019U，<0.05 為 -1449U，<0.10 為 -753U。
+2. 即時破軌入口：**2026-09-12 使用者指定停用**（不以破軌上漲開倉），只保留 CK 中軌趨勢入口；`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=false`。
+- 末端禁開 `CHANNEL_TAIL_MAX_TREND_BARS=0` 已停用：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
+- **KC 走平禁開（2026-09-12 新增）**：最近兩根已收線中軌位移 ÷ 軌寬 < `CHANNEL_FLAT_MIDDLE_RATIO`（預設 0.05）即視為走平，多空對稱不開倉，並同時套用於趨勢入口、V 型快通道與即時破軌三條路徑。使用軌寬相對值而非固定百分比，避免低價幣被絕對門檻誤擋。
 - 共用過濾不變：末端禁開、當根實體過熱不追、前一根大K不追、淨利空間 0.15%、反向異常攔截、每根限次、帳戶風控。
 
 **平倉出口**
-1. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（預設 4U）啟動，鎖住「峰值 − `CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT`」（預設 2U），之後每上升一個 offset 上移一階。參數已由寫死改為設定值，啟動看板會印出實際值。
+1. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（2026-09-12 由 4U 改為 **2U**）啟動，鎖住「峰值 − `CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT`」（2U）。峰值 2~4U 的單會鎖在損益兩平之上，不再全部靠 -8.4U 硬止損收場。
+- **停損後冷卻（2026-09-12 新增）**：`CHANNEL_STOP_LOSS_COOLDOWN_SEC`（預設 900 秒）。硬止損、瀑布或雙異常出場後，該幣 15 分鐘內不得再開新倉，避免停損後立刻反向再被停損。
 2. CK 狹窄衰退＋MA3 峰谷反向 0.10 ATR：`CHANNEL_FADING_MA3_EXIT_ENABLED`（預設啟用）。**2026-09-12 還原**：commit 3b1df46 曾把它改成無條件 `return False`，導致該出口完全不會觸發，本次修復。
 3. 單根瀑布反向實體 ≥ 2.5 ATR。
 4. 雙已收線反向異常 K 各 ≥ 1 ATR。

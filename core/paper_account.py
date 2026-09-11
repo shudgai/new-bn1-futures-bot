@@ -198,6 +198,7 @@ class PaperAccount:
         self.takeover_shadow_events: List[dict] = []
         self.closing_lock: set = set()
         self.last_closed_at: Dict[str, float] = {}
+        self.last_stop_at: Dict[str, float] = {}
         self.channel_profit_reentries: Dict[str, dict] = {}
         self._auto_close_reject_logged_at: Dict[tuple, float] = {}
         self._rapid_drop_last_price: Dict[str, float] = {}
@@ -301,6 +302,9 @@ class PaperAccount:
         self.last_closed_at = {
             str(k): float(v) for k, v in data.get("last_closed_at", {}).items()
         }
+        self.last_stop_at = {
+            str(k): float(v) for k, v in data.get("last_stop_at", {}).items()
+        }
         self.daily_date = data.get("daily_date")
         self.daily_start_balance = float(data.get("daily_start_balance", 0.0))
         self.daily_start_realized_pnl = float(data.get("daily_start_realized_pnl", 0.0))
@@ -361,6 +365,7 @@ class PaperAccount:
             "logs": self.logs[-200:],
             "takeover_shadow_events": self.takeover_shadow_events[-2000:],
             "last_closed_at": self.last_closed_at,
+            "last_stop_at": self.last_stop_at,
             "channel_profit_reentries": self.channel_profit_reentries,
             "daily_date": self.daily_date,
             "daily_start_balance": self.daily_start_balance,
@@ -1028,6 +1033,8 @@ class PaperAccount:
             self.balance += margin + raw_pnl - close_fee
             self.realized_pnl += net_pnl
             self.last_closed_at[symbol] = time.time()
+            if any(tag in str(close_reason) for tag in ("HARD_STOP", "WATERFALL", "ADVERSE")):
+                self.last_stop_at[symbol] = time.time()
 
             # 移動止利的SL可能是在價格觸發時「回吐前一波峰值」推上去的，
             # 但下一次檢查價格已跳空穿越（含滑點/手續費），實際平倉價
