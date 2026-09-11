@@ -23,7 +23,7 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         outer = aligned_entry(frame, price)
         quoted = float(getattr(engine, '_channel_entry_quote_times', {}).get(symbol, float('nan')))
         fresh = math.isfinite(quoted) and 0 <= now - quoted <= 5
-        room = None
+        room = engine._channel_profit_room(frame, price, side) if side else None
         extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=False,
                      outer_signal=outer.get('reason'), profit_room=room)
         if engine._channel_candle_entry_blocked(symbol, now):
@@ -66,6 +66,10 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         candidate = engine._channel_candidate_bar_id(frame)
         if not ticket and (symbol, side, candidate) in getattr(engine, '_channel_invalid_entry_candidates', set()):
             return result('KC_CANDIDATE_INVALIDATED', '此候選訊號已失效', '等待下一個有效候選，再重新評估進場。', **extra)
+        if engine._channel_terminal_market(frame):
+            return result('KC_TREND_END_WAIT', '末端弱量期間多空暫停開倉', '等趨勢重新明朗後重驗。', **extra)
+        if outer.get('action') == 'ENTER' and room and not room['allowed']:
+            return result(room['reason'], '利潤空間尚未足夠', room['detail'], **extra)
         if outer.get('action') == 'ENTER':
             return result('KC_ENTRY_READY', '已有入口訊號，等待送單風控', '仍須重驗帳戶、行情、票據與每根限次；不代表保證成交。', **extra)
         return result('KC_ENTRY_SIGNAL_WAIT', '等待MA3位於KC外軌外',

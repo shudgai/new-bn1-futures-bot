@@ -57,7 +57,8 @@ def test_non_mature_entry_is_not_blocked_by_trend_end_guard(monkeypatch):
         lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
     )
     result = TradingEngine._channel_swing_action(frame("LONG", mature=False), 112.0)
-    assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"}
+    # Terminal guard released, but this five-row fixture cannot estimate room.
+    assert result == {"action": "WAIT", "side": None, "reason": "KC_PROFIT_ROOM_DATA_INVALID"}
 
 
 def test_confirmed_volume_recovery_releases_mature_guard(monkeypatch):
@@ -68,7 +69,8 @@ def test_confirmed_volume_recovery_releases_mature_guard(monkeypatch):
     recovered = frame("SHORT")
     recovered.loc[recovered.index[-2], "volume"] = 2.0
     result = TradingEngine._channel_swing_action(recovered, 88.0)
-    assert result == {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"}
+    # Volume recovery does not bypass the independent profit-space requirement.
+    assert result == {"action": "WAIT", "side": None, "reason": "KC_PROFIT_ROOM_DATA_INVALID"}
 
 
 def test_mature_edge_blocks_first_favorable_live_candle(monkeypatch):
@@ -126,6 +128,7 @@ async def test_order_routes_recheck_terminal_market(side, route, terminal, monke
     f, price = ready(side)
     # Current entry requires a directional live body; the legacy fixture is a doji.
     f.loc[f.index[-1], "open"] = price - (.05 if side == "LONG" else -.05)
+    f.loc[f.index[5], 'high' if side == 'LONG' else 'low'] = price + (3. if side == 'LONG' else -3.)
     snapshot = dict(price=price, frame=f.copy(), kc_upper=float(f.iloc[-1]['kc_upper']), kc_lower=float(f.iloc[-1]['kc_lower']))
     sign = 1 if side == 'LONG' else -1
     if terminal:

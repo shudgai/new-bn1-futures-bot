@@ -130,6 +130,9 @@ def test_invalid_data_still_blocks(side, invalid):
 @pytest.mark.parametrize("late", [False, True])
 async def test_final_order_checks_phase_for_every_route(side, route, late, monkeypatch):
     f = phase_frame(side, late=late, target=105.9 if late else 106.2)
+    # Supply the current strengthening CK entry prerequisite to reach room validation.
+    sign = 1 if side == 'LONG' else -1
+    f.loc[f.index[-5:-1], 'kc_middle'] = [100 + sign * x for x in (0, .1, .2, .4)]
     price = float(f.iloc[-1]["close"])
     e = _execution_engine(f, side, True)
     e.account.positions.clear()

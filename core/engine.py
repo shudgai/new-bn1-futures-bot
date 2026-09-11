@@ -2550,6 +2550,8 @@ class TradingEngine:
                         signal_code='KC_LIVE_PIVOT_' + side)
         # Channel Swing new legs use the live MA3 outer-cross/continuation
         # entry for every route; the retired two-closed-body rule is not used.
+        # Room is evaluated after the snapshot, so a temporary shortage cannot
+        # become a candidate-invalidated lock through a None snapshot.
         entry_ready = aligned_entry_ready(frame, price, side)
         if not entry_ready:
             return None
@@ -2564,7 +2566,7 @@ class TradingEngine:
                 return None
             return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame,
                     "signal_code": (outside_reentry(frame, price, side) if ticket.get("mode") == "outer_cycle"
-                                    else self._channel_swing_action(frame, price))["reason"],
+                                    else self._channel_swing_action(frame, price, check_profit_room=False))["reason"],
                     "outer_cycle_reentry": ticket.get("mode") == "outer_cycle"}
         exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
         if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
@@ -2589,13 +2591,14 @@ class TradingEngine:
                 position_path=self.account.positions.get(symbol, {}).get("channel_position_path"),
                 allow_live_entry=bool(allow_live_outer),
                 outer_entry_only=confirmed_reverse,
+                check_profit_room=False,
             ).get("side") != side
         ):
             return None
         return {
             "price": price, "kc_upper": upper, "kc_lower": lower,
             "frame": frame,
-            "signal_code": self._channel_swing_action(frame, price)["reason"] if not confirmed_reverse else None,
+            "signal_code": self._channel_swing_action(frame, price, check_profit_room=False)["reason"] if not confirmed_reverse else None,
         }
 
     def _channel_candle_entry_blocked(self, symbol: str, now: float | None = None) -> bool:
@@ -2782,11 +2785,17 @@ class TradingEngine:
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
-            # User disabled structural profit-room filtering for all order routes.
+            room = self._channel_profit_room(fresh_frame, planned_price, side)
             signal.pop("profit_room_pct", None)
             signal.pop("estimated_profit_target", None)
             signal.pop("entry_trend_stage", None)
-            signal["profit_room_checked"] = False
+            signal["profit_room_checked"] = room.get("checked", False)
+            if not room["allowed"]:
+                self.account.log(f"⏳ {symbol} {side} {room['reason']}：{room.get('detail', '')}", "INFO")
+                return False
+            signal["profit_room_pct"] = room["net_room_pct"] / 100.0
+            signal["estimated_profit_target"] = room["target"]
+            signal["entry_trend_stage"] = room["stage"]
             getattr(self, "tickers", {})[symbol] = planned_price
         atr = max(float(signal.get("atr") or 0.0), planned_price * 1e-6)
         # Keep closed signal metadata for the order, but assess current market
@@ -4127,9 +4136,10 @@ class TradingEngine:
 
     @staticmethod
     def _channel_profit_room(frame, price, side="LONG"):
-        """Compatibility result: structural profit-room filtering is disabled."""
-        return dict(allowed=True, checked=False, reason="KC_PROFIT_ROOM_DISABLED",
-                    detail="獲利空間篩選已停用。")
+        """Estimate net room using confirmed structure and the current quote."""
+        from core.channel_entry_room import entry_room
+        return entry_room(frame, price, side, TAKER_FEE_RATE, SLIPPAGE_PCT,
+                          NET_PROFIT_GUARANTEE_BUFFER)
 
     @staticmethod
     def _channel_long_profit_room(frame, price):
@@ -4165,8 +4175,8 @@ class TradingEngine:
 
     @staticmethod
     def _channel_entry_requires_profit_room(reason: str | None) -> bool:
-        """No entry requires a structural profit target."""
-        return False
+        """All Channel Swing entries require sufficient net room."""
+        return True
 
     @staticmethod
     def _channel_recent_candles_whipsawing(
@@ -6934,6 +6944,7 @@ class TradingEngine:
         allow_live_entry: bool = False,
         position_path: dict | None = None,
         outer_entry_only: bool = False,
+        check_profit_room: bool = True,
     ) -> dict:
         """Use one MA3 outer-cross entry and position-aware execution exits."""
         if str(current_side or "").upper() in ("LONG", "SHORT"):
@@ -6944,7 +6955,12 @@ class TradingEngine:
                 "side": None,
                 "reason": "KC_TREND_END_WAIT",
             }
-        return aligned_entry(frame, live_price)
+        decision = aligned_entry(frame, live_price)
+        if check_profit_room and decision.get("action") == "ENTER":
+            room = TradingEngine._channel_profit_room(frame, live_price, decision["side"])
+            if not room["allowed"]:
+                return {"action": "WAIT", "side": None, "reason": room["reason"]}
+        return decision
 
     @staticmethod
     def _channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
