@@ -50,20 +50,20 @@ def _reversed():
 
 
 def _unclear():
-    """Middle rises but upper rail falls -> UNCLEAR (ck_direction returns None)."""
+    """Middle is flat -> UNCLEAR (ck_direction returns None)."""
     return _make_frame(
         (0.9,  1.00, 1.10, 1000.0),
-        (0.91, 1.01, 1.09, 2000.0),   # middle up, upper down -> UNCLEAR
-        (0.92, 1.02, 1.08, 3000.0),
+        (0.91, 1.00, 1.09, 2000.0),   # middle flat -> UNCLEAR
+        (0.92, 1.00, 1.08, 3000.0),
     )
 
 
 def _unclear_bar2():
-    """Same UNCLEAR pattern but with a newer last-closed bar_id (2000 -> 3000)."""
+    """Same UNCLEAR pattern but with a newer last-closed bar_id."""
     return _make_frame(
-        (0.91, 1.01, 1.09, 2000.0),
-        (0.92, 1.02, 1.08, 3000.0),   # still UNCLEAR, new bar
-        (0.93, 1.03, 1.07, 4000.0),
+        (0.91, 1.00, 1.09, 2000.0),
+        (0.92, 1.00, 1.08, 3000.0),   # still UNCLEAR, new bar
+        (0.93, 1.00, 1.07, 4000.0),
     )
 
 

@@ -65,9 +65,9 @@ def ck_direction(frame):
                or not row[0] < row[1] < row[2] for row in rows):
             return None
         a, b = rows
-        if b[1] > a[1] and b[2] >= a[2]:
+        if b[1] > a[1]:
             return 'LONG'
-        if b[1] < a[1] and b[0] <= a[0]:
+        if b[1] < a[1]:
             return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return None
