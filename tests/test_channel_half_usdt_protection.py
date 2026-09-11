@@ -14,11 +14,11 @@ def test_half_net_arms_and_twenty_percent_retracement(side):
     assert protection(p,price_for_net(side,.499),.0005,.0001) is None
     r=protection(p,price_for_net(side,.5),.0005,.0001)
     assert r is not None
-    assert p['channel_profit_protection']['locked_net']==pytest.approx(.4)
+    assert p['channel_profit_protection']['locked_net']==pytest.approx(.44)  # 88% of 0.5U
     assert not p['channel_profit_protection']['pending']
-    protection(p,price_for_net(side,.401),.0005,.0001)
+    protection(p,price_for_net(side,.441),.0005,.0001)
     assert not p['channel_profit_protection']['pending']
-    protection(p,price_for_net(side,.399),.0005,.0001)
+    protection(p,price_for_net(side,.439),.0005,.0001)
     assert p['channel_profit_protection']['pending']
     p=json.loads(json.dumps(p))
     protection(p,price_for_net(side,.8),.0005,.0001)

@@ -87,9 +87,9 @@ def protection(position, price, fee, slippage, frame=None):
     state['armed'] = bool(state.get('armed')) or state['peak_net'] >= 0.5 - 1e-10 or state['locked_net'] > 0.
     if not state['armed']:
         return None
-    locked = max(float(state['locked_net']), state['peak_net'] * .80)
+    locked = max(float(state['locked_net']), state['peak_net'] * .88)  # 12% drawback (was 20%)
     state['locked_net'] = locked
-    state['retracement_fraction'] = .20
+    state['retracement_fraction'] = .12
     if side == 'LONG':
         stop = (entry * (1 + fee) + locked / qty) / ((1 - slippage) * (1 - fee))
     else:
@@ -99,7 +99,7 @@ def protection(position, price, fee, slippage, frame=None):
     state['pending'] = bool(state.get('pending')) or net <= locked
     return {'triggered': state['pending'], 'stop_price': stop,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
-            'locked_net': locked, 'peak_net': state['peak_net'], 'retracement_fraction': .20}
+            'locked_net': locked, 'peak_net': state['peak_net'], 'retracement_fraction': .12}
 
 
 def abnormal_long_bar(frame, price):

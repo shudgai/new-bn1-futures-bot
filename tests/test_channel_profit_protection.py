@@ -41,9 +41,9 @@ def test_peak_retracement_monotonic_and_survives_json_restart(side):
     sign = 1 if side == 'LONG' else -1
     peak = protection(p, 100 + sign * 5, .0005, .0001)
     assert peak['peak_gross'] == 10.
-    assert peak['stop_price'] == pytest.approx(100 + sign * 4.0)
+    assert peak['stop_price'] == pytest.approx(100 + sign * 4.413, rel=1e-3)
     p = json.loads(json.dumps(p))
-    before = protection(p, 100 + sign * 4.1, .0005, .0001)
+    before = protection(p, 100 + sign * 4.5, .0005, .0001)
     assert not before['triggered']
     assert before['stop_price'] == peak['stop_price']
     assert protection(p, 100 + sign * 4.0, .0005, .0001)['triggered']
@@ -201,10 +201,10 @@ def test_smooth_trend_arms_twenty_percent_protection(side):
     sign = 1 if side == 'LONG' else -1
     f = styled_frame('SMOOTH', side)
     first = protection(p, 100 + sign * 5, .0005, .0001, f)
-    assert first['retracement_fraction'] == .20
+    assert first['retracement_fraction'] == .12
     assert p['channel_profit_protection']['armed']
     result = protection(p, 100 + sign * 5, .0005, .0001, styled_frame('CHOPPY', side))
-    assert result['stop_price'] == pytest.approx(100 + sign * 4.0)
+    assert result['stop_price'] == pytest.approx(100 + sign * 4.413, rel=1e-3)
     # Reclassification cannot remove or loosen the existing eight-dollar line.
     result = protection(p, 100 + sign * 4.0, .0005, .0001, f)
     assert result['triggered']
@@ -216,8 +216,8 @@ def test_stack_live_opposite_tightens_ten_dollar_peak_to_nine(side):
     sign = 1 if side == 'LONG' else -1
     f = styled_frame('STACKED', side)
     result = protection(p, 100 + sign * 5, .0005, .0001, f)
-    assert result['stop_price'] == pytest.approx(100 + sign * 4.0)
-    assert result['retracement_fraction'] == .20  # Live doji is not opposite.
+    assert result['stop_price'] == pytest.approx(100 + sign * 4.413, rel=1e-3)
+    assert result['retracement_fraction'] == .12  # Live doji is not opposite.
     # close remains favorable/doji in the frame; ticker alone forms the red K.
     result = protection(p, 100 + sign * 4.8, .0005, .0001, f)
     assert result['retracement_fraction'] == .10
@@ -250,7 +250,7 @@ def test_pre_entry_stack_does_not_tighten_and_live_bar_cannot_complete_stack():
     p = position('LONG')
     protection(p, 105., .0005, .0001, f)
     result = protection(p, 104.4, .0005, .0001, f)
-    assert result['retracement_fraction'] == .20
+    assert result['retracement_fraction'] == .12
     assert not result['triggered']
 
 
@@ -292,7 +292,7 @@ async def test_engine_passes_live_frame_and_preserves_exit_priority(action):
 
 def test_tightening_on_opposite_tick_honors_previously_observed_peak():
     p = position('LONG')
-    assert protection(p, 105., .0005, .0001, styled_frame('SMOOTH'))['retracement_fraction'] == .20
+    assert protection(p, 105., .0005, .0001, styled_frame('SMOOTH'))['retracement_fraction'] == .12
     result = protection(p, 104.4, .0005, .0001, styled_frame('STACKED'))
     assert result['peak_gross'] == 10.
     assert result['stop_price'] == 104.5
@@ -356,7 +356,7 @@ def test_reopened_position_reclassifies_without_previous_ten_percent_lock(style)
     result = protection(p, 101., .0005, .0001, styled_frame(style))
     assert p['channel_profit_protection']['trend_style'] == style
     assert not p['channel_profit_protection'].get('tightened')
-    assert result['retracement_fraction'] == .20
+    assert result['retracement_fraction'] == .12
     assert p['channel_profit_protection']['armed']
 
 
@@ -366,6 +366,6 @@ def test_unknown_style_still_arms_twenty_percent_protection():
     f = frame().iloc[:2]
     result = protection(p, 105., .0005, .0001, f)
     assert result['trend_style'] == 'UNKNOWN'
-    assert result['retracement_fraction'] == .20
-    assert result['stop_price'] == 104.0
+    assert result['retracement_fraction'] == .12
+    assert result['stop_price'] == pytest.approx(104.413, rel=1e-3)
     assert protection(p, 104.0, .0005, .0001, f)['triggered']
