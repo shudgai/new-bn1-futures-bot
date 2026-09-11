@@ -2516,6 +2516,8 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
+        if self._channel_terminal_market(frame):
+            return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
                 symbol, {'side': side, 'profit_reentry_token': profit_reentry_token}):
             if not reverse_quote_ready(self, symbol, frame, price, side):
@@ -2729,6 +2731,9 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
+            if self._channel_terminal_market(fresh_frame):
+                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：末端期間多空均禁止開倉", "INFO")
+                return False
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
             planned_price = float(entry_quote)
             if not live_candle_color_ready(fresh_frame, planned_price, side):
@@ -5493,41 +5498,23 @@ class TradingEngine:
             return False
 
         confirmed_frame = frame.iloc[:-1]
-        confirmed_price = float(frame["close"].iloc[-2])
-        quality = TradingEngine._directional_trend_quality(
-            confirmed_frame, confirmed_price, requested,
-        )
-        volume_ratio = TradingEngine._channel_volume_ratio(confirmed_frame)
-        # A fresh confirmed volume pulse resumes evaluation.  CK direction,
-        # momentum, MA3 and rail checks remain enforced by aligned_entry().
-        if volume_ratio >= 1.50:
-            return False
-        # Permit the first favorable live candle at a mature edge, but do not
-        # reopen after two completed adverse candles.  This is causal and
-        # survives process restarts because it is derived from closed bars.
+        # Invalid volume is not evidence of a terminal market.
         try:
-            recent = frame.iloc[-3:-1]
-            adverse = (
-                all(float(row["close"]) < float(row["open"]) for _, row in recent.iterrows())
-                if requested == "LONG" else
-                all(float(row["close"]) > float(row["open"]) for _, row in recent.iterrows())
-            )
-            live = frame.iloc[-1]
-            favorable_live = (
-                float(live["close"]) > float(live["open"])
-                if requested == "LONG" else
-                float(live["close"]) < float(live["open"])
-            )
-            if favorable_live and not adverse:
+            volumes = confirmed_frame["volume"].astype(float)
+            mean = (float(confirmed_frame["vol_ma_20"].iloc[-1])
+                    if "vol_ma_20" in confirmed_frame else float(volumes.iloc[:-1].tail(20).mean()))
+            latest = float(volumes.iloc[-1])
+            if not all(math.isfinite(v) for v in (latest, mean)) or latest < 0 or mean <= 0:
                 return False
         except (TypeError, ValueError, KeyError, IndexError):
-            pass
-        exceptional_energy = bool(
-            quality >= 1.25
-            and volume_ratio >= 1.50
-            and quality * volume_ratio >= 2.00
-        )
-        return not exceptional_energy
+            return False
+        return latest / mean < 1.50
+
+    @staticmethod
+    def _channel_terminal_market(frame):
+        """A mature weak run blocks entries on BOTH sides."""
+        return any(TradingEngine._channel_mature_outer_trend_is_weak(frame, side)
+                   for side in ("LONG", "SHORT"))
 
     @staticmethod
     def _channel_immediate_outer_break_action(
@@ -6951,16 +6938,13 @@ class TradingEngine:
         """Use one MA3 outer-cross entry and position-aware execution exits."""
         if str(current_side or "").upper() in ("LONG", "SHORT"):
             return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
-        decision = aligned_entry(frame, live_price)
-        if (decision.get("action") == "ENTER"
-                and TradingEngine._channel_mature_outer_trend_is_weak(
-                    frame, decision.get("side"))):
+        if TradingEngine._channel_terminal_market(frame):
             return {
                 "action": "WAIT",
                 "side": None,
                 "reason": "KC_TREND_END_WAIT",
             }
-        return decision
+        return aligned_entry(frame, live_price)
 
     @staticmethod
     def _channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
