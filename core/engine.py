@@ -44,10 +44,10 @@ from core.services.pulse_service import (
     detect_btc_1m_pulse, begin_btc_lead_shadow, record_btc_lead_shadow_candidate, btc_pulse_blocks_entry
 )
 from core.services.surveillance_service import (
-    sample_reference_price, market_crash_entries_paused, btc_flash_crash_close_symbols, continuous_entry_price_is_safe
+    sample_reference_price, market_crash_entries_paused, btc_flash_crash_close_symbols, continuous_entry_price_is_safe, MarketSurveillanceService
 )
-from core.guards.risk_guard import same_side_entry_allowed
-from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit
+from core.guards.risk_guard import same_side_entry_allowed, RiskGuardManager
+from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, AbnormalMarketGuard
 from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
 from core.services.exits.fading_exit_service import fading_ma3_turn, next_breakout_ready, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.services.exits.hard_stop_service import enforce_hard_stop
@@ -213,6 +213,9 @@ class TradingEngine:
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
         self.symbol_rotation = SymbolRotation(self.account)
+        self.surveillance_service = MarketSurveillanceService()
+        self.risk_guard = RiskGuardManager()
+        self.abnormal_guard = AbnormalMarketGuard()
         self.is_running = False
         self.task: asyncio.Task = None
         self.rotation_task: asyncio.Task = None
