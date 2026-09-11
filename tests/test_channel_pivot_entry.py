@@ -24,7 +24,7 @@ def market(side="LONG"):
     f.loc[16:18] = f.loc[15:17].to_numpy()
     f.loc[19, ["open", "high", "low", "close"]] = [98., 98.2, 97.9, 98.1]
     f["kc_middle"] = 100.
-    f.loc[16:18, "kc_middle"] = [99.8, 99.9, 100.]
+    f.loc[16:18, "kc_middle"] = [98.8, 99.4, 100.]
     if side == "SHORT":
         original = f.copy()
         for key in ("open", "close", "ma3", "ma15", "kc_middle"):

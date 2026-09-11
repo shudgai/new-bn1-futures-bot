@@ -16,7 +16,7 @@ def market(side):
     f['kc_upper'], f['kc_lower'], f['atr'] = 102., 98., 2.
     f.loc[16:18, 'ma15'] = [99., 100., 101.]
     f['kc_middle'] = 100.
-    f.loc[16:18, 'kc_middle'] = [99.8, 99.9, 100.]
+    f.loc[16:18, 'kc_middle'] = [98.8, 99.4, 100.]
     f.loc[17, ['open','close','high','low']] = [101.,103.,103.1,100.9]
     f.loc[18, ['open','close','high','low']] = [103.,104.,104.1,102.9]
     f.loc[19, ['open','close','high','low']] = [104.,104.5,104.6,103.9]

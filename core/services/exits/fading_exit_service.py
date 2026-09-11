@@ -6,6 +6,7 @@ from statistics import median
 from typing import Dict, Any, Optional
 import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
+from core.config import CHANNEL_FADING_MA3_EXIT_ENABLED
 from core.services.swing_service import significant_ma3_turn
 from core.services.strategies.outer_strategy import ck_momentum_fading, aligned_entry
 
@@ -47,7 +48,27 @@ def fading_ma3_turn(position, frame, price):
     if state and state.get('identity') != identity:
         position.pop(STATE_KEY, None)
         state = None
-    return False
+    if not CHANNEL_FADING_MA3_EXIT_ENABLED:
+        return False
+    if state and state.get('version') == 3 and state.get('pending'):
+        return True
+    fading = ck_momentum_fading(frame, position.get('side'))
+    if fading is None:
+        position.pop(STATE_KEY, None)
+        return False
+    observed = {k: position.get(k) for k in ('side', 'open_timestamp', 'entry_price')}
+    if state:
+        observed['channel_significant_ma3_turn'] = state
+    turned = significant_ma3_turn(observed, frame, price)
+    state = observed.get('channel_significant_ma3_turn')
+    if state is None:
+        position.pop(STATE_KEY, None)
+        return False
+    eligible = fading and ck_channel_narrow(frame)
+    if turned and not eligible:
+        state.update(pending=False, favorable=False)
+    position[STATE_KEY] = state
+    return bool(turned and eligible)
 
 
 def next_breakout_ready(account, symbol, frame, price):

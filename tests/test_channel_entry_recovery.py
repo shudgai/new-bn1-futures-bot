@@ -8,11 +8,11 @@ def anyio_backend(): return 'asyncio'
 
 def ready(side):
     f,price=continuing(side);sign=1 if side=='LONG' else -1
-    f.loc[f.index[-5:-1],'kc_middle']=[100+sign*x for x in (0,.1,.2,.4)]
+    f.loc[f.index[-5:-1],'kc_middle']=[100+sign*x for x in (0,.3,.6,1.2)]
     return f,price
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('steps,expected',[( [0,.1,.2,.4],True),([0,.3,.5,.6],False),([0,.3,.4,.5],False),([0,.3,.5,.65],False),([0,.3,.3,.4],True)])
+@pytest.mark.parametrize('steps,expected',[([0,.3,.6,1.2],True),([0,.9,1.5,1.8],False),([0,.9,1.2,1.5],False),([0,.9,1.5,1.95],False),([0,.9,.9,1.2],True)])
 def test_closed_momentum_must_strengthen(side,steps,expected):
     f,price=ready(side);sign=1 if side=='LONG' else -1
     f.loc[f.index[-5:-1],'kc_middle']=[100+sign*x for x in steps]
@@ -39,7 +39,7 @@ async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypat
     f,price=ready(side);sign=1 if side=='LONG' else -1
     snapshot=dict(price=price,frame=f.copy(),kc_upper=float(f.iloc[-1]['kc_upper']),kc_lower=float(f.iloc[-1]['kc_lower']))
     if blocked=='momentum':
-        f.loc[f.index[-5:-1],'kc_middle']=[100+sign*x for x in (0,.3,.5,.65)]
+        f.loc[f.index[-5:-1],'kc_middle']=[100+sign*x for x in (0,.9,1.5,1.95)]
     if blocked=='gap':
         ma=(float(f.iloc[-3]['close'])+float(f.iloc[-2]['close'])+price)/3
         f.loc[f.index[-1],'kc_upper' if side=='LONG' else 'kc_lower']=ma-sign*.01

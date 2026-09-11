@@ -225,7 +225,7 @@ async def process_single_symbol_runner(
                                    "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                    "path": copy.deepcopy(path_state)}
                 engine.account.save_state()
-                engine.account.log(f"🛡️ [獲利保護] {symbol} 浮盈回吐20% 淨利峰值={profit['peak_net']:.4f} 鎖定淨利={profit['locked_net']:.2f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
+                engine.account.log(f"🛡️ [獲利保護] {symbol} 階梯鎖利 淨利峰值={profit['peak_net']:.4f} 鎖定淨利={profit['locked_net']:.2f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
                 closed = await engine.account.close_position(
                     symbol, channel_price, "Channel Swing PROFIT_PROTECTION " + token, is_manual=True)
                 if closed and symbol not in engine.account.positions:

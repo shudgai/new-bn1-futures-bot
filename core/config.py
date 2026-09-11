@@ -240,6 +240,17 @@ CHANNEL_ENTRY_MAX_PREV_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ENTRY_MAX_PREV_BODY_ATR", "1.0"))
 )
 
+# KC 中軌走平（平行／盤整）禁開：最近兩根已收線中軌的位移小於軌寬的這個比例即視為走平。
+# 用「位移／軌寬」而非固定百分比，避免低價幣（例如 1000PEPE）被絕對門檻誤擋。
+CHANNEL_FLAT_MIDDLE_RATIO = max(
+    0.0, float(os.getenv("CHANNEL_FLAT_MIDDLE_RATIO", "0.05"))
+)
+
+# CK 狹窄衰退＋MA3 峰谷出口開關；停用時不出場也不清除既有狀態。
+CHANNEL_FADING_MA3_EXIT_ENABLED = os.getenv(
+    "CHANNEL_FADING_MA3_EXIT_ENABLED", "true"
+).lower() == "true"
+
 # 末端禁開：CK 中軌已連續同向走過這麼多根就不再進場（雙向）。
 CHANNEL_TAIL_MAX_TREND_BARS = max(
     2, int(float(os.getenv("CHANNEL_TAIL_MAX_TREND_BARS", "12")))

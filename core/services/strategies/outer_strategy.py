@@ -7,6 +7,7 @@ import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
 from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
+    CHANNEL_FLAT_MIDDLE_RATIO,
 )
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
@@ -232,6 +233,35 @@ def live_body_breakout_side(frame, price):
     return None
 
 
+FLAT_MIDDLE_REASON = "KC_FLAT_MIDDLE_WAIT"
+
+
+def channel_middle_is_flat(frame, ratio=None):
+    """Parallel closed KC middle blocks new entries on both sides.
+
+    Authorised 2026-09-11 (09-11 live window): entries whose closed-middle
+    displacement was under 5% of the channel width lost 55.85 USDT over 15
+    trades, while the rest made 31.06 USDT, and the same split held in both
+    halves of the session. Width-relative so low-priced symbols are not blocked
+    by a fixed percentage.
+    """
+    if ratio is None:
+        ratio = CHANNEL_FLAT_MIDDLE_RATIO
+    try:
+        if ratio <= 0 or frame is None or len(frame) < 4:
+            return False
+        key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+        previous, latest = (float(v) for v in frame[key].iloc[-3:-1])
+        upper = float(frame["kc_upper"].iloc[-2])
+        lower = float(frame["kc_lower"].iloc[-2])
+        if (not all(math.isfinite(v) and v > 0 for v in (previous, latest, upper, lower))
+                or upper <= lower):
+            return False
+        return abs(latest - previous) / (upper - lower) < ratio
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return False
+
+
 def channel_tail_entry_blocked(frame, side) -> bool:
     """Block fresh entries once the CK middle has already run the same way too long.
 
@@ -279,6 +309,8 @@ def aligned_entry(frame, price):
             return wait
         if channel_tail_entry_blocked(frame, side):
             return {**wait, "reason": "KC_TREND_TAIL_WAIT"}
+        if channel_middle_is_flat(frame):
+            return {**wait, "reason": FLAT_MIDDLE_REASON}
             
         upper = float(frame.iloc[-1]['kc_upper'])
         lower = float(frame.iloc[-1]['kc_lower'])

@@ -11,7 +11,7 @@ def anyio_backend(): return 'asyncio'
 def trend(side):
     f=closed_outer_entry_frame('LONG')
     for n,i in enumerate(f.index[-7:-1]):
-        f.loc[i,['open','close','kc_middle']]=[101+n*.3,101.25+n*.3,99+n*.1]
+        f.loc[i,['open','close','kc_middle']]=[101+n*.3,101.25+n*.3,98.2+n*.35]
     f['high']=f[['open','close']].max(axis=1)+.1
     f['low']=f[['open','close']].min(axis=1)-.1
     f['ma3']=f['close'].rolling(3).mean().fillna(100.)
