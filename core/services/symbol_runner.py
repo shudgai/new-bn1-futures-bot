@@ -9,11 +9,13 @@ from core.services.strategies.outer_strategy import aligned_entry, LIVE_OUTER_CO
 from core.services.exits.profit_protection_service import protection
 from core.services.exits.fading_exit_service import fading_ma3_turn, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.guards.abnormal_guard import channel_adverse_exit_reason
-from core.services.swing_service import channel_ck_exit_with_tolerance, volume_decay_exit_ready
+from core.services.swing_service import (
+    channel_ck_exit_with_tolerance, ma3_middle_cross_against, volume_decay_exit_ready,
+)
 from core.services.strategies.pivot_strategy import PIVOT_CODES
 from core.config import (
     TAKER_FEE_RATE, SLIPPAGE_PCT, SCAN_1M_KLINE_LIMIT, CHANNEL_VOLUME_DECAY_EXIT_ENABLED,
-    CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT,
+    CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT, CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED,
 )
 
 def create_exit_ticket(symbol: str, position: dict, channel_action: dict, frame: Any = None) -> dict:
@@ -216,8 +218,15 @@ async def process_single_symbol_runner(
                     channel_df, existing_pos.get("side"), channel_exit_net_profitable,
                     CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT)
             )
+            middle_cross_exit = bool(
+                CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED and not emergency
+                and channel_action.get("reason") != FADING_EXIT_REASON
+                and ma3_middle_cross_against(channel_df, existing_pos.get("side"))
+            )
             if terminal_turn and not emergency and not (profit and profit["triggered"]):
                 channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
+            elif middle_cross_exit:
+                channel_action = {"action": "EXIT", "side": None, "reason": "MA3_MIDDLE_CROSS_EXIT"}
             elif volume_decay_exit:
                 channel_action = {"action": "EXIT", "side": None, "reason": "VOLUME_DECAY_EXIT"}
             if changed:

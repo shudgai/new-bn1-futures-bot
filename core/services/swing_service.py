@@ -338,3 +338,34 @@ def volume_decay_exit_ready(
         return bool(has_real_volume_decay(frame, -1 if side == "LONG" else 1))
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
+
+
+def ma3_middle_cross_against(frame: pd.DataFrame, side: str) -> bool:
+    """MA3 穿越 KC 中軌且方向對持倉不利 → 趨勢反轉，平倉。
+
+    2026-09-12 使用者要求：空單抱到趨勢翻多還不平，應該在 MA3 穿越中軌
+    （圖上黑圈）時平倉，而不是一路抱下去。多單對稱（MA3 由上往下穿越中軌）。
+    用已收線K比較，並要求價格也站在中軌的順向側，避免單根雜訊。
+    """
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+            return False
+        key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+        required = {"ma3", key, "close"}
+        if not required.issubset(frame.columns):
+            return False
+        ma3_previous = float(frame["ma3"].iloc[-3])
+        ma3_latest = float(frame["ma3"].iloc[-2])
+        middle_previous = float(frame[key].iloc[-3])
+        middle_latest = float(frame[key].iloc[-2])
+        price = float(frame["close"].iloc[-2])
+        if not all(math.isfinite(v) for v in
+                   (ma3_previous, ma3_latest, middle_previous, middle_latest, price)):
+            return False
+        if side == "SHORT":
+            return (ma3_previous <= middle_previous and ma3_latest > middle_latest
+                    and price > middle_latest)
+        return (ma3_previous >= middle_previous and ma3_latest < middle_latest
+                and price < middle_latest)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False

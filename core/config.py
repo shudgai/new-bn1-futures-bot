@@ -297,6 +297,11 @@ CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC = max(
     0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", "120"))
 )
 
+# MA3 穿越 KC 中軌（趨勢反轉）平倉：空單 MA3 由下往上穿越中軌、多單對稱即平倉。
+CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED = os.getenv(
+    "CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED", "true"
+).lower() == "true"
+
 # 強趨勢豁免冷卻：已收線中軌位移 ÷ 軌寬 ≥ 此比例，且價格在持倉側外軌外時，
 # 停損後與獲利重開的冷卻都直接豁免（使用者：漲勢跌勢強時不在此限）。
 CHANNEL_STRONG_TREND_RATIO = max(

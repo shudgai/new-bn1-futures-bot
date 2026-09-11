@@ -180,3 +180,39 @@ def test_strong_trend_exemption_can_be_disabled(monkeypatch):
     engine.tickers = {"X/USDT": 101.0}
     engine._channel_exit_frames = {"X/USDT": _trend_frame(101.0, strong=True)}
     assert engine._channel_strong_trend("X/USDT", "LONG") is False
+
+
+def _middle_cross_frame(side, crossed):
+    import pandas as pd
+
+    if side == "SHORT":
+        ma3 = (100.4, 100.6) if crossed else (101.4, 101.6)
+        middle = (100.5, 100.5)
+        price = 100.7
+    else:
+        ma3 = (100.6, 100.4) if crossed else (99.6, 99.4)
+        middle = (100.5, 100.5)
+        price = 100.3
+    return pd.DataFrame({
+        "ma3": [*ma3, ma3[-1]],
+        "kc_middle": [*middle, middle[-1]],
+        "kc_upper": [101.5] * 3,
+        "kc_lower": [99.5] * 3,
+        "close": [price] * 3,
+    })
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_ma3_middle_cross_closes_the_position(side):
+    from core.services.swing_service import ma3_middle_cross_against
+
+    assert ma3_middle_cross_against(_middle_cross_frame(side, crossed=True), side) is True
+    assert ma3_middle_cross_against(_middle_cross_frame(side, crossed=False), side) is False
+
+
+def test_ma3_middle_cross_needs_price_on_the_reversal_side():
+    from core.services.swing_service import ma3_middle_cross_against
+
+    frame = _middle_cross_frame("SHORT", crossed=True)
+    frame.loc[frame.index[-2], "close"] = 100.2  # 價格仍在中軌下方
+    assert ma3_middle_cross_against(frame, "SHORT") is False

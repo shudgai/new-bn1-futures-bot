@@ -142,7 +142,8 @@ def active_exit_rule_lines() -> List[str]:
         f"  7. MA3 由持倉側外軌轉進軌內後，單根反向異常K ≥ "
         f"{config.CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR:g} ATR 即平倉："
         f"{_flag(config.CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED)}",
-        f"  8. 日虧損停機："
+        f"  8. MA3 穿越 KC 中軌（趨勢反轉）平倉：{_flag(config.CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED)}",
+        f"  9. 日虧損停機："
         + (f"{config.MAX_DAILY_LOSS_PCT:g}%" if config.MAX_DAILY_LOSS_PCT > 0 else "未啟用（0）"),
     ]
 
