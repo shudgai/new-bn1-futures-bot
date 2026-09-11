@@ -11,7 +11,7 @@ from core.services.exits.fading_exit_service import fading_ma3_turn, STATE_KEY a
 from core.guards.abnormal_guard import channel_adverse_exit_reason
 from core.services.swing_service import channel_ck_exit_with_tolerance
 from core.services.strategies.pivot_strategy import PIVOT_CODES
-from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
+from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT, SCAN_1M_KLINE_LIMIT
 
 def create_exit_ticket(symbol: str, position: dict, channel_action: dict, frame: Any = None) -> dict:
     """Build the post-exit reentry ticket for a Channel Swing pullback exit."""
@@ -54,7 +54,7 @@ async def process_single_symbol_runner(
             return signal_progress, detected_candidates
         channel_df = exit_frame
         if channel_df is None:
-            channel_df = await engine.fetch_klines(symbol, timeframe="1m", limit=200, keep_live=True)
+            channel_df = await engine.fetch_klines(symbol, timeframe="1m", limit=SCAN_1M_KLINE_LIMIT, keep_live=True)
             if not channel_df.empty:
                 channel_df = engine.strategy.compute_indicators(channel_df.copy())
         if not channel_df.empty:

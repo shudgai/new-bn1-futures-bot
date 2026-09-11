@@ -217,6 +217,12 @@ CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ADVERSE_TWO_CANDLE_BODY_ATR", "1.0"))
 )
 
+# K 線抓取：重試次數、單次逾時、重試間隔與掃描暖機根數。
+KLINE_FETCH_ATTEMPTS = max(1, int(float(os.getenv("KLINE_FETCH_ATTEMPTS", "3"))))
+KLINE_FETCH_TIMEOUT_SEC = max(1.0, float(os.getenv("KLINE_FETCH_TIMEOUT_SEC", "8.0")))
+KLINE_FETCH_RETRY_PAUSE_SEC = max(0.0, float(os.getenv("KLINE_FETCH_RETRY_PAUSE_SEC", "0.5")))
+SCAN_1M_KLINE_LIMIT = max(60, int(float(os.getenv("SCAN_1M_KLINE_LIMIT", "500"))))
+
 # 進場當根順向實體上限（ATR 倍數）：過熱的大K不追，避免下一根反向異常K。
 CHANNEL_ENTRY_MAX_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ENTRY_MAX_BODY_ATR", "0.8"))

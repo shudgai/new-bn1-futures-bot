@@ -97,7 +97,8 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CHANNEL_WATERFALL_BODY_ATR,
+    CHANNEL_WATERFALL_BODY_ATR, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC,
+    KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     PIVOT_STRONG_BODY_ATR_MULT,
     TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
@@ -1113,21 +1114,29 @@ class TradingEngine:
 
 
     async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
-        try:
-            ohlcv = await asyncio.wait_for(
-                self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit),
-                timeout=12.0,
-            )
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
-            # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
-            # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
-            if keep_live:
-                return df
-            return drop_unclosed_candle(df, timeframe)
-        except Exception as e:
-            print(f"fetch_klines ERROR: {e}")
-            return pd.DataFrame()
+        """Fetch klines from Binance with retries; empty payloads count as failures."""
+        last_error = None
+        for attempt in range(KLINE_FETCH_ATTEMPTS):
+            try:
+                ohlcv = await asyncio.wait_for(
+                    self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit),
+                    timeout=KLINE_FETCH_TIMEOUT_SEC,
+                )
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                if df.empty:
+                    raise ValueError("empty kline payload")
+                # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
+                # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
+                # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
+                if keep_live:
+                    return df
+                return drop_unclosed_candle(df, timeframe)
+            except Exception as e:
+                last_error = e
+                if attempt + 1 < KLINE_FETCH_ATTEMPTS:
+                    await asyncio.sleep(KLINE_FETCH_RETRY_PAUSE_SEC)
+        print(f"fetch_klines ERROR after {KLINE_FETCH_ATTEMPTS} attempts: {last_error}")
+        return pd.DataFrame()
 
     async def update_market_prices(self):
         try:
