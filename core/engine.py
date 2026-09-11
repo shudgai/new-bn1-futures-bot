@@ -5,7 +5,7 @@ from core.channel_live_pivot import LivePivot
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
+from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
 from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, live_candle_color_ready, ck_entry_momentum_ready, LIVE_OUTER_CODES
 from core.channel_intrabar_entry import IntrabarEntry
@@ -2546,8 +2546,9 @@ class TradingEngine:
                 return None
             return dict(price=price, kc_upper=upper, kc_lower=lower, frame=frame,
                         signal_code='KC_LIVE_PIVOT_' + side)
-        entry_ready = (confirmed_outer_breakout_ready(frame, price, side, allow_three_short=False) if closing_reverse else
-                       aligned_entry_ready(frame, price, side))
+        # Channel Swing new legs use the live MA3 outer-cross/continuation
+        # entry for every route; the retired two-closed-body rule is not used.
+        entry_ready = aligned_entry_ready(frame, price, side)
         if not entry_ready:
             return None
         if profit_reentry_token is not None:

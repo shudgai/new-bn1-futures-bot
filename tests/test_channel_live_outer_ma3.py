@@ -60,6 +60,16 @@ def test_entry_requires_green_long_or_red_short_live_candle(side, monkeypatch):
     assert aligned_entry(f, p)['reason'] == 'KC_LIVE_CANDLE_DIRECTION_WAIT'
 
 
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_ma3_outer_entry_does_not_require_two_closed_same_color_bodies(side, monkeypatch):
+    f, p, _, _ = outer_setup(side, monkeypatch)
+    sign = 1 if side == 'LONG' else -1
+    f.loc[f.index[-3:-1], 'open'] = f.loc[f.index[-3:-1], 'close'] - sign * .1
+    f['high'] = f[['open', 'close']].max(axis=1) + .1
+    f['low'] = f[['open', 'close']].min(axis=1) - .1
+    assert aligned_entry(f, p)['side'] == side
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('invalid', ['ck_flat', 'ck_outer_reverse', 'ck_nan', 'ma_flat', 'ma_reverse', 'ma_nan', 'touch', 'inside', 'room', 'stale'])
