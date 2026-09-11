@@ -679,6 +679,32 @@ class BinanceTestnetAccount:
                     # 保護單確實建立（meta["sl"] 有值）才標記，失敗時下輪自動重試
                     self._orphan_protection_attempted.add(symbol)
 
+            # ── 停電保護補建：Channel Swing 沒有一般 SL（pos["sl"] 恆為 0），
+            #    上面的孤兒偵測刻意跳過它，所以進場當下若掛單失敗（網路中斷、
+            #    權限不足、algoOrder 不支援），部位會在交易所端「裸倉」直到下次
+            #    重啟才補。這裡每 120 秒檢查一次並補掛，避免停電時沒有保護。
+            if (
+                ENABLE_EXCHANGE_INITIAL_STOP_LOSS
+                and str(pos.get("entry_mode") or meta.get("entry_mode") or "").upper()
+                    == "CHANNEL_SWING"
+                and not float(meta.get("channel_swing_emergency_sl") or 0.0)
+                and symbol not in self.pending_limit_orders
+            ):
+                if not hasattr(self, "_emergency_stop_retry_at"):
+                    self._emergency_stop_retry_at = {}
+                last_try = float(self._emergency_stop_retry_at.get(symbol, 0.0))
+                if time.time() - last_try >= 120.0:
+                    self._emergency_stop_retry_at[symbol] = time.time()
+                    close_side_es = "sell" if pos["side"] == "LONG" else "buy"
+                    placed = await self._place_channel_swing_emergency_stop(
+                        symbol, close_side_es, pos["qty"],
+                        pos["entry_price"], pos["side"], pos.get("leverage", 1),
+                    )
+                    if placed:
+                        meta["channel_swing_emergency_sl"] = placed
+                        self.position_meta[symbol] = meta
+                        self.save_state()
+
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
 
