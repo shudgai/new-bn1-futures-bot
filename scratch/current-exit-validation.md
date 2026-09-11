@@ -357,3 +357,34 @@
 - 最終9份專項184 passed，含逆CK／MA、逐報價階梯平倉反手、CK平倉反手、失敗、過期、重啟、成交防偽／防重複及CK等待恢復。
 - 指定三份交易回歸加fixed_steps：隔離0069b36基準115 passed / 65 failed；修改後115 passed / 65 failed，失敗集合相同。兩項舊只平倉測試按新授權更新成「無新報價時保留反手票據、不送單」，不放寬風控。
 - 證據/tmp/direct-focused.txt、/tmp/direct-before.txt、/tmp/direct-after.txt；非全套通過。
+
+## 2026-09-11 1000PEPE 阻擋診斷與末端守門
+
+- 線上狀態核查：1000PEPE/USDT 當時已有一筆手動接管 LONG，持倉數達 `MAX_SLOTS=2`，可用餘額為 `0.0`；因此目前首先被已有持倉、槽位及資金風控擋住，不是單一 PEPE 訊號原因。
+- 歷史事件另見 `KC_WAIT_NET_PROFIT_GIVEBACK`、異常瀑布平倉後的回踩票據，以及 CK 方向／動能、即時 MA3 順向與外軌條件等待。近期平倉記錄包含瀑布 -0.98U 與保護線 -0.19U，不能把「有保護狀態」解讀成必然獲利。
+- 將既有 `_channel_mature_outer_trend_is_weak` 接入共用 `_channel_swing_action`：CK／外軌走勢已成熟且能量不足時回傳 `KC_TREND_END_WAIT`，不送新倉；待下一輪 CK 方向與動能重新明朗後再評估。
+- API 圖表診斷即使已有持倉也會回傳阻擋結果，顯示 `KC_POSITION_HELD`，不再以 `null` 掩蓋實際原因。
+- 一般策略出口維持淨利保護；CK 衰退末端出口可先平倉並等待新 CK，硬止損、瀑布及雙異常安全出口不取消。末端守門測試及 CK／0.5U 出口專項共 `74 passed`。
+
+## 2026-09-11 重新破軌票據修正
+
+- 找到實際缺口：CK 末端平倉後的 `next_breakout` 票據在 `_try_profit_reentry_locked` 被直接返回，導致成功平倉後重新破軌永遠不送單。
+- 修正為成功平倉、換到新 K、CK 方向與動能明朗、MA3／價格重新位於同側外軌外時重新評估；不再錯誤導向 live pivot 入口。
+- 掃描訊號與最後送單快照都重新套用 `KC_TREND_END_WAIT`，避免舊快取在趨勢末端追入。
+- 一般買入沿用淨利 0.5U 啟動、峰值回吐20%平倉；CK末端最後平倉、硬止損與瀑布安全出口保留。
+- 重新破軌、末端守門、0.5U保護與送單流程共 `77 passed`。
+
+## 2026-09-11 CK未明先平倉
+
+- 有效已收線 CK 若無法確認多空，或方向已與持倉相反，持倉先平倉，原因分別為 `KC_CK_DIRECTION_UNCLEAR_EXIT`／`KC_CK_DIRECTION_REVERSED_EXIT`；空手入口仍拒絕 CK 未明，不再買入。
+- 指標資料缺失、NaN 或通道結構無效時不猜測、不強制平倉；硬止損與瀑布／雙異常出口優先。
+- CK 未明平倉後建立正常重開票據，只有換 K 且 CK 重新明朗、MA3 與價格符合外軌入口才可再評估；一般平倉仍使用淨利保護回吐20%，CK 末端最後平倉為例外。
+- 受影響出口與方向專項 `74 passed`，新增 CK 未明／反向／無效資料邊界 `4 passed`。
+
+## 2026-09-11 龍蝦 MA3 穿軌入口修正
+
+- 龍蝦日誌顯示實際阻擋依序包含 `KC_DIRECTION_WAIT`、`KC_MOMENTUM_FADE_WAIT`、`KC_MA3_OUTSIDE_WAIT` 及 `KC_TREND_END_WAIT`；不是單一資金或槽位原因。當時也曾成功開兩次 SHORT，並各以 20% 淨利回吐保護獲利平倉。
+- 根因：`ma3_outer_cross_ready()` 已存在但 `aligned_entry()` 沒有呼叫，只檢查 MA3 已在外軌的延續；MA3 剛穿軌時因此回傳 `KC_MA3_OUTSIDE_WAIT`。
+- 修正為先接受 MA3 新穿越 `KC_LIVE_OUTER_LONG/SHORT`，若沒有新穿越再接受 `KC_OUTSIDE_LONG/SHORT` 延續。CK 明朗、動能增強、即時 MA3 順向、反向異常、末端守門與最終快照重驗全部保留。
+- 「後面又變掉」是掃描訊號與最後送單之間會重新抓 K 線及 ticker；若 CK 動能、MA3 方向、外軌位置、反向異常、末端狀態或每根限次在這段時間改變，送單前會正確拒絕，避免用舊快照追價。
+- 龍蝦 MA3 外軌入口專項 `44 passed`；剩餘4項為既有停用獲利空間／CK直接反手舊測試，不是本次穿軌回歸。

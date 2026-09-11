@@ -184,6 +184,8 @@ def aligned_entry(frame, price):
             return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
+        if ma3_outer_cross_ready(frame, price, side):
+            return {"action": "ENTER", "side": side, "reason": "KC_LIVE_OUTER_" + side}
         if ma3_outer_continuation_ready(frame, price, side):
             return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
         return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}

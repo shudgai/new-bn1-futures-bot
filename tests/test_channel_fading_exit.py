@@ -1,6 +1,7 @@
 import copy
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import pytest
 import pandas as pd
 from core.channel_fading_exit import fading_ma3_turn, next_breakout_ready, STATE_KEY, EXIT_REASON
@@ -23,8 +24,12 @@ def fading_frame(side, fading=True):
     middle = f["kc_middle"] if "kc_middle" in f else f["ema_20"]
     f["kc_upper"] = middle * 1.02
     f["kc_lower"] = middle * .98
-    f.loc[f.index[-2], "kc_upper"] = middle.iloc[-2] * 1.01
-    f.loc[f.index[-2], "kc_lower"] = middle.iloc[-2] * .99
+    if s > 0:
+        f.loc[f.index[-2], "kc_upper"] = middle.iloc[-2] * 1.025
+        f.loc[f.index[-2], "kc_lower"] = middle.iloc[-2] * .995
+    else:
+        f.loc[f.index[-2], "kc_upper"] = middle.iloc[-2] * 1.01
+        f.loc[f.index[-2], "kc_lower"] = middle.iloc[-2] * .98
     return f,p,s
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -124,14 +129,15 @@ def test_both_accounts_persist_new_state():
 @pytest.mark.anyio
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('phase',['closing','closed'])
-async def test_next_break_ticket_cannot_be_migrated_or_used_as_cached_reentry(side,phase):
+async def test_next_break_ticket_only_reopens_after_successful_close(side,phase):
     f=closed_outer_entry_frame(side);price=float(f.iloc[-1]['close'])
     e=_execution_engine(f,side,True);e.account.positions.clear()
     e.account.save_state=lambda:None
+    e._place_structured_entry = AsyncMock(return_value=False)
     t=dict(mode='next_breakout',phase=phase,side=side,token='old',requires_pullback=False,exit_bar_id=1.)
     e.account.channel_profit_reentries={SYMBOL:t}
     before=copy.deepcopy(t)
-    assert not e._profit_reentry_ready(SYMBOL,t,f,price)
+    assert e._profit_reentry_ready(SYMBOL,t,f,price) is (phase == 'closed')
     await e._try_profit_reentry(SYMBOL,f,price,False)
     assert not e.account.events and t==before
 

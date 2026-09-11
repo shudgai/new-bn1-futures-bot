@@ -2,6 +2,7 @@ import asyncio
 import copy
 import pytest
 from core.channel_outer_entry import ck_direction, aligned_entry_ready
+from core.engine import TradingEngine
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -15,8 +16,16 @@ def setup(side, monkeypatch, success=True):
     frame = closed_outer_entry_frame(side)
     frame['timestamp'] = [(i + 1) * 60000 for i in range(len(frame))]
     frame['atr'] = 1.
-    price = float(frame.iloc[-1]['close'])
+    middle_key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
     sign = 1 if side == 'LONG' else -1
+    middle = frame[middle_key].astype(float)
+    frame.loc[frame.index[-3], middle_key] = middle.iloc[-3]
+    frame.loc[frame.index[-2], middle_key] = middle.iloc[-3] + sign
+    frame.loc[frame.index[-3], 'kc_upper'] = middle.iloc[-3] + 10.
+    frame.loc[frame.index[-2], 'kc_upper'] = middle.iloc[-3] + 10. + sign
+    frame.loc[frame.index[-3], 'kc_lower'] = middle.iloc[-3] - 10.
+    frame.loc[frame.index[-2], 'kc_lower'] = middle.iloc[-3] - 10. + sign
+    price = float(frame.iloc[-1]['close'])
     frame.loc[5, 'high' if side == 'LONG' else 'low'] = price + sign * 3.
     # CK has turned even though the moving averages still point the other way.
     frame['ma3'] = [100. - sign * i * .01 for i in range(len(frame))]
@@ -63,6 +72,23 @@ def test_first_closed_ck_turn_and_invalid_direction(side, monkeypatch):
     assert ck_direction(f) is None
     f.loc[f.index[-2], 'kc_middle'] = float('nan')
     assert ck_direction(f) is None
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_unclear_or_reversed_closed_ck_requires_exit(side):
+    f = closed_outer_entry_frame(side)
+    assert TradingEngine._channel_ck_exit_reason(f, side) is None
+    f.loc[f.index[-2], 'kc_middle'] = f.iloc[-3]['kc_middle']
+    assert TradingEngine._channel_ck_exit_reason(f, side) == 'KC_CK_DIRECTION_UNCLEAR_EXIT'
+    f.loc[f.index[-2], 'kc_middle'] = f.iloc[-3]['kc_middle'] - (1 if side == 'LONG' else -1)
+    assert TradingEngine._channel_ck_exit_reason(f, side) == 'KC_CK_DIRECTION_REVERSED_EXIT'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_invalid_closed_ck_does_not_force_exit(side):
+    f = closed_outer_entry_frame(side)
+    f.loc[f.index[-2], 'kc_middle'] = float('nan')
+    assert TradingEngine._channel_ck_exit_reason(f, side) is None
 
 
 @pytest.mark.anyio

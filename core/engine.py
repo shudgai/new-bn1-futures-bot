@@ -2742,6 +2742,14 @@ class TradingEngine:
                 return False
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
+            if not ck_reverse and not live_pivot:
+                final_entry = self._channel_swing_action(fresh_frame, planned_price)
+                if final_entry.get("action") != "ENTER" or final_entry.get("side") != side:
+                    self.account.log(
+                        f"⏳ {symbol} {side} {final_entry.get('reason', 'KC_ENTRY_WAIT')}：最新快照已不適合追入",
+                        "INFO",
+                    )
+                    return False
             if not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
                     reverse_quote_ready(self, symbol, fresh_frame, planned_price, side) if ck_reverse else aligned_entry_ready(fresh_frame, planned_price, side)):
                 watcher = getattr(self, "_channel_intrabar_entries", None)
@@ -6911,7 +6919,46 @@ class TradingEngine:
         """Use one MA3 outer-cross entry and position-aware execution exits."""
         if str(current_side or "").upper() in ("LONG", "SHORT"):
             return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
-        return aligned_entry(frame, live_price)
+        decision = aligned_entry(frame, live_price)
+        if (decision.get("action") == "ENTER"
+                and TradingEngine._channel_mature_outer_trend_is_weak(
+                    frame, decision.get("side"))):
+            return {
+                "action": "WAIT",
+                "side": None,
+                "reason": "KC_TREND_END_WAIT",
+            }
+        return decision
+
+    @staticmethod
+    def _channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
+        """Close a position when valid closed CK data is no longer clear for it."""
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+            return None
+        middle_key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+        required = {"kc_lower", middle_key, "kc_upper"}
+        if not required.issubset(frame.columns):
+            return None
+        try:
+            rows = frame.iloc[-3:-1]
+            values = [
+                (float(row["kc_lower"]), float(row[middle_key]), float(row["kc_upper"]))
+                for _, row in rows.iterrows()
+            ]
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            return None
+        if len(values) != 2 or any(
+            not all(math.isfinite(value) and value > 0 for value in row)
+            or not row[0] < row[1] < row[2]
+            for row in values
+        ):
+            return None
+        direction = ck_direction(frame)
+        if direction == side:
+            return None
+        if direction in ("LONG", "SHORT"):
+            return "KC_CK_DIRECTION_REVERSED_EXIT"
+        return "KC_CK_DIRECTION_UNCLEAR_EXIT"
 
     @staticmethod
     def _is_continuous_wave_position(position: dict, meta: dict | None = None) -> bool:
@@ -7546,11 +7593,19 @@ class TradingEngine:
         return False
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
-        if ticket.get("mode") == "next_breakout":
-            return False
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
+        if ticket.get("mode") == "next_breakout":
+            try:
+                current_bar = float(frame.iloc[-1].get("timestamp", frame.index[-1]))
+                exit_bar = float(ticket["exit_bar_id"])
+                if not (math.isfinite(current_bar) and math.isfinite(exit_bar) and current_bar > exit_bar):
+                    return False
+            except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+                return False
+            decision = self._channel_swing_action(frame, price)
+            return decision.get("action") == "ENTER" and decision.get("side") == ticket["side"]
         if ticket.get('mode') == 'direct_reverse':
             return (self._ck_reverse_order_authorized(symbol, {'side': ticket['side'], 'profit_reentry_token': ticket['token']})
                     and reverse_quote_ready(self, symbol, frame, price, ticket['side']))
@@ -7606,8 +7661,6 @@ class TradingEngine:
         ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
         if not ticket or symbol in self.account.positions:
             return
-        if ticket.get('mode') == 'next_breakout':
-            return
         if ticket.get('mode') in ('direct_reverse', 'ck_reverse', 'ma3_turn_wait'):
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
@@ -7642,7 +7695,7 @@ class TradingEngine:
         decision = ({'reason': 'KC_REVERSE_' + ticket['side']} if ticket.get('mode') == 'ck_reverse' else
                     outside_reentry(frame, price, ticket["side"]) if ticket.get("mode") == "outer_cycle"
                     else self._channel_swing_action(frame, price))
-        live_pivot = (ticket.get('mode') != 'ck_reverse' and not ticket.get('requires_pullback', True)
+        live_pivot = (ticket.get('mode') == 'outer_cycle' and not ticket.get('requires_pullback', True)
                       and self._live_pivot_ready(symbol, frame, price, ticket['side']))
         if live_pivot:
             decision = {'reason': 'KC_LIVE_PIVOT_' + ticket['side']}
@@ -7856,12 +7909,15 @@ class TradingEngine:
                             state.pop(key)
                             changed = True
                 channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_NET_PROFIT_GIVEBACK"}
+                ck_exit = self._channel_ck_exit_reason(channel_df, existing_pos.get("side"))
                 emergency = self._channel_exception_exit(existing_pos, channel_df, channel_price)
                 if emergency:
                     if existing_pos.get("channel_exception_exit_pending") != emergency:
                         existing_pos["channel_exception_exit_pending"] = emergency
                         changed = True
                     channel_action = {"action": "EXIT", "side": None, "reason": emergency}
+                elif ck_exit:
+                    channel_action = {"action": "EXIT", "side": None, "reason": ck_exit}
                 if terminal_turn and not emergency and not (profit and profit["triggered"]):
                     channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
                 if changed:
@@ -7939,7 +7995,10 @@ class TradingEngine:
                 }
                 ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
                 fading_exit = channel_action.get("reason") == FADING_EXIT_REASON
-                pullback_exit = fading_exit or abnormal_exit or ma3_turn_exit or channel_exit_net_profitable
+                ck_exit = channel_action.get("reason") in {
+                    "KC_CK_DIRECTION_UNCLEAR_EXIT", "KC_CK_DIRECTION_REVERSED_EXIT",
+                }
+                pullback_exit = fading_exit or abnormal_exit or ma3_turn_exit or ck_exit or channel_exit_net_profitable
                 if pullback_exit:
                     tickets[symbol] = {"token": str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns()),
                                        "phase": "closing", "side": existing_pos["side"], "mode": "next_breakout" if fading_exit else "outer_cycle",
