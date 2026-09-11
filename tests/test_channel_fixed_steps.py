@@ -8,6 +8,15 @@ from test_channel_swing_execution import _execution_engine
 @pytest.fixture
 def anyio_backend(): return 'asyncio'
 
+from core import config
+
+
+@pytest.fixture(autouse=True)
+def _ladder_only(monkeypatch):
+    """本檔只驗證階梯鎖利；保底停利另見 tests/test_channel_profit_floor.py。"""
+    monkeypatch.setattr(config, "CHANNEL_SWING_PROFIT_FLOOR_NET_USDT", 0.0)
+
+
 def quote(net, side, fee=.0005, slip=.0001):
     return ((100*(1+fee)+net)/((1-slip)*(1-fee)) if side=='LONG'
             else (100*(1-fee)-net)/((1+slip)*(1+fee)))

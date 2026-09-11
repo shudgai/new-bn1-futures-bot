@@ -62,4 +62,5 @@ def test_profit_ladder_arm_comes_from_config(monkeypatch):
     from core.services.exits import profit_protection_service as svc
 
     monkeypatch.setattr(config, "CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT", 10_000.0)
+    monkeypatch.setattr(config, "CHANNEL_SWING_PROFIT_FLOOR_NET_USDT", 0.0)
     assert svc.protection(_long_position(), 100.8, 0.0, 0.0) is None
