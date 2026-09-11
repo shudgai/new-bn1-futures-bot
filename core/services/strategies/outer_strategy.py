@@ -221,6 +221,17 @@ def aligned_entry(frame, price):
         side = breakout_side or entry_trend_direction(frame)
         if side is None:
             return wait
+            
+        try:
+            live_ma3 = float(frame.iloc[-1]['ma3'])
+            live_ma15 = float(frame.iloc[-1]['ma15'])
+            if side == 'LONG' and (price < live_ma3 or price < live_ma15):
+                return {**wait, "reason": "KC_MA_SAFETY_WAIT"}
+            if side == 'SHORT' and (price > live_ma3 or price > live_ma15):
+                return {**wait, "reason": "KC_MA_SAFETY_WAIT"}
+        except (KeyError, ValueError, TypeError, IndexError):
+            pass
+
         if ck_momentum_fading(frame, side):
             return {**wait, "reason": "KC_MOMENTUM_FADING_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
