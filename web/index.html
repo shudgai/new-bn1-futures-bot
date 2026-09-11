@@ -89,7 +89,7 @@
 
         /* Stats Grid */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-        .stats-grid-6 { grid-template-columns: repeat(6, 1fr); }
+        .stats-grid-6 { grid-template-columns: repeat(7, 1fr); }
         .stat-box { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
         .stat-label { font-size: 11px; color: var(--muted); font-weight: 600; }
         .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; margin-top: 4px; }
@@ -285,6 +285,18 @@
                     <div class="stat-box">
                         <div class="stat-label">帳戶餘額 (USDT)</div>
                         <div class="stat-val">{{ bot.balance.toFixed(2) }}</div>
+                        <div style="font-size:10px; color:var(--muted); margin-top:2px;">
+                            可用 {{ (bot.available_balance || 0).toFixed(2) }} ｜ 佔用 {{ occupiedMargin.toFixed(2) }}
+                        </div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">可用餘額 (USDT)</div>
+                        <div class="stat-val" :style="{ color: (bot.available_balance || 0) > 0 ? 'var(--up)' : 'var(--muted)' }">
+                            {{ (bot.available_balance || 0).toFixed(2) }}
+                        </div>
+                        <div style="font-size:10px; color:var(--muted); margin-top:2px;">
+                            每筆上限 ≈ {{ (bot.available_balance || 0).toFixed(2) }} × 5倍槓桿
+                        </div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">總累計損益</div>
@@ -647,6 +659,10 @@
                 }
             },
             computed: {
+                occupiedMargin() {
+                    if (!this.bot || !Array.isArray(this.bot.positions)) return 0;
+                    return this.bot.positions.reduce((sum, p) => sum + (Number(p.margin) || 0), 0);
+                },
                 newestLogs() {
                     if (!this.bot || !Array.isArray(this.bot.logs)) return [];
                     // Persisted logs may not retain insertion order after a restart.
