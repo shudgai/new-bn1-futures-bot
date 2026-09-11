@@ -57,7 +57,7 @@ def test_invalid_ck_is_not_fading_and_live_ck_ignored(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_immediate_ma3_turn_exits_without_fading_or_atr_gate(side):
+def test_retired_immediate_ma3_turn_never_authorizes_close(side):
     sign = 1 if side == 'LONG' else -1
     p = {'side': side, 'entry_price': 100., 'open_timestamp': 1200.}
     rows = pd.DataFrame({
@@ -75,8 +75,9 @@ def test_immediate_ma3_turn_exits_without_fading_or_atr_gate(side):
     rows.loc[4, 'timestamp'] = 1560000
     rows.loc[2, 'close'] = 104.
     rows.loc[3, 'close'] = 108.
-    assert immediate_ma3_turn(p, rows, adverse)
-    assert p['channel_immediate_ma3_turn']['pending']
+    p['channel_immediate_ma3_turn'] = {'pending': True}
+    assert not immediate_ma3_turn(p, rows, adverse)
+    assert 'channel_immediate_ma3_turn' not in p
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_old_nonfading_turn_cannot_fire_later(side):
@@ -220,3 +221,30 @@ def test_wide_channel_blocks_exit_but_still_blocks_new_entry(side,armed):
     assert not fading_ma3_turn(p,f,100+s*.6)
     assert fading_ma3_turn(p,f,100-s*.3)
     assert fading_ma3_turn(json.loads(json.dumps(p)),None,100.)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('path', ['quote', 'scan'])
+@pytest.mark.parametrize('old_pending', [False, True])
+async def test_tick_pullback_while_ma3_still_forward_holds(side, path, old_pending, monkeypatch):
+    f, p, sign = fading_frame(side)
+    e = _execution_engine(f, side, True)
+    e.is_running = True
+    e.account.save_state = lambda: None
+    e.account.positions[SYMBOL].update(p)
+    e._channel_exit_frames = {SYMBOL: f}
+    monkeypatch.setattr('core.engine.time.time', lambda: 1201.)
+    if old_pending:
+        stale = {'identity': [side, p['open_timestamp'], p['entry_price']], 'pending': True}
+        e.account.positions[SYMBOL]['channel_immediate_ma3_turn'] = copy.deepcopy(stale)
+        e.account.position_meta.setdefault(SYMBOL, {})['channel_immediate_ma3_turn'] = stale
+    for price in [100., 100. + sign * .3, 100. + sign * .29, 100. + sign * .4]:
+        if path == 'quote':
+            await e._channel_quote_exit(SYMBOL, price, 1201000)
+        else:
+            e.tickers[SYMBOL] = price
+            await e._process_single_symbol(SYMBOL, 2., None, False)
+        assert not e.account.events, e.account.logs
+    assert 'channel_immediate_ma3_turn' not in e.account.positions[SYMBOL]
+    assert 'channel_immediate_ma3_turn' not in e.account.position_meta.get(SYMBOL, {})
