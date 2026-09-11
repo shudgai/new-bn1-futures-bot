@@ -294,14 +294,23 @@ CHANNEL_1H_TREND_FILTER_ENABLED = os.getenv(
 
 # 獲利保護平倉後的重開冷卻：避免「保護平倉 → 1 分鐘後重開 → 再被保護平倉」的成本損耗。
 CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC = max(
-    0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", "300"))
+    0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", "120"))
 )
+
+# 強趨勢豁免冷卻：已收線中軌位移 ÷ 軌寬 ≥ 此比例，且價格在持倉側外軌外時，
+# 停損後與獲利重開的冷卻都直接豁免（使用者：漲勢跌勢強時不在此限）。
+CHANNEL_STRONG_TREND_RATIO = max(
+    0.0, float(os.getenv("CHANNEL_STRONG_TREND_RATIO", "0.20"))
+)
+CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN = os.getenv(
+    "CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN", "true"
+).lower() == "true"
 
 # Channel Swing 停損後冷卻：硬止損、瀑布或異常出場後，該幣在這段秒數內不得再開新倉。
 # 起因：2026-09-11 後段連續三筆在停損後 0.1~7.4 分鐘立刻反向再進場，全部再被停損，
 # 單一時段就吃掉當日 92% 的虧損。設 0 代表停用。
 CHANNEL_STOP_LOSS_COOLDOWN_SEC = max(
-    0.0, float(os.getenv("CHANNEL_STOP_LOSS_COOLDOWN_SEC", "900"))
+    0.0, float(os.getenv("CHANNEL_STOP_LOSS_COOLDOWN_SEC", "300"))
 )
 
 # CK 狹窄衰退＋MA3 峰谷出口開關；停用時不出場也不清除既有狀態。

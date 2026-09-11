@@ -98,7 +98,8 @@ from core.config import (
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC,
-    CHANNEL_1H_TREND_FILTER_ENABLED, CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
+    CHANNEL_1H_TREND_FILTER_ENABLED, CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC,
+    CHANNEL_STRONG_TREND_RATIO, CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
     API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
@@ -599,6 +600,32 @@ class TradingEngine:
         self.start_market_data()
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
+
+    def _channel_strong_trend(self, symbol: str, side: str) -> bool:
+        """強趨勢：已收線中軌位移 ÷ 軌寬達門檻，且價格在持倉側外軌之外。
+
+        使用者 2026-09-12：漲勢跌勢強時不受冷卻限制。
+        """
+        if not CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN or CHANNEL_STRONG_TREND_RATIO <= 0:
+            return False
+        if str(side or "").upper() not in ("LONG", "SHORT"):
+            return False
+        frame = (getattr(self, "_channel_exit_frames", {}) or {}).get(symbol)
+        if frame is None or len(frame) < 4:
+            return False
+        try:
+            key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+            previous, latest = float(frame[key].iloc[-3]), float(frame[key].iloc[-2])
+            width = float(frame["kc_upper"].iloc[-2]) - float(frame["kc_lower"].iloc[-2])
+            price = float(self.tickers.get(symbol) or frame["close"].iloc[-2])
+            rail = float(frame["kc_upper"].iloc[-2] if side == "LONG" else frame["kc_lower"].iloc[-2])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return False
+        if not all(math.isfinite(v) for v in (previous, latest, width, price, rail)) or width <= 0:
+            return False
+        direction_ok = latest > previous if side == "LONG" else latest < previous
+        outside = price > rail if side == "LONG" else price < rail
+        return direction_ok and outside and abs(latest - previous) / width >= CHANNEL_STRONG_TREND_RATIO
 
     def _channel_stop_cooldown_remaining(self, symbol: str) -> float:
         """停損後冷卻剩餘秒數；0 代表未設定或已冷卻完畢。"""
@@ -1902,6 +1929,9 @@ class TradingEngine:
                         f"⏸️ [1h 趨勢過濾] {symbol} 1h 方向 {trend_1h:+d} 與 {side} 不一致，不開新倉", "INFO")
                     return False
         remaining = self._channel_stop_cooldown_remaining(symbol)
+        if remaining > 0 and self._channel_strong_trend(symbol, str((signal or {}).get("side") or "")):
+            self.account.log(f"🔥 [強趨勢豁免] {symbol} 趨勢強勁，略過停損後冷卻", "INFO")
+            remaining = 0.0
         if remaining > 0:
             self.account.log(
                 f"⏸️ [停損後冷卻] {symbol} 距上次停損不足 "
@@ -3191,7 +3221,7 @@ class TradingEngine:
                 or symbol in self.account.positions):
             return False
         cooldown = float(CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC or 0.0)
-        if cooldown > 0:
+        if cooldown > 0 and not self._channel_strong_trend(symbol, ticket.get("side")):
             try:
                 requested = float(ticket.get("close_requested_at_ms") or 0.0) / 1000.0
                 if requested > 0 and (time.time() - requested) < cooldown:

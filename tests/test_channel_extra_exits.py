@@ -142,3 +142,41 @@ def test_profit_reentry_cooldown_can_be_disabled(monkeypatch):
     fresh = {"phase": "closed", "side": "LONG", "close_requested_at_ms": time.time() * 1000,
              "mode": "ck_reverse"}
     assert engine._profit_reentry_ready("X/USDT", fresh, None, 100.0) is False  # ck_reverse 一律不重開
+
+
+def _trend_frame(price, strong=True):
+    import pandas as pd
+
+    width = 1.0
+    middle = 100.0
+    previous, latest = (99.8, 100.0) if strong else (99.99, 100.0)
+    rows = [{"open": middle, "close": middle, "kc_middle": middle,
+             "kc_upper": middle + width / 2, "kc_lower": middle - width / 2} for _ in range(4)]
+    rows[-3]["kc_middle"] = previous
+    rows[-2]["kc_middle"] = latest
+    rows[-1]["close"] = price
+    return pd.DataFrame(rows)
+
+
+def test_strong_trend_exempts_the_stop_cooldown(monkeypatch):
+    import time
+    from core.engine import TradingEngine
+
+    monkeypatch.setattr("core.engine.CHANNEL_STRONG_TREND_RATIO", 0.20)
+    monkeypatch.setattr("core.engine.CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN", True)
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.tickers = {"X/USDT": 101.0}
+    engine._channel_exit_frames = {"X/USDT": _trend_frame(101.0, strong=True)}
+    assert engine._channel_strong_trend("X/USDT", "LONG") is True
+    engine._channel_exit_frames = {"X/USDT": _trend_frame(101.0, strong=False)}
+    assert engine._channel_strong_trend("X/USDT", "LONG") is False
+
+
+def test_strong_trend_exemption_can_be_disabled(monkeypatch):
+    from core.engine import TradingEngine
+
+    monkeypatch.setattr("core.engine.CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN", False)
+    engine = TradingEngine.__new__(TradingEngine)
+    engine.tickers = {"X/USDT": 101.0}
+    engine._channel_exit_frames = {"X/USDT": _trend_frame(101.0, strong=True)}
+    assert engine._channel_strong_trend("X/USDT", "LONG") is False
