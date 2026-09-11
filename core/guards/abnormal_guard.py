@@ -1,8 +1,11 @@
-"""Abnormal market guard and emergency adverse waterfall exit helpers."""
+"""Abnormal market guard and emergency adverse waterfall exit helpers.
+OOP AbnormalMarketGuard implementing IGuardRule.
+"""
 
 import math
 import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
+from core.interfaces.guard_interface import IGuardRule
 
 from core.config import RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR, CHANNEL_WATERFALL_BODY_ATR
 from core.services.strategies.outer_strategy import (
@@ -101,3 +104,24 @@ def opposite_entry_releases(account: Any, symbol: str, frame: pd.DataFrame, pric
                 and live_adverse_entry_safe(frame, price, side))
     except (AttributeError, TypeError, ValueError, KeyError, IndexError, OverflowError):
         return False
+
+
+class AbnormalMarketGuard(IGuardRule):
+    """OOP Guard implementing IGuardRule for emergency adverse waterfall detection."""
+
+    def check_permission(
+        self,
+        account: Any,
+        symbol: str,
+        side: str,
+        frame: Optional[pd.DataFrame] = None,
+        price: float = 0.0,
+        **kwargs: Any
+    ) -> Tuple[bool, str]:
+        if frame is None or frame.empty or len(frame) < 3:
+            return True, "DATA_INSUFFICIENT"
+        atr = float(frame.iloc[-2].get("atr", 0.0))
+        reason = channel_adverse_exit_reason(frame, side, price, atr)
+        if reason:
+            return False, reason
+        return True, "PERMISSION_GRANTED"

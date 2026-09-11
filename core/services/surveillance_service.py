@@ -1,4 +1,6 @@
-"""Market surveillance and price monitoring services."""
+"""Market surveillance and price monitoring services.
+OOP Class & Standalone Functions.
+"""
 
 from collections import deque
 import math
@@ -72,3 +74,29 @@ def continuous_entry_price_is_safe(
     else:
         return False, f"invalid entry side {side}"
     return (True, "price is safe") if safe else (False, reason)
+
+
+class MarketSurveillanceService:
+    """OOP Service for Market Crash Surveillance and Execution Price Safety Monitoring."""
+
+    def __init__(self):
+        self.cooldown_until: float = 0.0
+        self.snapshots: Dict[str, dict] = {}
+        self.price_samples: Dict[str, deque] = {}
+
+    def is_crash_paused(self, now: Optional[float] = None) -> bool:
+        return market_crash_entries_paused(self.cooldown_until, now)
+
+    def set_cooldown(self, until: float) -> None:
+        self.cooldown_until = float(until)
+
+    def check_price_safety(
+        self, side: str, frame: pd.DataFrame, live_price: float
+    ) -> Tuple[bool, str]:
+        return continuous_entry_price_is_safe(side, frame, live_price)
+
+    def sample_reference(self, symbol: str, cutoff: float) -> Optional[float]:
+        samples = self.price_samples.get(symbol)
+        if not samples:
+            return None
+        return sample_reference_price(samples, cutoff)
