@@ -4,6 +4,7 @@ Implements IExitStrategy interface.
 import math
 from typing import Dict, Any, Optional
 import pandas as pd
+from core import config
 from core.interfaces.exit_interface import IExitStrategy
 
 
@@ -65,7 +66,7 @@ def locked_stop_price(entry, side, qty, locked_net, fee, slippage):
 
 
 def protection(position, price, fee, slippage, frame=None):
-    """Step ladder: arm at 4U net peak, locking peak-2U and climbing every 2U."""
+    """Step ladder: arm at the configured net peak, lock peak minus the offset."""
     entry = float(position.get('entry_price') or 0)
     qty = float(position.get('qty') or 0)
     side = position.get('side')
@@ -89,9 +90,11 @@ def protection(position, price, fee, slippage, frame=None):
     state['peak_net'] = max(float(state.get('peak_net', net)), net)
     state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
 
-    # 4U peak locks 2U, 6U locks 4U, and every further 2U moves the floor up one step.
+    # 淨利峰值達 ARM 才啟動，鎖住「峰值 − LOCK_OFFSET」，之後每上升一個 LOCK_OFFSET 再上移一階。
     peak = float(state['peak_net'])
-    ladder_lock = float(math.floor(peak / 2.0) * 2.0 - 2.0) if peak >= 4.0 else 0.0
+    arm = float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT)
+    step = float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT)
+    ladder_lock = (float(math.floor(peak / step) * step - step) if peak >= arm and step > 0 else 0.0)
     locked = max(float(state.get('locked_net', 0.0)), ladder_lock)
     state['locked_net'] = locked
     state['armed'] = locked > 0.0

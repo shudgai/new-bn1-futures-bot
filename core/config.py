@@ -246,6 +246,15 @@ CHANNEL_FLAT_MIDDLE_RATIO = max(
     0.0, float(os.getenv("CHANNEL_FLAT_MIDDLE_RATIO", "0.05"))
 )
 
+# 現行獲利保護：淨利峰值達 ARM 才啟動，鎖住「峰值 − LOCK_OFFSET」。
+# 這兩個值原本寫死在 profit_protection_service，現在集中到設定，啟動看板才印得出真正的規則。
+CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT = max(
+    0.0, float(os.getenv("CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT", "4.0"))
+)
+CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT = max(
+    0.1, float(os.getenv("CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT", "2.0"))
+)
+
 # CK 狹窄衰退＋MA3 峰谷出口開關；停用時不出場也不清除既有狀態。
 CHANNEL_FADING_MA3_EXIT_ENABLED = os.getenv(
     "CHANNEL_FADING_MA3_EXIT_ENABLED", "true"

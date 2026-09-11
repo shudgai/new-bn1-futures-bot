@@ -584,6 +584,7 @@ class TradingEngine:
         else:
             self.rotation_task = None
             self.account.log(f"⏸️ [自動幣種輪替] 已停用，鎖定預設 {len(config.DEFAULT_SYMBOLS)} 個幣種交易", "INFO")
+        self._announce_active_rules()
         # 歷史分析是第三條完全獨立的工作，不等待主交易或幣種輪替。
         self.analysis_task = asyncio.create_task(self._analysis_loop())
         # 持倉平倉參考指標同樣獨立成背景任務，抓K線失敗/變慢不影響主迴圈。
@@ -597,6 +598,17 @@ class TradingEngine:
         self.start_market_data()
         # 啟動時檢查既有歷史；摘要未變時會由 digest 快取直接略過。
         self.request_trade_analysis()
+
+    def _announce_active_rules(self) -> None:
+        """Log the single rule set this process actually applies (read-only)."""
+        from core.services.rule_registry import rule_banner, stale_environment_keys
+        for line in rule_banner():
+            self.account.log(line, "INFO")
+        stale = stale_environment_keys()
+        if stale:
+            shown = "、".join(stale[:12])
+            more = f"（另有 {len(stale) - 12} 項）" if len(stale) > 12 else ""
+            self.account.log(f"⚠️ [設定檢查] .env 中目前不影響程式的項目：{shown}{more}", "WARNING")
 
     def start_market_data(self) -> None:
         """Keep one ticker stream alive independently from trading tasks."""
