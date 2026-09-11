@@ -1,4 +1,4 @@
-from core.channel_hard_stop import enforce_hard_stop
+from core.services.exits.hard_stop_service import enforce_hard_stop
 import json
 import math
 import os

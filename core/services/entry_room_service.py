@@ -1,8 +1,10 @@
 """Every entry needs sufficient net room to a confirmed structural target."""
 import math
+from typing import Dict, Any
 
-
-def entry_room(frame, price, side, fee, slippage, minimum_net):
+def entry_room(
+    frame: Any, price: float, side: str, fee: float, slippage: float, minimum_net: float
+) -> Dict[str, Any]:
     """Use completed bars for phase/structure, and the latest quote for costs."""
     invalid = dict(allowed=False, checked=False, stage="invalid",
                    reason="KC_PROFIT_ROOM_DATA_INVALID", detail="走勢或價格資料無效，暫不進場。")
@@ -34,8 +36,11 @@ def entry_room(frame, price, side, fee, slippage, minimum_net):
         last = pushes[-3:]
         weakening = last[0] > last[1] > last[2] and last[0] > 0 and last[2] <= .5 * last[0]
         mature = sum(v > 0 for v in pushes) >= 4 and extension >= 3.
-        # A pivot ceases to be an obstacle once any later closed wick clears it.
-        # Never manufacture a ceiling from last close + ATR in price discovery.
+        if not (mature and weakening):
+            return dict(allowed=True, checked=False, stage="developing",
+                        reason="KC_TREND_ROOM_SKIPPED",
+                        detail="尚未符合末端衰退條件，不計算淨利空間。",
+                        extension_atr=extension)
         extremes = [row[1] if side == "LONG" else row[2] for row in rows]
         targets = [
             value for i, value in enumerate(extremes[1:-1], start=1)

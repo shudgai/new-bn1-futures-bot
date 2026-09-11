@@ -2,7 +2,7 @@ import copy
 import pytest
 from unittest.mock import AsyncMock
 from core.channel_direct_reverse import authorized
-from core.channel_outer_entry import ck_direction
+from core.services.strategies.outer_strategy import ck_direction
 from test_channel_ck_reverse import setup, SYMBOL
 
 @pytest.fixture
@@ -110,7 +110,7 @@ async def test_grace_persists_until_alignment_then_ck_exit(side,monkeypatch):
 @pytest.mark.anyio
 @pytest.mark.parametrize('old',['LONG','SHORT'])
 async def test_fixed_profit_exit_reverses_on_quote_path(old,monkeypatch):
-    from core.channel_profit_protection import protection
+    from core.services.exits.profit_protection_service import protection
     from test_channel_fixed_steps import quote
     f,p,e=prepare(old,monkeypatch)
     e.account.positions[SYMBOL].update(side=old,entry_price=100.,qty=1.,open_timestamp=1.)

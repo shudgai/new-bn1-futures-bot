@@ -1,8 +1,8 @@
 """All order routes require net room and can retry after room recovers."""
 from unittest.mock import AsyncMock
 import pytest
-from core.channel_entry_room import entry_room
-from core.channel_outer_entry import aligned_entry_ready
+from core.services.entry_room_service import entry_room
+from core.services.strategies.outer_strategy import aligned_entry_ready
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

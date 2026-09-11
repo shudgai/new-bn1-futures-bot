@@ -124,7 +124,7 @@ def anyio_backend():
 async def test_order_routes_recheck_terminal_market(side, route, terminal, monkeypatch):
     from test_channel_entry_recovery import ready
     from test_channel_swing_execution import _execution_engine, SYMBOL
-    from core.channel_outer_entry import aligned_entry
+    from core.services.strategies.outer_strategy import aligned_entry
     f, price = ready(side)
     # Current entry requires a directional live body; the legacy fixture is a doji.
     f.loc[f.index[-1], "open"] = price - (.05 if side == "LONG" else -.05)

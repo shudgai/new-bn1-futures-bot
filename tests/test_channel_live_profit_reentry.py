@@ -1,7 +1,7 @@
 """Profit reentry requires two completed directional bodies on both sides."""
 from unittest.mock import AsyncMock
 import pytest
-from core.channel_outer_entry import two_closed_bodies_ready, outside_reentry
+from core.services.strategies.outer_strategy import two_closed_bodies_ready, outside_reentry
 from test_channel_outer_cycle import setup
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -71,7 +71,7 @@ async def test_reentry_rechecks_closed_bodies_before_order(side, case, monkeypat
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 @pytest.mark.parametrize("cached", [False, True])
 async def test_order_cannot_bypass_body_cross_with_two_colored_bodies(side, cached, monkeypatch):
-    from core.channel_outer_entry import confirmed_outer_breakout_ready
+    from core.services.strategies.outer_strategy import confirmed_outer_breakout_ready
     f, price = setup(side)
     sign = 1 if side == "LONG" else -1
     rail = "kc_upper" if side == "LONG" else "kc_lower"

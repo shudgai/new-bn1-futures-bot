@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 from core import config
-from core.channel_hard_stop import enforce_hard_stop, hard_stop_reason
+from core.services.exits.hard_stop_service import enforce_hard_stop, hard_stop_reason
 from core.testnet_account import BinanceTestnetAccount
 from core.engine import TradingEngine
 from test_direct_break_execution import setup_engine

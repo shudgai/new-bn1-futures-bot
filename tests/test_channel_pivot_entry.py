@@ -4,7 +4,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from core.channel_pivot_entry import pivot_entry, pivot_middle_exit
+from core.services.strategies.pivot_strategy import pivot_entry, pivot_middle_exit
 from core.engine import TradingEngine
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 

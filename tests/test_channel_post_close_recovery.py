@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.channel_profit_protection import protection
+from core.services.exits.profit_protection_service import protection
 from core.engine import TradingEngine
 from test_channel_outer_cycle import setup as market
 from test_channel_live_ma3_exit import setup as turn_market

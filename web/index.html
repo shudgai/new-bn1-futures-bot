@@ -513,36 +513,7 @@
                     </div>
                 </div>
 
-                <!-- AI TRADE HISTORY ANALYSIS -->
-                <div class="card ai-analysis-card">
-                    <div class="card-title collapsible" @click="aiAnalysisExpanded = !aiAnalysisExpanded">
-                        <span><span class="collapse-arrow" :class="{ open: aiAnalysisExpanded }">▶</span> 🧠 AI 歷史交易分析</span>
-                        <span style="display:flex; align-items:center; gap:8px;">
-                            <button class="btn" style="padding:4px 7px; font-size:10px;" @click.stop="runAiTradeAnalysis" :disabled="isAnalyzing" :style="{ opacity: isAnalyzing ? 0.6 : 1, cursor: isAnalyzing ? 'not-allowed' : 'pointer' }">
-                                {{ isAnalyzing ? '分析中...' : '立即分析' }}
-                            </button>
-                            <span style="font-size:10px; color:var(--muted); text-transform:none;">
-                                {{ bot.trade_ai_analysis.status === 'ok' ? '自建 AI 已完成' : '等待分析' }}
-                            </span>
-                        </span>
-                    </div>
-                    <div v-show="aiAnalysisExpanded" style="font-size:12px; line-height:1.7; color:var(--muted);">
-                        <p style="color:var(--text); margin-bottom:8px;">
-                            {{ bot.trade_ai_analysis.summary || '尚未產生分析' }}
-                        </p>
-                        <p style="margin-bottom:6px;">
-                            已分析 {{ bot.trade_ai_analysis.trade_count || 0 }} 筆平倉交易
-                        </p>
-                        <div v-if="bot.trade_ai_analysis.weaknesses && bot.trade_ai_analysis.weaknesses.length">
-                            <b style="color:var(--down)">需改善：</b>
-                            <div v-for="(item, i) in bot.trade_ai_analysis.weaknesses.slice(0, 3)" :key="'w'+i">• {{ item }}</div>
-                        </div>
-                        <div v-if="bot.trade_ai_analysis.recommendations && bot.trade_ai_analysis.recommendations.length" style="margin-top:6px;">
-                            <b style="color:var(--primary)">AI 建議：</b>
-                            <div v-for="(item, i) in bot.trade_ai_analysis.recommendations.slice(0, 3)" :key="'r'+i">• {{ item }}</div>
-                        </div>
-                    </div>
-                </div>
+
 
                 <!-- SYSTEM LOG CONSOLE -->
                 <div class="card system-log-card">

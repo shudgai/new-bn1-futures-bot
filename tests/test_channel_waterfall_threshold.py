@@ -2,7 +2,7 @@
 import json
 import pytest
 from core.engine import TradingEngine
-from core.channel_outer_entry import live_adverse_entry_safe
+from core.services.strategies.outer_strategy import live_adverse_entry_safe
 from test_channel_protected_only_exit import market
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

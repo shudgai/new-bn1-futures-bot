@@ -1,7 +1,7 @@
 """Three closed red candles may bridge a small middle body after a breakout."""
 import pytest
 
-from core.channel_outer_entry import (
+from core.services.strategies.outer_strategy import (
     aligned_entry, confirmed_outer_breakout_ready, continuation_entry, outside_reentry,
     three_closed_short_breakout_ready,
 )

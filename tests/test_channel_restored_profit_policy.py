@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.channel_profit_protection import protection
+from core.services.exits.profit_protection_service import protection
 from core.channel_direct_reverse import authorized
 from test_channel_fixed_steps import quote
 from test_channel_protected_only_exit import market

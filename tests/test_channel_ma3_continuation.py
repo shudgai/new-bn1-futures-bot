@@ -1,6 +1,6 @@
 """Missed MA3 crossings remain eligible without a new inside-to-outside crossing."""
 import pytest
-from core.channel_outer_entry import aligned_entry, outside_reentry, ma3_outer_cross_ready
+from core.services.strategies.outer_strategy import aligned_entry, outside_reentry, ma3_outer_cross_ready
 from test_channel_ma3_cross_entry import crossing
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -53,7 +53,7 @@ def test_normal_close_next_bar_continues_but_abnormal_needs_pullback(side,kind):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_fading_close_next_bar_accepts_continuation_with_matched_fill(side):
-    from core.channel_fading_exit import next_breakout_ready, EXIT_REASON
+    from core.services.exits.fading_exit_service import next_breakout_ready, EXIT_REASON
     f,price=continuing(side)
     e=_execution_engine(f,side,True);e.account.positions.clear();e.account.save_state=lambda:None
     closed=float(f.iloc[-2]['timestamp'])+1000

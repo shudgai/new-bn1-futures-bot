@@ -1,7 +1,7 @@
 """Avoid entering a live candle that already satisfies the adverse exit."""
 from unittest.mock import AsyncMock
 import pytest
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready, outside_reentry, live_adverse_entry_safe
+from core.services.strategies.outer_strategy import aligned_entry, aligned_entry_ready, outside_reentry, live_adverse_entry_safe
 from core.engine import TradingEngine
 from test_channel_sustained_trend import trend
 from test_channel_swing_execution import _execution_engine, SYMBOL

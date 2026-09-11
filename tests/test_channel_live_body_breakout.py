@@ -1,6 +1,6 @@
 """First live long-body break enters either side before CK or MA3 confirms."""
 import pytest
-from core.channel_outer_entry import aligned_entry, live_body_breakout_side
+from core.services.strategies.outer_strategy import aligned_entry, live_body_breakout_side
 from core.engine import TradingEngine
 from core.channel_entry_diagnostics import entry_diagnostics
 from channel_test_frames import closed_outer_entry_frame

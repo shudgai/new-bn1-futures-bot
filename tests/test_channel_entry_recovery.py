@@ -1,5 +1,5 @@
 import pytest
-from core.channel_outer_entry import aligned_entry, ck_entry_momentum_ready, ma3_outer_continuation_ready
+from core.services.strategies.outer_strategy import aligned_entry, ck_entry_momentum_ready, ma3_outer_continuation_ready
 from test_channel_ma3_continuation import continuing
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -65,7 +65,7 @@ async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypat
 
 def test_live_upward_surge_no_long_entry_veto():
     from core.channel_surge_entry import surge_recovery_entry
-    from core.channel_outer_entry import outside_reentry
+    from core.services.strategies.outer_strategy import outside_reentry
     f,price=ready('LONG')
     f.loc[f.index[-1],['open','low','high']]=[90.,89.,price+.1]
     assert surge_recovery_entry(f,price)['action']=='WAIT'

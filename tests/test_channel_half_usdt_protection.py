@@ -1,6 +1,6 @@
 import json
 import pytest
-from core.channel_profit_protection import protection
+from core.services.exits.profit_protection_service import protection
 
 
 def price_for_net(side,net):

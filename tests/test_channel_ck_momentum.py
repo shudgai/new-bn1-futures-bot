@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock
 import pytest
-from core.channel_outer_entry import ck_entry_momentum_ready, ck_direction, aligned_entry
+from core.services.strategies.outer_strategy import ck_entry_momentum_ready, ck_direction, aligned_entry
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

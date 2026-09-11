@@ -1,6 +1,6 @@
 import copy
 import pytest
-from core.channel_profit_protection import protection
+from core.services.exits.profit_protection_service import protection
 from test_channel_ck_reverse import setup, SYMBOL
 from test_channel_protected_only_exit import market
 from test_channel_swing_execution import _execution_engine

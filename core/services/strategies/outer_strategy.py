@@ -1,5 +1,10 @@
-"""Confirmed CK trend entries; legacy rail helpers remain for exit compatibility."""
+"""Confirmed CK trend entries; legacy rail helpers remain for exit compatibility.
+Implements IEntryStrategy interface.
+"""
 import math
+from typing import Dict, Any, Tuple
+import pandas as pd
+from core.interfaces.entry_interface import IEntryStrategy
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
@@ -118,7 +123,6 @@ def sustained_trend_ready(frame, side):
             lo_a, hi_a = sorted((a[0], a[3]))
             lo_b, hi_b = sorted((b[0], b[3]))
             smaller = min(hi_a - lo_a, hi_b - lo_b)
-            # Doji pairs provide no evidence of directional body separation.
             overlaps.append(max(0., min(hi_a, hi_b) - max(lo_a, lo_b)) / smaller if smaller > 0 else 1.)
         return sum(overlaps) / len(overlaps) <= .50
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
@@ -201,7 +205,7 @@ def live_body_breakout_side(frame, price):
 
 
 def aligned_entry(frame, price):
-    """Live long-body breaks may precede CK confirmation; retain trend entries."""
+    """Closed KC direction with live MA3 outside; missed crosses may continue."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -212,14 +216,20 @@ def aligned_entry(frame, price):
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        breakout_side = live_body_breakout_side(frame, price)
-        side = breakout_side or entry_trend_direction(frame)
-        if side is None:
+        side = ck_direction(frame)
+        if not aligned_direction(frame, side):
             return wait
+        if not live_ma3_direction_ready(frame, price, side):
+            return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
+        if not live_candle_color_ready(frame, price, side):
+            return {**wait, "reason": "KC_LIVE_CANDLE_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
-        return {"action": "ENTER", "side": side, "reason": reason}
+        if ma3_outer_cross_ready(frame, price, side):
+            return {"action": "ENTER", "side": side, "reason": "KC_LIVE_OUTER_" + side}
+        if ma3_outer_continuation_ready(frame, price, side):
+            return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
+        return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return wait
 
@@ -236,7 +246,6 @@ def live_ma3_direction_ready(frame, price, side):
         if (side not in ("LONG", "SHORT") or len(closes) != 3
                 or not all(math.isfinite(v) and v > 0 for v in [price, *closes])):
             return False
-        # Shared closes cancel; avoid rounding a flat MA into a slope.
         return (1 if side == "LONG" else -1) * (price - closes[0]) > 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
@@ -251,7 +260,7 @@ def live_candle_color_ready(frame, price, side):
         price = float(price)
         if not all(math.isfinite(value) and value > 0 for value in (opened, price)):
             return False
-        return (1 if side == "LONG" else -1) * (price - opened) > 0
+        return (1 if side == "LONG" else -1) * (price - opened) >= 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 
@@ -433,3 +442,19 @@ def abnormal_pullback_ready(ticket, frame, price):
         return math.isfinite(pulled) and exited < pulled <= bar
     except (AttributeError, TypeError, ValueError, KeyError, IndexError):
         return False
+
+
+class OuterChannelEntryStrategy(IEntryStrategy):
+    """OOP Strategy class implementing IEntryStrategy for outer channel entry evaluation."""
+
+    def evaluate_entry(
+        self,
+        frame: pd.DataFrame,
+        price: float,
+        side: str,
+        **kwargs: Any
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        decision = aligned_entry(frame, price)
+        if decision.get("action") == "ENTER" and decision.get("side") == side:
+            return True, decision.get("reason", "OK"), decision
+        return False, decision.get("reason", "WAIT"), decision

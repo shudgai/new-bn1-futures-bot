@@ -1,7 +1,7 @@
 import json
 from unittest.mock import AsyncMock
 import pytest
-from core.channel_outer_entry import abnormal_pullback_ready
+from core.services.strategies.outer_strategy import abnormal_pullback_ready
 from test_channel_outer_cycle import setup
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

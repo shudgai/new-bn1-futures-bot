@@ -1,6 +1,6 @@
 import json
 import pytest
-from core.channel_profit_protection import protection
+from core.services.exits.profit_protection_service import protection
 
 @pytest.mark.parametrize('side,sign', [('LONG', 1), ('SHORT', -1)])
 @pytest.mark.parametrize('tightened', [False, True])

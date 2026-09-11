@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import pytest
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready, two_closed_bodies_ready, sustained_trend_ready, live_ma3_direction_ready, live_candle_color_ready
+from core.services.strategies.outer_strategy import aligned_entry, aligned_entry_ready, two_closed_bodies_ready, sustained_trend_ready, live_ma3_direction_ready, live_candle_color_ready
 from core.channel_entry_diagnostics import entry_diagnostics
 from test_channel_ck_reverse import setup
 from test_channel_live_pivot import prepare, quote, anyio_backend
@@ -56,7 +56,7 @@ def test_entry_requires_green_long_or_red_short_live_candle(side, monkeypatch):
     assert live_candle_color_ready(f, good, side)
     bad = opened - .01 if side == 'LONG' else opened + .01
     assert not live_candle_color_ready(f, bad, side)
-    monkeypatch.setattr('core.channel_outer_entry.live_candle_color_ready', lambda *args: False)
+    monkeypatch.setattr('core.services.strategies.outer_strategy.live_candle_color_ready', lambda *args: False)
     assert aligned_entry(f, p)['reason'] == 'KC_LIVE_CANDLE_DIRECTION_WAIT'
 
 

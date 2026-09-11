@@ -1,6 +1,6 @@
 """A missed breakout can enter on later closed outside bodies, with existing gates."""
 import pytest
-from core.channel_outer_entry import (
+from core.services.strategies.outer_strategy import (
     aligned_entry, aligned_entry_ready, outside_reentry,
     confirmed_outer_breakout_ready, confirmed_outer_continuation_ready,
 )

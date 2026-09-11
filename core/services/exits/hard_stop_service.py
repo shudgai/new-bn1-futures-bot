@@ -1,6 +1,11 @@
-"""Account loss limits shared by Channel Swing quotes and account updates."""
+"""Account loss limits shared by Channel Swing quotes and account updates.
+Implements IExitStrategy interface.
+"""
 import math
+from typing import Dict, Any, Optional
+import pandas as pd
 from core import config
+from core.interfaces.exit_interface import IExitStrategy
 
 
 def hard_stop_reason(position, price):
@@ -48,6 +53,21 @@ async def enforce_hard_stop(account, symbol, price):
         position["channel_hard_stop_pending"] = reason
         account.position_meta.setdefault(symbol, {})["channel_hard_stop_pending"] = reason
         account.save_state()
-    # The Channel Swing prefix retains strategy close deduplication and retry delay.
     await account.close_position(symbol, price, "Channel Swing HARD_STOP " + reason, is_manual=True)
     return True
+
+
+class HardStopExitStrategy(IExitStrategy):
+    """OOP Strategy class implementing IExitStrategy for hard stop loss evaluation."""
+
+    def evaluate_exit(
+        self,
+        position: Dict[str, Any],
+        frame: pd.DataFrame,
+        price: float,
+        **kwargs: Any
+    ) -> Optional[str]:
+        reason = hard_stop_reason(position, price)
+        if reason:
+            return "HARD_STOP_" + reason
+        return None

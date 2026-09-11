@@ -7,7 +7,7 @@ import pytest
 from test_channel_outer_cycle import setup as outer_cycle_market
 from test_channel_pivot_entry import market as pivot_market
 
-from core.channel_profit_protection import protection, reentry_gate, trend_style
+from core.services.exits.profit_protection_service import protection, reentry_gate, trend_style
 from core.engine import TradingEngine
 from test_channel_swing_execution import _execution_engine, SYMBOL
 from test_channel_symmetric_rules import market as confirmed_reentry_frame

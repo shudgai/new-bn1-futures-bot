@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.channel_abnormal_release import opposite_entry_releases
+from core.guards.abnormal_guard import opposite_entry_releases
 from core.channel_entry_diagnostics import entry_diagnostics
 from test_channel_aligned_entry import aligned_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL

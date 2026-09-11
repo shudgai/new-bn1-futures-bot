@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from core.channel_outer_entry import aligned_entry, outside_reentry
+from core.services.strategies.outer_strategy import aligned_entry, outside_reentry
 from core.channel_surge_entry import surge_recovery_entry
 from test_channel_aligned_entry import aligned_frame
 

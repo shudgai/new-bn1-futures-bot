@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock
 from core.engine import TradingEngine
 from test_channel_late_entry_room import phase_frame
-from core.channel_profit_protection import directional_entry_ready, reentry_gate
+from core.services.exits.profit_protection_service import directional_entry_ready, reentry_gate
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 @pytest.fixture

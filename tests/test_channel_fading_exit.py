@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 import pandas as pd
-from core.channel_fading_exit import fading_ma3_turn, immediate_ma3_turn, next_breakout_ready, STATE_KEY, EXIT_REASON, IMMEDIATE_EXIT_REASON
-from core.channel_outer_entry import ck_momentum_fading, ck_entry_momentum_ready
+from core.services.exits.fading_exit_service import fading_ma3_turn, immediate_ma3_turn, next_breakout_ready, STATE_KEY, EXIT_REASON, IMMEDIATE_EXIT_REASON
+from core.services.strategies.outer_strategy import ck_momentum_fading, ck_entry_momentum_ready
 from test_channel_significant_ma3 import setup
 from test_channel_swing_execution import _execution_engine, SYMBOL
 from channel_test_frames import closed_outer_entry_frame
@@ -185,7 +185,7 @@ def test_diagnostic_is_readonly_and_release_returns_to_general_entry(side):
 
 @pytest.mark.parametrize('ratio,expected',[(.5,True),(.75,True),(.751,False),(1.,False)])
 def test_relative_channel_width_boundary(ratio,expected):
-    from core.channel_fading_exit import ck_channel_narrow
+    from core.services.exits.fading_exit_service import ck_channel_narrow
     f,_,_=fading_frame('LONG')
     # Exact integer boundaries, avoiding fixture floating-point cancellation.
     f['kc_middle']=100.;f['kc_upper']=102.;f['kc_lower']=98.
@@ -196,7 +196,7 @@ def test_relative_channel_width_boundary(ratio,expected):
 
 @pytest.mark.parametrize('case',['short','nan','inverted','missing'])
 def test_invalid_narrow_data_does_not_authorize_exit(case):
-    from core.channel_fading_exit import ck_channel_narrow
+    from core.services.exits.fading_exit_service import ck_channel_narrow
     f,_,_=fading_frame('LONG')
     if case=='short': f=f.iloc[1:]
     if case=='nan': f.loc[f.index[0],'kc_upper']=float('nan')

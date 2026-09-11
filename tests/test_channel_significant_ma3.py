@@ -1,7 +1,7 @@
 import copy
 import json
 import pytest
-from core.channel_ma3_turn import significant_ma3_turn
+from core.services.swing_service import significant_ma3_turn
 from test_channel_protected_only_exit import market
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

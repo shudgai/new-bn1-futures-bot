@@ -2,7 +2,7 @@ import copy
 import json
 import pytest
 from core.channel_entry_diagnostics import entry_diagnostics
-from core.channel_ma3_turn import significant_ma3_turn
+from core.services.swing_service import significant_ma3_turn
 from test_channel_live_pivot import prepare, quote, anyio_backend
 from test_channel_significant_ma3 import setup as ma_setup
 from test_channel_swing_execution import SYMBOL

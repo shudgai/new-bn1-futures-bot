@@ -1,7 +1,7 @@
 """Closed bodies qualify breakouts; aligned trend entries and order gates remain independent."""
 import pytest
 from core.engine import TradingEngine
-from core.channel_outer_entry import (
+from core.services.strategies.outer_strategy import (
     aligned_entry, confirmed_outer_breakout_ready, outside_reentry, two_closed_bodies_ready,
 )
 from test_channel_next_live_push import push_frame

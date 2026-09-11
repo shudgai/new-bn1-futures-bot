@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import pytest
-from core.channel_outer_entry import ck_direction, aligned_entry_ready
+from core.services.strategies.outer_strategy import ck_direction, aligned_entry_ready
 from core.engine import TradingEngine
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL

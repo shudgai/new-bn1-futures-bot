@@ -1,6 +1,10 @@
-"""Closed price/MA3 pivots with first-turn confirmation and exit state."""
+"""Closed price/MA3 pivots with first-turn confirmation and exit state.
+Implements IEntryStrategy interface.
+"""
 import math
-
+from typing import Dict, Any, Tuple
+import pandas as pd
+from core.interfaces.entry_interface import IEntryStrategy
 
 PIVOT_CODES = {"KC_MA15_TROUGH_LONG", "KC_MA15_PEAK_SHORT"}
 
@@ -80,7 +84,7 @@ def pivot_entry(frame, price):
 def pivot_middle_exit(position, price, middle):
     """Persist favorable crossing and latch a failed close for the next scan."""
     if not position.get("channel_pivot_entry"):
-        return True  # Existing positions retain their ordinary middle exit.
+        return True
     if position.get("channel_pivot_middle_exit_pending"):
         return True
     side = position.get("side")
@@ -103,3 +107,19 @@ def pivot_middle_exit(position, price, middle):
     except (TypeError, ValueError):
         return False
     return False
+
+
+class PivotChannelEntryStrategy(IEntryStrategy):
+    """OOP Strategy class implementing IEntryStrategy for pivot entry evaluation."""
+
+    def evaluate_entry(
+        self,
+        frame: pd.DataFrame,
+        price: float,
+        side: str,
+        **kwargs: Any
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        decision = pivot_entry(frame, price)
+        if decision.get("action") == "ENTER" and decision.get("side") == side:
+            return True, decision.get("reason", "OK"), decision
+        return False, decision.get("reason", "WAIT"), decision

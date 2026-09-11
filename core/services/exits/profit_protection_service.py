@@ -1,5 +1,10 @@
-"""Channel Swing profit floor and retracement calculations, independent of orders."""
+"""Channel Swing profit floor and retracement calculations, independent of orders.
+Implements IExitStrategy interface.
+"""
 import math
+from typing import Dict, Any, Optional
+import pandas as pd
+from core.interfaces.exit_interface import IExitStrategy
 
 
 def trend_style(frame, side, opened_at=None):
@@ -70,8 +75,6 @@ def protection(position, price, fee, slippage, frame=None):
         state['identity'] = identity
     policy = 'net_peak_giveback_v1'
     if state.get('policy') != policy:
-        # Preserve observed net peaks and already committed fixed-step protection.
-        # Never derive historical net profit from a gross peak.
         known = state.get('policy') == 'fixed_net_steps_v1'
         peak = float(state.get('peak_net', net)) if known else net
         floor = float(state.get('locked_net', 0.)) if known else 0.
@@ -192,3 +195,23 @@ def reentry_gate(ticket, frame, price):
         return 'ready' if directional_entry_ready(frame, price, side) else 'wait'
     except (TypeError, ValueError, KeyError, IndexError, ZeroDivisionError):
         return 'wait'
+
+
+class ProfitProtectionExitStrategy(IExitStrategy):
+    """OOP Strategy class implementing IExitStrategy for profit protection exit evaluation."""
+
+    def __init__(self, fee: float = 0.0005, slippage: float = 0.0005):
+        self.fee = fee
+        self.slippage = slippage
+
+    def evaluate_exit(
+        self,
+        position: Dict[str, Any],
+        frame: pd.DataFrame,
+        price: float,
+        **kwargs: Any
+    ) -> Optional[str]:
+        result = protection(position, price, self.fee, self.slippage, frame)
+        if result and result.get('triggered'):
+            return "PROFIT_PROTECTION_DRAWDOWN_EXIT"
+        return None

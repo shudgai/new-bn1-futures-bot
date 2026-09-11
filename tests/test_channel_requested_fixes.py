@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock
 import pytest
 from core.engine import TradingEngine
-from core.channel_profit_protection import reentry_gate
+from core.services.exits.profit_protection_service import reentry_gate
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 @pytest.fixture
@@ -130,7 +130,7 @@ def test_live_second_red_cannot_open_short():
 
 @pytest.mark.parametrize('bad', ['upper', 'middle', 'red', 'wick', 'inside', 'nan', 'none'])
 def test_outer_reentry_long_entry_live_body_and_ck_direction(bad):
-    from core.channel_profit_protection import long_entry_ready
+    from core.services.exits.profit_protection_service import long_entry_ready
     f = market()
     f.loc[16:18, 'ma15'] = [99., 100., 101.]
     f.loc[17, ['open', 'close', 'high', 'low']] = [101., 102.3, 102.4, 100.9]

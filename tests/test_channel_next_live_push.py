@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.engine import TradingEngine
-from core.channel_profit_protection import trend_style
+from core.services.exits.profit_protection_service import trend_style
 from test_channel_profit_protection import styled_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -135,7 +135,7 @@ def test_two_closed_bodies_are_enough_for_stacking(side):
 
 
 def test_entry_during_second_body_keeps_breakout_context_for_tightening():
-    from core.channel_profit_protection import protection
+    from core.services.exits.profit_protection_service import protection
     f = styled_frame('STACKED')
     f['timestamp'] = [i * 60000 for i in range(len(f))]
     f.loc[8, 'close'] = f.loc[8, 'open']

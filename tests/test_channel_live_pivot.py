@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 from core.channel_live_pivot import LivePivot
-from core.channel_outer_entry import aligned_entry_ready
+from core.services.strategies.outer_strategy import aligned_entry_ready
 from test_channel_ck_reverse import setup
 from test_channel_swing_execution import SYMBOL
 

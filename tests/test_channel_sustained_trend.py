@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock
 import pytest
-from core.channel_outer_entry import sustained_trend_ready, aligned_entry, aligned_entry_ready, outside_reentry
+from core.services.strategies.outer_strategy import sustained_trend_ready, aligned_entry, aligned_entry_ready, outside_reentry
 from core.engine import TradingEngine
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL

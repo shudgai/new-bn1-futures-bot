@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock
 import pytest
 from core.engine import TradingEngine
-from core.channel_entry_room import entry_room
+from core.services.entry_room_service import entry_room
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 

@@ -1,15 +1,18 @@
-"""Post-entry MA3 turning exit gated by confirmed CK momentum fading."""
+"""Post-entry MA3 turning exit gated by confirmed CK momentum fading.
+Implements IExitStrategy interface.
+"""
 import math
 from statistics import median
-from core.channel_ma3_turn import significant_ma3_turn
-from core.channel_outer_entry import ck_momentum_fading, aligned_entry
+from typing import Dict, Any, Optional
+import pandas as pd
+from core.interfaces.exit_interface import IExitStrategy
+from core.services.swing_service import significant_ma3_turn
+from core.services.strategies.outer_strategy import ck_momentum_fading, aligned_entry
 
 STATE_KEY = 'channel_fading_ma3_turn'
 EXIT_REASON = 'CK_FADING_MA3_TURN_EXIT'
 IMMEDIATE_EXIT_REASON = 'MA3_IMMEDIATE_TURN_EXIT'
 
-
-# Relative closed-bar bandwidth avoids the fixed KC-width / current-ATR ratio.
 NARROW_LOOKBACK = 20
 NARROW_RATIO = 0.75
 
@@ -50,8 +53,6 @@ def fading_ma3_turn(position, frame, price):
     if fading is None:
         position.pop(STATE_KEY, None)
         return False
-    # Reuse the existing post-entry observation and fixed 0.10 ATR threshold.
-    # This additional exit remains eligible after profit protection arms.
     observed = {k: position.get(k) for k in ('side', 'open_timestamp', 'entry_price')}
     if state:
         observed['channel_significant_ma3_turn'] = state
@@ -62,7 +63,6 @@ def fading_ma3_turn(position, frame, price):
         return False
     eligible = fading and ck_channel_narrow(frame)
     if turned and not eligible:
-        # Do not save a non-fading turn to trigger retrospectively on a later bar.
         state.update(pending=False, favorable=False)
     position[STATE_KEY] = state
     return bool(turned and eligible)
@@ -89,3 +89,18 @@ def next_breakout_ready(account, symbol, frame, price):
                 and aligned_entry(frame, price).get('action') == 'ENTER')
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
         return False
+
+
+class FadingExitStrategy(IExitStrategy):
+    """OOP Strategy class implementing IExitStrategy for fading MA3 turn exit evaluation."""
+
+    def evaluate_exit(
+        self,
+        position: Dict[str, Any],
+        frame: pd.DataFrame,
+        price: float,
+        **kwargs: Any
+    ) -> Optional[str]:
+        if fading_ma3_turn(position, frame, price):
+            return EXIT_REASON
+        return None

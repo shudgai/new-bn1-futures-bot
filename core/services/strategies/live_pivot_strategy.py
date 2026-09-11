@@ -1,7 +1,6 @@
 """Confirm a live turn from ordered quotes, never from a completed candle wick."""
 import math
 
-
 class LivePivot:
     def __init__(self):
         self.states = {}

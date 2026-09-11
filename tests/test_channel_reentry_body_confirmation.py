@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
-from core.channel_profit_protection import protection, reentry_gate
+from core.services.exits.profit_protection_service import protection, reentry_gate
 from test_channel_requested_fixes import market
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

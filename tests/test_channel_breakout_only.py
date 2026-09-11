@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready, outside_reentry
+from core.services.strategies.outer_strategy import aligned_entry, aligned_entry_ready, outside_reentry
 from core.engine import TradingEngine
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
@@ -86,7 +86,7 @@ def test_ma3_turn_uses_quote_and_requires_post_entry_observation(side):
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_opposite_color_does_not_tighten_twenty_percent_protection(side):
-    from core.channel_profit_protection import protection
+    from core.services.exits.profit_protection_service import protection
     from test_channel_profit_protection import styled_frame
     sign = 1 if side == 'LONG' else -1
     p = dict(side=side, entry_price=100., qty=2., open_timestamp=1.)
