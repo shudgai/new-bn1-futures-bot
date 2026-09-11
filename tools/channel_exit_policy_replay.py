@@ -41,18 +41,30 @@ class Policy:
     hard_stop_pct: float
 
 
+FEE_ENTRY = config.TAKER_FEE_RATE
+FEE_EXIT = config.TAKER_FEE_RATE
+SLIP_ENTRY = config.SLIPPAGE_PCT
+SLIP_EXIT = config.SLIPPAGE_PCT
+
+
 def net_pnl(side: str, entry: float, price: float, qty: float) -> float:
     sign = 1 if side == "LONG" else -1
-    execution = price * (1 - sign * config.SLIPPAGE_PCT)
-    return sign * (execution - entry) * qty - (entry + execution) * qty * config.TAKER_FEE_RATE
+    entry_exec = entry * (1 + sign * SLIP_ENTRY)
+    exit_exec = price * (1 - sign * SLIP_EXIT)
+    return (sign * (exit_exec - entry_exec) * qty
+            - (entry_exec + exit_exec) * qty * FEE_EXIT
+            - entry_exec * qty * FEE_ENTRY)
 
 
 def price_for_net(side: str, entry: float, qty: float, target: float) -> float:
-    """Price at which the given net P&L is realised (mirrors locked_stop_price)."""
-    fee, slip = config.TAKER_FEE_RATE, config.SLIPPAGE_PCT
-    if side == "LONG":
-        return (entry * (1 + fee) + target / qty) / ((1 - slip) * (1 - fee))
-    return (entry * (1 - fee) - target / qty) / ((1 + slip) * (1 + fee))
+    """Price at which the given net P&L is realised (inverse of net_pnl)."""
+    sign = 1 if side == "LONG" else -1
+    entry_exec = entry * (1 + sign * SLIP_ENTRY)
+    if sign > 0:
+        exit_exec = (target / qty + entry_exec * (1 + FEE_EXIT + FEE_ENTRY)) / (1 - FEE_EXIT)
+    else:
+        exit_exec = (entry_exec * (1 - FEE_EXIT - FEE_ENTRY) - target / qty) / (1 + FEE_EXIT)
+    return exit_exec / (1 - sign * SLIP_EXIT)
 
 
 def make_policies() -> List[Policy]:
@@ -224,7 +236,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--flat-ratio", type=float, default=config.CHANNEL_FLAT_MIDDLE_RATIO)
     parser.add_argument("--sweep", action="store_true", help="只掃走平門檻，使用政策 A")
+    parser.add_argument("--maker-entry", action="store_true",
+                        help="進場用限價 maker（0.02%%，無滑價），出場維持 taker")
     args = parser.parse_args()
+    if args.maker_entry:
+        global FEE_ENTRY, SLIP_ENTRY
+        FEE_ENTRY, SLIP_ENTRY = 0.0002, 0.0
+        print("※ 情境：進場限價 maker 0.02%%、無進場滑價；出場維持 taker 0.05%% + 滑價")
 
     policies = make_policies()
     if args.sweep:
