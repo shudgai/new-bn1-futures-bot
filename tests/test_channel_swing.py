@@ -695,3 +695,45 @@ def test_entry_body_overheat_blocks_both_sides(side):
 
     cool_frame, cool_price = _overheat_frame(side, max(0.5, CHANNEL_ENTRY_MAX_BODY_ATR - 0.2))
     assert aligned_entry(cool_frame, cool_price).get("reason") != "KC_ENTRY_BODY_OVERHEAT_WAIT"
+
+
+def _trend_after_spike_frame(side, prev_body_atr, atr=0.10):
+    """Pure CK-trend setup with a configurable previous closed body size."""
+    import pandas as pd
+    n = 16
+    step = 0.05 if side == "LONG" else -0.05
+    base = 100.0
+    mids = [base] * (n - 2) + [base + step, base + step]
+    prev_open = base
+    prev_close = base + (prev_body_atr * atr if side == "LONG" else -prev_body_atr * atr)
+    price = base + step + (0.30 * atr if side == "LONG" else -0.30 * atr)
+    upper = price - 0.01 if side == "LONG" else price + 0.30
+    lower = price - 0.30 if side == "LONG" else price + 0.01
+    rows = []
+    for i in range(n - 1):
+        if i == n - 2:
+            o, c = prev_open, prev_close
+        else:
+            o = c = base
+        rows.append(dict(open=o, close=c, high=max(o, c) + 0.01, low=min(o, c) - 0.01,
+                         kc_middle=mids[i], kc_upper=upper, kc_lower=lower,
+                         ma3=base, ma15=base, ema_20=mids[i], atr=atr, timestamp=float(i)))
+    live_open = base + step
+    rows.append(dict(open=live_open, close=price, high=max(live_open, price) + 0.01,
+                     low=min(live_open, price) - 0.01, kc_middle=mids[-1],
+                     kc_upper=upper, kc_lower=lower, ma3=base, ma15=base,
+                     ema_20=mids[-1], atr=atr, timestamp=float(n - 1)))
+    return pd.DataFrame(rows), price
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_trend_entry_skips_after_large_previous_body(side):
+    """2026-09-11: a pure trend entry must not chase right after a spike bar."""
+    from core.services.strategies.outer_strategy import aligned_entry
+    from core.config import CHANNEL_ENTRY_MAX_PREV_BODY_ATR
+
+    hot, hot_price = _trend_after_spike_frame(side, CHANNEL_ENTRY_MAX_PREV_BODY_ATR + 0.4)
+    assert aligned_entry(hot, hot_price).get("reason") == "KC_ENTRY_PREV_BODY_WAIT"
+
+    cool, cool_price = _trend_after_spike_frame(side, CHANNEL_ENTRY_MAX_PREV_BODY_ATR - 0.2)
+    assert aligned_entry(cool, cool_price).get("reason") != "KC_ENTRY_PREV_BODY_WAIT"

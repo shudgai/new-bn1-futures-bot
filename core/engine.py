@@ -2307,6 +2307,7 @@ class TradingEngine:
             "KC_UPPER_MATURE_TREND_WEAK": "漲勢已成熟且量能不足，不在末端追多",
             "KC_TREND_TAIL_WAIT": "趨勢已連續同向走滿設定根數，末端不再開倉",
             "KC_ENTRY_BODY_OVERHEAT_WAIT": "進場當根順向實體過大（過熱），不追價",
+            "KC_ENTRY_PREV_BODY_WAIT": "前一根已收線是大K，純趨勢進場不追價",
             "KC_LOWER_MATURE_TREND_WEAK": "跌勢已成熟且量能不足，不在末端追空",
             "KC_CLOSED_BODY_BREAK_LOW_VOLUME": "收盤實體突破量能不足，繼續找其他幣",
             "WAIT_TREND_BREAK": "上軌多方動能等待下一根破高",

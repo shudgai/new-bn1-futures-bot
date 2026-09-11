@@ -231,6 +231,11 @@ CHANNEL_ENTRY_MAX_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_ENTRY_MAX_BODY_ATR", "0.8"))
 )
 
+# 純趨勢進場時，前一根已收線實體超過這個 ATR 倍數就不追（避免追在被拉開的位置）。
+CHANNEL_ENTRY_MAX_PREV_BODY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_ENTRY_MAX_PREV_BODY_ATR", "1.0"))
+)
+
 # 末端禁開：CK 中軌已連續同向走過這麼多根就不再進場（雙向）。
 CHANNEL_TAIL_MAX_TREND_BARS = max(
     2, int(float(os.getenv("CHANNEL_TAIL_MAX_TREND_BARS", "12")))

@@ -5,7 +5,9 @@ import math
 from typing import Dict, Any, Tuple
 import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
-from core.config import CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR
+from core.config import (
+    CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
+)
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
@@ -314,6 +316,12 @@ def aligned_entry(frame, price):
 
             if not live_candle_color_ready(frame, price, side):
                 return {**wait, "reason": "KC_LIVE_COLOR_WAIT"}
+
+            # 純趨勢進場（當根不是長K破軌）：前一根已是大K就不追。
+            if atr > 0:
+                prev_body = abs(float(frame.iloc[-2]["close"]) - float(frame.iloc[-2]["open"]))
+                if prev_body > atr * CHANNEL_ENTRY_MAX_PREV_BODY_ATR:
+                    return {**wait, "reason": "KC_ENTRY_PREV_BODY_WAIT"}
 
         if ck_momentum_fading(frame, side):
             return {**wait, "reason": "KC_MOMENTUM_FADING_WAIT"}
