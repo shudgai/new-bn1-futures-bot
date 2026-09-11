@@ -565,6 +565,13 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
+                    <span class="badge"
+                          :style="{ background: (bot.api_usage && bot.api_usage.is_warning) ? '#fef2f2' : '#eef2ff',
+                                    color: (bot.api_usage && bot.api_usage.percent >= (bot.api_usage.warn_percent || 70)) ? 'var(--down)' : ((bot.api_usage && bot.api_usage.percent >= 40) ? '#b45309' : 'var(--up)') }"
+                          :title="'幣安 API 用量（每分鐘）；警示門檻 ' + ((bot.api_usage && bot.api_usage.warn_percent) || 70) + '%'">
+                        幣安 API {{ bot.api_usage ? bot.api_usage.percent.toFixed(1) + '%' : '-' }}
+                        <span v-if="bot.api_usage">（{{ bot.api_usage.used_weight_1m }} / {{ bot.api_usage.limit_per_min }}）</span>
+                    </span>
                     <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
                     <button class="btn chart-fullscreen-btn" @click.stop="toggleChartFullscreen">
                         {{ chartFullscreen ? '退出全螢幕' : '全螢幕' }}
