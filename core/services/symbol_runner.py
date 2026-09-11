@@ -9,6 +9,7 @@ from core.services.strategies.outer_strategy import aligned_entry, LIVE_OUTER_CO
 from core.services.exits.profit_protection_service import protection
 from core.services.exits.fading_exit_service import fading_ma3_turn, FADING_STATE_KEY, FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.guards.abnormal_guard import channel_adverse_exit_reason
+from core.services.swing_service import channel_ck_exit_with_tolerance
 from core.services.strategies.pivot_strategy import PIVOT_CODES
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
@@ -161,7 +162,7 @@ async def process_single_symbol_runner(
                         state.pop(key)
                         changed = True
             channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_NET_PROFIT_GIVEBACK"}
-            ck_exit = engine._channel_ck_exit_reason(channel_df, existing_pos.get("side"))
+            ck_exit = channel_ck_exit_with_tolerance(channel_df, existing_pos.get("side"), existing_pos)
             emergency = engine._channel_exception_exit(existing_pos, channel_df, channel_price)
             if emergency:
                 if existing_pos.get("channel_exception_exit_pending") != emergency:

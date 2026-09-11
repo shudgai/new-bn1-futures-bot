@@ -225,6 +225,63 @@ def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
         return "KC_CK_DIRECTION_REVERSED_EXIT"
     return "KC_CK_DIRECTION_UNCLEAR_EXIT"
 
+
+_UNCLEAR_BAR_KEY = "channel_ck_unclear_bar"
+
+
+def channel_ck_exit_with_tolerance(
+    frame: pd.DataFrame, side: str, position: dict
+) -> str | None:
+    """1-bar UNCLEAR tolerance gate.
+
+    Rules:
+    - REVERSED always exits immediately (no grace period).
+    - UNCLEAR: on first detection record the current closed bar_id in position
+      metadata and return None (hold). On the NEXT different bar_id still UNCLEAR
+      → exit. If direction recovers to `side` in between → clear the flag.
+    - PROFIT_PROTECTION, WATERFALL, and REVERSED remain unaffected.
+    - State is persisted inside `position` dict (survives bot restarts via save_state).
+    """
+    reason = channel_ck_exit_reason(frame, side)
+
+    # Direction matches: clear any stale tolerance flag and hold.
+    if reason is None:
+        position.pop(_UNCLEAR_BAR_KEY, None)
+        return None
+
+    # REVERSED: exit immediately, no tolerance.
+    if reason == "KC_CK_DIRECTION_REVERSED_EXIT":
+        position.pop(_UNCLEAR_BAR_KEY, None)
+        return reason
+
+    # UNCLEAR path — apply 1-bar grace period.
+    try:
+        last_closed_row = frame.iloc[-2]
+        current_bar_id = float(last_closed_row.get("timestamp", last_closed_row.name))
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        # Cannot determine bar_id safely → fall back to immediate exit.
+        position.pop(_UNCLEAR_BAR_KEY, None)
+        return reason
+
+    if not math.isfinite(current_bar_id) or current_bar_id <= 0:
+        position.pop(_UNCLEAR_BAR_KEY, None)
+        return reason
+
+    first_unclear_bar = position.get(_UNCLEAR_BAR_KEY)
+
+    if first_unclear_bar is None:
+        # First time we see UNCLEAR on this bar → record and hold.
+        position[_UNCLEAR_BAR_KEY] = current_bar_id
+        return None
+
+    if current_bar_id <= float(first_unclear_bar):
+        # Still on the same bar (multiple ticks) → continue holding.
+        return None
+
+    # A new bar has closed and UNCLEAR persists → exit now and clean up.
+    position.pop(_UNCLEAR_BAR_KEY, None)
+    return reason
+
 def two_bar_structure_failure_exit(frame: pd.DataFrame, side: str) -> bool:
     return False
 

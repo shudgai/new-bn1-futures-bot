@@ -28,7 +28,7 @@ from core.services.swing_service import (
     channel_impulse_turn_allowed, channel_ma15_convergence_is_gradual, channel_outer_gap_expanding,
     channel_trend_exit_reason, channel_position_path, channel_impulse_first_turn,
     channel_all_same_color_inside, channel_closed_waves_falling, channel_swing_action,
-    channel_ck_exit_reason, two_bar_structure_failure_exit, adverse_kc_outer_breached,
+    channel_ck_exit_reason, channel_ck_exit_with_tolerance, two_bar_structure_failure_exit, adverse_kc_outer_breached,
     confirmed_outer_reversal, range_swing_reverse_side, pivot_pullback_ready,
     detect_strict_pivot_prealert
 )
@@ -2293,6 +2293,7 @@ class TradingEngine:
     _channel_closed_waves_falling = staticmethod(channel_closed_waves_falling)
     _channel_swing_action = staticmethod(channel_swing_action)
     _channel_ck_exit_reason = staticmethod(channel_ck_exit_reason)
+    _channel_ck_exit_with_tolerance = staticmethod(channel_ck_exit_with_tolerance)
     _two_bar_structure_failure_exit = staticmethod(two_bar_structure_failure_exit)
     _adverse_kc_outer_breached = staticmethod(adverse_kc_outer_breached)
     _confirmed_outer_reversal = staticmethod(confirmed_outer_reversal)
