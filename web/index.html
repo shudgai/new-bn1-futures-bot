@@ -960,7 +960,11 @@
                     }
                     
                     if (!ctx.requestHasFit) {
-                        ctx.chart.timeScale().fitContent();
+                        const total = candles.length;
+                        ctx.chart.timeScale().setVisibleLogicalRange({
+                            from: total > 60 ? total - 60 : 0,
+                            to: total + 5
+                        });
                         ctx.requestHasFit = true;
                     }
                     ctx.failureCount = 0;

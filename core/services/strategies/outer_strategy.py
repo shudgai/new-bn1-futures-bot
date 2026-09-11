@@ -221,6 +221,8 @@ def aligned_entry(frame, price):
         side = breakout_side or entry_trend_direction(frame)
         if side is None:
             return wait
+        if ck_momentum_fading(frame, side):
+            return {**wait, "reason": "KC_MOMENTUM_FADING_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
         reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
