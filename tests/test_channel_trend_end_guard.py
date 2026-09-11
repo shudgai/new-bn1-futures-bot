@@ -32,22 +32,22 @@ def frame(side="LONG", mature=True):
     })
 
 
-def test_mature_long_outer_entry_waits_for_clear_ck(monkeypatch):
+def test_mature_long_outer_entry_allows_first_favorable_live_candle(monkeypatch):
     monkeypatch.setattr(
         "core.engine.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
     )
     result = TradingEngine._channel_swing_action(frame("LONG"), 112.0)
-    assert result == {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}
+    assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"}
 
 
-def test_mature_short_outer_entry_waits_for_clear_ck(monkeypatch):
+def test_mature_short_outer_entry_allows_first_favorable_live_candle(monkeypatch):
     monkeypatch.setattr(
         "core.engine.aligned_entry",
         lambda frame, price: {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"},
     )
     result = TradingEngine._channel_swing_action(frame("SHORT"), 88.0)
-    assert result == {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}
+    assert result == {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"}
 
 
 def test_non_mature_entry_is_not_blocked_by_trend_end_guard(monkeypatch):
@@ -68,3 +68,25 @@ def test_confirmed_volume_recovery_releases_mature_guard(monkeypatch):
     recovered.loc[recovered.index[-2], "volume"] = 2.0
     result = TradingEngine._channel_swing_action(recovered, 88.0)
     assert result == {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_SHORT"}
+
+
+def test_mature_edge_allows_first_favorable_live_candle(monkeypatch):
+    monkeypatch.setattr(
+        "core.engine.aligned_entry",
+        lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
+    )
+    first = frame("LONG")
+    first.loc[first.index[-1], ["open", "close"]] = [104.0, 105.0]
+    assert TradingEngine._channel_swing_action(first, 105.0)["action"] == "ENTER"
+
+
+def test_mature_edge_blocks_after_two_adverse_closed_candles(monkeypatch):
+    monkeypatch.setattr(
+        "core.engine.aligned_entry",
+        lambda frame, price: {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_LONG"},
+    )
+    blocked = frame("LONG")
+    blocked.loc[blocked.index[-3:-1], ["open", "close"]] = [[104.0, 103.0], [103.0, 102.0]]
+    blocked.loc[blocked.index[-1], ["open", "close"]] = [102.0, 103.0]
+    result = TradingEngine._channel_swing_action(blocked, 103.0)
+    assert result == {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}

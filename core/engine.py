@@ -5502,6 +5502,26 @@ class TradingEngine:
         # momentum, MA3 and rail checks remain enforced by aligned_entry().
         if volume_ratio >= 1.50:
             return False
+        # Permit the first favorable live candle at a mature edge, but do not
+        # reopen after two completed adverse candles.  This is causal and
+        # survives process restarts because it is derived from closed bars.
+        try:
+            recent = frame.iloc[-3:-1]
+            adverse = (
+                all(float(row["close"]) < float(row["open"]) for _, row in recent.iterrows())
+                if requested == "LONG" else
+                all(float(row["close"]) > float(row["open"]) for _, row in recent.iterrows())
+            )
+            live = frame.iloc[-1]
+            favorable_live = (
+                float(live["close"]) > float(live["open"])
+                if requested == "LONG" else
+                float(live["close"]) < float(live["open"])
+            )
+            if favorable_live and not adverse:
+                return False
+        except (TypeError, ValueError, KeyError, IndexError):
+            pass
         exceptional_energy = bool(
             quality >= 1.25
             and volume_ratio >= 1.50
