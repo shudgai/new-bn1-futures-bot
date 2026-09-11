@@ -2371,6 +2371,9 @@ class BinanceTestnetAccount:
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        # ⚠️ 併發不變量：本檢查與下方 closing_lock.add() 之間「不得插入任何 await」。
+        # 中間若有 await，兩個並行呼叫會同時通過檢查 → 同一部位重複平倉
+        #（2026-09-11 稽核確認目前兩帳戶皆無 await，屬原子操作）。
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉

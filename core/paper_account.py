@@ -930,6 +930,9 @@ class PaperAccount:
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
+        # ⚠️ 併發不變量：本檢查與下方 closing_lock.add() 之間「不得插入任何 await」。
+        # 中間若有 await，兩個並行呼叫會同時通過檢查 → 同一部位重複平倉
+        #（2026-09-11 稽核確認目前兩帳戶皆無 await，屬原子操作）。
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
         # OUTER_RUN 是最高優先級持倉規則：外軌外的反向 K 不得讓已鎖利
