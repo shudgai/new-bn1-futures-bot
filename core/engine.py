@@ -5,9 +5,9 @@ from core.channel_live_pivot import LivePivot
 from core.channel_hard_stop import enforce_hard_stop
 import asyncio
 import copy
-from core.channel_outer_entry import OUTER_CODES, TREND_CODES, outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
+from core.channel_outer_entry import ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES, outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready, three_closed_short_breakout_ready
 from core.channel_pivot_entry import PIVOT_CODES, pivot_entry
-from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, live_candle_color_ready, ck_entry_momentum_ready, LIVE_OUTER_CODES
+from core.channel_outer_entry import aligned_entry, aligned_entry_ready, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
 from core.channel_intrabar_entry import IntrabarEntry
 from core.channel_profit_protection import protection, reentry_gate, long_entry_ready, directional_entry_ready
 import math
@@ -1563,7 +1563,7 @@ class TradingEngine:
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
         """Use an observed live turn, retaining the shared structured order gates."""
-        side = ck_direction(frame)
+        side = entry_trend_direction(frame)
         pivot_ready = self._live_pivot_ready(symbol, frame, price, side)
         outer_ready = aligned_entry_ready(frame, price, side)
         if not pivot_ready and not outer_ready:
@@ -2477,8 +2477,6 @@ class TradingEngine:
             ticket = getattr(self.account, 'channel_profit_reentries', {}).get(symbol, {})
             return (self._ck_reverse_order_authorized(symbol, {'side': side, 'profit_reentry_token': ticket.get('token')})
                     and reverse_quote_ready(self, symbol, frame, price, side))
-        if not ck_entry_momentum_ready(frame, side):
-            return False
         quoted = getattr(self, "_channel_entry_quote_times", {}).get(symbol)
         if quoted is not None and (not math.isfinite(quoted) or not 0 <= time.time() - quoted <= 5):
             return False
@@ -2719,7 +2717,7 @@ class TradingEngine:
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
                     watcher.reset(symbol)
-                if invalid_candidate_key is not None and not live_outer_entry and not signal.get("live_pivot") and not signal.get("live_outer"):
+                if invalid_candidate_key is not None and not live_outer_entry and not signal.get("live_pivot") and not signal.get("live_outer") and signal.get("signal_code") not in ENTRY_TREND_CODES:
                     if not hasattr(self, "_channel_invalid_entry_candidates"):
                         self._channel_invalid_entry_candidates = set()
                     self._channel_invalid_entry_candidates.add(invalid_candidate_key)
@@ -2739,21 +2737,8 @@ class TradingEngine:
                 return False
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
             planned_price = float(entry_quote)
-            if not live_candle_color_ready(fresh_frame, planned_price, side):
-                self.account.log(
-                    f"⏳ {symbol} {side} KC_LIVE_CANDLE_DIRECTION_WAIT：多單需綠K、空單需紅K，取消開倉",
-                    "INFO",
-                )
-                return False
             if not live_adverse_entry_safe(fresh_frame, entry_quote, side):
                 self.account.log(f"🛑 {symbol} {side} KC_LIVE_ADVERSE_ENTRY_WAIT：當根反向異常風險，取消開倉", "WARNING")
-                return False
-            ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
-            if not ck_reverse and not ck_entry_momentum_ready(fresh_frame, side):
-                self.account.log(f"⏳ {symbol} {side} KC_MOMENTUM_FADE_WAIT：已收線CK順向動能尚未增強，暫停新倉", "INFO")
-                return False
-            if not ck_reverse and not live_ma3_direction_ready(fresh_frame, planned_price, side):
-                self.account.log(f'⏳ {symbol} {side} KC_LIVE_MA3_DIRECTION_WAIT：即時MA3未順向，不開倉', 'INFO')
                 return False
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
@@ -2984,15 +2969,13 @@ class TradingEngine:
             self.account.log(f"⏳ {symbol} KC_ONE_ENTRY_PER_CANDLE：送單前確認當根已有成交，取消重開", "INFO")
             return False
         if entry_mode == "CHANNEL_SWING":
-            if (live_pivot or signal.get("live_outer")) and self._ck_reverse_new_leg_halted():
+            if (live_pivot or signal.get("live_outer") or signal.get("signal_code") in ENTRY_TREND_CODES) and self._ck_reverse_new_leg_halted():
                 return False
             if ck_reverse and (self._ck_reverse_new_leg_halted()
                                or not self._ck_reverse_order_authorized(symbol, signal)):
                 return False
             latest_price = float(getattr(self, "tickers", {}).get(symbol) or planned_price)
-            if (not live_candle_color_ready(fresh_frame, latest_price, side)
-                    or (not ck_reverse and not ck_entry_momentum_ready(fresh_frame, side))
-                    or latest_price != planned_price
+            if (latest_price != planned_price
                     or not (self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, live_pivot=True) if live_pivot else
                             self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, ck_reverse=True)
                             if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side))):
@@ -7149,7 +7132,7 @@ class TradingEngine:
             latest = frame.iloc[-2]
             confirmation_label = ("confirmed price pivot" if decision["reason"] in PIVOT_CODES else
                                   "live MA3 outside CK outer rail" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
-                                  "closed MA3/MA15/KC aligned trend" if decision["reason"] in TREND_CODES else
+                                  "confirmed CK middle trend" if decision["reason"] in TREND_CODES else
                                   "closed breakout continuation" if decision["reason"] in {"KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT"} else
                                   "next live breakout candle")
             signal = {
@@ -7888,7 +7871,7 @@ class TradingEngine:
             if (
                 not existing_pos
                 and channel_action.get("action") == "ENTER"
-                and channel_action.get("reason") not in LIVE_OUTER_CODES
+                and channel_action.get("reason") not in LIVE_OUTER_CODES | ENTRY_TREND_CODES
                 and chop_state.get("detected")
                 and not chop_state.get("clear_direction")
             ):

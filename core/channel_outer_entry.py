@@ -1,9 +1,10 @@
-"""Live outside entries use the current CK rail; order route checks room and risk."""
+"""Confirmed CK trend entries; legacy rail helpers remain for exit compatibility."""
 import math
 
 LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"}
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
-TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"}
+ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}
+TREND_CODES = {"KC_MIDDLE_TREND_LONG", "KC_MIDDLE_TREND_SHORT"} | ENTRY_TREND_CODES
 
 
 def ck_momentum_fading(frame, side):
@@ -161,37 +162,39 @@ def ma3_outer_continuation_ready(frame, price, side):
         return False
 
 
+def entry_trend_direction(frame):
+    """Entry direction uses only the last two completed CK middle values."""
+    try:
+        if frame is None or len(frame) < 3:
+            return None
+        key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
+        previous, latest = [float(v) for v in frame[key].iloc[-3:-1]]
+        if not all(math.isfinite(v) and v > 0 for v in (previous, latest)):
+            return None
+        return 'LONG' if latest > previous else 'SHORT' if latest < previous else None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def aligned_entry(frame, price):
-    """Closed KC direction with live MA3 outside; missed crosses may continue."""
+    """Enter with confirmed CK trend, independently of rail position or MA3."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
-        live = frame.iloc[-1]
-        lower, upper = float(live["kc_lower"]), float(live["kc_upper"])
-        if not all(math.isfinite(v) for v in (price, lower, upper)) or not (price > 0 and 0 < lower < upper):
+        if not math.isfinite(price) or price <= 0 or frame is None or len(frame) < 4:
             return wait
         for _, row in frame.iloc[-4:].iterrows():
             opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        side = ck_direction(frame)
-        if not aligned_direction(frame, side):
+        side = entry_trend_direction(frame)
+        if side is None:
             return wait
-        if not ck_entry_momentum_ready(frame, side):
-            return {**wait, "reason": "KC_MOMENTUM_FADE_WAIT"}
-        if not live_ma3_direction_ready(frame, price, side):
-            return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
-        if not live_candle_color_ready(frame, price, side):
-            return {**wait, "reason": "KC_LIVE_CANDLE_DIRECTION_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        if ma3_outer_cross_ready(frame, price, side):
-            return {"action": "ENTER", "side": side, "reason": "KC_LIVE_OUTER_" + side}
-        if ma3_outer_continuation_ready(frame, price, side):
-            return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_" + side}
-        return {**wait, "reason": "KC_MA3_OUTSIDE_WAIT"}
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return wait
 
 
@@ -380,7 +383,7 @@ def continuation_entry(frame, price):
 
 
 def outside_reentry(frame, price, side):
-    """Use the same live CK outside and MA3 checks for reentries."""
+    """Use the same confirmed CK trend for normal reentries."""
     decision = aligned_entry(frame, price)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
