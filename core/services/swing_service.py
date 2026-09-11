@@ -243,11 +243,6 @@ def channel_swing_action(
             "reason": "KC_TREND_END_WAIT",
         }
     decision = aligned_entry(frame, live_price)
-    if check_profit_room and decision.get("action") == "ENTER":
-        from core.services.rank_service import channel_profit_room
-        room = channel_profit_room(frame, live_price, decision["side"])
-        if not room["allowed"]:
-            return {"action": "WAIT", "side": None, "reason": room["reason"]}
     return decision
 
 def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
