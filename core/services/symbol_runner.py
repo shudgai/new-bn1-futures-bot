@@ -209,10 +209,16 @@ async def process_single_symbol_runner(
                 channel_action = {"action": "EXIT", "side": None, "reason": emergency}
             elif ck_exit:
                 channel_action = {"action": "EXIT", "side": None, "reason": ck_exit}
+            ma3_closed = [float(v) for v in channel_df["ma3"].iloc[-3:-1]]
+            ma3_turned_against = (
+                ma3_closed[-1] < ma3_closed[-2] if existing_pos.get("side") == "LONG"
+                else ma3_closed[-1] > ma3_closed[-2]
+            )
             volume_decay_exit = bool(
                 CHANNEL_VOLUME_DECAY_EXIT_ENABLED and not emergency
                 and channel_action.get("reason") != FADING_EXIT_REASON
                 and channel_exit_net_profitable
+                and ma3_turned_against
                 and has_volume_divergence(
                     channel_df, -1 if existing_pos.get("side") == "LONG" else 1)
             )
@@ -290,7 +296,7 @@ async def process_single_symbol_runner(
                 "KC_LONG_LIVE_RED_LONG_EXIT", "KC_SHORT_LIVE_GREEN_LONG_EXIT",
                 "EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL", "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
                 "EMERGENCY_EXIT_2_CANDLE_ADVERSE", "EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL",
-                "EMERGENCY_EXIT_MA3_OUTSIDE_ADVERSE_BAR",
+                "EMERGENCY_EXIT_MA3_ENTERED_RAIL_ADVERSE_BAR",
             }
             ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
             fading_exit = channel_action.get("reason") == FADING_EXIT_REASON

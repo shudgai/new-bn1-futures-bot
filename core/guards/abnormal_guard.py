@@ -47,16 +47,21 @@ def channel_adverse_exit_reason(
             return "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL"
         if all(body >= threshold for body in bodies):
             return "EMERGENCY_EXIT_2_CANDLE_ADVERSE"
-        if CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED:
+        if CHANNEL_SINGLE_ADVERSE_EXIT_ENABLED and len(frame) >= 3:
             rail_key = "kc_upper" if side == "LONG" else "kc_lower"
             if "ma3" in frame.columns and rail_key in frame.columns:
-                rail = float(frame.iloc[-2][rail_key])
-                ma3 = float(frame.iloc[-2]["ma3"])
-                outside = ma3 > rail if side == "LONG" else ma3 < rail
+                ma3_before = float(frame.iloc[-3]["ma3"])
+                rail_before = float(frame.iloc[-3][rail_key])
+                ma3_last = float(frame.iloc[-2]["ma3"])
+                rail_last = float(frame.iloc[-2][rail_key])
+                # MA3 由持倉側外軌之外「轉進軌內」：趨勢已破，出現反向異常K立即平倉。
+                was_outside = ma3_before < rail_before if side == "SHORT" else ma3_before > rail_before
+                now_inside = ma3_last >= rail_last if side == "SHORT" else ma3_last <= rail_last
                 single = float(atr) * CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR
-                if (outside and math.isfinite(rail) and math.isfinite(ma3)
+                finite = all(math.isfinite(v) for v in (ma3_before, rail_before, ma3_last, rail_last))
+                if (was_outside and now_inside and finite
                         and max(adverse_live, bodies[-1]) >= single > 0):
-                    return "EMERGENCY_EXIT_MA3_OUTSIDE_ADVERSE_BAR"
+                    return "EMERGENCY_EXIT_MA3_ENTERED_RAIL_ADVERSE_BAR"
     except (TypeError, ValueError, KeyError, IndexError):
         return None
     return None

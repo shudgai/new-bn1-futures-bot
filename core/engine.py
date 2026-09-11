@@ -3123,7 +3123,7 @@ class TradingEngine:
                     "Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
                     "Channel Swing EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL",
                     "Channel Swing EMERGENCY_EXIT_2_CANDLE_ADVERSE",
-                    "Channel Swing EMERGENCY_EXIT_MA3_OUTSIDE_ADVERSE_BAR",
+                    "Channel Swing EMERGENCY_EXIT_MA3_ENTERED_RAIL_ADVERSE_BAR",
                     "Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL"}):
             return False
         try:
@@ -3335,7 +3335,7 @@ class TradingEngine:
         pending = position.get("channel_exception_exit_pending")
         if pending in {"EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL",
                        "EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL", "EMERGENCY_EXIT_2_CANDLE_ADVERSE",
-                       "EMERGENCY_EXIT_MA3_OUTSIDE_ADVERSE_BAR"}:
+                       "EMERGENCY_EXIT_MA3_ENTERED_RAIL_ADVERSE_BAR"}:
             return pending
         try:
             if frame is None or len(frame) < 3:
