@@ -97,7 +97,7 @@ from core.config import (
     MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
     MA5_FAST_MIN_VOLUME_RATIO,
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CHANNEL_WATERFALL_BODY_ATR, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC,
+    CHANNEL_WATERFALL_BODY_ATR, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
     CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
     PIVOT_STRONG_BODY_ATR_MULT,
@@ -3188,6 +3188,16 @@ class TradingEngine:
             self.account.channel_profit_reentries.pop(symbol, None)
             self.account.save_state()
             return
+        # 2026-09-11: 票據超過期限就作廢，避免舊票據在很久之後才觸發重開。
+        requested = ticket.get("close_requested_at_ms")
+        if requested:
+            try:
+                if time.time() * 1000 - float(requested) > PROFIT_REENTRY_TICKET_TTL_SEC * 1000:
+                    self.account.channel_profit_reentries.pop(symbol, None)
+                    self.account.save_state()
+                    return
+            except (TypeError, ValueError):
+                pass
         if ticket.get("phase") == "closing":
             reason = ticket.get("close_reason") or "Channel Swing PROFIT_PROTECTION " + ticket["token"]
             if not any(t.get("symbol") == symbol and t.get("reason") == reason

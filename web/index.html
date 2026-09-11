@@ -200,17 +200,21 @@
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; height: 560px; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
         .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-        .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
-        .chart-pane-header { height: 38px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 800; }
+        .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; display: flex; flex-direction: column; }
+        .chart-pane-header { flex: 0 0 auto; height: 38px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 800; }
         .chart-symbol-trend { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-        .chart-container { width: 100%; height: calc(100% - 38px); }
+        .chart-price-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid var(--border); background: #f8fafc; font-size: 12px; font-weight: 700; }
+        .chart-price-bar .cp-label { color: var(--muted); font-weight: 700; }
+        .chart-price-bar .cp-now { font-size: 15px; font-weight: 800; }
+        .chart-price-bar .cp-side-long { color: var(--up); }
+        .chart-price-bar .cp-side-short { color: var(--down); }
+        .chart-container { width: 100%; flex: 1 1 auto; min-height: 0; }
         .chart-entry-notice {
             min-height: 44px; padding: 6px 10px; background: #fffbeb;
             color: #92400e; border-bottom: 1px solid #fde68a; font-size: 12px;
         }
         .chart-entry-notice strong { display: block; font-size: 13px; }
-        .chart-pane.has-entry-notice .chart-container { height: calc(100% - 96px); }
-        .chart-pane.has-entry-notice .chart-entry-notice { height: 58px; overflow: auto; }
+        .chart-pane.has-entry-notice .chart-entry-notice { flex: 0 0 auto; max-height: 72px; overflow: auto; }
         .chart-status-overlay {
             position: absolute; inset: 0; z-index: 2;
             display: flex; justify-content: center; align-items: center;
@@ -254,10 +258,6 @@
                 <span v-else class="badge" style="background:#dcfce7; color:#15803d;">BINANCE TESTNET</span>
             </div>
             <div class="strategy-panel">
-                <button type="button" class="strategy-toggle" @click="strategyExpanded = !strategyExpanded" :aria-expanded="strategyExpanded" aria-controls="strategy-description">
-                    策略說明 <span class="collapse-arrow" :class="{ open: strategyExpanded }" aria-hidden="true">▶</span>
-                </button>
-                <span id="strategy-description" class="strategy-description" :class="{ expanded: strategyExpanded }">Strategy: {{ bot.strategy }}</span>
                 <div :class="['badge-status', bot.is_running ? 'running' : 'stopped']" @click="toggleBot">
                     {{ bot.is_running ? '🟢 策略運行中' : '🟠 等待自動恢復' }}
                 </div>
@@ -553,6 +553,22 @@
                                 {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[chartModal.states[symbol]?.ckTrend || 'wait'] }}
                             </span>
                         </span>
+                    </div>
+                    <div class="chart-price-bar">
+                        <span class="cp-now"><span class="cp-label">現價 </span>{{ formatPrice(getCurrPrice(symbol)) }}</span>
+                        <template v-if="getPositionFor(symbol)">
+                            <span :class="getPositionFor(symbol).side === 'LONG' ? 'cp-side-long' : 'cp-side-short'">
+                                持倉 {{ getPositionFor(symbol).side }}
+                            </span>
+                            <span><span class="cp-label">進場 </span>{{ formatPrice(getPositionFor(symbol).entry_price) }}</span>
+                            <span :class="getPosUnrealizedPnl(getPositionFor(symbol)) >= 0 ? 'up' : 'down'">
+                                未實現 {{ getPosUnrealizedPnl(getPositionFor(symbol)) >= 0 ? '+' : '' }}{{ getPosUnrealizedPnl(getPositionFor(symbol)).toFixed(2) }}U
+                            </span>
+                            <span v-if="getPositionFor(symbol).channel_profit_protection && getPositionFor(symbol).channel_profit_protection.armed">
+                                <span class="cp-label">鎖利 </span>{{ getPositionFor(symbol).channel_profit_protection.locked_net.toFixed(2) }}U
+                            </span>
+                        </template>
+                        <span v-else class="cp-label">目前無持倉</span>
                     </div>
                     <div v-if="chartModal.states[symbol]?.entryBlock" class="chart-entry-notice" role="status">
                         <strong>{{ chartModal.states[symbol].entryBlock.message }}</strong>
@@ -1053,6 +1069,10 @@
                         || this.bot.tickers[symbol.replace('/USDT', ':USDT')]// /USDT → :USDT
                         || this.bot.tickers[symbol.replace('/USDT', '')]     // 去掉 /USDT
                         || null;
+                },
+                getPositionFor(symbol) {
+                    if (!this.bot || !Array.isArray(this.bot.positions)) return null;
+                    return this.bot.positions.find(p => p.symbol === symbol) || null;
                 },
                 getPosUnrealizedPnl(pos) {
                     const curr = this.getCurrPrice(pos.symbol) || Number(pos.mark_price);
