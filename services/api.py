@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import csv
 import io
@@ -124,7 +125,43 @@ BOT_PAUSED_FILE = os.path.join(os.path.dirname(WEB_DIR), "data", "bot_paused.fla
 BOT_SUPERVISOR_INTERVAL_SECONDS = 5.0
 _bot_supervisor_task = None
 _bot_control_lock = asyncio.Lock()
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="web-static")
+class _ProtectedStaticFiles(StaticFiles):
+    """Static assets must also require Basic auth.
+
+    app.mount() sub-applications bypass the FastAPI-level dependency, so /static/*
+    (including the dashboard HTML itself) would otherwise be readable without login.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await super().__call__(scope, receive, send)
+        headers = {
+            k.decode("latin-1").lower() if isinstance(k, bytes) else str(k).lower(): v
+            for k, v in (scope.get("headers") or [])
+        }
+        raw_value = headers.get("authorization") or b""
+        raw = raw_value.decode("latin-1") if isinstance(raw_value, bytes) else str(raw_value)
+        authorized = False
+        if raw.lower().startswith("basic "):
+            try:
+                decoded = base64.b64decode(raw.split(" ", 1)[1]).decode("utf-8")
+                username, _, password = decoded.partition(":")
+                authorized = (
+                    secrets.compare_digest(username, API_USERNAME)
+                    and secrets.compare_digest(password, API_PASSWORD)
+                )
+            except Exception:
+                authorized = False
+        if not authorized:
+            response = Response(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                headers={"WWW-Authenticate": "Basic"},
+            )
+            return await response(scope, receive, send)
+        return await super().__call__(scope, receive, send)
+
+
+app.mount("/static", _ProtectedStaticFiles(directory=WEB_DIR), name="web-static")
 
 # 圖表資料只供顯示，不能讓瀏覽器每秒的請求與交易循環爭用 Binance 額度。
 # 成功資料短暫快取；外部行情暫時失敗時則回傳最後一份資料，讓介面保持可用。
