@@ -20,7 +20,7 @@ def setup(side, monkeypatch, success=True):
     sign = 1 if side == 'LONG' else -1
     middle = frame[middle_key].astype(float)
     frame.loc[frame.index[-3], middle_key] = middle.iloc[-3]
-    frame.loc[frame.index[-2], middle_key] = middle.iloc[-3] + sign
+    frame.loc[frame.index[-2], middle_key] = middle.iloc[-3] + sign * 3
     frame.loc[frame.index[-3], 'kc_upper'] = middle.iloc[-3] + 10.
     frame.loc[frame.index[-2], 'kc_upper'] = middle.iloc[-3] + 10. + sign
     frame.loc[frame.index[-3], 'kc_lower'] = middle.iloc[-3] - 10.
@@ -80,7 +80,7 @@ def test_unclear_or_reversed_closed_ck_requires_exit(side):
     assert TradingEngine._channel_ck_exit_reason(f, side) is None
     f.loc[f.index[-2], 'kc_middle'] = f.iloc[-3]['kc_middle']
     assert TradingEngine._channel_ck_exit_reason(f, side) == 'KC_CK_DIRECTION_UNCLEAR_EXIT'
-    f.loc[f.index[-2], 'kc_middle'] = f.iloc[-3]['kc_middle'] - (1 if side == 'LONG' else -1)
+    f.loc[f.index[-2], 'kc_middle'] = f.iloc[-3]['kc_middle'] - (0.5 if side == 'LONG' else -0.5)
     assert TradingEngine._channel_ck_exit_reason(f, side) == 'KC_CK_DIRECTION_REVERSED_EXIT'
 
 

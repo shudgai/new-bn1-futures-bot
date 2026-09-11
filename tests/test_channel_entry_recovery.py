@@ -12,7 +12,7 @@ def ready(side):
     return f,price
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('steps,expected',[([0,.3,.6,1.2],True),([0,.9,1.5,1.8],False),([0,.9,1.2,1.5],False),([0,.9,1.5,1.95],False),([0,.9,.9,1.2],True)])
+@pytest.mark.parametrize('steps,expected',[([0,.3,.6,1.2],True),([0,.9,1.5,1.8],False),([0,.9,1.2,1.5],False),([0,.9,1.5,1.95],False),([0,.9,.9,1.5],True)])
 def test_closed_momentum_must_strengthen(side,steps,expected):
     f,price=ready(side);sign=1 if side=='LONG' else -1
     f.loc[f.index[-5:-1],'kc_middle']=[100+sign*x for x in steps]

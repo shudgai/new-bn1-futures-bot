@@ -15,7 +15,7 @@ def market(side):
     sign = 1 if side == 'LONG' else -1
     frame['kc_upper'], frame['kc_lower'] = 103., 97.
     frame['kc_middle'] = 100.
-    frame.loc[16:18, 'kc_middle'] = [100. - sign * .2, 100. - sign * .1, 100.]
+    frame.loc[16:18, 'kc_middle'] = [100. - sign * .8, 100. - sign * .4, 100.]
     frame.loc[16:18, 'kc_upper'] = [103., 102.9, 102.8]
     frame.loc[16:18, 'kc_lower'] = [97., 97.1, 97.2]
     price = 100. + sign * .4
@@ -82,7 +82,7 @@ async def test_ma3_exit_waits_for_recovery_before_reopening(side, success):
     f, p, price = turn_setup(side)
     sign = 1 if side == 'LONG' else -1
     f['kc_middle'] = 100.
-    f.loc[16:18, 'kc_middle'] = [100 - sign * .2, 100 - sign * .1, 100.]
+    f.loc[16:18, 'kc_middle'] = [100 - sign * .8, 100 - sign * .4, 100.]
     e = _execution_engine(f, side, success)
     e.account.save_state = lambda: None
     e.account.positions[SYMBOL].update(p)

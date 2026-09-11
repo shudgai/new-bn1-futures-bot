@@ -16,7 +16,7 @@ def closed_outer_entry_frame(side="LONG", rows=20):
     f.loc[rows-1, ["open", "close"]] = [103., 103.2]
     f.loc[rows-2:, "kc_upper"] = 102.1
     # 2026-09-11：共用進場框架必須是有斜率的通道，否則會被 KC_FLAT_MIDDLE_WAIT 正確擋下。
-    f.loc[rows-4:rows-1, "kc_middle"] = [98.9, 99.3, 99.65, 100.]
+    f.loc[rows-4:rows-1, "kc_middle"] = [98.2, 98.8, 99.4, 100.]
     f.loc[rows-4:rows-1, "ma15"] = [99.7, 99.8, 99.9, 100.]
     f["high"] = f[["open", "close"]].max(axis=1) + .1
     f["low"] = f[["open", "close"]].min(axis=1) - .1

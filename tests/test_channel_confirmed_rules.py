@@ -19,7 +19,7 @@ def confirm_entry(frame, side):
     # Dedup tests need a clear trend, without the removed live-push chop exemption.
     sign = 1 if side == "LONG" else -1
     for key in ("ma15", "kc_middle", "ema_20"):
-        frame.loc[frame.index[-4:-1], key] = [100 - sign * .4, 100 - sign * .2, 100.]
+        frame.loc[frame.index[-4:-1], key] = [100 - sign * 1.2, 100 - sign * .6, 100.]
     frame.loc[frame.index[-4:-1], "kc_upper"] = [102 - sign * .4, 102 - sign * .2, 102.]
     frame.loc[frame.index[-4:-1], "kc_lower"] = [98 - sign * .4, 98 - sign * .2, 98.]
     return float(frame.iloc[-1]["close"])

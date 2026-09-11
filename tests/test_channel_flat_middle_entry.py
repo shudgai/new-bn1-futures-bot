@@ -68,9 +68,10 @@ def test_sloped_middle_still_enters(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("ratio,expected", [(0.049, True), (0.051, False), (0.20, False)])
-def test_threshold_boundary(side, ratio, expected):
-    frame, _ = _entry_frame(side, ratio)
+@pytest.mark.parametrize("ratio_multiple,expected", [(0.9, True), (1.1, False), (4.0, False)])
+def test_threshold_boundary(side, ratio_multiple, expected):
+    from core import config
+    frame, _ = _entry_frame(side, config.CHANNEL_FLAT_MIDDLE_RATIO * ratio_multiple)
     assert channel_middle_is_flat(frame) is expected
 
 
