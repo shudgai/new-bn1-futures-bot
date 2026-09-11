@@ -103,6 +103,35 @@ def load_frame(symbol: str) -> pd.DataFrame:
     return SuperTrendKeltnerStrategy().compute_indicators(df)
 
 
+def collect_signal_records(df: pd.DataFrame) -> List[Tuple[int, str, str, float, float, bool]]:
+    """訊號 + 事前可得的品質特徵（走平比、離軌距離、MA3/MA15 排列）。"""
+    previous_ratio = outer_strategy.CHANNEL_FLAT_MIDDLE_RATIO
+    outer_strategy.CHANNEL_FLAT_MIDDLE_RATIO = 0.0
+    records = []
+    try:
+        for index in range(WARMUP, len(df) - 2):
+            frame = df.iloc[: index + 1]
+            price = float(frame["close"].iloc[-1])
+            decision = aligned_entry(frame, price)
+            if decision.get("action") != "ENTER":
+                continue
+            side = decision["side"]
+            key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+            mid_previous, mid_latest = float(frame[key].iloc[-3]), float(frame[key].iloc[-2])
+            width = float(frame["kc_upper"].iloc[-2]) - float(frame["kc_lower"].iloc[-2])
+            sign = 1 if side == "LONG" else -1
+            rail = float(frame["kc_upper"].iloc[-1] if side == "LONG" else frame["kc_lower"].iloc[-1])
+            atr = float(frame["atr"].iloc[-2])
+            depth = (sign * (price - rail) / atr) if atr > 0 else 0.0
+            ma3, ma15 = float(frame["ma3"].iloc[-1]), float(frame["ma15"].iloc[-1])
+            aligned = ma3 > ma15 if side == "LONG" else ma3 < ma15
+            records.append((index, side, str(decision.get("reason") or ""),
+                            abs(mid_latest - mid_previous) / width if width > 0 else 0.0, depth, aligned))
+    finally:
+        outer_strategy.CHANNEL_FLAT_MIDDLE_RATIO = previous_ratio
+    return records
+
+
 def collect_signals(df: pd.DataFrame, flat_ratio: float) -> List[Tuple[int, str]]:
     previous = outer_strategy.CHANNEL_FLAT_MIDDLE_RATIO
     outer_strategy.CHANNEL_FLAT_MIDDLE_RATIO = flat_ratio
