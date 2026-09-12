@@ -6,6 +6,12 @@ from core.services.entry_diagnostics_service import entry_diagnostics
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
+@pytest.fixture(autouse=True)
+def _profit_room_enabled(_pin_strategy_switches, monkeypatch):
+    """本檔含淨利空間案例，需開啟該檢查（其他測試預設關閉）。"""
+    monkeypatch.setattr("core.config.CHANNEL_PROFIT_ROOM_ENABLED", True)
+
+
 @pytest.fixture
 def anyio_backend(): return 'asyncio'
 

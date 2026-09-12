@@ -289,3 +289,30 @@ def test_long_body_entry_uses_a_short_target(monkeypatch):
     long_body = dict(trend, reason="Channel Swing KC_LIVE_BODY_BREAKOUT_LONG")
     assert protection(trend, 100.5, 0.0005, 0.0001)["target_price"] == pytest.approx(103.0)
     assert protection(long_body, 100.5, 0.0005, 0.0001)["target_price"] == pytest.approx(101.0)
+
+
+def test_long_body_entry_is_not_blocked_by_flat_or_overheat(monkeypatch):
+    """長K／破軌入口本身就是靠大實體成立，不能被走平或過熱過濾擋掉。"""
+    import pandas as pd
+    from core.services.strategies import outer_strategy
+
+    monkeypatch.setattr(outer_strategy, "CHANNEL_LONG_BODY_ENTRY_ATR", 2.0)
+    monkeypatch.setattr(outer_strategy, "CHANNEL_LIVE_BODY_BREAKOUT_ENABLED", False)
+    monkeypatch.setattr(outer_strategy, "CHANNEL_FLAT_MIDDLE_RATIO", 0.05)
+    monkeypatch.setattr(outer_strategy, "CHANNEL_MIN_DIRECTION_EFFICIENCY", 0.30)
+    monkeypatch.setattr(outer_strategy, "CHANNEL_TAIL_MAX_TREND_BARS", 12)
+
+    rows = []
+    for _ in range(20):
+        rows.append({"open": 100.0, "close": 100.0, "high": 100.1, "low": 99.9,
+                     "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
+                     "ema_20": 100.0, "ma3": 100.0, "ma15": 100.0, "atr": 1.0})
+    # 最後一根已收線：長綠實體 2.5 ATR 且收在上軌外；中軌完全沒動（走平）
+    rows[-2].update({"open": 101.0, "close": 103.5, "high": 103.6, "low": 100.9,
+                     "kc_upper": 102.0})
+    # 即時K：價格仍在上軌外
+    rows[-1].update({"open": 103.5, "close": 103.8, "high": 103.9, "low": 103.4,
+                     "kc_upper": 102.5})
+    frame = pd.DataFrame(rows)
+    decision = outer_strategy.aligned_entry(frame, 103.8)
+    assert decision["action"] == "ENTER" and decision["side"] == "LONG"

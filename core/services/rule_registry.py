@@ -117,8 +117,10 @@ def active_entry_rule_lines() -> List[str]:
         + ("末端禁開已停用（漲勢延續可再進場）、" if config.CHANNEL_TAIL_MAX_TREND_BARS <= 0
            else f"末端禁開（連續同向 {config.CHANNEL_TAIL_MAX_TREND_BARS} 根）、")
         + f"當根實體過熱 > {config.CHANNEL_ENTRY_MAX_BODY_ATR:g} ATR、"
-        f"前一根大K > {config.CHANNEL_ENTRY_MAX_PREV_BODY_ATR:g} ATR 不追、"
-        f"淨利空間 ≥ {config.NET_PROFIT_GUARANTEE_BUFFER * 100:g}%、反向異常攔截、每根限次、"
+        f"前一根大K > {config.CHANNEL_ENTRY_MAX_PREV_BODY_ATR:g} ATR 不追（長K／破軌入口不吃這兩項）、"
+        + (f"淨利空間 ≥ {config.NET_PROFIT_GUARANTEE_BUFFER * 100:g}%、"
+           if config.CHANNEL_PROFIT_ROOM_ENABLED else "淨利空間檢查：未啟用、")
+        + "反向異常攔截、每根限次、"
         + (f"停損後冷卻 {config.CHANNEL_STOP_LOSS_COOLDOWN_SEC / 60:g} 分鐘" if config.CHANNEL_STOP_LOSS_COOLDOWN_SEC > 0 else "停損後冷卻：未啟用")
         + ("（強趨勢豁免）" if config.CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN else ""),
         f"  獲利重開票據有效期 {config.PROFIT_REENTRY_TICKET_TTL_SEC} 秒",

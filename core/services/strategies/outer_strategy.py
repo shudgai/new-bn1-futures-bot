@@ -346,14 +346,18 @@ def aligned_entry(frame, price):
         body_side = long_body_side(frame, CHANNEL_LONG_BODY_ENTRY_ATR)
         if body_side is not None and (side is None or side != body_side):
             side = body_side
+        # 由長實體驅動的進場（即時破軌／長K特例）不吃「走平禁開」與「實體過熱」：
+        # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
+        # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
+        body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
         if side is None:
             return wait
         if channel_tail_entry_blocked(frame, side):
             return {**wait, "reason": "KC_TREND_TAIL_WAIT"}
-        if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not breakout_side
+        if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not body_driven
                 and direction_efficiency(frame) < CHANNEL_MIN_DIRECTION_EFFICIENCY):
             return {**wait, "reason": "KC_LOW_EFFICIENCY_WAIT"}
-        if channel_middle_is_flat(frame):
+        if not body_driven and channel_middle_is_flat(frame):
             return {**wait, "reason": FLAT_MIDDLE_REASON}
             
         upper = float(frame.iloc[-1]['kc_upper'])
@@ -376,10 +380,11 @@ def aligned_entry(frame, price):
                 return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
 
         # 進場當根順向實體過熱就別追：這種大K之後最容易接反向異常K。
-        if atr > 0 and body > atr * CHANNEL_ENTRY_MAX_BODY_ATR:
+        # 但長K／即時破軌入口本身就是靠大實體成立，不套用此過濾。
+        if not body_driven and atr > 0 and body > atr * CHANNEL_ENTRY_MAX_BODY_ATR:
             return {**wait, "reason": "KC_ENTRY_BODY_OVERHEAT_WAIT"}
 
-        if not breakout_side:
+        if not body_driven:
             try:
                 live_ma3 = float(frame.iloc[-1]['ma3'])
                 live_ma15 = float(frame.iloc[-1]['ma15'])

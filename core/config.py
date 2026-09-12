@@ -297,6 +297,12 @@ CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC = max(
     0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", "120"))
 )
 
+# 開倉前淨利空間檢查：最近 60 根已收線內、左右各一根確認且其後未被觸及的前高／前低，
+# 扣雙邊費用與滑價後需達 NET_PROFIT_GUARANTEE_BUFFER；設 false 可停用。
+CHANNEL_PROFIT_ROOM_ENABLED = os.getenv(
+    "CHANNEL_PROFIT_ROOM_ENABLED", "true"
+).lower() == "true"
+
 # ATR 括號出口（原型驗證版）：以進場時 ATR 設停損與目標，取代階梯鎖利。
 # walk-forward：龍虾＋嚴格進場下 1.5ATR停損/3ATR目標 為唯一整體為正的組合。
 CHANNEL_ATR_EXIT_ENABLED = os.getenv(

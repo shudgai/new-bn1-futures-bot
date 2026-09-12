@@ -11,6 +11,12 @@ def fixed_costs(monkeypatch):
     monkeypatch.setattr('core.engine.SLIPPAGE_PCT', .0001)
     monkeypatch.setattr('core.engine.NET_PROFIT_GUARANTEE_BUFFER', .006)
 
+@pytest.fixture(autouse=True)
+def _profit_room_enabled(_pin_strategy_switches, monkeypatch):
+    """本檔專門驗證淨利空間；其他測試預設關閉以免被合成框架的目標不足擋下。"""
+    monkeypatch.setattr("core.config.CHANNEL_PROFIT_ROOM_ENABLED", True)
+
+
 @pytest.fixture
 def anyio_backend():
     return 'asyncio'

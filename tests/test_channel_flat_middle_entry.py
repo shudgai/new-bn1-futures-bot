@@ -50,13 +50,10 @@ def test_flat_middle_blocks_trend_entry(side):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_flat_middle_blocks_live_body_breakout_entry(side):
-    sloped, sloped_price = _entry_frame(side, 0.20, breakout=True)
-    assert aligned_entry(sloped, sloped_price)["action"] == "ENTER"
-    flat, flat_price = _entry_frame(side, 0.005, breakout=True)
-    decision = aligned_entry(flat, flat_price)
-    assert decision["action"] == "WAIT"
-    assert decision["reason"] == FLAT_MIDDLE_REASON
+def test_live_body_breakout_is_exempt_from_the_flat_middle_filter(side):
+    """2026-09-12：長K／破軌本身就是訊號，不吃走平禁開（否則長K入口永遠不會觸發）。"""
+    frame, price = _entry_frame(side, 0.005, breakout=True)
+    assert aligned_entry(frame, price)["action"] == "ENTER"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])

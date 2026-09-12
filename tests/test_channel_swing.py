@@ -659,6 +659,19 @@ def test_tail_entry_blocked_after_long_one_way_run():
     assert channel_tail_entry_blocked(pd.DataFrame({"kc_middle": [float("nan")] * 20}), "LONG") is True
 
 
+def test_long_body_breakout_is_exempt_from_the_overheat_guard():
+    """2026-09-12：長K／破軌靠大實體成立，不套用 0.8 ATR 過熱過濾。"""
+    from core.services.strategies.outer_strategy import aligned_entry
+    from core.config import CHANNEL_ENTRY_MAX_BODY_ATR
+    from test_channel_live_body_breakout import breakout_frame
+
+    for side in ("LONG", "SHORT"):
+        frame, price = breakout_frame(side)
+        frame.loc[frame.index[-1], "atr"] = 1.0
+        assert CHANNEL_ENTRY_MAX_BODY_ATR < 1.7   # 這個框架的實體 1.7 ATR 本會被過熱擋下
+        assert aligned_entry(frame, price).get("reason") != "KC_ENTRY_BODY_OVERHEAT_WAIT"
+
+
 def _overheat_frame(side, body_atr):
     """Frame whose live body is body_atr x ATR beyond the outer rail (14 warmup bars)."""
     import pandas as pd
@@ -686,15 +699,20 @@ def _overheat_frame(side, body_atr):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_entry_body_overheat_blocks_both_sides(side):
-    """2026-09-11: do not chase a live body already beyond 0.8 ATR (symmetric)."""
+    """趨勢路徑（開盤已在軌外，不算長K破軌）仍受 0.8 ATR 過熱過濾保護。"""
     from core.services.strategies.outer_strategy import aligned_entry
     from core.config import CHANNEL_ENTRY_MAX_BODY_ATR
+    from channel_test_frames import closed_outer_entry_frame
 
-    hot_frame, hot_price = _overheat_frame(side, CHANNEL_ENTRY_MAX_BODY_ATR + 0.4)
-    assert aligned_entry(hot_frame, hot_price).get("reason") == "KC_ENTRY_BODY_OVERHEAT_WAIT"
-
-    cool_frame, cool_price = _overheat_frame(side, max(0.5, CHANNEL_ENTRY_MAX_BODY_ATR - 0.2))
-    assert aligned_entry(cool_frame, cool_price).get("reason") != "KC_ENTRY_BODY_OVERHEAT_WAIT"
+    frame = closed_outer_entry_frame(side)
+    sign = 1 if side == "LONG" else -1
+    body = (CHANNEL_ENTRY_MAX_BODY_ATR + 0.4) * float(frame.iloc[-2]["atr"])
+    row = frame.index[-1]
+    frame.loc[row, "close"] = float(frame.loc[row, "open"]) + sign * body
+    price = float(frame.loc[row, "close"])
+    frame.loc[row, "high"] = max(float(frame.loc[row, "open"]), price) + 0.1
+    frame.loc[row, "low"] = min(float(frame.loc[row, "open"]), price) - 0.1
+    assert aligned_entry(frame, price).get("reason") == "KC_ENTRY_BODY_OVERHEAT_WAIT"
 
 
 def _trend_after_spike_frame(side, prev_body_atr, atr=0.10):

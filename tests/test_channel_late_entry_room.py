@@ -6,6 +6,12 @@ from core.services.entry_room_service import entry_room
 from test_channel_swing_execution import _execution_engine, _narrow_channel_frame, SYMBOL
 
 
+@pytest.fixture(autouse=True)
+def _profit_room_enabled(_pin_strategy_switches, monkeypatch):
+    """本檔專門驗證淨利空間；其他測試預設關閉以免被合成框架的目標不足擋下。"""
+    monkeypatch.setattr("core.config.CHANNEL_PROFIT_ROOM_ENABLED", True)
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
