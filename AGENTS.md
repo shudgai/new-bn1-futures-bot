@@ -48,7 +48,7 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或資料無效不開。
    - KC 走平禁開：中軌位移 ÷ 軌寬 < `CHANNEL_FLAT_MIDDLE_RATIO`（0.05）不開，多空對稱；用軌寬相對值避免低價幣被絕對門檻誤擋。
    - 1h 大趨勢過濾：`CHANNEL_1H_TREND_FILTER_ENABLED=true`，1h SuperTrend 方向與進場方向不一致就不開（快取尚未取得時不擋）。原本此快取只用在 15m 軟停損，進場完全沒看大週期。
-2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌、順向實體 ≥ 上一根已收線 ATR 的 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`（1.0）才成立；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（**1.0**，2026-09-13 由 2.0 下調，使用者要求把實體約 1 ATR、收在軌外的K也視為特例長K）且收在軌外」的 CK 不明特例。
+2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌即成立（`CHANNEL_LIVE_BREAKOUT_BODY_ATR=0`，2026-09-13 使用者：不再要求穿越當下的實體門檻，很多特例長K是從 KC 裡衝出來的）；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（**1.0**，2026-09-13 由 2.0 下調，使用者要求把實體約 1 ATR、收在軌外的K也視為特例長K）且收在軌外」的 CK 不明特例。
 - 末端禁開停用（`CHANNEL_TAIL_MAX_TREND_BARS=0`）：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
 - 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控（長K／即時破軌入口不吃實體過熱與前一根大K限制，否則恆不觸發）。
 - 兩根同色確認（2026-09-13 使用者：套用在「第一次破軌」＝全新第一筆）：一般趨勢新倉需最近兩根已收線同色有效實體（實體 ≥ 全長 20%），否則 `KC_SECOND_BODY_WAIT`；獲利重開與破軌延續不套用。
@@ -71,7 +71,7 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 1. 帳戶硬止損：保證金虧損 10%（5x 槓桿約等於價格逆向 2%）。
 2. 單根瀑布反向實體 ≥ 2.5 ATR；雙已收線反向異常 K 各 ≥ 1 ATR。
 3. MA3 轉進持倉側外軌內 ＋ 單根反向異常K ≥ `CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR`（1.0）→ 立即平倉，不等第二根。
-4. MA3 轉彎平倉（2026-09-13 使用者修正）：**只有「漲勢末端、MA3 仍在持倉側外軌之外卻已轉向往回（朝軌）」，且從峰谷反向 ≥ 0.10 ATR 時才平倉**（多單：MA3 > 上軌且即時 MA3 < 已收線 MA3；空單鏡像）。MA3 正向轉彎、或已回到軌內往上，都不平倉。不再要求 CK 衰退或通道狹窄；真量能衰退出口（`CHANNEL_VOLUME_DECAY_EXIT_ENABLED`，不要求獲利）仍在。沒有 frame 可驗證軌位時不成立（fail-safe）。「真衰退」＝只用已收線K、用中位數比較前後半段、後段至少 3/4 低於前段中位數、創新高／新低那一根必須是低量（爆量創極值不算）。
+4. MA3 轉彎平倉（2026-09-13 使用者修正）：**必須同時滿足「真量能衰退」＋「MA3 仍持倉側外軌之外卻已轉向往回（朝軌）」＋「從峰谷反向 ≥ 0.10 ATR」才平倉**；量能沒衰退、通道仍寬時不平（多單：MA3 > 上軌且即時 MA3 < 已收線 MA3；空單鏡像）。MA3 正向轉彎、或已回到軌內往上，都不平倉。不再要求 CK 衰退或通道狹窄；真量能衰退出口（`CHANNEL_VOLUME_DECAY_EXIT_ENABLED`，不要求獲利）仍在。沒有 frame 可驗證軌位時不成立（fail-safe）。「真衰退」＝只用已收線K、用中位數比較前後半段、後段至少 3/4 低於前段中位數、創新高／新低那一根必須是低量（爆量創極值不算）。
 5. MA3 穿越 KC 中軌（趨勢反轉）：空單 MA3 由下往上穿越中軌且價格站上中軌、多單對稱（`CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED`）。平倉後可依一般入口轉開反向倉。
 6. CK 狹窄衰退＋MA3 峰谷反向 0.10 ATR（`CHANNEL_FADING_MA3_EXIT_ENABLED`）。
 7. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（4U）啟動，鎖住峰值 − `..._LOCK_OFFSET_USDT`（2U）。

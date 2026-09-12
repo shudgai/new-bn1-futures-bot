@@ -93,9 +93,16 @@ def fading_ma3_turn(position, frame, price):
         position.pop(STATE_KEY, None)
         return False
     # 幅度門檻沿用 significant_ma3_turn 的 0.10 ATR 峰谷反向；
-    # 但只有在 MA3 仍位於持倉側外軌之外時才成立（軌內的正向轉彎不平）。
+    # 2026-09-13 使用者：還必須是「真量能衰退」＋MA3 在持倉側外軌外轉向往回才平，
+    # 通道寬、量沒衰退的場合不可以平（先前只看 MA3 轉彎是錯的）。
     position[STATE_KEY] = state
-    return bool(turned) and ma3_outside_rail_turning_back(frame, price, position.get('side'))
+    if not turned:
+        return False
+    if not ma3_outside_rail_turning_back(frame, price, position.get('side')):
+        return False
+    from core.strategy import has_real_volume_decay
+    side = position.get('side')
+    return bool(has_real_volume_decay(frame, -1 if side == 'LONG' else 1))
 
 
 def next_breakout_ready(account, symbol, frame, price):

@@ -30,6 +30,14 @@ def fading_frame(side, fading=True):
     else:
         f.loc[f.index[-2], "kc_upper"] = middle.iloc[-2] * 1.01
         f.loc[f.index[-2], "kc_lower"] = middle.iloc[-2] * .98
+    # 2026-09-13：MA3 轉彎平倉需「真量能衰退」——前段高量、後段持續低量。
+    n = len(f)
+    f["volume"] = [400.0] * max(0, n - 8) + [100.0] * min(8, n)
+    # 後半段必須「低量創出新高／新低」才算真衰退。
+    if s > 0:
+        f.loc[f.index[19], "high"] = float(f["high"].iloc[5:13].max()) + 0.2
+    else:
+        f.loc[f.index[19], "low"] = float(f["low"].iloc[5:13].min()) - 0.2
     # 2026-09-13：MA3 轉彎平倉要求 MA3 仍在持倉側外軌之外（多單：MA3 > 上軌）。
     ma3 = f["ma3"].astype(float)
     if s > 0:
