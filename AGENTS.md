@@ -51,6 +51,8 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌、順向實體 ≥ 上一根已收線 ATR 的 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`（1.0）才成立；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外」的 CK 不明特例。
 - 末端禁開停用（`CHANNEL_TAIL_MAX_TREND_BARS=0`）：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
 - 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控（長K／即時破軌入口不吃實體過熱與前一根大K限制，否則恆不觸發）。
+- 兩根同色確認（2026-09-13 使用者：套用在「第一次破軌」＝全新第一筆）：一般趨勢新倉需最近兩根已收線同色有效實體（實體 ≥ 全長 20%），否則 `KC_SECOND_BODY_WAIT`；獲利重開與破軌延續不套用。
+- 順向特例長K可逆 1h（2026-09-13 使用者核可）：進場方向雖與 1h SuperTrend 相反，但當根成立順向特例長K（即時長K破軌或長實體收在軌外）時放行，日誌記「1h 趨勢過濾豁免」。
 - 「MA3 確實往上、KC 都往上」才買（2026-09-13 使用者，對所有入口含特例長K）：
   1. 已收線 CK 中軌不得與進場方向相反（持平仍保留特例長K），反向回 `KC_MIDDLE_OPPOSITE_WAIT`；
   2. 即時 MA3 必須順向推進（多單 live MA3 > 前一根已收線 MA3、空單對稱），MA3 峰頂轉下或資料無效回 `KC_MA3_TURN_WAIT`。

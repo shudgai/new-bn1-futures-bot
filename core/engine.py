@@ -1926,6 +1926,11 @@ class TradingEngine:
             side = str((signal or {}).get("side") or "").upper()
             if trend_1h in (1, -1) and side in ("LONG", "SHORT"):
                 aligned = (side == "LONG" and trend_1h == 1) or (side == "SHORT" and trend_1h == -1)
+                if not aligned and self._special_long_body_signal(signal, channel_snapshot, side):
+                    # 2026-09-13 使用者：順向特例長K開放逆 1h（瀑布追空用）。
+                    self.account.log(
+                        f"🔥 [1h 趨勢過濾豁免] {symbol} {side} 順向特例長K，允許逆 1h 進場", "INFO")
+                    aligned = True
                 if not aligned:
                     self.account.log(
                         f"⏸️ [1h 趨勢過濾] {symbol} 1h 方向 {trend_1h:+d} 與 {side} 不一致，不開新倉", "INFO")
@@ -2039,7 +2044,9 @@ class TradingEngine:
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
             if not ck_reverse and not live_pivot:
-                final_entry = self._channel_swing_action(fresh_frame, planned_price)
+                final_entry = self._channel_swing_action(
+                    fresh_frame, planned_price,
+                    profit_reentry=bool(signal.get("profit_reentry_token")))
                 if final_entry.get("action") != "ENTER" or final_entry.get("side") != side:
                     self.account.log(
                         f"⏳ {symbol} {side} {final_entry.get('reason', 'KC_ENTRY_WAIT')}：最新快照已不適合追入",
@@ -3223,6 +3230,18 @@ class TradingEngine:
                     changed = True
         if changed:
             self.account.save_state()
+        return False
+
+    @staticmethod
+    def _special_long_body_signal(signal, channel_snapshot, side):
+        """訊號本身是否屬順向特例長K（即時長K破軌或長實體收在軌外）。"""
+        code = str((signal or {}).get("signal_code") or "")
+        if code in LIVE_BODY_BREAKOUT_CODES:
+            return True
+        frame = (channel_snapshot or {}).get("frame")
+        price = (channel_snapshot or {}).get("price")
+        if frame is not None and price:
+            return TradingEngine._special_long_body_entry(frame, price, side)
         return False
 
     @staticmethod

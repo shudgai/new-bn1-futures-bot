@@ -47,7 +47,8 @@ async def test_all_order_routes_revalidate_recovery(side,route,blocked,monkeypat
         # A historical upward surge must not veto an otherwise valid entry.
         f.loc[f.index[-6],['open','high','low','close']]=[90.,110.,89.,109.]
         f.loc[f.index[-5],['open','high','low','close']]=[100.,100.1,99.9,100.]
-        f.loc[f.index[-3],['open','high','low','close']]=[float(f.iloc[-3]['close']),float(f.iloc[-3]['close'])+.1,float(f.iloc[-3]['close'])-.1,float(f.iloc[-3]['close'])]
+        # 2026-09-13：最後兩根已收線仍須是順向有效實體（兩根確認），
+        # 這裡只模擬更早的歷史急拉，不動 -3／-2 的實體。
     e=_execution_engine(f,side,True);del e._channel_intrabar_ready
     e.account.positions.clear();e.account.save_state=lambda:None
     e._abnormal_market_entry_allowed=lambda *a,**k:True

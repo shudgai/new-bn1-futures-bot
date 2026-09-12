@@ -13,8 +13,16 @@ def anyio_backend(): return 'asyncio'
 def crossing(side):
     f=closed_outer_entry_frame(side)
     f['timestamp']=[(i+1)*60000 for i in range(len(f))]
-    # Both closed candles are doji: old two-body confirmation must be irrelevant.
+    sign=1 if side=='LONG' else -1
+    # 2026-09-13 使用者：全新第一筆的一般趨勢要「破軌後第二根也是同色K」；
+    # 其餘已收線K維持十字，只有最後兩根已收線帶順向有效實體。
     f['open']=f['close']
+    for idx in f.index[-3:-1]:
+        closed=float(f.loc[idx,'close'])
+        opened=closed-sign*.8
+        f.loc[idx,['open','close']]=[opened,closed]
+        f.loc[idx,'high']=max(opened,closed)+.1
+        f.loc[idx,'low']=min(opened,closed)-.1
     return f,float(f.iloc[-1]['close'])
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

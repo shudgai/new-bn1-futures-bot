@@ -231,6 +231,7 @@ def channel_swing_action(
     position_path: dict | None = None,
     outer_entry_only: bool = False,
     check_profit_room: bool = True,
+    profit_reentry: bool = False,
     **kwargs
 ) -> dict:
     """Use one MA3 outer-cross entry and position-aware execution exits."""
@@ -243,7 +244,8 @@ def channel_swing_action(
             "side": None,
             "reason": "KC_TREND_END_WAIT",
         }
-    decision = aligned_entry(frame, live_price)
+    # 兩根同色確認只套用在全新第一筆；獲利重開與延續不套用。
+    decision = aligned_entry(frame, live_price, require_second_body=not profit_reentry)
     return decision
 
 def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:

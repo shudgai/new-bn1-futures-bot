@@ -12,6 +12,12 @@ def continuing(side):
     rail='kc_upper' if side=='LONG' else 'kc_lower'
     f.loc[f.index[-4],'close']=float(f.iloc[-2][rail])+s*.1
     f['open']=f['close'];f['high']=f['close']+.1;f['low']=f['close']-.1
+    # 2026-09-13 使用者：全新第一筆的一般趨勢要「破軌後第二根也是同色K」。
+    for idx in f.index[-3:-1]:
+        closed=float(f.loc[idx,'close']);opened=closed-s*.8
+        f.loc[idx,'open']=opened
+        f.loc[idx,'high']=max(opened,closed)+.1
+        f.loc[idx,'low']=min(opened,closed)-.1
     return f,price
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

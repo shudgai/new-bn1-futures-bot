@@ -367,8 +367,12 @@ def channel_tail_entry_blocked(frame, side) -> bool:
     return run >= CHANNEL_TAIL_MAX_TREND_BARS
 
 
-def aligned_entry(frame, price):
-    """Live long-body breaks may precede CK confirmation; retain trend entries."""
+def aligned_entry(frame, price, require_second_body=True):
+    """Live long-body breaks may precede CK confirmation; retain trend entries.
+
+    require_second_body：2026-09-13 使用者要求「一般漲勢破軌後第二根也要同色綠K才開」，
+    只套用在全新第一筆；獲利重開與破軌延續由呼叫端帶 False。
+    """
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
@@ -412,6 +416,9 @@ def aligned_entry(frame, price):
         # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
         # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
+        # 2026-09-13 使用者：全新第一筆的一般趨勢要等「破軌後第二根也是同色K」才開倉。
+        if require_second_body and not body_driven and not two_closed_bodies_ready(frame, side):
+            return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait
         if channel_tail_entry_blocked(frame, side):
@@ -479,8 +486,9 @@ def aligned_entry(frame, price):
         return wait
 
 
-def aligned_entry_ready(frame, price, side):
-    return side in ('LONG', 'SHORT') and aligned_entry(frame, price).get('side') == side
+def aligned_entry_ready(frame, price, side, require_second_body=True):
+    return side in ('LONG', 'SHORT') and aligned_entry(
+        frame, price, require_second_body=require_second_body).get('side') == side
 
 
 def live_ma3_direction_ready(frame, price, side):
@@ -664,7 +672,7 @@ def continuation_entry(frame, price):
 
 def outside_reentry(frame, price, side):
     """Use the same confirmed CK trend for normal reentries."""
-    decision = aligned_entry(frame, price)
+    decision = aligned_entry(frame, price, require_second_body=False)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
     return decision
