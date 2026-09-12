@@ -60,7 +60,7 @@ from core.services.strategies.outer_strategy import (
     outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready,
     three_closed_short_breakout_ready, aligned_entry, aligned_entry_ready,
     live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES,
-    live_body_breakout_side,
+    live_body_breakout_side, long_body_side,
 )
 from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
 from core.services.exits.profit_protection_service import protection, reentry_gate, long_entry_ready, directional_entry_ready
@@ -1791,7 +1791,7 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
-        if self._channel_terminal_market(frame):
+        if self._channel_terminal_market(frame) and not self._terminal_market_exempt(frame, price, side, profit_reentry_token):
             return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
                 symbol, {'side': side, 'profit_reentry_token': profit_reentry_token}):
@@ -2028,7 +2028,9 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
-            if self._channel_terminal_market(fresh_frame):
+            terminal_exempt = self._terminal_market_exempt(
+                fresh_frame, planned_price, side, signal.get("profit_reentry_token"))
+            if self._channel_terminal_market(fresh_frame) and not terminal_exempt:
                 self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：末端期間多空均禁止開倉", "INFO")
                 return False
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
@@ -2039,7 +2041,8 @@ class TradingEngine:
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
             if not ck_reverse and not live_pivot:
-                final_entry = self._channel_swing_action(fresh_frame, planned_price)
+                final_entry = self._channel_swing_action(
+                    fresh_frame, planned_price, allow_terminal_market=terminal_exempt)
                 if final_entry.get("action") != "ENTER" or final_entry.get("side") != side:
                     self.account.log(
                         f"⏳ {symbol} {side} {final_entry.get('reason', 'KC_ENTRY_WAIT')}：最新快照已不適合追入",
@@ -3219,6 +3222,32 @@ class TradingEngine:
         return False
 
     @staticmethod
+    def _special_long_body_entry(frame, price, side):
+        """當根成立特例長K入口：即時長K破軌（開盤在軌內側、報價剛破軌）或順向長實體收在軌外。
+
+        使用者 2026-09-13：特例K線要能追到，不受末端追高上限。
+        """
+        if side not in ("LONG", "SHORT"):
+            return False
+        try:
+            if live_body_breakout_side(frame, price) == side:
+                return True
+            limit = float(getattr(config, "CHANNEL_LONG_BODY_ENTRY_ATR", 0.0) or 0.0)
+            return bool(limit > 0 and long_body_side(frame, limit) == side)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _terminal_market_exempt(frame, price, side, profit_reentry_token=None):
+        """末端弱量禁開只擋全新第一筆：獲利重開與特例長K不受限制。
+
+        使用者 2026-09-13：階梯式漲勢與一般漲勢要能開倉並延續開倉，特例長K要能追到。
+        """
+        if profit_reentry_token:
+            return True
+        return TradingEngine._special_long_body_entry(frame, price, side)
+
+    @staticmethod
     def _profit_reentry_rail_gap(frame, price, side):
         """現價距持倉側 KC 外軌的順向距離（單位＝最新已收線 1m ATR）；資料無效回 None。"""
         try:
@@ -3241,9 +3270,9 @@ class TradingEngine:
         chase_atr = float(getattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR", 0.0) or 0.0)
         if chase_atr > 0 and side in ("LONG", "SHORT"):
             rail_gap = self._profit_reentry_rail_gap(frame, price, side)
-            # 當根即時長K破軌是新訊號（距離被當根實體撐開是正常的），不受末端上限。
+            # 特例長K是新訊號（距離被當根實體撐開是正常的），不受末端上限。
             if (rail_gap is not None and rail_gap > chase_atr + 1e-9
-                    and live_body_breakout_side(frame, price) != side):
+                    and not self._special_long_body_entry(frame, price, side)):
                 self.account.log(
                     f"⏸️ [追高上限] {symbol} 暫不重開（票據保留）：現價離持倉側外軌 "
                     f"{rail_gap:.2f} ATR（上限 {chase_atr:.1f} ATR）", "INFO")

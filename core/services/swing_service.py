@@ -231,12 +231,14 @@ def channel_swing_action(
     position_path: dict | None = None,
     outer_entry_only: bool = False,
     check_profit_room: bool = True,
+    allow_terminal_market: bool = False,
     **kwargs
 ) -> dict:
     """Use one MA3 outer-cross entry and position-aware execution exits."""
     if str(current_side or "").upper() in ("LONG", "SHORT"):
         return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
-    if channel_terminal_market(frame):
+    # 末端弱量禁開只擋全新第一筆；獲利重開與當根即時長K破軌由呼叫端帶 allow_terminal_market。
+    if channel_terminal_market(frame) and not allow_terminal_market:
         return {
             "action": "WAIT",
             "side": None,

@@ -7,6 +7,7 @@
 import pytest
 
 from core import config
+from core.engine import TradingEngine
 from test_channel_breakout_only import invalid_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 
@@ -80,3 +81,36 @@ def test_chase_limit_off_when_zero(side, monkeypatch):
     assert not any("追高上限" in text for text, _level in engine_off.account.logs)
     assert any("追高上限" in text for text, _level in engine_on.account.logs)
     assert ready_on is False
+
+def _special_long_body_frame(side):
+    """把倒數第二根（已收線）做成順向長實體並收在軌外，構成特例長K入口。"""
+    frame, _price = invalid_frame(side, "no_cross")
+    frame["timestamp"] = [(i + 1) * 60000 for i in range(len(frame))]
+    sign = 1 if side == "LONG" else -1
+    rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+    idx = frame.index[-2]
+    opened = rail - sign * 1.0
+    closed = rail + sign * 2.0
+    frame.loc[idx, ["open", "close"]] = [opened, closed]
+    frame.loc[idx, "high"] = max(opened, closed) + 0.1
+    frame.loc[idx, "low"] = min(opened, closed) - 0.1
+    return frame
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_long_body_special_entry_is_exempt_from_chase_limit(side, monkeypatch):
+    frame = _special_long_body_frame(side)
+    sign = 1 if side == "LONG" else -1
+    rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+    price = rail + sign * 4.0 * float(frame.iloc[-2]["atr"])
+    frame.loc[frame.index[-1], ["open", "close"]] = [price - sign * 0.3, price]
+    monkeypatch.setattr(config, "CHANNEL_LONG_BODY_ENTRY_ATR", 2.0, raising=False)
+    assert TradingEngine._special_long_body_entry(frame, price, side) is True
+    assert TradingEngine._terminal_market_exempt(frame, price, side) is True
+    monkeypatch.setattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR", 2.0, raising=False)
+    engine = _engine(frame, side)
+    ready_on = engine._profit_reentry_ready(SYMBOL, _ticket(side), frame, price)
+    monkeypatch.setattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR", 0.0, raising=False)
+    ready_off = _engine(frame, side)._profit_reentry_ready(SYMBOL, _ticket(side), frame, price)
+    assert not any("追高上限" in text for text, _level in engine.account.logs)
+    assert ready_on is ready_off

@@ -156,5 +156,24 @@ async def test_order_routes_recheck_terminal_market(side, route, terminal, monke
     e.tickers[SYMBOL] = price
     e._observe_channel_entry_quote(SYMBOL, price, now * 1000)
     result = await e._place_structured_entry(SYMBOL, signal, price, channel_snapshot=snapshot if route == 'cached' else None)
-    assert bool(result) is (not terminal), e.account.logs
-    assert [event[0] for event in e.account.events] == ([] if terminal else ['open'])
+    # 2026-09-13：末端弱量禁開只擋全新第一筆，獲利重開不受限。
+    blocked = terminal and route != 'reentry'
+    assert bool(result) is (not blocked), e.account.logs
+    assert [event[0] for event in e.account.events] == ([] if blocked else ['open'])
+
+
+def test_terminal_market_exempts_profit_reentry_and_live_long_body():
+    f = frame("LONG")
+    assert TradingEngine._terminal_market_exempt(f, 112.0, "LONG", "token") is True
+    assert TradingEngine._terminal_market_exempt(f, 112.0, "LONG") is False
+    live = frame("LONG")
+    live.loc[live.index[-1], "open"] = float(live.iloc[-1]["kc_upper"]) - 1.0
+    price = float(live.iloc[-1]["kc_upper"]) + 1.0
+    assert TradingEngine._terminal_market_exempt(live, price, "LONG") is True
+    assert TradingEngine._terminal_market_exempt(live, price, "SHORT") is False
+
+
+def test_channel_swing_action_can_bypass_terminal_market():
+    f = frame("LONG")
+    assert TradingEngine._channel_swing_action(f, 112.0, allow_terminal_market=True)["reason"] != "KC_TREND_END_WAIT"
+    assert TradingEngine._channel_swing_action(f, 112.0)["reason"] == "KC_TREND_END_WAIT"

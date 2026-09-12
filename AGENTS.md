@@ -52,7 +52,9 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 - 末端禁開停用（`CHANNEL_TAIL_MAX_TREND_BARS=0`）：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
 - 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控（長K／即時破軌入口不吃實體過熱與前一根大K限制，否則恆不觸發）。
 - 淨利空間尺規：`CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND=true` 與 `CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION=true` 時，強趨勢與一般趨勢延續改用 `CHANNEL_ATR_TARGET_MULT`（3.0）個 ATR 當目標空間，讓階梯式漲勢可以續追。
-- 獲利重開追高上限（2026-09-13 改版）：上次獲利保護平倉後要重開時，量測「現價距持倉側 KC 外軌的順向距離 ÷ 1m ATR」，超過 `CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR`（2.0 ATR）視為末端追價、暫不重開（票據保留，回落仍可追）。當根即時長K破軌是新訊號，不受此上限。**舊「離上次平倉價 2%」規則已移除**。
+- 獲利重開追高上限（2026-09-13 改版）：上次獲利保護平倉後要重開時，量測「現價距持倉側 KC 外軌的順向距離 ÷ 1m ATR」，超過 `CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR`（2.0 ATR）視為末端追價、暫不重開（票據保留，回落仍可追）。**舊「離上次平倉價 2%」規則已移除**。
+- 特例長K豁免（2026-09-13）：當根成立特例長K入口（即時長K破軌，或順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外）時，**不受追高上限**；因為距離是被當根長實體撐開，屬新訊號而非末端追價。
+- 末端弱量禁開（`KC_TREND_END_WAIT`）只擋**全新第一筆**：獲利重開（帶票據）與特例長K照樣可進場，讓階梯式／一般漲勢能續開。
 - 冷卻：停損後 5 分鐘（`CHANNEL_STOP_LOSS_COOLDOWN_SEC=300`）、獲利保護平倉後重開 2 分鐘（`CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC=120`）。
   **強趨勢豁免**：已收線中軌位移 ÷ 軌寬 ≥ `CHANNEL_STRONG_TREND_RATIO`（0.20）且價格在持倉側外軌之外時，兩個冷卻都豁免（使用者：漲勢跌勢強時不在此限）。
 
