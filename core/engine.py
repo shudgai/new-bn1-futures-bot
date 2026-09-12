@@ -2977,6 +2977,35 @@ class TradingEngine:
         except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
             return None
 
+    def _channel_breakout_stop_invalid(self, frame, price, info):
+        """已掛出的破軌觸價單是否該撤（有黏著性，避免條件閃動反覆掛撤）。"""
+        try:
+            from core.services.strategies.outer_strategy import entry_trend_direction
+        except Exception:
+            return None
+        try:
+            side = str(info.get("side") or "").upper()
+            trigger = float(info.get("trigger_price") or 0.0)
+            atr = float(info.get("atr") or 0.0)
+            price = float(price)
+            if side not in ("LONG", "SHORT") or trigger <= 0:
+                return "資料無效"
+            if entry_trend_direction(frame) != side:
+                return "CK 中軌轉向"
+            if side == "LONG" and price >= trigger:
+                return "價格已到觸發價（未成交）"
+            if side == "SHORT" and price <= trigger:
+                return "價格已到觸發價（未成交）"
+            if atr > 0:
+                # 價格反向退回 1.5 ATR 以上代表這波突破動能已消失。
+                if side == "LONG" and trigger - price > 1.5 * atr:
+                    return "價格退回過深"
+                if side == "SHORT" and price - trigger > 1.5 * atr:
+                    return "價格退回過深"
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+            return "資料無效"
+        return None
+
     async def _maintain_channel_breakout_stop(self, symbol, frame, price, daily_halt=False):
         """維護破軌預掛觸價單：條件符合就掛，換根／條件消失／逾時就撤。"""
         if not CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED:
@@ -2996,8 +3025,9 @@ class TradingEngine:
             stale = []
             if info.get("bar_id") != self._channel_candidate_bar_id(frame):
                 stale.append("換根")
-            if plan is None:
-                stale.append("條件消失")
+            invalid_reason = self._channel_breakout_stop_invalid(frame, price, info)
+            if invalid_reason:
+                stale.append(invalid_reason)
             if time.time() - float(info.get("placed_at") or 0.0) > CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC:
                 stale.append("逾時")
             if self._channel_stop_cooldown_remaining(symbol) > 0:
