@@ -310,9 +310,10 @@ def test_long_body_entry_is_not_blocked_by_flat_or_overheat(monkeypatch):
     # 最後一根已收線：長綠實體 2.5 ATR 且收在上軌外；中軌完全沒動（走平）
     rows[-2].update({"open": 101.0, "close": 103.5, "high": 103.6, "low": 100.9,
                      "kc_upper": 102.0})
-    # 即時K：價格仍在上軌外
+    # 即時K：價格仍在上軌外；MA3 確實往上（2026-09-13 新條件）
     rows[-1].update({"open": 103.5, "close": 103.8, "high": 103.9, "low": 103.4,
-                     "kc_upper": 102.5})
+                     "kc_upper": 102.5, "ma3": 100.3})
+    rows[-2]["ma3"] = 100.0
     frame = pd.DataFrame(rows)
     decision = outer_strategy.aligned_entry(frame, 103.8)
     assert decision["action"] == "ENTER" and decision["side"] == "LONG"

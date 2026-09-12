@@ -33,7 +33,8 @@ def test_shared_crossing_rule(side,case):
     if case=='wrong_direction': f.loc[f.index[-2],'kc_middle']=float(f.iloc[-3]['kc_middle'])-s*.1
     if case=='invalid': f.loc[f.index[-2],'close']=float('nan')
     if case=='stale_ma': f['ma3']=1.
-    expected=case in ('valid','stale_ma')
+    # 2026-09-13：MA3 沒有確實往上（stale）不再算合格入口。
+    expected=case == 'valid'
     assert (aligned_entry(f,price)['action']=='ENTER') is expected
     assert (outside_reentry(f,price,side)['action']=='ENTER') is expected
     assert (TradingEngine._channel_swing_action(f,price)['action']=='ENTER') is expected

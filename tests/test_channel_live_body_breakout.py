@@ -24,7 +24,9 @@ def breakout_frame(side, scale=1., ck='opposite'):
     f['low'] = f[['open','close']].min(axis=1) - .1
     f.loc[5, 'high' if side=='LONG' else 'low'] = 110. if side=='LONG' else 90.
     f.loc[f.index[-3:-1], 'kc_middle'] = [100., 100. if ck=='flat' else 100.-sign*.1]
+    # 2026-09-13：MA3 必須確實順向推進（live 那根要比前一顆已收線高／低）。
     f['ma3'] = 80. if side=='LONG' else 120.
+    f.loc[f.index[-1], 'ma3'] = 80.2 if side=='LONG' else 119.8
     f['timestamp'] = [(i+1)*60000. for i in range(len(f))]
     for col in ('open','high','low','close','kc_upper','kc_lower','kc_middle','ema_20','ma3','ma15','atr'):
         f[col] *= scale
@@ -33,9 +35,13 @@ def breakout_frame(side, scale=1., ck='opposite'):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('ck',['flat','opposite'])
 @pytest.mark.parametrize('scale',[1.,.00003])
-def test_first_body_break_ignores_ck_and_ma3_confirmation(side,ck,scale):
-    """即時長K破軌不要求 CK／MA3 先確認（2026-09-13 使用者：有漲勢就該買）。"""
+def test_first_body_break_requires_rising_ma3_and_ck(side,ck,scale):
+    """2026-09-13 使用者：等 MA3 確實往上、KC 都往上再買；MA3 已峰頂轉下就先不買。"""
     f, price = breakout_frame(side,scale,ck)
+    if ck == 'opposite':
+        assert aligned_entry(f,price)['action'] == 'WAIT'
+        assert TradingEngine._channel_swing_action(f,price)['action'] == 'WAIT'
+        return
     assert aligned_entry(f,price)==dict(action='ENTER',side=side,reason='KC_LIVE_BODY_BREAKOUT_'+side)
     assert TradingEngine._channel_swing_action(f,price)['side']==side
     f.loc[f.index[-1],'atr']=1e9

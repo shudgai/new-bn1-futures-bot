@@ -45,7 +45,9 @@ def test_only_breakout_route_and_closed_direction(side, route):
         assert result["action"] == "WAIT"
     assert TradingEngine._channel_swing_action(f, price) == result
     f.loc[19, ["ma3", "ma15", "kc_middle"]] = [float("nan"), 1., 1000.]
-    assert aligned_entry(f, price) == result
+    invalid = aligned_entry(f, price)
+    # 2026-09-13：MA3 無效或沒有確實往上，一律不開。
+    assert invalid["action"] == "WAIT" and invalid["side"] is None
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -81,8 +83,8 @@ def test_order_validation_requires_live_ma3_slope_and_matching_candle(side):
     price = float(f.iloc[-1]["close"])
     assert aligned_entry_ready(f, price, side)
 
-    f.loc[19, "ma3"] = f.loc[18, "ma3"]  # stale indicator is ignored
-    assert aligned_entry_ready(f, price, side)
+    f.loc[19, "ma3"] = f.loc[18, "ma3"]  # MA3 沒有確實往上就不開
+    assert not aligned_entry_ready(f, price, side)
     assert not aligned_entry_ready(f, float(f.iloc[-4]["close"]), side)
 
     f = aligned_frame(side)

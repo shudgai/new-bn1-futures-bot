@@ -54,9 +54,15 @@ def setup(side, monkeypatch, success=True):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_breakout_does_not_wait_for_ma_alignment(side, monkeypatch):
+def test_breakout_still_requires_live_ma3_slope(side, monkeypatch):
+    """2026-09-13 使用者：要等 MA3 確實往上、KC 都往上才買。"""
     f, p, e = setup(side, monkeypatch)
+    sign = 1 if side == 'LONG' else -1
     assert ck_direction(f) == side
+    # 這份 frame 的 MA3 故意往反方向走（模擬 MA3 已峰頂轉下）→ 不開
+    assert not aligned_entry_ready(f, p, side)
+    f.loc[f.index[-2], 'ma3'] = f.loc[f.index[-3], 'ma3'] - sign * .1
+    f.loc[f.index[-1], 'ma3'] = f.loc[f.index[-2], 'ma3'] + sign * .05
     assert aligned_entry_ready(f, p, side)
     f.loc[f.index[-1], ['kc_middle', 'kc_upper', 'kc_lower']] = [999., 1000., 998.]
     assert ck_direction(f) == side

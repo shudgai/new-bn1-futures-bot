@@ -32,6 +32,8 @@ def market(side):
             f[key] = 200. - original[key]
         f['high'], f['low'] = 200.-original['low'], 200.-original['high']
         f['kc_upper'], f['kc_lower'] = 200.-original['kc_lower'], 200.-original['kc_upper']
+    # 2026-09-13：entry 需要 live MA3 確實順向推進。
+    f.loc[f.index[-1], 'ma3'] = float(f.loc[f.index[-2], 'ma3']) + (0.2 if side == 'LONG' else -0.2)
     return f
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

@@ -386,13 +386,28 @@ def aligned_entry(frame, price):
                     return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
             except (KeyError, IndexError, TypeError, ValueError):
                 return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
+        ck_side = entry_trend_direction(frame)
         breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
-        side = breakout_side or entry_trend_direction(frame)
-        # 長K特例：CK 中軌不明或仍反向時，只要出現夠大的順向長實體且收在軌外仍可進場。
-        # 2026-09-13 使用者：有漲勢就該買，中軌下彎不單獨否決（先前加的限制已撤銷）。
+        # 長K特例：CK 中軌不明或持平時，只要出現夠大的順向長實體且收在軌外仍可進場。
         body_side = long_body_side(frame, CHANNEL_LONG_BODY_ENTRY_ATR)
+        side = breakout_side or ck_side
         if body_side is not None and (side is None or side != body_side):
             side = body_side
+        if side is None:
+            return wait
+        # 2026-09-13 使用者：MA3 已經轉彎（轉入軌內／前面已是峰頂）就先不要買；
+        # 要等 MA3 確實往上、KC 也往上再做。以下兩關對所有入口（含特例長K）都適用。
+        if ck_side is not None and ck_side != side:
+            return {**wait, "reason": "KC_MIDDLE_OPPOSITE_WAIT"}
+        try:
+            live_ma3 = float(frame.iloc[-1]["ma3"])
+            closed_ma3 = float(frame.iloc[-2]["ma3"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return {**wait, "reason": "KC_MA3_TURN_WAIT"}
+        if not (math.isfinite(live_ma3) and math.isfinite(closed_ma3)):
+            return {**wait, "reason": "KC_MA3_TURN_WAIT"}
+        if (side == "LONG" and not live_ma3 > closed_ma3) or (side == "SHORT" and not live_ma3 < closed_ma3):
+            return {**wait, "reason": "KC_MA3_TURN_WAIT"}
         # 由長實體驅動的進場（即時破軌／長K特例）不吃「走平禁開」與「實體過熱」：
         # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
         # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
