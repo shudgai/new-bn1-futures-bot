@@ -461,11 +461,9 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True)
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
         # 2026-09-13 使用者：特例K就是特例——入口過濾一律去除，成立就開倉。
         #（跳過：走平、效率、末端、過熱、前一根大K、MA3 轉向、中軌反向、反向異常、兩根確認）
-        # 2026-09-14 使用者：特例K（已收線順向長實體 ≥ CHANNEL_LONG_BODY_ENTRY_ATR，
-        # 目前 1.8 ATR，且收在軌外）一樣無條件開倉；其餘入口才需要破軌＋同色實體K。
-        special_long_body = body_side is not None and side == body_side
-        if special_long_body:
-            return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
+        # 2026-09-14 使用者：破軌開倉的第二根必須「已收線且確定是實體K」才可進場——
+        # 第二根還在跑就先開是錯的（圖1 LAB 16:42 案例：第二根最後收成十字）。
+        # 特例K（單根長實體）也一樣要等第二根收線確認，不再提前進場。
         if require_second_body and not breakout_two_bodies_ready(frame, side):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
