@@ -359,6 +359,10 @@ def volume_decay_exit_ready(
         turned = values[-1] < values[-2] if side == "LONG" else values[-1] > values[-2]
         if not turned:
             return False
+        # 2026-09-14 使用者：量能衰退只在「漲勢末端」成立——走勢還沒走到成熟尾端時不可以平倉
+        #（龙蝦 18:24 那筆就是在趨勢中段被量能衰退平掉，-2.39U）。
+        if not channel_mature_outer_trend_is_weak(frame, side):
+            return False
         from core.strategy import has_real_volume_decay
         return bool(has_real_volume_decay(frame, -1 if side == "LONG" else 1))
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):

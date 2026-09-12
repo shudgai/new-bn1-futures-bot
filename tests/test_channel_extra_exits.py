@@ -77,8 +77,8 @@ def _volume_frame(recent_volume, extreme_volume=None, rows=21):
 def _decay_frame(recent_volume, ma3_before, ma3_last):
     frame = _volume_frame(recent_volume)
     frame["ma3"] = [100.0] * len(frame)
-    frame.loc[frame.index[-3], "ma3"] = ma3_before
-    frame.loc[frame.index[-2], "ma3"] = ma3_last
+    frame.loc[frame.index[-3], "ma3"] = 100.0
+    frame.loc[frame.index[-2], "ma3"] = 100.6
     return frame
 
 
@@ -116,6 +116,18 @@ def test_real_volume_decay_ignores_the_unclosed_bar():
 
 def test_volume_decay_exit_matches_the_strict_detector(monkeypatch):
     frame = _decay_frame(20.0, 100.0, 100.6)
+    # 2026-09-14 使用者：量能衰退只在「漲勢末端」成立 → 讓框架符合成熟量弱的末端條件。
+    if "ma15" not in frame.columns:
+        frame["ma15"] = 101.0
+    frame["ma3"] = frame["ma15"] - 1.0
+    frame["close"] = 100.0
+    frame["atr"] = 1.0
+    for offset, idx in enumerate(frame.index[-5:]):
+        frame.loc[idx, "kc_upper"] = 110.0 - offset
+        frame.loc[idx, "kc_lower"] = 90.0 - offset
+    # 保留原本調好的 MA3 轉彎（被上面的 ma3 覆蓋掉）
+    frame.loc[frame.index[-3], "ma3"] = 100.0
+    frame.loc[frame.index[-2], "ma3"] = 100.6
     assert volume_decay_exit_ready(frame, "SHORT", net_profitable=False) is True
     assert volume_decay_exit_ready(_decay_frame(100.0, 100.0, 100.6), "SHORT", net_profitable=False) is False
 

@@ -83,7 +83,8 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 - **出場標籤正確化（2026-09-14 使用者）**：ATR 括號出場不再一律寫「獲利保護」——觸發停損寫 `Channel Swing ATR_STOP`（顯示「ATR 停損」）、觸發目標寫 `ATR_TARGET`；階梯鎖利／保底停利才寫 `PROFIT_PROTECTION`。票據比對與反向解除同時接受這三種前綴。
 2. 單根瀑布反向實體 ≥ 2.5 ATR；雙已收線反向異常 K 各 ≥ 1 ATR。
 3. MA3 轉進持倉側外軌內 ＋ 單根反向異常K ≥ `CHANNEL_SINGLE_ADVERSE_EXIT_BODY_ATR`（1.0）→ 立即平倉，不等第二根。
-4. MA3 轉彎平倉（2026-09-13 使用者修正）：**必須同時滿足「真量能衰退」＋「MA3 仍持倉側外軌之外卻已轉向往回（朝軌）」＋「從峰谷反向 ≥ 0.10 ATR」才平倉**；量能沒衰退、通道仍寬時不平（多單：MA3 > 上軌且即時 MA3 < 已收線 MA3；空單鏡像）。MA3 正向轉彎、或已回到軌內往上，都不平倉。不再要求 CK 衰退或通道狹窄；真量能衰退出口（`CHANNEL_VOLUME_DECAY_EXIT_ENABLED`，不要求獲利）仍在。沒有 frame 可驗證軌位時不成立（fail-safe）。「真衰退」＝只用已收線K、用中位數比較前後半段、後段至少 3/4 低於前段中位數、創新高／新低那一根必須是低量（爆量創極值不算）。
+4. 出場總原則（2026-09-14 使用者）：「開倉到平倉之間只會有 ①鎖利 ②大瀑布 ③硬止損；量能衰退只發生在末端」。因此**量能衰退平倉必須先通過末端判定**（`channel_mature_outer_trend_is_weak`：MA3/MA15 連續同向 4 根＋外軌連續同向位移 ≥2＋近 3 根已收線量能中位數 < 1.5 倍均量），趨勢中段不得因量能衰退平倉。
+5. MA3 轉彎平倉（2026-09-13 使用者修正）：**必須同時滿足「真量能衰退」＋「MA3 仍持倉側外軌之外卻已轉向往回（朝軌）」＋「從峰谷反向 ≥ 0.10 ATR」才平倉**；量能沒衰退、通道仍寬時不平（多單：MA3 > 上軌且即時 MA3 < 已收線 MA3；空單鏡像）。MA3 正向轉彎、或已回到軌內往上，都不平倉。不再要求 CK 衰退或通道狹窄；真量能衰退出口（`CHANNEL_VOLUME_DECAY_EXIT_ENABLED`，不要求獲利）仍在。沒有 frame 可驗證軌位時不成立（fail-safe）。「真衰退」＝只用已收線K、用中位數比較前後半段、後段至少 3/4 低於前段中位數、創新高／新低那一根必須是低量（爆量創極值不算）。
 5. MA3 穿越 KC 中軌（趨勢反轉）：空單 MA3 由下往上穿越中軌且價格站上中軌、多單對稱（`CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED`）。平倉後可依一般入口轉開反向倉。
 6. CK 狹窄衰退＋MA3 峰谷反向 0.10 ATR（`CHANNEL_FADING_MA3_EXIT_ENABLED`）。
 7. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（4U）啟動，鎖住峰值 − `..._LOCK_OFFSET_USDT`（2U）。
