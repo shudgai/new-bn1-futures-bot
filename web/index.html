@@ -605,9 +605,16 @@
                             <span :class="getPosUnrealizedPnl(getPositionFor(symbol)) >= 0 ? 'up' : 'down'">
                                 未實現 {{ getPosUnrealizedPnl(getPositionFor(symbol)) >= 0 ? '+' : '' }}{{ getPosUnrealizedPnl(getPositionFor(symbol)).toFixed(2) }}U
                             </span>
-                            <span v-if="getPositionFor(symbol).channel_profit_protection && getPositionFor(symbol).channel_profit_protection.armed">
-                                <span class="cp-label">鎖利 </span>{{ getPositionFor(symbol).channel_profit_protection.locked_net.toFixed(2) }}U
+                            <span v-if="getPositionFor(symbol).channel_atr_bracket && getPositionFor(symbol).channel_atr_bracket.locked_net > 0"
+                                  class="up">
+                                <span class="cp-label">已鎖利 </span>+{{ getPositionFor(symbol).channel_atr_bracket.locked_net.toFixed(2) }}U
+                                <span class="cp-label">（停損 {{ formatPrice(getPositionFor(symbol).channel_atr_bracket.stop_price) }}）</span>
                             </span>
+                            <span v-else-if="getPositionFor(symbol).channel_profit_protection && getPositionFor(symbol).channel_profit_protection.armed"
+                                  class="up">
+                                <span class="cp-label">已鎖利 </span>+{{ getPositionFor(symbol).channel_profit_protection.locked_net.toFixed(2) }}U
+                            </span>
+                            <span v-else class="cp-label">尚未鎖利（浮盈未達門檻）</span>
                         </template>
                         <span v-else class="cp-label">目前無持倉</span>
                     </div>
@@ -1305,6 +1312,8 @@
                             const ctx = (this._charts || {})[symbol];
                             if (container && ctx?.chart) {
                                 ctx.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+                                // 全螢幕進出時把整段已載入的 K 線自動縮放到滿版
+                                try { ctx.chart.timeScale().fitContent(); } catch (e) {}
                             }
                         });
                     });

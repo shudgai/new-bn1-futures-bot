@@ -82,6 +82,15 @@ def protection(position, price, fee, slippage, frame=None):
         except (TypeError, ValueError):
             atr = 0.0
         if atr > 0:
+            # ATR 括號模式：固定停損／目標之外，併用階梯鎖利保護既有獲利
+            # （峰值 ≥ ARM 就把停損抬到 峰值 − OFFSET），讓介面能顯示「已鎖利」。
+            state_atr = position.setdefault("channel_atr_bracket", {})
+            state_atr["peak_net"] = max(float(state_atr.get("peak_net") or net), net)
+            peak_net = float(state_atr["peak_net"])
+            arm = float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT)
+            step = float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT)
+            lock = (float(math.floor(peak_net / step) * step - step)
+                    if peak_net >= arm and step > 0 else 0.0)
             reason = str(position.get("reason") or "")
             long_body = "KC_LIVE_BODY_BREAKOUT" in reason or "LONG_BODY" in reason
             target_mult = (config.CHANNEL_ATR_LONG_BODY_TARGET_MULT if long_body
@@ -90,14 +99,16 @@ def protection(position, price, fee, slippage, frame=None):
             target_offset = atr * target_mult
             stop = entry - sign * stop_offset
             target = entry + sign * target_offset
+            if lock > 0:
+                locked_price = locked_stop_price(entry, side, qty, lock, fee, slippage)
+                stop = max(stop, locked_price) if sign > 0 else min(stop, locked_price)
+            state_atr.update(stop_price=stop, target_price=target, atr=atr, locked_net=lock)
             hit_stop = price <= stop if sign > 0 else price >= stop
             hit_target = price >= target if sign > 0 else price <= target
-            state_atr = position.setdefault("channel_atr_bracket", {})
-            state_atr.update(stop_price=stop, target_price=target, atr=atr)
             return {"triggered": bool(hit_stop or hit_target), "stop_price": stop,
                     "target_price": target,
                     "peak_gross": float(state_atr.get("peak_gross") or 0.0),
-                    "net_pnl": net, "locked_net": 0.0, "peak_net": net,
+                    "net_pnl": net, "locked_net": lock, "peak_net": peak_net,
                     "retracement_fraction": 0.0}
     state = position.setdefault("channel_profit_protection", {})
     identity = [side, position.get('open_timestamp'), entry, qty]
