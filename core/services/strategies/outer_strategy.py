@@ -461,13 +461,11 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True)
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
         # 2026-09-13 使用者：特例K就是特例——入口過濾一律去除，成立就開倉。
         #（跳過：走平、效率、末端、過熱、前一根大K、MA3 轉向、中軌反向、反向異常、兩根確認）
-        # 2026-09-13 使用者：V 型谷底（或 MA3 中軌折返）成立就是「新破軌」——
-        # 連特例K也要破軌＋兩根實體K，不可提前進場。
-        if body_driven and special_k_exempt:
+        # 2026-09-13 使用者：特例K在谷底也要開倉——特例K一律直接進場，不受重置規則限制。
+        if body_driven:
             return {"action": "ENTER", "side": side,
                     "reason": ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side}
-        if require_second_body and (not body_driven or not special_k_exempt) \
-                and not two_closed_bodies_ready(frame, side):
+        if require_second_body and not two_closed_bodies_ready(frame, side):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait
