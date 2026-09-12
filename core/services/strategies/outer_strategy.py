@@ -416,8 +416,9 @@ def aligned_entry(frame, price, require_second_body=True):
         # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
         # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
-        # 2026-09-13 使用者：全新第一筆的一般趨勢要等「破軌後第二根也是同色K」才開倉。
-        if require_second_body and not body_driven and not two_closed_bodies_ready(frame, side):
+        # 2026-09-13 使用者：第一次破軌（含即時長K破軌）都要「破軌那根＋第二根」都是同色
+        # 實體K才開倉；突破處沒有兩根實體K代表量能不夠，不能開。
+        if require_second_body and not two_closed_bodies_ready(frame, side):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait

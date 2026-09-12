@@ -307,6 +307,9 @@ def test_long_body_entry_is_not_blocked_by_flat_or_overheat(monkeypatch):
         rows.append({"open": 100.0, "close": 100.0, "high": 100.1, "low": 99.9,
                      "kc_upper": 101.0, "kc_lower": 99.0, "kc_middle": 100.0,
                      "ema_20": 100.0, "ma3": 100.0, "ma15": 100.0, "atr": 1.0})
+    # 2026-09-13：第一次破軌要「破軌那根＋第二根」都是同色實體K。
+    rows[-3].update({"open": 100.0, "close": 101.4, "high": 101.5, "low": 99.9,
+                     "kc_upper": 101.0})
     # 最後一根已收線：長綠實體 2.5 ATR 且收在上軌外；中軌完全沒動（走平）
     rows[-2].update({"open": 101.0, "close": 103.5, "high": 103.6, "low": 100.9,
                      "kc_upper": 102.0})
