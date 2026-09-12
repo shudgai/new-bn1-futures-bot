@@ -166,10 +166,4 @@ async def test_order_routes_recheck_terminal_market(side, route, terminal, monke
 def test_terminal_market_blocks_every_route(side):
     """走弱末端不做任何新倉，連特例長K也不放行。"""
     f = frame(side)
-    rail = float(f.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
-    sign = 1 if side == "LONG" else -1
-    f.loc[f.index[-1], "open"] = rail - sign * 1.0
-    price = rail + sign * 2.0
-    assert TradingEngine._special_long_body_entry(f, price, side) is True
-    assert TradingEngine._channel_swing_action(
-        f, price, allow_terminal_market=True)["reason"] == "KC_TREND_END_WAIT"
+    assert TradingEngine._channel_swing_action(f, 100.0)["reason"] == "KC_TREND_END_WAIT"

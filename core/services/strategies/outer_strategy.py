@@ -386,17 +386,11 @@ def aligned_entry(frame, price):
                     return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
             except (KeyError, IndexError, TypeError, ValueError):
                 return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
-        ck_side = entry_trend_direction(frame)
         breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
-        # 2026-09-13 使用者：CK 中軌已經下彎就先不要買，要等它再向上。
-        # 特例長K（即時破軌／長實體）只在中軌「不明或同向」時成立，不得覆蓋反向中軌；
-        # 中軌持平（direction 為 None）時仍保留原本的 CK 不明特例。
-        if breakout_side is not None and ck_side is not None and ck_side != breakout_side:
-            breakout_side = None
-        side = breakout_side or ck_side
+        side = breakout_side or entry_trend_direction(frame)
+        # 長K特例：CK 中軌不明或仍反向時，只要出現夠大的順向長實體且收在軌外仍可進場。
+        # 2026-09-13 使用者：有漲勢就該買，中軌下彎不單獨否決（先前加的限制已撤銷）。
         body_side = long_body_side(frame, CHANNEL_LONG_BODY_ENTRY_ATR)
-        if body_side is not None and ck_side is not None and ck_side != body_side:
-            body_side = None
         if body_side is not None and (side is None or side != body_side):
             side = body_side
         # 由長實體驅動的進場（即時破軌／長K特例）不吃「走平禁開」與「實體過熱」：

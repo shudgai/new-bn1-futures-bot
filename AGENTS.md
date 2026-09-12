@@ -51,7 +51,6 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌、順向實體 ≥ 上一根已收線 ATR 的 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`（1.0）才成立；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外」的 CK 不明特例。
 - 末端禁開停用（`CHANNEL_TAIL_MAX_TREND_BARS=0`）：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
 - 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控（長K／即時破軌入口不吃實體過熱與前一根大K限制，否則恆不觸發）。
-- CK 中軌反向禁入（2026-09-13 使用者）：特例長K（即時破軌／長實體）只在中軌「不明或同向」時成立，**不得覆蓋反向中軌**——中軌已下彎就先不要買多，要等它再向上。
 - 淨利空間尺規：`CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND=true` 與 `CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION=true` 時，強趨勢與一般趨勢延續改用 `CHANNEL_ATR_TARGET_MULT`（3.0）個 ATR 當目標空間，讓階梯式漲勢可以續追。
 - 獲利重開追高上限（2026-09-13 改版）：上次獲利保護平倉後要重開時，量測「現價距持倉側 KC 外軌的順向距離 ÷ 1m ATR」，超過 `CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR`（2.0 ATR）視為末端追價、暫不重開（票據保留，回落仍可追）。**舊「離上次平倉價 2%」規則已移除**。
 - 特例長K豁免（2026-09-13）：當根成立特例長K入口（即時長K破軌，或順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外）時，**不受追高上限**；因為距離是被當根長實體撐開，屬新訊號而非末端追價。

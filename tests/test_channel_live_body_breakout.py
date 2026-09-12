@@ -33,13 +33,9 @@ def breakout_frame(side, scale=1., ck='opposite'):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('ck',['flat','opposite'])
 @pytest.mark.parametrize('scale',[1.,.00003])
-def test_first_body_break_ignores_flat_ck_but_not_opposite(side,ck,scale):
-    """2026-09-13 使用者：CK 中軌已反向就先不要買；持平仍走即時長K破軌特例。"""
+def test_first_body_break_ignores_ck_and_ma3_confirmation(side,ck,scale):
+    """即時長K破軌不要求 CK／MA3 先確認（2026-09-13 使用者：有漲勢就該買）。"""
     f, price = breakout_frame(side,scale,ck)
-    if ck == 'opposite':
-        assert aligned_entry(f,price)['side'] is None
-        assert TradingEngine._channel_swing_action(f,price)['side'] is None
-        return
     assert aligned_entry(f,price)==dict(action='ENTER',side=side,reason='KC_LIVE_BODY_BREAKOUT_'+side)
     assert TradingEngine._channel_swing_action(f,price)['side']==side
     f.loc[f.index[-1],'atr']=1e9
