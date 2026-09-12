@@ -3265,6 +3265,32 @@ class TradingEngine:
         return False
 
     @staticmethod
+    def _channel_v_bottom_after_exit(ticket, frame):
+        """出場後是否已形成 V 型谷底（先跌一段、低點在區間中間、之後回升）。
+
+        使用者 2026-09-13：形成谷底後的突破視為「新突破」，重開／延續也要兩根實體K。
+        """
+        try:
+            exited = float(ticket.get("exit_bar_id") or 0.0)
+            stamps = [float(v) for v in frame["timestamp"]]
+            lows = [float(v) for v in frame["low"]]
+            closes = [float(v) for v in frame["close"]]
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+        idx = [i for i, t in enumerate(stamps) if math.isfinite(t) and t > exited]
+        if len(idx) < 3:
+            return False
+        seg = [lows[i] for i in idx]
+        if not all(math.isfinite(v) for v in seg):
+            return False
+        pos = seg.index(min(seg))
+        if pos == 0 or pos >= len(idx) - 1:
+            return False
+        low = seg[pos]
+        after = [closes[i] for i in idx[pos + 1:]]
+        return bool(after) and max(after) > low and after[-1] > low
+
+    @staticmethod
     def _special_long_body_entry(frame, price, side):
         """當根成立特例長K入口：即時長K破軌（開盤在軌內側、報價剛破軌）或順向長實體收在軌外。
 
@@ -3369,7 +3395,9 @@ class TradingEngine:
             self.account.save_state()
         if ready and not ticket.get('requires_pullback', True) and self._live_pivot_ready(symbol, frame, price, ticket['side']):
             return True
-        decision = outside_reentry(frame, price, ticket["side"])
+        decision = outside_reentry(
+            frame, price, ticket["side"],
+            require_second_body=self._channel_v_bottom_after_exit(ticket, frame))
         if not self._profit_pivot_is_new(ticket, frame):
             return False
         return ready and decision.get("side") == ticket["side"]

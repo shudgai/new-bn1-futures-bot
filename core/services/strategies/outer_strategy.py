@@ -674,9 +674,13 @@ def continuation_entry(frame, price):
     return wait
 
 
-def outside_reentry(frame, price, side):
-    """Use the same confirmed CK trend for normal reentries."""
-    decision = aligned_entry(frame, price, require_second_body=False)
+def outside_reentry(frame, price, side, require_second_body=False):
+    """Use the same confirmed CK trend for normal reentries.
+
+    require_second_body=True：2026-09-13 使用者要求「跌下來形成 V 型谷底後，
+    再往上突破要當成新突破」——此時重開／延續也必須破軌＋兩根實體K。
+    """
+    decision = aligned_entry(frame, price, require_second_body=require_second_body)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
     return decision
