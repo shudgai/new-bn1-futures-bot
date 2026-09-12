@@ -48,8 +48,9 @@ def _plan(price, **kwargs):
 
 
 def _trigger(rail, opened, atr):
-    """測試環境（conftest）會覆寫長K門檻，一律以執行時的值計算。"""
-    return max(rail, opened + outer.LIVE_BREAKOUT_BODY_ATR * atr)
+    """預掛觸價單的觸發價已與特例K門檻拆開（2026-09-12 使用者）。"""
+    from core.config import CHANNEL_BREAKOUT_STOP_BODY_ATR
+    return max(rail, opened + CHANNEL_BREAKOUT_STOP_BODY_ATR * atr)
 
 
 def test_trigger_uses_long_body_level_when_close_to_rail():

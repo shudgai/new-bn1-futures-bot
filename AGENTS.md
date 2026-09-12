@@ -52,7 +52,8 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 ## 破軌預掛觸價單（2026-09-12 使用者核准 A 方案，最新授權）
 - 目的：使用者指出「買進已在外軌中段，為什麼沒有辦法破軌就買」。毫秒資料證實龍蝦 22:35 那根由 0.13674 衝到 0.14475 只花 **64 毫秒**；行情串流每秒才推一次報價，加上每輪重抓 K 線與送單前重驗要 1.5～2 秒，市價單必然追在長K上半段（實際成交 0.14044）。因此改為「破軌價位預掛觸價單」。
 - 掛單條件（多空對稱，只掛當根）：最近兩根已收線 CK 中軌順向、現價仍在觸發價內側、現價距觸發價 ≤ `CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR`（1.0 ATR）、量能 ≥1.5×近20根均量、無持倉／無掛單／無平倉鎖、停損冷卻中不掛。
-- 觸發價＝多單 `max(上軌, 當根開盤 + CHANNEL_LIVE_BREAKOUT_BODY_ATR×ATR)`，空單對稱取 `min`；觸價即為「特例K成立」，由交易所端 STOP_MARKET 立即市價進場（`workingType=CONTRACT_PRICE`、`reduceOnly=false`）。
+- 觸發價＝多單 `max(上軌, 當根開盤 + CHANNEL_BREAKOUT_STOP_BODY_ATR×ATR)`，空單對稱取 `min`（**2026-09-12 使用者：與特例K門檻拆開**；`CHANNEL_BREAKOUT_STOP_BODY_ATR` 預設 0.0＝直接掛在外軌價位＝純破軌就買，特例K門檻 `CHANNEL_LIVE_BREAKOUT_BODY_ATR` 另有 1.7 的設定互不影響）。只做「第一次從軌內往外突破」，開盤已在軌外（延續段）不預掛。由交易所端 STOP_MARKET 立即市價進場（`workingType=CONTRACT_PRICE`、`reduceOnly=false`）。
+- 成交後是否標記 `entry_special_k`（走特例K出口）：以「開盤到成交價的實體是否仍達 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`」判定，未達標者算一般破軌進場。
 - 撤單條件：換根、條件消失（現價已破軌或退回太遠、量能不足、CK 轉向）、超過 `CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC`（75 秒）、停損冷卻開始、已有持倉、或一般訊號要進場時先撤單（避免同一根 K 兩種入口各開一次）。
 - 成交判定：偵測到同向持倉且成交價與觸發價差距 ≤1.5% 才認定是這張觸價單成交，並標記 `entry_special_k`（走特例K的 2U/1U 鎖利＋1.5 ATR 停損）；同向但價差過大、或反向持倉，只撤單不誤標。
 - 開機時對「沒有持倉」的幣種清掉殘留條件單，避免記憶體追蹤遺失後自行觸價進場；有持倉的幣種不動。

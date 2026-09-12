@@ -102,7 +102,7 @@ from core.config import (
     CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC,
     CHANNEL_1H_TREND_FILTER_ENABLED, CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC,
     CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED, CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR,
-    CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC,
+    CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC, CHANNEL_BREAKOUT_STOP_BODY_ATR,
     CHANNEL_STRONG_TREND_RATIO, CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
     API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
@@ -2939,7 +2939,7 @@ class TradingEngine:
         """
         try:
             from core.services.strategies.outer_strategy import (
-                entry_trend_direction, special_volume_surge_ok, LIVE_BREAKOUT_BODY_ATR,
+                entry_trend_direction, special_volume_surge_ok,
             )
             if frame is None or len(frame) < 4:
                 return None
@@ -2953,14 +2953,20 @@ class TradingEngine:
             price = float(price)
             if not all(math.isfinite(v) and v > 0 for v in (opened, atr, rail, price)):
                 return None
+            # 預掛觸價單只做「第一次從軌內往外突破」；開盤已在軌外＝延續段，
+            # 交給一般入口，不在這裡預掛（2026-09-12 使用者：觸發價與特例K門檻拆開）。
+            if side == "LONG" and opened >= rail:
+                return None
+            if side == "SHORT" and opened <= rail:
+                return None
             if side == "LONG":
-                trigger = max(rail, opened + LIVE_BREAKOUT_BODY_ATR * atr)
+                trigger = max(rail, opened + CHANNEL_BREAKOUT_STOP_BODY_ATR * atr)
                 if price >= trigger:
                     return None
                 if trigger - price > CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR * atr:
                     return None
             else:
-                trigger = min(rail, opened - LIVE_BREAKOUT_BODY_ATR * atr)
+                trigger = min(rail, opened - CHANNEL_BREAKOUT_STOP_BODY_ATR * atr)
                 if price <= trigger:
                     return None
                 if price - trigger > CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR * atr:
@@ -2973,6 +2979,7 @@ class TradingEngine:
                 "atr": atr,
                 "bar_id": self._channel_candidate_bar_id(frame),
                 "rail": rail,
+                "bar_open": opened,
             }
         except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
             return None
@@ -3048,7 +3055,7 @@ class TradingEngine:
             symbol, plan["side"], plan["trigger"], amount,
             atr=plan["atr"], signal_score=100,
             reason=f"Channel Swing KC_BREAKOUT_STOP_{plan['side']}",
-            bar_id=plan["bar_id"],
+            bar_id=plan["bar_id"], bar_open=plan.get("bar_open"),
         )
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False):

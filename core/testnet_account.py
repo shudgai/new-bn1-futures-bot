@@ -2390,7 +2390,7 @@ class BinanceTestnetAccount:
     async def place_breakout_stop_entry(
         self, symbol: str, side: str, trigger_price: float, amount_usdt: float,
         atr: float = 0.0, reason: str = "", signal_score: int = None,
-        bar_id: object = None, leverage: int = None,
+        bar_id: object = None, leverage: int = None, bar_open: float = None,
     ) -> bool:
         """破軌預掛觸價單：價格觸及破軌價位時，由交易所端立刻市價進場。
 
@@ -2451,6 +2451,7 @@ class BinanceTestnetAccount:
             "reason": reason,
             "signal_score": signal_score,
             "bar_id": bar_id,
+            "bar_open": float(bar_open or 0.0),
             "placed_at": time.time(),
         }
         self.log(
@@ -2500,19 +2501,35 @@ class BinanceTestnetAccount:
                 except (TypeError, ValueError):
                     matched = True
             if matched:
+                # 觸發價與特例K門檻已拆開：只有成交時實體仍達特例K門檻才標記
+                # entry_special_k，否則算一般破軌進場（2026-09-12 使用者）。
+                from core.config import CHANNEL_LIVE_BREAKOUT_BODY_ATR
+                try:
+                    bar_open = float(info.get("bar_open") or 0.0)
+                    atr_val = float(info.get("atr") or 0.0)
+                    entry_px = float(position.get("entry_price") or 0.0)
+                    is_special = bool(
+                        bar_open > 0 and atr_val > 0 and entry_px > 0
+                        and abs(entry_px - bar_open) >= CHANNEL_LIVE_BREAKOUT_BODY_ATR * atr_val
+                    )
+                except (TypeError, ValueError):
+                    is_special = False
                 meta = self.position_meta.setdefault(symbol, {})
                 meta["entry_mode"] = meta.get("entry_mode") or "CHANNEL_SWING"
-                meta["entry_special_k"] = True
+                if not is_special:
+                    meta.pop("entry_special_k", None)
                 meta["reason"] = info.get("reason") or meta.get("reason")
                 if info.get("atr"):
                     meta["atr"] = float(info["atr"])
                 if info.get("signal_score") is not None:
                     meta["signal_score"] = info["signal_score"]
-                position["entry_special_k"] = True
+                if is_special:
+                    position["entry_special_k"] = True
                 self.breakout_stop_entries.pop(symbol, None)
                 self.log(
                     f"✅ [破軌觸價單成交] {symbol} {held_side} 已由交易所觸價進場"
-                    f"（觸價 {info.get('trigger_price')}）",
+                    f"（觸價 {info.get('trigger_price')}，"
+                    f"{'特例K' if is_special else '一般破軌'}）",
                     "SUCCESS",
                 )
                 self.save_state()

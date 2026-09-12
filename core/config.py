@@ -364,6 +364,12 @@ CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED = os.getenv(
 CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR = max(
     0.0, float(os.getenv("CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR", "1.0"))
 )
+# 2026-09-12 使用者：把「預掛觸價單的觸發價」與「特例K門檻」拆開。特例K門檻
+# （CHANNEL_LIVE_BREAKOUT_BODY_ATR）提高後，預掛單不該跟著變高——預掛單要的是
+# 「破軌就買」，所以預設 0.0＝直接掛在外軌價位（純破軌），可自行調整為 0.5/1.0。
+CHANNEL_BREAKOUT_STOP_BODY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_BREAKOUT_STOP_BODY_ATR", "0.0"))
+)
 # 預掛觸價單最長存活秒數；換根、條件消失、成交、超時都會撤單。
 CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC = max(
     5.0, float(os.getenv("CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC", "75"))
