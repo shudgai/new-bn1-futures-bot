@@ -504,6 +504,19 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             # 2026-09-14 使用者：特例K要量能確認（突破根量 ≥1.5×近20根均量），沒量視為假突破。
             if not special_volume_surge_ok(frame, -2):
                 return {**wait, "reason": "KC_SPECIAL_LOW_VOLUME_WAIT"}
+            # 2026-09-15 使用者：「不要在不是破軌的地方開倉」——已收線長實體的收盤雖在軌外，
+            # 但進場當下價格若已縮回軌內，就不准開（避免在通道內進場）。
+            try:
+                live_rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+                live_price = float(price)
+                if not (math.isfinite(live_rail) and math.isfinite(live_price)):
+                    return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+                if side == "LONG" and live_price <= live_rail:
+                    return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+                if side == "SHORT" and live_price >= live_rail:
+                    return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+            except (KeyError, IndexError, TypeError, ValueError):
+                return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
             return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
         # 2026-09-14 使用者：即時特例K（當根長實體破軌）也要量能確認。
         if body_driven and not special_volume_surge_ok(frame, -1):
