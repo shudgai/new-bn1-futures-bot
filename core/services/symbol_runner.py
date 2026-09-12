@@ -247,6 +247,9 @@ async def process_single_symbol_runner(
                                    "side": existing_pos["side"],
                                    "old_side": existing_pos["side"], "mode": "outer_cycle",
                                    "close_reason": close_reason,
+                                   "special_k_entry": bool(
+                                       existing_pos.get("entry_special_k")
+                                       or engine.account.position_meta.get(symbol, {}).get("entry_special_k")),
                                    "close_requested_at_ms": int(time.time() * 1000),
                                    "requires_pullback": False,
                                    "opened_at": existing_pos.get("open_timestamp"),

@@ -2294,6 +2294,15 @@ class TradingEngine:
                 price=planned_price, **kwargs
             )
         if placed:
+            # 2026-09-14 使用者：記錄這筆是否為特例K進場——特例K平倉後，下一次要等
+            # 「第二根同色實體K」才能再開（不可用延續豁免）。
+            try:
+                if (self._special_long_body_entry(fresh_frame, planned_price, str(signal.get("side") or "").upper())
+                        or str(signal.get("signal_code") or "") in LIVE_BODY_BREAKOUT_CODES):
+                    self.account.position_meta.setdefault(symbol, {})["entry_special_k"] = True
+                    self.account.save_state()
+            except (AttributeError, KeyError, TypeError, ValueError):
+                pass
             pivot = getattr(self, '_channel_live_pivots', None)
             if pivot is not None:
                 pivot.reset(symbol)
@@ -3390,7 +3399,10 @@ class TradingEngine:
         if ready and not ticket.get('requires_pullback', True) and self._live_pivot_ready(symbol, frame, price, ticket['side']):
             return True
         # 2026-09-14 使用者：沒有兩根實體K線就不應該開倉（唯一例外：長實體特例K）。
-        decision = outside_reentry(frame, price, ticket["side"], require_second_body=True)
+        # 2026-09-14 使用者：特例K已平倉後，下一次要「第二根同色實體K」才能開 → 不給延續豁免。
+        decision = outside_reentry(
+            frame, price, ticket["side"], require_second_body=True,
+            continuation_exempt=not bool(ticket.get("special_k_entry")))
         if not self._profit_pivot_is_new(ticket, frame):
             return False
         return ready and decision.get("side") == ticket["side"]

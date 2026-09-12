@@ -475,7 +475,8 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         # 延續段（連續兩根已收線都在軌外）單根同色K即可；首次破軌才要兩根。
         # continuation_exempt：只有「平倉後的延續／重開」帶 True（2026-09-14 使用者：
         # 站上外軌代表已突破，平倉後可延續開倉）。
-        if (require_second_body and not continuation_ready
+        # 2026-09-14 使用者：即時特例K（當根長實體破軌）要當根就開，不等第二根確認。
+        if (require_second_body and not body_driven and not continuation_ready
                 and not breakout_two_bodies_ready(frame, side)):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
@@ -816,14 +817,14 @@ def continuation_entry(frame, price):
     return wait
 
 
-def outside_reentry(frame, price, side, require_second_body=True):
+def outside_reentry(frame, price, side, require_second_body=True, continuation_exempt=True):
     """Use the same confirmed CK trend for normal reentries.
 
     2026-09-14 使用者：站上外軌代表已突破，所以**平倉後可延續開倉**——重開時
     若最近兩根已收線都在持倉側外軌之外，單根同色K即可（continuation_exempt）。
     """
     decision = aligned_entry(frame, price, require_second_body=require_second_body,
-                             continuation_exempt=True)
+                             continuation_exempt=continuation_exempt)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
     return decision
