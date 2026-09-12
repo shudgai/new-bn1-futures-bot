@@ -91,7 +91,8 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 5. MA3 穿越 KC 中軌（趨勢反轉）：空單 MA3 由下往上穿越中軌且價格站上中軌、多單對稱（`CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED`）。平倉後可依一般入口轉開反向倉。
 6. CK 狹窄衰退＋MA3 峰谷反向 0.10 ATR（`CHANNEL_FADING_MA3_EXIT_ENABLED`）。
 7. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（4U）啟動，鎖住峰值 − `..._LOCK_OFFSET_USDT`（2U）；每 2U 上移一階。
-   - **特例K專用（2026-09-14 使用者）**：特例K進場的持倉**不走 ATR 括號**，改用固定鎖利（階梯 4U→鎖峰值−2U＋保底 +0.6U）；其他進場仍用 ATR 括號（1.5 停損／3 目標）。
+   - **特例K＝早點入袋（2026-09-14 使用者）**：ATR 停損 1.5 ATR（虧損底線）＋階梯鎖利「峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_SPECIAL_K_USDT`（2U）啟動 → 鎖峰值 − `..._LOCK_OFFSET_SPECIAL_K_USDT`（1U）」；**不設 ATR 目標**。
+   - **一般進場（破軌確認／延續／重開）**：ATR 停損 1.5 ATR ＋ ATR 目標 3 ATR ＋ 階梯鎖利「峰值 ≥ 4U → 鎖峰值 − 2U」，**三者誰先到誰出**。
 8. 保底停利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT`（2U）後，出場不得低於 `..._FLOOR_NET_USDT`（+0.6U）。0.3U 會被成交滑價吃光（實測 -0.01）。
 9. 日虧損停機：`MAX_DAILY_LOSS_PCT=0`（測試中未啟用）。
 
