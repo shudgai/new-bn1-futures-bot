@@ -318,9 +318,11 @@ CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION = os.getenv(
     "CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION", "false"
 ).lower() == "true"
 
-# 獲利重開追高上限：現價若比上次平倉價順向高出超過此比例，票據作廢不追（0＝停用）。
-CHANNEL_PROFIT_REENTRY_MAX_CHASE_PCT = max(
-    0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_MAX_CHASE_PCT", "0.02"))
+# 獲利重開追高上限（ATR 版，2026-09-13 取代「離上次平倉價 2%」）：
+# 現價距持倉側 KC 外軌的順向距離除以最新已收線 1m ATR，超過此倍數視為末端追價、
+# 暫不重開（0＝停用）。當根即時長K破軌是新訊號，不受此上限。
+CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR = max(
+    0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR", "2.0"))
 )
 
 # ATR 括號出口（原型驗證版）：以進場時 ATR 設停損與目標，取代階梯鎖利。

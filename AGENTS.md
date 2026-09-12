@@ -41,16 +41,18 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 # 🤖 AGENTS.md — AI 助理規則（Binance Futures Bot 2.0）
 
 
-## 🟢 現行生效規則（單一來源，2026-09-12 更新）
+## 🟢 現行生效規則（單一來源，2026-09-13 更新）
 > 本區塊以「程式實際行為」為準，並由 `core/services/rule_registry.py` 在每次啟動時印出。以下任何舊條文與本區塊衝突者一律以本區塊為準；舊條文僅保留授權追溯，不代表仍生效。
 
 **開倉入口（只有一條趨勢入口）**
 1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或資料無效不開。
    - KC 走平禁開：中軌位移 ÷ 軌寬 < `CHANNEL_FLAT_MIDDLE_RATIO`（0.05）不開，多空對稱；用軌寬相對值避免低價幣被絕對門檻誤擋。
    - 1h 大趨勢過濾：`CHANNEL_1H_TREND_FILTER_ENABLED=true`，1h SuperTrend 方向與進場方向不一致就不開（快取尚未取得時不擋）。原本此快取只用在 15m 軟停損，進場完全沒看大週期。
-2. 即時長K破軌入口：**停用**（`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=false`，使用者指定不以破軌上漲開倉）。
+2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌、順向實體 ≥ 上一根已收線 ATR 的 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`（1.0）才成立；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外」的 CK 不明特例。
 - 末端禁開停用（`CHANNEL_TAIL_MAX_TREND_BARS=0`）：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
-- 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控。
+- 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控（長K／即時破軌入口不吃實體過熱與前一根大K限制，否則恆不觸發）。
+- 淨利空間尺規：`CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND=true` 與 `CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION=true` 時，強趨勢與一般趨勢延續改用 `CHANNEL_ATR_TARGET_MULT`（3.0）個 ATR 當目標空間，讓階梯式漲勢可以續追。
+- 獲利重開追高上限（2026-09-13 改版）：上次獲利保護平倉後要重開時，量測「現價距持倉側 KC 外軌的順向距離 ÷ 1m ATR」，超過 `CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR`（2.0 ATR）視為末端追價、暫不重開（票據保留，回落仍可追）。當根即時長K破軌是新訊號，不受此上限。**舊「離上次平倉價 2%」規則已移除**。
 - 冷卻：停損後 5 分鐘（`CHANNEL_STOP_LOSS_COOLDOWN_SEC=300`）、獲利保護平倉後重開 2 分鐘（`CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC=120`）。
   **強趨勢豁免**：已收線中軌位移 ÷ 軌寬 ≥ `CHANNEL_STRONG_TREND_RATIO`（0.20）且價格在持倉側外軌之外時，兩個冷卻都豁免（使用者：漲勢跌勢強時不在此限）。
 
@@ -66,7 +68,7 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 9. 日虧損停機：`MAX_DAILY_LOSS_PCT=0`（測試中未啟用）。
 
 **交易幣種**
-- `DEFAULT_SYMBOLS="1000PEPE/USDT,龙虾/USDT"`（使用者 2026-09-12 指定兩個都做）。程式內原本硬寫死的幣種清單已改為讀設定。
+- `DEFAULT_SYMBOLS="龙虾/USDT,LAB/USDT"`、`MAX_SLOTS=2`（每槽 50%）、`LEVERAGE=5`。程式內原本硬寫死的幣種清單已改為讀設定；1000PEPE 已依使用者要求移除。
 
 **已停用但仍在程式內**
 - 34 個函式已改成固定回傳、不參與判斷，清單見 `core/services/rule_registry.py` 的 `RETIRED_GATE_FUNCTIONS`；啟動會印出數量，`tests/test_rule_registry.py` 確保清單與程式碼一致。

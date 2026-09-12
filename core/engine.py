@@ -59,7 +59,8 @@ from core.services.strategies.outer_strategy import (
     LIVE_BODY_BREAKOUT_CODES, ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES,
     outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready,
     three_closed_short_breakout_ready, aligned_entry, aligned_entry_ready,
-    live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
+    live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES,
+    live_body_breakout_side,
 )
 from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
 from core.services.exits.profit_protection_service import protection, reentry_gate, long_entry_ready, directional_entry_ready
@@ -74,6 +75,7 @@ import pandas as pd
 import weakref
 from collections import deque
 from typing import Dict, List
+from core import config  # noqa: F401  (供 getattr 讀取執行期設定)
 from core.config import (
     DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, MAX_SLOT_TRADE_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
     CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION,
@@ -3216,31 +3218,36 @@ class TradingEngine:
             self.account.save_state()
         return False
 
+    @staticmethod
+    def _profit_reentry_rail_gap(frame, price, side):
+        """現價距持倉側 KC 外軌的順向距離（單位＝最新已收線 1m ATR）；資料無效回 None。"""
+        try:
+            atr = float(frame.iloc[-2]["atr"])
+            rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+            price = float(price)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return None
+        if not (math.isfinite(atr) and atr > 0 and math.isfinite(rail)
+                and math.isfinite(price) and price > 0):
+            return None
+        sign = 1 if side == "LONG" else -1
+        return sign * (price - rail) / atr
+
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
-        chase_limit = float(getattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_PCT", 0.0) or 0.0)
-        if chase_limit > 0:
-            try:
-                reason = str(ticket.get("close_reason") or "")
-                last_close = 0.0
-                for trade in reversed(list(getattr(self.account, "trades", []))[-60:]):
-                    if (trade.get("symbol") == symbol
-                            and str(trade.get("action", "")).startswith("CLOSE")
-                            and str(trade.get("reason")) == reason):
-                        last_close = float(trade.get("price") or 0.0)
-                        break
-                if last_close > 0:
-                    sign = 1 if str(ticket.get("side")).upper() == "LONG" else -1
-                    chase = sign * (float(price) - last_close) / last_close
-                    if chase > chase_limit:
-                        self.account.log(
-                            f"⏸️ [追高上限] {symbol} 重開票據作廢：現價已高於上次平倉 "
-                            f"{chase * 100:.2f}%（上限 {chase_limit * 100:.2f}%）", "INFO")
-                        return False
-            except (TypeError, ValueError, AttributeError):
-                pass
+        side = str(ticket.get("side")).upper()
+        chase_atr = float(getattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR", 0.0) or 0.0)
+        if chase_atr > 0 and side in ("LONG", "SHORT"):
+            rail_gap = self._profit_reentry_rail_gap(frame, price, side)
+            # 當根即時長K破軌是新訊號（距離被當根實體撐開是正常的），不受末端上限。
+            if (rail_gap is not None and rail_gap > chase_atr + 1e-9
+                    and live_body_breakout_side(frame, price) != side):
+                self.account.log(
+                    f"⏸️ [追高上限] {symbol} 暫不重開（票據保留）：現價離持倉側外軌 "
+                    f"{rail_gap:.2f} ATR（上限 {chase_atr:.1f} ATR）", "INFO")
+                return False
         cooldown = float(CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC or 0.0)
         if cooldown > 0 and not self._channel_strong_trend(symbol, ticket.get("side")):
             try:
