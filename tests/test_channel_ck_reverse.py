@@ -63,6 +63,13 @@ def test_breakout_still_requires_live_ma3_slope(side, monkeypatch):
     assert not aligned_entry_ready(f, p, side)
     f.loc[f.index[-2], 'ma3'] = f.loc[f.index[-3], 'ma3'] - sign * .1
     f.loc[f.index[-1], 'ma3'] = f.loc[f.index[-2], 'ma3'] + sign * .05
+    # 2026-09-14：破軌確認需要「破軌根（收在軌外）＋同色實體K」→ 補上已收線的破軌根。
+    rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
+    for idx in (f.index[-3], f.index[-2]):
+        closed = float(f.loc[idx, rail]) + sign * .5
+        f.loc[idx, ['open', 'close']] = [closed - sign * .4, closed]
+        f.loc[idx, 'high'] = max(float(f.loc[idx, 'open']), closed) + .1
+        f.loc[idx, 'low'] = min(float(f.loc[idx, 'open']), closed) - .1
     assert aligned_entry_ready(f, p, side)
     f.loc[f.index[-1], ['kc_middle', 'kc_upper', 'kc_lower']] = [999., 1000., 998.]
     assert ck_direction(f) == side

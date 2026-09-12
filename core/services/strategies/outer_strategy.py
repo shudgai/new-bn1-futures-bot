@@ -637,30 +637,43 @@ def outside_continuation_ready(frame, side):
         return False
 
 
-def breakout_two_bodies_ready(frame, side):
-    """破軌入口的兩根確認：破軌根＋下一根同色。
+def breakout_two_bodies_ready(frame, side, lookback=4):
+    """破軌確認：破軌根（同色、收在軌外）＋之後第一根「同色實體K」。
 
-    2026-09-13 使用者：「破軌開倉的條件是破軌實體K 1 根＋1 根實體同色K線，
-    第一根不用管它是怎樣的實體，只要是同色就可以。」→ 第一根只檢查同色，
-    第二根（確認根）才要求是同色實體K（實體 ≥ 全長 20%）。
+    2026-09-14 使用者：「若第二根是同色弱實體，第三根是同色實體，後面就可以開倉，以此類推。」
+    → 破軌根之後若出現同色弱實體（實體 < 全長 20%），不取消資格，繼續往後等第一根同色實體K。
     """
     try:
-        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        rail = "kc_upper" if side == "LONG" else "kc_lower"
+        if rail not in frame.columns:
             return False
         sign = 1 if side == "LONG" else -1
-        rows = list(frame.iloc[-3:-1].iterrows())
-        if len(rows) != 2:
+        rows = list(frame.iloc[-1 - lookback:-1].iterrows())
+        if not rows:
             return False
-        for _, row in rows:
+        # 最後一根已收線必須是同色實體K（確認根）
+        _, last = rows[-1]
+        l_open, l_high, l_low, l_close = (float(last[k]) for k in ("open", "high", "low", "close"))
+        if not all(math.isfinite(v) and v > 0 for v in (l_open, l_high, l_low, l_close)):
+            return False
+        span = l_high - l_low
+        if span <= 0 or sign * (l_close - l_open) <= 0 or abs(l_close - l_open) / span < 0.20:
+            return False
+        # 往回找破軌根：中間可以夾同色弱實體，遇到反向K就不成立
+        for _, row in reversed(rows[:-1]):
             opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
-            if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
-                    or not low <= min(opened, closed) <= max(opened, closed) <= high
-                    or sign * (closed - opened) <= 0):
+            limit = float(row[rail])
+            if not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed, limit)):
                 return False
-        _, second = rows[1]
-        s_open, s_high, s_low, s_close = (float(second[k]) for k in ("open", "high", "low", "close"))
-        span = s_high - s_low
-        return span > 0 and abs(s_close - s_open) / span >= 0.20
+            if not low <= min(opened, closed) <= max(opened, closed) <= high:
+                return False
+            if sign * (closed - opened) <= 0:
+                return False
+            if (closed > limit) if side == "LONG" else (closed < limit):
+                return True
+        return False
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 
