@@ -252,13 +252,16 @@ def channel_swing_action(
     outer_entry_only: bool = False,
     check_profit_room: bool = True,
     profit_reentry: bool = False,
+    terminal_blocked: bool | None = None,
     **kwargs
 ) -> dict:
     """Use one MA3 outer-cross entry and position-aware execution exits."""
     if str(current_side or "").upper() in ("LONG", "SHORT"):
         return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
     # 2026-09-14 使用者選項3：末端弱量擋一般單，但放行特例K（長K是起漲證據）。
-    if channel_terminal_market(frame) and not _special_long_body_aligned(frame, live_price):
+    if terminal_blocked is None:
+        terminal_blocked = channel_terminal_market(frame)
+    if terminal_blocked and not _special_long_body_aligned(frame, live_price):
         return {
             "action": "WAIT",
             "side": None,

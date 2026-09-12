@@ -138,6 +138,8 @@ async def process_single_symbol_runner(
                 or 0.0
             ) if existing_pos else 0.0,
             allow_live_entry=not bool(existing_pos),
+            # 2026-09-14 使用者：過了末端又再創新高要能開倉 → 用引擎的狀態判定。
+            terminal_blocked=engine._channel_terminal_blocked(symbol, channel_df),
         )
         if (
             not existing_pos

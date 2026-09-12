@@ -1792,7 +1792,7 @@ class TradingEngine:
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
         # 2026-09-14 使用者選項3：末端擋一般單，放行特例K。
-        if (self._channel_terminal_market(frame)
+        if (self._channel_terminal_blocked(symbol, frame, side)
                 and not self._special_long_body_entry(frame, price, side)):
             return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
@@ -2030,7 +2030,7 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
-            if (self._channel_terminal_market(fresh_frame)
+            if (self._channel_terminal_blocked(symbol, fresh_frame, side)
                     and not self._special_long_body_entry(fresh_frame, planned_price, side)):
                 self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：漲勢末端不進場（特例K除外）", "INFO")
                 return False
@@ -3266,6 +3266,57 @@ class TradingEngine:
         if frame is not None and price:
             return self._special_long_body_entry(frame, price, side)
         return False
+
+    def _channel_terminal_blocked(self, symbol, frame, side=None):
+        """末端弱量禁開；但「過了末端又再創新高／新低」就解除禁開。
+
+        使用者 2026-09-14：過了末端又有漲勢的要開倉（仍須先過利潤空間檢查）。
+        """
+        state = getattr(self, "_channel_terminal_extremes", None)
+        if state is None:
+            state = self._channel_terminal_extremes = {}
+        requested = str(side or "").upper()
+        probes = [requested] if requested in ("LONG", "SHORT") else ["LONG", "SHORT"]
+        blocked = False
+        for probe in probes:
+            try:
+                weak = channel_mature_outer_trend_is_weak(frame, probe)
+            except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+                blocked = True
+                continue
+            key = (symbol, probe)
+            if not weak:
+                state.pop(key, None)
+                continue
+            try:
+                row = frame.iloc[-2]
+                atr = float(row["atr"])
+                close = float(row["close"])
+                high = float(row["high"])
+                low = float(row["low"])
+            except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+                blocked = True
+                continue
+            if not all(math.isfinite(v) for v in (atr, close, high, low)) or atr <= 0:
+                blocked = True
+                continue
+            extreme = state.get(key)
+            if extreme is None:
+                state[key] = {"high": high, "low": low}
+                blocked = True
+                continue
+            if probe == "LONG":
+                if close > extreme["high"] + atr * 0.3:
+                    state.pop(key, None)
+                    continue
+                state[key] = {"high": max(extreme["high"], high), "low": extreme["low"]}
+            else:
+                if close < extreme["low"] - atr * 0.3:
+                    state.pop(key, None)
+                    continue
+                state[key] = {"high": extreme["high"], "low": min(extreme["low"], low)}
+            blocked = True
+        return blocked
 
     @staticmethod
     def _channel_v_bottom_after_exit(ticket, frame):
