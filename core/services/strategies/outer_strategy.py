@@ -274,6 +274,24 @@ def long_body_side(frame, atr_mult: float):
     return None
 
 
+def trend_continuation(frame, price, side) -> bool:
+    """趨勢延續：中軌方向順向，且最新價在持倉側外軌之外（不限斜率大小）。"""
+    if side not in ("LONG", "SHORT"):
+        return False
+    try:
+        key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+        previous, latest = float(frame[key].iloc[-3]), float(frame[key].iloc[-2])
+        price = float(price)
+        rail = float(frame["kc_upper"].iloc[-1] if side == "LONG" else frame["kc_lower"].iloc[-1])
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+    if not all(math.isfinite(v) and v > 0 for v in (previous, latest, price, rail)):
+        return False
+    direction_ok = latest > previous if side == "LONG" else latest < previous
+    outside = price > rail if side == "LONG" else price < rail
+    return direction_ok and outside
+
+
 def strong_trend_continuation(frame, price, side) -> bool:
     """強趨勢延續：已收線中軌位移 ÷ 軌寬 達門檻，且最新價在持倉側外軌之外。"""
     ratio = CHANNEL_STRONG_TREND_RATIO
@@ -429,7 +447,8 @@ def aligned_entry(frame, price):
             # 純趨勢進場（當根不是長K破軌）：前一根已是大K就不追。
             # 例外：強趨勢延續（中軌位移÷軌寬 ≥ 門檻且價格在持倉側軌外）允許續追，
             # 否則一波強漲/強跌中的每根大K都會把延續訊號全部擋掉（2026-09-13 使用者反映）。
-            if atr > 0 and not strong_trend_continuation(frame, price, side):
+            if atr > 0 and not (strong_trend_continuation(frame, price, side)
+                                or trend_continuation(frame, price, side)):
                 prev_body = abs(float(frame.iloc[-2]["close"]) - float(frame.iloc[-2]["open"]))
                 if prev_body > atr * CHANNEL_ENTRY_MAX_PREV_BODY_ATR:
                     return {**wait, "reason": "KC_ENTRY_PREV_BODY_WAIT"}

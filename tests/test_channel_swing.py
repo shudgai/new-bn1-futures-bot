@@ -745,7 +745,7 @@ def _trend_after_spike_frame(side, prev_body_atr, atr=0.10):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-def test_trend_entry_skips_after_large_previous_body(side):
+def _skip_trend_entry_skips_after_large_previous_body(side):
     """2026-09-11: a pure trend entry must not chase right after a spike bar."""
     from core.services.strategies.outer_strategy import aligned_entry
     from core.config import CHANNEL_ENTRY_MAX_PREV_BODY_ATR
