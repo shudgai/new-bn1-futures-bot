@@ -265,9 +265,10 @@ def channel_swing_action(
             "reason": "KC_TREND_END_WAIT",
         }
     # 兩根同色確認只套用在全新第一筆；獲利重開與延續不套用。
-    # 2026-09-13 使用者：特例K一律直接開（谷底／MA3 中軌折返也一樣）；
-    # 一般（非特例）重開在 V 型谷底後仍由 outside_reentry 要求兩根實體K。
-    decision = aligned_entry(frame, live_price, require_second_body=not profit_reentry)
+    # 2026-09-13 使用者：V 型谷底／MA3 中軌折返成立＝新破軌，特例K也不得提前進場。
+    decision = aligned_entry(
+        frame, live_price, require_second_body=not profit_reentry,
+        special_k_exempt=not (v_bottom_shape(frame) or ma3_middle_cross_reset(frame)))
     return decision
 
 def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
