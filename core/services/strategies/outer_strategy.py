@@ -605,8 +605,18 @@ def outside_continuation_ready(frame, side):
         rail = "kc_upper" if side == "LONG" else "kc_lower"
         if rail not in frame.columns:
             return False
-        # 2026-09-14 使用者：站在外軌外就代表已在漲，不用等兩三根（等於追高）。
-        # 只要「前一根已收線」是順向實體K且收在軌外，當根單根同色K即可延續進場。
+        # 2026-09-14 使用者：破軌那根不算延續——「破軌後第二根」必須是同一色實體K，
+        # 破軌才算完成；完成之後（前兩根已收線都在軌外）才可用單根同色K延續進場。
+        prev, before = frame.iloc[-2], frame.iloc[-3]
+        for probe in (prev, before):
+            probe_close = float(probe["close"])
+            probe_limit = float(probe[rail])
+            if not (math.isfinite(probe_close) and math.isfinite(probe_limit) and probe_close > 0 and probe_limit > 0):
+                return False
+            if side == "LONG" and not probe_close > probe_limit:
+                return False
+            if side == "SHORT" and not probe_close < probe_limit:
+                return False
         row = frame.iloc[-2]
         opened = float(row["open"])
         close = float(row["close"])
