@@ -257,8 +257,8 @@ def channel_swing_action(
     """Use one MA3 outer-cross entry and position-aware execution exits."""
     if str(current_side or "").upper() in ("LONG", "SHORT"):
         return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
-    # 2026-09-14 使用者：漲勢末端不能開倉（看了好幾筆都在末端開倉然後虧損）——特例K也一樣。
-    if channel_terminal_market(frame):
+    # 2026-09-14 使用者選項3：末端弱量擋一般單，但放行特例K（長K是起漲證據）。
+    if channel_terminal_market(frame) and not _special_long_body_aligned(frame, live_price):
         return {
             "action": "WAIT",
             "side": None,

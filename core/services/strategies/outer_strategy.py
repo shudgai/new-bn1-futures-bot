@@ -410,7 +410,8 @@ def ma3_middle_cross_reset(frame, lookback=10):
         return False
 
 
-def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True):
+def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
+                  continuation_exempt=False):
     """Live long-body breaks may precede CK confirmation; retain trend entries.
 
     require_second_body：2026-09-13 使用者要求「一般漲勢破軌後第二根也要同色綠K才開」，
@@ -468,7 +469,11 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True)
         special_long_body = body_side is not None and side == body_side
         if special_long_body:
             return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
-        if require_second_body and not breakout_two_bodies_ready(frame, side):
+        # 延續段（連續兩根已收線都在軌外）單根同色K即可；首次破軌才要兩根。
+        # continuation_exempt：只有「平倉後的延續／重開」帶 True（2026-09-14 使用者：
+        # 站上外軌代表已突破，平倉後可延續開倉）。
+        if (require_second_body and not (continuation_exempt and outside_continuation_ready(frame, side))
+                and not breakout_two_bodies_ready(frame, side)):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait
@@ -581,6 +586,35 @@ def _outside_continuation(frame, side):
         if not (math.isfinite(close) and math.isfinite(limit) and close > 0 and limit > 0):
             return False
         return close > limit if side == "LONG" else close < limit
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
+def outside_continuation_ready(frame, side):
+    """延續開倉：最近兩根已收線都收在持倉側外軌之外 → 單根同色K即可開倉。
+
+    使用者 2026-09-14：「後續K線都站在外軌外時，那些綠K可1根延續開；空單也要做。」
+    （僅適用於價格已連續站在軌外的延續段，不是首次破軌。）
+    """
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        rail = "kc_upper" if side == "LONG" else "kc_lower"
+        if rail not in frame.columns:
+            return False
+        rows = frame.iloc[-4:-1]
+        if len(rows) < 3:
+            return False
+        for _, row in rows.iterrows():
+            close = float(row["close"])
+            limit = float(row[rail])
+            if not (math.isfinite(close) and math.isfinite(limit) and close > 0 and limit > 0):
+                return False
+            if side == "LONG" and not close > limit:
+                return False
+            if side == "SHORT" and not close < limit:
+                return False
+        return True
     except (AttributeError, KeyError, IndexError, TypeError, ValueError):
         return False
 
@@ -768,10 +802,11 @@ def continuation_entry(frame, price):
 def outside_reentry(frame, price, side, require_second_body=True):
     """Use the same confirmed CK trend for normal reentries.
 
-    require_second_body=True：2026-09-13 使用者要求「跌下來形成 V 型谷底後，
-    再往上突破要當成新突破」——此時重開／延續也必須破軌＋兩根實體K。
+    2026-09-14 使用者：站上外軌代表已突破，所以**平倉後可延續開倉**——重開時
+    若最近兩根已收線都在持倉側外軌之外，單根同色K即可（continuation_exempt）。
     """
-    decision = aligned_entry(frame, price, require_second_body=require_second_body)
+    decision = aligned_entry(frame, price, require_second_body=require_second_body,
+                             continuation_exempt=True)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
     return decision
