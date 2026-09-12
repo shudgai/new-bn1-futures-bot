@@ -187,6 +187,11 @@
             background: rgba(0,0,0,0.6); z-index: 100;
             display: flex; justify-content: center; align-items: center;
         }
+        /* 2026-09-13 使用者要求：K 線圖預設就是全螢幕尺寸（不需要按全螢幕按鈕） */
+        .chart-modal:not(:fullscreen) {
+            width: 100vw; height: 100vh; max-width: none; max-height: none;
+            margin: 0; padding: 14px; border-radius: 0; border: 0;
+        }
         .chart-modal {
             background: #fff; width: 96%; max-width: 1800px; border-radius: 12px;
             box-shadow: 0 10px 25px rgba(0,0,0,0.2); overflow: hidden;
@@ -789,6 +794,18 @@
                     symbols.map(item => [item, { loading: true, error: '', entryBlock: null }])
                 );
                 this.chartModal.show = true;
+
+                // 開啟時自動進入全螢幕（使用者要求）；瀏覽器若拒絕（非使用者手勢等）
+                // 仍維持原本的視窗模式，不影響功能。
+                this.$nextTick(() => {
+                    const card = this.$refs.chartCard;
+                    if (card && !document.fullscreenElement) {
+                        try {
+                            const req = card.requestFullscreen && card.requestFullscreen();
+                            if (req && req.catch) req.catch(() => {});
+                        } catch (e) {}
+                    }
+                });
 
                 // Wait for DOM to render the modal container
                 this.$nextTick(() => {
