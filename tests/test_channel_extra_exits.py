@@ -216,3 +216,36 @@ def test_ma3_middle_cross_needs_price_on_the_reversal_side():
     frame = _middle_cross_frame("SHORT", crossed=True)
     frame.loc[frame.index[-2], "close"] = 100.2  # 價格仍在中軌下方
     assert ma3_middle_cross_against(frame, "SHORT") is False
+
+
+def _flat_middle_frame(rows=24):
+    import pandas as pd
+
+    data = {
+        "open": [100.0] * rows, "close": [100.0] * rows, "high": [100.2] * rows,
+        "low": [99.8] * rows, "kc_upper": [102.0] * rows, "kc_lower": [98.0] * rows,
+        "kc_middle": [100.0] * rows, "ema_20": [100.0] * rows,
+        "ma3": [100.0] * rows, "ma15": [100.0] * rows, "atr": [1.0] * rows,
+    }
+    return pd.DataFrame(data)
+
+
+def test_direction_efficiency_measures_one_way_progress():
+    from core.services.strategies.outer_strategy import direction_efficiency
+
+    frame = _flat_middle_frame()
+    frame.loc[frame.index[-21:-1], "close"] = [100.0 + 0.1 * i for i in range(20)]
+    assert direction_efficiency(frame) > 0.9
+    noisy = _flat_middle_frame()
+    noisy.loc[noisy.index[-21:-1], "close"] = [100.0 + (0.1 if i % 2 else -0.1) for i in range(20)]
+    assert direction_efficiency(noisy) < 0.2
+
+
+def test_long_body_entry_ignores_ck_middle_direction(monkeypatch):
+    from core.services.strategies import outer_strategy
+
+    frame = _flat_middle_frame()
+    frame.loc[frame.index[-2], ["open", "close"]] = [101.0, 103.0]   # 長綠K且收在上軌外
+    frame.loc[frame.index[-2], "kc_upper"] = 102.0
+    assert outer_strategy.long_body_side(frame, 1.5) == "LONG"
+    assert outer_strategy.long_body_side(frame, 3.0) is None         # 實體不足 3 ATR

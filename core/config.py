@@ -297,6 +297,24 @@ CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC = max(
     0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC", "120"))
 )
 
+# ATR 括號出口（原型驗證版）：以進場時 ATR 設停損與目標，取代階梯鎖利。
+# walk-forward：龍虾＋嚴格進場下 1.5ATR停損/3ATR目標 為唯一整體為正的組合。
+CHANNEL_ATR_EXIT_ENABLED = os.getenv(
+    "CHANNEL_ATR_EXIT_ENABLED", "false"
+).lower() == "true"
+CHANNEL_ATR_STOP_MULT = max(0.1, float(os.getenv("CHANNEL_ATR_STOP_MULT", "1.5")))
+CHANNEL_ATR_TARGET_MULT = max(0.1, float(os.getenv("CHANNEL_ATR_TARGET_MULT", "3.0")))
+
+# 方向效率進場過濾：最近 20 根已收線「淨位移 ÷ 總路徑」需達此值（0＝停用）。
+CHANNEL_MIN_DIRECTION_EFFICIENCY = max(
+    0.0, float(os.getenv("CHANNEL_MIN_DIRECTION_EFFICIENCY", "0.0"))
+)
+
+# 長K特例：不管 CK 中軌方向，只要順向實體 ≥ 此 ATR 倍數且收在軌外就進場（0＝停用）。
+CHANNEL_LONG_BODY_ENTRY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_LONG_BODY_ENTRY_ATR", "0.0"))
+)
+
 # MA3 穿越 KC 中軌（趨勢反轉）平倉：空單 MA3 由下往上穿越中軌、多單對稱即平倉。
 CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED = os.getenv(
     "CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED", "true"

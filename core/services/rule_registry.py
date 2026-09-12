@@ -104,6 +104,10 @@ def active_entry_rule_lines() -> List[str]:
         "  1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或無效不開",
         f"     走平禁開：中軌位移 ÷ 軌寬 < {config.CHANNEL_FLAT_MIDDLE_RATIO:g} 即不開"
         "（V 型快通道與即時破軌入口同樣適用）",
+        (f"  1b. 方向效率過濾：最近 20 根淨位移 ÷ 總路徑 ≥ {config.CHANNEL_MIN_DIRECTION_EFFICIENCY:g}"
+         if config.CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 else "  1b. 方向效率過濾：未啟用"),
+        (f"  1c. 長K特例（不看 CK 中軌）：順向實體 ≥ {config.CHANNEL_LONG_BODY_ENTRY_ATR:g} ATR 且收在軌外"
+         if config.CHANNEL_LONG_BODY_ENTRY_ATR > 0 else "  1c. 長K特例：未啟用"),
         f"  2. 即時長K破軌入口：{_flag(config.CHANNEL_LIVE_BODY_BREAKOUT_ENABLED)}",
         "  共用過濾："
         + f"1h 趨勢過濾{_flag(config.CHANNEL_1H_TREND_FILTER_ENABLED)}（與 1h SuperTrend 方向不一致不開）、"
@@ -124,10 +128,13 @@ def active_entry_rule_lines() -> List[str]:
 def active_exit_rule_lines() -> List[str]:
     """Describe the exits that can actually close a position right now."""
     return [
-        ("  1. 階梯鎖利：停用（門檻設定為 999U，由峰谷出口負責）"
-         if config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT >= 900
-         else f"  1. 階梯鎖利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT:g}U 啟動，"
-              f"鎖住峰值 − {config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT:g}U"),
+        (f"  1. ATR 括號出口：停損 {config.CHANNEL_ATR_STOP_MULT:g} ATR／目標 "
+         f"{config.CHANNEL_ATR_TARGET_MULT:g} ATR（取代階梯鎖利）"
+         if config.CHANNEL_ATR_EXIT_ENABLED else
+         ("  1. 階梯鎖利：停用（門檻設定為 999U，由峰谷出口負責）"
+          if config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT >= 900
+          else f"  1. 階梯鎖利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT:g}U 啟動，"
+               f"鎖住峰值 − {config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT:g}U")),
         (f"     保底停利：淨利峰值 ≥ {config.CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT:g}U 後，"
          f"出場不得低於 +{config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT:g}U"
          if config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT > 0 else "     保底停利：停用"),

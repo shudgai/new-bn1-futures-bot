@@ -8,6 +8,7 @@ from core.interfaces.entry_interface import IEntryStrategy
 from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
     CHANNEL_FLAT_MIDDLE_RATIO, CHANNEL_LIVE_BODY_BREAKOUT_ENABLED,
+    CHANNEL_MIN_DIRECTION_EFFICIENCY, CHANNEL_LONG_BODY_ENTRY_ATR,
 )
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
@@ -236,6 +237,41 @@ def live_body_breakout_side(frame, price):
 FLAT_MIDDLE_REASON = "KC_FLAT_MIDDLE_WAIT"
 
 
+def direction_efficiency(frame, lookback: int = 20) -> float:
+    """最近 lookback 根已收線的「淨位移 ÷ 總路徑」；越高代表單向推進。"""
+    try:
+        if frame is None or len(frame) < lookback + 2:
+            return 0.0
+        closes = [float(v) for v in frame["close"].iloc[-(lookback + 1):-1]]
+        if not all(math.isfinite(v) for v in closes):
+            return 0.0
+        moves = [b - a for a, b in zip(closes, closes[1:])]
+        path = sum(abs(v) for v in moves)
+        return abs(closes[-1] - closes[0]) / path if path > 0 else 0.0
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def long_body_side(frame, atr_mult: float):
+    """長K特例：最後一根已收線順向實體 ≥ atr_mult × ATR 且收在軌外（不看 CK 中軌）。"""
+    if atr_mult <= 0:
+        return None
+    try:
+        row = frame.iloc[-2]
+        atr = float(frame.iloc[-3]["atr"])
+        opened, close = float(row["open"]), float(row["close"])
+        body = abs(close - opened)
+        if atr <= 0 or body < atr * atr_mult:
+            return None
+        if close > opened and close > float(row["kc_upper"]):
+            return "LONG"
+        if close < opened and close < float(row["kc_lower"]):
+            return "SHORT"
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+    return None
+
+
 def channel_middle_is_flat(frame, ratio=None):
     """Parallel closed KC middle blocks new entries on both sides.
 
@@ -305,10 +341,17 @@ def aligned_entry(frame, price):
                 return wait
         breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
         side = breakout_side or entry_trend_direction(frame)
+        # 長K特例：CK 中軌不明或仍反向時，只要出現夠大的順向長實體且收在軌外仍可進場。
+        body_side = long_body_side(frame, CHANNEL_LONG_BODY_ENTRY_ATR)
+        if body_side is not None and (side is None or side != body_side):
+            side = body_side
         if side is None:
             return wait
         if channel_tail_entry_blocked(frame, side):
             return {**wait, "reason": "KC_TREND_TAIL_WAIT"}
+        if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not breakout_side
+                and direction_efficiency(frame) < CHANNEL_MIN_DIRECTION_EFFICIENCY):
+            return {**wait, "reason": "KC_LOW_EFFICIENCY_WAIT"}
         if channel_middle_is_flat(frame):
             return {**wait, "reason": FLAT_MIDDLE_REASON}
             

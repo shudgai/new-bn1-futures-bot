@@ -76,7 +76,26 @@ def protection(position, price, fee, slippage, frame=None):
     execution = price * (1 - sign * slippage)
     gross = sign * (price - entry) * qty
     net = sign * (execution - entry) * qty - (entry + execution) * qty * fee
-    state = position.setdefault('channel_profit_protection', {})
+    if config.CHANNEL_ATR_EXIT_ENABLED:
+        try:
+            atr = float(position.get("atr") or 0.0)
+        except (TypeError, ValueError):
+            atr = 0.0
+        if atr > 0:
+            stop_offset = atr * config.CHANNEL_ATR_STOP_MULT
+            target_offset = atr * config.CHANNEL_ATR_TARGET_MULT
+            stop = entry - sign * stop_offset
+            target = entry + sign * target_offset
+            hit_stop = price <= stop if sign > 0 else price >= stop
+            hit_target = price >= target if sign > 0 else price <= target
+            state_atr = position.setdefault("channel_atr_bracket", {})
+            state_atr.update(stop_price=stop, target_price=target, atr=atr)
+            return {"triggered": bool(hit_stop or hit_target), "stop_price": stop,
+                    "target_price": target,
+                    "peak_gross": float(state_atr.get("peak_gross") or 0.0),
+                    "net_pnl": net, "locked_net": 0.0, "peak_net": net,
+                    "retracement_fraction": 0.0}
+    state = position.setdefault("channel_profit_protection", {})
     identity = [side, position.get('open_timestamp'), entry, qty]
     if state.get('identity') != identity:
         state.clear()
