@@ -108,7 +108,12 @@ def channel_mature_outer_trend_is_weak(
         volumes = confirmed_frame["volume"].astype(float)
         mean = (float(confirmed_frame["vol_ma_20"].iloc[-1])
                 if "vol_ma_20" in confirmed_frame else float(volumes.iloc[:-1].tail(20).mean()))
-        latest = float(volumes.iloc[-1])
+        # 2026-09-13 使用者：末端判定不可被「單根爆量」騙過（LAB 13:31 就是這樣溜進去的），
+        # 改用最近 3 根已收線量能的中位數。
+        recent = [float(v) for v in volumes.iloc[-3:]]
+        if not all(math.isfinite(v) and v >= 0 for v in recent) or len(recent) < 3:
+            return False
+        latest = sorted(recent)[1]
         if not all(math.isfinite(v) for v in (latest, mean)) or latest < 0 or mean <= 0:
             return False
     except (TypeError, ValueError, KeyError, IndexError):

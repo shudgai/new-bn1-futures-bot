@@ -106,10 +106,20 @@ def test_terminal_market_blocks_both_directions(trend, entry, monkeypatch):
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-@pytest.mark.parametrize("volume,expected", [(1.499, True), (1.5, False), (float("nan"), False)])
-def test_terminal_volume_boundary_and_invalid_data(side, volume, expected):
+@pytest.mark.parametrize("volumes,expected", [
+    ([1.499, 1.499, 1.499], True),      # 中位數 < 1.5 倍均量 → 末端弱
+    ("high", False),                    # 量能明顯高於均量 → 不算末端弱
+    ([0.1, 3.0, 0.1], True),            # 單根爆量不能救（2026-09-13 LAB 13:31 案例）
+    ([float("nan")] * 3, False),        # 無效量能不推定末端
+])
+def test_terminal_volume_boundary_and_invalid_data(side, volumes, expected):
     f = frame(side)
-    f.loc[f.index[-2], "volume"] = volume
+    if volumes == "high":
+        f["vol_ma_20"] = 1.0
+        f["volume"] = 2.0
+    else:
+        for idx, volume in zip(f.index[-4:-1], volumes):
+            f.loc[idx, "volume"] = volume
     assert TradingEngine._channel_terminal_market(f) is expected
 
 @pytest.fixture
