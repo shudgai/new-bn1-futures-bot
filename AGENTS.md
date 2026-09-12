@@ -90,7 +90,8 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 5. MA3 轉彎平倉（2026-09-13 使用者修正）：**必須同時滿足「真量能衰退」＋「MA3 仍持倉側外軌之外卻已轉向往回（朝軌）」＋「從峰谷反向 ≥ 0.10 ATR」才平倉**；量能沒衰退、通道仍寬時不平（多單：MA3 > 上軌且即時 MA3 < 已收線 MA3；空單鏡像）。MA3 正向轉彎、或已回到軌內往上，都不平倉。不再要求 CK 衰退或通道狹窄；真量能衰退出口（`CHANNEL_VOLUME_DECAY_EXIT_ENABLED`，不要求獲利）仍在。沒有 frame 可驗證軌位時不成立（fail-safe）。「真衰退」＝只用已收線K、用中位數比較前後半段、後段至少 3/4 低於前段中位數、創新高／新低那一根必須是低量（爆量創極值不算）。
 5. MA3 穿越 KC 中軌（趨勢反轉）：空單 MA3 由下往上穿越中軌且價格站上中軌、多單對稱（`CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED`）。平倉後可依一般入口轉開反向倉。
 6. CK 狹窄衰退＋MA3 峰谷反向 0.10 ATR（`CHANNEL_FADING_MA3_EXIT_ENABLED`）。
-7. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（4U）啟動，鎖住峰值 − `..._LOCK_OFFSET_USDT`（2U）。
+7. 階梯鎖利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT`（4U）啟動，鎖住峰值 − `..._LOCK_OFFSET_USDT`（2U）；每 2U 上移一階。
+   - **特例K專用（2026-09-14 使用者）**：特例K進場的持倉**不走 ATR 括號**，改用固定鎖利（階梯 4U→鎖峰值−2U＋保底 +0.6U）；其他進場仍用 ATR 括號（1.5 停損／3 目標）。
 8. 保底停利：淨利峰值 ≥ `CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT`（2U）後，出場不得低於 `..._FLOOR_NET_USDT`（+0.6U）。0.3U 會被成交滑價吃光（實測 -0.01）。
 9. 日虧損停機：`MAX_DAILY_LOSS_PCT=0`（測試中未啟用）。
 

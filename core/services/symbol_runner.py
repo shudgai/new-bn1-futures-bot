@@ -71,6 +71,10 @@ async def process_single_symbol_runner(
             engine.tickers.get(symbol)
             or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)))
         existing_pos = engine.account.positions.get(symbol)
+        if existing_pos is not None:
+            meta_special = engine.account.position_meta.get(symbol, {}).get("entry_special_k")
+            if meta_special and not existing_pos.get("entry_special_k"):
+                existing_pos["entry_special_k"] = True
         if exit_only and not existing_pos:
             return signal_progress, detected_candidates
         if existing_pos:

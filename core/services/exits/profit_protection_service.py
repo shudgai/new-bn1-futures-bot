@@ -76,7 +76,9 @@ def protection(position, price, fee, slippage, frame=None):
     execution = price * (1 - sign * slippage)
     gross = sign * (price - entry) * qty
     net = sign * (execution - entry) * qty - (entry + execution) * qty * fee
-    if config.CHANNEL_ATR_EXIT_ENABLED:
+    # 2026-09-14 使用者：特例K不走 ATR 括號，改回固定鎖利（階梯：4U 啟動、鎖峰值−2U）。
+    special_k_entry = bool(position.get("entry_special_k") or position.get("special_k_entry"))
+    if config.CHANNEL_ATR_EXIT_ENABLED and not special_k_entry:
         try:
             atr = float(position.get("atr") or 0.0)
         except (TypeError, ValueError):
