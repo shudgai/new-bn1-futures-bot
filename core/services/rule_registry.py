@@ -163,7 +163,8 @@ def rule_banner() -> List[str]:
     lines.extend(active_exit_rule_lines())
     lines.append(f"🧾 [生效規則] 已停用但仍在程式內的舊規則函式：{retired} 個（固定回傳、不參與判斷）")
     lines.append(f"🧾 [生效規則] 交易幣種：{', '.join(config.DEFAULT_SYMBOLS)}｜"
-                 f"槓桿 {config.LEVERAGE:g}x｜幣種輪替 {_flag(config.ENABLE_SYMBOL_ROTATION)}")
+                 f"槓桿 {config.LEVERAGE:g}x｜幣種輪替 {_flag(config.ENABLE_SYMBOL_ROTATION)}｜"
+                 f"全市場監控 {_flag(config.FULL_MARKET_SURVEILLANCE_ENABLED)}")
     return lines
 
 
