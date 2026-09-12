@@ -107,6 +107,8 @@ def protection(position, price, fee, slippage, frame=None):
             hit_target = price >= target if sign > 0 else price <= target
             return {"triggered": bool(hit_stop or hit_target), "stop_price": stop,
                     "target_price": target,
+                    # 2026-09-14 使用者：出場標籤要正確——ATR 停損不該寫成「獲利保護」。
+                    "exit_kind": "ATR_STOP" if hit_stop else "ATR_TARGET",
                     "peak_gross": float(state_atr.get("peak_gross") or 0.0),
                     "net_pnl": net, "locked_net": lock, "peak_net": peak_net,
                     "retracement_fraction": 0.0}

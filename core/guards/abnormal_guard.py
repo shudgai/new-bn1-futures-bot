@@ -103,6 +103,7 @@ ABNORMAL_RELEASE_REASONS = {
     'Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL',
 }
 PROFIT_PROTECTION_REASON_PREFIX = 'Channel Swing PROFIT_PROTECTION '
+ATR_EXIT_REASON_PREFIXES = ('Channel Swing ATR_STOP ', 'Channel Swing ATR_TARGET ')
 
 
 def releasable_close_reason(ticket: dict) -> bool:
@@ -114,7 +115,7 @@ def releasable_close_reason(ticket: dict) -> bool:
     reason = str(ticket.get('close_reason') or '')
     if reason in ABNORMAL_RELEASE_REASONS:
         return bool(ticket.get('requires_pullback'))
-    if reason.startswith(PROFIT_PROTECTION_REASON_PREFIX):
+    if reason.startswith(PROFIT_PROTECTION_REASON_PREFIX) or reason.startswith(ATR_EXIT_REASON_PREFIXES):
         return not ticket.get('requires_pullback')
     return False
 

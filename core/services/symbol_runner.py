@@ -236,19 +236,26 @@ async def process_single_symbol_runner(
                     engine.account.save_state()
             elif profit and profit["triggered"]:
                 token = str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns())
+                kind = str(profit.get("exit_kind") or "")
+                if kind in ("ATR_STOP", "ATR_TARGET"):
+                    close_reason = "Channel Swing " + kind + " " + token
+                    label = "ATR 停損" if kind == "ATR_STOP" else "ATR 目標"
+                else:
+                    close_reason = "Channel Swing PROFIT_PROTECTION " + token
+                    label = "階梯鎖利"
                 tickets[symbol] = {"token": token, "phase": "closing",
                                    "side": existing_pos["side"],
                                    "old_side": existing_pos["side"], "mode": "outer_cycle",
-                                   "close_reason": "Channel Swing PROFIT_PROTECTION " + token,
+                                   "close_reason": close_reason,
                                    "close_requested_at_ms": int(time.time() * 1000),
                                    "requires_pullback": False,
                                    "opened_at": existing_pos.get("open_timestamp"),
                                    "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
                                    "path": copy.deepcopy(path_state)}
                 engine.account.save_state()
-                engine.account.log(f"🛡️ [獲利保護] {symbol} 階梯鎖利 淨利峰值={profit['peak_net']:.4f} 鎖定淨利={profit['locked_net']:.2f} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}", "INFO")
+                engine.account.log(f"🛡️ [{label}] {symbol} 保護價={profit['stop_price']:.10g} 預估淨利={profit['net_pnl']:.4f}（峰值淨利 {profit['peak_net']:.4f}、鎖定 {profit['locked_net']:.2f}）", "INFO")
                 closed = await engine.account.close_position(
-                    symbol, channel_price, "Channel Swing PROFIT_PROTECTION " + token, is_manual=True)
+                    symbol, channel_price, close_reason, is_manual=True)
                 if closed and symbol not in engine.account.positions:
                     tickets[symbol]["phase"] = "closed"
                     engine.account.save_state()
