@@ -192,6 +192,8 @@ class PaperAccount:
         self.positions: Dict[str, dict] = {}
         self.position_meta: Dict[str, dict] = {}
         self.pending_limit_orders: Dict[str, dict] = {}
+        # 2026-09-12 使用者核准：破軌預掛觸價單（紙上版）。
+        self.breakout_stop_entries: Dict[str, dict] = {}
         self.latest_prices: Dict[str, float] = {}
         self.trades: List[dict] = []
         self.logs: List[dict] = []
@@ -296,6 +298,7 @@ class PaperAccount:
         self.positions = data.get("positions", {})
         self.position_meta = data.get("position_meta", {})
         self.pending_limit_orders = data.get("pending_limit_orders", {})
+        self.breakout_stop_entries = data.get("breakout_stop_entries", {}) or {}
         self.trades = data.get("trades", [])
         self.logs = data.get("logs", [])
         self.takeover_shadow_events = data.get("takeover_shadow_events", [])
@@ -361,6 +364,7 @@ class PaperAccount:
             "positions": self.positions,
             "position_meta": self.position_meta,
             "pending_limit_orders": self.pending_limit_orders,
+            "breakout_stop_entries": self.breakout_stop_entries,
             "trades": self.trades[:500],
             "logs": self.logs[-200:],
             "takeover_shadow_events": self.takeover_shadow_events[-2000:],
@@ -395,6 +399,7 @@ class PaperAccount:
         self.positions = {}
         self.position_meta = {}
         self.pending_limit_orders = {}
+        self.breakout_stop_entries = {}
         self.latest_prices = {}
         self.trades = []
         self.logs = []
@@ -932,6 +937,105 @@ class PaperAccount:
             self.log(f"↩️ [紙上Maker撤單] {symbol}：{reason}", "INFO")
             self.save_state()
 
+    async def place_breakout_stop_entry(
+        self, symbol: str, side: str, trigger_price: float, amount_usdt: float,
+        atr: float = 0.0, reason: str = "", signal_score: int = None,
+        bar_id: object = None, leverage: int = None,
+    ) -> bool:
+        """破軌預掛觸價單（紙上版）：價格觸及破軌價位即以觸發價市價成交。
+
+        2026-09-12 使用者核准 A 方案。真倉走交易所 CONDITIONAL STOP_MARKET；
+        紙上帳戶以逐筆報價比對觸發價模擬，成交價固定為觸發價，讓紙上結果
+        與「預掛成交」一致（市價單在快市會被滑價吃掉）。
+        """
+        side = str(side or "").upper()
+        if side not in ("LONG", "SHORT"):
+            return False
+        try:
+            trigger_price = float(trigger_price)
+            amount_usdt = float(amount_usdt)
+        except (TypeError, ValueError):
+            return False
+        if not (trigger_price > 0 and amount_usdt > 0):
+            return False
+        if symbol in self.positions or symbol in self.closing_lock:
+            return False
+        if symbol in self.pending_limit_orders or symbol in self.breakout_stop_entries:
+            return False
+        leverage = leverage or (
+            get_signal_leverage(symbol, signal_score)
+            if signal_score is not None else get_leverage(symbol)
+        )
+        self.breakout_stop_entries[symbol] = {
+            "side": side,
+            "trigger_price": trigger_price,
+            "amount_usdt": amount_usdt,
+            "atr": float(atr or 0.0),
+            "leverage": leverage,
+            "reason": reason,
+            "signal_score": signal_score,
+            "bar_id": bar_id,
+            "placed_at": time.time(),
+        }
+        self.log(
+            f"🪝 [破軌觸價單] {symbol} {side} 觸價 {trigger_price:.10g}"
+            f"（{leverage}x）：價格一到就進場",
+            "INFO",
+        )
+        self.save_state()
+        return True
+
+    async def cancel_breakout_stop_entry(self, symbol: str, reason: str = "") -> None:
+        info = self.breakout_stop_entries.pop(symbol, None)
+        if info is None:
+            return
+        self.log(f"↩️ [破軌觸價單] {symbol} 已撤單（{reason or '條件消失'}）", "INFO")
+        self.save_state()
+
+    async def check_breakout_stop_entries(self) -> None:
+        """逐筆報價比對觸發價；觸價即以觸發價市價進場。"""
+        for symbol, info in list(self.breakout_stop_entries.items()):
+            if symbol in self.positions:
+                self.breakout_stop_entries.pop(symbol, None)
+                continue
+            price = self.latest_prices.get(symbol)
+            if price is None:
+                continue
+            try:
+                price = float(price)
+                trigger = float(info.get("trigger_price") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if not (price > 0 and trigger > 0):
+                continue
+            side = str(info.get("side") or "").upper()
+            hit = price >= trigger if side == "LONG" else price <= trigger
+            if not hit:
+                continue
+            self.breakout_stop_entries.pop(symbol, None)
+            opened = await self.open_position(
+                symbol=symbol, side=side, price=trigger,
+                amount_usdt=float(info.get("amount_usdt") or 0.0),
+                sl=0.0, tp=0.0,
+                reason=info.get("reason") or f"Channel Swing KC_BREAKOUT_STOP_{side}",
+                atr=float(info.get("atr") or 0.0),
+                leverage=info.get("leverage"),
+                signal_score=info.get("signal_score"),
+                entry_context={"entry_mode": "CHANNEL_SWING"},
+            )
+            if opened:
+                meta = self.position_meta.setdefault(symbol, {})
+                meta["entry_special_k"] = True
+                meta["entry_mode"] = "CHANNEL_SWING"
+                position = self.positions.get(symbol)
+                if isinstance(position, dict):
+                    position["entry_special_k"] = True
+                self.log(
+                    f"✅ [破軌觸價單成交] {symbol} {side} 觸價 {trigger:.10g} 已進場",
+                    "SUCCESS",
+                )
+            self.save_state()
+
     async def close_position(self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
@@ -1211,6 +1315,8 @@ class PaperAccount:
         for symbol, price in ticker_prices.items():
             if price is not None:
                 self.latest_prices[str(symbol)] = float(price)
+
+        await self.check_breakout_stop_entries()
 
         for symbol, pos in list(self.positions.items()):
             curr_p = (
