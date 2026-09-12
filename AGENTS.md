@@ -48,7 +48,7 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或資料無效不開。
    - KC 走平禁開：中軌位移 ÷ 軌寬 < `CHANNEL_FLAT_MIDDLE_RATIO`（0.05）不開，多空對稱；用軌寬相對值避免低價幣被絕對門檻誤擋。
    - 1h 大趨勢過濾：`CHANNEL_1H_TREND_FILTER_ENABLED=true`，1h SuperTrend 方向與進場方向不一致就不開（快取尚未取得時不擋）。原本此快取只用在 15m 軟停損，進場完全沒看大週期。
-2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌、順向實體 ≥ 上一根已收線 ATR 的 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`（1.0）才成立；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外」的 CK 不明特例。
+2. 即時長K破軌入口（特例K線）：`CHANNEL_LIVE_BODY_BREAKOUT_ENABLED=true`。當根原始開盤在持倉側外軌內側或碰軌、最新價嚴格破軌、順向實體 ≥ 上一根已收線 ATR 的 `CHANNEL_LIVE_BREAKOUT_BODY_ATR`（1.0）才成立；另保留「順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（**1.0**，2026-09-13 由 2.0 下調，使用者要求把實體約 1 ATR、收在軌外的K也視為特例長K）且收在軌外」的 CK 不明特例。
 - 末端禁開停用（`CHANNEL_TAIL_MAX_TREND_BARS=0`）：平倉後若又起漲勢仍可再進場，不因前面已漲一大段就不做。
 - 共用過濾：當根實體過熱 > 0.8 ATR 不追、前一根大K > 1 ATR 不追、淨利空間 ≥ 0.15%、反向異常攔截、每根限次、帳戶風控（長K／即時破軌入口不吃實體過熱與前一根大K限制，否則恆不觸發）。
 - 兩根同色確認（2026-09-13 使用者：套用在「第一次破軌」＝全新第一筆）：一般趨勢新倉需最近兩根已收線同色有效實體（實體 ≥ 全長 20%），否則 `KC_SECOND_BODY_WAIT`；獲利重開與破軌延續不套用。
