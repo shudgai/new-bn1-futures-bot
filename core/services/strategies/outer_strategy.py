@@ -461,9 +461,13 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True)
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
         # 2026-09-13 使用者：特例K就是特例——入口過濾一律去除，成立就開倉。
         #（跳過：走平、效率、末端、過熱、前一根大K、MA3 轉向、中軌反向、反向異常、兩根確認）
-        # 2026-09-14 使用者：破軌開倉的第二根必須「已收線且確定是實體K」才可進場——
-        # 第二根還在跑就先開是錯的（圖1 LAB 16:42 案例：第二根最後收成十字）。
-        # 特例K（單根長實體）也一樣要等第二根收線確認，不再提前進場。
+        # 2026-09-14 使用者定案：
+        # (1) 特例K（單根順向長實體 ≥ CHANNEL_LONG_BODY_ENTRY_ATR 且收在軌外）可自行開倉；
+        # (2) 延續：前一根已收線也收在持倉側外軌之外時，單根同色K即可延續開倉；
+        # (3) 首次破軌（從軌內穿出）才需要「破軌根＋第二根已收線同色實體K」。
+        special_long_body = body_side is not None and side == body_side
+        if special_long_body:
+            return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
         if require_second_body and not breakout_two_bodies_ready(frame, side):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
@@ -562,6 +566,22 @@ def live_candle_color_ready(frame, price, side):
             return False
         return (1 if side == "LONG" else -1) * (price - opened) >= 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def _outside_continuation(frame, side):
+    """前一根已收線也收在持倉側外軌之外 → 屬延續，單根同色K即可開倉。"""
+    try:
+        rail = "kc_upper" if side == "LONG" else "kc_lower"
+        if rail not in frame.columns:
+            return False
+        prev = frame.iloc[-2]
+        close = float(prev["close"])
+        limit = float(prev[rail])
+        if not (math.isfinite(close) and math.isfinite(limit) and close > 0 and limit > 0):
+            return False
+        return close > limit if side == "LONG" else close < limit
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
         return False
 
 
