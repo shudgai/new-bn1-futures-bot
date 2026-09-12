@@ -605,19 +605,23 @@ def outside_continuation_ready(frame, side):
         rail = "kc_upper" if side == "LONG" else "kc_lower"
         if rail not in frame.columns:
             return False
-        rows = frame.iloc[-4:-1]
-        if len(rows) < 3:
+        # 2026-09-14 使用者：站在外軌外就代表已在漲，不用等兩三根（等於追高）。
+        # 只要「前一根已收線」是順向實體K且收在軌外，當根單根同色K即可延續進場。
+        row = frame.iloc[-2]
+        opened = float(row["open"])
+        close = float(row["close"])
+        high = float(row["high"])
+        low = float(row["low"])
+        limit = float(row[rail])
+        if not all(math.isfinite(v) and v > 0 for v in (opened, close, high, low, limit)):
             return False
-        for _, row in rows.iterrows():
-            close = float(row["close"])
-            limit = float(row[rail])
-            if not (math.isfinite(close) and math.isfinite(limit) and close > 0 and limit > 0):
-                return False
-            if side == "LONG" and not close > limit:
-                return False
-            if side == "SHORT" and not close < limit:
-                return False
-        return True
+        span = high - low
+        if span <= 0:
+            return False
+        sign = 1 if side == "LONG" else -1
+        if sign * (close - opened) <= 0 or abs(close - opened) / span < 0.20:
+            return False
+        return close > limit if side == "LONG" else close < limit
     except (AttributeError, KeyError, IndexError, TypeError, ValueError):
         return False
 

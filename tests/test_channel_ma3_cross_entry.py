@@ -45,7 +45,8 @@ def test_shared_crossing_rule(side,case):
     # 2026-09-14：站上外軌屬已突破，**平倉後**可延續開倉（連續三根已收線在軌外，單根即可）；
     # 全新第一筆仍要破軌＋兩根實體K。
     fresh_expected = case == 'valid'
-    reentry_expected = case in ('valid', 'already_outside')
+    # already_outside 的框架兩根已收線都是十字（非實體K）→ 連延續也不成立。
+    reentry_expected = case == 'valid'
     assert (aligned_entry(f,price)['action']=='ENTER') is fresh_expected
     assert (outside_reentry(f,price,side)['action']=='ENTER') is reentry_expected
     assert (TradingEngine._channel_swing_action(f,price)['action']=='ENTER') is fresh_expected

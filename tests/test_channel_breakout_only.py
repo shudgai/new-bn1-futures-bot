@@ -48,7 +48,9 @@ def test_scan_reentry_and_legacy_flag_share_rejection(side, case):
     f, price = invalid_frame(side, case)
     assert aligned_entry(f, price)['action'] == 'WAIT'
     assert not aligned_entry_ready(f, price, side)
-    assert outside_reentry(f, price, side)['action'] == 'WAIT'
+    # 2026-09-14：延續只看「前一根已收線」，one_body（再前一顆是十字）不再阻擋延續。
+    if case != 'one_body':
+        assert outside_reentry(f, price, side)['action'] == 'WAIT'
     assert TradingEngine._channel_swing_action(f, price, outer_entry_only=True)['action'] == 'WAIT'
 
 

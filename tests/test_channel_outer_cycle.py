@@ -43,7 +43,9 @@ def test_outer_cycle_conditions(side, case):
     if case == 'first_doji': f.loc[17, 'open'] = f.loc[17, 'close']
     if case == 'invalid': f.loc[18, 'close'] = float('nan')
     # 2026-09-14：重開／延續也要「破軌根＋同色實體K」；第一根是十字（不同色）→ 不開。
-    assert (outside_reentry(f, price, side).get('side') == side) is (case == 'valid')
+    # 2026-09-14：延續只看「前一根已收線」是否為順向實體K且收在軌外；
+    # first_doji（再前一顆是十字）不再阻擋延續。
+    assert (outside_reentry(f, price, side).get('side') == side) is (case in ('valid', 'first_doji'))
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
