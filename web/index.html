@@ -211,6 +211,8 @@
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; height: 560px; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
         .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        /* 只有一個幣種時用單欄，圖表才會佔滿整個寬度（含全螢幕） */
+        .chart-grid.chart-grid-single { grid-template-columns: 1fr; }
         .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; display: flex; flex-direction: column; }
         .chart-pane-header { flex: 0 0 auto; height: 38px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 800; }
         .chart-symbol-trend { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
@@ -590,7 +592,9 @@
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
             </div>
-            <div class="chart-modal-body chart-grid" :style="(!chartFullscreen && chartModalHeight) ? { height: chartModalHeight + 'px' } : {}">
+            <div class="chart-modal-body chart-grid"
+                 :class="{ 'chart-grid-single': chartModal.symbols.length <= 1 }"
+                 :style="(!chartFullscreen && chartModalHeight) ? { height: chartModalHeight + 'px' } : {}">
                 <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': chartModal.states[symbol]?.entryBlock }">
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
