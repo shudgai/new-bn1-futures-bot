@@ -21,7 +21,7 @@ SYMBOL_LEVERAGE = {
     "SOL/USDT": 8, "AVAX/USDT": 8, "AAVE/USDT": 8, "UNI/USDT": 8,
     "ADA/USDT": 6, "APT/USDT": 6, "DOGE/USDT": 6, "NEAR/USDT": 6,
     "SUI/USDT": 6, "TAO/USDT": 6, "FET/USDT": 6,
-    "WIF/USDT": 3, "1000PEPE/USDT": 3,
+    "WIF/USDT": 3,
     "WLD/USDT": 3,   # 高波動 AI 概念幣，單次損失放大明顯，限 3x
 }
 
