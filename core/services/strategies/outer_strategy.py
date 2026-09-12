@@ -214,6 +214,39 @@ def entry_trend_direction(frame):
         return None
 
 
+def special_volume_surge_ok(frame, index, ratio=1.5):
+    """特例K量能確認：該根成交量 ≥ ratio × 近20根均量（當根未收線按已過時間比例換算）。
+
+    2026-09-14 使用者：假突破＝沒量 → 量能沒放大的特例K不開。資料不足（暖機／合成框架）時不做過濾。
+    """
+    try:
+        import time as _time
+        if frame is None or "volume" not in frame.columns or "high" not in frame.columns:
+            return True
+        if len(frame) < 22:
+            return True
+        vols = [float(v) for v in frame["volume"]]
+        base = vols[index - 20:index]
+        if len(base) < 20:
+            return True
+        mean = sum(base) / len(base)
+        if not (math.isfinite(mean) and mean > 0):
+            return True
+        volume = vols[index]
+        if not math.isfinite(volume) or volume < 0:
+            return False
+        if index == -1 and "timestamp" in frame.columns:
+            try:
+                opened = float(frame["timestamp"].iloc[-1]) / 1000.0
+                elapsed = min(max((_time.time() - opened) / 60.0, 0.15), 1.0)
+                volume = volume / elapsed
+            except (TypeError, ValueError, IndexError):
+                pass
+        return volume >= mean * ratio
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return True
+
+
 def live_body_breakout_side(frame, price):
     """Current real body crosses an outer rail by quote, sized on closed ATR."""
     try:
@@ -468,7 +501,13 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         # (3) 首次破軌（從軌內穿出）才需要「破軌根＋第二根已收線同色實體K」。
         special_long_body = body_side is not None and side == body_side
         if special_long_body:
+            # 2026-09-14 使用者：特例K要量能確認（突破根量 ≥1.5×近20根均量），沒量視為假突破。
+            if not special_volume_surge_ok(frame, -2):
+                return {**wait, "reason": "KC_SPECIAL_LOW_VOLUME_WAIT"}
             return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
+        # 2026-09-14 使用者：即時特例K（當根長實體破軌）也要量能確認。
+        if body_driven and not special_volume_surge_ok(frame, -1):
+            return {**wait, "reason": "KC_SPECIAL_LOW_VOLUME_WAIT"}
         # 2026-09-14 使用者：延續（連續三根已收線在軌外、平倉後重開）不受效率門檻限制，
         # 單根同色K即可延續開倉。
         continuation_ready = continuation_exempt and outside_continuation_ready(frame, side, price)
