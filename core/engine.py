@@ -3395,9 +3395,8 @@ class TradingEngine:
             self.account.save_state()
         if ready and not ticket.get('requires_pullback', True) and self._live_pivot_ready(symbol, frame, price, ticket['side']):
             return True
-        decision = outside_reentry(
-            frame, price, ticket["side"],
-            require_second_body=self._channel_v_bottom_after_exit(ticket, frame))
+        # 2026-09-14 使用者：沒有兩根實體K線就不應該開倉（唯一例外：長實體特例K）。
+        decision = outside_reentry(frame, price, ticket["side"], require_second_body=True)
         if not self._profit_pivot_is_new(ticket, frame):
             return False
         return ready and decision.get("side") == ticket["side"]

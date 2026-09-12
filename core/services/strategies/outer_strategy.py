@@ -747,7 +747,7 @@ def continuation_entry(frame, price):
     return wait
 
 
-def outside_reentry(frame, price, side, require_second_body=False):
+def outside_reentry(frame, price, side, require_second_body=True):
     """Use the same confirmed CK trend for normal reentries.
 
     require_second_body=True：2026-09-13 使用者要求「跌下來形成 V 型谷底後，

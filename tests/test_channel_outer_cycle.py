@@ -42,8 +42,8 @@ def test_outer_cycle_conditions(side, case):
     if case == 'inside': price = 100.
     if case == 'first_doji': f.loc[17, 'open'] = f.loc[17, 'close']
     if case == 'invalid': f.loc[18, 'close'] = float('nan')
-    # A doji prevents breakout confirmation but not an independently aligned trend.
-    assert (outside_reentry(f, price, side).get('side') == side) is (case in ('valid', 'first_doji'))
+    # 2026-09-14：重開／延續也要「破軌根＋同色實體K」；第一根是十字（不同色）→ 不開。
+    assert (outside_reentry(f, price, side).get('side') == side) is (case == 'valid')
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
