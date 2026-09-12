@@ -465,7 +465,7 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True)
         if body_driven:
             return {"action": "ENTER", "side": side,
                     "reason": ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side}
-        if require_second_body and not two_closed_bodies_ready(frame, side):
+        if require_second_body and not breakout_two_bodies_ready(frame, side):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait
@@ -562,6 +562,34 @@ def live_candle_color_ready(frame, price, side):
         if not all(math.isfinite(value) and value > 0 for value in (opened, price)):
             return False
         return (1 if side == "LONG" else -1) * (price - opened) >= 0
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def breakout_two_bodies_ready(frame, side):
+    """破軌入口的兩根確認：破軌根＋下一根同色。
+
+    2026-09-13 使用者：「破軌開倉的條件是破軌實體K 1 根＋1 根實體同色K線，
+    第一根不用管它是怎樣的實體，只要是同色就可以。」→ 第一根只檢查同色，
+    第二根（確認根）才要求是同色實體K（實體 ≥ 全長 20%）。
+    """
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+            return False
+        sign = 1 if side == "LONG" else -1
+        rows = list(frame.iloc[-3:-1].iterrows())
+        if len(rows) != 2:
+            return False
+        for _, row in rows:
+            opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
+            if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
+                    or not low <= min(opened, closed) <= max(opened, closed) <= high
+                    or sign * (closed - opened) <= 0):
+                return False
+        _, second = rows[1]
+        s_open, s_high, s_low, s_close = (float(second[k]) for k in ("open", "high", "low", "close"))
+        span = s_high - s_low
+        return span > 0 and abs(s_close - s_open) / span >= 0.20
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 
