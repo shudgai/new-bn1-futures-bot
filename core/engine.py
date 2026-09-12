@@ -101,6 +101,8 @@ from core.config import (
     RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
     CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC,
     CHANNEL_1H_TREND_FILTER_ENABLED, CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC,
+    CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED, CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR,
+    CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC,
     CHANNEL_STRONG_TREND_RATIO, CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
     API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
     KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
@@ -1909,6 +1911,13 @@ class TradingEngine:
         if locks is None:
             locks = self._channel_entry_locks = {}
         async with locks.setdefault(symbol, asyncio.Lock()):
+            # 一般訊號要進場時，先撤掉同一幣種的破軌預掛觸價單，避免兩種入口
+            # 在同一根K各開一次（2026-09-12）。
+            cancel_stop = getattr(self.account, "cancel_breakout_stop_entry", None)
+            if cancel_stop is not None and symbol in getattr(
+                self.account, "breakout_stop_entries", {},
+            ):
+                await cancel_stop(symbol, "改由一般訊號進場")
             if self._channel_candle_entry_blocked(symbol) and not self._ck_reverse_order_authorized(symbol, signal):
                 self.account.log(f"⏳ {symbol} KC_ONE_ENTRY_PER_CANDLE：本根1分鐘K已開倉或平倉，等待下一根再評估", "INFO")
                 return False
@@ -2919,6 +2928,98 @@ class TradingEngine:
         )
         return True
 
+
+    def _channel_breakout_stop_plan(self, frame, price, symbol=None):
+        """破軌預掛觸價單的計畫：價格還沒破軌、但已在可及範圍時回傳觸發價。
+
+        2026-09-12 使用者核准。觸發價＝max(上軌, 當根開盤 + 1.4 ATR)（空單
+        對稱取 min），也就是「一旦碰到就等於特例K成立」的價位；現價必須還在
+        觸發價內側、且距離不超過 CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR，
+        否則代表離破軌還很遠，不值得預掛。量能不足（<1.5×近20根均量）不掛。
+        """
+        try:
+            from core.services.strategies.outer_strategy import (
+                entry_trend_direction, special_volume_surge_ok, LIVE_BREAKOUT_BODY_ATR,
+            )
+            if frame is None or len(frame) < 4:
+                return None
+            side = entry_trend_direction(frame)
+            if side not in ("LONG", "SHORT"):
+                return None
+            row = frame.iloc[-1]
+            opened = float(row["open"])
+            atr = float(frame.iloc[-2]["atr"])
+            rail = float(row["kc_upper"] if side == "LONG" else row["kc_lower"])
+            price = float(price)
+            if not all(math.isfinite(v) and v > 0 for v in (opened, atr, rail, price)):
+                return None
+            if side == "LONG":
+                trigger = max(rail, opened + LIVE_BREAKOUT_BODY_ATR * atr)
+                if price >= trigger:
+                    return None
+                if trigger - price > CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR * atr:
+                    return None
+            else:
+                trigger = min(rail, opened - LIVE_BREAKOUT_BODY_ATR * atr)
+                if price <= trigger:
+                    return None
+                if price - trigger > CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR * atr:
+                    return None
+            if not special_volume_surge_ok(frame, -1):
+                return None
+            return {
+                "side": side,
+                "trigger": float(trigger),
+                "atr": atr,
+                "bar_id": self._channel_candidate_bar_id(frame),
+                "rail": rail,
+            }
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+            return None
+
+    async def _maintain_channel_breakout_stop(self, symbol, frame, price, daily_halt=False):
+        """維護破軌預掛觸價單：條件符合就掛，換根／條件消失／逾時就撤。"""
+        if not CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED:
+            return False
+        account = self.account
+        entries = getattr(account, "breakout_stop_entries", None)
+        if entries is None or not hasattr(account, "place_breakout_stop_entry"):
+            return False
+        info = entries.get(symbol)
+        in_position = symbol in account.positions
+        plan = None
+        if not daily_halt and not in_position:
+            plan = self._channel_breakout_stop_plan(frame, price, symbol)
+        if info is not None:
+            if in_position:
+                return False
+            stale = []
+            if info.get("bar_id") != self._channel_candidate_bar_id(frame):
+                stale.append("換根")
+            if plan is None:
+                stale.append("條件消失")
+            if time.time() - float(info.get("placed_at") or 0.0) > CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC:
+                stale.append("逾時")
+            if self._channel_stop_cooldown_remaining(symbol) > 0:
+                stale.append("停損冷卻")
+            if stale:
+                await account.cancel_breakout_stop_entry(symbol, "、".join(stale))
+            return False
+        if plan is None or daily_halt or in_position:
+            return False
+        if symbol in account.pending_limit_orders or symbol in account.closing_lock:
+            return False
+        if self._channel_stop_cooldown_remaining(symbol) > 0:
+            return False
+        amount = self._continuous_entry_amount()
+        if amount <= 0:
+            return False
+        return await account.place_breakout_stop_entry(
+            symbol, plan["side"], plan["trigger"], amount,
+            atr=plan["atr"], signal_score=100,
+            reason=f"Channel Swing KC_BREAKOUT_STOP_{plan['side']}",
+            bar_id=plan["bar_id"],
+        )
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False):
         """Submit on this scan, retaining every structured-order account safety check."""

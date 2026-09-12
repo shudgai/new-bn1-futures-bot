@@ -175,6 +175,8 @@ class BinanceTestnetAccount:
         # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
         # 一個 symbol 同時最多一張掛單。
         self.pending_limit_orders: Dict[str, dict] = {}
+        # 2026-09-12 使用者核准：破軌預掛觸價單（交易所端 STOP_MARKET 進場）。
+        self.breakout_stop_entries: Dict[str, dict] = {}
         # 同一 symbol 反覆掛單-撤單（見 place_limit_entry/cancel_pending_limit）
         # 時，只印第一次「掛單中」，之後同一個 symbol 連續沒成交就不再重複
         # 印掛單/撤銷——同一個 symbol 一直顯示卻沒有新結果，畫面上只是雜訊。
@@ -334,6 +336,7 @@ class BinanceTestnetAccount:
         await self.exchange.load_markets()
         self._markets_loaded = True
         await self._cancel_orphan_entry_orders()
+        await self._cancel_orphan_breakout_stops()
         await self.refresh(force=True)
         await self._restore_exchange_initial_stops()
 
@@ -2365,6 +2368,156 @@ class BinanceTestnetAccount:
         if streak == 0:
             self.log(f"↩️ [限價單撤銷] {symbol} {info['side']}：{reason}", "INFO")
         self._pending_retry_streak[symbol] = streak + 1
+
+    async def _cancel_orphan_breakout_stops(self) -> None:
+        """開機時清掉「沒有持倉」幣種殘留的條件單（含前一輪破軌觸價單）。
+
+        破軌觸價單是交易所端 CONDITIONAL（STOP_MARKET）單，成交後會直接
+        產生持倉；軟體重啟會讓記憶體追蹤失效，若不清理，殘留單可能在沒有
+        訊號的情況下自行觸價進場。有持倉的幣種不動，避免誤刪停損停利。
+        """
+        for symbol in DEFAULT_SYMBOLS:
+            if symbol in self.positions:
+                continue
+            try:
+                await self.exchange.request(
+                    "algoOpenOrders", "fapiPrivate", "DELETE",
+                    {"symbol": self._raw_symbol(symbol)},
+                )
+            except Exception:
+                pass
+
+    async def place_breakout_stop_entry(
+        self, symbol: str, side: str, trigger_price: float, amount_usdt: float,
+        atr: float = 0.0, reason: str = "", signal_score: int = None,
+        bar_id: object = None, leverage: int = None,
+    ) -> bool:
+        """破軌預掛觸價單：價格觸及破軌價位時，由交易所端立刻市價進場。
+
+        2026-09-12 使用者核准。快市行情（例：龍蝦 0.13674 → 0.14475 只花
+        64 毫秒）不可能靠程式掃描追上：行情串流每秒才推一次報價，加上
+        每輪重抓 K 線／指標重算，從看到破軌到送單要 1.5～2 秒，成交價
+        一定落在長 K 上半段。改在破軌價位預掛 STOP_MARKET，觸價即成交，
+        成交價才會貼近破軌價。
+        """
+        try:
+            if str(side or "").upper() not in ("LONG", "SHORT"):
+                return False
+            trigger_price = float(trigger_price)
+            amount_usdt = float(amount_usdt)
+            if not (trigger_price > 0 and amount_usdt > 0):
+                return False
+            if symbol in self.positions or symbol in self.closing_lock:
+                return False
+            if symbol in self.pending_limit_orders or symbol in self.breakout_stop_entries:
+                return False
+            await self._ensure_markets()
+            leverage = leverage or (
+                get_signal_leverage(symbol, signal_score)
+                if signal_score is not None else get_leverage(symbol)
+            )
+            qty = float(self.exchange.amount_to_precision(
+                symbol, (amount_usdt * leverage) / max(trigger_price, 1e-12),
+            ))
+            if qty <= 0:
+                return False
+            price_str = self.exchange.price_to_precision(symbol, trigger_price)
+            await self._prepare_leverage(symbol, leverage)
+            result = await self.exchange.request("algoOrder", "fapiPrivate", "POST", {
+                "algoType": "CONDITIONAL",
+                "symbol": self._raw_symbol(symbol),
+                "side": "BUY" if str(side).upper() == "LONG" else "SELL",
+                "quantity": self.exchange.amount_to_precision(symbol, qty),
+                "triggerPrice": price_str,
+                "reduceOnly": "false",
+                "workingType": "CONTRACT_PRICE",
+                "type": "STOP_MARKET",
+            })
+        except Exception as exc:
+            self.log(
+                f"🛑 {symbol} 破軌觸價單掛單失敗：{type(exc).__name__}: {exc}",
+                "WARNING",
+            )
+            return False
+        algo_id = (result or {}).get("algoId") or (result or {}).get("orderId")
+        self.breakout_stop_entries[symbol] = {
+            "algo_id": algo_id,
+            "side": str(side).upper(),
+            "trigger_price": float(price_str),
+            "qty": qty,
+            "amount_usdt": amount_usdt,
+            "atr": float(atr or 0.0),
+            "leverage": leverage,
+            "reason": reason,
+            "signal_score": signal_score,
+            "bar_id": bar_id,
+            "placed_at": time.time(),
+        }
+        self.log(
+            f"🪝 [破軌觸價單] {symbol} {str(side).upper()} 觸價 {price_str}"
+            f"（{leverage}x）：價格一到由交易所直接市價進場",
+            "INFO",
+        )
+        return True
+
+    async def cancel_breakout_stop_entry(self, symbol: str, reason: str = "") -> None:
+        """撤掉破軌觸價單（換根、條件消失、逾時或已有持倉）。"""
+        info = self.breakout_stop_entries.get(symbol)
+        if not info:
+            return
+        try:
+            await self.exchange.request(
+                "algoOrder", "fapiPrivate", "DELETE", {"algoId": info.get("algo_id")},
+            )
+        except Exception as exc:
+            # 可能在這個瞬間剛好觸價成交；成交會產生持倉，交給
+            # check_breakout_stop_entries() 標記後收尾，不在此清除追蹤。
+            if symbol not in self.positions:
+                self.log(
+                    f"⚠️ {symbol} 破軌觸價單撤單失敗：{type(exc).__name__}: {exc}",
+                    "WARNING",
+                )
+                return
+        self.breakout_stop_entries.pop(symbol, None)
+        self.log(f"↩️ [破軌觸價單] {symbol} 已撤單（{reason or '條件消失'}）", "INFO")
+
+    async def check_breakout_stop_entries(self) -> None:
+        """偵測破軌觸價單是否成交：成交後交易所端會直接出現持倉。"""
+        for symbol, info in list(self.breakout_stop_entries.items()):
+            position = self.positions.get(symbol)
+            if position is None:
+                continue
+            held_side = str(position.get("side") or "").upper()
+            matched = held_side == str(info.get("side") or "").upper()
+            if matched:
+                # 只有「成交價貼近觸發價」才認定是這張觸價單成交；若同向
+                # 持倉是別的入口開的（價位差很遠），只撤單不誤標特例K。
+                try:
+                    trigger = float(info.get("trigger_price") or 0.0)
+                    entry_price = float(position.get("entry_price") or 0.0)
+                    if trigger > 0 and entry_price > 0:
+                        matched = abs(entry_price - trigger) / trigger <= 0.015
+                except (TypeError, ValueError):
+                    matched = True
+            if matched:
+                meta = self.position_meta.setdefault(symbol, {})
+                meta["entry_mode"] = meta.get("entry_mode") or "CHANNEL_SWING"
+                meta["entry_special_k"] = True
+                meta["reason"] = info.get("reason") or meta.get("reason")
+                if info.get("atr"):
+                    meta["atr"] = float(info["atr"])
+                if info.get("signal_score") is not None:
+                    meta["signal_score"] = info["signal_score"]
+                position["entry_special_k"] = True
+                self.breakout_stop_entries.pop(symbol, None)
+                self.log(
+                    f"✅ [破軌觸價單成交] {symbol} {held_side} 已由交易所觸價進場"
+                    f"（觸價 {info.get('trigger_price')}）",
+                    "SUCCESS",
+                )
+                self.save_state()
+            else:
+                await self.cancel_breakout_stop_entry(symbol, "已有反向持倉")
 
     async def close_position(
         self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False

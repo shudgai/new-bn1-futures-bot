@@ -87,6 +87,13 @@ async def process_single_symbol_runner(
                 return signal_progress, detected_candidates
             entry_side = aligned_entry(channel_df, channel_price).get("side")
             engine._channel_intrabar_ready(symbol, channel_df, channel_price, entry_side)
+        # 破軌觸價單：成交偵測 + 掛單/撤單維護（2026-09-12 使用者核准）。
+        check_stop = getattr(engine.account, "check_breakout_stop_entries", None)
+        if check_stop is not None:
+            await check_stop()
+        maintain_stop = getattr(engine, "_maintain_channel_breakout_stop", None)
+        if maintain_stop is not None and not existing_pos:
+            await maintain_stop(symbol, channel_df, channel_price, daily_halt)
         else:
             watcher = getattr(engine, "_channel_intrabar_entries", None)
             if watcher is not None:
