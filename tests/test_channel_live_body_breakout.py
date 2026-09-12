@@ -134,7 +134,13 @@ async def test_breakout_does_not_bypass_guards(side,block,monkeypatch):
         assert TradingEngine._channel_terminal_market(f)
     if block=='daily': e._ck_reverse_new_leg_halted=lambda:True
     signal=dict(side=side,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',reason='first body',signal_code='KC_LIVE_BODY_BREAKOUT_'+side,live_outer=True)
-    assert not await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot)
+    result = await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot)
+    if block == 'room':
+        # 2026-09-13 使用者：特例K一律可開，不看上方還剩多少淨利空間。
+        assert result, e.account.logs
+        assert [v[0] for v in e.account.events] == ['open']
+        return
+    assert not result
     assert not e.account.events
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])

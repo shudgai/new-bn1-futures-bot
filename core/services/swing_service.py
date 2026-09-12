@@ -120,6 +120,19 @@ def channel_mature_outer_trend_is_weak(
         return False
     return latest / mean < 1.50
 
+def _special_long_body_aligned(frame, price):
+    """當根是否為順向特例長K（即時破軌或長實體收在軌外）——特例K一律可開。"""
+    try:
+        from core.services.strategies.outer_strategy import live_body_breakout_side, long_body_side
+        from core import config as _config
+        if live_body_breakout_side(frame, price) in ("LONG", "SHORT"):
+            return True
+        limit = float(getattr(_config, "CHANNEL_LONG_BODY_ENTRY_ATR", 0.0) or 0.0)
+        return bool(limit > 0 and long_body_side(frame, limit) in ("LONG", "SHORT"))
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
 def channel_terminal_market(frame):
     """A mature weak run blocks entries on BOTH sides."""
     return any(channel_mature_outer_trend_is_weak(frame, side)
@@ -242,8 +255,8 @@ def channel_swing_action(
     """Use one MA3 outer-cross entry and position-aware execution exits."""
     if str(current_side or "").upper() in ("LONG", "SHORT"):
         return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
-    # 2026-09-13 使用者：走弱就全部不做（含獲利重開與特例長K），等走勢再出來才開倉。
-    if channel_terminal_market(frame):
+    # 2026-09-13 使用者：走弱末端暫停一般新倉；但特例K一律可開（特例就是特例）。
+    if channel_terminal_market(frame) and not _special_long_body_aligned(frame, live_price):
         return {
             "action": "WAIT",
             "side": None,
