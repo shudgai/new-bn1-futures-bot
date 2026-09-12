@@ -1791,9 +1791,8 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
-        # 2026-09-13 使用者：特例長K一律可開，不受走弱末端限制。
-        if (self._channel_terminal_market(frame)
-                and not self._special_long_body_entry(frame, price, side)):
+        # 2026-09-14 使用者：末端（真量能衰退）一律不進場。
+        if self._channel_terminal_market(frame):
             return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
                 symbol, {'side': side, 'profit_reentry_token': profit_reentry_token}):
@@ -1928,11 +1927,6 @@ class TradingEngine:
             side = str((signal or {}).get("side") or "").upper()
             if trend_1h in (1, -1) and side in ("LONG", "SHORT"):
                 aligned = (side == "LONG" and trend_1h == 1) or (side == "SHORT" and trend_1h == -1)
-                if not aligned and self._special_long_body_signal(signal, channel_snapshot, side, symbol):
-                    # 2026-09-13 使用者：順向特例長K開放逆 1h（瀑布追空用）。
-                    self.account.log(
-                        f"🔥 [1h 趨勢過濾豁免] {symbol} {side} 順向特例長K，允許逆 1h 進場", "INFO")
-                    aligned = True
                 if not aligned:
                     self.account.log(
                         f"⏸️ [1h 趨勢過濾] {symbol} 1h 方向 {trend_1h:+d} 與 {side} 不一致，不開新倉", "INFO")
@@ -2035,9 +2029,8 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
-            if (self._channel_terminal_market(fresh_frame)
-                    and not self._special_long_body_entry(fresh_frame, planned_price, side)):
-                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：走弱末端暫停一般開倉（特例K除外）", "INFO")
+            if self._channel_terminal_market(fresh_frame):
+                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：末端（量能衰退）不進場", "INFO")
                 return False
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
             planned_price = float(entry_quote)
