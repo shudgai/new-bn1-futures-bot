@@ -390,6 +390,26 @@ def v_bottom_shape(frame, lookback=10):
         return False
 
 
+def ma3_middle_cross_reset(frame, lookback=10):
+    """MA3 走到中軌（穿越）後又回到順向側＝趨勢重置，之後突破視同新突破。
+
+    使用者 2026-09-13：「MA3 走到中軌再回去也是視同新破軌」。
+    """
+    try:
+        if frame is None or len(frame) < lookback + 1:
+            return False
+        seg = frame.iloc[-(lookback + 1):-1]
+        mid = [float(v) for v in seg["kc_middle"]]
+        ma3 = [float(v) for v in seg["ma3"]]
+        if len(mid) < 3 or not all(math.isfinite(v) for v in mid + ma3):
+            return False
+        side = [1 if m > c else -1 if m < c else 0 for m, c in zip(ma3, mid)]
+        changed = any(a != b for a, b in zip(side, side[1:]) if a != 0 and b != 0)
+        return bool(changed and side[-1] != 0)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
 def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True):
     """Live long-body breaks may precede CK confirmation; retain trend entries.
 
