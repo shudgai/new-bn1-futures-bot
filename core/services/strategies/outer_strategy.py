@@ -469,17 +469,20 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         special_long_body = body_side is not None and side == body_side
         if special_long_body:
             return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
+        # 2026-09-14 使用者：延續（連續三根已收線在軌外、平倉後重開）不受效率門檻限制，
+        # 單根同色K即可延續開倉。
+        continuation_ready = continuation_exempt and outside_continuation_ready(frame, side)
         # 延續段（連續兩根已收線都在軌外）單根同色K即可；首次破軌才要兩根。
         # continuation_exempt：只有「平倉後的延續／重開」帶 True（2026-09-14 使用者：
         # 站上外軌代表已突破，平倉後可延續開倉）。
-        if (require_second_body and not (continuation_exempt and outside_continuation_ready(frame, side))
+        if (require_second_body and not continuation_ready
                 and not breakout_two_bodies_ready(frame, side)):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait
         if channel_tail_entry_blocked(frame, side):
             return {**wait, "reason": "KC_TREND_TAIL_WAIT"}
-        if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not body_driven
+        if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not body_driven and not continuation_ready
                 and direction_efficiency(frame) < CHANNEL_MIN_DIRECTION_EFFICIENCY):
             return {**wait, "reason": "KC_LOW_EFFICIENCY_WAIT"}
         if not body_driven and channel_middle_is_flat(frame):
