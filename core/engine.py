@@ -3154,15 +3154,19 @@ class TradingEngine:
 
 
     def _release_resolved_abnormal_exit(self, symbol, frame, price):
-        # 2026-09-13 使用者：反向出現順向特例長K時，直接作廢舊票據，讓反向新倉可被評估。
+        # 2026-09-13 使用者：只要出現順向特例長K，就取消票據並回到一般入口開倉
+        #（同向走一般入口即可；反向則換方向評估，不必再等票據解除）。
         ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol) or {}
-        opposite = {"LONG": "SHORT", "SHORT": "LONG"}.get(str(ticket.get("side") or "").upper())
-        if opposite and self._special_long_body_entry(frame, price, opposite):
-            self.account.channel_profit_reentries.pop(symbol, None)
-            self.account.save_state()
-            self.account.log(
-                f"✅ {symbol} {opposite} 出現特例長K，作廢舊{ticket.get('side')}票據，改評估反向新倉", "INFO")
-            return True
+        if ticket:
+            for side in ("LONG", "SHORT"):
+                if not self._special_long_body_entry(frame, price, side):
+                    continue
+                held = str(ticket.get("side") or "").upper()
+                self.account.channel_profit_reentries.pop(symbol, None)
+                self.account.save_state()
+                self.account.log(
+                    f"✅ {symbol} 出現{side}特例長K，作廢原{held}重開票據，改由一般入口評估開倉", "INFO")
+                return True
         if next_breakout_ready(self.account, symbol, frame, price):
             self.account.channel_profit_reentries.pop(symbol)
             self.account.save_state()

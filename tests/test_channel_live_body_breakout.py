@@ -98,6 +98,12 @@ async def test_actual_order_paths_accept_first_break(side,route,monkeypatch):
     elif route=='scan': result=await e._execute_confirmed_channel_break(SYMBOL,f,price,side)
     elif route=='quote': result=await e._try_live_pivot_entry(SYMBOL,f,price)
     else: result=await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot if route=='cached' else None)
+    if route=='reentry':
+        # 2026-09-13 使用者：出現順向特例長K時先作廢票據，改由一般入口重新評估，
+        # 因此這一輪帶著舊 token 的送單會失效，票據已被取消。
+        assert SYMBOL not in e.account.channel_profit_reentries
+        assert any('特例長K' in text for text,_ in e.account.logs)
+        return
     assert result,e.account.logs
     assert [v[0] for v in e.account.events]==['open']
 
