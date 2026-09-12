@@ -53,6 +53,12 @@
             font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
         }
         .badge-port { background: #e0e7ff; color: #4338ca; }
+        .badge-api {
+            font-size: 14px; font-weight: 800; padding: 6px 14px; border-radius: 8px;
+            text-transform: none; letter-spacing: .2px; white-space: nowrap;
+            border: 1px solid rgba(0,0,0,.06); cursor: default;
+        }
+        .badge-api .badge-api-sub { font-size: 12px; font-weight: 700; opacity: .85; }
         .badge-status { cursor: pointer; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; transition: all 0.2s; }
         .badge-status.running { background: var(--up-bg); color: var(--up); border: 1px solid var(--up); }
         .badge-status.stopped { background: var(--down-bg); color: var(--down); border: 1px solid var(--down); }
@@ -565,12 +571,12 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge"
+                    <span class="badge badge-api"
                           :style="{ background: (bot.api_usage && bot.api_usage.is_warning) ? '#fef2f2' : '#eef2ff',
                                     color: (bot.api_usage && bot.api_usage.percent >= (bot.api_usage.warn_percent || 70)) ? 'var(--down)' : ((bot.api_usage && bot.api_usage.percent >= 40) ? '#b45309' : 'var(--up)') }"
                           :title="'幣安 API 用量（每分鐘）；警示門檻 ' + ((bot.api_usage && bot.api_usage.warn_percent) || 70) + '%'">
                         幣安 API {{ bot.api_usage ? bot.api_usage.percent.toFixed(1) + '%' : '-' }}
-                        <span v-if="bot.api_usage">（{{ bot.api_usage.used_weight_1m }} / {{ bot.api_usage.limit_per_min }}）</span>
+                        <span v-if="bot.api_usage" class="badge-api-sub">（{{ bot.api_usage.used_weight_1m }} / {{ bot.api_usage.limit_per_min }}）</span>
                     </span>
                     <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
                     <button class="btn chart-fullscreen-btn" @click.stop="toggleChartFullscreen">
