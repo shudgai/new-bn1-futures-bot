@@ -94,19 +94,37 @@ def channel_live_ma3_turn_exit(
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 
+ABNORMAL_RELEASE_REASONS = {
+    'Channel Swing KC_LONG_LIVE_RED_LONG_EXIT',
+    'Channel Swing KC_SHORT_LIVE_GREEN_LONG_EXIT',
+    'Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL',
+    'Channel Swing EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL',
+    'Channel Swing EMERGENCY_EXIT_2_CANDLE_ADVERSE',
+    'Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL',
+}
+PROFIT_PROTECTION_REASON_PREFIX = 'Channel Swing PROFIT_PROTECTION '
+
+
+def releasable_close_reason(ticket: dict) -> bool:
+    """是否屬「方向確認反轉就作廢重開票據」的平倉。
+
+    使用者 2026-09-13：賺錢落袋（階梯鎖利）留下的票據原本不會因方向反轉解除，
+    會卡到票據過期（1 小時），反向新倉完全進不來；異常／瀑布平倉本來就有此機制。
+    """
+    reason = str(ticket.get('close_reason') or '')
+    if reason in ABNORMAL_RELEASE_REASONS:
+        return bool(ticket.get('requires_pullback'))
+    if reason.startswith(PROFIT_PROTECTION_REASON_PREFIX):
+        return not ticket.get('requires_pullback')
+    return False
+
+
 def opposite_entry_releases(account: Any, symbol: str, frame: pd.DataFrame, price: float) -> bool:
     ticket = getattr(account, 'channel_profit_reentries', {}).get(symbol, {})
     if (symbol in account.positions or ticket.get('phase') != 'closed'
-            or ticket.get('mode') != 'outer_cycle' or not ticket.get('requires_pullback')
+            or ticket.get('mode') != 'outer_cycle'
             or ticket.get('side') not in ('LONG', 'SHORT')
-            or ticket.get('close_reason') not in {
-                'Channel Swing KC_LONG_LIVE_RED_LONG_EXIT',
-                'Channel Swing KC_SHORT_LIVE_GREEN_LONG_EXIT',
-                'Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_WATERFALL',
-                'Channel Swing EMERGENCY_EXIT_CLOSED_ADVERSE_WATERFALL',
-                'Channel Swing EMERGENCY_EXIT_2_CANDLE_ADVERSE',
-                'Channel Swing EMERGENCY_EXIT_LIVE_ADVERSE_ABNORMAL',
-            }):
+            or not releasable_close_reason(ticket)):
         return False
     try:
         requested = float(ticket['close_requested_at_ms'])

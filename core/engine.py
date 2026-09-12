@@ -3090,12 +3090,6 @@ class TradingEngine:
         signed_move_pct = (candle_close - candle_open) / candle_open
         body_atr = abs(candle_close - candle_open) / atr
         requested = str(side or "").upper()
-        excessive_range = (
-            (ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR > 0
-             and range_atr >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR)
-            or (ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT > 0
-                and range_pct >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT)
-        )
         adverse_impulse = (
             (requested == "LONG" and signed_move_pct <= -ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
             or (requested == "SHORT" and signed_move_pct >= ABNORMAL_MARKET_ADVERSE_MOVE_PCT)
@@ -3106,6 +3100,19 @@ class TradingEngine:
             (requested == "LONG" and signed_move_pct > 0.0)
             or (requested == "SHORT" and signed_move_pct < 0.0)
         )
+        # 使用者 2026-09-13：順向特例長K本身就是要抓的訊號，不因當根振幅大就禁開；
+        # 逆向衝動（adverse_impulse）與反向長實體的保護完全不變。
+        long_body_threshold = float(getattr(config, "CHANNEL_LIVE_BREAKOUT_BODY_ATR", 0.0) or 0.0)
+        aligned_special_long_body = bool(
+            direction_aligned_impulse and long_body_threshold > 0
+            and body_atr >= long_body_threshold
+        )
+        excessive_range = (
+            (ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR > 0
+             and range_atr >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR)
+            or (ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT > 0
+                and range_pct >= ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT)
+        ) and not aligned_special_long_body
         strong_live_candle = (
             PIVOT_STRONG_BODY_ATR_MULT > 0
             and body_atr >= PIVOT_STRONG_BODY_ATR_MULT
