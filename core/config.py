@@ -345,25 +345,6 @@ CHANNEL_LIVE_BREAKOUT_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_LIVE_BREAKOUT_BODY_ATR", "0.5"))
 )
 
-# 末端衰竭／反折過濾（2026-09-12 使用者要求）：命中就放棄開倉並清除信號。
-CHANNEL_EXHAUSTION_FILTER_ENABLED = os.getenv(
-    "CHANNEL_EXHAUSTION_FILTER_ENABLED", "true"
-).lower() == "true"
-# 規則1 MA3 拐頭反向：既有 KC_MA3_TURN_WAIT 已是同一條件（多單 MA3 未上升
-# 就不開、空單 MA3 未下降就不開），由該處統一處理。
-# 規則2：收盤價距持倉側外軌的乖離率上限（>此值視為超買／超賣末端，禁止追）。
-CHANNEL_EXHAUSTION_MAX_RAIL_DEVIATION_PCT = max(
-    0.0, float(os.getenv("CHANNEL_EXHAUSTION_MAX_RAIL_DEVIATION_PCT", "0.015"))
-)
-# 規則3：突破／確認K的「反向影線 ÷ 實體」倍數上限（超過視為遭遇吸收／重壓）。
-CHANNEL_EXHAUSTION_WICK_BODY_RATIO = max(
-    0.0, float(os.getenv("CHANNEL_EXHAUSTION_WICK_BODY_RATIO", "1.0"))
-)
-# 特例K是否也套用末端過濾（使用者要求「所有開倉函式之前」，故預設 true）。
-CHANNEL_EXHAUSTION_APPLIES_SPECIAL_K = os.getenv(
-    "CHANNEL_EXHAUSTION_APPLIES_SPECIAL_K", "true"
-).lower() == "true"
-
 # 2026-09-12 使用者核准「破軌預掛觸價單」：價格尚未破軌、但已在可及範圍時，
 # 先在交易所掛 STOP_MARKET 觸價單，價格一到就由交易所端立刻市價進場，
 # 取代等程式掃到才追價（快市例：龍蝦 0.13674 → 0.14475 只花 64 毫秒，

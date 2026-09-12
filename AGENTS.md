@@ -42,12 +42,6 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 
 
 ## 🟢 現行生效規則（單一來源，2026-09-13 更新）
-## 末端衰竭／反折過濾（2026-09-12 使用者要求，程式已實作，預設關閉）
-- 使用者要求在所有開倉函式前插入「末端防追單過濾」：(1) MA3 拐頭反向不開、(2) 收盤價距持倉側外軌乖離 > 1.5% 不追、(3) 突破／確認K反向影線 > 實體 1 倍不開，命中時印出「⚠️ [警告] 命中末端衰竭/MA3反折過濾條件，取消開倉操作」。
-- 實作：`outer_strategy.channel_exhaustion_block()`（`CHANNEL_EXHAUSTION_FILTER_ENABLED`／`..._MAX_RAIL_DEVIATION_PCT`＝0.015／`..._WICK_BODY_RATIO`＝1.0／`..._APPLIES_SPECIAL_K`＝true）；規則1 MA3 拐頭與既有 `KC_MA3_TURN_WAIT` 同義，仍由該處處理；引擎以每根K一次節流印出警示。
-- **預設 `CHANNEL_EXHAUSTION_FILTER_ENABLED=false`**：今日 46 筆實際交易回測，照原門檻開啟會把合計 +163.65U 變成 −7.39U（乖離規則單獨開啟也只剩 +101.72U），原因是強趨勢進場本來就離外軌很遠、被擋掉的多是賺錢的趨勢單。門檻未確認前不啟用。
-- 特例K是否套用由 `CHANNEL_EXHAUSTION_APPLIES_SPECIAL_K` 控制（預設 true，符合使用者「所有開倉函式之前」）。
-
 ## 破軌預掛觸價單（2026-09-12 使用者核准 A 方案，最新授權）
 - 目的：使用者指出「買進已在外軌中段，為什麼沒有辦法破軌就買」。毫秒資料證實龍蝦 22:35 那根由 0.13674 衝到 0.14475 只花 **64 毫秒**；行情串流每秒才推一次報價，加上每輪重抓 K 線與送單前重驗要 1.5～2 秒，市價單必然追在長K上半段（實際成交 0.14044）。因此改為「破軌價位預掛觸價單」。
 - 掛單條件（多空對稱，只掛當根）：最近兩根已收線 CK 中軌順向、現價仍在觸發價內側、現價距觸發價 ≤ `CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR`（1.0 ATR）、量能 ≥1.5×近20根均量、無持倉／無掛單／無平倉鎖、停損冷卻中不掛。

@@ -85,10 +85,8 @@ async def process_single_symbol_runner(
         if not existing_pos:
             if await engine._try_live_pivot_entry(symbol, channel_df, channel_price, daily_halt):
                 return signal_progress, detected_candidates
-            entry_decision = aligned_entry(channel_df, channel_price)
-            entry_side = entry_decision.get("side")
+            entry_side = aligned_entry(channel_df, channel_price).get("side")
             engine._channel_intrabar_ready(symbol, channel_df, channel_price, entry_side)
-            engine._log_exhaustion_block(symbol, entry_decision.get("reason"), channel_df)
         # 破軌觸價單：成交偵測 + 掛單/撤單維護（2026-09-12 使用者核准）。
         check_stop = getattr(engine.account, "check_breakout_stop_entries", None)
         if check_stop is not None:

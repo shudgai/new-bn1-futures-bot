@@ -26,10 +26,6 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         room = engine._channel_profit_room(frame, price, side) if side else None
         extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=False,
                      outer_signal=outer.get('reason'), profit_room=room)
-        if str(outer.get('reason') or '').startswith('KC_EXHAUSTION'):
-            detail = ('通道外乖離過大' if str(outer.get('reason')).endswith('RAIL_DEVIATION')
-                      else '突破K反向影線過長')
-            return result(outer['reason'], '末端衰竭，取消開倉', f'{detail}；MA3 拐頭、乖離過大或反向長影線一律不追。', **extra)
         if engine._channel_candle_entry_blocked(symbol, now):
             return result('KC_ONE_ENTRY_PER_CANDLE', '本根K已有成交，等待下一根', '平倉後不反手；每根限次保留。', **extra)
         if not fresh:
