@@ -3220,6 +3220,27 @@ class TradingEngine:
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
+        chase_limit = float(getattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_PCT", 0.0) or 0.0)
+        if chase_limit > 0:
+            try:
+                reason = str(ticket.get("close_reason") or "")
+                last_close = 0.0
+                for trade in reversed(list(getattr(self.account, "trades", []))[-60:]):
+                    if (trade.get("symbol") == symbol
+                            and str(trade.get("action", "")).startswith("CLOSE")
+                            and str(trade.get("reason")) == reason):
+                        last_close = float(trade.get("price") or 0.0)
+                        break
+                if last_close > 0:
+                    sign = 1 if str(ticket.get("side")).upper() == "LONG" else -1
+                    chase = sign * (float(price) - last_close) / last_close
+                    if chase > chase_limit:
+                        self.account.log(
+                            f"⏸️ [追高上限] {symbol} 重開票據作廢：現價已高於上次平倉 "
+                            f"{chase * 100:.2f}%（上限 {chase_limit * 100:.2f}%）", "INFO")
+                        return False
+            except (TypeError, ValueError, AttributeError):
+                pass
         cooldown = float(CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC or 0.0)
         if cooldown > 0 and not self._channel_strong_trend(symbol, ticket.get("side")):
             try:

@@ -318,6 +318,11 @@ CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION = os.getenv(
     "CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION", "false"
 ).lower() == "true"
 
+# 獲利重開追高上限：現價若比上次平倉價順向高出超過此比例，票據作廢不追（0＝停用）。
+CHANNEL_PROFIT_REENTRY_MAX_CHASE_PCT = max(
+    0.0, float(os.getenv("CHANNEL_PROFIT_REENTRY_MAX_CHASE_PCT", "0.02"))
+)
+
 # ATR 括號出口（原型驗證版）：以進場時 ATR 設停損與目標，取代階梯鎖利。
 # walk-forward：龍虾＋嚴格進場下 1.5ATR停損/3ATR目標 為唯一整體為正的組合。
 CHANNEL_ATR_EXIT_ENABLED = os.getenv(
