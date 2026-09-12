@@ -33,8 +33,13 @@ def breakout_frame(side, scale=1., ck='opposite'):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('ck',['flat','opposite'])
 @pytest.mark.parametrize('scale',[1.,.00003])
-def test_first_body_break_ignores_ck_and_ma3_confirmation(side,ck,scale):
+def test_first_body_break_ignores_flat_ck_but_not_opposite(side,ck,scale):
+    """2026-09-13 使用者：CK 中軌已反向就先不要買；持平仍走即時長K破軌特例。"""
     f, price = breakout_frame(side,scale,ck)
+    if ck == 'opposite':
+        assert aligned_entry(f,price)['side'] is None
+        assert TradingEngine._channel_swing_action(f,price)['side'] is None
+        return
     assert aligned_entry(f,price)==dict(action='ENTER',side=side,reason='KC_LIVE_BODY_BREAKOUT_'+side)
     assert TradingEngine._channel_swing_action(f,price)['side']==side
     f.loc[f.index[-1],'atr']=1e9
@@ -69,7 +74,7 @@ def test_closed_atr_body_threshold(side,body,expected):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('route',['fresh','cached','reentry','scan','quote','runner'])
 async def test_actual_order_paths_accept_first_break(side,route,monkeypatch):
-    f,price=breakout_frame(side,.00003)
+    f,price=breakout_frame(side,.00003,'flat')
     e=_execution_engine(f,side,True);e.account.positions.clear();e.account.save_state=lambda:None
     del e._channel_intrabar_ready
     e._abnormal_market_entry_allowed=lambda *a,**kw:True
@@ -98,7 +103,7 @@ async def test_actual_order_paths_accept_first_break(side,route,monkeypatch):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('block',['quote_retracted','room','same_bar','stale','held','terminal','daily'])
 async def test_breakout_does_not_bypass_guards(side,block,monkeypatch):
-    f,price=breakout_frame(side)
+    f,price=breakout_frame(side,1.,'flat')
     e=_execution_engine(f,side,True);e.account.positions.clear();e.account.save_state=lambda:None
     del e._channel_intrabar_ready
     e._abnormal_market_entry_allowed=lambda *a,**kw:True
@@ -126,7 +131,7 @@ async def test_breakout_does_not_bypass_guards(side,block,monkeypatch):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_diagnostics_use_breakout_side_instead_of_old_ck(side):
-    f,price=breakout_frame(side)
+    f,price=breakout_frame(side,1.,'flat')
     e=_execution_engine(f,side,True);e.account.positions.clear();e.is_running=True
     now=float(f.iloc[-1]['timestamp'])/1000+1
     e._channel_entry_quote_times={SYMBOL:now};e._channel_candle_entry_blocked=lambda *a:False

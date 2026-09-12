@@ -35,13 +35,14 @@ def fading_frame(side, fading=True):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('armed',[False,True])
 @pytest.mark.parametrize('fading',[False,True])
-def test_only_fading_and_post_entry_significant_turn_exits(side,armed,fading):
+def test_significant_turn_exits_without_waiting_ck_fading(side,armed,fading):
+    """2026-09-13 使用者：MA3 一轉彎就要馬上平倉，不等 CK 衰退與通道狹窄。"""
     f,p,s=fading_frame(side,fading)
     p['channel_profit_protection']={'armed':armed}
     assert not fading_ma3_turn(p,f,100.)
     assert not fading_ma3_turn(p,f,100+s*.3)
     assert not fading_ma3_turn(p,f,100-s*.03)
-    assert fading_ma3_turn(p,f,100-s*.3) is fading
+    assert fading_ma3_turn(p,f,100-s*.3) is True
     assert p['channel_profit_protection']['armed'] is armed
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -80,14 +81,12 @@ def test_retired_immediate_ma3_turn_never_authorizes_close(side):
     assert 'channel_immediate_ma3_turn' not in p
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-def test_old_nonfading_turn_cannot_fire_later(side):
+def test_nonfading_turn_fires_and_persists_across_restart(side):
+    """2026-09-13：CK 未衰退時 MA3 轉彎仍立即成立，且狀態跨幀／重啟保留。"""
     f,p,s=fading_frame(side,False)
-    for price in [100.,100+s*.3,100-s*.3]:
+    for price in [100.,100+s*.3]:
         assert not fading_ma3_turn(p,f,price)
-    f,_,_=fading_frame(side)
-    assert not fading_ma3_turn(p,f,100-s*.3)
-    assert not fading_ma3_turn(p,f,100+s*.6)
-    assert fading_ma3_turn(p,f,100-s*.3)
+    assert fading_ma3_turn(p,f,100-s*.3) is True
     p=json.loads(json.dumps(p))
     assert fading_ma3_turn(p,None,100.)
     p['open_timestamp']+=1
@@ -206,20 +205,16 @@ def test_invalid_narrow_data_does_not_authorize_exit(case):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('armed',[False,True])
-def test_wide_channel_blocks_exit_but_still_blocks_new_entry(side,armed):
+def test_wide_channel_no_longer_blocks_turn_exit(side,armed):
+    """2026-09-13：通道寬窄不再阻擋 MA3 轉彎平倉；0.10 ATR 幅度門檻仍保留。"""
     f,p,s=fading_frame(side)
     p['channel_profit_protection']={'armed':armed}
     middle=f['kc_middle']
     f['kc_upper']=middle*1.02;f['kc_lower']=middle*.98
     assert not ck_entry_momentum_ready(f,side)
-    for price in [100.,100+s*.3,100-s*.3]:
-        assert not fading_ma3_turn(p,f,price)
-    assert not p[STATE_KEY]['pending']
-    f.loc[f.index[-2],'kc_upper']=middle.iloc[-2]*1.01
-    f.loc[f.index[-2],'kc_lower']=middle.iloc[-2]*.99
-    assert not fading_ma3_turn(p,f,100-s*.3)
-    assert not fading_ma3_turn(p,f,100+s*.6)
-    assert fading_ma3_turn(p,f,100-s*.3)
+    assert not fading_ma3_turn(p,f,100.)
+    assert not fading_ma3_turn(p,f,100+s*.3)
+    assert fading_ma3_turn(p,f,100-s*.3) is True
     assert fading_ma3_turn(json.loads(json.dumps(p)),None,100.)
 
 

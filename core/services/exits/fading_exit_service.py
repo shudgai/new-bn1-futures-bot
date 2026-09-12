@@ -52,8 +52,7 @@ def fading_ma3_turn(position, frame, price):
         return False
     if state and state.get('version') == 3 and state.get('pending'):
         return True
-    fading = ck_momentum_fading(frame, position.get('side'))
-    if fading is None:
+    if ck_momentum_fading(frame, position.get('side')) is None:
         position.pop(STATE_KEY, None)
         return False
     observed = {k: position.get(k) for k in ('side', 'open_timestamp', 'entry_price')}
@@ -64,11 +63,10 @@ def fading_ma3_turn(position, frame, price):
     if state is None:
         position.pop(STATE_KEY, None)
         return False
-    eligible = fading and ck_channel_narrow(frame)
-    if turned and not eligible:
-        state.update(pending=False, favorable=False)
+    # 2026-09-13 使用者：MA3 一轉彎就要馬上平倉，不可以等（不等 CK 衰退、不等通道狹窄）。
+    # 幅度門檻沿用 significant_ma3_turn 的 0.10 ATR 峰谷反向，避免小抖動誤平。
     position[STATE_KEY] = state
-    return bool(turned and eligible)
+    return bool(turned)
 
 
 def next_breakout_ready(account, symbol, frame, price):
