@@ -1791,9 +1791,8 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
-        # 2026-09-14 使用者：特例K無條件開倉，不受末端限制。
-        if (self._channel_terminal_market(frame)
-                and not self._special_long_body_entry(frame, price, side)):
+        # 2026-09-14 使用者：漲勢末端不能開倉（特例K也一樣）。
+        if self._channel_terminal_market(frame):
             return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
                 symbol, {'side': side, 'profit_reentry_token': profit_reentry_token}):
@@ -1928,10 +1927,6 @@ class TradingEngine:
             side = str((signal or {}).get("side") or "").upper()
             if trend_1h in (1, -1) and side in ("LONG", "SHORT"):
                 aligned = (side == "LONG" and trend_1h == 1) or (side == "SHORT" and trend_1h == -1)
-                if not aligned and self._special_long_body_signal(signal, channel_snapshot, side, symbol):
-                    self.account.log(
-                        f"🔥 [1h 趨勢過濾豁免] {symbol} {side} 特例K無條件開倉", "INFO")
-                    aligned = True
                 if not aligned:
                     self.account.log(
                         f"⏸️ [1h 趨勢過濾] {symbol} 1h 方向 {trend_1h:+d} 與 {side} 不一致，不開新倉", "INFO")
@@ -2034,9 +2029,8 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
-            if (self._channel_terminal_market(fresh_frame)
-                    and not self._special_long_body_entry(fresh_frame, planned_price, side)):
-                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：末端不進場（特例K除外）", "INFO")
+            if self._channel_terminal_market(fresh_frame):
+                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：漲勢末端不進場", "INFO")
                 return False
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
             planned_price = float(entry_quote)
@@ -2080,9 +2074,8 @@ class TradingEngine:
             signal.pop("estimated_profit_target", None)
             signal.pop("entry_trend_stage", None)
             signal["profit_room_checked"] = room.get("checked", False)
-            # 2026-09-13 使用者：特例K一律可開，不看上方還剩多少淨利空間。
-            if (not room["allowed"]
-                    and not self._special_long_body_entry(fresh_frame, planned_price, side)):
+            # 2026-09-14 使用者：末端要開倉就得先算利潤空間，不夠就不要開（特例K也一樣）。
+            if not room["allowed"]:
                 self.account.log(f"⏳ {symbol} {side} {room['reason']}：{room.get('detail', '')}", "INFO")
                 return False
             if "net_room_pct" in room:
