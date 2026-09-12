@@ -305,6 +305,16 @@ CHANNEL_ATR_EXIT_ENABLED = os.getenv(
 CHANNEL_ATR_STOP_MULT = max(0.1, float(os.getenv("CHANNEL_ATR_STOP_MULT", "1.5")))
 CHANNEL_ATR_TARGET_MULT = max(0.1, float(os.getenv("CHANNEL_ATR_TARGET_MULT", "3.0")))
 
+# 即時長K破軌門檻：當根報價實體 ÷ 前一根 ATR（0.5＝原設定；調高＝只抓長K）。
+CHANNEL_LIVE_BREAKOUT_BODY_ATR = max(
+    0.0, float(os.getenv("CHANNEL_LIVE_BREAKOUT_BODY_ATR", "0.5"))
+)
+
+# 長K進場專用目標倍數：長K只要有賺就入袋，不追求大目標。
+CHANNEL_ATR_LONG_BODY_TARGET_MULT = max(
+    0.1, float(os.getenv("CHANNEL_ATR_LONG_BODY_TARGET_MULT", "1.0"))
+)
+
 # 方向效率進場過濾：最近 20 根已收線「淨位移 ÷ 總路徑」需達此值（0＝停用）。
 CHANNEL_MIN_DIRECTION_EFFICIENCY = max(
     0.0, float(os.getenv("CHANNEL_MIN_DIRECTION_EFFICIENCY", "0.0"))

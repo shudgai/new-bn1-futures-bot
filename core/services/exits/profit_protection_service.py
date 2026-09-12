@@ -82,8 +82,12 @@ def protection(position, price, fee, slippage, frame=None):
         except (TypeError, ValueError):
             atr = 0.0
         if atr > 0:
+            reason = str(position.get("reason") or "")
+            long_body = "KC_LIVE_BODY_BREAKOUT" in reason or "LONG_BODY" in reason
+            target_mult = (config.CHANNEL_ATR_LONG_BODY_TARGET_MULT if long_body
+                           else config.CHANNEL_ATR_TARGET_MULT)
             stop_offset = atr * config.CHANNEL_ATR_STOP_MULT
-            target_offset = atr * config.CHANNEL_ATR_TARGET_MULT
+            target_offset = atr * target_mult
             stop = entry - sign * stop_offset
             target = entry + sign * target_offset
             hit_stop = price <= stop if sign > 0 else price >= stop

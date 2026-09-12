@@ -249,3 +249,43 @@ def test_long_body_entry_ignores_ck_middle_direction(monkeypatch):
     frame.loc[frame.index[-2], "kc_upper"] = 102.0
     assert outer_strategy.long_body_side(frame, 1.5) == "LONG"
     assert outer_strategy.long_body_side(frame, 3.0) is None         # 實體不足 3 ATR
+
+
+def _breakout_frame(body_atr, atr=1.0):
+    import pandas as pd
+
+    rows = []
+    for _ in range(2):
+        rows.append({"open": 100.0, "close": 100.0, "kc_upper": 101.0, "kc_lower": 99.0,
+                     "ma3": 100.0, "kc_middle": 100.0, "atr": atr})
+    rows.append({"open": 100.0, "close": 100.0 + body_atr, "kc_upper": 101.0,
+                 "kc_lower": 99.0, "ma3": 100.0, "kc_middle": 100.0, "atr": atr})
+    return pd.DataFrame(rows)
+
+
+def test_live_breakout_threshold_comes_from_config(monkeypatch):
+    from core.services.strategies import outer_strategy
+
+    frame = _breakout_frame(body_atr=2.0)
+    price = 102.0
+    monkeypatch.setattr(outer_strategy, "LIVE_BREAKOUT_BODY_ATR", 0.5)
+    assert outer_strategy.live_body_breakout_side(frame, price) == "LONG"
+    monkeypatch.setattr(outer_strategy, "LIVE_BREAKOUT_BODY_ATR", 1.0)
+    assert outer_strategy.live_body_breakout_side(frame, price) == "LONG"
+    monkeypatch.setattr(outer_strategy, "LIVE_BREAKOUT_BODY_ATR", 3.0)
+    assert outer_strategy.live_body_breakout_side(frame, price) is None
+
+
+def test_long_body_entry_uses_a_short_target(monkeypatch):
+    from core import config
+    from core.services.exits.profit_protection_service import protection
+
+    monkeypatch.setattr(config, "CHANNEL_ATR_EXIT_ENABLED", True)
+    monkeypatch.setattr(config, "CHANNEL_ATR_STOP_MULT", 1.5)
+    monkeypatch.setattr(config, "CHANNEL_ATR_TARGET_MULT", 3.0)
+    monkeypatch.setattr(config, "CHANNEL_ATR_LONG_BODY_TARGET_MULT", 1.0)
+    trend = {"side": "LONG", "entry_price": 100.0, "qty": 3.75, "open_timestamp": 1.0,
+             "atr": 1.0, "reason": "Channel Swing KC_TREND_LONG"}
+    long_body = dict(trend, reason="Channel Swing KC_LIVE_BODY_BREAKOUT_LONG")
+    assert protection(trend, 100.5, 0.0005, 0.0001)["target_price"] == pytest.approx(103.0)
+    assert protection(long_body, 100.5, 0.0005, 0.0001)["target_price"] == pytest.approx(101.0)
