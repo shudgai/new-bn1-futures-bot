@@ -1926,7 +1926,7 @@ class TradingEngine:
             side = str((signal or {}).get("side") or "").upper()
             if trend_1h in (1, -1) and side in ("LONG", "SHORT"):
                 aligned = (side == "LONG" and trend_1h == 1) or (side == "SHORT" and trend_1h == -1)
-                if not aligned and self._special_long_body_signal(signal, channel_snapshot, side):
+                if not aligned and self._special_long_body_signal(signal, channel_snapshot, side, symbol):
                     # 2026-09-13 使用者：順向特例長K開放逆 1h（瀑布追空用）。
                     self.account.log(
                         f"🔥 [1h 趨勢過濾豁免] {symbol} {side} 順向特例長K，允許逆 1h 進場", "INFO")
@@ -3154,6 +3154,15 @@ class TradingEngine:
 
 
     def _release_resolved_abnormal_exit(self, symbol, frame, price):
+        # 2026-09-13 使用者：反向出現順向特例長K時，直接作廢舊票據，讓反向新倉可被評估。
+        ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol) or {}
+        opposite = {"LONG": "SHORT", "SHORT": "LONG"}.get(str(ticket.get("side") or "").upper())
+        if opposite and self._special_long_body_entry(frame, price, opposite):
+            self.account.channel_profit_reentries.pop(symbol, None)
+            self.account.save_state()
+            self.account.log(
+                f"✅ {symbol} {opposite} 出現特例長K，作廢舊{ticket.get('side')}票據，改評估反向新倉", "INFO")
+            return True
         if next_breakout_ready(self.account, symbol, frame, price):
             self.account.channel_profit_reentries.pop(symbol)
             self.account.save_state()
@@ -3232,16 +3241,18 @@ class TradingEngine:
             self.account.save_state()
         return False
 
-    @staticmethod
-    def _special_long_body_signal(signal, channel_snapshot, side):
+    def _special_long_body_signal(self, signal, channel_snapshot, side, symbol=None):
         """訊號本身是否屬順向特例長K（即時長K破軌或長實體收在軌外）。"""
         code = str((signal or {}).get("signal_code") or "")
         if code in LIVE_BODY_BREAKOUT_CODES:
             return True
-        frame = (channel_snapshot or {}).get("frame")
+        frames = getattr(self, "_channel_exit_frames", {}) or {}
+        frame = (channel_snapshot or {}).get("frame") or (frames.get(symbol) if symbol else None)
         price = (channel_snapshot or {}).get("price")
+        if price is None and symbol:
+            price = float(getattr(self, "tickers", {}).get(symbol) or 0.0) or None
         if frame is not None and price:
-            return TradingEngine._special_long_body_entry(frame, price, side)
+            return self._special_long_body_entry(frame, price, side)
         return False
 
     @staticmethod
