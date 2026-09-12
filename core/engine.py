@@ -1791,7 +1791,7 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
-        if self._channel_terminal_market(frame) and not self._terminal_market_exempt(frame, price, side, profit_reentry_token):
+        if self._channel_terminal_market(frame):
             return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
                 symbol, {'side': side, 'profit_reentry_token': profit_reentry_token}):
@@ -2028,10 +2028,8 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
-            terminal_exempt = self._terminal_market_exempt(
-                fresh_frame, planned_price, side, signal.get("profit_reentry_token"))
-            if self._channel_terminal_market(fresh_frame) and not terminal_exempt:
-                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：末端期間多空均禁止開倉", "INFO")
+            if self._channel_terminal_market(fresh_frame):
+                self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：走弱末端期間多空均禁止開倉，等走勢再出來", "INFO")
                 return False
             entry_quote = getattr(self, "tickers", {}).get(symbol) or planned_price
             planned_price = float(entry_quote)
@@ -2041,8 +2039,7 @@ class TradingEngine:
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
             if not ck_reverse and not live_pivot:
-                final_entry = self._channel_swing_action(
-                    fresh_frame, planned_price, allow_terminal_market=terminal_exempt)
+                final_entry = self._channel_swing_action(fresh_frame, planned_price)
                 if final_entry.get("action") != "ENTER" or final_entry.get("side") != side:
                     self.account.log(
                         f"⏳ {symbol} {side} {final_entry.get('reason', 'KC_ENTRY_WAIT')}：最新快照已不適合追入",
@@ -3243,16 +3240,6 @@ class TradingEngine:
             return bool(limit > 0 and long_body_side(frame, limit) == side)
         except (AttributeError, IndexError, KeyError, TypeError, ValueError):
             return False
-
-    @staticmethod
-    def _terminal_market_exempt(frame, price, side, profit_reentry_token=None):
-        """末端弱量禁開只擋全新第一筆：獲利重開與特例長K不受限制。
-
-        使用者 2026-09-13：階梯式漲勢與一般漲勢要能開倉並延續開倉，特例長K要能追到。
-        """
-        if profit_reentry_token:
-            return True
-        return TradingEngine._special_long_body_entry(frame, price, side)
 
     @staticmethod
     def _profit_reentry_rail_gap(frame, price, side):

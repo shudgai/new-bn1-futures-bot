@@ -55,7 +55,7 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 - 淨利空間尺規：`CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND=true` 與 `CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION=true` 時，強趨勢與一般趨勢延續改用 `CHANNEL_ATR_TARGET_MULT`（3.0）個 ATR 當目標空間，讓階梯式漲勢可以續追。
 - 獲利重開追高上限（2026-09-13 改版）：上次獲利保護平倉後要重開時，量測「現價距持倉側 KC 外軌的順向距離 ÷ 1m ATR」，超過 `CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR`（2.0 ATR）視為末端追價、暫不重開（票據保留，回落仍可追）。**舊「離上次平倉價 2%」規則已移除**。
 - 特例長K豁免（2026-09-13）：當根成立特例長K入口（即時長K破軌，或順向長實體 ≥ `CHANNEL_LONG_BODY_ENTRY_ATR`（2.0）且收在軌外）時，**不受追高上限**；因為距離是被當根長實體撐開，屬新訊號而非末端追價。
-- 末端弱量禁開（`KC_TREND_END_WAIT`）只擋**全新第一筆**：獲利重開（帶票據）與特例長K照樣可進場，讓階梯式／一般漲勢能續開。
+- 走弱末端一律不做（`KC_TREND_END_WAIT`，2026-09-13 使用者修正）：**含獲利重開（帶票據）與特例長K**全部暫停，等走勢再出來才開倉；前一版「只擋全新第一筆」的豁免已撤銷。
 - 異常拉砸守門（`ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR` 4.0／`..._PCT` 2.5%）：**順向特例長K**（實體 ≥ `CHANNEL_LIVE_BREAKOUT_BODY_ATR` 1.0）不再因當根振幅大被擋；逆向衝動（1.2%）與反向長實體保護不變。
 - 重開票據反向解除：異常／瀑布票據沿用原有機制，**獲利保護（階梯鎖利）票據也適用**——有匹配成交、下一根已收線確認 CK 中軌與即時 MA3 均反向、風控通過時即作廢票據，回到一般入口（不必等 1 小時 TTL）。
 - BTC 插針熔斷（2026-09-13 啟用並放寬）：BTC 5 秒內漲跌 ≥ `BTC_FLASH_CRASH_DROP_PCT`／`..._PUMP_PCT`（1.0%）即平掉所有同向倉（跨幣種），並停止新倉 `MARKET_CRASH_ENTRY_COOLDOWN_SEC`（120 秒）。

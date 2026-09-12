@@ -156,24 +156,20 @@ async def test_order_routes_recheck_terminal_market(side, route, terminal, monke
     e.tickers[SYMBOL] = price
     e._observe_channel_entry_quote(SYMBOL, price, now * 1000)
     result = await e._place_structured_entry(SYMBOL, signal, price, channel_snapshot=snapshot if route == 'cached' else None)
-    # 2026-09-13：末端弱量禁開只擋全新第一筆，獲利重開不受限。
-    blocked = terminal and route != 'reentry'
+    # 2026-09-13：走弱末端一律不做（含獲利重開與特例長K）。
+    blocked = terminal
     assert bool(result) is (not blocked), e.account.logs
     assert [event[0] for event in e.account.events] == ([] if blocked else ['open'])
 
 
-def test_terminal_market_exempts_profit_reentry_and_live_long_body():
-    f = frame("LONG")
-    assert TradingEngine._terminal_market_exempt(f, 112.0, "LONG", "token") is True
-    assert TradingEngine._terminal_market_exempt(f, 112.0, "LONG") is False
-    live = frame("LONG")
-    live.loc[live.index[-1], "open"] = float(live.iloc[-1]["kc_upper"]) - 1.0
-    price = float(live.iloc[-1]["kc_upper"]) + 1.0
-    assert TradingEngine._terminal_market_exempt(live, price, "LONG") is True
-    assert TradingEngine._terminal_market_exempt(live, price, "SHORT") is False
-
-
-def test_channel_swing_action_can_bypass_terminal_market():
-    f = frame("LONG")
-    assert TradingEngine._channel_swing_action(f, 112.0, allow_terminal_market=True)["reason"] != "KC_TREND_END_WAIT"
-    assert TradingEngine._channel_swing_action(f, 112.0)["reason"] == "KC_TREND_END_WAIT"
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_terminal_market_blocks_every_route(side):
+    """走弱末端不做任何新倉，連特例長K也不放行。"""
+    f = frame(side)
+    rail = float(f.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+    sign = 1 if side == "LONG" else -1
+    f.loc[f.index[-1], "open"] = rail - sign * 1.0
+    price = rail + sign * 2.0
+    assert TradingEngine._special_long_body_entry(f, price, side) is True
+    assert TradingEngine._channel_swing_action(
+        f, price, allow_terminal_market=True)["reason"] == "KC_TREND_END_WAIT"

@@ -106,7 +106,6 @@ def test_long_body_special_entry_is_exempt_from_chase_limit(side, monkeypatch):
     frame.loc[frame.index[-1], ["open", "close"]] = [price - sign * 0.3, price]
     monkeypatch.setattr(config, "CHANNEL_LONG_BODY_ENTRY_ATR", 2.0, raising=False)
     assert TradingEngine._special_long_body_entry(frame, price, side) is True
-    assert TradingEngine._terminal_market_exempt(frame, price, side) is True
     monkeypatch.setattr(config, "CHANNEL_PROFIT_REENTRY_MAX_CHASE_ATR", 2.0, raising=False)
     engine = _engine(frame, side)
     ready_on = engine._profit_reentry_ready(SYMBOL, _ticket(side), frame, price)
