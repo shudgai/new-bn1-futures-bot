@@ -627,8 +627,8 @@ def outside_continuation_ready(frame, side, price=None):
         if span <= 0:
             return False
         sign = 1 if side == "LONG" else -1
-        if sign * (close - opened) <= 0 or abs(close - opened) / span < 0.20:
-            return False
+        # 2026-09-14 使用者：「只要在外軌，不要看前一根是什麼」→ 前一根只要是「收盤在軌外」
+        # 即可，不再檢查它的顏色或實體大小；當根必須同色（下方檢查）。
         if sign * (live_price - live_open) <= 0:
             return False
         return close > limit if side == "LONG" else close < limit

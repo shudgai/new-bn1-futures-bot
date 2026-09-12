@@ -16,7 +16,8 @@ async def test_live_reentry_without_closed_bodies(side, case, monkeypatch):
     f, price = setup(side)
     f.loc[17:18, 'open'] = f.loc[17:18, 'close']
     assert not two_closed_bodies_ready(f, side)
-    assert outside_reentry(f, price, side)['side'] is None
+    # 2026-09-14：延續不看前一根的顏色/實體 → 已收線沒有實體K不再阻擋。
+    assert outside_reentry(f, price, side)['side'] == side
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
     e.account.save_state = lambda: None
@@ -37,7 +38,9 @@ async def test_live_reentry_without_closed_bodies(side, case, monkeypatch):
     e.fetch_klines = AsyncMock(return_value=fresh)
     monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
     await e._try_profit_reentry(SYMBOL, f, price, False)
-    assert not e.account.events, e.account.logs
+    blocked = case in ('abnormal', 'same_bar', 'fresh_ck', 'fresh_ma', 'fresh_red', 'room',
+                       'normal', 'legacy_profit', 'recovered')
+    assert bool(e.account.events) is (not blocked), (case, e.account.logs)
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
