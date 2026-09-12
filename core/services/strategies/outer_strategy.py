@@ -367,7 +367,30 @@ def channel_tail_entry_blocked(frame, side) -> bool:
     return run >= CHANNEL_TAIL_MAX_TREND_BARS
 
 
-def aligned_entry(frame, price, require_second_body=True):
+def v_bottom_shape(frame, lookback=10):
+    """最近區間是否形成 V 型谷底（低點在中段、兩側都有更高的收盤價）。
+
+    使用者 2026-09-13：跌下來形成谷底後，再往上突破視為新突破，特例K也要等收線後
+    有漲勢（兩根實體K）才能開。
+    """
+    try:
+        if frame is None or len(frame) < lookback + 1:
+            return False
+        seg = frame.iloc[-(lookback + 1):-1]
+        lows = [float(v) for v in seg["low"]]
+        closes = [float(v) for v in seg["close"]]
+        if not all(math.isfinite(v) for v in lows + closes):
+            return False
+        pos = lows.index(min(lows))
+        if pos < 1 or pos > len(lows) - 2:
+            return False
+        low = lows[pos]
+        return max(closes[:pos]) > low and max(closes[pos + 1:]) > low
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
+def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True):
     """Live long-body breaks may precede CK confirmation; retain trend entries.
 
     require_second_body：2026-09-13 使用者要求「一般漲勢破軌後第二根也要同色綠K才開」，
@@ -418,10 +441,12 @@ def aligned_entry(frame, price, require_second_body=True):
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
         # 2026-09-13 使用者：特例K就是特例——入口過濾一律去除，成立就開倉。
         #（跳過：走平、效率、末端、過熱、前一根大K、MA3 轉向、中軌反向、反向異常、兩根確認）
-        if body_driven:
+        if body_driven and special_k_exempt:
             return {"action": "ENTER", "side": side,
                     "reason": ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side}
-        if require_second_body and not two_closed_bodies_ready(frame, side):
+        # 谷底後（special_k_exempt=False）特例K不再免兩根，要等收線有漲勢再開。
+        if require_second_body and (not body_driven or not special_k_exempt) \
+                and not two_closed_bodies_ready(frame, side):
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait

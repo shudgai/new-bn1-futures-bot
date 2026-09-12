@@ -1,7 +1,7 @@
 import math
 import pandas as pd
 from typing import Dict, Any, Optional
-from core.services.strategies.outer_strategy import aligned_entry, ck_direction
+from core.services.strategies.outer_strategy import aligned_entry, ck_direction, v_bottom_shape
 
 def significant_ma3_turn(position, frame, price):
     key = 'channel_significant_ma3_turn'
@@ -263,7 +263,10 @@ def channel_swing_action(
             "reason": "KC_TREND_END_WAIT",
         }
     # 兩根同色確認只套用在全新第一筆；獲利重開與延續不套用。
-    decision = aligned_entry(frame, live_price, require_second_body=not profit_reentry)
+    # 2026-09-13 使用者：形成 V 型谷底後視為新突破，特例K也要等收線有漲勢（兩根實體K）。
+    decision = aligned_entry(
+        frame, live_price, require_second_body=not profit_reentry,
+        special_k_exempt=not v_bottom_shape(frame))
     return decision
 
 def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
