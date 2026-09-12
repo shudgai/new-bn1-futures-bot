@@ -471,7 +471,7 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
         # 2026-09-14 使用者：延續（連續三根已收線在軌外、平倉後重開）不受效率門檻限制，
         # 單根同色K即可延續開倉。
-        continuation_ready = continuation_exempt and outside_continuation_ready(frame, side)
+        continuation_ready = continuation_exempt and outside_continuation_ready(frame, side, price)
         # 延續段（連續兩根已收線都在軌外）單根同色K即可；首次破軌才要兩根。
         # continuation_exempt：只有「平倉後的延續／重開」帶 True（2026-09-14 使用者：
         # 站上外軌代表已突破，平倉後可延續開倉）。
@@ -594,7 +594,7 @@ def _outside_continuation(frame, side):
         return False
 
 
-def outside_continuation_ready(frame, side):
+def outside_continuation_ready(frame, side, price=None):
     """延續開倉：最近兩根已收線都收在持倉側外軌之外 → 單根同色K即可開倉。
 
     使用者 2026-09-14：「後續K線都站在外軌外時，那些綠K可1根延續開；空單也要做。」
@@ -608,17 +608,14 @@ def outside_continuation_ready(frame, side):
             return False
         # 2026-09-14 使用者：破軌那根不算延續——「破軌後第二根」必須是同一色實體K，
         # 破軌才算完成；完成之後（前兩根已收線都在軌外）才可用單根同色K延續進場。
-        prev, before = frame.iloc[-2], frame.iloc[-3]
-        for probe in (prev, before):
-            probe_close = float(probe["close"])
-            probe_limit = float(probe[rail])
-            if not (math.isfinite(probe_close) and math.isfinite(probe_limit) and probe_close > 0 and probe_limit > 0):
-                return False
-            if side == "LONG" and not probe_close > probe_limit:
-                return False
-            if side == "SHORT" and not probe_close < probe_limit:
-                return False
+        # 2026-09-14 使用者：平倉後不用等兩根——前一根已收線站在外軌外且是同色實體K即可，
+        # 但「當根」也必須同色（避免在反向K上進場，例如破軌後第二根是紅K的情況）。
         row = frame.iloc[-2]
+        live = frame.iloc[-1]
+        live_open = float(live["open"])
+        live_price = float(price) if price is not None else float(live["close"])
+        if not (math.isfinite(live_open) and live_open > 0 and math.isfinite(live_price)):
+            return False
         opened = float(row["open"])
         close = float(row["close"])
         high = float(row["high"])
@@ -631,6 +628,8 @@ def outside_continuation_ready(frame, side):
             return False
         sign = 1 if side == "LONG" else -1
         if sign * (close - opened) <= 0 or abs(close - opened) / span < 0.20:
+            return False
+        if sign * (live_price - live_open) <= 0:
             return False
         return close > limit if side == "LONG" else close < limit
     except (AttributeError, KeyError, IndexError, TypeError, ValueError):

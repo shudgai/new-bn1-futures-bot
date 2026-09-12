@@ -34,7 +34,11 @@ def test_both_closed_bodies_must_finish_strictly_outside(side, offset, touch):
     f['low'] = f[['open', 'close']].min(axis=1)-.1
     assert not confirmed_outer_continuation_ready(f, price, side)
     assert not aligned_entry_ready(f, price, side)
-    assert outside_reentry(f, price, side)['action'] == 'WAIT'
+    if offset == -3:
+        # 2026-09-14：平倉後的延續只看「前一根已收線」；再前一顆縮回軌內不影響。
+        assert outside_reentry(f, price, side)['side'] == side
+    else:
+        assert outside_reentry(f, price, side)['action'] == 'WAIT'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
