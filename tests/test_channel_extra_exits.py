@@ -316,3 +316,42 @@ def test_long_body_entry_is_not_blocked_by_flat_or_overheat(monkeypatch):
     frame = pd.DataFrame(rows)
     decision = outer_strategy.aligned_entry(frame, 103.8)
     assert decision["action"] == "ENTER" and decision["side"] == "LONG"
+
+
+def test_low_volatility_blocks_entry(monkeypatch):
+    """1m ATR% 低於門檻就不開倉（避開 180 天中那 5 個虧損窗口）。"""
+    import pandas as pd
+    from core.services.strategies import outer_strategy
+
+    monkeypatch.setattr(outer_strategy, "CHANNEL_MIN_ATR_PCT", 0.5)
+    monkeypatch.setattr(outer_strategy, "CHANNEL_LIVE_BODY_BREAKOUT_ENABLED", False)
+    frame = pd.DataFrame([{
+        "open": 100.0, "close": 100.1, "high": 100.2, "low": 99.9,
+        "kc_upper": 100.5, "kc_lower": 99.5, "kc_middle": 100.0, "ema_20": 100.0,
+        "ma3": 100.0, "ma15": 100.0, "atr": 0.1,           # ATR% = 0.1% < 0.5%
+    } for _ in range(20)])
+    assert outer_strategy.aligned_entry(frame, 100.1)["reason"] == "KC_LOW_VOLATILITY_WAIT"
+
+
+def test_strong_trend_room_uses_atr_target(monkeypatch):
+    """強趨勢時淨利空間改用 3 ATR 目標，不再因下一個前高太近而擋單。"""
+    import pandas as pd
+    from core import config
+    from core.services.entry_room_service import entry_room
+
+    monkeypatch.setattr(config, "CHANNEL_PROFIT_ROOM_ENABLED", True)
+    monkeypatch.setattr(config, "CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND", True)
+    monkeypatch.setattr(config, "CHANNEL_STRONG_TREND_RATIO", 0.20)
+    monkeypatch.setattr(config, "CHANNEL_ATR_TARGET_MULT", 3.0)
+    rows = []
+    for i in range(20):
+        rows.append({"open": 100.0 + i * 0.5, "high": 100.6 + i * 0.5, "low": 99.9 + i * 0.5,
+                     "close": 100.5 + i * 0.5, "kc_upper": 101.0 + i * 0.5,
+                     "kc_lower": 99.0 + i * 0.5, "kc_middle": 100.0 + i * 0.5,
+                     "ema_20": 100.0 + i * 0.5, "atr": 0.5})
+    frame = pd.DataFrame(rows)
+    frame.loc[frame.index[-1], "close"] = float(frame["kc_upper"].iloc[-1]) + 0.5
+    price = float(frame["close"].iloc[-1])
+    room = entry_room(frame, price, "LONG", 0.0005, 0.0001, 0.0015)
+    assert room["stage"] == "strong_trend"
+    assert room["allowed"] is True

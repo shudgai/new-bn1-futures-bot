@@ -10,7 +10,7 @@ from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
     CHANNEL_FLAT_MIDDLE_RATIO, CHANNEL_LIVE_BODY_BREAKOUT_ENABLED, CHANNEL_LIVE_BREAKOUT_BODY_ATR,
     CHANNEL_MIN_DIRECTION_EFFICIENCY, CHANNEL_LONG_BODY_ENTRY_ATR,
-    CHANNEL_STRONG_TREND_RATIO,
+    CHANNEL_STRONG_TREND_RATIO, CHANNEL_MIN_ATR_PCT,
 )
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
@@ -361,6 +361,13 @@ def aligned_entry(frame, price):
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
+        if CHANNEL_MIN_ATR_PCT > 0:
+            try:
+                atr_now = float(frame.iloc[-2]["atr"])
+                if not (atr_now > 0 and price > 0 and atr_now / price * 100 >= CHANNEL_MIN_ATR_PCT):
+                    return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
+            except (KeyError, IndexError, TypeError, ValueError):
+                return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
         breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
         side = breakout_side or entry_trend_direction(frame)
         # 長K特例：CK 中軌不明或仍反向時，只要出現夠大的順向長實體且收在軌外仍可進場。

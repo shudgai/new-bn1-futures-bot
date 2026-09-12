@@ -33,6 +33,33 @@ def entry_room(
         atr = float(closed.iloc[-1]["atr"])
         if not math.isfinite(atr) or atr <= 0:
             return invalid
+        sign = 1 if side == "LONG" else -1
+        # C 方案：強趨勢時改用 ATR 目標距離（不再看下一個前高／前低）
+        if (getattr(config, "CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND", False)
+                and getattr(config, "CHANNEL_STRONG_TREND_RATIO", 0.0) > 0):
+            try:
+                key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+                prev_mid = float(frame.iloc[-3][key])
+                last_mid = float(frame.iloc[-2][key])
+                width = float(frame.iloc[-2]["kc_upper"]) - float(frame.iloc[-2]["kc_lower"])
+                rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+                strong = (width > 0
+                          and abs(last_mid - prev_mid) / width >= float(config.CHANNEL_STRONG_TREND_RATIO)
+                          and ((price > rail) if side == "LONG" else (price < rail)))
+                if strong:
+                    target = price + sign * float(config.CHANNEL_ATR_TARGET_MULT) * atr
+                    entry_fill = price * (1 + sign * slippage)
+                    exit_fill = target * (1 - sign * slippage)
+                    net_room = (sign * (exit_fill - entry_fill)
+                                - (entry_fill + exit_fill) * fee) / (entry_fill * (1 + fee))
+                    allowed = net_room > 0 and net_room >= minimum_net
+                    return dict(allowed=allowed, checked=True, stage="strong_trend", target=target,
+                                net_room_pct=net_room * 100,
+                                reason="KC_PROFIT_ROOM_OK" if allowed else "KC_PROFIT_ROOM_INSUFFICIENT",
+                                detail=(f"強趨勢：改用 {float(config.CHANNEL_ATR_TARGET_MULT):g} ATR 目標 "
+                                        f"{target:.10g}，剩餘淨空間 {net_room * 100:.4f}%，門檻 {minimum_net * 100:.4f}%。"))
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+                pass
 
         sign = 1 if side == "LONG" else -1
         closes = [row[3] for row in rows[-7:]]

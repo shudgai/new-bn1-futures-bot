@@ -303,6 +303,15 @@ CHANNEL_PROFIT_ROOM_ENABLED = os.getenv(
     "CHANNEL_PROFIT_ROOM_ENABLED", "true"
 ).lower() == "true"
 
+# 進場最低波動度：1m ATR ÷ 價格 × 100 需達此值（0＝停用）。
+# 180 天分窗顯示：唯一賺錢的窗口 ATR% 0.529，虧損窗口 0.385~0.472。
+CHANNEL_MIN_ATR_PCT = max(0.0, float(os.getenv("CHANNEL_MIN_ATR_PCT", "0.5")))
+
+# 強趨勢時改用 ATR 目標距離作為淨利空間標準（C 方案）。
+CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND = os.getenv(
+    "CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND", "true"
+).lower() == "true"
+
 # ATR 括號出口（原型驗證版）：以進場時 ATR 設停損與目標，取代階梯鎖利。
 # walk-forward：龍虾＋嚴格進場下 1.5ATR停損/3ATR目標 為唯一整體為正的組合。
 CHANNEL_ATR_EXIT_ENABLED = os.getenv(
