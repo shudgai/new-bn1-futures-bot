@@ -312,6 +312,12 @@ CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND = os.getenv(
     "CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND", "true"
 ).lower() == "true"
 
+# 一般趨勢延續也改用 ATR 目標空間（使用者要求一般漲勢也能追單）：
+# 只要「價格在持倉側軌外」且「中軌方向順向」，空間標準就用 CHANNEL_ATR_TARGET_MULT 個 ATR。
+CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION = os.getenv(
+    "CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION", "false"
+).lower() == "true"
+
 # ATR 括號出口（原型驗證版）：以進場時 ATR 設停損與目標，取代階梯鎖利。
 # walk-forward：龍虾＋嚴格進場下 1.5ATR停損/3ATR目標 為唯一整體為正的組合。
 CHANNEL_ATR_EXIT_ENABLED = os.getenv(

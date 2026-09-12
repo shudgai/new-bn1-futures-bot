@@ -43,10 +43,13 @@ def entry_room(
                 last_mid = float(frame.iloc[-2][key])
                 width = float(frame.iloc[-2]["kc_upper"]) - float(frame.iloc[-2]["kc_lower"])
                 rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
-                strong = (width > 0
-                          and abs(last_mid - prev_mid) / width >= float(config.CHANNEL_STRONG_TREND_RATIO)
-                          and ((price > rail) if side == "LONG" else (price < rail)))
-                if strong:
+                directional = (last_mid > prev_mid) if side == "LONG" else (last_mid < prev_mid)
+                outside = (price > rail) if side == "LONG" else (price < rail)
+                strong_ratio = float(config.CHANNEL_STRONG_TREND_RATIO)
+                strong = (width > 0 and outside
+                          and abs(last_mid - prev_mid) / width >= strong_ratio)
+                continuation = bool(getattr(config, "CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION", False))
+                if strong or (continuation and directional and outside):
                     target = price + sign * float(config.CHANNEL_ATR_TARGET_MULT) * atr
                     entry_fill = price * (1 + sign * slippage)
                     exit_fill = target * (1 - sign * slippage)
@@ -56,7 +59,7 @@ def entry_room(
                     return dict(allowed=allowed, checked=True, stage="strong_trend", target=target,
                                 net_room_pct=net_room * 100,
                                 reason="KC_PROFIT_ROOM_OK" if allowed else "KC_PROFIT_ROOM_INSUFFICIENT",
-                                detail=(f"強趨勢：改用 {float(config.CHANNEL_ATR_TARGET_MULT):g} ATR 目標 "
+                                detail=(f"趨勢延續：改用 {float(config.CHANNEL_ATR_TARGET_MULT):g} ATR 目標 "
                                         f"{target:.10g}，剩餘淨空間 {net_room * 100:.4f}%，門檻 {minimum_net * 100:.4f}%。"))
             except (AttributeError, KeyError, TypeError, ValueError, IndexError):
                 pass
