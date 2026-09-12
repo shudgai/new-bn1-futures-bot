@@ -59,7 +59,9 @@ AI Agent MUST inspect the relevant specification files and output the canary cod
 - 開機時對「沒有持倉」的幣種清掉殘留條件單，避免記憶體追蹤遺失後自行觸價進場；有持倉的幣種不動。
 - 其餘入口、出口、每根限次、異常攔截、帳戶風控全部不變。
 
-> 本區塊以「程式實際行為」為準，並由 `core/services/rule_registry.py` 在每次啟動時印出。以下任何舊條文與本區塊衝突者一律以本區塊為準；舊條文僅保留授權追溯，不代表仍生效。
+> 本區塊以「程式實際行為」為準，並由 `core/services/rule_registry.py` 在每次啟動時印出。
+>
+> 📌 **現行 .env 實際參數快照**：`docs/active_params.md`（用 `.venv/bin/python tools/dump_active_params.py` 重新產生）。調整 `.env` 後請重跑並一起 commit。以下任何舊條文與本區塊衝突者一律以本區塊為準；舊條文僅保留授權追溯，不代表仍生效。
 
 **開倉入口（只有一條趨勢入口）**
 1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或資料無效不開。
