@@ -9,6 +9,8 @@ from core.interfaces.entry_interface import IEntryStrategy
 from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
     CHANNEL_FLAT_MIDDLE_RATIO, CHANNEL_LIVE_BODY_BREAKOUT_ENABLED, CHANNEL_LIVE_BREAKOUT_BODY_ATR,
+    CHANNEL_EXHAUSTION_FILTER_ENABLED, CHANNEL_EXHAUSTION_MAX_RAIL_DEVIATION_PCT,
+    CHANNEL_EXHAUSTION_WICK_BODY_RATIO, CHANNEL_EXHAUSTION_APPLIES_SPECIAL_K,
     CHANNEL_MIN_DIRECTION_EFFICIENCY, CHANNEL_LONG_BODY_ENTRY_ATR,
     CHANNEL_STRONG_TREND_RATIO, CHANNEL_MIN_ATR_PCT,
 )
@@ -517,6 +519,9 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
                     return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
             except (KeyError, IndexError, TypeError, ValueError):
                 return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
+            exhaustion = channel_exhaustion_block(frame, price, side, special_k=True)
+            if exhaustion:
+                return {**wait, "reason": exhaustion}
             return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
         # 2026-09-14 使用者：即時特例K（當根長實體破軌）也要量能確認。
         if body_driven and not special_volume_surge_ok(frame, -1):
@@ -592,6 +597,11 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             return {**wait, "reason": "KC_MOMENTUM_FADING_WAIT"}
         if not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
+        exhaustion = channel_exhaustion_block(
+            frame, price, side, special_k=bool(body_driven),
+        )
+        if exhaustion:
+            return {**wait, "reason": exhaustion}
         reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
         return {"action": "ENTER", "side": side, "reason": reason}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
@@ -628,6 +638,52 @@ def live_candle_color_ready(frame, price, side):
         return (1 if side == "LONG" else -1) * (price - opened) >= 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
+
+
+EXHAUSTION_REASON = "KC_EXHAUSTION_BLOCK"
+
+
+def channel_exhaustion_block(frame, price, side, special_k=False):
+    """末端防追單過濾（2026-09-12 使用者要求）：命中任一狀況就作廢開倉信號。
+
+    1. MA3 拐頭反向：既有 `KC_MA3_TURN_WAIT`（多單 MA3 未上升／空單 MA3 未
+       下降即不開）已是同一條件，於 `aligned_entry` 最前面統一處理。
+    2. 通道外乖離過大：收盤價距持倉側外軌超過
+       `CHANNEL_EXHAUSTION_MAX_RAIL_DEVIATION_PCT`（預設 1.5%）＝超買／超賣末端。
+    3. 反向長影線：突破／確認K的「反向影線 ÷ 實體」超過
+       `CHANNEL_EXHAUSTION_WICK_BODY_RATIO`（預設 1 倍）＝下方有買盤吸收／
+       上方遭遇重壓。
+
+    回傳命中的原因代碼（None 代表通過）。特例K是否套用由
+    `CHANNEL_EXHAUSTION_APPLIES_SPECIAL_K` 決定。
+    """
+    try:
+        if not CHANNEL_EXHAUSTION_FILTER_ENABLED:
+            return None
+        if special_k and not CHANNEL_EXHAUSTION_APPLIES_SPECIAL_K:
+            return None
+        if frame is None or len(frame) < 2 or side not in ("LONG", "SHORT"):
+            return None
+        row = frame.iloc[-1]
+        opened = float(row["open"])
+        high = float(row["high"])
+        low = float(row["low"])
+        closed = float(price)
+        rail = float(row["kc_upper"] if side == "LONG" else row["kc_lower"])
+        if not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed, rail)):
+            return None
+        if CHANNEL_EXHAUSTION_MAX_RAIL_DEVIATION_PCT > 0:
+            deviation = ((closed - rail) if side == "LONG" else (rail - closed)) / rail
+            if deviation > CHANNEL_EXHAUSTION_MAX_RAIL_DEVIATION_PCT:
+                return "KC_EXHAUSTION_RAIL_DEVIATION"
+        if CHANNEL_EXHAUSTION_WICK_BODY_RATIO > 0:
+            body = abs(closed - opened)
+            wick = (high - max(opened, closed)) if side == "LONG" else (min(opened, closed) - low)
+            if wick > 0 and wick > body * CHANNEL_EXHAUSTION_WICK_BODY_RATIO:
+                return "KC_EXHAUSTION_REJECTION_WICK"
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+        return None
+    return None
 
 
 def _outside_continuation(frame, side):

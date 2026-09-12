@@ -2929,6 +2929,32 @@ class TradingEngine:
         return True
 
 
+    def _log_exhaustion_block(self, symbol, reason, frame):
+        """末端衰竭過濾命中時印一次警示（同一根K同一原因只印一次）。"""
+        try:
+            reason = str(reason or "")
+            if not reason.startswith("KC_EXHAUSTION"):
+                return
+            bar_id = self._channel_candidate_bar_id(frame)
+            logged = getattr(self, "_channel_exhaustion_logged", None)
+            if logged is None:
+                logged = self._channel_exhaustion_logged = {}
+            key = (bar_id, reason)
+            if logged.get(symbol) == key:
+                return
+            logged[symbol] = key
+            detail = {
+                "KC_EXHAUSTION_RAIL_DEVIATION": "通道外乖離過大",
+                "KC_EXHAUSTION_REJECTION_WICK": "反向長影線",
+            }.get(reason, "末端衰竭")
+            self.account.log(
+                f"⚠️ [警告] 命中末端衰竭/MA3反折過濾條件，取消開倉操作"
+                f"（{symbol} {detail}）",
+                "WARNING",
+            )
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+            return
+
     def _channel_breakout_stop_plan(self, frame, price, symbol=None):
         """破軌預掛觸價單的計畫：價格還沒破軌、但已在可及範圍時回傳觸發價。
 
