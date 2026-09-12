@@ -42,6 +42,32 @@ def ck_channel_narrow(frame):
         return False
 
 
+def ma3_outside_rail_turning_back(frame, price, side):
+    """多單：已收線 MA3 仍在持倉側外軌（上軌）之外，但即時 MA3 已轉向往回；空單鏡像。
+
+    2026-09-13 使用者：只有「漲勢末端、MA3 還在上軌外卻已轉向往回」才是轉彎；
+    正向轉彎（MA3 還在往上、或在軌內往上）不可以平倉。
+    """
+    if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+        return False
+    rail_key = "kc_upper" if side == "LONG" else "kc_lower"
+    if "ma3" not in frame.columns or rail_key not in frame.columns:
+        return False
+    try:
+        closes = [float(v) for v in frame["close"].iloc[-4:-1]]
+        closed_ma3 = float(frame.iloc[-2]["ma3"])
+        rail = float(frame.iloc[-2][rail_key])
+        price = float(price)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return False
+    if (len(closes) != 3 or not all(math.isfinite(v) and v > 0 for v in (closed_ma3, rail, price, *closes))):
+        return False
+    live_ma3 = (closes[-2] + closes[-1] + price) / 3.0
+    if side == "LONG":
+        return closed_ma3 > rail and live_ma3 < closed_ma3
+    return closed_ma3 < rail and live_ma3 > closed_ma3
+
+
 def fading_ma3_turn(position, frame, price):
     identity = [position.get('side'), position.get('open_timestamp'), position.get('entry_price')]
     state = position.get(STATE_KEY)
@@ -50,7 +76,10 @@ def fading_ma3_turn(position, frame, price):
         state = None
     if not CHANNEL_FADING_MA3_EXIT_ENABLED:
         return False
-    if state and state.get('version') == 3 and state.get('pending'):
+    # 2026-09-13 使用者：只有「漲勢末端 MA3 還在外軌外卻已轉向往回」才是轉彎平倉；
+    # 正向轉彎（MA3 還在往上、或已回到軌內往上）不可以平。
+    if (state and state.get('version') == 3 and state.get('pending')
+            and ma3_outside_rail_turning_back(frame, price, position.get('side'))):
         return True
     if ck_momentum_fading(frame, position.get('side')) is None:
         position.pop(STATE_KEY, None)
@@ -63,10 +92,10 @@ def fading_ma3_turn(position, frame, price):
     if state is None:
         position.pop(STATE_KEY, None)
         return False
-    # 2026-09-13 使用者：MA3 一轉彎就要馬上平倉，不可以等（不等 CK 衰退、不等通道狹窄）。
-    # 幅度門檻沿用 significant_ma3_turn 的 0.10 ATR 峰谷反向，避免小抖動誤平。
+    # 幅度門檻沿用 significant_ma3_turn 的 0.10 ATR 峰谷反向；
+    # 但只有在 MA3 仍位於持倉側外軌之外時才成立（軌內的正向轉彎不平）。
     position[STATE_KEY] = state
-    return bool(turned)
+    return bool(turned) and ma3_outside_rail_turning_back(frame, price, position.get('side'))
 
 
 def next_breakout_ready(account, symbol, frame, price):

@@ -52,7 +52,10 @@ def test_state_not_reused(case):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('success',[True,False])
 async def test_quote_exit_small_turn_holds_large_turn_closes_and_retries(side,success,monkeypatch):
-    f,p,s=setup(side);e=_execution_engine(f,side,success);e.is_running=True
+    f,p,s=setup(side)
+    # 2026-09-13：MA3 轉彎平倉要求在持倉側外軌之外（多單：MA3 > 上軌）。
+    f['kc_upper'],f['kc_lower']=(99.,90.) if side=='LONG' else (110.,101.)
+    e=_execution_engine(f,side,success);e.is_running=True
     e.account.save_state=lambda:None;e.account.positions[SYMBOL].update(p)
     e._channel_exit_frames={SYMBOL:f}
     monkeypatch.setattr('core.engine.time.time',lambda:1201.)

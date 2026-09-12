@@ -30,6 +30,12 @@ def fading_frame(side, fading=True):
     else:
         f.loc[f.index[-2], "kc_upper"] = middle.iloc[-2] * 1.01
         f.loc[f.index[-2], "kc_lower"] = middle.iloc[-2] * .98
+    # 2026-09-13：MA3 轉彎平倉要求 MA3 仍在持倉側外軌之外（多單：MA3 > 上軌）。
+    ma3 = f["ma3"].astype(float)
+    if s > 0:
+        f["kc_upper"] = ma3 * .99
+    else:
+        f["kc_lower"] = ma3 * 1.01
     return f,p,s
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -88,7 +94,7 @@ def test_nonfading_turn_fires_and_persists_across_restart(side):
         assert not fading_ma3_turn(p,f,price)
     assert fading_ma3_turn(p,f,100-s*.3) is True
     p=json.loads(json.dumps(p))
-    assert fading_ma3_turn(p,None,100.)
+    assert fading_ma3_turn(p,None,100.) is False
     p['open_timestamp']+=1
     assert not fading_ma3_turn(p,f,100.)
 
@@ -114,7 +120,7 @@ async def test_live_exit_and_restart_retry_no_reverse(side,success,armed,monkeyp
         assert e.account.channel_profit_reentries[SYMBOL]['mode']=='next_breakout'
     else:
         e.account.positions[SYMBOL].pop(STATE_KEY)
-        await e._channel_quote_exit(SYMBOL,100.,1201000)
+        await e._channel_quote_exit(SYMBOL,100.-s*.3,1201000)
         assert [v[0] for v in e.account.events]==['close','close']
         assert e.account.events[0][3]==e.account.events[1][3]
 
@@ -206,16 +212,22 @@ def test_invalid_narrow_data_does_not_authorize_exit(case):
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('armed',[False,True])
 def test_wide_channel_no_longer_blocks_turn_exit(side,armed):
-    """2026-09-13：通道寬窄不再阻擋 MA3 轉彎平倉；0.10 ATR 幅度門檻仍保留。"""
+    """2026-09-13：通道寬窄無關，但 MA3 必須仍在持倉側外軌之外才算轉彎平倉。"""
     f,p,s=fading_frame(side)
     p['channel_profit_protection']={'armed':armed}
-    middle=f['kc_middle']
-    f['kc_upper']=middle*1.02;f['kc_lower']=middle*.98
     assert not ck_entry_momentum_ready(f,side)
     assert not fading_ma3_turn(p,f,100.)
     assert not fading_ma3_turn(p,f,100+s*.3)
+    ma3=f['ma3'].astype(float)
+    rail='kc_upper' if side=='LONG' else 'kc_lower'
+    # MA3 已退回軌內（正向轉彎）→ 不平倉
+    f[rail]=ma3*(1.01 if side=='LONG' else .99)
+    assert not fading_ma3_turn(p,f,100-s*.3)
+    # MA3 仍在軌外且轉向往回 → 立即平倉，且狀態跨幀保留
+    f[rail]=ma3*(.99 if side=='LONG' else 1.01)
     assert fading_ma3_turn(p,f,100-s*.3) is True
-    assert fading_ma3_turn(json.loads(json.dumps(p)),None,100.)
+    # 沒有 frame 就無法確認 MA3 是否仍在軌外 → 不成立
+    assert fading_ma3_turn(json.loads(json.dumps(p)),None,100.) is False
 
 
 @pytest.mark.anyio
