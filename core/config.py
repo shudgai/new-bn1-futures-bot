@@ -345,6 +345,14 @@ CHANNEL_LIVE_BREAKOUT_BODY_ATR = max(
     0.0, float(os.getenv("CHANNEL_LIVE_BREAKOUT_BODY_ATR", "0.5"))
 )
 
+# 2026-09-12 使用者：「龍蝦23:29、LAB23:21 沒有兩根實體K也開倉，以上都不能開倉」。
+# true＝特例K（即時長K破軌、已收線長實體）不再享有任何豁免，一律照一般單的
+# 關卡：破軌根＋同色實體確認根、當根實體過熱、方向效率、末端禁開、動能衰退、
+# MA3 安全距離等全部套用。
+CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION = os.getenv(
+    "CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION", "true"
+).lower() == "true"
+
 # 2026-09-12 使用者核准「破軌預掛觸價單」：價格尚未破軌、但已在可及範圍時，
 # 先在交易所掛 STOP_MARKET 觸價單，價格一到就由交易所端立刻市價進場，
 # 取代等程式掃到才追價（快市例：龍蝦 0.13674 → 0.14475 只花 64 毫秒，

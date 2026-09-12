@@ -9,6 +9,7 @@ from core.interfaces.entry_interface import IEntryStrategy
 from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
     CHANNEL_FLAT_MIDDLE_RATIO, CHANNEL_LIVE_BODY_BREAKOUT_ENABLED, CHANNEL_LIVE_BREAKOUT_BODY_ATR,
+    CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION,
     CHANNEL_MIN_DIRECTION_EFFICIENCY, CHANNEL_LONG_BODY_ENTRY_ATR,
     CHANNEL_STRONG_TREND_RATIO, CHANNEL_MIN_ATR_PCT,
 )
@@ -493,13 +494,23 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
         # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
+        # 2026-09-12 使用者：「沒有兩根實體K也開倉，以上都不能開倉」——
+        # 特例K不再有特權：把 body_driven 關掉，讓它走一般單的完整關卡
+        #（破軌根＋同色實體確認根、實體過熱、方向效率、末端禁開、動能衰退、
+        # MA3 安全距離…）。要回到舊行為把 CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION
+        # 設成 false 即可。
+        if CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION:
+            body_driven = False
         # 2026-09-13 使用者：特例K就是特例——入口過濾一律去除，成立就開倉。
         #（跳過：走平、效率、末端、過熱、前一根大K、MA3 轉向、中軌反向、反向異常、兩根確認）
         # 2026-09-14 使用者定案：
         # (1) 特例K（單根順向長實體 ≥ CHANNEL_LONG_BODY_ENTRY_ATR 且收在軌外）可自行開倉；
         # (2) 延續：前一根已收線也收在持倉側外軌之外時，單根同色K即可延續開倉；
         # (3) 首次破軌（從軌內穿出）才需要「破軌根＋第二根已收線同色實體K」。
-        special_long_body = body_side is not None and side == body_side
+        special_long_body = (
+            body_side is not None and side == body_side
+            and not CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION
+        )
         if special_long_body:
             # 2026-09-14 使用者：特例K要量能確認（突破根量 ≥1.5×近20根均量），沒量視為假突破。
             if not special_volume_surge_ok(frame, -2):
