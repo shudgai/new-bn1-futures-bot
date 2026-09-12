@@ -142,6 +142,21 @@ def protection(position, price, fee, slippage, frame=None):
     floor_net = float(config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT)
     floor_lock = floor_net if (floor_net > 0 and peak >= floor_arm > 0) else 0.0
     locked = max(float(state.get('locked_net', 0.0)), ladder_lock, floor_lock)
+    # 2026-09-14 使用者：進場那一根K還沒收線前，不准因「鎖利回吐」平倉——
+    # 特例K常在同一根內劇烈震盪，等該根收線後才啟用鎖利（ATR 停損不受影響）。
+    if locked > 0.0 and frame is not None:
+        try:
+            import time as _time
+            live_bar = float(frame.iloc[-1]["timestamp"]) / 1000.0
+            opened_at = float(position.get("open_timestamp") or 0.0)
+            # 僅針對「正在形成中的當根」（與現在時間相差 3 分鐘內）才抑制鎖利；
+            # 回測／測試用的歷史框架不受影響。
+            forming = live_bar > 0 and abs(_time.time() - live_bar) <= 180.0
+            if forming and opened_at >= live_bar:
+                locked = 0.0
+                state['locked_net'] = 0.0
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+            pass
     state['locked_net'] = locked
     state['armed'] = locked > 0.0
     # 2026-09-14 使用者：特例K也要有 ATR 停損（虧損底線）；一般進場本來就有。
