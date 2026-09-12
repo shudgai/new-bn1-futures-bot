@@ -10,6 +10,7 @@ from core.config import (
     CHANNEL_TAIL_MAX_TREND_BARS, CHANNEL_ENTRY_MAX_BODY_ATR, CHANNEL_ENTRY_MAX_PREV_BODY_ATR,
     CHANNEL_FLAT_MIDDLE_RATIO, CHANNEL_LIVE_BODY_BREAKOUT_ENABLED, CHANNEL_LIVE_BREAKOUT_BODY_ATR,
     CHANNEL_MIN_DIRECTION_EFFICIENCY, CHANNEL_LONG_BODY_ENTRY_ATR,
+    CHANNEL_STRONG_TREND_RATIO,
 )
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
@@ -273,6 +274,26 @@ def long_body_side(frame, atr_mult: float):
     return None
 
 
+def strong_trend_continuation(frame, price, side) -> bool:
+    """強趨勢延續：已收線中軌位移 ÷ 軌寬 達門檻，且最新價在持倉側外軌之外。"""
+    ratio = CHANNEL_STRONG_TREND_RATIO
+    if ratio <= 0 or side not in ("LONG", "SHORT"):
+        return False
+    try:
+        key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+        previous, latest = float(frame[key].iloc[-3]), float(frame[key].iloc[-2])
+        width = float(frame["kc_upper"].iloc[-2]) - float(frame["kc_lower"].iloc[-2])
+        price = float(price)
+        rail = float(frame["kc_upper"].iloc[-1] if side == "LONG" else frame["kc_lower"].iloc[-1])
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+    if not all(math.isfinite(v) and v > 0 for v in (previous, latest, width, price, rail)) or width <= 0:
+        return False
+    direction_ok = latest > previous if side == "LONG" else latest < previous
+    outside = price > rail if side == "LONG" else price < rail
+    return direction_ok and outside and abs(latest - previous) / width >= ratio
+
+
 def channel_middle_is_flat(frame, ratio=None):
     """Parallel closed KC middle blocks new entries on both sides.
 
@@ -399,7 +420,9 @@ def aligned_entry(frame, price):
                 return {**wait, "reason": "KC_LIVE_COLOR_WAIT"}
 
             # 純趨勢進場（當根不是長K破軌）：前一根已是大K就不追。
-            if atr > 0:
+            # 例外：強趨勢延續（中軌位移÷軌寬 ≥ 門檻且價格在持倉側軌外）允許續追，
+            # 否則一波強漲/強跌中的每根大K都會把延續訊號全部擋掉（2026-09-13 使用者反映）。
+            if atr > 0 and not strong_trend_continuation(frame, price, side):
                 prev_body = abs(float(frame.iloc[-2]["close"]) - float(frame.iloc[-2]["open"]))
                 if prev_body > atr * CHANNEL_ENTRY_MAX_PREV_BODY_ATR:
                     return {**wait, "reason": "KC_ENTRY_PREV_BODY_WAIT"}

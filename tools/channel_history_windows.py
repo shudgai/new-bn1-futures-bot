@@ -58,6 +58,7 @@ def window_stats(df: pd.DataFrame, start: int, end: int) -> dict:
         return {"n": 0}
     trend = one_hour_direction(sub)
     pnls: List[float] = []
+    side_pnls = {"LONG": [], "SHORT": []}
     for index in range(WARMUP, len(sub) - 2):
         frame = sub.iloc[: index + 1]
         price = float(frame["close"].iloc[-1])
@@ -73,12 +74,22 @@ def window_stats(df: pd.DataFrame, start: int, end: int) -> dict:
         if not room["allowed"]:
             continue
         body = bool(live_body_breakout_side(frame, price)) or long_body_side(frame, 2.0) == side
-        pnls.extend(atr_bracket(sub, [(index, side)], 1.5, 1.0 if body else 3.0))
+        outcome = atr_bracket(sub, [(index, side)], 1.5, 1.0 if body else 3.0)
+        pnls.extend(outcome)
+        side_pnls[side].extend(outcome)
     if not pnls:
         return {"n": 0, "per": 0.0, "net": 0.0, "win": 0.0}
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
+    def side_stat(values):
+        if not values:
+            return {"n": 0, "per": 0.0}
+        wins = [v for v in values if v > 0]
+        losses = [v for v in values if v < 0]
+        return {"n": len(values), "per": round(sum(values) / len(values), 2),
+                "pf": round(sum(wins) / (abs(sum(losses)) or 1e-9), 2)}
     return {
+        "long": side_stat(side_pnls["LONG"]), "short": side_stat(side_pnls["SHORT"]),
         "n": len(pnls), "net": round(sum(pnls), 1), "per": round(sum(pnls) / len(pnls), 2),
         "win": round(100 * len(wins) / len(pnls), 1),
         "pf": round(sum(wins) / (abs(sum(losses)) or 1e-9), 2),
@@ -95,14 +106,16 @@ def main() -> None:
     df = fetch(args.symbol, args.days)
     span = args.window * 1440
     print(f"{args.symbol}｜共 {len(df)} 根 1m（約 {len(df)//1440} 天）｜每窗 {args.window} 天")
-    print(f"{'窗口（由舊到新）':<22}{'筆數':>6}{'淨U':>9}{'單筆U':>8}{'勝率%':>7}{'PF':>7}{'ATR%':>7}")
+    print(f"{'窗口':<9}{'合計筆數':>8}{'合計單筆':>9}{'多單筆數':>9}{'多單單筆':>10}{'多單PF':>8}"
+          f"{'空單筆數':>9}{'空單單筆':>10}{'空單PF':>8}{'ATR%':>7}")
     for i, start in enumerate(range(0, len(df), span)):
         stats = window_stats(df, start, start + span)
         if not stats.get("n"):
             continue
         label = time.strftime("%m-%d", time.gmtime(df["timestamp"].iloc[start] / 1000))
-        print(f"{label:<22}{stats['n']:>6}{stats['net']:>9}{stats['per']:>8}{stats['win']:>7}"
-              f"{stats['pf']:>7}{stats['atr_pct']:>7}")
+        long_, short_ = stats["long"], stats["short"]
+        print(f"{label:<9}{stats['n']:>8}{stats['per']:>9}{long_['n']:>9}{long_['per']:>10}{long_.get('pf', 0):>8}"
+              f"{short_['n']:>9}{short_['per']:>10}{short_.get('pf', 0):>8}{stats['atr_pct']:>7}")
 
 
 if __name__ == "__main__":
