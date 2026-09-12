@@ -1928,6 +1928,12 @@ class TradingEngine:
             side = str((signal or {}).get("side") or "").upper()
             if trend_1h in (1, -1) and side in ("LONG", "SHORT"):
                 aligned = (side == "LONG" and trend_1h == 1) or (side == "SHORT" and trend_1h == -1)
+                # 2026-09-14 使用者：特例K常發生在「多空轉換、CK 還沒轉過來」的當下，
+                # 不能讓 1h 過濾擋掉它 → 特例K豁免 1h（空單特例K就開空、多單特例K就開多）。
+                if not aligned and self._special_long_body_signal(signal, channel_snapshot, side, symbol):
+                    self.account.log(
+                        f"🔥 [1h 趨勢過濾豁免] {symbol} {side} 特例K（常在 CK 轉向之間）", "INFO")
+                    aligned = True
                 if not aligned:
                     self.account.log(
                         f"⏸️ [1h 趨勢過濾] {symbol} 1h 方向 {trend_1h:+d} 與 {side} 不一致，不開新倉", "INFO")
