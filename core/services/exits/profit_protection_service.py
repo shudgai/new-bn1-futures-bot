@@ -130,8 +130,13 @@ def protection(position, price, fee, slippage, frame=None):
 
     # 淨利峰值達 ARM 才啟動，鎖住「峰值 − LOCK_OFFSET」，之後每上升一個 LOCK_OFFSET 再上移一階。
     peak = float(state['peak_net'])
-    arm = float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT)
-    step = float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT)
+    if special_k_entry:
+        # 特例K：早點入袋（2U 啟動、回吐 1U）
+        arm = float(getattr(config, "CHANNEL_SWING_PROFIT_LADDER_ARM_SPECIAL_K_USDT", 2.0))
+        step = float(getattr(config, "CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_SPECIAL_K_USDT", 1.0))
+    else:
+        arm = float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT)
+        step = float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT)
     ladder_lock = (float(math.floor(peak / step) * step - step) if peak >= arm and step > 0 else 0.0)
     floor_arm = float(config.CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT)
     floor_net = float(config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT)
@@ -139,8 +144,23 @@ def protection(position, price, fee, slippage, frame=None):
     locked = max(float(state.get('locked_net', 0.0)), ladder_lock, floor_lock)
     state['locked_net'] = locked
     state['armed'] = locked > 0.0
+    # 2026-09-14 使用者：特例K也要有 ATR 停損（虧損底線）；一般進場本來就有。
+    atr_stop = None
+    try:
+        atr_value = float(position.get("atr") or 0.0)
+    except (TypeError, ValueError):
+        atr_value = 0.0
+    if config.CHANNEL_ATR_EXIT_ENABLED and atr_value > 0:
+        atr_stop = entry - sign * atr_value * float(config.CHANNEL_ATR_STOP_MULT)
     if not state['armed']:
-        return None
+        if atr_stop is None:
+            return None
+        hit_atr = price <= atr_stop if sign > 0 else price >= atr_stop
+        state['stop_price'] = atr_stop
+        return {'triggered': bool(hit_atr), 'stop_price': atr_stop, 'target_price': None,
+                'exit_kind': 'ATR_STOP', 'peak_gross': float(state.get('peak_gross') or 0.0),
+                'net_pnl': net, 'locked_net': 0.0, 'peak_net': peak,
+                'retracement_fraction': 0.0}
 
     state['retracement_fraction'] = 0.0
     stop = locked_stop_price(entry, side, qty, locked, fee, slippage)
