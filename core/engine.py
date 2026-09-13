@@ -35,7 +35,7 @@ from core.services.swing_service import (
 from core.services.pivot_service import (
     validate_strict_pivot_entry, resolve_entry_atr, pivot_confirmation_body_atr,
     strong_burst_live_entry_is_valid, resolve_trailing_atr, opposite_closed_candle_exit,
-    outer_run_second_candle_status
+    outer_run_second_candle_status, is_real_pivot, is_exhaustion_before_pivot
 )
 from core.services.pullback_service import (
     quality_bonus, format_pullback_order_log, pullback_reversal_confirmed, classify_pullback_drop
@@ -1211,12 +1211,14 @@ class TradingEngine:
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 if df.empty:
                     raise ValueError("empty kline payload")
+                # 固定共同資料管道長度，避免長時間運行造成索引漂移。
+                df = df.tail(100).copy().reset_index(drop=True)
                 # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
                 # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
                 # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
                 if keep_live:
                     return df
-                return drop_unclosed_candle(df, timeframe)
+                return drop_unclosed_candle(df, timeframe).tail(100).copy().reset_index(drop=True)
             except Exception as e:
                 last_error = e
                 if attempt + 1 < KLINE_FETCH_ATTEMPTS:
@@ -2641,6 +2643,8 @@ class TradingEngine:
     _range_swing_reverse_side = staticmethod(range_swing_reverse_side)
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
+    _is_real_pivot = staticmethod(is_real_pivot)
+    _is_exhaustion_before_pivot = staticmethod(is_exhaustion_before_pivot)
 
     async def _try_channel_stronger_symbol_takeover(
         self, candidate: dict, now_time: float, daily_halt: bool,
