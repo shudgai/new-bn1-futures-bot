@@ -219,6 +219,19 @@ def test_smooth_trend_arms_step_ladder_protection(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_strong_trend_drops_fixed_atr_target_but_keeps_stop_and_ladder(side, monkeypatch):
+    monkeypatch.setattr("core.config.CHANNEL_ATR_EXIT_ENABLED", True)
+    p = position(side)
+    p["atr"] = 1.0
+    p["reason"] = "Channel Swing KC_BREAKOUT_STOP_" + side
+    sign = 1 if side == "LONG" else -1
+    result = protection(p, 100 + sign * 3.5, .0005, .0001, styled_frame("SMOOTH", side))
+
+    assert result["target_price"] is None
+    assert result["stop_price"] > 0
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 def test_stack_live_opposite_tightens_ten_dollar_peak_to_nine(side):
     p = position(side)
     sign = 1 if side == 'LONG' else -1

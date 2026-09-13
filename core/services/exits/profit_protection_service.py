@@ -98,15 +98,23 @@ def protection(position, price, fee, slippage, frame=None):
             target_mult = (config.CHANNEL_ATR_LONG_BODY_TARGET_MULT if long_body
                            else config.CHANNEL_ATR_TARGET_MULT)
             stop_offset = atr * config.CHANNEL_ATR_STOP_MULT
-            target_offset = atr * target_mult
+            # In a confirmed smooth/stacked trend, let the profit ladder trail
+            # the move instead of capping the position at a fixed ATR target.
+            strong_trend = trend_style(frame, side, position.get("open_timestamp")) in {
+                "STACKED", "SMOOTH",
+            }
+            target_offset = None if strong_trend and not long_body else atr * target_mult
             stop = entry - sign * stop_offset
-            target = entry + sign * target_offset
+            target = entry + sign * target_offset if target_offset is not None else None
             if lock > 0:
                 locked_price = locked_stop_price(entry, side, qty, lock, fee, slippage)
                 stop = max(stop, locked_price) if sign > 0 else min(stop, locked_price)
             state_atr.update(stop_price=stop, target_price=target, atr=atr, locked_net=lock)
             hit_stop = price <= stop if sign > 0 else price >= stop
-            hit_target = price >= target if sign > 0 else price <= target
+            hit_target = (
+                target is not None
+                and (price >= target if sign > 0 else price <= target)
+            )
             return {"triggered": bool(hit_stop or hit_target), "stop_price": stop,
                     "target_price": target,
                     # 2026-09-14 使用者：出場標籤要正確——ATR 停損不該寫成「獲利保護」。
