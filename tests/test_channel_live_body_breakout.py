@@ -72,6 +72,19 @@ def test_closed_atr_body_threshold(side,body,expected):
     price=rail-sign*.1+sign*body
     assert (live_body_breakout_side(f,price)==side) is expected
 
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_active_long_body_outside_rail_is_special_entry(side, monkeypatch):
+    f, price = breakout_frame(side, ck='flat')
+    sign = 1 if side == 'LONG' else -1
+    rail = float(f.iloc[-1]['kc_upper' if side == 'LONG' else 'kc_lower'])
+    atr = float(f.iloc[-2]['atr'])
+    opened = rail + sign * 0.1 * atr
+    price = opened + sign * 1.1 * atr
+    f.loc[f.index[-1], 'open'] = opened
+    monkeypatch.setattr('core.services.strategies.outer_strategy.CHANNEL_LONG_BODY_ENTRY_ATR', 1.0)
+    assert live_body_breakout_side(f, price) == side
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('route',['fresh','cached','reentry','scan','quote','runner'])

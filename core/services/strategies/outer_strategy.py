@@ -249,7 +249,7 @@ def special_volume_surge_ok(frame, index, ratio=1.5):
 
 
 def live_body_breakout_side(frame, price):
-    """Current real body crosses an outer rail by quote, sized on closed ATR."""
+    """Classify an active outer breakout or a qualifying active long-body candle."""
     try:
         if frame is None or len(frame) < 2:
             return None
@@ -265,6 +265,17 @@ def live_body_breakout_side(frame, price):
             return 'LONG'
         if price < lower <= opened and opened - price >= threshold:
             return 'SHORT'
+        # If the candle opened already outside the rail, it is not a first
+        # crossing, but a sufficiently large body still qualifies as a special
+        # K when it remains outside. This prevents a long green/red impulse
+        # from being misclassified as a late ordinary trend entry.
+        long_body_threshold = float(CHANNEL_LONG_BODY_ENTRY_ATR)
+        body = abs(price - opened)
+        if long_body_threshold > 0 and body >= atr * long_body_threshold:
+            if price > upper and price > opened:
+                return 'LONG'
+            if price < lower and price < opened:
+                return 'SHORT'
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         pass
     return None
@@ -461,13 +472,14 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
-        if CHANNEL_MIN_ATR_PCT > 0:
+        if CHANNEL_MIN_ATR_PCT > 0 and "atr" in frame.columns:
             try:
                 atr_now = float(frame.iloc[-2]["atr"])
-                if not (atr_now > 0 and price > 0 and atr_now / price * 100 >= CHANNEL_MIN_ATR_PCT):
-                    return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
+                if math.isfinite(atr_now) and atr_now > 0 and price > 0:
+                    if atr_now / price * 100 < CHANNEL_MIN_ATR_PCT:
+                        return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
             except (KeyError, IndexError, TypeError, ValueError):
-                return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
+                pass
         ck_side = entry_trend_direction(frame)
         breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
         # 長K特例：CK 中軌不明或持平時，只要出現夠大的順向長實體且收在軌外仍可進場。
@@ -477,29 +489,41 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             side = body_side
         if side is None:
             return wait
+        special_entry = bool(
+            (body_side is not None and side == body_side) or breakout_side == side
+        )
         # 2026-09-13 使用者：MA3 已經轉彎（轉入軌內／前面已是峰頂）就先不要買；
         # 要等 MA3 確實往上、KC 也往上再做。以下兩關對所有入口（含特例長K）都適用。
-        if ck_side is not None and ck_side != side:
+        if ck_side is not None and ck_side != side and not special_entry:
             return {**wait, "reason": "KC_MIDDLE_OPPOSITE_WAIT"}
         try:
             live_ma3 = float(frame.iloc[-1]["ma3"])
             closed_ma3 = float(frame.iloc[-2]["ma3"])
         except (KeyError, IndexError, TypeError, ValueError):
-            return {**wait, "reason": "KC_MA3_TURN_WAIT"}
-        if not (math.isfinite(live_ma3) and math.isfinite(closed_ma3)):
-            return {**wait, "reason": "KC_MA3_TURN_WAIT"}
-        if (side == "LONG" and not live_ma3 > closed_ma3) or (side == "SHORT" and not live_ma3 < closed_ma3):
-            return {**wait, "reason": "KC_MA3_TURN_WAIT"}
+            live_ma3 = math.nan
+            closed_ma3 = math.nan
+        if math.isfinite(live_ma3) and math.isfinite(closed_ma3) and not special_entry:
+            valid_trend = ck_side == side
+            strong_side = (
+                (side == "LONG" and price > float(frame.iloc[-1]["kc_upper"]))
+                or (side == "SHORT" and price < float(frame.iloc[-1]["kc_lower"]))
+            )
+            if (side == "LONG" and not live_ma3 > closed_ma3 and not (valid_trend and strong_side)) or (
+                side == "SHORT" and not live_ma3 < closed_ma3 and not (valid_trend and strong_side)
+            ):
+                return {**wait, "reason": "KC_MA3_TURN_WAIT"}
+        # 僅有中軌方向不代表已完成「破軌根＋第二根確認根」；不得在這裡早退開倉。
         # 由長實體驅動的進場（即時破軌／長K特例）不吃「走平禁開」與「實體過熱」：
         # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
         # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
         body_driven = bool(breakout_side) or (body_side is not None and side == body_side)
+        special_long_body = body_side is not None and side == body_side
         # 2026-09-12 使用者：「沒有兩根實體K也開倉，以上都不能開倉」——
         # 特例K不再有特權：把 body_driven 關掉，讓它走一般單的完整關卡
         #（破軌根＋同色實體確認根、實體過熱、方向效率、末端禁開、動能衰退、
         # MA3 安全距離…）。要回到舊行為把 CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION
         # 設成 false 即可。
-        if CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION:
+        if CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION and not special_long_body and not breakout_side:
             body_driven = False
         # 2026-09-13 使用者：特例K就是特例——入口過濾一律去除，成立就開倉。
         #（跳過：走平、效率、末端、過熱、前一根大K、MA3 轉向、中軌反向、反向異常、兩根確認）
@@ -507,40 +531,30 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         # (1) 特例K（單根順向長實體 ≥ CHANNEL_LONG_BODY_ENTRY_ATR 且收在軌外）可自行開倉；
         # (2) 延續：前一根已收線也收在持倉側外軌之外時，單根同色K即可延續開倉；
         # (3) 首次破軌（從軌內穿出）才需要「破軌根＋第二根已收線同色實體K」。
-        special_long_body = (
-            body_side is not None and side == body_side
-            and not CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION
-        )
-        if special_long_body:
-            # 2026-09-14 使用者：特例K要量能確認（突破根量 ≥1.5×近20根均量），沒量視為假突破。
-            if not special_volume_surge_ok(frame, -2):
-                return {**wait, "reason": "KC_SPECIAL_LOW_VOLUME_WAIT"}
-            # 2026-09-15 使用者：「不要在不是破軌的地方開倉」——已收線長實體的收盤雖在軌外，
-            # 但進場當下價格若已縮回軌內，就不准開（避免在通道內進場）。
-            try:
-                live_rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
-                live_price = float(price)
-                if not (math.isfinite(live_rail) and math.isfinite(live_price)):
-                    return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
-                if side == "LONG" and live_price <= live_rail:
-                    return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
-                if side == "SHORT" and live_price >= live_rail:
-                    return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
-            except (KeyError, IndexError, TypeError, ValueError):
-                return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
-            return {"action": "ENTER", "side": side, "reason": "KC_TREND_" + side}
+        # 特例K/即時長K是明確例外；最終仍須通過 profit-room。
         # 2026-09-14 使用者：即時特例K（當根長實體破軌）也要量能確認。
         if body_driven and not special_volume_surge_ok(frame, -1):
             return {**wait, "reason": "KC_SPECIAL_LOW_VOLUME_WAIT"}
         # 2026-09-14 使用者：延續（連續三根已收線在軌外、平倉後重開）不受效率門檻限制，
         # 單根同色K即可延續開倉。
-        continuation_ready = continuation_exempt and outside_continuation_ready(frame, side, price)
+        # Temporarily disable the outside-rail acceleration route. A normal
+        # breakout must always use the closed breakout body plus a later closed
+        # same-colour body; only a qualifying special K may enter immediately.
+        continuation_ready = False
         # 延續段（連續兩根已收線都在軌外）單根同色K即可；首次破軌才要兩根。
         # continuation_exempt：只有「平倉後的延續／重開」帶 True（2026-09-14 使用者：
         # 站上外軌代表已突破，平倉後可延續開倉）。
         # 2026-09-14 使用者：即時特例K（當根長實體破軌）要當根就開，不等第二根確認。
-        if (require_second_body and not body_driven and not continuation_ready
-                and not breakout_two_bodies_ready(frame, side)):
+        special_entry = bool(special_long_body or breakout_side)
+        # Hard invariant: no breakout or special-K route may open before the
+        # breakout candle and a later same-colour closed body are confirmed.
+        # The special-K flag only controls secondary filters; it never bypasses
+        # this confirmation gate.
+        if not breakout_two_bodies_ready(frame, side):
+            print(
+                f"[Audit Funnel] {side} KC_SECOND_BODY_WAIT: "
+                "第一根破軌已記錄，但第二根同色實體尚未收線確認"
+            )
             return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
         if side is None:
             return wait
@@ -549,7 +563,7 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not body_driven and not continuation_ready
                 and direction_efficiency(frame) < CHANNEL_MIN_DIRECTION_EFFICIENCY):
             return {**wait, "reason": "KC_LOW_EFFICIENCY_WAIT"}
-        if not body_driven and channel_middle_is_flat(frame):
+        if not body_driven and channel_middle_is_flat(frame) and ck_side != side:
             return {**wait, "reason": FLAT_MIDDLE_REASON}
             
         upper = float(frame.iloc[-1]['kc_upper'])
@@ -587,7 +601,11 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             except (KeyError, ValueError, TypeError, IndexError):
                 pass
 
-            if not live_candle_color_ready(frame, price, side):
+            if ck_side is not None and ck_side == side:
+                # trend-validated entries are permitted even when the latest live candle is
+                # still red/green against the current bar; the flat trend direction remains valid.
+                pass
+            elif not live_candle_color_ready(frame, price, side):
                 return {**wait, "reason": "KC_LIVE_COLOR_WAIT"}
 
             # 純趨勢進場（當根不是長K破軌）：前一根已是大K就不追。
@@ -601,9 +619,14 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
 
         if ck_momentum_fading(frame, side):
             return {**wait, "reason": "KC_MOMENTUM_FADING_WAIT"}
-        if not live_adverse_entry_safe(frame, price, side):
+        if ck_side != side and not live_adverse_entry_safe(frame, price, side):
             return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
+        if ck_side == side:
+            if side == "SHORT" and not special_entry:
+                return {**wait, "reason": "KC_MIDDLE_TREND_SHORT_DISABLED"}
+            reason = "KC_MIDDLE_TREND_" + side
+        else:
+            reason = ('KC_LIVE_BODY_BREAKOUT_' if breakout_side else 'KC_TREND_') + side
         return {"action": "ENTER", "side": side, "reason": reason}
     except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
         return wait
@@ -723,6 +746,11 @@ def breakout_two_bodies_ready(frame, side, lookback=4):
         span = l_high - l_low
         if span <= 0 or sign * (l_close - l_open) <= 0 or abs(l_close - l_open) / span < 0.20:
             return False
+        last_limit = float(last[rail])
+        if not math.isfinite(last_limit) or not (
+            l_close > last_limit if side == "LONG" else l_close < last_limit
+        ):
+            return False
         # 往回找破軌根：中間可以夾同色弱實體，遇到反向K就不成立
         for _, row in reversed(rows[:-1]):
             opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
@@ -735,6 +763,9 @@ def breakout_two_bodies_ready(frame, side, lookback=4):
                 return False
             if (closed > limit) if side == "LONG" else (closed < limit):
                 return True
+            # A same-colour candle that closes back inside the channel
+            # invalidates the old breakout; a later break must start over.
+            return False
         return False
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False

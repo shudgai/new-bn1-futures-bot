@@ -175,8 +175,6 @@ class BinanceTestnetAccount:
         # 再送市價單」的 pending_pullbacks（見 engine.py）。keyed by symbol，
         # 一個 symbol 同時最多一張掛單。
         self.pending_limit_orders: Dict[str, dict] = {}
-        # 2026-09-12 使用者核准：破軌預掛觸價單（交易所端 STOP_MARKET 進場）。
-        self.breakout_stop_entries: Dict[str, dict] = {}
         # 同一 symbol 反覆掛單-撤單（見 place_limit_entry/cancel_pending_limit）
         # 時，只印第一次「掛單中」，之後同一個 symbol 連續沒成交就不再重複
         # 印掛單/撤銷——同一個 symbol 一直顯示卻沒有新結果，畫面上只是雜訊。
@@ -336,7 +334,6 @@ class BinanceTestnetAccount:
         await self.exchange.load_markets()
         self._markets_loaded = True
         await self._cancel_orphan_entry_orders()
-        await self._cancel_orphan_breakout_stops()
         await self.refresh(force=True)
         await self._restore_exchange_initial_stops()
 

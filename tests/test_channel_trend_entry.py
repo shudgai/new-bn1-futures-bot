@@ -35,8 +35,14 @@ def test_trend_ignores_rail_position_and_old_direction_filters(side, location, s
     f, price = trend_frame(side, location, scale)
     assert entry_trend_direction(f) == side
     assert ck_direction(f) != side  # Exit direction helper retains its old contract.
-    assert aligned_entry(f, price) == dict(action='ENTER', side=side, reason='KC_TREND_'+side)
-    assert TradingEngine._channel_swing_action(f, price)['side'] == side
+    if side == 'SHORT':
+        assert aligned_entry(f, price) == dict(
+            action='WAIT', side=None, reason='KC_MIDDLE_TREND_SHORT_DISABLED'
+        )
+        assert TradingEngine._channel_swing_action(f, price)['action'] == 'WAIT'
+    else:
+        assert aligned_entry(f, price) == dict(action='ENTER', side=side, reason='KC_TREND_'+side)
+        assert TradingEngine._channel_swing_action(f, price)['side'] == side
     f.loc[f.index[-1], 'kc_middle'] = float('nan')
     assert entry_trend_direction(f) == side  # Never use the forming CK value.
 
@@ -74,8 +80,12 @@ async def test_real_orders_use_trend_inside_or_outside(side, location, route, mo
                   if route == 'scan' else await e._try_live_pivot_entry(SYMBOL, f, price))
     else:
         result = await e._place_structured_entry(SYMBOL, signal, price, channel_snapshot=snapshot if route=='cached' else None)
-    assert result, e.account.logs
-    assert [x[0] for x in e.account.events] == ['open']
+    if side == 'SHORT':
+        assert result is False
+        assert not e.account.events, e.account.logs
+    else:
+        assert result, e.account.logs
+        assert [x[0] for x in e.account.events] == ['open']
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

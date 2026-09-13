@@ -85,12 +85,13 @@ def test_middle_cross_is_strict_persistent_and_failed_close_latches(side):
 async def test_snapshot_accepts_inside_channel_and_rejects_changed_signal(side):
     f = market(side); price = float(f.iloc[-1]["close"])
     e = _execution_engine(f, side, True); e.account.positions.clear(); e.tickers[SYMBOL] = price
-    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is None
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18, pivot_entry_signal=True) is not None
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 17) is None
     f.loc[16:18, "ma15"] = 100.
-    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is not None
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18, pivot_entry_signal=True) is not None
     f.loc[16:18, "kc_middle"] = 100.
-    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18) is None
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18, pivot_entry_signal=True) is None
 
 
 @pytest.mark.anyio

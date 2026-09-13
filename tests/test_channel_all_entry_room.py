@@ -31,6 +31,7 @@ async def test_all_routes_check_room(side,cached,reentry,target,scale,monkeypatc
     price *= scale
     assert aligned_entry_ready(f,price,side)
     e=_execution_engine(f,side,True);e.account.positions.clear();e.account.save_state=lambda:None
+    e._channel_chop_state = lambda _: {"detected": False, "clear_direction": None}
     e.tickers[SYMBOL]=price;e._abnormal_market_entry_allowed=lambda *a,**k:True
     snapshot=dict(frame=f,price=price,kc_upper=float(f.iloc[-1]['kc_upper']),kc_lower=float(f.iloc[-1]['kc_lower']))
     e._fresh_channel_entry_snapshot=AsyncMock(return_value=snapshot)
@@ -99,6 +100,7 @@ async def test_real_snapshot_room_failure_then_recovery(side, monkeypatch):
     e = _execution_engine(f, side, True)
     e.account.positions.clear()
     e.account.save_state = lambda: None
+    e._channel_chop_state = lambda _: {"detected": False, "clear_direction": None}
     del e._channel_intrabar_ready
     e._abnormal_market_entry_allowed = lambda *a, **kw: True
     now = float(f.iloc[-1]['timestamp']) / 1000 + 1

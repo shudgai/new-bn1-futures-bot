@@ -353,28 +353,6 @@ CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION = os.getenv(
     "CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION", "true"
 ).lower() == "true"
 
-# 2026-09-12 使用者核准「破軌預掛觸價單」：價格尚未破軌、但已在可及範圍時，
-# 先在交易所掛 STOP_MARKET 觸價單，價格一到就由交易所端立刻市價進場，
-# 取代等程式掃到才追價（快市例：龍蝦 0.13674 → 0.14475 只花 64 毫秒，
-# 程式掃描＋重抓 K 線要 1.5～2 秒，永遠只能追在長 K 上半段）。
-CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED = os.getenv(
-    "CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED", "true"
-).lower() == "true"
-# 現價距觸發價超過幾倍 ATR 就不值得預掛（代表離破軌還很遠）。
-CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR = max(
-    0.0, float(os.getenv("CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR", "1.0"))
-)
-# 2026-09-12 使用者：把「預掛觸價單的觸發價」與「特例K門檻」拆開。特例K門檻
-# （CHANNEL_LIVE_BREAKOUT_BODY_ATR）提高後，預掛單不該跟著變高——預掛單要的是
-# 「破軌就買」，所以預設 0.0＝直接掛在外軌價位（純破軌），可自行調整為 0.5/1.0。
-CHANNEL_BREAKOUT_STOP_BODY_ATR = max(
-    0.0, float(os.getenv("CHANNEL_BREAKOUT_STOP_BODY_ATR", "0.0"))
-)
-# 預掛觸價單最長存活秒數；換根、條件消失、成交、超時都會撤單。
-CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC = max(
-    5.0, float(os.getenv("CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC", "75"))
-)
-
 # 長K進場專用目標倍數：長K只要有賺就入袋，不追求大目標。
 CHANNEL_ATR_LONG_BODY_TARGET_MULT = max(
     0.1, float(os.getenv("CHANNEL_ATR_LONG_BODY_TARGET_MULT", "1.0"))

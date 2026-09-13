@@ -192,8 +192,6 @@ class PaperAccount:
         self.positions: Dict[str, dict] = {}
         self.position_meta: Dict[str, dict] = {}
         self.pending_limit_orders: Dict[str, dict] = {}
-        # 2026-09-12 使用者核准：破軌預掛觸價單（紙上版）。
-        self.breakout_stop_entries: Dict[str, dict] = {}
         self.latest_prices: Dict[str, float] = {}
         self.trades: List[dict] = []
         self.logs: List[dict] = []
@@ -298,7 +296,6 @@ class PaperAccount:
         self.positions = data.get("positions", {})
         self.position_meta = data.get("position_meta", {})
         self.pending_limit_orders = data.get("pending_limit_orders", {})
-        self.breakout_stop_entries = data.get("breakout_stop_entries", {}) or {}
         self.trades = data.get("trades", [])
         self.logs = data.get("logs", [])
         self.takeover_shadow_events = data.get("takeover_shadow_events", [])
@@ -364,7 +361,6 @@ class PaperAccount:
             "positions": self.positions,
             "position_meta": self.position_meta,
             "pending_limit_orders": self.pending_limit_orders,
-            "breakout_stop_entries": self.breakout_stop_entries,
             "trades": self.trades[:500],
             "logs": self.logs[-200:],
             "takeover_shadow_events": self.takeover_shadow_events[-2000:],
@@ -399,7 +395,6 @@ class PaperAccount:
         self.positions = {}
         self.position_meta = {}
         self.pending_limit_orders = {}
-        self.breakout_stop_entries = {}
         self.latest_prices = {}
         self.trades = []
         self.logs = []
@@ -1328,8 +1323,6 @@ class PaperAccount:
         for symbol, price in ticker_prices.items():
             if price is not None:
                 self.latest_prices[str(symbol)] = float(price)
-
-        await self.check_breakout_stop_entries()
 
         for symbol, pos in list(self.positions.items()):
             curr_p = (

@@ -47,6 +47,32 @@ def test_normal_breakout_waits_for_same_color_confirmation():
     assert decision.reason == "STANDARD_CONFIRMATION"
 
 
+def test_reentering_channel_invalidates_long_breakout_before_rebreak():
+    machine = DualTrackBreakoutStateMachine()
+    first = bar(close=101.2, high=101.4, low=100.0)
+    back_inside = bar(open=101.2, close=100.5, high=101.3, low=100.2)
+    second_break = bar(close=101.3, high=101.5, low=100.8)
+
+    assert machine.process_closed_bar(first).reason == "STANDARD_BREAKOUT_PENDING"
+    assert machine.process_closed_bar(back_inside).reason == "BREAKOUT_REENTERED_CHANNEL"
+    assert machine.pending_signal is None
+    assert machine.pending_bars_count == 0
+    assert machine.process_closed_bar(second_break).reason == "STANDARD_BREAKOUT_PENDING"
+
+
+def test_reentering_channel_invalidates_short_breakout_before_rebreak():
+    machine = DualTrackBreakoutStateMachine()
+    first = bar(open=100.0, close=98.8, high=100.0, low=98.8)
+    back_inside = bar(open=98.8, close=99.5, high=99.8, low=98.6)
+    second_break = bar(open=99.5, close=98.7, high=99.6, low=98.5)
+
+    assert machine.process_closed_bar(first).reason == "STANDARD_BREAKOUT_PENDING"
+    assert machine.process_closed_bar(back_inside).reason == "BREAKOUT_REENTERED_CHANNEL"
+    assert machine.pending_signal is None
+    assert machine.pending_bars_count == 0
+    assert machine.process_closed_bar(second_break).reason == "STANDARD_BREAKOUT_PENDING"
+
+
 def test_doji_extends_pending_and_opposite_candle_cancels():
     machine = DualTrackBreakoutStateMachine()
     first = bar(close=101.2, high=101.4, low=100.0)
@@ -55,7 +81,7 @@ def test_doji_extends_pending_and_opposite_candle_cancels():
 
     machine.process_closed_bar(first)
     assert machine.process_closed_bar(doji).reason == "DOJI_EXTENDS_PENDING"
-    assert machine.process_closed_bar(opposite).reason == "OPPOSITE_CANDLE_CANCELLED"
+    assert machine.process_closed_bar(opposite).reason == "BREAKOUT_REENTERED_CHANNEL"
     assert machine.pending_signal is None
 
 
@@ -166,3 +192,22 @@ def test_exit_preserves_special_flag_for_next_bar_profit_review():
     assert machine.closed_position_bar_time == 2000
     assert confirmation.reason == "SPECIAL_CONFIRMATION_NO_PROFIT_SPACE"
     assert machine.position is None
+
+
+def test_execution_guard_rejects_duplicate_bar_and_existing_position():
+    sent = []
+    machine = DualTrackBreakoutStateMachine(
+        order_executor=lambda action, side: sent.append((action, side)) or True,
+    )
+
+    assert machine.execute_order("OPEN", "LONG", bar_time=3000) is True
+    assert machine.execute_order("OPEN", "LONG", bar_time=3000) is False
+    assert machine.execute_order("OPEN", "SHORT", bar_time=3001) is False
+    assert sent == [("OPEN", "LONG")]
+
+
+def test_execution_guard_blocks_reentrant_ordering():
+    machine = DualTrackBreakoutStateMachine()
+    machine.is_ordering = True
+
+    assert machine.execute_order("OPEN", "LONG", bar_time=4000) is False

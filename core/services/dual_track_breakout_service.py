@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 import math
 import pandas as pd
+from core.services.anti_duplicate_execution import AntiDuplicateExecutionMixin
 
 
 LONG = "LONG"
@@ -25,7 +26,7 @@ class BreakoutDecision:
         return {"action": self.action, "side": self.side, "reason": self.reason}
 
 
-class DualTrackBreakoutStateMachine:
+class DualTrackBreakoutStateMachine(AntiDuplicateExecutionMixin):
     """逐根處理已收線 K，並保證平倉優先於開倉。"""
 
     def __init__(
@@ -39,6 +40,7 @@ class DualTrackBreakoutStateMachine:
         minimum_room_pct: float = 0.008,
         max_pending_bars: int = 3,
         position_amt_provider: Optional[Callable[[], float]] = None,
+        order_executor: Optional[Callable[[str, str], bool]] = None,
         standard_entry_filter: Optional[Callable[[pd.Series, str, pd.DataFrame], bool]] = None,
     ) -> None:
         self.lookback_bars = lookback_bars
@@ -58,6 +60,7 @@ class DualTrackBreakoutStateMachine:
         self.is_special_k = False
         self.last_processed_time = None
         self.closed_position_bar_time = None
+        self._init_execution_guard(order_executor)
 
     @staticmethod
     def prepare_frame(frame: Optional[pd.DataFrame], max_bars: int = 100) -> pd.DataFrame:
@@ -259,6 +262,24 @@ class DualTrackBreakoutStateMachine:
                 self._clear_trigger_state()
                 return BreakoutDecision("WAIT", None, "PENDING_SIGNAL_TIMEOUT")
             expected = self.pending_signal
+            # A breakout candidate is valid only while closed candles remain
+            # outside the triggering rail. Returning inside invalidates the
+            # entire setup; a later breakout must start at bar one again.
+            try:
+                close = float(bar["close"])
+                upper = float(bar["kc_upper"])
+                lower = float(bar["kc_lower"])
+                returned_inside = (
+                    expected == LONG and close <= upper
+                ) or (
+                    expected == SHORT and close >= lower
+                )
+            except (KeyError, TypeError, ValueError):
+                returned_inside = False
+            if returned_inside:
+                self.pending_signal = None
+                self._clear_trigger_state()
+                return BreakoutDecision("WAIT", None, "BREAKOUT_REENTERED_CHANNEL")
             if self._is_doji(bar):
                 return BreakoutDecision("WAIT", expected, "DOJI_EXTENDS_PENDING")
             same_color = self._is_bullish(bar) if expected == LONG else self._is_bearish(bar)

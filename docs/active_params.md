@@ -9,13 +9,9 @@
 | `LEVERAGE` | 5 | 槓桿 |
 | `SYMBOL_ROTATION_ENABLED` | False | 幣種輪替 |
 | `KELTNER_ATR_MULTIPLIER` | 1.0 | KC 軌道 = EMA20 ± ATR×此值 |
-| `CHANNEL_LIVE_BREAKOUT_BODY_ATR` | 1.7 | 特例K門檻（即時長K） |
-| `CHANNEL_LONG_BODY_ENTRY_ATR` | 1.7 | 特例K門檻（已收線長實體） |
+| `CHANNEL_LIVE_BREAKOUT_BODY_ATR` | 1.8 | 特例K門檻（即時長K） |
+| `CHANNEL_LONG_BODY_ENTRY_ATR` | 1.8 | 特例K門檻（已收線長實體） |
 | `CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION` | True | 特例K是否需兩根同色實體確認 |
-| `CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED` | True | 破軌預掛觸價單 |
-| `CHANNEL_BREAKOUT_STOP_BODY_ATR` | 0.0 | 預掛觸發價用實體（0=直接用外軌價） |
-| `CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR` | 1.0 | 預掛：現價距觸發價上限 |
-| `CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC` | 75.0 | 預掛：最長存活秒數 |
 | `CHANNEL_MIN_ATR_PCT` | 0.5 | 最低 ATR% 門檻 |
 | `CHANNEL_MIN_DIRECTION_EFFICIENCY` | 0.45 | 方向效率門檻 |
 | `CHANNEL_ENTRY_MAX_BODY_ATR` | 0.8 | 當根實體過熱上限 |
@@ -39,8 +35,7 @@
 ## 入口（現行）
 
 1. 一般入口：破軌根（同色、收在持倉側外軌外）＋同色實體確認根（實體 ≥ 全長 20%），中間可夾同色弱實體順延；另需方向效率 ≥ 0.45、ATR% ≥ 0.5%、無反向異常、每根限次與帳戶風控。
-2. 破軌預掛觸價單：價格尚未破軌、現價距觸發價 ≤ 1.0 ATR、量能 ≥ 1.5× 近20根均量時，先在觸發價（＝外軌價位，`CHANNEL_BREAKOUT_STOP_BODY_ATR=0.0`）掛 STOP_MARKET；換根、CK 中軌轉向、價格退回 > 1.5 ATR、逾時 75 秒、停損冷卻或已有持倉就撤單。成交後若「開盤到成交價」實體 ≥ 1.7 ATR 才標記特例K。
-3. 特例K（即時長K／已收線長實體，1.7 ATR）不再有特權：一律照一般入口的完整關卡。
+2. 特例K（即時長K／已收線長實體，1.7 ATR）不再有特權：一律照一般入口的完整關卡。
 
 ## 出口（現行）
 

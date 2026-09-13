@@ -16,130 +16,37 @@ from core.services.entry_service import (
     channel_outer_trend_entry_action, channel_strong_first_outer_touch_action,
     channel_immediate_outer_break_action
 )
-from core.services.swing_service import (
-    channel_macro_market_mode, channel_mature_outer_trend_is_weak, channel_terminal_market,
-    record_channel_chop_event, record_channel_signal_event, channel_chop_state,
-    channel_chop_breakout_action, channel_entry_reuses_exit_bar, channel_peak_exit_reentry_blocked,
-    channel_peak_reversal_action, channel_entry_min_profit_ok, channel_peak_exit_entry_gate,
-    channel_upper_red_short_reversal_allowed, channel_is_upper_red_peak_short,
-    channel_exit_requests_rotation, channel_slope_entry_gate, channel_macro_continuation_entry_gate,
-    channel_closed_body_volume_gate, channel_near_chop_entry_gate, channel_chop_gate,
-    channel_ma3_outside, channel_outer_half_space_hold, check_parabolic_reversal_exit,
-    channel_impulse_turn_allowed, channel_ma15_convergence_is_gradual, channel_outer_gap_expanding,
-    channel_trend_exit_reason, channel_position_path, channel_impulse_first_turn,
-    channel_all_same_color_inside, channel_closed_waves_falling, channel_swing_action,
-    channel_ck_exit_reason, channel_ck_exit_with_tolerance, two_bar_structure_failure_exit, adverse_kc_outer_breached,
-    confirmed_outer_reversal, range_swing_reverse_side, pivot_pullback_ready,
-    detect_strict_pivot_prealert
-)
-from core.services.pivot_service import (
-    validate_strict_pivot_entry, resolve_entry_atr, pivot_confirmation_body_atr,
-    strong_burst_live_entry_is_valid, resolve_trailing_atr, opposite_closed_candle_exit,
-    outer_run_second_candle_status, is_real_pivot, is_exhaustion_before_pivot
-)
-from core.services.pullback_service import (
-    quality_bonus, format_pullback_order_log, pullback_reversal_confirmed, classify_pullback_drop
-)
-from core.services.pulse_service import (
-    detect_btc_1m_pulse, begin_btc_lead_shadow, record_btc_lead_shadow_candidate, btc_pulse_blocks_entry
-)
-from core.services.surveillance_service import (
-    sample_reference_price, market_crash_entries_paused, btc_flash_crash_close_symbols, continuous_entry_price_is_safe, MarketSurveillanceService
-)
-from core.guards.risk_guard import same_side_entry_allowed, RiskGuardManager
-from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, AbnormalMarketGuard
-from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
-from core.services.exits.fading_exit_service import fading_ma3_turn, next_breakout_ready, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
-from core.services.exits.hard_stop_service import enforce_hard_stop
+from core.services.swing_service import *
+from core.services.pivot_service import *
+from core.services.pullback_service import *
+from core.services.pulse_service import *
+from core.services.surveillance_service import *
 from core.services.strategies.live_pivot_strategy import LivePivot
 from core.services.strategies.direct_reverse_strategy import authorized as reverse_authorized, quote_ready as reverse_quote_ready
+from core.services.strategies.outer_strategy import *
+from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
+from core.services.exits.profit_protection_service import *
+from core.services.exits.fading_exit_service import next_breakout_ready
+from core.guards.risk_guard import *
+from core.guards.abnormal_guard import *
+from core.routes.legacy_routes import *
+from core.config import *
 import asyncio
 import copy
-from core.services.strategies.outer_strategy import (
-    LIVE_BODY_BREAKOUT_CODES, ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES,
-    outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready,
-    three_closed_short_breakout_ready, aligned_entry, aligned_entry_ready,
-    live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES,
-    live_body_breakout_side, long_body_side,
-)
-from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
-from core.services.exits.profit_protection_service import protection, reentry_gate, long_entry_ready, directional_entry_ready
-from core.guards.risk_guard import same_side_entry_allowed, candidate_bar_invalid_locked
-from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, opposite_entry_releases
 import math
 import re
 import time
-import ccxt.async_support as ccxt
-import ccxt.pro as ccxtpro
-import pandas as pd
 import weakref
 from collections import deque
 from typing import Dict, List
-from core import config  # noqa: F401  (供 getattr 讀取執行期設定)
-from core.config import (
-    DEFAULT_SYMBOLS, MAX_SLOTS, MAX_SAME_SIDE_POSITIONS, TRADE_AMOUNT_USDT, MAX_SLOT_TRADE_USDT, get_effective_slot_count, TREND_FILTER_EMA_PERIOD,
-    CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION,
-    PULLBACK_TIMEOUT_MINUTES, ENTRY_LIMIT_TIMEOUT_SEC,
-    PULLBACK_TARGET_MAX_DRIFT_ATR, PULLBACK_RECLAIM_MIN_ATR,
-    PULLBACK_RETRY_COOLDOWN_SEC, get_pullback_target_depth,
-    SYMBOL_ROTATION_INTERVAL_SEC, SYMBOL_ROTATION_ENABLED,
-    UNHEALTHY_SYMBOL_CHECK_INTERVAL_SEC,
-    BINANCE_API_KEY, BINANCE_SECRET, get_position_multiplier, MIN_TRADE_USDT,
-    MIN_SCORE_THRESHOLD, USE_TESTNET,
-    ADX_QUALITY_MIN, ADX_DECLINE_LOOKBACK_BARS_1H, TEST_BUDGET_CAP_USDT,
-    HISTORY_RECENCY_DECAY, ENTRY_FRESHNESS_SCORE_MAX, MIN_FRESHNESS_SCORE,
-    ENTRY_DISABLED_SYMBOLS, MIN_SL_DISTANCE_PCT, MIN_NET_REWARD_RISK, ENABLE_TREND_FOLLOW_EXIT, ENABLE_STRONG_TRIGGER_AUTO_CLOSE,
-    STRUCTURED_NET_RR_FILTER_ENABLED, STRUCTURED_MIN_NET_REWARD_RISK, STRUCTURED_NET_RR_HARD_FLOOR,
-    MA5_EXIT_MIN_HOLD_SEC, MA5_EXIT_MIN_ADVERSE_PCT, MA5_EXIT_MIN_ADVERSE_ATR_MULT, MA5_EXIT_TIMEFRAME,
-    SL_ONLY_AFTER_PEAK_PCT,
-    ENABLE_TRAILING_SL, TRAILING_SL_ATR_MULT, USE_NATIVE_TRAILING_STOP, DISABLE_STOP_LOSS,
-    TAKER_FEE_RATE, SLIPPAGE_PCT, NET_PROFIT_GUARANTEE_BUFFER, MAX_TRADE_RISK_USDT, PAPER_TRADING, SOFT_WARNING_PERSIST_SEC, ENABLE_SOFT_WARNING_TIGHTEN,
-    ENABLE_PROFIT_LOCK_USDT,
-    CONTRARIAN_POSITION_SIZE_MULTIPLIER, MAINSTREAM_SYMBOLS, MA5_EARLY_CONFIRM_SCANS,
-    MA5_REVERSAL_MIN_ATR_MULT, MA5_FAST_MIN_ATR_MULT, MA5_FAST_MAX_ATR_MULT,
-    MA5_FAST_MIN_VOLUME_RATIO,
-    RAPID_PIVOT_IMMEDIATE_REVERSE_ENABLED, RAPID_PIVOT_IMMEDIATE_REVERSE_BODY_ATR,
-    CHANNEL_WATERFALL_BODY_ATR, CHANNEL_STOP_LOSS_COOLDOWN_SEC,
-    CHANNEL_1H_TREND_FILTER_ENABLED, CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC,
-    CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED, CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR,
-    CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC, CHANNEL_BREAKOUT_STOP_BODY_ATR,
-    CHANNEL_STRONG_TREND_RATIO, CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN, KLINE_FETCH_ATTEMPTS, KLINE_FETCH_TIMEOUT_SEC, PROFIT_REENTRY_TICKET_TTL_SEC,
-    API_WEIGHT_LIMIT_PER_MIN, API_WEIGHT_WARN_PCT,
-    KLINE_FETCH_RETRY_PAUSE_SEC, SCAN_1M_KLINE_LIMIT,
-    CONTINUOUS_TREND_ONLY, CONTINUOUS_PIVOT_ONLY, DISABLE_CONTINUOUS_TREND_ENTRIES, PIVOT_LONG_ONLY, PIVOT_EARLY_ENTRY_MAX_REBOUND_ATR, PIVOT_MIN_KC_WIDTH_PCT, MA3_MARKET_ENTRY_MAX_DISTANCE_ATR,
-    PIVOT_STRONG_BODY_ATR_MULT,
-    TREND_ENTRY_MIN_KC_MIDDLE_DISTANCE_ATR, CONTINUOUS_ENTRY_OUTER_ZONE_RATIO, CONTINUOUS_OUTER_RAIL_EXIT_ONLY,
-    ABNORMAL_MARKET_GUARD_ENABLED, ABNORMAL_MARKET_MAX_CANDLE_RANGE_ATR,
-    ABNORMAL_MARKET_MAX_CANDLE_RANGE_PCT, ABNORMAL_MARKET_ADVERSE_MOVE_PCT,
-    CHANNEL_SWING_MIN_OUTER_DEPTH_RATIO,
-    CHANNEL_SWING_TURN_LOOKBACK_BARS,
-    BTC_1M_PULSE_FILTER_ENABLED, BTC_1M_PULSE_LOOKBACK_BARS,
-    BTC_1M_PULSE_MIN_ATR, BTC_FLASH_CRASH_WINDOW_SEC, BTC_FLASH_CRASH_DROP_PCT,
-    BTC_FLASH_CRASH_PUMP_PCT, MARKET_CRASH_ENTRY_COOLDOWN_SEC, RAPID_DROP_COOLDOWN_SEC,
-    MA5_BOTTOM_MIN_HOLD_SEC,
-    EXECUTION_PRICE_MAX_DEVIATION_PCT,
-    STRUCTURED_ENTRY_ENABLED, STRUCTURED_SUPPORT_ORDER_TIMEOUT_SEC,
-    BREAKOUT_HARD_STOP_ATR_MULT, BREAKOUT_CANDLE_STOP_BUFFER_ATR,
-    BREAKOUT_TRAILING_ATR_MULT, BREAKOUT_RR1_TARGET, BREAKOUT_RR2_TARGET,
-    BREAKOUT_RR_CLOSE_FRACTION, STRUCTURED_EXIT_INTERVAL_SEC, ENABLE_BREAKOUT_PARTIAL_TAKE_PROFIT,
-    BREAKOUT_KC_FAIL_CONFIRM_BARS, STOP_LOSS_MULTIPLIER,
-    BREAKOUT_PULLBACK_ATR_MULT, BREAKOUT_PULLBACK_TIMEOUT_SEC,
-    CONTINUOUS_REENTRY_COOLDOWN_SEC, MA5_STOP_LOSS_COOLDOWN_SEC,
-    EXHAUSTION_SNIPER_STOP_LOSS_PCT, EXHAUSTION_SNIPER_GRACE_SEC,
-    MIN_ENTRY_PROFIT_ROOM_PCT,
-    KELTNER_MIN_VOLUME_RATIO,
-    SYMBOL_MIN_QUOTE_VOLUME, SYMBOL_MAX_24H_CHANGE_PCT, SYMBOL_MIN_LISTING_DAYS,
-    FULL_MARKET_SURVEILLANCE_ENABLED, FULL_MARKET_SURVEILLANCE_SIDE_COUNT,
-    FULL_MARKET_SURVEILLANCE_SHORT_WINDOW_SEC,
-    FULL_MARKET_SURVEILLANCE_LONG_WINDOW_SEC,
-    FULL_MARKET_SURVEILLANCE_MIN_MOVE_PCT,
-    FULL_MARKET_SURVEILLANCE_STEADY_SIDE_COUNT,
-    FULL_MARKET_SURVEILLANCE_STEADY_WINDOW_SEC,
-    FULL_MARKET_SURVEILLANCE_STEADY_MIN_MOVE_PCT,
-    FULL_MARKET_SURVEILLANCE_STEADY_MIN_EFFICIENCY,
-    FULL_MARKET_SURVEILLANCE_STEADY_RETENTION_SEC,
-)
-from core.indicators import strict_pivot_type
+import ccxt.async_support as ccxt
+import ccxt.pro as ccxtpro
+import pandas as pd
+from core import config
+from core.testnet_account import BinanceTestnetAccount
+from core.paper_account import PaperAccount
+from core.symbol_rotation import SymbolRotation
+from core.indicators import drop_unclosed_candle, compute_position_trigger
 from core.strategy import (
     SuperTrendKeltnerStrategy, build_sl_tp_for_side, compute_sl_tp_distance,
     compute_pullback_target, compute_net_reward_risk,
@@ -147,10 +54,7 @@ from core.strategy import (
 )
 
 
-def cap_margin_to_trade_risk(
-    amount_usdt: float, leverage: int, entry_price: float, sl_price: float,
-) -> tuple[float, float]:
-    """依 SL、雙邊 taker fee 與單邊滑價縮小保證金，回傳(金額, 預估虧損)。"""
+def cap_margin_to_trade_risk(amount_usdt: float, leverage: int, entry_price: float, sl_price: float) -> tuple[float, float]:
     amount = max(0.0, float(amount_usdt))
     lev = max(1, int(leverage or 1))
     entry = float(entry_price or 0.0)
@@ -165,14 +69,10 @@ def cap_margin_to_trade_risk(
         amount *= MAX_TRADE_RISK_USDT / projected_loss
         projected_loss = MAX_TRADE_RISK_USDT
     return amount, projected_loss
-from core.testnet_account import BinanceTestnetAccount
-from core.paper_account import PaperAccount
-from core.symbol_rotation import SymbolRotation
-from core.indicators import drop_unclosed_candle, compute_position_trigger
+
 
 class TradingEngine:
     def __init__(self):
-        # 真實市場公開行情永遠連線（訊號偵測用，讀取公開資料不受
         # PAPER_TRADING 影響）；執行帳戶依 PAPER_TRADING 決定是否真的
         # 連上 Binance Testnet 下單，還是完全本地模擬（不受測試網伺服器
         # 穩不穩定影響）。
@@ -1280,6 +1180,18 @@ class TradingEngine:
         if SYMBOL_ROTATION_ENABLED and (getattr(rotation, 'last_rotation_at', 0) <= 0
                 or getattr(self, '_entry_waiting_for_post_close_rotation', False)):
             return False
+        confirmed_pivot = pivot_entry(frame, price)
+        if confirmed_pivot.get("action") == "ENTER":
+            signal = {
+                "side": confirmed_pivot["side"], "score": 100,
+                "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
+                "pivot_entry": True, "signal_code": confirmed_pivot["reason"],
+                "reason": f"Channel Swing {confirmed_pivot['reason']} confirmed pivot",
+                "candidate_bar_id": self._channel_candidate_bar_id(frame),
+                "profit_profile": "TREND_EXTENSION",
+                "atr": float(frame.iloc[-2]["atr"]),
+            }
+            return await self._place_structured_entry(symbol, signal, price)
         self._release_resolved_abnormal_exit(symbol, frame, price)
         if symbol in getattr(self.account, 'channel_profit_reentries', {}):
             await self._try_profit_reentry(symbol, frame, price, daily_halt)
@@ -1771,7 +1683,8 @@ class TradingEngine:
     async def _fresh_channel_entry_snapshot(
         self, symbol: str, side: str, candidate_bar_id: object = None,
         allow_live_outer: bool = False, allow_lower_reclaim: bool = False, allow_upper_reclaim: bool = False,
-        confirmed_reverse: bool = False, profit_reentry_token: str | None = None, live_pivot: bool = False,
+        confirmed_reverse: bool = False, profit_reentry_token: str | None = None,
+        live_pivot: bool = False, pivot_entry_signal: bool = False,
     ) -> dict | None:
         """Revalidate the same closed confirmation; legacy live flags cannot bypass it."""
         import core.config as config
@@ -1799,6 +1712,15 @@ class TradingEngine:
         if (self._channel_terminal_blocked(symbol, frame, side)
                 and not self._special_long_body_entry(frame, price, side)):
             return None
+        inside_channel = lower < price < upper
+        if inside_channel and not pivot_entry_signal:
+            return None
+        if pivot_entry_signal:
+            decision = pivot_entry(frame, price)
+            if decision.get("action") != "ENTER" or decision.get("side") != side:
+                return None
+            return dict(price=price, kc_upper=upper, kc_lower=lower, frame=frame,
+                        signal_code=decision["reason"])
         if profit_reentry_token and self._ck_reverse_order_authorized(
                 symbol, {'side': side, 'profit_reentry_token': profit_reentry_token}):
             if not reverse_quote_ready(self, symbol, frame, price, side):
@@ -1913,13 +1835,6 @@ class TradingEngine:
         if locks is None:
             locks = self._channel_entry_locks = {}
         async with locks.setdefault(symbol, asyncio.Lock()):
-            # 一般訊號要進場時，先撤掉同一幣種的破軌預掛觸價單，避免兩種入口
-            # 在同一根K各開一次（2026-09-12）。
-            cancel_stop = getattr(self.account, "cancel_breakout_stop_entry", None)
-            if cancel_stop is not None and symbol in getattr(
-                self.account, "breakout_stop_entries", {},
-            ):
-                await cancel_stop(symbol, "改由一般訊號進場")
             if self._channel_candle_entry_blocked(symbol) and not self._ck_reverse_order_authorized(symbol, signal):
                 self.account.log(f"⏳ {symbol} KC_ONE_ENTRY_PER_CANDLE：本根1分鐘K已開倉或平倉，等待下一根再評估", "INFO")
                 return False
@@ -2027,6 +1942,7 @@ class TradingEngine:
                     confirmed_reverse=bool(signal.get("channel_reversal")),
                     profit_reentry_token=signal.get("profit_reentry_token"),
                     live_pivot=bool(signal.get('live_pivot')),
+                    pivot_entry_signal=bool(signal.get("pivot_entry") or signal.get("signal_code") in PIVOT_CODES),
                 )
             if fresh_snapshot is None:
                 watcher = getattr(self, "_channel_intrabar_entries", None)
@@ -2047,6 +1963,26 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
+            chop = self._channel_chop_state(fresh_frame)
+            if chop.get("detected"):
+                self.account.log(
+                    f"[盤整攔截] {symbol} 市場處於通道壓縮/窄幅震盪，動能不足，強制禁止一切開倉！",
+                    "INFO",
+                )
+                return False
+            special_entry = bool(
+                self._special_long_body_entry(fresh_frame, planned_price, side)
+                or str(signal.get("signal_code") or "") in LIVE_BODY_BREAKOUT_CODES
+            )
+            continuation_entry = str(signal.get("signal_code") or "").startswith("KC_CONTINUATION_")
+            pivot_signal = bool(signal.get("pivot_entry") or signal.get("signal_code") in PIVOT_CODES)
+            if not pivot_signal and not breakout_two_bodies_ready(fresh_frame, side):
+                self.account.log(
+                    f"⏳ {symbol} {side} KC_SECOND_BODY_WAIT："
+                    "破軌或特例K已記錄，等待第二根已收線同色實體確認，禁止提前開倉",
+                    "INFO",
+                )
+                return False
             if (self._channel_terminal_blocked(symbol, fresh_frame, side)
                     and not self._special_long_body_entry(fresh_frame, planned_price, side)):
                 self.account.log(f"⏳ {symbol} KC_TREND_END_WAIT：漲勢末端不進場（特例K除外）", "INFO")
@@ -2058,7 +1994,7 @@ class TradingEngine:
                 return False
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
-            if not ck_reverse and not live_pivot:
+            if not ck_reverse and not live_pivot and not pivot_signal:
                 final_entry = self._channel_swing_action(
                     fresh_frame, planned_price,
                     profit_reentry=bool(signal.get("profit_reentry_token")))
@@ -2068,7 +2004,8 @@ class TradingEngine:
                         "INFO",
                     )
                     return False
-            if not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
+            if not (pivot_entry(fresh_frame, planned_price).get("side") == side if pivot_signal else
+                    self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
                     reverse_quote_ready(self, symbol, fresh_frame, planned_price, side) if ck_reverse else aligned_entry_ready(fresh_frame, planned_price, side)):
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
@@ -2078,7 +2015,8 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
-            if not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
+            if not (pivot_entry(fresh_frame, planned_price).get("side") == side if pivot_signal else
+                    self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
                     self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, ck_reverse=True)
                     if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side)):
                 self.account.log(f"⏳ {symbol} {side} KC_ENTRY_QUOTE_WAIT：報價過期或進場條件失效", "INFO")
@@ -2932,135 +2870,6 @@ class TradingEngine:
         )
         return True
 
-
-    def _channel_breakout_stop_plan(self, frame, price, symbol=None):
-        """破軌預掛觸價單的計畫：價格還沒破軌、但已在可及範圍時回傳觸發價。
-
-        2026-09-12 使用者核准。觸發價＝max(上軌, 當根開盤 + 1.4 ATR)（空單
-        對稱取 min），也就是「一旦碰到就等於特例K成立」的價位；現價必須還在
-        觸發價內側、且距離不超過 CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR，
-        否則代表離破軌還很遠，不值得預掛。量能不足（<1.5×近20根均量）不掛。
-        """
-        try:
-            from core.services.strategies.outer_strategy import (
-                entry_trend_direction, special_volume_surge_ok,
-            )
-            if frame is None or len(frame) < 4:
-                return None
-            side = entry_trend_direction(frame)
-            if side not in ("LONG", "SHORT"):
-                return None
-            row = frame.iloc[-1]
-            opened = float(row["open"])
-            atr = float(frame.iloc[-2]["atr"])
-            rail = float(row["kc_upper"] if side == "LONG" else row["kc_lower"])
-            price = float(price)
-            if not all(math.isfinite(v) and v > 0 for v in (opened, atr, rail, price)):
-                return None
-            # 預掛觸價單只做「第一次從軌內往外突破」；開盤已在軌外＝延續段，
-            # 交給一般入口，不在這裡預掛（2026-09-12 使用者：觸發價與特例K門檻拆開）。
-            if side == "LONG" and opened >= rail:
-                return None
-            if side == "SHORT" and opened <= rail:
-                return None
-            if side == "LONG":
-                trigger = max(rail, opened + CHANNEL_BREAKOUT_STOP_BODY_ATR * atr)
-                if price >= trigger:
-                    return None
-                if trigger - price > CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR * atr:
-                    return None
-            else:
-                trigger = min(rail, opened - CHANNEL_BREAKOUT_STOP_BODY_ATR * atr)
-                if price <= trigger:
-                    return None
-                if price - trigger > CHANNEL_BREAKOUT_STOP_MAX_DISTANCE_ATR * atr:
-                    return None
-            if not special_volume_surge_ok(frame, -1):
-                return None
-            return {
-                "side": side,
-                "trigger": float(trigger),
-                "atr": atr,
-                "bar_id": self._channel_candidate_bar_id(frame),
-                "rail": rail,
-                "bar_open": opened,
-            }
-        except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
-            return None
-
-    def _channel_breakout_stop_invalid(self, frame, price, info):
-        """已掛出的破軌觸價單是否該撤（有黏著性，避免條件閃動反覆掛撤）。"""
-        try:
-            from core.services.strategies.outer_strategy import entry_trend_direction
-        except Exception:
-            return None
-        try:
-            side = str(info.get("side") or "").upper()
-            trigger = float(info.get("trigger_price") or 0.0)
-            atr = float(info.get("atr") or 0.0)
-            price = float(price)
-            if side not in ("LONG", "SHORT") or trigger <= 0:
-                return "資料無效"
-            if entry_trend_direction(frame) != side:
-                return "CK 中軌轉向"
-            if side == "LONG" and price >= trigger:
-                return "價格已到觸發價（未成交）"
-            if side == "SHORT" and price <= trigger:
-                return "價格已到觸發價（未成交）"
-            if atr > 0:
-                # 價格反向退回 1.5 ATR 以上代表這波突破動能已消失。
-                if side == "LONG" and trigger - price > 1.5 * atr:
-                    return "價格退回過深"
-                if side == "SHORT" and price - trigger > 1.5 * atr:
-                    return "價格退回過深"
-        except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
-            return "資料無效"
-        return None
-
-    async def _maintain_channel_breakout_stop(self, symbol, frame, price, daily_halt=False):
-        """維護破軌預掛觸價單：條件符合就掛，換根／條件消失／逾時就撤。"""
-        if not CHANNEL_BREAKOUT_STOP_ENTRY_ENABLED:
-            return False
-        account = self.account
-        entries = getattr(account, "breakout_stop_entries", None)
-        if entries is None or not hasattr(account, "place_breakout_stop_entry"):
-            return False
-        info = entries.get(symbol)
-        in_position = symbol in account.positions
-        plan = None
-        if not daily_halt and not in_position:
-            plan = self._channel_breakout_stop_plan(frame, price, symbol)
-        if info is not None:
-            if in_position:
-                return False
-            stale = []
-            if info.get("bar_id") != self._channel_candidate_bar_id(frame):
-                stale.append("換根")
-            invalid_reason = self._channel_breakout_stop_invalid(frame, price, info)
-            if invalid_reason:
-                stale.append(invalid_reason)
-            if time.time() - float(info.get("placed_at") or 0.0) > CHANNEL_BREAKOUT_STOP_MAX_AGE_SEC:
-                stale.append("逾時")
-            if self._channel_stop_cooldown_remaining(symbol) > 0:
-                stale.append("停損冷卻")
-            if stale:
-                await account.cancel_breakout_stop_entry(symbol, "、".join(stale))
-            return False
-        if plan is None or daily_halt or in_position:
-            return False
-        if symbol in account.pending_limit_orders or symbol in account.closing_lock:
-            return False
-        if self._channel_stop_cooldown_remaining(symbol) > 0:
-            return False
-        amount = self._continuous_entry_amount()
-        if amount <= 0:
-            return False
-        return await account.place_breakout_stop_entry(
-            symbol, plan["side"], plan["trigger"], amount,
-            atr=plan["atr"], signal_score=100,
-            reason=f"Channel Swing KC_BREAKOUT_STOP_{plan['side']}",
-            bar_id=plan["bar_id"], bar_open=plan.get("bar_open"),
-        )
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False):
         """Submit on this scan, retaining every structured-order account safety check."""
