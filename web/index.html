@@ -994,7 +994,7 @@
                     // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
-                    state.entryBlock = json.cache?.source === 'stale' ? null : (json.entry_block || null);
+                    state.entryBlock = json.cache?.source === 'stale' ? null : (json.entry_diagnostics || null);
                     state.ckTrend = json.cache?.source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
                     const candles = [];
                     const ma3 = [];
@@ -1004,6 +1004,7 @@
                     const kcMiddle = [];
                     const kcLower = [];
                     const tradeMarkers = [];
+                    const auditMarkers = [];
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
@@ -1025,6 +1026,18 @@
                                 if (!markerStyle) return;
                                 tradeMarkers.push({
                                     time: d.time, ...markerStyle,
+                                    size: 1,
+                                });
+                            });
+                        [...(d.channel_markers || [])]
+                            .filter(event => event.action === 'WAIT' || event.action === 'BLOCK')
+                            .forEach(event => {
+                                auditMarkers.push({
+                                    time: d.time,
+                                    position: 'aboveBar',
+                                    color: '#f59e0b',
+                                    shape: 'circle',
+                                    text: event.label || event.reason || '未開倉',
                                     size: 1,
                                 });
                             });
@@ -1062,7 +1075,7 @@
                         });
                     }
                     if (candles.length > 0) ctx.lastCandle = candles[candles.length - 1];
-                    const chartMarkers = tradeMarkers.sort((a, b) => a.time - b.time);
+                    const chartMarkers = [...tradeMarkers, ...auditMarkers].sort((a, b) => a.time - b.time);
                     const markerSignature = JSON.stringify(chartMarkers);
                     if (ctx.markerSignature !== markerSignature) {
                         ctx.candlestickSeries.setMarkers(chartMarkers);
