@@ -56,6 +56,8 @@ class DualTrackBreakoutStateMachine:
         self.pending_signal: Optional[str] = None
         self.pending_bars_count = 0
         self.is_special_k = False
+        self.last_processed_time = None
+        self.closed_position_bar_time = None
 
     @staticmethod
     def prepare_frame(frame: Optional[pd.DataFrame], max_bars: int = 100) -> pd.DataFrame:
@@ -95,6 +97,10 @@ class DualTrackBreakoutStateMachine:
         self.is_special_k = False
 
     @staticmethod
+    def _bar_time(bar: pd.Series):
+        return bar.get("timestamp")
+
+    @staticmethod
     def _finite(*values: float) -> bool:
         return all(math.isfinite(float(value)) for value in values)
 
@@ -108,7 +114,8 @@ class DualTrackBreakoutStateMachine:
 
     @staticmethod
     def _is_doji(bar: pd.Series) -> bool:
-        return float(bar["close"]) == float(bar["open"])
+        close = float(bar["close"])
+        return abs(close - float(bar["open"])) <= 1e-5 * abs(close)
 
     def _is_extreme(self, bar: pd.Series) -> bool:
         return float(bar["high"]) - float(bar["low"]) >= self.extreme_range_atr * float(bar["atr"])
@@ -213,6 +220,11 @@ class DualTrackBreakoutStateMachine:
         actual_position_amt: Optional[float] = None,
     ) -> BreakoutDecision:
         """每次只處理一根已收線 K；平倉決策永遠優先。"""
+        bar_time = self._bar_time(bar)
+        if bar_time is not None and bar_time == self.last_processed_time:
+            return BreakoutDecision("WAIT", self.position, "DUPLICATE_CLOSED_BAR")
+        if bar_time is not None:
+            self.last_processed_time = bar_time
         if actual_position_amt is not None:
             if self.sync_position_from_exchange(actual_position_amt) is None and float(actual_position_amt) != 0.0:
                 return BreakoutDecision("WAIT", None, "POSITION_SYNC_WAIT")
@@ -226,6 +238,8 @@ class DualTrackBreakoutStateMachine:
                 self.position = None
                 self.pending_signal = exit_signal
                 self._clear_trigger_state()
+                self.is_special_k = self._is_extreme(bar)
+                self.closed_position_bar_time = bar_time
                 return BreakoutDecision("EXIT", closed_side, "CLOSE_THEN_WAIT_CONFIRMATION")
             if self._peak_or_valley_exit(bar):
                 closed_side = self.position
@@ -237,6 +251,8 @@ class DualTrackBreakoutStateMachine:
 
         side = self._breakout_side(bar)
         if self.pending_signal is not None:
+            if bar_time is not None and bar_time == self.closed_position_bar_time:
+                return BreakoutDecision("WAIT", self.pending_signal, "CLOSE_BAR_LOCK")
             self.pending_bars_count += 1
             if self.pending_bars_count > self.max_pending_bars:
                 self.pending_signal = None
@@ -250,11 +266,20 @@ class DualTrackBreakoutStateMachine:
                 self.pending_signal = None
                 self._clear_trigger_state()
                 return BreakoutDecision("WAIT", None, "OPPOSITE_CANDLE_CANCELLED")
+            was_special_k = self.is_special_k
             self.pending_signal = None
             self._clear_trigger_state()
-            if self.standard_entry_filter(bar, expected, history if history is not None else pd.DataFrame()):
+            standard_ok = self.standard_entry_filter(
+                bar, expected, history if history is not None else pd.DataFrame()
+            )
+            profit_ok = (
+                not was_special_k
+                or self.has_sufficient_profit_space(expected, bar, history)
+            )
+            if standard_ok and profit_ok:
                 return self._open(expected, "STANDARD_CONFIRMATION")
-            return BreakoutDecision("WAIT", None, "STANDARD_FILTER_REJECTED")
+            reason = "SPECIAL_CONFIRMATION_NO_PROFIT_SPACE" if standard_ok else "STANDARD_FILTER_REJECTED"
+            return BreakoutDecision("WAIT", None, reason)
 
         if side is None:
             return BreakoutDecision("WAIT", None, "NO_BREAKOUT")
@@ -272,6 +297,8 @@ class DualTrackBreakoutStateMachine:
         self.position = None
         self.pending_signal = None
         self._clear_trigger_state()
+        self.last_processed_time = None
+        self.closed_position_bar_time = None
 
 
 __all__ = ["BreakoutDecision", "DualTrackBreakoutStateMachine", "LONG", "SHORT"]

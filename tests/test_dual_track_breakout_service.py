@@ -141,3 +141,28 @@ def test_filled_order_result_clears_trigger_state():
     assert machine.pending_signal is None
     assert machine.pending_bars_count == 0
     assert machine.is_special_k is False
+
+
+def test_duplicate_closed_bar_is_ignored():
+    machine = DualTrackBreakoutStateMachine()
+    first = bar(timestamp=1000, close=101.2, high=101.4, low=100.0)
+
+    assert machine.process_closed_bar(first).reason == "STANDARD_BREAKOUT_PENDING"
+    assert machine.process_closed_bar(first).reason == "DUPLICATE_CLOSED_BAR"
+    assert machine.pending_bars_count == 0
+
+
+def test_exit_preserves_special_flag_for_next_bar_profit_review():
+    machine = DualTrackBreakoutStateMachine()
+    machine.position = "LONG"
+    reversal = bar(timestamp=2000, open=104.0, close=96.0, high=104.5, low=95.0, kc_lower=99.0)
+    machine.has_sufficient_profit_space = lambda *args, **kwargs: False
+
+    exit_decision = machine.process_closed_bar(reversal)
+    next_bar = bar(timestamp=2001, open=96.0, close=95.0, high=96.2, low=94.8)
+    confirmation = machine.process_closed_bar(next_bar, history_for(next_bar))
+
+    assert exit_decision.reason == "CLOSE_THEN_WAIT_CONFIRMATION"
+    assert machine.closed_position_bar_time == 2000
+    assert confirmation.reason == "SPECIAL_CONFIRMATION_NO_PROFIT_SPACE"
+    assert machine.position is None
