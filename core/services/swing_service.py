@@ -391,6 +391,9 @@ def channel_swing_action(
         if (terminal_blocked and not _special_long_body_aligned(frame, price)
                 and not outer_candidate):
             return {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}
+        pivot = pivot_entry(frame, price)
+        if pivot.get("action") == "ENTER":
+            return pivot
         special_side = live_body_breakout_side(frame, price)
         if (price > upper
             and special_side != "LONG"
@@ -409,7 +412,11 @@ def channel_swing_action(
             "KC_LIVE_BODY_BREAKOUT_", "KC_LONG_BODY_",
         ))
         is_continuation_entry = special_reason.startswith("KC_OUTSIDE_CONTINUATION_")
-        if decision.get("action") == "ENTER" and (is_special_entry or is_continuation_entry):
+        two_closed_entry = special_reason.startswith("KC_TWO_CLOSED_BODIES_")
+        kc_direction_entry = special_reason.startswith("KC_DIRECTION_")
+        if decision.get("action") == "ENTER" and (
+            is_special_entry or is_continuation_entry or two_closed_entry or kc_direction_entry
+        ):
             return decision
 
         if outer_entry_only:

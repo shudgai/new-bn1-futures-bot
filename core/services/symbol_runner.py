@@ -5,7 +5,12 @@ import time
 import pandas as pd
 from typing import Dict, Any, List, Tuple
 from core.services.exits.hard_stop_service import enforce_hard_stop
-from core.services.strategies.outer_strategy import aligned_entry, LIVE_OUTER_CODES, ENTRY_TREND_CODES, OUTER_CODES, TREND_CODES
+from core.services.strategies.outer_strategy import (
+    aligned_entry, ma15_rail_pivot_exit_ready, ma15_unarmed_opposite_exit_ready,
+    opposite_outer_breakout_side, same_side_special_k_ready, LIVE_OUTER_CODES,
+    ENTRY_TREND_CODES, OUTER_CODES, TREND_CODES, lobster_bearish_entry_ready,
+    three_point_pivot_exit_ready,
+)
 from core.services.exits.profit_protection_service import protection
 from core.services.exits.fading_exit_service import fading_ma3_turn, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.guards.abnormal_guard import channel_adverse_exit_reason
@@ -147,10 +152,19 @@ async def process_single_symbol_runner(
             # 2026-09-14 使用者：過了末端又再創新高要能開倉 → 用引擎的狀態判定。
             terminal_blocked=engine._channel_terminal_blocked(symbol, channel_df),
         )
+        if (not existing_pos
+                and lobster_bearish_entry_ready(
+                    symbol, channel_df, channel_price,
+                    getattr(engine, "st_direction_1h_cache", {}).get(symbol),
+                )):
+            channel_action = {
+                "action": "ENTER", "side": "SHORT",
+                "reason": "KC_LOBSTER_1H_BEARISH_SHORT",
+            }
         if (
             not existing_pos
             and channel_action.get("action") == "ENTER"
-            and channel_action.get("reason") not in LIVE_OUTER_CODES | ENTRY_TREND_CODES
+            and channel_action.get("reason") not in LIVE_OUTER_CODES | ENTRY_TREND_CODES | PIVOT_CODES
             and chop_state.get("detected")
             and not chop_state.get("clear_direction")
         ):
@@ -172,8 +186,12 @@ async def process_single_symbol_runner(
         if existing_pos:
             if await enforce_hard_stop(engine.account, symbol, channel_price):
                 return signal_progress, detected_candidates
+            if same_side_special_k_ready(channel_df, channel_price, existing_pos.get("side")):
+                existing_pos["entry_special_k"] = True
+                engine.account.position_meta.setdefault(symbol, {})["entry_special_k"] = True
             previous_protection = copy.deepcopy(existing_pos.get("channel_profit_protection"))
             profit = protection(existing_pos, channel_price, TAKER_FEE_RATE, SLIPPAGE_PCT, frame=channel_df)
+            profit_exit_enabled = True
             # 交易所帳戶（testnet/實盤）每次 refresh() 都會用交易所資料重建 position
             # 字典，寫在 position 上的階梯狀態會被清掉（峰值歸零 → 階梯永遠不觸發）。
             # 這裡把狀態同步回 position_meta，跨 refresh 與重啟都能保留。
@@ -210,39 +228,20 @@ async def process_single_symbol_runner(
                         state.pop(key)
                         changed = True
             channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_NET_PROFIT_GIVEBACK"}
-            special_k_reversal = special_k_reversal_exit_ready(
-                existing_pos, channel_df, channel_price,
-            )
-            ck_exit = channel_ck_exit_with_tolerance(channel_df, existing_pos.get("side"), existing_pos)
             emergency = engine._channel_exception_exit(existing_pos, channel_df, channel_price)
-            if special_k_reversal:
-                channel_action = {"action": "EXIT", "side": None,
-                                  "reason": "KC_SPECIAL_K_REVERSE_EXIT"}
-            elif emergency:
+            if emergency:
                 if existing_pos.get("channel_exception_exit_pending") != emergency:
                     existing_pos["channel_exception_exit_pending"] = emergency
                     changed = True
                 channel_action = {"action": "EXIT", "side": None, "reason": emergency}
-            elif ck_exit:
-                channel_action = {"action": "EXIT", "side": None, "reason": ck_exit}
-            # Normal Channel Swing positions ride the trend to a peak/valley
-            # or ladder lock. MA3 middle-cross and volume-decay are diagnostic
-            # signals here, not standalone exits; emergency and hard-stop
-            # exits above remain active.
-            volume_decay_exit = False
-            middle_cross_exit = False
-            if terminal_turn and not emergency and not (profit and profit["triggered"]):
-                channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
-            elif middle_cross_exit:
-                channel_action = {"action": "EXIT", "side": None, "reason": "MA3_MIDDLE_CROSS_EXIT"}
-            elif volume_decay_exit:
-                channel_action = {"action": "EXIT", "side": None, "reason": "VOLUME_DECAY_EXIT"}
+            elif three_point_pivot_exit_ready(channel_df, existing_pos.get("side")):
+                channel_action = {"action": "EXIT", "side": None, "reason": "KC_THREE_POINT_PIVOT_EXIT"}
             if changed:
                 engine.account.save_state()
             if channel_action.get("action") in {"EXIT", "REVERSE"}:
                 if tickets.pop(symbol, None) is not None:
                     engine.account.save_state()
-            elif profit and profit["triggered"]:
+            elif profit_exit_enabled and profit and profit["triggered"]:
                 token = str(existing_pos.get("open_timestamp")) + ":" + str(time.time_ns())
                 kind = str(profit.get("exit_kind") or "")
                 if kind in ("ATR_STOP", "ATR_TARGET"):
@@ -253,7 +252,10 @@ async def process_single_symbol_runner(
                     label = "階梯鎖利"
                 tickets[symbol] = {"token": token, "phase": "closing",
                                    "side": existing_pos["side"],
-                                   "old_side": existing_pos["side"], "mode": "outer_cycle",
+                                   "old_side": existing_pos["side"], "mode": (
+                                       "same_side_special_k" if existing_pos.get("entry_special_k")
+                                       else "trend_same_side"
+                                   ),
                                    "close_reason": close_reason,
                                    "special_k_entry": bool(
                                        existing_pos.get("entry_special_k")
@@ -285,6 +287,11 @@ async def process_single_symbol_runner(
             "KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT",
             "KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT",
             "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
+            "KC_MA3_MA15_TREND_LONG", "KC_MA3_MA15_TREND_SHORT",
+            "KC_ALIGNED_SPECIAL_K_LONG", "KC_ALIGNED_SPECIAL_K_SHORT",
+            "KC_TWO_CLOSED_BODIES_LONG", "KC_TWO_CLOSED_BODIES_SHORT",
+            "KC_DIRECTION_LONG", "KC_DIRECTION_SHORT",
+            "KC_LOBSTER_1H_BEARISH_SHORT",
         }
         pending_side = getattr(engine, "_channel_outer_reentry_after_exit", {}).get(symbol)
         direct_side = channel_action.get("side") if channel_action.get("reason") in break_reasons else None
@@ -302,6 +309,28 @@ async def process_single_symbol_runner(
                 getattr(engine, "_channel_pending_reverse_bar", {}).pop(symbol, None)
         if direct_side in ("LONG", "SHORT"):
             await engine._execute_confirmed_channel_break(symbol, channel_df, channel_price, direct_side, daily_halt)
+            return signal_progress, detected_candidates
+        if existing_pos and channel_action.get("action") == "REVERSE":
+            reverse_side = channel_action["side"]
+            closed = await engine.account.close_position(
+                symbol,
+                channel_price,
+                f"Channel Swing {channel_action['reason']} {reverse_side}",
+                is_manual=True,
+            )
+            if not closed or symbol in engine.account.positions:
+                engine.account.log(f"⚠️ [對側破軌反向] {symbol} 舊倉尚未平妥，不送 {reverse_side}", "WARNING")
+                return signal_progress, detected_candidates
+            opened = await engine._execute_confirmed_channel_break(
+                symbol, channel_df, channel_price, reverse_side, daily_halt,
+            )
+            if not opened:
+                engine._channel_swing_peak_exit_info[symbol] = {
+                    "side": existing_pos.get("side"),
+                    "exit_bar_id": channel_df.iloc[-1].get("timestamp", channel_df.index[-1]),
+                    "require_new_closed_break": True,
+                    "allow_new_outer_signal": True,
+                }
             return signal_progress, detected_candidates
         if existing_pos and channel_action.get("action") == "EXIT":
             if channel_action.get("reason") == "KC_REACHED_MIDDLE_COMPRESSED":
@@ -322,11 +351,15 @@ async def process_single_symbol_runner(
             ma3_turn_exit = channel_action.get("reason", "").endswith("LIVE_MA3_TURN_EXIT")
             fading_exit = channel_action.get("reason") == FADING_EXIT_REASON
             immediate_turn_exit = channel_action.get("reason") == IMMEDIATE_EXIT_REASON
+            ma15_exit = channel_action.get("reason") in {
+                "KC_MA15_RAIL_PIVOT_EXIT", "KC_MA15_DIRECTION_REVERSED_EXIT",
+                "KC_THREE_POINT_PIVOT_EXIT",
+            }
             ck_exit = channel_action.get("reason") in {
                 "KC_CK_DIRECTION_UNCLEAR_EXIT", "KC_CK_DIRECTION_REVERSED_EXIT",
             }
             pullback_exit = (fading_exit or abnormal_exit or ma3_turn_exit
-                             or immediate_turn_exit or ck_exit or channel_exit_net_profitable)
+                             or immediate_turn_exit or ck_exit or channel_exit_net_profitable) and not ma15_exit
             if pullback_exit:
                 tickets[symbol] = create_exit_ticket(symbol, existing_pos, channel_action, channel_df)
                 engine.account.save_state()

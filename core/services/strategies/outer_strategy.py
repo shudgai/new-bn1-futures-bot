@@ -498,8 +498,187 @@ def ma3_pivot_reset(frame, side):
         return False
 
 
+MA15_RAIL_PROXIMITY_RATIO = 0.40
+
+
+def ma15_rail_pivot_exit_ready(frame, side):
+    """Confirm a closed MA15 V at the directional rail, regardless of order."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        rows = frame.iloc[-4:-1]
+        ma15 = [float(value) for value in rows["ma15"]]
+        upper = [float(value) for value in rows["kc_upper"]]
+        lower = [float(value) for value in rows["kc_lower"]]
+        highs = [float(value) for value in rows["high"]]
+        lows = [float(value) for value in rows["low"]]
+        opens = [float(value) for value in rows["open"]]
+        closes = [float(value) for value in rows["close"]]
+        values = [*ma15, *upper, *lower, *highs, *lows, *opens, *closes]
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return False
+        widths = [top - bottom for top, bottom in zip(upper, lower)]
+        if any(width <= 0 for width in widths):
+            return False
+        pivot = (
+            ma15[0] > ma15[1] < ma15[2]
+            if side == "SHORT"
+            else ma15[0] < ma15[1] > ma15[2]
+        )
+        rail = lower if side == "SHORT" else upper
+        gaps = [abs(value - boundary) / width for value, boundary, width in zip(ma15, rail, widths)]
+        if side == "LONG":
+            price_pivot = highs[0] < highs[1] > highs[2]
+            confirmation = closes[2] < opens[2]
+        else:
+            price_pivot = lows[0] > lows[1] < lows[2]
+            confirmation = closes[2] > opens[2]
+        return (
+            pivot and price_pivot and confirmation
+            and gaps[0] > gaps[1] and gaps[1] <= MA15_RAIL_PROXIMITY_RATIO
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def ma15_unarmed_opposite_exit_ready(frame, price, side):
+    """Exit an unarmed trend once MA3, MA15, and KC clearly reverse together."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        rows = frame.iloc[-3:-1]
+        rail_key = "kc_upper" if side == "LONG" else "kc_lower"
+        gaps = []
+        for _, row in rows.iterrows():
+            upper, lower = float(row["kc_upper"]), float(row["kc_lower"])
+            ma15, rail = float(row["ma15"]), float(row[rail_key])
+            width = upper - lower
+            if not all(math.isfinite(value) and value > 0 for value in (upper, lower, ma15, rail, width)) or width <= 0:
+                return False
+            gaps.append(abs(ma15 - rail) / width)
+        if any(gap <= MA15_RAIL_PROXIMITY_RATIO for gap in gaps):
+            return False
+        opposite = "SHORT" if side == "LONG" else "LONG"
+        return ma3_ma15_kc_entry_side(frame, price) == opposite
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def ma3_ma15_kc_entry_side(frame, price):
+    """Return the direction only when live MA3/MA15 and closed KC agree."""
+    try:
+        if frame is None or len(frame) < 4:
+            return None
+        price = float(price)
+        closed_ma15 = [float(value) for value in frame["ma15"].iloc[-3:-1]]
+        live_ma3 = float(frame.iloc[-1]["ma3"])
+        live_ma15 = float(frame.iloc[-1]["ma15"])
+        values = [price, live_ma3, live_ma15, *closed_ma15]
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return None
+        side = ck_direction(frame)
+        if side == "LONG" and closed_ma15[1] > closed_ma15[0] and live_ma3 > live_ma15 and price >= live_ma3:
+            return side
+        if side == "SHORT" and closed_ma15[1] < closed_ma15[0] and live_ma3 < live_ma15 and price <= live_ma3:
+            return side
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+    return None
+
+
+def ma3_ma15_kc_reversal_exit_ready(frame, price, side):
+    """Exit only when the complete one-minute trend has reversed."""
+    if side not in ("LONG", "SHORT"):
+        return False
+    opposite = "SHORT" if side == "LONG" else "LONG"
+    return ma3_ma15_kc_entry_side(frame, price) == opposite
+
+
+def three_point_pivot_exit_ready(frame, side):
+    """Exit at a closed price/MA3-confirmed three-point peak or valley."""
+    try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        rows = frame.iloc[-4:-1]
+        highs = [float(value) for value in rows["high"]]
+        lows = [float(value) for value in rows["low"]]
+        opens = [float(value) for value in rows["open"]]
+        closes = [float(value) for value in rows["close"]]
+        ma3 = [float(value) for value in rows["ma3"]]
+        values = [*highs, *lows, *opens, *closes, *ma3]
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            return False
+        if side == "LONG":
+            return highs[0] < highs[1] > highs[2] and ma3[0] < ma3[1] > ma3[2] and closes[2] < opens[2]
+        return lows[0] > lows[1] < lows[2] and ma3[0] > ma3[1] < ma3[2] and closes[2] > opens[2]
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def aligned_special_k_side(frame, price):
+    """Accept an intrabar special K only when MA3, MA15, and KC agree."""
+    try:
+        side = live_body_breakout_side(frame, price)
+        if side != ma3_ma15_kc_entry_side(frame, price):
+            return None
+        rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+        price = float(price)
+        if not all(math.isfinite(value) and value > 0 for value in (rail, price)):
+            return None
+        return side if (price > rail if side == "LONG" else price < rail) else None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def same_side_special_k_ready(frame, price, side):
+    """Recognize a held position's same-direction live special K."""
+    try:
+        if side not in ("LONG", "SHORT"):
+            return False
+        return live_body_breakout_side(frame, price) == side
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def two_closed_same_color_entry_side(frame):
+    """Return a side after two consecutive closed directional body candles."""
+    try:
+        if frame is None or len(frame) < 3:
+            return None
+        rows = frame.iloc[-3:-1]
+        direction = None
+        for _, row in rows.iterrows():
+            opened, high, low, closed = (float(row[key]) for key in ("open", "high", "low", "close"))
+            if not all(math.isfinite(value) and value > 0 for value in (opened, high, low, closed)):
+                return None
+            span = high - low
+            body = closed - opened
+            if span <= 0 or abs(body) / span < 0.20:
+                return None
+            side = "LONG" if body > 0 else "SHORT" if body < 0 else None
+            if side is None or direction not in (None, side):
+                return None
+            direction = side
+        return direction
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def lobster_bearish_entry_ready(symbol, frame, price, trend_1h):
+    """Allow Lobster to short a completed 1H bearish trend on a live red candle."""
+    try:
+        base = str(symbol or "").split("/", 1)[0]
+        if base not in {"龍蝦", "龙虾"} or trend_1h != -1 or frame is None or frame.empty:
+            return False
+        opened = float(frame.iloc[-1]["open"])
+        price = float(price)
+        return all(math.isfinite(value) and value > 0 for value in (opened, price)) and price < opened
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
 def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
-                  continuation_exempt=True):
+                  continuation_exempt=True, legacy_fallback=False):
     """Live long-body breaks may precede CK confirmation; retain trend entries.
 
     require_second_body：2026-09-13 使用者要求「一般漲勢破軌後第二根也要同色綠K才開」，
@@ -515,11 +694,38 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
                     or not low <= min(opened, closed) <= max(opened, closed) <= high):
                 return wait
+        ma_trend_side = ma3_ma15_kc_entry_side(frame, price)
+        special_k_side = aligned_special_k_side(frame, price)
+        if special_k_side:
+            return {
+                "action": "ENTER",
+                "side": special_k_side,
+                "reason": "KC_ALIGNED_SPECIAL_K_" + special_k_side,
+            }
+        kc_side = ck_direction(frame)
+        if kc_side:
+            return {
+                "action": "ENTER",
+                "side": kc_side,
+                "reason": "KC_DIRECTION_" + kc_side,
+            }
+        two_body_side = two_closed_same_color_entry_side(frame)
+        if two_body_side:
+            return {
+                "action": "ENTER",
+                "side": two_body_side,
+                "reason": "KC_TWO_CLOSED_BODIES_" + two_body_side,
+            }
+        if ma_trend_side:
+            return {
+                "action": "ENTER",
+                "side": ma_trend_side,
+                "reason": "KC_MA3_MA15_TREND_" + ma_trend_side,
+            }
+        if not legacy_fallback:
+            return wait
         ck_side = entry_trend_direction(frame)
-        continuation_candidate = bool(
-            continuation_exempt and ck_side in ("LONG", "SHORT")
-            and outside_continuation_ready(frame, ck_side, price)
-        )
+        continuation_candidate = False
         if CHANNEL_MIN_ATR_PCT > 0 and "atr" in frame.columns and not continuation_candidate:
             try:
                 atr_now = float(frame.iloc[-2]["atr"])
@@ -536,6 +742,9 @@ def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
         side = breakout_side or ck_side
         if side is None:
             return wait
+        continuation_candidate = bool(
+            continuation_exempt and outside_continuation_ready(frame, side, price)
+        )
         special_entry = bool(
             breakout_side == side
         )
@@ -826,6 +1035,22 @@ def breakout_two_bodies_ready(frame, side, lookback=4):
         return root_found
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
+
+
+def opposite_outer_breakout_side(frame, price, current_side):
+    """Return the opposite side after its confirmed outer-rail breakout."""
+    try:
+        if current_side not in ("LONG", "SHORT"):
+            return None
+        side = "SHORT" if current_side == "LONG" else "LONG"
+        rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+        price = float(price)
+        if not all(math.isfinite(value) and value > 0 for value in (rail, price)):
+            return None
+        outside = price > rail if side == "LONG" else price < rail
+        return side if outside and breakout_two_bodies_ready(frame, side) else None
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
 
 
 def breakout_confirmation_pending(frame, side, lookback=4):

@@ -7,7 +7,7 @@ import pytest
 from test_channel_outer_cycle import setup as outer_cycle_market
 from test_channel_pivot_entry import market as pivot_market
 
-from core.services.exits.profit_protection_service import protection, reentry_gate, trend_style
+from core.services.exits.profit_protection_service import protection, profit_lock_thresholds, reentry_gate, trend_style
 from core.engine import TradingEngine
 from test_channel_swing_execution import _execution_engine, SYMBOL
 from test_channel_symmetric_rules import market as confirmed_reentry_frame
@@ -59,6 +59,22 @@ def test_peak_retracement_monotonic_and_survives_json_restart(side):
     assert not p['channel_profit_protection']['armed']
 
 
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_same_direction_special_k_uses_the_special_profit_ladder(side):
+    p = position(side)
+    p['entry_special_k'] = True
+    sign = 1 if side == 'LONG' else -1
+    result = protection(p, 100 + sign * 3, .0005, .0001)
+    assert result['locked_net'] == pytest.approx(4.0)
+    assert p['channel_profit_protection']['armed']
+
+
+@pytest.mark.parametrize('special,expected', [(False, (2.0, 1.0)), (True, (1.0, 0.5))])
+def test_fifty_usdt_margin_scales_profit_lock_thresholds(special, expected):
+    position_data = {'margin': 50.0, 'entry_special_k': special}
+    assert profit_lock_thresholds(position_data) == pytest.approx(expected)
+
+
 def frame():
     return pd.DataFrame(dict(open=[103.] * 12, close=[103.1] * 12,
                              high=[103.2] * 12, low=[102.9] * 12,
@@ -102,7 +118,7 @@ def test_ordinary_outer_reentry_requires_pullback_and_new_confirmation(side, pri
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('close_ok', [False, True])
-async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
+async def test_ordinary_position_profit_lock_reopens_on_later_same_color_trend(close_ok):
     f = frame()
     e = _execution_engine(f, 'LONG', close_ok)
     e.account.save_state = lambda: None
@@ -116,22 +132,29 @@ async def test_profit_close_must_succeed_before_same_side_reentry(close_ok):
     assert 'PROFIT_PROTECTION' in e.account.events[0][3]
     e._place_structured_entry.assert_not_awaited()
     if close_ok:
-        assert SYMBOL not in e.account.positions
-        assert e.account.channel_profit_reentries[SYMBOL]['phase'] == 'closed'
-        e._channel_swing_action = TradingEngine._channel_swing_action
-        f.loc[11,'open'] = 102.
-        await e._try_profit_reentry(SYMBOL, f, 102., False)
-        e._place_structured_entry.assert_not_awaited()
-        fresh, price = outer_cycle_market('LONG')
-        await e._try_profit_reentry(SYMBOL, fresh, 100., False)
-        await e._try_profit_reentry(SYMBOL, fresh, price, False)
-        e._place_structured_entry.assert_awaited_once()
-        assert e._place_structured_entry.call_args.args[1]['side'] == 'LONG'
+        assert e.account.channel_profit_reentries[SYMBOL]['mode'] == 'trend_same_side'
     else:
         assert SYMBOL in e.account.positions
-        await e._try_profit_reentry(SYMBOL, pivot_market('LONG'), 98.1, False)
-        e._place_structured_entry.assert_not_awaited()
-    assert SYMBOL not in e.account.channel_profit_reentries
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+async def test_same_side_special_k_profit_close_reopens_immediately(side):
+    f = frame()
+    e = _execution_engine(f, side, True)
+    e.account.save_state = lambda: None
+    sign = 1 if side == 'LONG' else -1
+    position_data = e.account.positions[SYMBOL]
+    position_data.update(position(side), entry_special_k=True)
+    protection(position_data, 100 + sign * 5, .0005, .0001)
+    e.tickers[SYMBOL] = 100 + sign * 3.1
+    e._channel_swing_action = lambda *a, **k: {'action': 'HOLD'}
+    e._place_structured_entry = AsyncMock(return_value=True)
+    await e._process_single_symbol(SYMBOL, 1., None, False)
+    assert len(e.account.events) == 1, e.account.logs
+    assert 'PROFIT_PROTECTION' in e.account.events[0][3]
+    e._place_structured_entry.assert_awaited_once()
+    assert e._place_structured_entry.call_args.args[1]['side'] == side
 
 
 @pytest.mark.anyio

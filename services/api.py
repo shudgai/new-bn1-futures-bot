@@ -21,6 +21,7 @@ from core.config import (
 )
 from core.engine import engine
 from core.paper_account import get_taipei_now_str
+from core.services.strategies.pivot_strategy import pivot_entry
 from core.trade_history_analysis import TradeHistoryAnalyzer
 from services.ma3_pivot_analysis import analyze_ma3_pivots
 
@@ -578,6 +579,37 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
         df['MA15'] = df['close'].rolling(window=15).mean()
         df['MA99'] = df['close'].rolling(window=99).mean()
         indicators = engine.strategy.compute_indicators(df)
+        pivot_markers = {}
+        if timeframe == "1m" and len(indicators) >= 4:
+            hourly = await engine.fetch_klines(
+                symbol, timeframe="1h", limit=200, keep_live=True,
+            )
+            hourly_indicators = (
+                engine.strategy.compute_indicators(hourly.copy())
+                if hourly is not None and not hourly.empty else pd.DataFrame()
+            )
+            for position in range(3, len(indicators)):
+                decision = pivot_entry(
+                    indicators.iloc[:position + 1], float(indicators.iloc[position]["close"]),
+                )
+                side = decision.get("side") if decision.get("action") == "ENTER" else None
+                if side not in ("LONG", "SHORT"):
+                    continue
+                pivot_index = indicators.index[position - 1]
+                pivot_time = float(indicators.loc[pivot_index, "timestamp"])
+                one_hour = hourly_indicators.iloc[:-1] if len(hourly_indicators) > 1 else hourly_indicators.iloc[0:0]
+                available = one_hour[one_hour["timestamp"].astype(float) <= pivot_time]
+                direction_value = available.iloc[-1].get("st_direction") if not available.empty else None
+                direction = int(direction_value) if pd.notna(direction_value) else 0
+                alignment = (
+                    "順1H" if (side == "LONG" and direction > 0) or (side == "SHORT" and direction < 0)
+                    else "逆1H" if direction else "1H未取得"
+                )
+                pivot_markers.setdefault(pivot_index, []).append({
+                    "side": side,
+                    "alignment": alignment,
+                    "reason": decision.get("reason") or "",
+                })
         trade_markers = {}
         for trade in engine.account.trades:
             if trade.get("symbol") != symbol:
@@ -649,6 +681,7 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
                 "kc_middle": None if pd.isna(indicators.loc[index, 'ema_20']) else indicators.loc[index, 'ema_20'],
                 "kc_lower": None if pd.isna(indicators.loc[index, 'kc_lower']) else indicators.loc[index, 'kc_lower'],
                 "trade_markers": trade_markers.get(index, []),
+                "pivot_markers": pivot_markers.get(index, []),
                 "chop_markers": chop_markers.get(index, []),
                 "channel_markers": channel_markers.get(index, []),
                 "is_live": bool(include_live and index == df.index[-1]),

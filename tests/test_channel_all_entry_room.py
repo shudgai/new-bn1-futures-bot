@@ -1,4 +1,4 @@
-"""All order routes require net room and can retry after room recovers."""
+"""Channel Swing entries no longer use structural profit-room estimates."""
 from unittest.mock import AsyncMock
 import pytest
 from core.services.entry_room_service import entry_room
@@ -21,7 +21,7 @@ def anyio_backend(): return 'asyncio'
 @pytest.mark.parametrize('reentry',[False,True])
 @pytest.mark.parametrize('target',['far','near','missing'])
 @pytest.mark.parametrize('scale',[1., .00003])
-async def test_all_routes_check_room(side,cached,reentry,target,scale,monkeypatch):
+async def test_all_routes_ignore_profit_room(side,cached,reentry,target,scale,monkeypatch):
     f=closed_outer_entry_frame(side);price=float(f.iloc[-1]['close'])
     sign=1 if side=='LONG' else -1
     rail='high' if side=='LONG' else 'low'
@@ -40,18 +40,11 @@ async def test_all_routes_check_room(side,cached,reentry,target,scale,monkeypatc
                 profit_room_pct=99.,estimated_profit_target=999.)
     if reentry:signal['profit_reentry_token']='old-profit'
     result=await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot if cached else None)
-    assert bool(result) is (target == 'far'), e.account.logs
-    assert len(e.account.events) == (1 if target == 'far' else 0)
-    if target == 'far':
-        assert signal['profit_room_checked'] is True
-        assert signal['estimated_profit_target'] == pytest.approx(f.loc[f.index[5],rail])
-        assert signal['profit_room_pct'] > 0
-    else:
-        # Recovery on the same candidate must not be poisoned by the room veto.
-        assert not getattr(e, '_channel_invalid_entry_candidates', set())
-        f.loc[f.index[5], rail] = price + sign * 3. * scale
-        assert await e._place_structured_entry(SYMBOL, signal, price), e.account.logs
-        assert len(e.account.events) == 1
+    assert result, e.account.logs
+    assert len(e.account.events) == 1
+    assert signal['profit_room_checked'] is False
+    assert 'estimated_profit_target' not in signal
+    assert 'profit_room_pct' not in signal
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_live_extreme_cannot_supply_target(side):
@@ -62,7 +55,7 @@ def test_live_extreme_cannot_supply_target(side):
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_pepe_diagnostics_room_recovery_is_read_only(side):
+def test_pepe_diagnostics_reports_one_hour_direction_before_entry_details(side):
     from core.services.entry_diagnostics_service import entry_diagnostics
     from core.engine import TradingEngine
     from types import SimpleNamespace
@@ -78,14 +71,12 @@ def test_pepe_diagnostics_room_recovery_is_read_only(side):
     e._channel_entry_quote_times = {'1000PEPE/USDT': now}
     e._channel_candle_entry_blocked = lambda *a: False
     e._channel_candidate_bar_id = lambda *a: 1
+    e.st_direction_1h_cache = {'1000PEPE/USDT': -1 if side == 'LONG' else 1}
     before = f.copy(deep=True)
     d = entry_diagnostics(e, '1000PEPE/USDT', f, price, now)
-    assert d['reason'] == 'KC_PROFIT_TARGET_UNAVAILABLE'
+    assert d['reason'] == 'KC_1H_DIRECTION_WAIT'
+    assert d['message'] == '1H方向不同，暫不開倉'
     assert f.equals(before)
-    f.loc[5, 'high' if side == 'LONG' else 'low'] = price + (.00009 if side == 'LONG' else -.00009)
-    d = entry_diagnostics(e, '1000PEPE/USDT', f, price, now)
-    assert d['reason'] == 'KC_ENTRY_READY'
-    assert d['profit_room']['allowed']
 
 
 @pytest.mark.anyio

@@ -1029,6 +1029,22 @@
                                     size: 1,
                                 });
                             });
+                        [...(d.pivot_markers || [])].forEach(pivot => {
+                            const isLong = pivot.side === 'LONG';
+                            const alignmentStyle = {
+                                '順1H': '#16a34a',
+                                '逆1H': '#ef4444',
+                                '1H未取得': '#64748b',
+                            }[pivot.alignment] || '#64748b';
+                            auditMarkers.push({
+                                time: d.time,
+                                position: isLong ? 'belowBar' : 'aboveBar',
+                                color: alignmentStyle,
+                                shape: isLong ? 'arrowUp' : 'arrowDown',
+                                text: `${isLong ? '峰底開多' : '峰頂開空'} ${pivot.alignment}`,
+                                size: 1,
+                            });
+                        });
                         [...(d.channel_markers || [])]
                             .filter(event => event.action === 'WAIT' || event.action === 'BLOCK')
                             .forEach(event => {

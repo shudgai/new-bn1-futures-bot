@@ -44,7 +44,6 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         side = outer.get('side') or entry_trend_direction(frame)
         quoted = float(getattr(engine, '_channel_entry_quote_times', {}).get(symbol, float('nan')))
         fresh = math.isfinite(quoted) and 0 <= now - quoted <= 5
-        room = engine._channel_profit_room(frame, price, side) if side else None
         live_body_atr = None
         live_atr = None
         special_side = live_body_breakout_side(frame, price)
@@ -55,8 +54,9 @@ def entry_diagnostics(engine, symbol, frame, price, now):
                 live_body_atr = live_body / live_atr
         except (AttributeError, KeyError, TypeError, ValueError, IndexError):
             pass
+        special_room = engine._channel_profit_room(frame, price, special_side) if special_side else None
         extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=False,
-                     outer_signal=outer.get('reason'), profit_room=room,
+                 outer_signal=outer.get('reason'), profit_room=special_room,
                      special_k_side=special_side, live_body_atr=live_body_atr,
                      special_k_threshold=LIVE_BREAKOUT_BODY_ATR)
         if engine._channel_candle_entry_blocked(symbol, now):
@@ -69,6 +69,16 @@ def entry_diagnostics(engine, symbol, frame, price, now):
             detail = (f"已收線CK中軌 {float(a[key]):.10g} → {float(b[key]):.10g}。"
                       '中軌上升評估多單、下降評估空單；持平或無效不開，不要求上下軌位置。')
             return result('KC_DIRECTION_WAIT', 'CK趨勢尚未明確', detail, **extra)
+        trend_1h = getattr(engine, 'st_direction_1h_cache', {}).get(symbol)
+        if trend_1h in (1, -1) and (
+            (side == 'LONG' and trend_1h == -1)
+            or (side == 'SHORT' and trend_1h == 1)
+        ):
+            return result(
+                'KC_1H_DIRECTION_WAIT', '1H方向不同，暫不開倉',
+                f"1H SuperTrend 為 {'多頭' if trend_1h == 1 else '空頭'}，目前 {side} 訊號需等待同向。",
+                **extra,
+            )
         if not live_adverse_entry_safe(frame, price, side):
             return result('KC_LIVE_ADVERSE_ENTRY_WAIT', '當根反向異常，暫不開倉', '沿用原開盤價及已收線ATR門檻。', **extra)
         ticket = getattr(engine.account, 'channel_profit_reentries', {}).get(symbol)
@@ -125,9 +135,9 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         continuation_signal = str(outer.get('reason') or '').startswith(
             'KC_OUTSIDE_CONTINUATION_'
         )
-        if room and not room['allowed'] and not continuation_signal:
+        if special_room and not special_room['allowed']:
             return result(
-                room['reason'], '利潤空間不足，暫不開倉', room['detail'], **extra,
+                special_room['reason'], '特例K利潤空間不足，暫不開倉', special_room['detail'], **extra,
             )
         if continuation_signal and outer.get('action') == 'ENTER':
             return result(

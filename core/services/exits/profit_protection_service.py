@@ -65,6 +65,28 @@ def locked_stop_price(entry, side, qty, locked_net, fee, slippage):
     return (entry * (1 - fee) - locked_net / qty) / ((1 + slippage) * (1 + fee))
 
 
+def profit_lock_thresholds(position):
+    """Scale the profit ladder to actual margin while retaining legacy defaults."""
+    special_k_entry = bool(position.get("entry_special_k") or position.get("special_k_entry"))
+    try:
+        margin = float(position.get("margin") or 0.0)
+    except (TypeError, ValueError):
+        margin = 0.0
+    if math.isfinite(margin) and margin > 0:
+        arm_ratio = 0.02 if special_k_entry else 0.04
+        arm = max(0.5, margin * arm_ratio)
+        return arm, max(0.25, arm / 2.0)
+    if special_k_entry:
+        return (
+            float(getattr(config, "CHANNEL_SWING_PROFIT_LADDER_ARM_SPECIAL_K_USDT", 2.0)),
+            float(getattr(config, "CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_SPECIAL_K_USDT", 1.0)),
+        )
+    return (
+        float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT),
+        float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT),
+    )
+
+
 def protection(position, price, fee, slippage, frame=None):
     """Step ladder: arm at the configured net peak, lock peak minus the offset."""
     entry = float(position.get('entry_price') or 0)
@@ -142,13 +164,7 @@ def protection(position, price, fee, slippage, frame=None):
 
     # 淨利峰值達 ARM 才啟動，鎖住「峰值 − LOCK_OFFSET」，之後每上升一個 LOCK_OFFSET 再上移一階。
     peak = float(state['peak_net'])
-    if special_k_entry:
-        # 特例K：早點入袋（2U 啟動、回吐 1U）
-        arm = float(getattr(config, "CHANNEL_SWING_PROFIT_LADDER_ARM_SPECIAL_K_USDT", 2.0))
-        step = float(getattr(config, "CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_SPECIAL_K_USDT", 1.0))
-    else:
-        arm = float(config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT)
-        step = float(config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT)
+    arm, step = profit_lock_thresholds(position)
     ladder_lock = (float(math.floor(peak / step) * step - step) if peak >= arm and step > 0 else 0.0)
     floor_arm = float(config.CHANNEL_SWING_PROFIT_FLOOR_ARM_NET_USDT)
     floor_net = float(config.CHANNEL_SWING_PROFIT_FLOOR_NET_USDT)
