@@ -24,22 +24,32 @@ def calculate_ck_trend(df: pd.DataFrame) -> str:
         return "BEAR"
     return "FLAT"
 
-def is_pivot_peak(df: pd.DataFrame) -> bool:
+def is_pivot_peak(df: pd.DataFrame, require_rail_touch: bool = False) -> bool:
     """真頂峰三點檢驗：t-2, t-1, t (已收盤)"""
     if df is None or len(df) < 3:
         return False
     b0, b1, b2 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
     is_peak = (b1["high"] > b0["high"]) and (b1["high"] > b2["high"])
     confirmed = b2["close"] < b1["low"]
+    
+    if require_rail_touch:
+        if b1["high"] < b1.get("kc_upper", float('inf')):
+            return False
+            
     return bool(is_peak and confirmed)
 
-def is_pivot_trough(df: pd.DataFrame) -> bool:
+def is_pivot_trough(df: pd.DataFrame, require_rail_touch: bool = False) -> bool:
     """真谷底三點檢驗：t-2, t-1, t (已收盤)"""
     if df is None or len(df) < 3:
         return False
     b0, b1, b2 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
     is_trough = (b1["low"] < b0["low"]) and (b1["low"] < b2["low"])
     confirmed = b2["close"] > b1["high"]
+    
+    if require_rail_touch:
+        if b1["low"] > b1.get("kc_lower", 0.0):
+            return False
+            
     return bool(is_trough and confirmed)
 
 def has_enough_profit_space(entry_price: float, target_level: float, atr: float, min_atr_mult: float = 1.5) -> bool:
@@ -114,7 +124,7 @@ def evaluate_strategy(df: pd.DataFrame, position: str) -> str:
 
     if position == "NONE":
         if trend == "BULL":
-            if is_pivot_trough(df):
+            if is_pivot_trough(df, require_rail_touch=True):
                 target = recent_levels.get("last_peak", close + 3 * atr)
                 if has_enough_profit_space(close, target, atr, min_atr_mult=1.5):
                     return "OPEN_LONG_FROM_TROUGH"
@@ -123,7 +133,7 @@ def evaluate_strategy(df: pd.DataFrame, position: str) -> str:
                 return "OPEN_LONG_REBREAKOUT"
 
         elif trend == "BEAR":
-            if is_pivot_peak(df):
+            if is_pivot_peak(df, require_rail_touch=True):
                 target = recent_levels.get("last_trough", close - 3 * atr)
                 if has_enough_profit_space(close, target, atr, min_atr_mult=1.5):
                     return "OPEN_SHORT_FROM_PEAK"
