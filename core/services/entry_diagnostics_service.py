@@ -2,12 +2,33 @@ from core.services.exits.fading_exit_service import next_breakout_ready
 """Read-only entry diagnostics; viewing a chart never observes or consumes a turn."""
 import math
 from core.guards.abnormal_guard import opposite_entry_releases
-from core.services.strategies.outer_strategy import entry_trend_direction, aligned_entry, live_adverse_entry_safe
+from core.services.strategies.outer_strategy import (
+    entry_trend_direction, aligned_entry, live_adverse_entry_safe,
+    breakout_confirmation_pending, live_body_breakout_side, LIVE_BREAKOUT_BODY_ATR,
+)
 
 
 def entry_diagnostics(engine, symbol, frame, price, now):
     def result(reason, message, detail, **extra):
         return dict(reason=reason, message=message, detail=detail, **extra)
+
+    def near_terminal_extreme(direction: str) -> bool:
+        """Only label terminal when price is near the recent structural extreme."""
+        try:
+            if direction not in ("LONG", "SHORT") or len(frame) < 8:
+                return False
+            atr = float(frame.iloc[-2]["atr"])
+            recent = frame.iloc[-8:-1]
+            price_value = float(price)
+            if not math.isfinite(atr) or atr <= 0 or not math.isfinite(price_value):
+                return False
+            if direction == "LONG":
+                extreme = float(recent["high"].max())
+                return price_value >= extreme - atr * 0.5
+            extreme = float(recent["low"].min())
+            return price_value <= extreme + atr * 0.5
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            return False
     if symbol in engine.account.positions:
         return result('KC_POSITION_HELD', '已有持倉，由出口邏輯管理', '不另外加倉。')
     if not engine.is_running:
@@ -24,8 +45,20 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         quoted = float(getattr(engine, '_channel_entry_quote_times', {}).get(symbol, float('nan')))
         fresh = math.isfinite(quoted) and 0 <= now - quoted <= 5
         room = engine._channel_profit_room(frame, price, side) if side else None
+        live_body_atr = None
+        live_atr = None
+        special_side = live_body_breakout_side(frame, price)
+        try:
+            live_body = abs(float(price) - float(frame.iloc[-1]["open"]))
+            live_atr = float(frame.iloc[-2]["atr"])
+            if live_atr > 0:
+                live_body_atr = live_body / live_atr
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            pass
         extra = dict(side=side, price=price, quote_fresh=fresh, pivot_ready=False,
-                     outer_signal=outer.get('reason'), profit_room=room)
+                     outer_signal=outer.get('reason'), profit_room=room,
+                     special_k_side=special_side, live_body_atr=live_body_atr,
+                     special_k_threshold=LIVE_BREAKOUT_BODY_ATR)
         if engine._channel_candle_entry_blocked(symbol, now):
             return result('KC_ONE_ENTRY_PER_CANDLE', '本根K已有成交，等待下一根', '平倉後不反手；每根限次保留。', **extra)
         if not fresh:
@@ -59,13 +92,65 @@ def entry_diagnostics(engine, symbol, frame, price, now):
         candidate = engine._channel_candidate_bar_id(frame)
         if not ticket and (symbol, side, candidate) in getattr(engine, '_channel_invalid_entry_candidates', set()):
             return result('KC_CANDIDATE_INVALIDATED', '此候選訊號已失效', '等待下一個有效候選，再重新評估進場。', **extra)
-        if engine._channel_terminal_market(frame):
+        outer_candidate = (
+            (math.isfinite(float(frame.iloc[-1].get('kc_upper', float('nan'))))
+             and price > float(frame.iloc[-1]['kc_upper']))
+            or
+            (math.isfinite(float(frame.iloc[-1].get('kc_lower', float('nan'))))
+             and price < float(frame.iloc[-1]['kc_lower']))
+        )
+        if outer_candidate and breakout_confirmation_pending(frame, side):
+            return result(
+                'KC_SECOND_BODY_WAIT', '外軌已破，等待第二根有效同色實體K',
+                '第一根有效實體已突破外軌；中間同色弱體可順延，直到第一根同色有效實體收線確認。',
+                **extra,
+            )
+        if outer.get('action') != 'ENTER' and not outer_candidate:
+            if outer.get('reason') in {
+                'KC_MA3_TURN_WAIT', 'KC_MIDDLE_OPPOSITE_WAIT',
+                'KC_LOW_VOLATILITY_WAIT', 'KC_ENTRY_BODY_OVERHEAT_WAIT',
+                'KC_ENTRY_PREV_BODY_WAIT', 'KC_MOMENTUM_FADING_WAIT',
+            }:
+                return result(
+                    outer['reason'], '延續條件已重置，等待新的外軌破軌',
+                    '價格已回到通道內或 MA3 已轉弱；下一次需重新完成兩根有效同色實體破軌確認。',
+                    **extra,
+                )
+            return result(
+                'KC_ENTRY_SIGNAL_WAIT', '目前沒有有效外軌入口',
+                '目前價格未站在持倉側外軌外；中軌趨勢不開倉，等待新的外軌破軌或當前K達 ATR 特例K。',
+                **extra,
+            )
+        terminal_side = side if outer_candidate else None
+        continuation_signal = str(outer.get('reason') or '').startswith(
+            'KC_OUTSIDE_CONTINUATION_'
+        )
+        if room and not room['allowed'] and not continuation_signal:
+            return result(
+                room['reason'], '利潤空間不足，暫不開倉', room['detail'], **extra,
+            )
+        if continuation_signal and outer.get('action') == 'ENTER':
+            return result(
+                'KC_ENTRY_READY', '外軌延續可開倉，等待送單風控',
+                '已完成破軌且同方向K仍在外軌外；延續入口不再因前方目標距離逐根失效。',
+                **extra,
+            )
+        if (engine._channel_terminal_market(frame) and outer_candidate
+                and terminal_side and near_terminal_extreme(terminal_side)
+                and not str(outer.get('reason') or '').startswith(
+                    ('KC_LIVE_BODY_BREAKOUT_', 'KC_LONG_BODY_'))):
             return result('KC_TREND_END_WAIT', '末端弱量期間多空暫停開倉', '等趨勢重新明朗後重驗。', **extra)
-        if outer.get('action') == 'ENTER' and room and not room['allowed']:
-            return result(room['reason'], '利潤空間尚未足夠', room['detail'], **extra)
+        if outer.get('reason') == 'KC_SECOND_BODY_WAIT':
+            return result(
+                'KC_SECOND_BODY_WAIT', '外軌已破，等待第二根有效同色實體K',
+                '第一根破軌已成立；第二根必須收線且實體比例達20%。', **extra)
+        if outer.get('reason') == 'KC_LIVE_BODY_BREAKOUT_WAIT':
+            return result(
+                'KC_SPECIAL_BODY_WAIT', '等待順向實體達 ATR 特例K門檻',
+                '特例K只看順向實體與 ATR，不要求外軌位置或通道內開盤。', **extra)
         if outer.get('action') == 'ENTER':
             return result('KC_ENTRY_READY', '已有入口訊號，等待送單風控', '仍須重驗帳戶、行情、票據與每根限次；不代表保證成交。', **extra)
-        return result('KC_ENTRY_SIGNAL_WAIT', '等待有效趨勢入口',
-                      '最近已收線CK中軌向上開多、向下開空；不要求MA3或價格位於外軌外。', **extra)
+        return result('KC_ENTRY_SIGNAL_WAIT', '等待外軌突破或 ATR 特例K',
+                  '中軌趨勢不開倉；一般入口需外軌破軌與第二根確認，特例K只看順向實體 ATR。', **extra)
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
         return result('KC_ENTRY_DATA_WAIT', '等待有效行情資料', '資料不足或無效，不推測進場方向。')

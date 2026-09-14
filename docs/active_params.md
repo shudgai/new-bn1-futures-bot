@@ -1,6 +1,6 @@
 # 現行生效參數（.env 實際值，不含機密）
 
-> 由 `tools/dump_active_params.py` 從 `core/config.py` 讀出的執行期實際值（2026-09-12 15:53）。調整 `.env` 後請重跑並一起 commit。
+> 由 `tools/dump_active_params.py` 從 `core/config.py` 讀出的執行期實際值（2026-09-13 23:21）。調整 `.env` 後請重跑並一起 commit。
 
 | 參數 | 值 | 說明 |
 |---|---|---|
@@ -11,7 +11,7 @@
 | `KELTNER_ATR_MULTIPLIER` | 1.0 | KC 軌道 = EMA20 ± ATR×此值 |
 | `CHANNEL_LIVE_BREAKOUT_BODY_ATR` | 1.8 | 特例K門檻（即時長K） |
 | `CHANNEL_LONG_BODY_ENTRY_ATR` | 1.8 | 特例K門檻（已收線長實體） |
-| `CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION` | True | 特例K是否需兩根同色實體確認 |
+| `CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION` | False | 特例K是否需兩根同色實體確認 |
 | `CHANNEL_MIN_ATR_PCT` | 0.5 | 最低 ATR% 門檻 |
 | `CHANNEL_MIN_DIRECTION_EFFICIENCY` | 0.45 | 方向效率門檻 |
 | `CHANNEL_ENTRY_MAX_BODY_ATR` | 0.8 | 當根實體過熱上限 |

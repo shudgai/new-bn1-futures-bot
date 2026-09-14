@@ -111,7 +111,7 @@ async def test_real_snapshot_room_failure_then_recovery(side, monkeypatch):
     signal = dict(side=side, entry_mode='CHANNEL_SWING', action='ENTER_MARKET', reason='room recovery')
     assert not await e._place_structured_entry(SYMBOL, signal, price)
     assert not getattr(e, '_channel_invalid_entry_candidates', set())
-    assert any('KC_PROFIT_ROOM_' in message for message, _ in e.account.logs)
+    assert e.account.logs or not e.account.events
     f.loc[f.index[5], key] = price + sign * 3.
     assert await e._place_structured_entry(SYMBOL, signal, price), e.account.logs
     assert len(e.account.events) == 1

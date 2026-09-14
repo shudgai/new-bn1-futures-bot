@@ -11,6 +11,7 @@ from core.services.exits.fading_exit_service import fading_ma3_turn, STATE_KEY a
 from core.guards.abnormal_guard import channel_adverse_exit_reason
 from core.services.swing_service import (
     channel_ck_exit_with_tolerance, ma3_middle_cross_against, volume_decay_exit_ready,
+    special_k_reversal_exit_ready,
 )
 from core.services.strategies.pivot_strategy import PIVOT_CODES
 from core.config import (
@@ -83,8 +84,9 @@ async def process_single_symbol_runner(
             if await engine._try_ck_reverse(symbol, channel_df, channel_price, daily_halt):
                 return signal_progress, detected_candidates
         if not existing_pos:
-            if await engine._try_live_pivot_entry(symbol, channel_df, channel_price, daily_halt):
-                return signal_progress, detected_candidates
+            # Pivot/V-bottom entries are retired. Fresh entries are evaluated
+            # only by the shared outer-breakout, special-K, and continuation
+            # routes below.
             entry_side = aligned_entry(channel_df, channel_price).get("side")
             engine._channel_intrabar_ready(symbol, channel_df, channel_price, entry_side)
         # CK 內破軌預掛已停用；撤掉尚未成交的舊追蹤單，避免殘留觸發。
@@ -208,9 +210,15 @@ async def process_single_symbol_runner(
                         state.pop(key)
                         changed = True
             channel_action = {"action": "HOLD", "side": None, "reason": "KC_WAIT_NET_PROFIT_GIVEBACK"}
+            special_k_reversal = special_k_reversal_exit_ready(
+                existing_pos, channel_df, channel_price,
+            )
             ck_exit = channel_ck_exit_with_tolerance(channel_df, existing_pos.get("side"), existing_pos)
             emergency = engine._channel_exception_exit(existing_pos, channel_df, channel_price)
-            if emergency:
+            if special_k_reversal:
+                channel_action = {"action": "EXIT", "side": None,
+                                  "reason": "KC_SPECIAL_K_REVERSE_EXIT"}
+            elif emergency:
                 if existing_pos.get("channel_exception_exit_pending") != emergency:
                     existing_pos["channel_exception_exit_pending"] = emergency
                     changed = True

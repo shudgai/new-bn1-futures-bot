@@ -21,6 +21,8 @@ def entry_room(
             return invalid
         if price <= 0 or not 0 <= fee < 1 or not 0 <= slippage < 1 or minimum_net < 0:
             return invalid
+        if len(frame) < 8:
+            return invalid
         closed = frame.iloc[:-1].tail(60)
         rows = []
         for _, row in closed.iterrows():
@@ -30,67 +32,45 @@ def entry_room(
                     or not low <= min(opened, close) <= max(opened, close) <= high):
                 return invalid
             rows.append(values)
-        atr = float(closed.iloc[-1]["atr"])
+        atr = float(frame.iloc[-2]["atr"])
         if not math.isfinite(atr) or atr <= 0:
             return invalid
-        sign = 1 if side == "LONG" else -1
-        # C 方案：強趨勢時改用 ATR 目標距離（不再看下一個前高／前低）
-        if (getattr(config, "CHANNEL_PROFIT_ROOM_ATR_IN_STRONG_TREND", False)
-                and getattr(config, "CHANNEL_STRONG_TREND_RATIO", 0.0) > 0):
-            try:
-                key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
-                prev_mid = float(frame.iloc[-3][key])
-                last_mid = float(frame.iloc[-2][key])
-                width = float(frame.iloc[-2]["kc_upper"]) - float(frame.iloc[-2]["kc_lower"])
-                rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
-                directional = (last_mid > prev_mid) if side == "LONG" else (last_mid < prev_mid)
-                outside = (price > rail) if side == "LONG" else (price < rail)
-                strong_ratio = float(config.CHANNEL_STRONG_TREND_RATIO)
-                strong = (width > 0 and outside
-                          and abs(last_mid - prev_mid) / width >= strong_ratio)
-                continuation = bool(getattr(config, "CHANNEL_PROFIT_ROOM_ATR_FOR_TREND_CONTINUATION", False))
-                if strong or (continuation and directional and outside):
-                    target = price + sign * float(config.CHANNEL_ATR_TARGET_MULT) * atr
-                    entry_fill = price * (1 + sign * slippage)
-                    exit_fill = target * (1 - sign * slippage)
-                    net_room = (sign * (exit_fill - entry_fill)
-                                - (entry_fill + exit_fill) * fee) / (entry_fill * (1 + fee))
-                    allowed = net_room > 0 and net_room >= minimum_net
-                    return dict(allowed=allowed, checked=True, stage="strong_trend", target=target,
-                                net_room_pct=net_room * 100,
-                                reason="KC_PROFIT_ROOM_OK" if allowed else "KC_PROFIT_ROOM_INSUFFICIENT",
-                                detail=(f"趨勢延續：改用 {float(config.CHANNEL_ATR_TARGET_MULT):g} ATR 目標 "
-                                        f"{target:.10g}，剩餘淨空間 {net_room * 100:.4f}%，門檻 {minimum_net * 100:.4f}%。"))
-            except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-                pass
+        history = frame.iloc[:-1].tail(60)
+        if history.empty:
+            return invalid
+        swing_high = float(history["high"].max())
+        swing_low = float(history["low"].min())
+        if not all(math.isfinite(v) for v in (swing_high, swing_low, price)):
+            return invalid
 
-        sign = 1 if side == "LONG" else -1
-        closes = [row[3] for row in rows[-7:]]
-        pushes = [sign * (b - a) for a, b in zip(closes, closes[1:])]
-        extension = sign * (closes[-1] - closes[0]) / atr
-        last = pushes[-3:]
-        weakening = last[0] > last[1] > last[2] and last[0] > 0 and last[2] <= .5 * last[0]
-        mature = sum(v > 0 for v in pushes) >= 4 and extension >= 3.
-        # All entries must pass target and net-room checks, including early trends.
-        extremes = [row[1] if side == "LONG" else row[2] for row in rows]
-        targets = [
-            value for i, value in enumerate(extremes[1:-1], start=1)
-            if sign * value > sign * extremes[i - 1]
-            and sign * value > sign * extremes[i + 1]
-            and sign * (value - price) > 0
-            and all(sign * later < sign * value for later in extremes[i + 1:])
-        ]
-        base = dict(checked=True, stage="late" if mature and weakening else "developing", extension_atr=extension)
-        if not targets:
-            return dict(base, allowed=False, reason="KC_PROFIT_TARGET_UNAVAILABLE",
-                        detail="沒有尚未突破的已確認前高／前低可估算空間，暫不進場。")
-        target = min(targets, key=lambda value: sign * value)
-        entry_fill = price * (1 + sign * slippage)
-        exit_fill = target * (1 - sign * slippage)
-        net_room = (sign * (exit_fill - entry_fill) - (entry_fill + exit_fill) * fee) / (entry_fill * (1 + fee))
-        allowed = net_room > 0 and net_room >= minimum_net
-        return dict(base, allowed=allowed, target=target, net_room_pct=net_room * 100,
-                    reason="KC_PROFIT_ROOM_OK" if allowed else "KC_PROFIT_ROOM_INSUFFICIENT",
-                    detail=f"至未突破前高／前低的剩餘淨空間 {net_room * 100:.4f}%，門檻 {minimum_net * 100:.4f}%。")
+        if side == "LONG":
+            targets = history.loc[history["high"].astype(float) > price, "high"]
+            target = float(targets.min()) if not targets.empty else float("nan")
+            space = target - price if math.isfinite(target) else 0.0
+            detail = (f"已突破前波峰 {swing_high:.10g}，進入加速段。"
+                      if not math.isfinite(target) else
+                      f"距前方結構目標 {space:.10g}。")
+        else:
+            targets = history.loc[history["low"].astype(float) < price, "low"]
+            target = float(targets.max()) if not targets.empty else float("nan")
+            space = price - target if math.isfinite(target) else 0.0
+            detail = (f"已跌破前波谷 {swing_low:.10g}，進入加速段。"
+                      if not math.isfinite(target) else
+                      f"距前方結構目標 {space:.10g}。")
+        gross_pct = space / price if price > 0 else 0.0
+        net_pct = gross_pct - 2.0 * (float(fee) + float(slippage))
+        target_available = math.isfinite(target)
+        allowed = target_available and net_pct >= minimum_net
+        reason = (
+            "KC_PROFIT_ROOM_OK" if allowed
+            else "KC_PROFIT_ROOM_INSUFFICIENT" if target_available
+            else "KC_PROFIT_TARGET_UNAVAILABLE"
+        )
+        return dict(allowed=allowed, checked=True, stage="developing",
+                    target=target if math.isfinite(target) else None,
+                    gross_room_pct=gross_pct * 100.0,
+                    net_room_pct=net_pct * 100.0,
+                    reason=reason,
+                    detail=detail)
     except (AttributeError, TypeError, ValueError, KeyError, IndexError, OverflowError):
         return invalid

@@ -3,9 +3,25 @@ import pandas as pd
 from typing import Dict, Any, Optional
 from core.services.strategies.outer_strategy import (
     aligned_entry, ck_direction, v_bottom_shape, ma3_middle_cross_reset,
-    confirmed_outer_breakout_ready,
+    confirmed_outer_breakout_ready, live_body_breakout_side,
+    anti_fakeout_breakout_ready, long_body_side,
 )
 from core.services.strategies.pivot_strategy import pivot_entry
+from core.config import CHANNEL_LONG_BODY_ENTRY_ATR
+
+
+def special_k_reversal_exit_ready(position: dict, frame: pd.DataFrame, price: float) -> bool:
+    """Exit a special-K position immediately when an opposite special K appears."""
+    try:
+        if not position.get("entry_special_k"):
+            return False
+        side = str(position.get("side") or "").upper()
+        if side not in ("LONG", "SHORT"):
+            return False
+        opposite = "SHORT" if side == "LONG" else "LONG"
+        return live_body_breakout_side(frame, price) == opposite
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
 
 def significant_ma3_turn(position, frame, price):
     key = 'channel_significant_ma3_turn'
@@ -125,14 +141,10 @@ def channel_mature_outer_trend_is_weak(
     return latest / mean < 1.50
 
 def _special_long_body_aligned(frame, price):
-    """當根是否為順向特例長K（即時破軌或長實體收在軌外）——特例K一律可開。"""
+    """當根是否為目前形成中K的順向ATR特例K。"""
     try:
-        from core.services.strategies.outer_strategy import live_body_breakout_side, long_body_side
-        from core import config as _config
-        if live_body_breakout_side(frame, price) in ("LONG", "SHORT"):
-            return True
-        limit = float(getattr(_config, "CHANNEL_LONG_BODY_ENTRY_ATR", 0.0) or 0.0)
-        return bool(limit > 0 and long_body_side(frame, limit) in ("LONG", "SHORT"))
+        from core.services.strategies.outer_strategy import live_body_breakout_side
+        return live_body_breakout_side(frame, price) in ("LONG", "SHORT")
     except (AttributeError, KeyError, IndexError, TypeError, ValueError):
         return False
 
@@ -350,11 +362,6 @@ def channel_swing_action(
     if frame is None or frame.empty:
         return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
 
-    if not str(current_side or "").upper() in ("LONG", "SHORT"):
-        pivot = pivot_entry(frame, live_price)
-        if pivot.get("action") == "ENTER":
-            return pivot
-
     if str(current_side or "").upper() in ("LONG", "SHORT"):
         side = str(current_side).upper()
         try:
@@ -365,36 +372,44 @@ def channel_swing_action(
             kc_upper = float(row.get("kc_upper", 0.0))
             kc_lower = float(row.get("kc_lower", 0.0))
             if side == "LONG":
-                if close_val < open_val and close_val <= ma3_val and close_val < kc_upper:
-                    return {"action": "EXIT", "side": "LONG", "reason": "KC_LONG_LIVE_RED_LONG_EXIT"}
-                if close_val < open_val and close_val < kc_upper:
-                    return {"action": "EXIT", "side": "LONG", "reason": "KC_LONG_LIVE_RED_LONG_EXIT"}
                 return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
-            if close_val > open_val and close_val >= kc_lower and close_val > ma3_val:
-                return {"action": "EXIT", "side": "SHORT", "reason": "KC_SHORT_LIVE_GREEN_LONG_EXIT"}
-            if close_val > open_val and close_val > kc_lower:
-                return {"action": "EXIT", "side": "SHORT", "reason": "KC_SHORT_LIVE_GREEN_LONG_EXIT"}
             return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
         except (AttributeError, KeyError, TypeError, ValueError, IndexError):
             return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH" if side == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
-
-    if terminal_blocked is None:
-        terminal_blocked = channel_terminal_market(frame)
-    if terminal_blocked and not _special_long_body_aligned(frame, live_price):
-        return {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}
 
     try:
         curr = frame.iloc[-1]
         price = float(live_price)
         upper = float(curr.get("kc_upper", 0.0))
         lower = float(curr.get("kc_lower", 0.0))
-        if price > upper and confirmed_outer_breakout_ready(frame, price, "LONG"):
+        if terminal_blocked is None:
+            terminal_blocked = channel_terminal_market(frame)
+        outer_candidate = (
+            (math.isfinite(upper) and price > upper)
+            or (math.isfinite(lower) and price < lower)
+        )
+        if (terminal_blocked and not _special_long_body_aligned(frame, price)
+                and not outer_candidate):
+            return {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}
+        special_side = live_body_breakout_side(frame, price)
+        if (price > upper
+            and special_side != "LONG"
+            and anti_fakeout_breakout_ready(frame, price, upper, "LONG")
+            and confirmed_outer_breakout_ready(frame, price, "LONG")):
             return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT"}
-        if price < lower and confirmed_outer_breakout_ready(frame, price, "SHORT"):
+        if (price < lower
+            and special_side != "SHORT"
+            and anti_fakeout_breakout_ready(frame, price, lower, "SHORT")
+            and confirmed_outer_breakout_ready(frame, price, "SHORT")):
             return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT_STRICT"}
 
         decision = aligned_entry(frame, live_price, require_second_body=not profit_reentry)
-        if decision.get("action") == "ENTER":
+        special_reason = str(decision.get("reason") or "")
+        is_special_entry = special_reason.startswith((
+            "KC_LIVE_BODY_BREAKOUT_", "KC_LONG_BODY_",
+        ))
+        is_continuation_entry = special_reason.startswith("KC_OUTSIDE_CONTINUATION_")
+        if decision.get("action") == "ENTER" and (is_special_entry or is_continuation_entry):
             return decision
 
         if outer_entry_only:
@@ -410,7 +425,7 @@ def channel_swing_action(
         if price > upper and math.isfinite(upper):
             return {"action": "WAIT", "side": None, "reason": "KC_SURGE_WAIT_TROUGH"}
         if price < lower and math.isfinite(lower):
-            return {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
+            return {"action": "WAIT", "side": None, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
         return decision
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}

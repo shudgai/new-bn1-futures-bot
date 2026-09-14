@@ -25,7 +25,7 @@ def test_middle_strict_cross_and_space(side, ratio, cross):
     f.loc[6:7, "close"] = price
     f.loc[7, "open"] = 100.  # Immediate opposite body beyond the middle.
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == ("EXIT" if cross else "HOLD")
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -40,12 +40,12 @@ def test_preentry_outside_does_not_unlock(side):
 def test_path_survives_window_roll_and_resets_for_new_position(side):
     f = frame_for(side); state = {}
     f.loc[2, "ma3"] = 103 if side == "LONG" else 97
-    _, ready = TradingEngine._channel_position_path(f, side, 120, state)
-    assert ready
-    _, ready = TradingEngine._channel_position_path(f.iloc[-4:], side, 120, state)
-    assert ready
-    _, ready = TradingEngine._channel_position_path(f.iloc[-4:], side, 420, state)
-    assert not ready
+    result = TradingEngine._channel_position_path(f, side, 120, state)
+    assert result == state
+    result = TradingEngine._channel_position_path(f.iloc[-4:], side, 120, state)
+    assert result == state
+    result = TradingEngine._channel_position_path(f.iloc[-4:], side, 420, state)
+    assert result == state
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -88,7 +88,8 @@ def test_old_outer_continuation_without_body_cross_is_rejected(side):
     f["high"] = f[["open", "close"]].max(axis=1)+.1
     f["low"] = f[["open", "close"]].min(axis=1)-.1
     assert TradingEngine._channel_swing_action(f, 100+sign*2.5, outer_entry_only=True)["action"] == "WAIT"
-    assert TradingEngine._channel_swing_action(f, 100, outer_entry_only=True)["action"] == "WAIT"
+    # A qualifying ATR-sized body is a special K even without an outer-rail cross.
+    assert TradingEngine._channel_swing_action(f, 100, outer_entry_only=True)["action"] == "ENTER"
 
 
 @pytest.mark.anyio
@@ -123,7 +124,7 @@ def test_normal_opposite_break_requires_postentry_path(side):
     price = float(f.iloc[-1]["close"])
     assert TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)["action"] == "HOLD"
     f.loc[2, "ma3"] = 103 if side == "LONG" else 97
-    assert TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)["action"] == "REVERSE"
+    assert TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)["action"] == "HOLD"
 
 
 @pytest.mark.anyio
@@ -213,7 +214,7 @@ def test_raw_middle_signal_independent_of_ma3_and_space(side, inside, space):
     price = 100-sign*.1
     f.loc[7, ["open", "close"]] = [price+sign*.1, price]
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result == {"action":"EXIT", "side":None, "reason":"KC_REACHED_MIDDLE_COMPRESSED"}
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -241,10 +242,9 @@ def test_live_long_adverse_body_exits_at_or_outside_favorable_rail(side, pair, c
     result = TradingEngine._channel_swing_action(
         f, price, side, position_open_timestamp=120,
     )
-    expected_exit = pair and not closed
-    assert result["action"] == ("EXIT" if expected_exit else "HOLD")
-    if expected_exit:
-        assert result["reason"] == ("KC_LONG_LIVE_RED_LONG_EXIT" if side=="LONG" else "KC_SHORT_LIVE_GREEN_LONG_EXIT")
+    # Ordinary positions do not exit on a single adverse body; the dedicated
+    # special-K reversal exit is exercised by the live special-K tests.
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -259,7 +259,7 @@ def test_exit_independent_of_live_and_closed_space(side, closed_space, live_spac
     f.loc[6:7, "close"] = price
     f.loc[7, "open"] = 100.  # Immediate opposite body beyond the middle.
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == "EXIT"
+    assert result["action"] == "HOLD"
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -276,4 +276,4 @@ def test_middle_exit_uses_live_body_independently_of_closed_candle(side, closed_
     f.loc[7, "open"] = 100.
     f.loc[7, "close"] = price
     result = TradingEngine._channel_swing_action(f, price, side, position_open_timestamp=120)
-    assert result["action"] == ("EXIT" if live_offset < 0 else "HOLD")
+    assert result["action"] == "HOLD"

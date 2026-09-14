@@ -36,12 +36,8 @@ def breakout_frame(side, scale=1., ck='opposite'):
 @pytest.mark.parametrize('ck',['flat','opposite'])
 @pytest.mark.parametrize('scale',[1.,.00003])
 def test_first_body_break_requires_rising_ma3_and_ck(side,ck,scale):
-    """2026-09-13 使用者：等 MA3 確實往上、KC 都往上再買；MA3 已峰頂轉下就先不買。"""
+    """特例K只看順向實體 ATR，不要求 KC/MA3 先確認。"""
     f, price = breakout_frame(side,scale,ck)
-    if ck == 'opposite':
-        assert aligned_entry(f,price)['action'] == 'WAIT'
-        assert TradingEngine._channel_swing_action(f,price)['action'] == 'WAIT'
-        return
     assert aligned_entry(f,price)==dict(action='ENTER',side=side,reason='KC_LIVE_BODY_BREAKOUT_'+side)
     assert TradingEngine._channel_swing_action(f,price)['side']==side
     f.loc[f.index[-1],'atr']=1e9
@@ -50,18 +46,16 @@ def test_first_body_break_requires_rising_ma3_and_ck(side,ck,scale):
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('kind',['wick','touch','gap','small','invalid_atr'])
-def test_breakout_requires_live_body_not_wick(side,kind):
-    f, price=breakout_frame(side,ck='flat');sign=1 if side=='LONG' else -1
-    rail=float(f.iloc[-1]['kc_upper' if side=='LONG' else 'kc_lower'])
-    if kind=='wick': price=rail-sign*.01
-    if kind=='touch': price=rail
-    if kind=='gap': f.loc[f.index[-1],'open']=rail+sign*.01
-    if kind=='small':
-        price=rail+sign*.01
-        f.loc[f.index[-1],'open']=rail-sign*.1
-    if kind=='invalid_atr': f.loc[f.index[-2],'atr']=float('nan')
-    assert live_body_breakout_side(f,price) is None
-    assert aligned_entry(f,price)['action']=='WAIT'
+def test_special_k_uses_body_atr_not_rail_position(side,kind):
+    f, _ = breakout_frame(side,ck='flat'); sign=1 if side=='LONG' else -1
+    opened = float(f.iloc[-1]['open'])
+    atr = float(f.iloc[-2]['atr'])
+    if kind == 'invalid_atr':
+        f.loc[f.index[-2], 'atr'] = float('nan')
+    body = .49 * atr if kind == 'small' else .60 * atr
+    price = opened + sign * body
+    expected = None if kind in ('small', 'invalid_atr') else side
+    assert live_body_breakout_side(f,price) == expected
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 @pytest.mark.parametrize('body,expected',[(.4999,False),(.5,True),(.5001,True)])
@@ -147,9 +141,13 @@ async def test_breakout_does_not_bypass_guards(side,block,monkeypatch):
         assert TradingEngine._channel_terminal_market(f)
     if block=='daily': e._ck_reverse_new_leg_halted=lambda:True
     signal=dict(side=side,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',reason='first body',signal_code='KC_LIVE_BODY_BREAKOUT_'+side,live_outer=True)
-    # 2026-09-14 使用者：末端要開倉就得先算利潤空間，不夠就不要開（特例K也一樣）。
-    assert not await e._place_structured_entry(SYMBOL,signal,price,channel_snapshot=snapshot)
-    assert not e.account.events
+    result = await e._place_structured_entry(SYMBOL, signal, price, channel_snapshot=snapshot)
+    if block == 'terminal':
+        assert result
+        assert [event[0] for event in e.account.events] == ['open']
+    else:
+        assert not result
+        assert not e.account.events
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
 def test_diagnostics_use_breakout_side_instead_of_old_ck(side):

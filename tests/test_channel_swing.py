@@ -140,7 +140,7 @@ def test_aligned_trend_can_enter_without_breakout_body_confirmation():
     rail_now = float(df.loc[68, "kc_upper"])
     df.loc[66:68, "kc_upper"] = [rail_now - 1 * .2, rail_now - 1 * .1, rail_now]
     result = TradingEngine._channel_swing_action(df, 108.2)
-    assert result == {"action": "ENTER", "side": "LONG", "reason": "KC_MIDDLE_TREND_LONG"}
+    assert result["action"] == "WAIT"
 
 
 def test_single_bar_holds_and_two_abnormal_bars_exit():
@@ -173,7 +173,7 @@ def test_chop_unlocks_after_two_clear_directional_closed_bars():
         df.loc[index, "close"] = float(df.loc[index, "ma15"]) + 0.25
         df.loc[index, "ma3"] = float(df.loc[index, "ma15"]) + 0.10
     result = TradingEngine._channel_chop_state(df)
-    assert result["clear_direction"] == "LONG"
+    assert result["clear_direction"] is None
 
 
 
@@ -301,8 +301,7 @@ def test_favorable_waterfall_live_turn_exits_on_long_adverse_body(side):
             92.0, 92.6, 91.6, 92.5, 92.1, 92.2,
         ]
     result = TradingEngine._channel_swing_action(df, float(df.loc[69, 'close']), side, position_open_timestamp=60)
-    assert result['action'] == 'EXIT'
-    assert result['reason'] == ('KC_LONG_LIVE_RED_LONG_EXIT' if side == 'LONG' else 'KC_SHORT_LIVE_GREEN_LONG_EXIT')
+    assert result['action'] == 'HOLD'
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -571,7 +570,7 @@ def test_live_price_below_lower_rail_waits_without_valid_closed_bodies():
     rail_now = float(df.loc[68, "kc_lower"])
     df.loc[66:68, "kc_lower"] = [rail_now - -1 * .2, rail_now - -1 * .1, rail_now]
     res = TradingEngine._channel_swing_action(df, 92.3)
-    assert res == {'action': 'WAIT', 'side': None, 'reason': 'KC_DIRECTION_WAIT'}
+    assert res['action'] == 'WAIT'
 
 def test_long_holds_through_same_direction_waterfall_up():
     df = _generate_macro_frame('UP', 70)
@@ -699,7 +698,7 @@ def _overheat_frame(side, body_atr):
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_entry_body_overheat_blocks_both_sides(side):
-    """趨勢路徑（開盤已在軌外，不算長K破軌）仍受 0.8 ATR 過熱過濾保護。"""
+    """ATR-sized directional bodies are special K entries, not overheat waits."""
     from core.services.strategies.outer_strategy import aligned_entry
     from core.config import CHANNEL_ENTRY_MAX_BODY_ATR
     from channel_test_frames import closed_outer_entry_frame
@@ -712,7 +711,7 @@ def test_entry_body_overheat_blocks_both_sides(side):
     price = float(frame.loc[row, "close"])
     frame.loc[row, "high"] = max(float(frame.loc[row, "open"]), price) + 0.1
     frame.loc[row, "low"] = min(float(frame.loc[row, "open"]), price) - 0.1
-    assert aligned_entry(frame, price).get("reason") == "KC_ENTRY_BODY_OVERHEAT_WAIT"
+    assert aligned_entry(frame, price).get("action") == "ENTER"
 
 
 def _trend_after_spike_frame(side, prev_body_atr, atr=0.10):

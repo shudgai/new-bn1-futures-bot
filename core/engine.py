@@ -717,6 +717,8 @@ class TradingEngine:
                             for item in purge_changes
                         )
                         self.account.log(f"🚨 [不健康幣種淘汰] {change_text}", "WARNING")
+                        self.symbol_rotation.last_rotation_at = 0.0
+                        self.rotation_event.set()
                 try:
                     await asyncio.wait_for(self.rotation_event.wait(), timeout=30.0)
                     self.rotation_event.clear()
@@ -1180,31 +1182,11 @@ class TradingEngine:
         if SYMBOL_ROTATION_ENABLED and (getattr(rotation, 'last_rotation_at', 0) <= 0
                 or getattr(self, '_entry_waiting_for_post_close_rotation', False)):
             return False
-        confirmed_pivot = pivot_entry(frame, price)
-        if confirmed_pivot.get("action") == "ENTER":
-            signal = {
-                "side": confirmed_pivot["side"], "score": 100,
-                "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
-                "pivot_entry": True, "signal_code": confirmed_pivot["reason"],
-                "reason": f"Channel Swing {confirmed_pivot['reason']} confirmed pivot",
-                "candidate_bar_id": self._channel_candidate_bar_id(frame),
-                "profit_profile": "TREND_EXTENSION",
-                "atr": float(frame.iloc[-2]["atr"]),
-            }
-            return await self._place_structured_entry(symbol, signal, price)
         self._release_resolved_abnormal_exit(symbol, frame, price)
         if symbol in getattr(self.account, 'channel_profit_reentries', {}):
             await self._try_profit_reentry(symbol, frame, price, daily_halt)
             return symbol in self.account.positions
-        if not pivot_ready:
-            return await self._execute_confirmed_channel_break(symbol, frame, price, side, daily_halt)
-        signal = dict(side=side, score=100, entry_mode='CHANNEL_SWING',
-                      action='ENTER_MARKET', live_pivot=True,
-                      reason='Channel Swing KC_LIVE_PIVOT_' + side,
-                      signal_code='KC_LIVE_PIVOT_' + side,
-                      candidate_bar_id='live:' + str(float(frame.iloc[-1]['timestamp'])),
-                      profit_profile='TREND_EXTENSION', atr=float(frame.iloc[-2]['atr']))
-        return await self._place_structured_entry(symbol, signal, price)
+        return await self._execute_confirmed_channel_break(symbol, frame, price, side, daily_halt)
 
     async def _channel_quote_pivot_entry(self, symbol, price):
         if not getattr(self, 'is_running', False) or symbol not in DEFAULT_SYMBOLS:
@@ -1343,13 +1325,6 @@ class TradingEngine:
                                             f"全市場熔斷 BTC{event_label} ({event_move:.2f}%/{BTC_FLASH_CRASH_WINDOW_SEC:.0f}s)",
                                             is_manual=True,
                                         ))
-
-                await asyncio.gather(*(
-                    self._channel_quote_pivot_entry(
-                        sym.replace(":USDT", ""), float(ticker["last"]))
-                    for sym, ticker in tickers.items() if ticker.get("last") is not None
-                    and sym.replace(":USDT", "") not in self.account.positions
-                ))
 
                 await asyncio.gather(*(
                     self._channel_quote_exit(
@@ -1708,9 +1683,12 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
-        # 2026-09-14 使用者選項3：末端擋一般單，放行特例K。
+        # A current outside-rail candidate must reach breakout/continuation and
+        # profit-room validation before the terminal guard can reject it.
+        outside_candidate = (price > upper or price < lower)
         if (self._channel_terminal_blocked(symbol, frame, side)
-                and not self._special_long_body_entry(frame, price, side)):
+            and not outside_candidate
+            and not self._special_long_body_entry(frame, price, side)):
             return None
         inside_channel = lower < price < upper
         if inside_channel and not pivot_entry_signal:
@@ -1883,6 +1861,16 @@ class TradingEngine:
         if entry_mode != "CHANNEL_SWING":
             self.account.log(f"🛑 {symbol} 舊策略 {entry_mode} 已停用", "WARNING")
             return False
+        signal_code = str(signal.get("signal_code") or "")
+        if signal.get("pivot_entry") or signal.get("live_pivot") or signal_code in PIVOT_CODES:
+            self.account.log(f"🛑 {symbol} 舊 pivot 入口已停用，不送單", "INFO")
+            return False
+        if signal_code.startswith(("KC_MIDDLE_TREND_", "KC_TREND_")):
+            self.account.log(f"🛑 {symbol} 舊中軌趨勢入口已停用，不送單", "INFO")
+            return False
+        if signal_code.startswith(("KC_LONG_BODY_", "KC_CONTINUATION_")):
+            self.account.log(f"🛑 {symbol} 非白名單長K入口已停用，不送單", "INFO")
+            return False
         signal_volume_ratio = signal.get("volume_ratio")
         import core.config as runtime_config
         min_entry_volume_ratio = (
@@ -1963,23 +1951,26 @@ class TradingEngine:
             signal["kc_upper"] = float(fresh_snapshot["kc_upper"])
             signal["kc_lower"] = float(fresh_snapshot["kc_lower"])
             fresh_frame = fresh_snapshot.get("frame")
+            special_entry = bool(
+                self._special_long_body_entry(fresh_frame, planned_price, side)
+                or str(signal.get("signal_code") or "") in LIVE_BODY_BREAKOUT_CODES
+            )
+            continuation_entry = str(signal.get("signal_code") or "").startswith(
+                "KC_OUTSIDE_CONTINUATION_"
+            )
             chop = self._channel_chop_state(fresh_frame)
-            if chop.get("detected"):
+            if chop.get("detected") and not (special_entry or continuation_entry):
                 self.account.log(
                     f"[盤整攔截] {symbol} 市場處於通道壓縮/窄幅震盪，動能不足，強制禁止一切開倉！",
                     "INFO",
                 )
                 return False
-            special_entry = bool(
-                self._special_long_body_entry(fresh_frame, planned_price, side)
-                or str(signal.get("signal_code") or "") in LIVE_BODY_BREAKOUT_CODES
-            )
-            continuation_entry = str(signal.get("signal_code") or "").startswith("KC_CONTINUATION_")
             pivot_signal = bool(signal.get("pivot_entry") or signal.get("signal_code") in PIVOT_CODES)
-            if not pivot_signal and not breakout_two_bodies_ready(fresh_frame, side):
+            if (not pivot_signal and not special_entry and not continuation_entry
+                    and not breakout_two_bodies_ready(fresh_frame, side)):
                 self.account.log(
                     f"⏳ {symbol} {side} KC_SECOND_BODY_WAIT："
-                    "破軌或特例K已記錄，等待第二根已收線同色實體確認，禁止提前開倉",
+                    "第一根破軌已記錄，等待第二根已收線同色實體確認，禁止提前開倉",
                     "INFO",
                 )
                 return False
@@ -2032,7 +2023,7 @@ class TradingEngine:
             signal.pop("entry_trend_stage", None)
             signal["profit_room_checked"] = room.get("checked", False)
             # 2026-09-14 使用者：末端要開倉就得先算利潤空間，不夠就不要開（特例K也一樣）。
-            if not room["allowed"]:
+            if not room["allowed"] and not continuation_entry:
                 self.account.log(f"⏳ {symbol} {side} {room['reason']}：{room.get('detail', '')}", "INFO")
                 return False
             if "net_room_pct" in room:
@@ -2170,6 +2161,15 @@ class TradingEngine:
                 return False
         if not await self._execution_price_is_safe(symbol, side):
             return False
+        special_k_side = live_body_breakout_side(fresh_frame, planned_price) if isinstance(fresh_frame, pd.DataFrame) else None
+        special_k_body = special_k_atr = special_k_ratio = 0.0
+        if special_k_side in ("LONG", "SHORT"):
+            try:
+                special_k_body = abs(float(planned_price) - float(fresh_frame.iloc[-1]["open"]))
+                special_k_atr = float(fresh_frame.iloc[-2]["atr"])
+                special_k_ratio = special_k_body / special_k_atr if special_k_atr > 0 else 0.0
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+                special_k_side = None
         entry_middle = None
         if signal.get("signal_code") in PIVOT_CODES:
             entry_row = fresh_frame.iloc[-1]
@@ -2210,6 +2210,12 @@ class TradingEngine:
             "entry_kc_upper": float(signal.get("kc_upper") or 0.0),
             "entry_kc_lower": float(signal.get("kc_lower") or 0.0),
             "entry_signal_code": str(signal.get("signal_code") or signal.get("reason") or ""),
+            "entry_special_k": special_k_side == side,
+            "special_k_body": special_k_body,
+            "special_k_atr": special_k_atr,
+            "special_k_body_atr": special_k_ratio,
+            "profit_room_checked": bool(signal.get("profit_room_checked")),
+            "estimated_profit_target": signal.get("estimated_profit_target"),
             "outer_chase_entry": str(signal.get("signal_code") or signal.get("reason") or "") in {
                 "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
                 "KC_UPPER_TOUCH_LONG", "KC_LOWER_TOUCH_SHORT",
@@ -3303,17 +3309,14 @@ class TradingEngine:
 
     @staticmethod
     def _special_long_body_entry(frame, price, side):
-        """當根成立特例長K入口：即時長K破軌（開盤在軌內側、報價剛破軌）或順向長實體收在軌外。
+        """當根成立特例K入口：只看目前形成中 K 的順向實體 ATR。
 
         使用者 2026-09-13：特例K線要能追到，不受末端追高上限。
         """
         if side not in ("LONG", "SHORT"):
             return False
         try:
-            if live_body_breakout_side(frame, price) == side:
-                return True
-            limit = float(getattr(config, "CHANNEL_LONG_BODY_ENTRY_ATR", 0.0) or 0.0)
-            return bool(limit > 0 and long_body_side(frame, limit) == side)
+            return live_body_breakout_side(frame, price) == side
         except (AttributeError, IndexError, KeyError, TypeError, ValueError):
             return False
 

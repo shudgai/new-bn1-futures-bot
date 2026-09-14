@@ -1014,6 +1014,7 @@ class SymbolRotation:
         裡有沒有幣種已經變得不健康，不用等下一次整點的完整輪替（含AI+全池
         K線，最壞要等 SYMBOL_ROTATION_INTERVAL_SEC）才處理。已經有持倉的
         幣種不受影響，維持只等SL/TP/24h時間過濾出場，不會被這裡動到。"""
+        await exchange.load_markets()
         tickers = await exchange.fetch_tickers()
         normalized = self._normalize_tickers(tickers)
         held = set(self.account.positions.keys())
@@ -1024,23 +1025,40 @@ class SymbolRotation:
             if symbol in ENTRY_DISABLED_SYMBOLS:
                 reason = "已暫停新倉"
             else:
-                ticker = normalized.get(symbol)
-                if not ticker:
-                    continue
-                quote_volume = float(ticker.get("quoteVolume") or 0.0)
-                change_pct = abs(float(ticker.get("percentage") or 0.0))
-                volatility_excluded = bool(
-                    self.volatility_stats.get(symbol, {}).get("volatility_excluded")
-                )
-
-                if quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
-                    reason = f"流動性不足({quote_volume:.0f}<{SYMBOL_MIN_QUOTE_VOLUME:.0f})"
-                elif change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
-                    reason = f"24h暴漲暴跌({change_pct:.1f}%>{SYMBOL_MAX_24H_CHANGE_PCT:.1f}%)"
-                elif volatility_excluded:
-                    reason = "波動率長期偏離可交易區間"
+                market = exchange.markets.get(symbol)
+                if market is None:
+                    reason = "Binance市場不存在，疑似下市"
                 else:
-                    continue
+                    info = market.get("info") or {}
+                    status = str(info.get("status") or "").upper()
+                    contract_type = str(info.get("contractType") or "").upper()
+                    if (not market.get("active") or not market.get("swap")
+                            or market.get("quote") != "USDT"
+                            or (contract_type and contract_type != "PERPETUAL")
+                            or (status and status != "TRADING")):
+                        reason = f"Binance合約不可交易(status={status or 'unknown'})"
+                    else:
+                        reason = None
+                if reason:
+                    pass
+                else:
+                    ticker = normalized.get(symbol)
+                    if not ticker:
+                        continue
+                    quote_volume = float(ticker.get("quoteVolume") or 0.0)
+                    change_pct = abs(float(ticker.get("percentage") or 0.0))
+                    volatility_excluded = bool(
+                        self.volatility_stats.get(symbol, {}).get("volatility_excluded")
+                    )
+
+                    if quote_volume < SYMBOL_MIN_QUOTE_VOLUME:
+                        reason = f"流動性不足({quote_volume:.0f}<{SYMBOL_MIN_QUOTE_VOLUME:.0f})"
+                    elif change_pct > SYMBOL_MAX_24H_CHANGE_PCT:
+                        reason = f"24h暴漲暴跌({change_pct:.1f}%>{SYMBOL_MAX_24H_CHANGE_PCT:.1f}%)"
+                    elif volatility_excluded:
+                        reason = "波動率長期偏離可交易區間"
+                    else:
+                        continue
 
             DEFAULT_SYMBOLS.remove(symbol)
             self.direction_map.pop(symbol, None)

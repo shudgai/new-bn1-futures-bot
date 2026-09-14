@@ -210,7 +210,7 @@
         .market-mode-wait { background:#e2e8f0; color:#475569; }
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; height: 560px; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
-        .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .chart-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
         /* 只有一個幣種時用單欄，圖表才會佔滿整個寬度（含全螢幕） */
         .chart-grid.chart-grid-single { grid-template-columns: 1fr; }
         .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; display: flex; flex-direction: column; }
@@ -252,7 +252,7 @@
             .chart-modal-header { padding: 12px 14px; }
             .chart-modal-title { font-size: 15px; gap: 8px; min-width: 0; }
             .chart-modal-body { height: min(62vh, 420px); padding: 8px; }
-            .chart-grid { grid-template-columns: 1fr; }
+            .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         .coin-card { cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
         .coin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: var(--primary); }
@@ -595,7 +595,7 @@
         <div ref="chartCard" class="chart-modal" role="dialog" aria-modal="true" aria-label="K線圖">
             <div class="chart-modal-header">
                 <div class="chart-modal-title">
-                    📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
+                    📈 {{ chartModal.symbols.length > 1 ? '多幣種 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
                     <span class="badge badge-api"
@@ -811,7 +811,7 @@
                 const available = Array.isArray(this.bot.symbols) ? this.bot.symbols : [];
                 const symbols = [symbol, ...available.filter(item => item !== symbol)]
                     .filter(Boolean)
-                    .slice(0, desktop ? 2 : 1);
+                    .slice(0, desktop ? 3 : 1);
                 this.chartModal.symbol = symbol;
                 this.chartModal.symbols = symbols;
                 this.chartModal.states = Object.fromEntries(
