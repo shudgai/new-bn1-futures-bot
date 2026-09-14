@@ -22,9 +22,9 @@ def hard_stop_reason(position, price):
         if side not in ("LONG", "SHORT") or not all(math.isfinite(v) and v > 0 for v in (entry, qty, leverage, margin, price)):
             return None
         loss = (entry - price) if side == "LONG" else (price - entry)
-        if config.MAX_POSITION_MARGIN_LOSS_RATIO > 0 and loss * qty >= margin * config.MAX_POSITION_MARGIN_LOSS_RATIO:
+        if config.MAX_POSITION_MARGIN_LOSS_RATIO > 0 and loss * qty > margin * config.MAX_POSITION_MARGIN_LOSS_RATIO:
             return "MARGIN_LOSS"
-        if config.MAX_ACCEPTABLE_LOSS_PCT < 0 and loss / entry >= -config.MAX_ACCEPTABLE_LOSS_PCT:
+        if config.MAX_ACCEPTABLE_LOSS_PCT < 0 and loss / entry > -config.MAX_ACCEPTABLE_LOSS_PCT:
             return "PRICE_LOSS"
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
         pass

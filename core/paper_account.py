@@ -153,6 +153,8 @@ ENTRY_CONTEXT_KEYS = (
     "eligibility_note", "wave_regime", "market_mode", "entry_market_mode",
     "channel_entry_profile", "channel_entry_profile_basis",
     "profit_lock_usdt_v2",
+    "entry_signal_code", "entry_special_k", "special_k_body", "special_k_atr",
+    "special_k_body_atr", "profit_room_checked", "estimated_profit_target",
     "channel_live_ma3_exit_pending", "channel_live_ma3_favorable_bar",
     "channel_live_ma3_turn_exit_pending", "channel_ma3_turn_observed_bar",
 )

@@ -109,6 +109,8 @@ ENTRY_CONTEXT_KEYS = (
     "signal_candle_low", "signal_candle_high",
     "channel_turn_low", "channel_turn_high",
     "profit_profile", "profit_room_pct",
+    "entry_signal_code", "entry_special_k", "special_k_body", "special_k_atr",
+    "special_k_body_atr", "profit_room_checked", "estimated_profit_target",
     "bounce_capture_ratio", "bounce_target_pct",
     "structured_net_rr", "high_readiness_low_room",
     "low_room_allocation_factor",

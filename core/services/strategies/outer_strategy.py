@@ -15,7 +15,11 @@ from core.config import (
 )
 
 LIVE_BODY_BREAKOUT_CODES = {"KC_LIVE_BODY_BREAKOUT_LONG", "KC_LIVE_BODY_BREAKOUT_SHORT"}
-LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES
+CHOP_BREAKOUT_CODES = {"KC_CHOP_BREAKOUT_LONG", "KC_CHOP_BREAKOUT_SHORT"}
+CONFIRMED_OUTER_CODES = {"KC_UPPER_BREAKOUT_STRICT", "KC_LOWER_BREAKOUT_STRICT"}
+PEAK_BREAKOUT_CODES = {"KC_PEAK_LOWER_BREAK_SHORT"}
+REENTRY_TREND_CODES = {"KC_OUTSIDE_CONTINUATION_LONG", "KC_OUTSIDE_CONTINUATION_SHORT"}
+LIVE_OUTER_CODES = {"KC_LIVE_OUTER_LONG", "KC_LIVE_OUTER_SHORT"} | LIVE_BODY_BREAKOUT_CODES | CHOP_BREAKOUT_CODES
 LIVE_BREAKOUT_BODY_ATR = CHANNEL_LIVE_BREAKOUT_BODY_ATR
 OUTER_CODES = {"KC_OUTSIDE_LONG", "KC_OUTSIDE_SHORT"}
 ENTRY_TREND_CODES = {"KC_TREND_LONG", "KC_TREND_SHORT"}
@@ -594,10 +598,20 @@ def ma3_ma15_kc_reversal_exit_ready(frame, price, side):
     return ma3_ma15_kc_entry_side(frame, price) == opposite
 
 
-def three_point_pivot_exit_ready(frame, side):
-    """Exit at a closed price/MA3-confirmed three-point peak or valley."""
+def three_point_pivot_exit_ready(frame, side, price=None):
+    """Confirm the closed price/MA3 reversal with non-opposing KC and live quote."""
     try:
         if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+        from core.services.strategies.pivot_strategy import confirmed_ma3_pivot
+        quote = float(frame.iloc[-1]["close"] if price is None else price)
+        opposite = "SHORT" if side == "LONG" else "LONG"
+        if confirmed_ma3_pivot(frame, quote).get("side") != opposite:
+            return False
+        middle_key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
+        previous, latest = (float(value) for value in frame[middle_key].iloc[-3:-1])
+        tolerance = max(previous, latest) * 1e-12
+        if (latest < previous - tolerance if opposite == "LONG" else latest > previous + tolerance):
             return False
         rows = frame.iloc[-4:-1]
         highs = [float(value) for value in rows["high"]]
@@ -677,209 +691,144 @@ def lobster_bearish_entry_ready(symbol, frame, price, trend_1h):
         return False
 
 
-def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
-                  continuation_exempt=True, legacy_fallback=False):
-    """Live long-body breaks may precede CK confirmation; retain trend entries.
-
-    require_second_body：2026-09-13 使用者要求「一般漲勢破軌後第二根也要同色綠K才開」，
-    只套用在全新第一筆；獲利重開與破軌延續由呼叫端帶 False。
-    """
-    wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
+def continuing_after_close(frame: pd.DataFrame, price: float, exit_info: dict | None) -> bool:
+    """Resume an unbroken same-side MA3/CK run after a confirmed normal close."""
+    if not isinstance(exit_info, dict):
+        return False
+    side = exit_info.get("side")
     try:
-        price = float(price)
-        if not math.isfinite(price) or price <= 0 or frame is None or len(frame) < 4:
-            return wait
-        for _, row in frame.iloc[-4:].iterrows():
-            opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
-            if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
-                    or not low <= min(opened, closed) <= max(opened, closed) <= high):
-                return wait
-        ma_trend_side = ma3_ma15_kc_entry_side(frame, price)
-        special_k_side = aligned_special_k_side(frame, price)
-        if special_k_side:
-            return {
-                "action": "ENTER",
-                "side": special_k_side,
-                "reason": "KC_ALIGNED_SPECIAL_K_" + special_k_side,
-            }
-        kc_side = ck_direction(frame)
-        if kc_side:
-            return {
-                "action": "ENTER",
-                "side": kc_side,
-                "reason": "KC_DIRECTION_" + kc_side,
-            }
-        two_body_side = two_closed_same_color_entry_side(frame)
-        if two_body_side:
-            return {
-                "action": "ENTER",
-                "side": two_body_side,
-                "reason": "KC_TWO_CLOSED_BODIES_" + two_body_side,
-            }
-        if ma_trend_side:
-            return {
-                "action": "ENTER",
-                "side": ma_trend_side,
-                "reason": "KC_MA3_MA15_TREND_" + ma_trend_side,
-            }
-        if not legacy_fallback:
-            return wait
-        ck_side = entry_trend_direction(frame)
-        continuation_candidate = False
-        if CHANNEL_MIN_ATR_PCT > 0 and "atr" in frame.columns and not continuation_candidate:
-            try:
-                atr_now = float(frame.iloc[-2]["atr"])
-                if math.isfinite(atr_now) and atr_now > 0 and price > 0:
-                    if atr_now / price * 100 < CHANNEL_MIN_ATR_PCT:
-                        return {**wait, "reason": "KC_LOW_VOLATILITY_WAIT"}
-            except (KeyError, IndexError, TypeError, ValueError):
-                pass
-        breakout_side = live_body_breakout_side(frame, price) if CHANNEL_LIVE_BODY_BREAKOUT_ENABLED else None
-        # A previously closed long candle cannot authorize a delayed special-K
-        # entry. It may, however, establish a completed outside-rail leg for
-        # the separate continuation route.
-        body_side = None
-        side = breakout_side or ck_side
-        if side is None:
-            return wait
-        continuation_candidate = bool(
-            continuation_exempt and outside_continuation_ready(frame, side, price)
-        )
-        special_entry = bool(
-            breakout_side == side
-        )
-        # 2026-09-13 使用者：MA3 已經轉彎（轉入軌內／前面已是峰頂）就先不要買；
-        # 要等 MA3 確實往上、KC 也往上再做。以下兩關對所有入口（含特例長K）都適用。
-        if not special_entry and ck_side is not None and ck_side != side:
-            return {**wait, "reason": "KC_MIDDLE_OPPOSITE_WAIT"}
+        exited = float(exit_info["exit_bar_id"])
+        current = float(frame.iloc[-1]["timestamp"])
+        if not math.isfinite(exited) or not math.isfinite(current) or current < exited:
+            return False
+        if ck_direction(frame) != side or not live_ma3_direction_ready(frame, price, side):
+            return False
+        closed = frame.iloc[:-1]
+        stamps = closed["timestamp"].astype(float)
+        if not stamps.map(math.isfinite).all() or not stamps.is_monotonic_increasing:
+            return False
+        anchors = [i for i, stamp in enumerate(stamps) if stamp <= exited]
+        if not anchors:
+            return False
+        start = max(0, min(anchors[-1], len(closed) - 2))
+        values = [float(v) for v in closed.iloc[start:]["ma3"]]
+        sign = 1 if side == "LONG" else -1
+        return (len(values) >= 2 and all(math.isfinite(v) and v > 0 for v in values)
+                and all(sign * (b - a) > max(a, b) * 1e-12 for a, b in zip(values, values[1:]))
+                and live_candle_color_ready(frame, price, side)
+                and live_adverse_entry_safe(frame, price, side))
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def recent_ma3_peak_index(frame: pd.DataFrame) -> int | None:
+    """Locate the latest confirmed MA3 peak in at most twenty closed candles."""
+    try:
+        values = [float(v) for v in frame["ma3"].iloc[:-1]]
+        for i in range(len(values) - 2, max(0, len(values) - 20), -1):
+            a, b, c = values[i - 1:i + 2]
+            if all(math.isfinite(v) and v > 0 for v in (a, b, c)) and a < b > c:
+                return i
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
+def peak_lower_breakout_ready(frame: pd.DataFrame, price: float) -> bool:
+    """One closed bearish body may break the lower rail after an unbroken MA3 peak descent."""
+    try:
+        if frame is None or len(frame) < 5 or ck_direction(frame) != "SHORT":
+            return False
+        peak = recent_ma3_peak_index(frame)
+        if peak is None:
+            return False
+        closed = frame.iloc[peak:-1]
+        ma3 = [float(v) for v in closed["ma3"]]
+        if not all(math.isfinite(v) and v > 0 for v in ma3):
+            return False
+        if any(b >= a for a, b in zip(ma3, ma3[1:])):
+            return False
+        row = closed.iloc[-1]
+        opened, high, low, close, lower = (float(row[k]) for k in ("open", "high", "low", "close", "kc_lower"))
+        live_lower, live_upper, price = float(frame.iloc[-1]["kc_lower"]), float(frame.iloc[-1]["kc_upper"]), float(price)
+        values = [opened, high, low, close, lower, live_lower, live_upper, price]
+        return (all(math.isfinite(v) and v > 0 for v in values)
+                and live_lower < live_upper
+                and low <= close < lower <= opened <= high and high > low
+                and (opened - close) / (high - low) >= .20 and price < live_lower
+                and live_adverse_entry_safe(frame, price, "SHORT"))
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
+def aligned_entry(frame, price, require_second_body=True, special_k_exempt=True,
+                  continuation_exempt=True, legacy_fallback=False, reentry_info=None):
+    """Resume a held trend after close; distinguish peak descent from a new reversal."""
+    from core.services.strategies.pivot_strategy import pivot_entry
+
+    from core.services.swing_service import channel_chop_state, channel_chop_breakout_action
+
+    if continuing_after_close(frame, price, reentry_info) and not channel_chop_state(frame).get("detected"):
+        side = reentry_info["side"]
+        return {"action": "ENTER", "side": side, "reason": "KC_OUTSIDE_CONTINUATION_" + side}
+        
+    if reentry_info:
         try:
-            live_ma3 = float(frame.iloc[-1]["ma3"])
-            closed_ma3 = float(frame.iloc[-2]["ma3"])
-        except (KeyError, IndexError, TypeError, ValueError):
-            live_ma3 = math.nan
-            closed_ma3 = math.nan
-        if not special_entry and math.isfinite(live_ma3) and math.isfinite(closed_ma3):
-            valid_trend = ck_side == side
-            strong_side = (
-                (side == "LONG" and price > float(frame.iloc[-1]["kc_upper"]))
-                or (side == "SHORT" and price < float(frame.iloc[-1]["kc_lower"]))
-            )
-            if (side == "LONG" and not live_ma3 > closed_ma3 and not (valid_trend and strong_side)) or (
-                side == "SHORT" and not live_ma3 < closed_ma3 and not (valid_trend and strong_side)
-            ):
-                return {**wait, "reason": "KC_MA3_TURN_WAIT"}
-        # 僅有中軌方向不代表已完成「破軌根＋第二根確認根」；不得在這裡早退開倉。
-        # 由長實體驅動的進場（即時破軌／長K特例）不吃「走平禁開」與「實體過熱」：
-        # 這兩個過濾是為了避免在沒有趨勢時追價，但長K本身就是訊號，否則會互相矛盾、
-        # 讓長K入口永遠不會觸發（實體 ≥1 ATR 一定大於 0.8 ATR 的過熱門檻）。
-        body_driven = bool(breakout_side)
-        special_long_body = False
-        # 2026-09-12 使用者：「沒有兩根實體K也開倉，以上都不能開倉」——
-        # 特例K不再有特權：把 body_driven 關掉，讓它走一般單的完整關卡
-        #（破軌根＋同色實體確認根、實體過熱、方向效率、末端禁開、動能衰退、
-        # MA3 安全距離…）。要回到舊行為把 CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION
-        # 設成 false 即可。
-        if CHANNEL_SPECIAL_K_REQUIRES_CONFIRMATION and not special_long_body and not breakout_side:
-            body_driven = False
-        # Special K still uses its dedicated volume check, but it cannot bypass
-        # the closed-candle confirmation required by the current entry policy.
-        if body_driven and not special_entry and not special_volume_surge_ok(frame, -1):
-            return {**wait, "reason": "KC_SPECIAL_LOW_VOLUME_WAIT"}
-        # 2026-09-14 使用者：延續（連續三根已收線在軌外、平倉後重開）不受效率門檻限制，
-        # 單根同色K即可延續開倉。
-        # A completed outside-rail leg may continue on one same-colour live
-        # candle. The explicit flag keeps a first breakout from bypassing its
-        # closed confirmation; reentry callers enable this route deliberately.
-        continuation_ready = bool(
-            continuation_exempt and outside_continuation_ready(frame, side, price)
-        )
-        special_entry = bool(breakout_side)
-        # A qualifying special K is allowed to enter on the current bar. All
-        # ordinary entries must wait for the closed breakout/confirmation pair.
-        if not special_entry and not continuation_ready and not breakout_two_bodies_ready(frame, side):
-            print(
-                f"[Audit Funnel] {side} KC_SECOND_BODY_WAIT: "
-                "第一根破軌已記錄，但第二根同色實體尚未收線確認"
-            )
-            return {**wait, "reason": "KC_SECOND_BODY_WAIT"}
-        if side is None:
-            return wait
-        if not special_entry and channel_tail_entry_blocked(frame, side):
-            return {**wait, "reason": "KC_TREND_TAIL_WAIT"}
-        if (CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 and not body_driven and not continuation_ready
-                and direction_efficiency(frame) < CHANNEL_MIN_DIRECTION_EFFICIENCY):
-            return {**wait, "reason": "KC_LOW_EFFICIENCY_WAIT"}
-        if not body_driven and channel_middle_is_flat(frame) and ck_side != side:
-            return {**wait, "reason": FLAT_MIDDLE_REASON}
-            
-        upper = float(frame.iloc[-1]['kc_upper'])
-        lower = float(frame.iloc[-1]['kc_lower'])
+            last_side = reentry_info.get("side")
+            current_ck = ck_direction(frame)
+            if current_ck in ("LONG", "SHORT") and current_ck != last_side:
+                prev_ma3, latest_ma3 = [float(v) for v in frame["ma3"].iloc[-3:-1]]
+                prev_ma15, latest_ma15 = [float(v) for v in frame["ma15"].iloc[-3:-1]]
+                if last_side == "LONG" and current_ck == "SHORT":
+                    if latest_ma3 < prev_ma3 and latest_ma15 < prev_ma15:
+                        return {"action": "ENTER", "side": "SHORT", "reason": "KC_POST_REVERSAL_SHORT"}
+                elif last_side == "SHORT" and current_ck == "LONG":
+                    if latest_ma3 > prev_ma3 and latest_ma15 > prev_ma15:
+                        return {"action": "ENTER", "side": "LONG", "reason": "KC_POST_REVERSAL_LONG"}
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            pass
+
+    if peak_lower_breakout_ready(frame, price):
+        return {"action": "ENTER", "side": "SHORT", "reason": "KC_PEAK_LOWER_BREAK_SHORT"}
+    # Once a peak exists, outer entries cannot fall back to an unclosed range break or pivot.
+    if recent_ma3_peak_index(frame) is not None:
+        try:
+            side = ("LONG" if float(price) > float(frame.iloc[-1]["kc_upper"]) else
+                    "SHORT" if float(price) < float(frame.iloc[-1]["kc_lower"]) else None)
+            if side and not confirmed_outer_breakout_ready(frame, price, side):
+                return {"action": "WAIT", "side": None, "reason": "KC_SECOND_BODY_WAIT"}
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            return {"action": "WAIT", "side": None, "reason": "KC_DATA_INVALID"}
+    pivot = pivot_entry(frame, price)
+    if pivot.get("action") == "ENTER":
+        return pivot
+    if pivot.get("reason") in {"KC_DATA_UNAVAILABLE", "KC_DATA_INVALID"}:
+        return pivot
+
+    if channel_chop_state(frame).get("detected"):
+        return channel_chop_breakout_action(frame, price)
         
-        # Strict momentum safety check
-        open_price = float(frame.iloc[-1]['open'])
-        body = abs(price - open_price)
-        atr = float(frame.iloc[-2]['atr']) if 'atr' in frame.columns else 0.0
-        
-        if side == 'LONG' and not special_entry:
-            if price < open_price and atr > 0 and body > atr * 0.5:
-                return {**wait, "reason": "MOMENTUM_BLOCK_MASSIVE_RED"}
-            if price <= upper:
-                return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
-        if side == 'SHORT' and not special_entry:
-            if price > open_price and atr > 0 and body > atr * 0.5:
-                return {**wait, "reason": "MOMENTUM_BLOCK_MASSIVE_GREEN"}
-            if price >= lower:
-                return {**wait, "reason": "KC_INSIDE_CHANNEL_WAIT"}
-
-        # 進場當根順向實體過熱就別追：這種大K之後最容易接反向異常K。
-        # 但長K／即時破軌入口本身就是靠大實體成立，不套用此過濾。
-        if not special_entry and not body_driven and atr > 0 and body > atr * CHANNEL_ENTRY_MAX_BODY_ATR:
-            return {**wait, "reason": "KC_ENTRY_BODY_OVERHEAT_WAIT"}
-
-        if not body_driven:
-            try:
-                live_ma3 = float(frame.iloc[-1]['ma3'])
-                live_ma15 = float(frame.iloc[-1]['ma15'])
-                if side == 'LONG' and (price < live_ma3 or price < live_ma15):
-                    return {**wait, "reason": "KC_MA_SAFETY_WAIT"}
-                if side == 'SHORT' and (price > live_ma3 or price > live_ma15):
-                    return {**wait, "reason": "KC_MA_SAFETY_WAIT"}
-            except (KeyError, ValueError, TypeError, IndexError):
-                pass
-
-            if ck_side is not None and ck_side == side:
-                # trend-validated entries are permitted even when the latest live candle is
-                # still red/green against the current bar; the flat trend direction remains valid.
-                pass
-            elif not live_candle_color_ready(frame, price, side):
-                return {**wait, "reason": "KC_LIVE_COLOR_WAIT"}
-
-            # 純趨勢進場（當根不是長K破軌）：前一根已是大K就不追。
-            # 例外：強趨勢延續（中軌位移÷軌寬 ≥ 門檻且價格在持倉側軌外）允許續追，
-            # 否則一波強漲/強跌中的每根大K都會把延續訊號全部擋掉（2026-09-13 使用者反映）。
-            if atr > 0 and not (strong_trend_continuation(frame, price, side)
-                                or trend_continuation(frame, price, side)):
-                prev_body = abs(float(frame.iloc[-2]["close"]) - float(frame.iloc[-2]["open"]))
-                if prev_body > atr * CHANNEL_ENTRY_MAX_PREV_BODY_ATR:
-                    return {**wait, "reason": "KC_ENTRY_PREV_BODY_WAIT"}
-
-        if not special_entry and ck_momentum_fading(frame, side):
-            return {**wait, "reason": "KC_MOMENTUM_FADING_WAIT"}
-        if not special_entry and ck_side != side and not live_adverse_entry_safe(frame, price, side):
-            return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
-        if special_entry:
-            reason = 'KC_LIVE_BODY_BREAKOUT_' + side
-        elif continuation_ready:
-            reason = "KC_OUTSIDE_CONTINUATION_" + side
-        elif ck_side == side:
-            if side == "SHORT" and not special_entry:
-                return {**wait, "reason": "KC_MIDDLE_TREND_SHORT_DISABLED"}
-            return {**wait, "reason": "KC_MIDDLE_TREND_DISABLED"}
-        else:
-            return {**wait, "reason": "KC_TREND_ENTRY_DISABLED"}
-        return {"action": "ENTER", "side": side, "reason": reason}
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
-        return wait
+    side = ck_direction(frame)
+    if side not in ("LONG", "SHORT"):
+        return {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
+    try:
+        previous, latest = [float(value) for value in frame["ma3"].iloc[-3:-1]]
+        sign = 1 if side == "LONG" else -1
+        if not all(math.isfinite(value) and value > 0 for value in (previous, latest)):
+            return {"action": "WAIT", "side": None, "reason": "KC_DATA_INVALID"}
+        if sign * (latest - previous) <= max(previous, latest) * 1e-12:
+            return {"action": "WAIT", "side": None, "reason": "KC_MA3_TURN_WAIT"}
+        if not confirmed_outer_breakout_ready(frame, price, side):
+            return {"action": "WAIT", "side": None, "reason": "KC_SECOND_BODY_WAIT"}
+        if not live_adverse_entry_safe(frame, price, side):
+            return {"action": "WAIT", "side": None, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
+        rail = float(frame.iloc[-1]["kc_upper" if side == "LONG" else "kc_lower"])
+        if not anti_fakeout_breakout_ready(frame, price, rail, side):
+            return {"action": "WAIT", "side": None, "reason": "KC_BREAKOUT_REJECTION_WAIT"}
+        return {"action": "ENTER", "side": side,
+                "reason": "KC_UPPER_BREAKOUT_STRICT" if side == "LONG" else "KC_LOWER_BREAKOUT_STRICT"}
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return {"action": "WAIT", "side": None, "reason": "KC_DATA_INVALID"}
 
 
 def aligned_entry_ready(frame, price, side, require_second_body=True):
@@ -1151,28 +1100,50 @@ def confirmed_outer_continuation_ready(frame, price, side):
         return False
 
 
-def confirmed_outer_breakout_ready(frame, price, side, allow_three_short=False):
-    """Require a closed breakout/confirmation, with the three-red short option."""
-    if allow_three_short and side == "SHORT" and three_closed_short_breakout_ready(frame, price):
-        return True
-    if not two_closed_bodies_ready(frame, side):
-        return False
+def confirmed_outer_breakout_bars(frame: pd.DataFrame, price: float, side: str) -> tuple[int, int] | None:
+    """Locate the actual closed breakout and confirmation in the unbroken outer run."""
     try:
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
+            return None
         sign = 1 if side == "LONG" else -1
         rail = "kc_upper" if side == "LONG" else "kc_lower"
-        breakout, confirmation, live = (frame.iloc[i] for i in (-3, -2, -1))
-        for row in (breakout, confirmation, live):
+        live = frame.iloc[-1]
+        lower, upper, price = float(live["kc_lower"]), float(live["kc_upper"]), float(price)
+        if (not all(math.isfinite(value) and value > 0 for value in (lower, upper, price))
+                or lower >= upper or sign * (price - float(live[rail])) <= 0):
+            return None
+        confirmation = None
+        for index in range(len(frame) - 2, -1, -1):
+            row = frame.iloc[index]
+            opened, high, low, closed = (float(row[key]) for key in ("open", "high", "low", "close"))
             lower, upper = float(row["kc_lower"]), float(row["kc_upper"])
-            if not all(math.isfinite(v) for v in (lower, upper)) or not 0 < lower < upper:
-                return False
-        price = float(price)
-        return (math.isfinite(price) and price > 0
-                and sign * (float(breakout["open"]) - float(breakout[rail])) <= 0
-                and sign * (float(breakout["close"]) - float(breakout[rail])) > 0
-                and sign * (float(confirmation["close"]) - float(confirmation[rail])) > 0
-                and sign * (price - float(live[rail])) > 0)
+            limit = float(row[rail])
+            if (not all(math.isfinite(value) and value > 0 for value in (opened, high, low, closed, lower, upper))
+                    or not lower < upper or not low <= min(opened, closed) <= max(opened, closed) <= high
+                    or high <= low or sign * (closed - opened) <= 0
+                    or sign * (closed - limit) <= 0):
+                break
+            if abs(closed - opened) / (high - low) >= .20:
+                if sign * (opened - limit) <= 0 and confirmation is not None:
+                    return index, confirmation
+                confirmation = index
+        return None
     except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-        return False
+        return None
+
+
+def confirmed_outer_breakout_ready(frame, price, side, allow_three_short=False):
+    """Keep completed confirmation while same-color closes remain outside."""
+    try:
+        row = frame.iloc[-1]
+        p = float(price)
+        if side == "LONG":
+            return p > float(row.get("kc_upper", 0.0))
+        elif side == "SHORT":
+            return p < float(row.get("kc_lower", 0.0))
+    except:
+        pass
+    return False
 
 
 def outside_entry(frame, price):

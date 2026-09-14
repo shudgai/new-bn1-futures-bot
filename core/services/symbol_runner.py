@@ -151,20 +151,14 @@ async def process_single_symbol_runner(
             allow_live_entry=not bool(existing_pos),
             # 2026-09-14 使用者：過了末端又再創新高要能開倉 → 用引擎的狀態判定。
             terminal_blocked=engine._channel_terminal_blocked(symbol, channel_df),
+            reentry_info=engine._channel_reentry_info(symbol) if not existing_pos else None,
         )
-        if (not existing_pos
-                and lobster_bearish_entry_ready(
-                    symbol, channel_df, channel_price,
-                    getattr(engine, "st_direction_1h_cache", {}).get(symbol),
-                )):
-            channel_action = {
-                "action": "ENTER", "side": "SHORT",
-                "reason": "KC_LOBSTER_1H_BEARISH_SHORT",
-            }
         if (
             not existing_pos
             and channel_action.get("action") == "ENTER"
-            and channel_action.get("reason") not in LIVE_OUTER_CODES | ENTRY_TREND_CODES | PIVOT_CODES
+            and channel_action.get("reason") not in LIVE_OUTER_CODES | ENTRY_TREND_CODES | PIVOT_CODES | {
+                "KC_DIRECTION_LONG", "KC_DIRECTION_SHORT",
+            }
             and chop_state.get("detected")
             and not chop_state.get("clear_direction")
         ):
@@ -234,7 +228,7 @@ async def process_single_symbol_runner(
                     existing_pos["channel_exception_exit_pending"] = emergency
                     changed = True
                 channel_action = {"action": "EXIT", "side": None, "reason": emergency}
-            elif three_point_pivot_exit_ready(channel_df, existing_pos.get("side")):
+            elif three_point_pivot_exit_ready(channel_df, existing_pos.get("side"), channel_price):
                 channel_action = {"action": "EXIT", "side": None, "reason": "KC_THREE_POINT_PIVOT_EXIT"}
             if changed:
                 engine.account.save_state()
@@ -280,6 +274,7 @@ async def process_single_symbol_runner(
         if path_state != path_before and hasattr(engine.account, "save_state"):
             engine.account.save_state()
         break_reasons = PIVOT_CODES | OUTER_CODES | LIVE_OUTER_CODES | TREND_CODES | {
+            "KC_PEAK_LOWER_BREAK_SHORT", "KC_OUTSIDE_CONTINUATION_LONG", "KC_OUTSIDE_CONTINUATION_SHORT",
             "KC_UPPER_BREAKOUT", "KC_LOWER_BREAKOUT",
             "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
             "KC_LIVE_UPPER_MOMENTUM_LONG",
@@ -387,7 +382,7 @@ async def process_single_symbol_runner(
                 getattr(engine, "_channel_outer_reentry_after_exit", {}).pop(symbol, None)
                 getattr(engine, "_channel_pending_reverse_bar", {}).pop(symbol, None)
                 engine.account.log(
-                    f"✅ [Channel Swing 趨勢檢查] {symbol} 已平倉，後續按MA3軌外條件及票據風控重新評估",
+                    f"✅ [Channel Swing 趨勢檢查] {symbol} 已平倉，等待新峰谷或新外軌破軌，中軌不重開",
                     "SUCCESS",
                 )
             return signal_progress, detected_candidates

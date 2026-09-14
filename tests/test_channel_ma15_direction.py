@@ -127,7 +127,7 @@ def test_lobster_one_hour_bearish_red_candle_allows_short_without_two_bodies():
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
-def test_confirmed_kc_direction_enters_without_two_same_color_bodies(side):
+def test_confirmed_kc_direction_waits_without_ma3_pivot(side):
     sign = 1 if side == 'LONG' else -1
     rows = [
         dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., kc_middle=100., kc_upper=102., kc_lower=98.),
@@ -136,7 +136,43 @@ def test_confirmed_kc_direction_enters_without_two_same_color_bodies(side):
         dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., kc_middle=100., kc_upper=102., kc_lower=98.),
     ]
     result = aligned_entry(pd.DataFrame(rows), 100.)
-    assert result == {'action': 'ENTER', 'side': side, 'reason': 'KC_DIRECTION_' + side}
+    assert result['action'] == 'WAIT'
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_flat_kc_direction_does_not_enter(side):
+    sign = 1 if side == 'LONG' else -1
+    rows = [
+        dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., kc_middle=100., kc_upper=102., kc_lower=98.),
+        dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., kc_middle=100., kc_upper=102., kc_lower=98.),
+        dict(open=100., high=101., low=99., close=100. + sign * .01, ma3=100., ma15=100., kc_middle=100. + sign * .01, kc_upper=102., kc_lower=98.),
+        dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., kc_middle=100. + sign * .01, kc_upper=102., kc_lower=98.),
+    ]
+    assert aligned_entry(pd.DataFrame(rows), 100.)['action'] == 'WAIT'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('trend_1h', [1, -1])
+async def test_confirmed_kc_direction_without_ma3_pivot_never_submits(side, trend_1h, monkeypatch):
+    from test_channel_swing_execution import _execution_engine, SYMBOL
+    sign = 1 if side == 'LONG' else -1
+    rows = [
+        dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., atr=1., kc_middle=100., kc_upper=102., kc_lower=98., timestamp=60_000),
+        dict(open=100., high=101., low=99., close=100. - sign, ma3=100., ma15=100., atr=1., kc_middle=100. - sign, kc_upper=102., kc_lower=98., timestamp=120_000),
+        dict(open=100., high=101., low=99., close=100., ma3=100., ma15=100., atr=1., kc_middle=100., kc_upper=102., kc_lower=98., timestamp=180_000),
+        dict(open=99. if side == 'LONG' else 101., high=101., low=99., close=100., ma3=100., ma15=100., atr=1., kc_middle=100., kc_upper=102., kc_lower=98., timestamp=240_000),
+    ]
+    frame = pd.DataFrame(rows)
+    engine = _execution_engine(frame, side, True)
+    engine.account.positions.clear()
+    engine.account.save_state = lambda: None
+    engine.tickers[SYMBOL] = 100.
+    engine.st_direction_1h_cache = {SYMBOL: trend_1h}
+    engine._abnormal_market_entry_allowed = lambda *args, **kwargs: True
+    monkeypatch.setattr('core.engine.DEFAULT_SYMBOLS', [SYMBOL])
+    await engine._process_single_symbol(SYMBOL, 1., None, False)
+    assert engine.account.events == [], engine.account.logs
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])

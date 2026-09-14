@@ -8,16 +8,19 @@ from core.services import rule_registry
 def test_retired_gate_list_matches_source():
     """註冊表與程式碼必須一致，否則規則會再無聲地新舊並存。"""
     assert rule_registry.retired_gate_mismatches() == {"undocumented": [], "still_active": []}
-    assert len(rule_registry.RETIRED_GATE_FUNCTIONS) >= 30
+    assert len(rule_registry.RETIRED_GATE_FUNCTIONS) == len(set(rule_registry.RETIRED_GATE_FUNCTIONS))
 
 
 def test_banner_reports_live_thresholds():
     banner = "\n".join(rule_registry.rule_banner())
-    assert f"< {config.CHANNEL_FLAT_MIDDLE_RATIO:g}" in banner
+    assert "MA3 三點谷底轉上開多／峰頂轉下開空" in banner
+    assert "峰谷不等待1分鐘CK或1H轉向" in banner
     assert f"≥ {config.CHANNEL_SWING_PROFIT_LADDER_ARM_NET_USDT:g}U" in banner
     assert f"峰值 − {config.CHANNEL_SWING_PROFIT_LADDER_LOCK_OFFSET_USDT:g}U" in banner
     assert f"{config.CHANNEL_WATERFALL_BODY_ATR:g} ATR" in banner
     assert f"{config.MAX_POSITION_MARGIN_LOSS_RATIO * 100:g}%" in banner
+    assert "可同根立即重開，不等獲利冷卻" in banner
+    assert "峰頂回落後轉向做多" in banner
 
 
 @pytest.mark.parametrize("flag,expected", [(True, "啟用"), (False, "停用")])

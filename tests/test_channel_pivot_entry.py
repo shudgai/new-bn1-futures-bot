@@ -52,7 +52,7 @@ def test_closed_pivot_confirmation(side, case):
     elif case == "live_only": f = f.iloc[:-1].copy()
     elif case == "broken_pivot": price = float(f.loc[17, extreme])
     result = pivot_entry(f, price)
-    allowed = case in {"valid", "flat_ma15", "mixed_ma15", "opposite_ma15"}
+    allowed = case in {"valid", "flat_ma15", "mixed_ma15", "opposite_ma15", "equal_extreme"}
     assert (result["action"] == "ENTER") is allowed, result
     if allowed: assert result["side"] == side
 
@@ -64,6 +64,19 @@ def test_live_ma15_and_live_pivot_cannot_change_closed_signal(side):
     f.loc[19, ["ma15", "ma3", "high", "low"]] = [1., 1000., 1000., .01]
     assert pivot_entry(f, price) == original
     assert original["action"] == "ENTER"
+
+
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+def test_ma3_pivot_enters_when_kc_is_flat_but_rejects_a_clear_opposite_slope(side):
+    f = market(side)
+    price = float(f.iloc[-1]["close"])
+    f.loc[16:18, "kc_middle"] = 100.0
+    assert pivot_entry(f, price)["side"] == side
+    f.loc[16:18, "kc_middle"] = [100.0, 99.0, 98.0] if side == "LONG" else [100.0, 101.0, 102.0]
+    assert pivot_entry(f, price) == {
+        "action": "WAIT", "side": None,
+        "reason": "KC_DIRECTION_BLOCK_" + side,
+    }
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
@@ -91,6 +104,8 @@ async def test_snapshot_accepts_inside_channel_and_rejects_changed_signal(side):
     f.loc[16:18, "ma15"] = 100.
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18, pivot_entry_signal=True) is not None
     f.loc[16:18, "kc_middle"] = 100.
+    assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18, pivot_entry_signal=True) is not None
+    f.loc[18, "kc_middle"] = 99. if side == "LONG" else 101.
     assert await e._fresh_channel_entry_snapshot(SYMBOL, side, 18, pivot_entry_signal=True) is None
 
 
@@ -119,6 +134,25 @@ async def test_process_opens_once_and_persists_pivot_context(side, monkeypatch):
     e.account.trades = [{"symbol": SYMBOL, "action": f"OPEN_{side}", "channel_confirmation_bar_id": 18}]
     assert not await e._execute_confirmed_channel_break(SYMBOL, f, price, side)
     assert len(e.account.events) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+async def test_confirmed_pivot_can_enter_against_one_hour_trend(side, monkeypatch):
+    f = market(side)
+    price = float(f.iloc[-1]["close"])
+    e = _execution_engine(f, side, True)
+    e.account.positions.clear()
+    e.account.save_state = lambda: None
+    e.tickers[SYMBOL] = price
+    e.account.positions = {}
+    e.account.position_meta = {}
+    e.st_direction_1h_cache = {SYMBOL: -1 if side == "LONG" else 1}
+    e._channel_chop_state = lambda *_: {"detected": False, "clear_direction": None}
+    e._abnormal_market_entry_allowed = lambda *args, **kwargs: True
+    monkeypatch.setattr("core.engine.DEFAULT_SYMBOLS", [SYMBOL])
+    assert await e._execute_confirmed_channel_break(SYMBOL, f, price, side)
+    assert e.account.events[-1][2] == side
 
 
 @pytest.mark.anyio
@@ -287,9 +321,9 @@ async def test_profit_reentry_waits_for_pullback_and_reclaim_not_inside_pivot(si
     await e._try_profit_reentry(SYMBOL, fresh, recovered, True)
     assert not e.account.events  # Daily halt still applies after a pullback.
     await e._try_profit_reentry(SYMBOL, fresh, recovered, False)
-    assert len(e.account.events) == 1, e.account.logs
-    assert e.account.events[0][2] == side
-    assert SYMBOL not in e.account.channel_profit_reentries
+    # Reclaiming the rail alone no longer receives the retired KC-only entry.
+    assert not e.account.events, e.account.logs
+    assert SYMBOL in e.account.channel_profit_reentries
 
 
 @pytest.mark.anyio

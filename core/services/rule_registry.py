@@ -33,7 +33,6 @@ RETIRED_GATE_FUNCTIONS: Tuple[Tuple[str, str], ...] = (
     ("core/services/strategies/direct_reverse_strategy.py", "authorized"),  # -> False
     ("core/services/swing_service.py", "channel_entry_reuses_exit_bar"),  # -> False
     ("core/services/swing_service.py", "channel_peak_exit_reentry_blocked"),  # -> False
-    ("core/services/swing_service.py", "channel_entry_min_profit_ok"),  # -> True
     ("core/services/swing_service.py", "channel_peak_exit_entry_gate"),  # -> True
     ("core/services/swing_service.py", "channel_upper_red_short_reversal_allowed"),  # -> True
     ("core/services/swing_service.py", "channel_is_upper_red_peak_short"),  # -> False
@@ -41,8 +40,6 @@ RETIRED_GATE_FUNCTIONS: Tuple[Tuple[str, str], ...] = (
     ("core/services/swing_service.py", "channel_slope_entry_gate"),  # -> True
     ("core/services/swing_service.py", "channel_macro_continuation_entry_gate"),  # -> True
     ("core/services/swing_service.py", "channel_closed_body_volume_gate"),  # -> True
-    ("core/services/swing_service.py", "channel_near_chop_entry_gate"),  # -> True
-    ("core/services/swing_service.py", "channel_chop_gate"),  # -> True
     ("core/services/swing_service.py", "channel_outer_half_space_hold"),  # -> True
     ("core/services/swing_service.py", "check_parabolic_reversal_exit"),  # -> None
     ("core/services/swing_service.py", "channel_impulse_turn_allowed"),  # -> True
@@ -55,8 +52,6 @@ RETIRED_GATE_FUNCTIONS: Tuple[Tuple[str, str], ...] = (
     ("core/services/swing_service.py", "two_bar_structure_failure_exit"),  # -> False
     ("core/services/swing_service.py", "adverse_kc_outer_breached"),  # -> False
     ("core/services/swing_service.py", "confirmed_outer_reversal"),  # -> False
-    ("core/services/swing_service.py", "pivot_pullback_ready"),  # -> True
-    ("core/services/swing_service.py", "detect_strict_pivot_prealert"),  # -> None
 )
 
 _FIXED_RETURNS = (False, None, True, 0, 0.0, "")
@@ -101,34 +96,25 @@ def _flag(enabled: bool) -> str:
 def active_entry_rule_lines() -> List[str]:
     """Describe the gates that can actually allow a new position right now."""
     return [
-        "  1. 趨勢入口：最近兩根已收線 CK 中軌嚴格上升／下降；持平或無效不開",
-        f"     走平禁開：中軌位移 ÷ 軌寬 < {config.CHANNEL_FLAT_MIDDLE_RATIO:g} 即不開"
-        "（V 型快通道與即時破軌入口同樣適用）",
-        (f"  1b. 方向效率過濾：最近 20 根淨位移 ÷ 總路徑 ≥ {config.CHANNEL_MIN_DIRECTION_EFFICIENCY:g}"
-         if config.CHANNEL_MIN_DIRECTION_EFFICIENCY > 0 else "  1b. 方向效率過濾：未啟用"),
-        (f"  1c. 長K特例（不看 CK 中軌）：順向實體 ≥ {config.CHANNEL_LONG_BODY_ENTRY_ATR:g} ATR 且收在軌外"
-         if config.CHANNEL_LONG_BODY_ENTRY_ATR > 0 else "  1c. 長K特例：未啟用"),
-        f"  2. 即時長K破軌入口：{_flag(config.CHANNEL_LIVE_BODY_BREAKOUT_ENABLED)}",
-        "  共用過濾："
-        + f"1h 趨勢過濾{_flag(config.CHANNEL_1H_TREND_FILTER_ENABLED)}（與 1h SuperTrend 方向不一致不開）、"
-        + (f"獲利重開冷卻 {config.CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC / 60:g} 分鐘"
-           + ("（強趨勢豁免）" if config.CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN else "") + "、"
-           if config.CHANNEL_PROFIT_REENTRY_COOLDOWN_SEC > 0 else "")
-        + ("末端禁開已停用（漲勢延續可再進場）、" if config.CHANNEL_TAIL_MAX_TREND_BARS <= 0
-           else f"末端禁開（連續同向 {config.CHANNEL_TAIL_MAX_TREND_BARS} 根）、")
-        + f"當根實體過熱 > {config.CHANNEL_ENTRY_MAX_BODY_ATR:g} ATR、"
-        f"前一根大K > {config.CHANNEL_ENTRY_MAX_PREV_BODY_ATR:g} ATR 不追（長K／破軌入口不吃這兩項）、"
-        + "淨利空間檢查：僅特例K、"
-        + "反向異常攔截、每根限次、"
-        + (f"停損後冷卻 {config.CHANNEL_STOP_LOSS_COOLDOWN_SEC / 60:g} 分鐘" if config.CHANNEL_STOP_LOSS_COOLDOWN_SEC > 0 else "停損後冷卻：未啟用")
-        + ("（強趨勢豁免）" if config.CHANNEL_STRONG_TREND_EXEMPTS_COOLDOWN else ""),
-        f"  獲利重開票據有效期 {config.PROFIT_REENTRY_TICKET_TTL_SEC} 秒",
+        "  1. 一般破軌：實體破軌根＋同向實體確認根，兩根均已收線且實體占全長至少20%",
+        "     兩根收盤與送單現價均須在同側外軌外，已收線MA3與KC中軌均同向",
+        "     完成確認後，同色收線持續軌外就保留資格，不因多走一根重等；送單失敗可重驗，成交才計次",
+        "  2. 峰谷入口：已收線 MA3 三點谷底轉上開多／峰頂轉下開空，右側一根同向收線K即可",
+        "     峰谷不等待1分鐘CK或1H轉向、不要求破軌；盤整不顯示訊號也不開倉",
+        "  3. 盤整即時破軌：當根由軌內穿上軌立即開多、穿下軌立即開空，不等收線或MA3/KC轉向",
+        "     縮回軌內取消；盤整突破不受舊末端標記攔截，平倉當根與帳戶風控仍限制進場",
+        "  峰頂未開空：MA3自峰頂持續下降，下軌破軌一根實體K收線即可開空（實體占全長至少20%）",
+        "  峰頂回落後轉向做多：上軌破軌根＋同色實體確認根均須收線，盤整與峰谷入口不得跳過",
+        "  正常平倉後原方向MA3與KC趨勢持續：可同根立即重開，不等獲利冷卻或全新破軌；轉向後須重新確認",
+        "  共用風控：帳戶餘額與槽位、有效報價、反向異常與送單前重驗；每根限次僅豁免已確認平倉的同向趨勢重開",
+        f"  停損冷卻 {config.CHANNEL_STOP_LOSS_COOLDOWN_SEC:g} 秒，既有強趨勢豁免保留",
     ]
 
 
 def active_exit_rule_lines() -> List[str]:
     """Describe the exits that can actually close a position right now."""
     return [
+        "  峰谷平倉：已收線價格與MA3三點轉折＋右側同向K，KC不得反對平倉方向，現價不得跌破谷底／突破峰頂",
         (f"  1. ATR 括號出口：停損 {config.CHANNEL_ATR_STOP_MULT:g} ATR／目標 "
          f"{config.CHANNEL_ATR_TARGET_MULT:g} ATR（取代階梯鎖利）"
          if config.CHANNEL_ATR_EXIT_ENABLED else

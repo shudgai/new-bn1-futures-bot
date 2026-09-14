@@ -211,6 +211,7 @@
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; height: 560px; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
         .chart-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .chart-grid.chart-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         /* 只有一個幣種時用單欄，圖表才會佔滿整個寬度（含全螢幕） */
         .chart-grid.chart-grid-single { grid-template-columns: 1fr; }
         .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; display: flex; flex-direction: column; }
@@ -613,7 +614,10 @@
                 </div>
             </div>
             <div class="chart-modal-body chart-grid"
-                 :class="{ 'chart-grid-single': chartModal.symbols.length <= 1 }"
+                      :class="{
+                          'chart-grid-single': chartModal.symbols.length <= 1,
+                          'chart-grid-two': chartModal.symbols.length === 2,
+                      }"
                  :style="(!chartFullscreen && chartModalHeight) ? { height: chartModalHeight + 'px' } : {}">
                 <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': chartModal.states[symbol]?.entryBlock }">
                     <div class="chart-pane-header">
@@ -1005,6 +1009,7 @@
                     const kcLower = [];
                     const tradeMarkers = [];
                     const auditMarkers = [];
+                    const showPivotMarkers = !/^(?:龙虾|龍蝦)(?:\/|USDT|$)/.test(symbol);
                     
                     json.data.forEach(d => {
                         candles.push({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close });
@@ -1029,19 +1034,14 @@
                                     size: 1,
                                 });
                             });
-                        [...(d.pivot_markers || [])].forEach(pivot => {
+                        (showPivotMarkers ? (d.pivot_markers || []) : []).forEach(pivot => {
                             const isLong = pivot.side === 'LONG';
-                            const alignmentStyle = {
-                                '順1H': '#16a34a',
-                                '逆1H': '#ef4444',
-                                '1H未取得': '#64748b',
-                            }[pivot.alignment] || '#64748b';
                             auditMarkers.push({
                                 time: d.time,
                                 position: isLong ? 'belowBar' : 'aboveBar',
-                                color: alignmentStyle,
+                                color: isLong ? '#16a34a' : '#ef4444',
                                 shape: isLong ? 'arrowUp' : 'arrowDown',
-                                text: `${isLong ? '峰底開多' : '峰頂開空'} ${pivot.alignment}`,
+                                text: isLong ? '谷底開多訊號' : '峰頂開空訊號',
                                 size: 1,
                             });
                         });

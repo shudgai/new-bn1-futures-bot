@@ -64,6 +64,7 @@ def test_three_point_exit_does_not_require_ma15_to_touch_the_rail(side):
     values = [100.0, 99.0, 100.0] if side == "SHORT" else [100.0, 101.0, 100.0]
     frame = frame_for(side, values, [4.5, 4.5, 4.5])
     frame["ma3"] = [100.0, 99.0, 100.0, 100.0] if side == "SHORT" else [100.0, 101.0, 100.0, 100.0]
+    frame["kc_middle"] = 100.
     assert three_point_pivot_exit_ready(frame, side)
 
 
@@ -100,7 +101,7 @@ def test_unarmed_ma15_trend_exits_when_ma3_ma15_and_kc_reverse(side):
     assert ma15_unarmed_opposite_exit_ready(pd.DataFrame(rows), price, side)
 
 
-def test_mid_trend_exit_can_use_a_later_valid_entry_or_outer_breakout():
+def test_mid_trend_exit_waits_for_two_closed_bodies_then_allows_breakout():
     rows = [
         {"open": 101.0, "high": 102.0, "low": 99.0, "close": 100.0,
          "ma3": 100.0, "ma15": 101.0, "kc_upper": 105.0, "kc_lower": 95.0,
@@ -118,13 +119,16 @@ def test_mid_trend_exit_can_use_a_later_valid_entry_or_outer_breakout():
     frame = pd.DataFrame(rows)
     exit_info = {"side": "SHORT", "exit_bar_id": 60_000, "require_new_closed_break": True}
     gate = TradingEngine._channel_peak_exit_reentry_blocked
-    assert not gate("ENTER", False, "SHORT", frame, exit_info, "TEST", live_price=99.0)
+    assert gate("ENTER", False, "SHORT", frame, exit_info, "TEST", live_price=99.0)
     frame.loc[1, ["open", "high", "low", "close"]] = [100.0, 101.0, 93.0, 94.0]
     frame.loc[2, ["open", "high", "low", "close"]] = [94.0, 95.0, 92.0, 93.0]
+    frame.loc[1:2, "ma3"] = [99., 97.]
+    frame["atr"] = 2.
+    frame.loc[3, ["open", "high", "low", "close"]] = [93.2, 93.25, 92.9, 93.]
     assert not gate("ENTER", False, "SHORT", frame, exit_info, "TEST", live_price=93.0)
 
 
-def test_mid_trend_exit_allows_a_new_ma3_ma15_kc_entry_after_a_later_closed_bar():
+def test_mid_trend_exit_rejects_ma_alignment_without_pivot_or_breakout():
     rows = [
         {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "ma3": 100.0, "ma15": 101.0,
          "kc_upper": 105.0, "kc_lower": 95.0, "kc_middle": 101.0, "timestamp": 60_000},
@@ -138,7 +142,7 @@ def test_mid_trend_exit_allows_a_new_ma3_ma15_kc_entry_after_a_later_closed_bar(
     frame = pd.DataFrame(rows)
     exit_info = {"side": "LONG", "exit_bar_id": 60_000, "require_new_closed_break": True}
     gate = TradingEngine._channel_peak_exit_reentry_blocked
-    assert not gate("ENTER", False, "SHORT", frame, exit_info, "TEST", live_price=98.0)
+    assert gate("ENTER", False, "SHORT", frame, exit_info, "TEST", live_price=98.0)
 
 
 def test_confirmed_opposite_outer_breakout_requires_two_closed_bodies():

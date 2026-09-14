@@ -116,3 +116,15 @@ def test_diagnostics_preview_release_without_mutating(side):
     assert result['reason'] == 'KC_ENTRY_READY', result
     assert result['abnormal_ticket_release_ready']
     assert e.account.channel_profit_reentries == before
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_abnormal_reverse_waits_for_a_closed_confirmation_after_the_exit_bar(side):
+    e, f, price = setup(side)
+    ticket = e.account.channel_profit_reentries[SYMBOL]
+    ticket['exit_bar_id'] = 960_000
+    ticket['close_requested_at_ms'] = 960_001
+    e.account.trades[0]['id'] = 960_002
+    f.loc[f.index[-1], 'timestamp'] = 1_020_000
+    f.loc[f.index[-2], 'timestamp'] = 960_000
+    assert not opposite_entry_releases(e.account, SYMBOL, f, price)

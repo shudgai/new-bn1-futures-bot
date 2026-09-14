@@ -1,6 +1,6 @@
 # 現行生效參數（.env 實際值，不含機密）
 
-> 由 `tools/dump_active_params.py` 從 `core/config.py` 讀出的執行期實際值（2026-09-14 02:19）。調整 `.env` 後請重跑並一起 commit。
+> 由 `tools/dump_active_params.py` 從 `core/config.py` 讀出的執行期實際值（2026-09-14 08:49）。調整 `.env` 後請重跑並一起 commit。
 
 | 參數 | 值 | 說明 |
 |---|---|---|
@@ -30,7 +30,7 @@
 
 ## 交易幣種
 
-- 龙虾/USDT、SOL/USDT、1000PEPE/USDT（固定牌面，幣種輪替停用）
+- 龙虾/USDT、1000PEPE/USDT（固定牌面，幣種輪替停用）
 
 ## 入口（現行）
 

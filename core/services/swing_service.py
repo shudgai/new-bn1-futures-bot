@@ -162,50 +162,40 @@ def record_channel_signal_event(symbol: str, reason: str, frame: pd.DataFrame) -
 
 def channel_chop_state(frame: pd.DataFrame) -> dict:
     """Return the rigid, side-independent KC consolidation state."""
-    if frame is None or len(frame) < 20:
+    from core.services.strategies.outer_strategy import ck_direction
+    
+    if frame is None or len(frame) < 2:
         return {"detected": False, "clear_direction": None}
-    try:
-        closed = frame.iloc[:-1] if len(frame) > 20 else frame
-        middle_key = "kc_middle" if "kc_middle" in closed.columns else "ema_20"
-        middle = closed[middle_key].astype(float)
-        upper = closed["kc_upper"].astype(float)
-        lower = closed["kc_lower"].astype(float)
-        widths = (upper - lower) / middle.abs().clip(lower=1e-12)
-        if len(widths) < 20 or not widths.iloc[-20:].map(math.isfinite).all():
-            return {"detected": False, "clear_direction": None}
-        bandwidth = float(widths.iloc[-1])
-        bandwidth_ma = float(widths.iloc[-20:].mean())
-        compression = bandwidth < 0.8 * bandwidth_ma
-
-        slope_base = float(middle.iloc[-3])
-        slope = abs(float(middle.iloc[-1]) - slope_base) / max(abs(slope_base), 1e-12)
-        recent = closed.iloc[-5:]
-        bodies = (recent["close"].astype(float) - recent["open"].astype(float)).abs()
-        atr = recent["atr"].astype(float)
-        small_body_count = int((bodies < 0.5 * atr).sum())
-        low_momentum = small_body_count >= 3 and slope < 0.001
-        return {
-            "detected": bool(compression or low_momentum),
-            "clear_direction": None,
-            "compression": bool(compression),
-            "low_momentum": bool(low_momentum),
-            "bandwidth": bandwidth,
-            "bandwidth_ma": bandwidth_ma,
-            "slope": slope,
-            "small_body_count": small_body_count,
-        }
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return {"detected": False, "clear_direction": None}
+        
+    direction = ck_direction(frame)
+    if direction == "FLAT":
+        return {"detected": True, "clear_direction": None}
+        
+    # 2026-09-14 依照要求：只要不是平走，就算是明顯趨勢，絕非盤整
+    return {"detected": False, "clear_direction": direction}
 
 def channel_chop_breakout_action(frame: pd.DataFrame, price: float) -> dict:
-    if frame is None or frame.empty:
-        return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
-    curr = frame.iloc[-1]
-    if price > float(curr["kc_upper"]):
-        return {"action": "ENTER", "side": "LONG", "reason": "KC_CHOP_BREAKOUT_LONG"}
-    elif price < float(curr["kc_lower"]):
-        return {"action": "ENTER", "side": "SHORT", "reason": "KC_CHOP_BREAKOUT_SHORT"}
-    return {"action": "WAIT", "side": None, "reason": "CHOP_WAIT"}
+    """Enter on a current candle's inside-to-outside break; never on a wick alone."""
+    from core.services.strategies.outer_strategy import live_adverse_entry_safe
+
+    wait = {"action": "WAIT", "side": None, "reason": "KC_CHOP_WAIT"}
+    try:
+        if frame is None or len(frame) < 2:
+            return wait
+        curr = frame.iloc[-1]
+        opened, upper, lower = (float(curr[key]) for key in ("open", "kc_upper", "kc_lower"))
+        price = float(price)
+        if not all(math.isfinite(value) and value > 0 for value in (opened, upper, lower, price)) or lower >= upper:
+            return {**wait, "reason": "KC_DATA_INVALID"}
+        side = ("LONG" if opened <= upper < price else
+                "SHORT" if opened >= lower > price else None)
+        if side is None:
+            return wait
+        if not live_adverse_entry_safe(frame, price, side):
+            return {**wait, "reason": "KC_LIVE_ADVERSE_ENTRY_WAIT"}
+        return {"action": "ENTER", "side": side, "reason": "KC_CHOP_BREAKOUT_" + side}
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return {**wait, "reason": "KC_DATA_INVALID"}
 
 def channel_entry_reuses_exit_bar(position: dict, frame: pd.DataFrame) -> bool:
     return False
@@ -353,119 +343,48 @@ def channel_swing_action(
     terminal_blocked: bool | None = None,
     **kwargs
 ) -> dict:
-    """Channel Swing entry/exit state machine.
-
-    The regression contract expects two behaviors:
-    - held positions exit on a live adverse candle or a valid peak reversal,
-    - fresh entries only trigger after a real outer-rail break or a valid trend entry.
-    """
+    """Channel Swing entry/exit state machine using 3-point pivots and spatial filtering."""
     if frame is None or frame.empty:
         return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
 
-    if str(current_side or "").upper() in ("LONG", "SHORT"):
-        side = str(current_side).upper()
-        try:
-            row = frame.iloc[-1]
-            close_val = float(row.get("close", 0.0))
-            open_val = float(row.get("open", 0.0))
-            ma3_val = float(row.get("ma3", 0.0))
-            kc_upper = float(row.get("kc_upper", 0.0))
-            kc_lower = float(row.get("kc_lower", 0.0))
-            if side == "LONG":
-                return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH"}
-            return {"action": "HOLD", "side": None, "reason": "HOLDING_SHORT_RUN_TO_LOW"}
-        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-            return {"action": "HOLD", "side": None, "reason": "HOLDING_LONG_RUN_TO_HIGH" if side == "LONG" else "HOLDING_SHORT_RUN_TO_LOW"}
-
     try:
-        curr = frame.iloc[-1]
-        price = float(live_price)
-        upper = float(curr.get("kc_upper", 0.0))
-        lower = float(curr.get("kc_lower", 0.0))
-        if terminal_blocked is None:
-            terminal_blocked = channel_terminal_market(frame)
-        outer_candidate = (
-            (math.isfinite(upper) and price > upper)
-            or (math.isfinite(lower) and price < lower)
-        )
-        if (terminal_blocked and not _special_long_body_aligned(frame, price)
-                and not outer_candidate):
-            return {"action": "WAIT", "side": None, "reason": "KC_TREND_END_WAIT"}
-        pivot = pivot_entry(frame, price)
-        if pivot.get("action") == "ENTER":
-            return pivot
-        special_side = live_body_breakout_side(frame, price)
-        if (price > upper
-            and special_side != "LONG"
-            and anti_fakeout_breakout_ready(frame, price, upper, "LONG")
-            and confirmed_outer_breakout_ready(frame, price, "LONG")):
-            return {"action": "ENTER", "side": "LONG", "reason": "KC_UPPER_BREAKOUT_STRICT"}
-        if (price < lower
-            and special_side != "SHORT"
-            and anti_fakeout_breakout_ready(frame, price, lower, "SHORT")
-            and confirmed_outer_breakout_ready(frame, price, "SHORT")):
-            return {"action": "ENTER", "side": "SHORT", "reason": "KC_LOWER_BREAKOUT_STRICT"}
-
-        decision = aligned_entry(frame, live_price, require_second_body=not profit_reentry)
-        special_reason = str(decision.get("reason") or "")
-        is_special_entry = special_reason.startswith((
-            "KC_LIVE_BODY_BREAKOUT_", "KC_LONG_BODY_",
-        ))
-        is_continuation_entry = special_reason.startswith("KC_OUTSIDE_CONTINUATION_")
-        two_closed_entry = special_reason.startswith("KC_TWO_CLOSED_BODIES_")
-        kc_direction_entry = special_reason.startswith("KC_DIRECTION_")
-        if decision.get("action") == "ENTER" and (
-            is_special_entry or is_continuation_entry or two_closed_entry or kc_direction_entry
-        ):
-            return decision
-
-        if outer_entry_only:
-            prior = frame.iloc[-2] if len(frame) >= 2 else curr
-            prev_close = float(prior.get("close", 0.0))
-            prev_upper = float(prior.get("kc_upper", 0.0))
-            prev_lower = float(prior.get("kc_lower", 0.0))
-            previous_outside = (prev_close > prev_upper) or (prev_close < prev_lower)
-            if price > upper or price < lower or previous_outside:
-                return {"action": "WAIT", "side": None, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
-            return {"action": "WAIT", "side": None, "reason": "KC_INSIDE_CHANNEL"}
-
-        if price > upper and math.isfinite(upper):
-            return {"action": "WAIT", "side": None, "reason": "KC_SURGE_WAIT_TROUGH"}
-        if price < lower and math.isfinite(lower):
-            return {"action": "WAIT", "side": None, "reason": "KC_OUTSIDE_WAIT_NEXT_CANDLE"}
-        return decision
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        from core.services.strategies.pivot_strategy import evaluate_strategy
+        
+        position = "NONE"
+        if str(current_side or "").upper() == "LONG":
+            position = "LONG"
+        elif str(current_side or "").upper() == "SHORT":
+            position = "SHORT"
+            
+        decision = evaluate_strategy(frame, position)
+        
+        # Mapping evaluate_strategy outputs to engine-expected dictionaries
+        if decision == "CLOSE_LONG":
+            return {"action": "CLOSE", "side": "LONG", "reason": "KC_MA15_PEAK_SHORT_REVERSAL"}
+        elif decision == "CLOSE_SHORT":
+            return {"action": "CLOSE", "side": "SHORT", "reason": "KC_MA15_TROUGH_LONG_REVERSAL"}
+        elif decision == "HOLD_LONG":
+            return {"action": "HOLD", "side": "LONG", "reason": "HOLDING_LONG_RUN_TO_HIGH"}
+        elif decision == "HOLD_SHORT":
+            return {"action": "HOLD", "side": "SHORT", "reason": "HOLDING_SHORT_RUN_TO_LOW"}
+            
+        elif decision == "OPEN_LONG_FROM_TROUGH":
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_MA15_TROUGH_LONG"}
+        elif decision == "OPEN_LONG_REBREAKOUT":
+            return {"action": "ENTER", "side": "LONG", "reason": "KC_OUTSIDE_CONTINUATION_LONG"}
+            
+        elif decision == "OPEN_SHORT_FROM_PEAK":
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_MA15_PEAK_SHORT"}
+        elif decision == "OPEN_SHORT_REBREAKOUT":
+            return {"action": "ENTER", "side": "SHORT", "reason": "KC_OUTSIDE_CONTINUATION_SHORT"}
+            
         return {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
+        
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError) as e:
+        return {"action": "WAIT", "side": None, "reason": f"KC_ERROR: {str(e)}"}
 
 def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
-    """Close a position when valid closed CK data is no longer clear for it."""
-    if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
-        return None
-    middle_key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
-    required = {"kc_lower", middle_key, "kc_upper"}
-    if not required.issubset(frame.columns):
-        return None
-    try:
-        rows = frame.iloc[-3:-1]
-        values = [
-            (float(row["kc_lower"]), float(row[middle_key]), float(row["kc_upper"]))
-            for _, row in rows.iterrows()
-        ]
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return None
-    if len(values) != 2 or any(
-        not all(math.isfinite(value) and value > 0 for value in row)
-        or not row[0] < row[1] < row[2]
-        for row in values
-    ):
-        return None
-    direction = ck_direction(frame)
-    if direction == side:
-        return None
-    if direction in ("LONG", "SHORT"):
-        return "KC_CK_DIRECTION_REVERSED_EXIT"
-    return "KC_CK_DIRECTION_UNCLEAR_EXIT"
-
+    return None
 
 _UNCLEAR_BAR_KEY = "channel_ck_unclear_bar"
 

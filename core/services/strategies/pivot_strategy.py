@@ -1,6 +1,4 @@
-"""Closed price/MA3 pivots with first-turn confirmation and exit state.
-Implements IEntryStrategy interface.
-"""
+"""Closed price True Peak/Trough 3 points with spatial filtering and CKS trend direction."""
 import math
 from typing import Dict, Any, Tuple
 import pandas as pd
@@ -8,110 +6,135 @@ from core.interfaces.entry_interface import IEntryStrategy
 
 PIVOT_CODES = {"KC_MA15_TROUGH_LONG", "KC_MA15_PEAK_SHORT"}
 
+def calculate_ck_trend(df: pd.DataFrame) -> str:
+    """判斷 CK (Chande Kroll / 通道指標) 當前走向"""
+    if df is None or len(df) < 2:
+        return "FLAT"
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    ck_long = latest.get("ck_long", 0.0)
+    ck_short = latest.get("ck_short", float('inf'))
+    close = latest["close"]
+    prev_ck_long = prev.get("ck_long", 0.0)
+    prev_ck_short = prev.get("ck_short", float('inf'))
 
-def closed_ck_direction(frame, require_outer_slope=True):
-    """Use three closed midpoints and a non-adverse directional outer rail."""
-    try:
-        if frame is None or len(frame) < 4:
-            return None
-        middle_key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
-        rows = [frame.iloc[i] for i in (-4, -3, -2)]
-        middle = [float(r[middle_key]) for r in rows]
-        upper = [float(r["kc_upper"]) for r in rows]
-        lower = [float(r["kc_lower"]) for r in rows]
-        if not all(math.isfinite(v) and v > 0 for v in middle + upper + lower):
-            return None
-        if any(lo >= hi for lo, hi in zip(lower, upper)):
-            return None
-        if middle[0] < middle[1] < middle[2] and (not require_outer_slope or upper[0] <= upper[1] <= upper[2]):
-            return "LONG"
-        if middle[0] > middle[1] > middle[2] and (not require_outer_slope or lower[0] >= lower[1] >= lower[2]):
-            return "SHORT"
-    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-        return None
-    return None
+    if close > ck_short and ck_long >= prev_ck_long:
+        return "BULL"
+    elif close < ck_long and ck_short <= prev_ck_short:
+        return "BEAR"
+    return "FLAT"
 
-
-def pivot_entry(frame, price):
-    wait = {"action": "WAIT", "side": None, "reason": "WAIT_MA15_PRICE_PIVOT"}
-    required = {"open", "high", "low", "close", "ma3", "kc_upper", "kc_lower"}
-    if frame is None or len(frame) < 4 or not required.issubset(frame.columns):
-        return {**wait, "reason": "KC_DATA_UNAVAILABLE"}
-    try:
-        left, pivot, right = (frame.iloc[-4], frame.iloc[-3], frame.iloc[-2])
-        rows = (left, pivot, right)
-        values = [float(row[key]) for row in rows for key in required] + [float(price)]
-        if not all(math.isfinite(v) and v > 0 for v in values):
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        if any(not (float(r["low"]) <= min(float(r["open"]), float(r["close"]))
-                    <= max(float(r["open"]), float(r["close"])) <= float(r["high"])) for r in rows):
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        rails = [(float(r["kc_lower"]), float(r["kc_upper"])) for r in (*rows, frame.iloc[-1])]
-        if any(not (math.isfinite(lo) and math.isfinite(hi) and 0 < lo < hi) for lo, hi in rails):
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        middle_key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
-        trend_rows = rows
-        middle = [float(r[middle_key]) for r in trend_rows]
-        if not all(math.isfinite(v) and v > 0 for v in middle):
-            return {**wait, "reason": "KC_DATA_INVALID"}
-        direction = closed_ck_direction(frame)
-
-        live = frame.iloc[-1]
-        ma3_live = float(live.get("ma3", 0.0))
-        ma3_right = float(right["ma3"])
-
-        if (float(pivot["low"]) < min(float(left["low"]), float(right["low"]))
-                and float(right["close"]) > float(right["open"])
-                and float(left["ma3"]) > float(pivot["ma3"]) < ma3_right
-                and ma3_live > ma3_right
-                and price > float(pivot["low"])):
-            if direction != "LONG":
-                return {**wait, "reason": "KC_DIRECTION_BLOCK_LONG"}
-            return {"action": "ENTER", "side": "LONG", "reason": "KC_MA15_TROUGH_LONG"}
-        if (float(pivot["high"]) > max(float(left["high"]), float(right["high"]))
-                and float(right["close"]) < float(right["open"])
-                and float(left["ma3"]) < float(pivot["ma3"]) > ma3_right
-                and ma3_live < ma3_right
-                and price < float(pivot["high"])):
-            if direction != "SHORT":
-                return {**wait, "reason": "KC_DIRECTION_BLOCK_SHORT"}
-            return {"action": "ENTER", "side": "SHORT", "reason": "KC_MA15_PEAK_SHORT"}
-    except (TypeError, ValueError, KeyError, IndexError):
-        return {**wait, "reason": "KC_DATA_INVALID"}
-    return wait
-
-
-def pivot_middle_exit(position, price, middle):
-    """Persist favorable crossing and latch a failed close for the next scan."""
-    if not position.get("channel_pivot_entry"):
-        return True
-    if position.get("channel_pivot_middle_exit_pending"):
-        return True
-    side = position.get("side")
-    if side not in ("LONG", "SHORT"):
+def is_pivot_peak(df: pd.DataFrame) -> bool:
+    """真頂峰三點檢驗：t-2, t-1, t (已收盤)"""
+    if df is None or len(df) < 3:
         return False
-    direction = 1 if side == "LONG" else -1
-    try:
-        if not all(math.isfinite(float(v)) and float(v) > 0 for v in (price, middle)):
-            return False
-        entry = float(position.get("entry_price") or 0)
-        entry_middle = float(position.get("entry_kc_middle") or 0)
-        if (entry > 0 and entry_middle > 0 and math.isfinite(entry) and math.isfinite(entry_middle)
-                and direction * (entry - entry_middle) > 0):
-            position["channel_pivot_middle_reached"] = True
-        if direction * (price - middle) > 0:
-            position["channel_pivot_middle_reached"] = True
-        if position.get("channel_pivot_middle_reached") and direction * (price - middle) <= 0:
-            position["channel_pivot_middle_exit_pending"] = True
-            return True
-    except (TypeError, ValueError):
+    b0, b1, b2 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+    is_peak = (b1["high"] > b0["high"]) and (b1["high"] > b2["high"])
+    confirmed = b2["close"] < b1["low"]
+    return bool(is_peak and confirmed)
+
+def is_pivot_trough(df: pd.DataFrame) -> bool:
+    """真谷底三點檢驗：t-2, t-1, t (已收盤)"""
+    if df is None or len(df) < 3:
         return False
+    b0, b1, b2 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+    is_trough = (b1["low"] < b0["low"]) and (b1["low"] < b2["low"])
+    confirmed = b2["close"] > b1["high"]
+    return bool(is_trough and confirmed)
+
+def has_enough_profit_space(entry_price: float, target_level: float, atr: float, min_atr_mult: float = 1.5) -> bool:
+    """空間距離過濾：計算到下一個預期阻力/支撐的空間是否足夠獲利"""
+    distance = abs(target_level - entry_price)
+    return distance >= (atr * min_atr_mult)
+
+def check_two_bar_breakout(df: pd.DataFrame, band_type: str = "upper") -> bool:
+    """平倉後防假破軌：必須連續兩根 K 線實體完整收在軌道外"""
+    if df is None or len(df) < 2:
+        return False
+    b1 = df.iloc[-2]
+    b2 = df.iloc[-1]
+
+    if band_type == "upper":
+        two_closes = (b1["close"] > b1["kc_upper"]) and (b2["close"] > b2["kc_upper"])
+        is_bullish = b2["close"] > b2["open"]
+        return bool(two_closes and is_bullish)
+
+    elif band_type == "lower":
+        two_closes = (b1["close"] < b1["kc_lower"]) and (b2["close"] < b2["kc_lower"])
+        is_bearish = b2["close"] < b2["open"]
+        return bool(two_closes and is_bearish)
+
     return False
 
+def get_recent_levels(df: pd.DataFrame) -> dict:
+    """從歷史 K 線中找出最近的真峰頂與真谷底價格"""
+    levels = {"last_peak": None, "last_trough": None}
+    if df is None or len(df) < 5:
+        return levels
+        
+    # 回溯尋找最近的 peak/trough
+    for i in range(len(df)-1, 2, -1):
+        window = df.iloc[i-3:i]
+        if levels["last_peak"] is None and is_pivot_peak(window):
+            levels["last_peak"] = window.iloc[-2]["high"]
+        if levels["last_trough"] is None and is_pivot_trough(window):
+            levels["last_trough"] = window.iloc[-2]["low"]
+            
+        if levels["last_peak"] is not None and levels["last_trough"] is not None:
+            break
+            
+    # 若找不到，給予預設極端值避免報錯
+    if levels["last_peak"] is None:
+        levels["last_peak"] = df.iloc[-1]["close"] * 1.5
+    if levels["last_trough"] is None:
+        levels["last_trough"] = df.iloc[-1]["close"] * 0.5
+        
+    return levels
+
+def evaluate_strategy(df: pd.DataFrame, position: str) -> str:
+    """交易決策主函數 (由外部調用)"""
+    if df is None or len(df) < 3:
+        return "WAIT"
+        
+    latest = df.iloc[-1]
+    close = latest["close"]
+    atr = latest["atr"]
+    trend = calculate_ck_trend(df)
+    recent_levels = get_recent_levels(df)
+
+    if position == "LONG":
+        if is_pivot_peak(df):
+            return "CLOSE_LONG"
+        return "HOLD_LONG"
+
+    if position == "SHORT":
+        if is_pivot_trough(df):
+            return "CLOSE_SHORT"
+        return "HOLD_SHORT"
+
+    if position == "NONE":
+        if trend == "BULL":
+            if is_pivot_trough(df):
+                target = recent_levels.get("last_peak", close + 3 * atr)
+                if has_enough_profit_space(close, target, atr, min_atr_mult=1.5):
+                    return "OPEN_LONG_FROM_TROUGH"
+                return "SKIP_SPACE_TOO_CLOSE"
+            if check_two_bar_breakout(df, band_type="upper"):
+                return "OPEN_LONG_REBREAKOUT"
+
+        elif trend == "BEAR":
+            if is_pivot_peak(df):
+                target = recent_levels.get("last_trough", close - 3 * atr)
+                if has_enough_profit_space(close, target, atr, min_atr_mult=1.5):
+                    return "OPEN_SHORT_FROM_PEAK"
+                return "SKIP_SPACE_TOO_CLOSE"
+            if check_two_bar_breakout(df, band_type="lower"):
+                return "OPEN_SHORT_REBREAKOUT"
+
+    return "WAIT"
 
 class PivotChannelEntryStrategy(IEntryStrategy):
-    """OOP Strategy class implementing IEntryStrategy for pivot entry evaluation."""
-
+    """Legacy interface mapping"""
     def evaluate_entry(
         self,
         frame: pd.DataFrame,
@@ -119,7 +142,6 @@ class PivotChannelEntryStrategy(IEntryStrategy):
         side: str,
         **kwargs: Any
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        decision = pivot_entry(frame, price)
-        if decision.get("action") == "ENTER" and decision.get("side") == side:
-            return True, decision.get("reason", "OK"), decision
-        return False, decision.get("reason", "WAIT"), decision
+        # This is overridden by the global evaluate_strategy mechanism now.
+        return False, "DEPRECATED", {}
+

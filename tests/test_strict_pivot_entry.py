@@ -254,3 +254,53 @@ def test_original_5887ffa_first_confirmation_then_strict_second_k():
     )
     assert accepted is True
     assert "confirmation passed" in accepted_reason
+
+
+def test_real_pivot_requires_outer_rail_peak_and_ma3_turn():
+    frame = pd.DataFrame({
+        "open": [100.0, 101.0, 102.0, 101.2],
+        "close": [101.0, 101.6, 101.0, 100.4],
+        "high": [102.2, 103.0, 102.8, 101.1],
+        "low": [99.7, 100.8, 100.1, 100.2],
+        "ma3": [100.0, 101.0, 102.0, 101.4],
+        "ma15": [100.0] * 4,
+        "ema_20": [100.0] * 4,
+        "kc_upper": [101.8, 101.8, 101.8, 101.8],
+        "kc_lower": [98.2, 98.2, 98.2, 98.2],
+        "atr": [1.0] * 4,
+    })
+    assert TradingEngine._is_real_pivot(frame, "LONG") is True
+
+
+def test_exhaustion_before_pivot_blocks_entry_for_long():
+    frame = pd.DataFrame({
+        "open": [100.0, 99.8, 99.6],
+        "close": [99.9, 99.7, 99.9],
+        "high": [101.0, 101.2, 100.5],
+        "low": [99.2, 99.1, 99.2],
+        "ma3": [100.0, 99.8, 99.7],
+        "ma15": [100.0] * 3,
+        "ema_20": [100.0] * 3,
+        "kc_upper": [101.0, 101.0, 101.0],
+        "kc_lower": [98.0, 98.0, 98.0],
+        "atr": [1.0] * 3,
+    })
+    assert TradingEngine._is_exhaustion_before_pivot(frame, "LONG") is True
+
+
+def test_first_breakout_bar_must_clear_kc_rail_before_open():
+    frame = pd.DataFrame({
+        "open": [100.0, 99.8, 99.6],
+        "close": [100.1, 99.5, 99.2],
+        "high": [100.3, 99.7, 99.6],
+        "low": [99.5, 99.2, 99.0],
+        "ma3": [100.0, 99.8, 99.5],
+        "ma15": [100.0] * 3,
+        "ema_20": [100.0] * 3,
+        "kc_upper": [100.8, 100.8, 100.8],
+        "kc_lower": [98.2, 98.2, 98.2],
+        "atr": [1.0] * 3,
+    })
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "LONG")
+    assert ok is False
+    assert "KC rail" in reason

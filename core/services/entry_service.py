@@ -99,9 +99,21 @@ def channel_immediate_outer_break_action(
     curr = frame.iloc[-1]
     kc_upper = float(curr["kc_upper"])
     kc_lower = float(curr["kc_lower"])
-    ma3 = float(curr["ma3"])
-    if price > kc_upper and ma3 > kc_upper:
+    prev = frame.iloc[-2] if len(frame) >= 2 else curr
+    if price > kc_upper:
+        prev_close = float(prev["close"])
+        prev_open = float(prev["open"])
+        if prev_close < prev_open and prev_close >= kc_upper:
+            return {"action": "WAIT", "side": None, "reason": "KC_SURGE_WAIT_TROUGH"}
+        if float(curr["close"]) <= kc_upper and float(curr["open"]) <= kc_upper:
+            return {"action": "WAIT", "side": None, "reason": "KC_SURGE_WAIT_TROUGH"}
         return channel_strong_first_outer_touch_action(frame, price, "LONG")
-    elif price < kc_lower and ma3 < kc_lower:
+    elif price < kc_lower:
+        prev_close = float(prev["close"])
+        prev_open = float(prev["open"])
+        if prev_close > prev_open and prev_close <= kc_lower:
+            return {"action": "WAIT", "side": None, "reason": "KC_SURGE_WAIT_TROUGH"}
+        if float(curr["close"]) >= kc_lower and float(curr["open"]) >= kc_lower:
+            return {"action": "WAIT", "side": None, "reason": "KC_SURGE_WAIT_TROUGH"}
         return channel_strong_first_outer_touch_action(frame, price, "SHORT")
     return {"action": "WAIT", "side": None, "reason": "INSIDE_KC"}

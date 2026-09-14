@@ -1,0 +1,2874 @@
+[
+ {
+  "symbol": "LSK/USDT:USDT",
+  "atr_pct": 1.275
+ },
+ {
+  "symbol": "\u9f99\u867e/USDT:USDT",
+  "atr_pct": 1.209
+ },
+ {
+  "symbol": "LAB/USDT:USDT",
+  "atr_pct": 0.94
+ },
+ {
+  "symbol": "TREE/USDT:USDT",
+  "atr_pct": 0.9
+ },
+ {
+  "symbol": "VTHO/USDT:USDT",
+  "atr_pct": 0.871
+ },
+ {
+  "symbol": "\u6211\u8e0f\u9a6c\u6765\u4e86/USDT:USDT",
+  "atr_pct": 0.818
+ },
+ {
+  "symbol": "SOPH/USDT:USDT",
+  "atr_pct": 0.751
+ },
+ {
+  "symbol": "RIVER/USDT:USDT",
+  "atr_pct": 0.705
+ },
+ {
+  "symbol": "BEAT/USDT:USDT",
+  "atr_pct": 0.68
+ },
+ {
+  "symbol": "\u725b\u6765/USDT:USDT",
+  "atr_pct": 0.648
+ },
+ {
+  "symbol": "CYS/USDT:USDT",
+  "atr_pct": 0.636
+ },
+ {
+  "symbol": "RAVE/USDT:USDT",
+  "atr_pct": 0.571
+ },
+ {
+  "symbol": "\u54c8\u57fa\u7c73/USDT:USDT",
+  "atr_pct": 0.554
+ },
+ {
+  "symbol": "IOST/USDT:USDT",
+  "atr_pct": 0.546
+ },
+ {
+  "symbol": "COLLECT/USDT:USDT",
+  "atr_pct": 0.515
+ },
+ {
+  "symbol": "RAYSOL/USDT:USDT",
+  "atr_pct": 0.509
+ },
+ {
+  "symbol": "VELVET/USDT:USDT",
+  "atr_pct": 0.479
+ },
+ {
+  "symbol": "4/USDT:USDT",
+  "atr_pct": 0.457
+ },
+ {
+  "symbol": "USELESS/USDT:USDT",
+  "atr_pct": 0.442
+ },
+ {
+  "symbol": "TAG/USDT:USDT",
+  "atr_pct": 0.439
+ },
+ {
+  "symbol": "MINA/USDT:USDT",
+  "atr_pct": 0.427
+ },
+ {
+  "symbol": "BULLA/USDT:USDT",
+  "atr_pct": 0.416
+ },
+ {
+  "symbol": "PONS/USDT:USDT",
+  "atr_pct": 0.414
+ },
+ {
+  "symbol": "BILL/USDT:USDT",
+  "atr_pct": 0.409
+ },
+ {
+  "symbol": "DOGS/USDT:USDT",
+  "atr_pct": 0.383
+ },
+ {
+  "symbol": "ALLO/USDT:USDT",
+  "atr_pct": 0.379
+ },
+ {
+  "symbol": "KAT/USDT:USDT",
+  "atr_pct": 0.379
+ },
+ {
+  "symbol": "MARSCOIN/USDT:USDT",
+  "atr_pct": 0.373
+ },
+ {
+  "symbol": "MET/USDT:USDT",
+  "atr_pct": 0.362
+ },
+ {
+  "symbol": "ERA/USDT:USDT",
+  "atr_pct": 0.351
+ },
+ {
+  "symbol": "BTR/USDT:USDT",
+  "atr_pct": 0.348
+ },
+ {
+  "symbol": "MITO/USDT:USDT",
+  "atr_pct": 0.341
+ },
+ {
+  "symbol": "PUNDIX/USDT:USDT",
+  "atr_pct": 0.335
+ },
+ {
+  "symbol": "MTL/USDT:USDT",
+  "atr_pct": 0.329
+ },
+ {
+  "symbol": "AKE/USDT:USDT",
+  "atr_pct": 0.318
+ },
+ {
+  "symbol": "LIGHT/USDT:USDT",
+  "atr_pct": 0.31
+ },
+ {
+  "symbol": "UAI/USDT:USDT",
+  "atr_pct": 0.295
+ },
+ {
+  "symbol": "AGT/USDT:USDT",
+  "atr_pct": 0.289
+ },
+ {
+  "symbol": "PROM/USDT:USDT",
+  "atr_pct": 0.285
+ },
+ {
+  "symbol": "BLUR/USDT:USDT",
+  "atr_pct": 0.281
+ },
+ {
+  "symbol": "AVAAI/USDT:USDT",
+  "atr_pct": 0.279
+ },
+ {
+  "symbol": "BIRB/USDT:USDT",
+  "atr_pct": 0.277
+ },
+ {
+  "symbol": "SIREN/USDT:USDT",
+  "atr_pct": 0.274
+ },
+ {
+  "symbol": "MYX/USDT:USDT",
+  "atr_pct": 0.273
+ },
+ {
+  "symbol": "TUT/USDT:USDT",
+  "atr_pct": 0.272
+ },
+ {
+  "symbol": "Q/USDT:USDT",
+  "atr_pct": 0.272
+ },
+ {
+  "symbol": "ARK/USDT:USDT",
+  "atr_pct": 0.271
+ },
+ {
+  "symbol": "ETHFI/USDT:USDT",
+  "atr_pct": 0.267
+ },
+ {
+  "symbol": "BIGTIME/USDT:USDT",
+  "atr_pct": 0.266
+ },
+ {
+  "symbol": "BR/USDT:USDT",
+  "atr_pct": 0.261
+ },
+ {
+  "symbol": "AIO/USDT:USDT",
+  "atr_pct": 0.259
+ },
+ {
+  "symbol": "STAR/USDT:USDT",
+  "atr_pct": 0.259
+ },
+ {
+  "symbol": "TRUST/USDT:USDT",
+  "atr_pct": 0.258
+ },
+ {
+  "symbol": "MUBARAK/USDT:USDT",
+  "atr_pct": 0.257
+ },
+ {
+  "symbol": "NEWT/USDT:USDT",
+  "atr_pct": 0.257
+ },
+ {
+  "symbol": "THETA/USDT:USDT",
+  "atr_pct": 0.253
+ },
+ {
+  "symbol": "ACE/USDT:USDT",
+  "atr_pct": 0.249
+ },
+ {
+  "symbol": "DOOD/USDT:USDT",
+  "atr_pct": 0.247
+ },
+ {
+  "symbol": "ESPORTS/USDT:USDT",
+  "atr_pct": 0.247
+ },
+ {
+  "symbol": "F/USDT:USDT",
+  "atr_pct": 0.244
+ },
+ {
+  "symbol": "WCT/USDT:USDT",
+  "atr_pct": 0.242
+ },
+ {
+  "symbol": "SKR/USDT:USDT",
+  "atr_pct": 0.242
+ },
+ {
+  "symbol": "VVV/USDT:USDT",
+  "atr_pct": 0.239
+ },
+ {
+  "symbol": "PIEVERSE/USDT:USDT",
+  "atr_pct": 0.236
+ },
+ {
+  "symbol": "FIGHT/USDT:USDT",
+  "atr_pct": 0.236
+ },
+ {
+  "symbol": "H/USDT:USDT",
+  "atr_pct": 0.234
+ },
+ {
+  "symbol": "TRUTH/USDT:USDT",
+  "atr_pct": 0.234
+ },
+ {
+  "symbol": "BTW/USDT:USDT",
+  "atr_pct": 0.233
+ },
+ {
+  "symbol": "US/USDT:USDT",
+  "atr_pct": 0.23
+ },
+ {
+  "symbol": "SAGA/USDT:USDT",
+  "atr_pct": 0.227
+ },
+ {
+  "symbol": "ANIME/USDT:USDT",
+  "atr_pct": 0.225
+ },
+ {
+  "symbol": "LA/USDT:USDT",
+  "atr_pct": 0.225
+ },
+ {
+  "symbol": "PLAY/USDT:USDT",
+  "atr_pct": 0.225
+ },
+ {
+  "symbol": "KOMA/USDT:USDT",
+  "atr_pct": 0.224
+ },
+ {
+  "symbol": "TRIA/USDT:USDT",
+  "atr_pct": 0.224
+ },
+ {
+  "symbol": "GUA/USDT:USDT",
+  "atr_pct": 0.223
+ },
+ {
+  "symbol": "TA/USDT:USDT",
+  "atr_pct": 0.222
+ },
+ {
+  "symbol": "REZ/USDT:USDT",
+  "atr_pct": 0.219
+ },
+ {
+  "symbol": "ZBT/USDT:USDT",
+  "atr_pct": 0.215
+ },
+ {
+  "symbol": "NEAR/USDT:USDT",
+  "atr_pct": 0.214
+ },
+ {
+  "symbol": "COTI/USDT:USDT",
+  "atr_pct": 0.214
+ },
+ {
+  "symbol": "CHIP/USDT:USDT",
+  "atr_pct": 0.21
+ },
+ {
+  "symbol": "CATI/USDT:USDT",
+  "atr_pct": 0.208
+ },
+ {
+  "symbol": "FOLKS/USDT:USDT",
+  "atr_pct": 0.208
+ },
+ {
+  "symbol": "BB/USDT:USDT",
+  "atr_pct": 0.206
+ },
+ {
+  "symbol": "NAORIS/USDT:USDT",
+  "atr_pct": 0.206
+ },
+ {
+  "symbol": "ZEC/USDT:USDT",
+  "atr_pct": 0.205
+ },
+ {
+  "symbol": "HEMI/USDT:USDT",
+  "atr_pct": 0.204
+ },
+ {
+  "symbol": "ROBO/USDT:USDT",
+  "atr_pct": 0.204
+ },
+ {
+  "symbol": "PHAROS/USDT:USDT",
+  "atr_pct": 0.204
+ },
+ {
+  "symbol": "BSB/USDT:USDT",
+  "atr_pct": 0.202
+ },
+ {
+  "symbol": "POWR/USDT:USDT",
+  "atr_pct": 0.2
+ },
+ {
+  "symbol": "PUMP/USDT:USDT",
+  "atr_pct": 0.2
+ },
+ {
+  "symbol": "ORCA/USDT:USDT",
+  "atr_pct": 0.198
+ },
+ {
+  "symbol": "PHA/USDT:USDT",
+  "atr_pct": 0.197
+ },
+ {
+  "symbol": "MAGMA/USDT:USDT",
+  "atr_pct": 0.196
+ },
+ {
+  "symbol": "EDGE/USDT:USDT",
+  "atr_pct": 0.194
+ },
+ {
+  "symbol": "ARX/USDT:USDT",
+  "atr_pct": 0.193
+ },
+ {
+  "symbol": "JUP/USDT:USDT",
+  "atr_pct": 0.192
+ },
+ {
+  "symbol": "POWER/USDT:USDT",
+  "atr_pct": 0.192
+ },
+ {
+  "symbol": "CHILLGUY/USDT:USDT",
+  "atr_pct": 0.189
+ },
+ {
+  "symbol": "FOGO/USDT:USDT",
+  "atr_pct": 0.189
+ },
+ {
+  "symbol": "DOS/USDT:USDT",
+  "atr_pct": 0.189
+ },
+ {
+  "symbol": "BICO/USDT:USDT",
+  "atr_pct": 0.188
+ },
+ {
+  "symbol": "0G/USDT:USDT",
+  "atr_pct": 0.186
+ },
+ {
+  "symbol": "TAC/USDT:USDT",
+  "atr_pct": 0.185
+ },
+ {
+  "symbol": "TRADOOR/USDT:USDT",
+  "atr_pct": 0.185
+ },
+ {
+  "symbol": "WAL/USDT:USDT",
+  "atr_pct": 0.184
+ },
+ {
+  "symbol": "ESP/USDT:USDT",
+  "atr_pct": 0.184
+ },
+ {
+  "symbol": "APR/USDT:USDT",
+  "atr_pct": 0.183
+ },
+ {
+  "symbol": "ACU/USDT:USDT",
+  "atr_pct": 0.183
+ },
+ {
+  "symbol": "ARB/USDT:USDT",
+  "atr_pct": 0.182
+ },
+ {
+  "symbol": "ZORA/USDT:USDT",
+  "atr_pct": 0.182
+ },
+ {
+  "symbol": "LIT/USDT:USDT",
+  "atr_pct": 0.182
+ },
+ {
+  "symbol": "RE/USDT:USDT",
+  "atr_pct": 0.182
+ },
+ {
+  "symbol": "XNY/USDT:USDT",
+  "atr_pct": 0.181
+ },
+ {
+  "symbol": "INX/USDT:USDT",
+  "atr_pct": 0.181
+ },
+ {
+  "symbol": "BABY/USDT:USDT",
+  "atr_pct": 0.18
+ },
+ {
+  "symbol": "RVN/USDT:USDT",
+  "atr_pct": 0.178
+ },
+ {
+  "symbol": "SCR/USDT:USDT",
+  "atr_pct": 0.178
+ },
+ {
+  "symbol": "BROCCOLI714/USDT:USDT",
+  "atr_pct": 0.178
+ },
+ {
+  "symbol": "ONE/USDT:USDT",
+  "atr_pct": 0.177
+ },
+ {
+  "symbol": "1000RATS/USDT:USDT",
+  "atr_pct": 0.177
+ },
+ {
+  "symbol": "CHZ/USDT:USDT",
+  "atr_pct": 0.176
+ },
+ {
+  "symbol": "CKB/USDT:USDT",
+  "atr_pct": 0.176
+ },
+ {
+  "symbol": "FHE/USDT:USDT",
+  "atr_pct": 0.174
+ },
+ {
+  "symbol": "KERNEL/USDT:USDT",
+  "atr_pct": 0.174
+ },
+ {
+  "symbol": "DASH/USDT:USDT",
+  "atr_pct": 0.173
+ },
+ {
+  "symbol": "EGLD/USDT:USDT",
+  "atr_pct": 0.173
+ },
+ {
+  "symbol": "EDEN/USDT:USDT",
+  "atr_pct": 0.171
+ },
+ {
+  "symbol": "AT/USDT:USDT",
+  "atr_pct": 0.171
+ },
+ {
+  "symbol": "INIT/USDT:USDT",
+  "atr_pct": 0.169
+ },
+ {
+  "symbol": "JTO/USDT:USDT",
+  "atr_pct": 0.168
+ },
+ {
+  "symbol": "DYM/USDT:USDT",
+  "atr_pct": 0.168
+ },
+ {
+  "symbol": "XAN/USDT:USDT",
+  "atr_pct": 0.168
+ },
+ {
+  "symbol": "GIGGLE/USDT:USDT",
+  "atr_pct": 0.168
+ },
+ {
+  "symbol": "XPIN/USDT:USDT",
+  "atr_pct": 0.167
+ },
+ {
+  "symbol": "BLESS/USDT:USDT",
+  "atr_pct": 0.167
+ },
+ {
+  "symbol": "CFG/USDT:USDT",
+  "atr_pct": 0.167
+ },
+ {
+  "symbol": "JCT/USDT:USDT",
+  "atr_pct": 0.166
+ },
+ {
+  "symbol": "BROCCOLIF3B/USDT:USDT",
+  "atr_pct": 0.164
+ },
+ {
+  "symbol": "AIN/USDT:USDT",
+  "atr_pct": 0.164
+ },
+ {
+  "symbol": "MIRA/USDT:USDT",
+  "atr_pct": 0.164
+ },
+ {
+  "symbol": "KNC/USDT:USDT",
+  "atr_pct": 0.161
+ },
+ {
+  "symbol": "BMT/USDT:USDT",
+  "atr_pct": 0.161
+ },
+ {
+  "symbol": "ELSA/USDT:USDT",
+  "atr_pct": 0.161
+ },
+ {
+  "symbol": "SOMI/USDT:USDT",
+  "atr_pct": 0.16
+ },
+ {
+  "symbol": "EDU/USDT:USDT",
+  "atr_pct": 0.159
+ },
+ {
+  "symbol": "BEAMX/USDT:USDT",
+  "atr_pct": 0.159
+ },
+ {
+  "symbol": "GPS/USDT:USDT",
+  "atr_pct": 0.159
+ },
+ {
+  "symbol": "RED/USDT:USDT",
+  "atr_pct": 0.159
+ },
+ {
+  "symbol": "SAFE/USDT:USDT",
+  "atr_pct": 0.158
+ },
+ {
+  "symbol": "ZEREBRO/USDT:USDT",
+  "atr_pct": 0.158
+ },
+ {
+  "symbol": "ON/USDT:USDT",
+  "atr_pct": 0.158
+ },
+ {
+  "symbol": "ORDER/USDT:USDT",
+  "atr_pct": 0.157
+ },
+ {
+  "symbol": "SOLV/USDT:USDT",
+  "atr_pct": 0.156
+ },
+ {
+  "symbol": "TAIKO/USDT:USDT",
+  "atr_pct": 0.156
+ },
+ {
+  "symbol": "ENSO/USDT:USDT",
+  "atr_pct": 0.156
+ },
+ {
+  "symbol": "\u5e01\u5b89\u4eba\u751f/USDT:USDT",
+  "atr_pct": 0.156
+ },
+ {
+  "symbol": "ZEST/USDT:USDT",
+  "atr_pct": 0.156
+ },
+ {
+  "symbol": "TAKE/USDT:USDT",
+  "atr_pct": 0.154
+ },
+ {
+  "symbol": "STABLE/USDT:USDT",
+  "atr_pct": 0.154
+ },
+ {
+  "symbol": "UNI/USDT:USDT",
+  "atr_pct": 0.153
+ },
+ {
+  "symbol": "ACT/USDT:USDT",
+  "atr_pct": 0.153
+ },
+ {
+  "symbol": "BERA/USDT:USDT",
+  "atr_pct": 0.153
+ },
+ {
+  "symbol": "FORM/USDT:USDT",
+  "atr_pct": 0.153
+ },
+ {
+  "symbol": "KAS/USDT:USDT",
+  "atr_pct": 0.152
+ },
+ {
+  "symbol": "FARTCOIN/USDT:USDT",
+  "atr_pct": 0.152
+ },
+ {
+  "symbol": "PLUME/USDT:USDT",
+  "atr_pct": 0.152
+ },
+ {
+  "symbol": "PUMPBTC/USDT:USDT",
+  "atr_pct": 0.152
+ },
+ {
+  "symbol": "SIGN/USDT:USDT",
+  "atr_pct": 0.151
+ },
+ {
+  "symbol": "ZKC/USDT:USDT",
+  "atr_pct": 0.151
+ },
+ {
+  "symbol": "ENA/USDT:USDT",
+  "atr_pct": 0.15
+ },
+ {
+  "symbol": "EVAA/USDT:USDT",
+  "atr_pct": 0.15
+ },
+ {
+  "symbol": "TOWNS/USDT:USDT",
+  "atr_pct": 0.149
+ },
+ {
+  "symbol": "GRIFFAIN/USDT:USDT",
+  "atr_pct": 0.147
+ },
+ {
+  "symbol": "FF/USDT:USDT",
+  "atr_pct": 0.147
+ },
+ {
+  "symbol": "CAP/USDT:USDT",
+  "atr_pct": 0.147
+ },
+ {
+  "symbol": "XVG/USDT:USDT",
+  "atr_pct": 0.146
+ },
+ {
+  "symbol": "IDOL/USDT:USDT",
+  "atr_pct": 0.146
+ },
+ {
+  "symbol": "WET/USDT:USDT",
+  "atr_pct": 0.146
+ },
+ {
+  "symbol": "DODOX/USDT:USDT",
+  "atr_pct": 0.145
+ },
+ {
+  "symbol": "XTZ/USDT:USDT",
+  "atr_pct": 0.144
+ },
+ {
+  "symbol": "CELO/USDT:USDT",
+  "atr_pct": 0.144
+ },
+ {
+  "symbol": "FLUID/USDT:USDT",
+  "atr_pct": 0.144
+ },
+ {
+  "symbol": "COAI/USDT:USDT",
+  "atr_pct": 0.144
+ },
+ {
+  "symbol": "EUL/USDT:USDT",
+  "atr_pct": 0.144
+ },
+ {
+  "symbol": "SUPER/USDT:USDT",
+  "atr_pct": 0.143
+ },
+ {
+  "symbol": "SYN/USDT:USDT",
+  "atr_pct": 0.143
+ },
+ {
+  "symbol": "FLOCK/USDT:USDT",
+  "atr_pct": 0.143
+ },
+ {
+  "symbol": "UB/USDT:USDT",
+  "atr_pct": 0.143
+ },
+ {
+  "symbol": "MEGA/USDT:USDT",
+  "atr_pct": 0.143
+ },
+ {
+  "symbol": "THE/USDT:USDT",
+  "atr_pct": 0.142
+ },
+ {
+  "symbol": "DEXE/USDT:USDT",
+  "atr_pct": 0.142
+ },
+ {
+  "symbol": "WLFI/USDT:USDT",
+  "atr_pct": 0.142
+ },
+ {
+  "symbol": "BARD/USDT:USDT",
+  "atr_pct": 0.142
+ },
+ {
+  "symbol": "GWEI/USDT:USDT",
+  "atr_pct": 0.142
+ },
+ {
+  "symbol": "CTR/USDT:USDT",
+  "atr_pct": 0.142
+ },
+ {
+  "symbol": "PORTAL/USDT:USDT",
+  "atr_pct": 0.141
+ },
+ {
+  "symbol": "AVA/USDT:USDT",
+  "atr_pct": 0.141
+ },
+ {
+  "symbol": "SONIC/USDT:USDT",
+  "atr_pct": 0.141
+ },
+ {
+  "symbol": "TST/USDT:USDT",
+  "atr_pct": 0.14
+ },
+ {
+  "symbol": "GRVT/USDT:USDT",
+  "atr_pct": 0.14
+ },
+ {
+  "symbol": "COW/USDT:USDT",
+  "atr_pct": 0.139
+ },
+ {
+  "symbol": "MOVR/USDT:USDT",
+  "atr_pct": 0.138
+ },
+ {
+  "symbol": "WAXP/USDT:USDT",
+  "atr_pct": 0.137
+ },
+ {
+  "symbol": "1000000BOB/USDT:USDT",
+  "atr_pct": 0.137
+ },
+ {
+  "symbol": "PTB/USDT:USDT",
+  "atr_pct": 0.137
+ },
+ {
+  "symbol": "AGLD/USDT:USDT",
+  "atr_pct": 0.136
+ },
+ {
+  "symbol": "MERL/USDT:USDT",
+  "atr_pct": 0.136
+ },
+ {
+  "symbol": "SAHARA/USDT:USDT",
+  "atr_pct": 0.136
+ },
+ {
+  "symbol": "ALGO/USDT:USDT",
+  "atr_pct": 0.135
+ },
+ {
+  "symbol": "MELANIA/USDT:USDT",
+  "atr_pct": 0.135
+ },
+ {
+  "symbol": "EPIC/USDT:USDT",
+  "atr_pct": 0.135
+ },
+ {
+  "symbol": "OPEN/USDT:USDT",
+  "atr_pct": 0.135
+ },
+ {
+  "symbol": "SKY/USDT:USDT",
+  "atr_pct": 0.135
+ },
+ {
+  "symbol": "ZEN/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "CELR/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "WLD/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "ARKM/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "SWARMS/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "TRUMP/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "PROMPT/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "DOLO/USDT:USDT",
+  "atr_pct": 0.133
+ },
+ {
+  "symbol": "ALICE/USDT:USDT",
+  "atr_pct": 0.132
+ },
+ {
+  "symbol": "WIF/USDT:USDT",
+  "atr_pct": 0.132
+ },
+ {
+  "symbol": "IO/USDT:USDT",
+  "atr_pct": 0.132
+ },
+ {
+  "symbol": "DRIFT/USDT:USDT",
+  "atr_pct": 0.132
+ },
+ {
+  "symbol": "CLO/USDT:USDT",
+  "atr_pct": 0.132
+ },
+ {
+  "symbol": "APT/USDT:USDT",
+  "atr_pct": 0.131
+ },
+ {
+  "symbol": "XPL/USDT:USDT",
+  "atr_pct": 0.131
+ },
+ {
+  "symbol": "AR/USDT:USDT",
+  "atr_pct": 0.13
+ },
+ {
+  "symbol": "ONG/USDT:USDT",
+  "atr_pct": 0.129
+ },
+ {
+  "symbol": "SPX/USDT:USDT",
+  "atr_pct": 0.129
+ },
+ {
+  "symbol": "B/USDT:USDT",
+  "atr_pct": 0.129
+ },
+ {
+  "symbol": "AVNT/USDT:USDT",
+  "atr_pct": 0.129
+ },
+ {
+  "symbol": "OPG/USDT:USDT",
+  "atr_pct": 0.129
+ },
+ {
+  "symbol": "O/USDT:USDT",
+  "atr_pct": 0.129
+ },
+ {
+  "symbol": "STRK/USDT:USDT",
+  "atr_pct": 0.128
+ },
+ {
+  "symbol": "BANK/USDT:USDT",
+  "atr_pct": 0.128
+ },
+ {
+  "symbol": "NOM/USDT:USDT",
+  "atr_pct": 0.128
+ },
+ {
+  "symbol": "SPELL/USDT:USDT",
+  "atr_pct": 0.127
+ },
+ {
+  "symbol": "CC/USDT:USDT",
+  "atr_pct": 0.127
+ },
+ {
+  "symbol": "PENDLE/USDT:USDT",
+  "atr_pct": 0.126
+ },
+ {
+  "symbol": "ORDI/USDT:USDT",
+  "atr_pct": 0.126
+ },
+ {
+  "symbol": "PIXEL/USDT:USDT",
+  "atr_pct": 0.126
+ },
+ {
+  "symbol": "RENDER/USDT:USDT",
+  "atr_pct": 0.126
+ },
+ {
+  "symbol": "EIGEN/USDT:USDT",
+  "atr_pct": 0.126
+ },
+ {
+  "symbol": "SPORTFUN/USDT:USDT",
+  "atr_pct": 0.126
+ },
+ {
+  "symbol": "SUSHI/USDT:USDT",
+  "atr_pct": 0.125
+ },
+ {
+  "symbol": "PEOPLE/USDT:USDT",
+  "atr_pct": 0.125
+ },
+ {
+  "symbol": "TIA/USDT:USDT",
+  "atr_pct": 0.125
+ },
+ {
+  "symbol": "PRL/USDT:USDT",
+  "atr_pct": 0.125
+ },
+ {
+  "symbol": "ATOM/USDT:USDT",
+  "atr_pct": 0.124
+ },
+ {
+  "symbol": "CYBER/USDT:USDT",
+  "atr_pct": 0.123
+ },
+ {
+  "symbol": "NIGHT/USDT:USDT",
+  "atr_pct": 0.123
+ },
+ {
+  "symbol": "ZKP/USDT:USDT",
+  "atr_pct": 0.123
+ },
+ {
+  "symbol": "USUAL/USDT:USDT",
+  "atr_pct": 0.122
+ },
+ {
+  "symbol": "AIOT/USDT:USDT",
+  "atr_pct": 0.122
+ },
+ {
+  "symbol": "HAEDAL/USDT:USDT",
+  "atr_pct": 0.122
+ },
+ {
+  "symbol": "CVC/USDT:USDT",
+  "atr_pct": 0.122
+ },
+ {
+  "symbol": "INJ/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "TLM/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "RIF/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "FIDA/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "CARV/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "SAPIEN/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "HOLO/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "CLANKER/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "ZAMA/USDT:USDT",
+  "atr_pct": 0.121
+ },
+ {
+  "symbol": "RUNE/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "FET/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "BOME/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "ZRO/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "GOAT/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "HUMA/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "SQD/USDT:USDT",
+  "atr_pct": 0.12
+ },
+ {
+  "symbol": "RARE/USDT:USDT",
+  "atr_pct": 0.119
+ },
+ {
+  "symbol": "VELODROME/USDT:USDT",
+  "atr_pct": 0.119
+ },
+ {
+  "symbol": "ARC/USDT:USDT",
+  "atr_pct": 0.119
+ },
+ {
+  "symbol": "GALA/USDT:USDT",
+  "atr_pct": 0.118
+ },
+ {
+  "symbol": "1000CAT/USDT:USDT",
+  "atr_pct": 0.118
+ },
+ {
+  "symbol": "MMT/USDT:USDT",
+  "atr_pct": 0.118
+ },
+ {
+  "symbol": "OPENAI/USDT:USDT",
+  "atr_pct": 0.118
+ },
+ {
+  "symbol": "ADA/USDT:USDT",
+  "atr_pct": 0.117
+ },
+ {
+  "symbol": "SYRUP/USDT:USDT",
+  "atr_pct": 0.117
+ },
+ {
+  "symbol": "GMX/USDT:USDT",
+  "atr_pct": 0.116
+ },
+ {
+  "symbol": "STX/USDT:USDT",
+  "atr_pct": 0.116
+ },
+ {
+  "symbol": "CETUS/USDT:USDT",
+  "atr_pct": 0.116
+ },
+ {
+  "symbol": "SXT/USDT:USDT",
+  "atr_pct": 0.116
+ },
+ {
+  "symbol": "DUSK/USDT:USDT",
+  "atr_pct": 0.115
+ },
+ {
+  "symbol": "STG/USDT:USDT",
+  "atr_pct": 0.115
+ },
+ {
+  "symbol": "STEEM/USDT:USDT",
+  "atr_pct": 0.115
+ },
+ {
+  "symbol": "HEI/USDT:USDT",
+  "atr_pct": 0.115
+ },
+ {
+  "symbol": "CROSS/USDT:USDT",
+  "atr_pct": 0.115
+ },
+ {
+  "symbol": "ARIA/USDT:USDT",
+  "atr_pct": 0.115
+ },
+ {
+  "symbol": "1000FLOKI/USDT:USDT",
+  "atr_pct": 0.114
+ },
+ {
+  "symbol": "MOVE/USDT:USDT",
+  "atr_pct": 0.114
+ },
+ {
+  "symbol": "HIVE/USDT:USDT",
+  "atr_pct": 0.114
+ },
+ {
+  "symbol": "PARTI/USDT:USDT",
+  "atr_pct": 0.114
+ },
+ {
+  "symbol": "ICNT/USDT:USDT",
+  "atr_pct": 0.114
+ },
+ {
+  "symbol": "SENT/USDT:USDT",
+  "atr_pct": 0.114
+ },
+ {
+  "symbol": "KAITO/USDT:USDT",
+  "atr_pct": 0.113
+ },
+ {
+  "symbol": "FIL/USDT:USDT",
+  "atr_pct": 0.112
+ },
+ {
+  "symbol": "B2/USDT:USDT",
+  "atr_pct": 0.112
+ },
+ {
+  "symbol": "YB/USDT:USDT",
+  "atr_pct": 0.112
+ },
+ {
+  "symbol": "RESOLV/USDT:USDT",
+  "atr_pct": 0.111
+ },
+ {
+  "symbol": "STBL/USDT:USDT",
+  "atr_pct": 0.111
+ },
+ {
+  "symbol": "1000BONK/USDT:USDT",
+  "atr_pct": 0.11
+ },
+ {
+  "symbol": "ALPINE/USDT:USDT",
+  "atr_pct": 0.11
+ },
+ {
+  "symbol": "DYDX/USDT:USDT",
+  "atr_pct": 0.109
+ },
+ {
+  "symbol": "ICP/USDT:USDT",
+  "atr_pct": 0.109
+ },
+ {
+  "symbol": "1000SATS/USDT:USDT",
+  "atr_pct": 0.109
+ },
+ {
+  "symbol": "AKT/USDT:USDT",
+  "atr_pct": 0.109
+ },
+ {
+  "symbol": "NIL/USDT:USDT",
+  "atr_pct": 0.109
+ },
+ {
+  "symbol": "M/USDT:USDT",
+  "atr_pct": 0.109
+ },
+ {
+  "symbol": "CHR/USDT:USDT",
+  "atr_pct": 0.108
+ },
+ {
+  "symbol": "WOO/USDT:USDT",
+  "atr_pct": 0.108
+ },
+ {
+  "symbol": "G/USDT:USDT",
+  "atr_pct": 0.108
+ },
+ {
+  "symbol": "TURTLE/USDT:USDT",
+  "atr_pct": 0.108
+ },
+ {
+  "symbol": "ID/USDT:USDT",
+  "atr_pct": 0.107
+ },
+ {
+  "symbol": "BRETT/USDT:USDT",
+  "atr_pct": 0.107
+ },
+ {
+  "symbol": "AERO/USDT:USDT",
+  "atr_pct": 0.107
+ },
+ {
+  "symbol": "MOCA/USDT:USDT",
+  "atr_pct": 0.107
+ },
+ {
+  "symbol": "JOE/USDT:USDT",
+  "atr_pct": 0.106
+ },
+ {
+  "symbol": "ETHW/USDT:USDT",
+  "atr_pct": 0.106
+ },
+ {
+  "symbol": "GLM/USDT:USDT",
+  "atr_pct": 0.106
+ },
+ {
+  "symbol": "AXL/USDT:USDT",
+  "atr_pct": 0.106
+ },
+ {
+  "symbol": "SHELL/USDT:USDT",
+  "atr_pct": 0.106
+ },
+ {
+  "symbol": "BAT/USDT:USDT",
+  "atr_pct": 0.105
+ },
+ {
+  "symbol": "RSR/USDT:USDT",
+  "atr_pct": 0.105
+ },
+ {
+  "symbol": "ARPA/USDT:USDT",
+  "atr_pct": 0.105
+ },
+ {
+  "symbol": "PYTH/USDT:USDT",
+  "atr_pct": 0.105
+ },
+ {
+  "symbol": "1000000MOG/USDT:USDT",
+  "atr_pct": 0.105
+ },
+ {
+  "symbol": "DOT/USDT:USDT",
+  "atr_pct": 0.104
+ },
+ {
+  "symbol": "1000XEC/USDT:USDT",
+  "atr_pct": 0.104
+ },
+ {
+  "symbol": "RECALL/USDT:USDT",
+  "atr_pct": 0.104
+ },
+ {
+  "symbol": "ONT/USDT:USDT",
+  "atr_pct": 0.103
+ },
+ {
+  "symbol": "KAVA/USDT:USDT",
+  "atr_pct": 0.103
+ },
+ {
+  "symbol": "T/USDT:USDT",
+  "atr_pct": 0.103
+ },
+ {
+  "symbol": "GUN/USDT:USDT",
+  "atr_pct": 0.102
+ },
+ {
+  "symbol": "DEEP/USDT:USDT",
+  "atr_pct": 0.102
+ },
+ {
+  "symbol": "MON/USDT:USDT",
+  "atr_pct": 0.102
+ },
+ {
+  "symbol": "API3/USDT:USDT",
+  "atr_pct": 0.101
+ },
+ {
+  "symbol": "OP/USDT:USDT",
+  "atr_pct": 0.101
+ },
+ {
+  "symbol": "ATH/USDT:USDT",
+  "atr_pct": 0.101
+ },
+ {
+  "symbol": "VET/USDT:USDT",
+  "atr_pct": 0.1
+ },
+ {
+  "symbol": "IMX/USDT:USDT",
+  "atr_pct": 0.1
+ },
+ {
+  "symbol": "JASMY/USDT:USDT",
+  "atr_pct": 0.1
+ },
+ {
+  "symbol": "METIS/USDT:USDT",
+  "atr_pct": 0.1
+ },
+ {
+  "symbol": "PENGU/USDT:USDT",
+  "atr_pct": 0.1
+ },
+ {
+  "symbol": "SAND/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "IOTX/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "GAS/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "HYPE/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "IN/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "BAS/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "BLUAI/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "IRYS/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "DATAIP/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "BNC/USDT:USDT",
+  "atr_pct": 0.099
+ },
+ {
+  "symbol": "XMR/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "CRV/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "KSM/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "GRASS/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "AIXBT/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "PIPPIN/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "KGEN/USDT:USDT",
+  "atr_pct": 0.098
+ },
+ {
+  "symbol": "BAND/USDT:USDT",
+  "atr_pct": 0.097
+ },
+ {
+  "symbol": "GRT/USDT:USDT",
+  "atr_pct": 0.097
+ },
+ {
+  "symbol": "LISTA/USDT:USDT",
+  "atr_pct": 0.097
+ },
+ {
+  "symbol": "PNUT/USDT:USDT",
+  "atr_pct": 0.097
+ },
+ {
+  "symbol": "ASR/USDT:USDT",
+  "atr_pct": 0.097
+ },
+ {
+  "symbol": "APE/USDT:USDT",
+  "atr_pct": 0.096
+ },
+ {
+  "symbol": "LINEA/USDT:USDT",
+  "atr_pct": 0.096
+ },
+ {
+  "symbol": "AZTEC/USDT:USDT",
+  "atr_pct": 0.096
+ },
+ {
+  "symbol": "BASED/USDT:USDT",
+  "atr_pct": 0.096
+ },
+ {
+  "symbol": "NEO/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "RLC/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "MASK/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "LDO/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "RPL/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "MORPHO/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "KAIA/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "LUMIA/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "ALCH/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "OPN/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "GENIUS/USDT:USDT",
+  "atr_pct": 0.095
+ },
+ {
+  "symbol": "CAKE/USDT:USDT",
+  "atr_pct": 0.094
+ },
+ {
+  "symbol": "TNSR/USDT:USDT",
+  "atr_pct": 0.094
+ },
+ {
+  "symbol": "HOME/USDT:USDT",
+  "atr_pct": 0.094
+ },
+ {
+  "symbol": "PROVE/USDT:USDT",
+  "atr_pct": 0.094
+ },
+ {
+  "symbol": "HANA/USDT:USDT",
+  "atr_pct": 0.094
+ },
+ {
+  "symbol": "ASTR/USDT:USDT",
+  "atr_pct": 0.093
+ },
+ {
+  "symbol": "MANTA/USDT:USDT",
+  "atr_pct": 0.093
+ },
+ {
+  "symbol": "RONIN/USDT:USDT",
+  "atr_pct": 0.093
+ },
+ {
+  "symbol": "SLP/USDT:USDT",
+  "atr_pct": 0.093
+ },
+ {
+  "symbol": "ZIL/USDT:USDT",
+  "atr_pct": 0.092
+ },
+ {
+  "symbol": "TAO/USDT:USDT",
+  "atr_pct": 0.092
+ },
+ {
+  "symbol": "VIRTUAL/USDT:USDT",
+  "atr_pct": 0.092
+ },
+ {
+  "symbol": "BIO/USDT:USDT",
+  "atr_pct": 0.092
+ },
+ {
+  "symbol": "BREV/USDT:USDT",
+  "atr_pct": 0.092
+ },
+ {
+  "symbol": "ANTHROPIC/USDT:USDT",
+  "atr_pct": 0.092
+ },
+ {
+  "symbol": "ZRX/USDT:USDT",
+  "atr_pct": 0.091
+ },
+ {
+  "symbol": "FLOW/USDT:USDT",
+  "atr_pct": 0.091
+ },
+ {
+  "symbol": "FLUX/USDT:USDT",
+  "atr_pct": 0.09
+ },
+ {
+  "symbol": "HMSTR/USDT:USDT",
+  "atr_pct": 0.09
+ },
+ {
+  "symbol": "SANTOS/USDT:USDT",
+  "atr_pct": 0.09
+ },
+ {
+  "symbol": "MAVIA/USDT:USDT",
+  "atr_pct": 0.09
+ },
+ {
+  "symbol": "FRAX/USDT:USDT",
+  "atr_pct": 0.09
+ },
+ {
+  "symbol": "QTUM/USDT:USDT",
+  "atr_pct": 0.089
+ },
+ {
+  "symbol": "ENS/USDT:USDT",
+  "atr_pct": 0.088
+ },
+ {
+  "symbol": "CFX/USDT:USDT",
+  "atr_pct": 0.088
+ },
+ {
+  "symbol": "XVS/USDT:USDT",
+  "atr_pct": 0.088
+ },
+ {
+  "symbol": "1000PEPE/USDT:USDT",
+  "atr_pct": 0.088
+ },
+ {
+  "symbol": "CTK/USDT:USDT",
+  "atr_pct": 0.088
+ },
+ {
+  "symbol": "SLX/USDT:USDT",
+  "atr_pct": 0.088
+ },
+ {
+  "symbol": "LQTY/USDT:USDT",
+  "atr_pct": 0.087
+ },
+ {
+  "symbol": "ONDO/USDT:USDT",
+  "atr_pct": 0.087
+ },
+ {
+  "symbol": "W/USDT:USDT",
+  "atr_pct": 0.087
+ },
+ {
+  "symbol": "NOT/USDT:USDT",
+  "atr_pct": 0.087
+ },
+ {
+  "symbol": "TURBO/USDT:USDT",
+  "atr_pct": 0.087
+ },
+ {
+  "symbol": "IOTA/USDT:USDT",
+  "atr_pct": 0.086
+ },
+ {
+  "symbol": "ENJ/USDT:USDT",
+  "atr_pct": 0.086
+ },
+ {
+  "symbol": "ROSE/USDT:USDT",
+  "atr_pct": 0.086
+ },
+ {
+  "symbol": "MAV/USDT:USDT",
+  "atr_pct": 0.086
+ },
+ {
+  "symbol": "MEME/USDT:USDT",
+  "atr_pct": 0.085
+ },
+ {
+  "symbol": "XAI/USDT:USDT",
+  "atr_pct": 0.085
+ },
+ {
+  "symbol": "LUNA2/USDT:USDT",
+  "atr_pct": 0.084
+ },
+ {
+  "symbol": "SUI/USDT:USDT",
+  "atr_pct": 0.084
+ },
+ {
+  "symbol": "ASTER/USDT:USDT",
+  "atr_pct": 0.084
+ },
+ {
+  "symbol": "GPRO/USDT:USDT",
+  "atr_pct": 0.084
+ },
+ {
+  "symbol": "AAVE/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "GMT/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "ACH/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "MEW/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "POL/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "HYPER/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "SOON/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "C/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "SPACE/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "AIGENSYN/USDT:USDT",
+  "atr_pct": 0.083
+ },
+ {
+  "symbol": "LPT/USDT:USDT",
+  "atr_pct": 0.082
+ },
+ {
+  "symbol": "ALT/USDT:USDT",
+  "atr_pct": 0.082
+ },
+ {
+  "symbol": "TOSHI/USDT:USDT",
+  "atr_pct": 0.082
+ },
+ {
+  "symbol": "MANA/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "CTSI/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "SSV/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "YGG/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "POLYX/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "ZK/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "STO/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "CVX/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "2Z/USDT:USDT",
+  "atr_pct": 0.081
+ },
+ {
+  "symbol": "1000SHIB/USDT:USDT",
+  "atr_pct": 0.08
+ },
+ {
+  "symbol": "C98/USDT:USDT",
+  "atr_pct": 0.08
+ },
+ {
+  "symbol": "ZETA/USDT:USDT",
+  "atr_pct": 0.08
+ },
+ {
+  "symbol": "ANKR/USDT:USDT",
+  "atr_pct": 0.079
+ },
+ {
+  "symbol": "POPCAT/USDT:USDT",
+  "atr_pct": 0.079
+ },
+ {
+  "symbol": "A/USDT:USDT",
+  "atr_pct": 0.079
+ },
+ {
+  "symbol": "MANTRA/USDT:USDT",
+  "atr_pct": 0.079
+ },
+ {
+  "symbol": "AXS/USDT:USDT",
+  "atr_pct": 0.078
+ },
+ {
+  "symbol": "GTC/USDT:USDT",
+  "atr_pct": 0.078
+ },
+ {
+  "symbol": "SEI/USDT:USDT",
+  "atr_pct": 0.078
+ },
+ {
+  "symbol": "AEVO/USDT:USDT",
+  "atr_pct": 0.078
+ },
+ {
+  "symbol": "NEIRO/USDT:USDT",
+  "atr_pct": 0.078
+ },
+ {
+  "symbol": "XLM/USDT:USDT",
+  "atr_pct": 0.077
+ },
+ {
+  "symbol": "BAN/USDT:USDT",
+  "atr_pct": 0.077
+ },
+ {
+  "symbol": "SNXX/USDT:USDT",
+  "atr_pct": 0.077
+ },
+ {
+  "symbol": "SFP/USDT:USDT",
+  "atr_pct": 0.076
+ },
+ {
+  "symbol": "COOKIE/USDT:USDT",
+  "atr_pct": 0.076
+ },
+ {
+  "symbol": "SNX/USDT:USDT",
+  "atr_pct": 0.075
+ },
+ {
+  "symbol": "CGPT/USDT:USDT",
+  "atr_pct": 0.075
+ },
+ {
+  "symbol": "KITE/USDT:USDT",
+  "atr_pct": 0.075
+ },
+ {
+  "symbol": "TRB/USDT:USDT",
+  "atr_pct": 0.074
+ },
+ {
+  "symbol": "ILV/USDT:USDT",
+  "atr_pct": 0.074
+ },
+ {
+  "symbol": "BSP/USDT:USDT",
+  "atr_pct": 0.074
+ },
+ {
+  "symbol": "ETC/USDT:USDT",
+  "atr_pct": 0.073
+ },
+ {
+  "symbol": "BEL/USDT:USDT",
+  "atr_pct": 0.073
+ },
+ {
+  "symbol": "BCH/USDT:USDT",
+  "atr_pct": 0.072
+ },
+ {
+  "symbol": "YFI/USDT:USDT",
+  "atr_pct": 0.072
+ },
+ {
+  "symbol": "AVAX/USDT:USDT",
+  "atr_pct": 0.072
+ },
+ {
+  "symbol": "1MBABYDOGE/USDT:USDT",
+  "atr_pct": 0.072
+ },
+ {
+  "symbol": "1000LUNC/USDT:USDT",
+  "atr_pct": 0.071
+ },
+ {
+  "symbol": "KMNO/USDT:USDT",
+  "atr_pct": 0.071
+ },
+ {
+  "symbol": "QNT/USDT:USDT",
+  "atr_pct": 0.07
+ },
+ {
+  "symbol": "BNT/USDT:USDT",
+  "atr_pct": 0.07
+ },
+ {
+  "symbol": "OG/USDT:USDT",
+  "atr_pct": 0.07
+ },
+ {
+  "symbol": "SKYAI/USDT:USDT",
+  "atr_pct": 0.07
+ },
+ {
+  "symbol": "SPK/USDT:USDT",
+  "atr_pct": 0.07
+ },
+ {
+  "symbol": "UMA/USDT:USDT",
+  "atr_pct": 0.069
+ },
+ {
+  "symbol": "ME/USDT:USDT",
+  "atr_pct": 0.069
+ },
+ {
+  "symbol": "S/USDT:USDT",
+  "atr_pct": 0.069
+ },
+ {
+  "symbol": "SOXL/USDT:USDT",
+  "atr_pct": 0.069
+ },
+ {
+  "symbol": "GRAM/USDT:USDT",
+  "atr_pct": 0.069
+ },
+ {
+  "symbol": "HOT/USDT:USDT",
+  "atr_pct": 0.068
+ },
+ {
+  "symbol": "USTC/USDT:USDT",
+  "atr_pct": 0.068
+ },
+ {
+  "symbol": "NXPC/USDT:USDT",
+  "atr_pct": 0.068
+ },
+ {
+  "symbol": "LYN/USDT:USDT",
+  "atr_pct": 0.068
+ },
+ {
+  "symbol": "AUCTION/USDT:USDT",
+  "atr_pct": 0.067
+ },
+ {
+  "symbol": "LTC/USDT:USDT",
+  "atr_pct": 0.066
+ },
+ {
+  "symbol": "COMP/USDT:USDT",
+  "atr_pct": 0.066
+ },
+ {
+  "symbol": "BANANA/USDT:USDT",
+  "atr_pct": 0.066
+ },
+ {
+  "symbol": "DIA/USDT:USDT",
+  "atr_pct": 0.066
+ },
+ {
+  "symbol": "MOODENG/USDT:USDT",
+  "atr_pct": 0.066
+ },
+ {
+  "symbol": "SKL/USDT:USDT",
+  "atr_pct": 0.065
+ },
+ {
+  "symbol": "MAGIC/USDT:USDT",
+  "atr_pct": 0.065
+ },
+ {
+  "symbol": "NMR/USDT:USDT",
+  "atr_pct": 0.065
+ },
+ {
+  "symbol": "JST/USDT:USDT",
+  "atr_pct": 0.065
+ },
+ {
+  "symbol": "AIA/USDT:USDT",
+  "atr_pct": 0.065
+ },
+ {
+  "symbol": "VANA/USDT:USDT",
+  "atr_pct": 0.064
+ },
+ {
+  "symbol": "SOL/USDT:USDT",
+  "atr_pct": 0.063
+ },
+ {
+  "symbol": "LINK/USDT:USDT",
+  "atr_pct": 0.062
+ },
+ {
+  "symbol": "1INCH/USDT:USDT",
+  "atr_pct": 0.061
+ },
+ {
+  "symbol": "OGN/USDT:USDT",
+  "atr_pct": 0.061
+ },
+ {
+  "symbol": "1000CHEEMS/USDT:USDT",
+  "atr_pct": 0.061
+ },
+ {
+  "symbol": "LAYER/USDT:USDT",
+  "atr_pct": 0.061
+ },
+ {
+  "symbol": "JELLYJELLY/USDT:USDT",
+  "atr_pct": 0.061
+ },
+ {
+  "symbol": "TWT/USDT:USDT",
+  "atr_pct": 0.059
+ },
+ {
+  "symbol": "BANANAS31/USDT:USDT",
+  "atr_pct": 0.059
+ },
+ {
+  "symbol": "DOGE/USDT:USDT",
+  "atr_pct": 0.057
+ },
+ {
+  "symbol": "SOXS/USDT:USDT",
+  "atr_pct": 0.057
+ },
+ {
+  "symbol": "AWE/USDT:USDT",
+  "atr_pct": 0.055
+ },
+ {
+  "symbol": "XRP/USDT:USDT",
+  "atr_pct": 0.053
+ },
+ {
+  "symbol": "HBAR/USDT:USDT",
+  "atr_pct": 0.052
+ },
+ {
+  "symbol": "BSV/USDT:USDT",
+  "atr_pct": 0.052
+ },
+ {
+  "symbol": "MINIMAX/USDT:USDT",
+  "atr_pct": 0.051
+ },
+ {
+  "symbol": "BZ/USDT:USDT",
+  "atr_pct": 0.05
+ },
+ {
+  "symbol": "KORU/USDT:USDT",
+  "atr_pct": 0.05
+ },
+ {
+  "symbol": "SKUU/USDT:USDT",
+  "atr_pct": 0.049
+ },
+ {
+  "symbol": "CSOPSKHYNIX2L/USDT:USDT",
+  "atr_pct": 0.048
+ },
+ {
+  "symbol": "ONDS/USDT:USDT",
+  "atr_pct": 0.046
+ },
+ {
+  "symbol": "ZHIPU/USDT:USDT",
+  "atr_pct": 0.046
+ },
+ {
+  "symbol": "BNB/USDT:USDT",
+  "atr_pct": 0.045
+ },
+ {
+  "symbol": "AXTI/USDT:USDT",
+  "atr_pct": 0.045
+ },
+ {
+  "symbol": "SHAZ/USDT:USDT",
+  "atr_pct": 0.044
+ },
+ {
+  "symbol": "ETH/USDT:USDT",
+  "atr_pct": 0.043
+ },
+ {
+  "symbol": "CL/USDT:USDT",
+  "atr_pct": 0.043
+ },
+ {
+  "symbol": "BMNR/USDT:USDT",
+  "atr_pct": 0.043
+ },
+ {
+  "symbol": "ORCL/USDT:USDT",
+  "atr_pct": 0.042
+ },
+ {
+  "symbol": "HPE/USDT:USDT",
+  "atr_pct": 0.042
+ },
+ {
+  "symbol": "INTW/USDT:USDT",
+  "atr_pct": 0.042
+ },
+ {
+  "symbol": "ALL/USDT:USDT",
+  "atr_pct": 0.039
+ },
+ {
+  "symbol": "NOK/USDT:USDT",
+  "atr_pct": 0.038
+ },
+ {
+  "symbol": "HK0625/USDT:USDT",
+  "atr_pct": 0.038
+ },
+ {
+  "symbol": "FWDI/USDT:USDT",
+  "atr_pct": 0.037
+ },
+ {
+  "symbol": "TEAM/USDT:USDT",
+  "atr_pct": 0.036
+ },
+ {
+  "symbol": "DELL/USDT:USDT",
+  "atr_pct": 0.035
+ },
+ {
+  "symbol": "SKDD/USDT:USDT",
+  "atr_pct": 0.035
+ },
+ {
+  "symbol": "BYD/USDT:USDT",
+  "atr_pct": 0.035
+ },
+ {
+  "symbol": "ZHONGJI/USDT:USDT",
+  "atr_pct": 0.034
+ },
+ {
+  "symbol": "HK0992/USDT:USDT",
+  "atr_pct": 0.034
+ },
+ {
+  "symbol": "BTCDOM/USDT:USDT",
+  "atr_pct": 0.032
+ },
+ {
+  "symbol": "MSTR/USDT:USDT",
+  "atr_pct": 0.032
+ },
+ {
+  "symbol": "BE/USDT:USDT",
+  "atr_pct": 0.032
+ },
+ {
+  "symbol": "COHR/USDT:USDT",
+  "atr_pct": 0.032
+ },
+ {
+  "symbol": "GIGADEV/USDT:USDT",
+  "atr_pct": 0.032
+ },
+ {
+  "symbol": "CRCL/USDT:USDT",
+  "atr_pct": 0.031
+ },
+ {
+  "symbol": "SNDK/USDT:USDT",
+  "atr_pct": 0.031
+ },
+ {
+  "symbol": "SUN/USDT:USDT",
+  "atr_pct": 0.029
+ },
+ {
+  "symbol": "LITE/USDT:USDT",
+  "atr_pct": 0.029
+ },
+ {
+  "symbol": "UVXY/USDT:USDT",
+  "atr_pct": 0.028
+ },
+ {
+  "symbol": "TER/USDT:USDT",
+  "atr_pct": 0.028
+ },
+ {
+  "symbol": "AAOI/USDT:USDT",
+  "atr_pct": 0.026
+ },
+ {
+  "symbol": "XLE/USDT:USDT",
+  "atr_pct": 0.026
+ },
+ {
+  "symbol": "MVLL/USDT:USDT",
+  "atr_pct": 0.026
+ },
+ {
+  "symbol": "IONQ/USDT:USDT",
+  "atr_pct": 0.026
+ },
+ {
+  "symbol": "NATGAS/USDT:USDT",
+  "atr_pct": 0.025
+ },
+ {
+  "symbol": "KSTR/USDT:USDT",
+  "atr_pct": 0.025
+ },
+ {
+  "symbol": "LGELECTRONICS/USDT:USDT",
+  "atr_pct": 0.025
+ },
+ {
+  "symbol": "ARM/USDT:USDT",
+  "atr_pct": 0.024
+ },
+ {
+  "symbol": "SKHYNIX/USDT:USDT",
+  "atr_pct": 0.024
+ },
+ {
+  "symbol": "ADBE/USDT:USDT",
+  "atr_pct": 0.024
+ },
+ {
+  "symbol": "TTWO/USDT:USDT",
+  "atr_pct": 0.024
+ },
+ {
+  "symbol": "APP/USDT:USDT",
+  "atr_pct": 0.024
+ },
+ {
+  "symbol": "SHOP/USDT:USDT",
+  "atr_pct": 0.024
+ },
+ {
+  "symbol": "INTC/USDT:USDT",
+  "atr_pct": 0.022
+ },
+ {
+  "symbol": "COPPER/USDT:USDT",
+  "atr_pct": 0.022
+ },
+ {
+  "symbol": "NBIS/USDT:USDT",
+  "atr_pct": 0.022
+ },
+ {
+  "symbol": "WDC/USDT:USDT",
+  "atr_pct": 0.022
+ },
+ {
+  "symbol": "CSOPSAMSUNG2L/USDT:USDT",
+  "atr_pct": 0.022
+ },
+ {
+  "symbol": "CXMT/USDT:USDT",
+  "atr_pct": 0.022
+ },
+ {
+  "symbol": "CRDO/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "SKHY/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "HK1810/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "UNITREE/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "TSLL/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "DDOG/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "MDB/USDT:USDT",
+  "atr_pct": 0.021
+ },
+ {
+  "symbol": "CRWV/USDT:USDT",
+  "atr_pct": 0.02
+ },
+ {
+  "symbol": "HANMI/USDT:USDT",
+  "atr_pct": 0.02
+ },
+ {
+  "symbol": "NET/USDT:USDT",
+  "atr_pct": 0.02
+ },
+ {
+  "symbol": "DJT/USDT:USDT",
+  "atr_pct": 0.02
+ },
+ {
+  "symbol": "XAG/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "XPT/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "COIN/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "BBX/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "IREN/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "CRWD/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "SAMSUNGEM/USDT:USDT",
+  "atr_pct": 0.019
+ },
+ {
+  "symbol": "BTC/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "HOOD/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "CBRS/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "IBM/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "WEN/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "MUU/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "VST/USDT:USDT",
+  "atr_pct": 0.018
+ },
+ {
+  "symbol": "RKLB/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "ASTS/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "DKNG/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "STXX/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "VRT/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "RAM/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "MARA/USDT:USDT",
+  "atr_pct": 0.017
+ },
+ {
+  "symbol": "BX/USDT:USDT",
+  "atr_pct": 0.016
+ },
+ {
+  "symbol": "NFLX/USDT:USDT",
+  "atr_pct": 0.016
+ },
+ {
+  "symbol": "KUAISHOU/USDT:USDT",
+  "atr_pct": 0.016
+ },
+ {
+  "symbol": "MRNA/USDT:USDT",
+  "atr_pct": 0.016
+ },
+ {
+  "symbol": "QCOM/USDT:USDT",
+  "atr_pct": 0.015
+ },
+ {
+  "symbol": "SPCX/USDT:USDT",
+  "atr_pct": 0.015
+ },
+ {
+  "symbol": "IWM/USDT:USDT",
+  "atr_pct": 0.015
+ },
+ {
+  "symbol": "NAVER/USDT:USDT",
+  "atr_pct": 0.015
+ },
+ {
+  "symbol": "AMAT/USDT:USDT",
+  "atr_pct": 0.014
+ },
+ {
+  "symbol": "XPD/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "AVGO/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "AMD/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "DRAM/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "GME/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "SONY/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "TXN/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "FLEX/USDT:USDT",
+  "atr_pct": 0.013
+ },
+ {
+  "symbol": "EWJ/USDT:USDT",
+  "atr_pct": 0.012
+ },
+ {
+  "symbol": "MRVL/USDT:USDT",
+  "atr_pct": 0.012
+ },
+ {
+  "symbol": "SAMSUNG/USDT:USDT",
+  "atr_pct": 0.012
+ },
+ {
+  "symbol": "URNM/USDT:USDT",
+  "atr_pct": 0.012
+ },
+ {
+  "symbol": "LRCX/USDT:USDT",
+  "atr_pct": 0.012
+ },
+ {
+  "symbol": "MRK/USDT:USDT",
+  "atr_pct": 0.012
+ },
+ {
+  "symbol": "NVDA/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "USAR/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "UBER/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "HD/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "ZM/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "KLAC/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "ALAB/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "SMCI/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "CIEN/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "LYTE/USDT:USDT",
+  "atr_pct": 0.011
+ },
+ {
+  "symbol": "TRX/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "AAPL/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "BABA/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "LLY/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "HIMS/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "EWZ/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "GLW/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "ASML/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "SQQQ/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "PANW/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "MEITUAN/USDT:USDT",
+  "atr_pct": 0.01
+ },
+ {
+  "symbol": "TSLA/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "PLTR/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "PAYP/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "GOOGL/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "MU/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "FLNC/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "QNTX/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "BOT/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "PENG/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "RDDT/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "TEM/USDT:USDT",
+  "atr_pct": 0.009
+ },
+ {
+  "symbol": "EWY/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "WMT/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "HYUNDAI/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "NOW/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "RIVN/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "TQQQ/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "GEV/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "TENCENT/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "BITO/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "SMH/USDT:USDT",
+  "atr_pct": 0.008
+ },
+ {
+  "symbol": "AMZN/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "TSM/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "JPM/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "EWT/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "CRM/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "SNOW/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "TZA/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "KO/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "GDX/USDT:USDT",
+  "atr_pct": 0.007
+ },
+ {
+  "symbol": "DIS/USDT:USDT",
+  "atr_pct": 0.006
+ },
+ {
+  "symbol": "NVO/USDT:USDT",
+  "atr_pct": 0.006
+ },
+ {
+  "symbol": "COST/USDT:USDT",
+  "atr_pct": 0.006
+ },
+ {
+  "symbol": "HK0700/USDT:USDT",
+  "atr_pct": 0.006
+ },
+ {
+  "symbol": "ZS/USDT:USDT",
+  "atr_pct": 0.006
+ },
+ {
+  "symbol": "META/USDT:USDT",
+  "atr_pct": 0.005
+ },
+ {
+  "symbol": "MSFT/USDT:USDT",
+  "atr_pct": 0.005
+ },
+ {
+  "symbol": "EBAY/USDT:USDT",
+  "atr_pct": 0.005
+ },
+ {
+  "symbol": "CAT/USDT:USDT",
+  "atr_pct": 0.005
+ },
+ {
+  "symbol": "NVDL/USDT:USDT",
+  "atr_pct": 0.005
+ },
+ {
+  "symbol": "CSCO/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "BRKB/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "XBI/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "SOFI/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "POPMART/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "TBT/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "PYPL/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "KODEX200/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "PDD/USDT:USDT",
+  "atr_pct": 0.004
+ },
+ {
+  "symbol": "V/USDT:USDT",
+  "atr_pct": 0.003
+ },
+ {
+  "symbol": "GTLB/USDT:USDT",
+  "atr_pct": 0.003
+ },
+ {
+  "symbol": "XAU/USDT:USDT",
+  "atr_pct": 0.002
+ },
+ {
+  "symbol": "QQQ/USDT:USDT",
+  "atr_pct": 0.002
+ },
+ {
+  "symbol": "SPY/USDT:USDT",
+  "atr_pct": 0.002
+ },
+ {
+  "symbol": "STRC/USDT:USDT",
+  "atr_pct": 0.002
+ },
+ {
+  "symbol": "TMF/USDT:USDT",
+  "atr_pct": 0.002
+ },
+ {
+  "symbol": "PAXG/USDT:USDT",
+  "atr_pct": 0.001
+ },
+ {
+  "symbol": "XAUT/USDT:USDT",
+  "atr_pct": 0.001
+ },
+ {
+  "symbol": "GS/USDT:USDT",
+  "atr_pct": 0.001
+ },
+ {
+  "symbol": "USDC/USDT:USDT",
+  "atr_pct": 0.0
+ }
+]

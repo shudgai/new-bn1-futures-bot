@@ -14,7 +14,7 @@ from core.config import (
 )
 from core.services.strategies.outer_strategy import (
     ck_direction, ck_entry_momentum_ready, live_ma3_direction_ready,
-    live_adverse_entry_safe,
+    live_adverse_entry_safe, aligned_entry_ready,
 )
 
 def channel_adverse_exit_reason(
@@ -141,11 +141,16 @@ def opposite_entry_releases(account: Any, symbol: str, frame: pd.DataFrame, pric
         if not fills:
             return False
         close_bar = math.floor(min(fills) / 60_000) * 60_000
-        if live <= close_bar or not close_bar <= confirmed < live:
+        if live <= close_bar or not close_bar < confirmed < live:
             return False
         side = 'SHORT' if ticket['side'] == 'LONG' else 'LONG'
-        return (ck_direction(frame) == side and ck_entry_momentum_ready(frame, side)
-                and live_ma3_direction_ready(frame, price, side)
+        candle = frame.iloc[-2]
+        opened, high, low, closed = (float(candle[key]) for key in ('open', 'high', 'low', 'close'))
+        body = (1 if side == 'LONG' else -1) * (closed - opened)
+        if not all(math.isfinite(value) for value in (opened, high, low, closed, body)):
+            return False
+        return (high > low and body / (high - low) >= 0.20
+                and aligned_entry_ready(frame, price, side)
                 and live_adverse_entry_safe(frame, price, side))
     except (AttributeError, TypeError, ValueError, KeyError, IndexError, OverflowError):
         return False

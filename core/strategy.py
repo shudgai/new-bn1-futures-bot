@@ -1,4 +1,5 @@
 import math
+import os
 import pandas as pd
 import numpy as np
 from core.config import (
@@ -774,6 +775,19 @@ class SuperTrendKeltnerStrategy:
         df['kc_upper'] = df['ema_20'] + (df['atr'] * KELTNER_ATR_MULTIPLIER)
         df['kc_lower'] = df['ema_20'] - (df['atr'] * KELTNER_ATR_MULTIPLIER)
         df['kc_width'] = df['kc_upper'] - df['kc_lower']
+
+        # Chande Kroll Stop
+        cks_p = int(os.getenv("CKS_P", "10"))
+        cks_x = float(os.getenv("CKS_X", "1.0"))
+        cks_q = int(os.getenv("CKS_Q", "9"))
+        tr_cks = tr.rolling(window=cks_p).mean()
+        high_p = high.rolling(window=cks_p).max()
+        low_p = low.rolling(window=cks_p).min()
+        first_long_stop = high_p - cks_x * tr_cks
+        first_short_stop = low_p + cks_x * tr_cks
+        df['ck_long'] = first_long_stop.rolling(window=cks_q).max()
+        df['ck_short'] = first_short_stop.rolling(window=cks_q).min()
+
 
         # SuperTrend
         hl2 = (high + low) / 2

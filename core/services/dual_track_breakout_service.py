@@ -142,7 +142,7 @@ class DualTrackBreakoutStateMachine(AntiDuplicateExecutionMixin):
             body = abs(close - open_price)
             if not self._finite(open_price, close, high, low, atr) or atr <= 0 or candle_range <= 0:
                 return False
-            if body < self.minimum_body_atr * atr or body / candle_range < self.minimum_body_ratio:
+            if body < self.minimum_body_atr * atr or body / candle_range < 0.5:
                 return False
 
             prior = history if history is not None else pd.DataFrame()
@@ -153,15 +153,9 @@ class DualTrackBreakoutStateMachine(AntiDuplicateExecutionMixin):
                 return False
             if side == LONG:
                 swing = float(prior["high"].max())
-                if close < swing and swing - close < self.minimum_room_atr * atr:
-                    return False
-                room_pct = (swing - close) / close if swing > close else self.minimum_room_pct
-            else:
-                swing = float(prior["low"].min())
-                if close > swing and close - swing < self.minimum_room_atr * atr:
-                    return False
-                room_pct = (close - swing) / close if swing < close else self.minimum_room_pct
-            return room_pct >= self.minimum_room_pct
+                return close >= swing or swing - close >= 0.8 * atr
+            swing = float(prior["low"].min())
+            return close <= swing or close - swing >= 0.8 * atr
         except (AttributeError, KeyError, TypeError, ValueError, IndexError):
             return False
 
