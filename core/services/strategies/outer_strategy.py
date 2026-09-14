@@ -732,6 +732,17 @@ def outside_continuation_ready(frame, side, price=None):
             return False
         if ma3_pivot_reset(frame, side) or ma3_middle_cross_reset(frame):
             return False
+        try:
+            previous_ma3 = float(frame.iloc[-2]["ma3"])
+            live_ma3 = float(frame.iloc[-1]["ma3"])
+            if not all(math.isfinite(v) and v > 0 for v in (previous_ma3, live_ma3)):
+                return False
+            if side == "LONG" and live_ma3 <= previous_ma3:
+                return False
+            if side == "SHORT" and live_ma3 >= previous_ma3:
+                return False
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            return False
         rail = "kc_upper" if side == "LONG" else "kc_lower"
         if rail not in frame.columns:
             return False
