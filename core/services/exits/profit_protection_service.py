@@ -103,7 +103,11 @@ def protection(position, price, fee, slippage, frame=None):
             strong_trend = trend_style(frame, side, position.get("open_timestamp")) in {
                 "STACKED", "SMOOTH",
             }
-            target_offset = None if strong_trend and not long_body else atr * target_mult
+            # Channel Swing rides the move until its peak/valley or ladder lock;
+            # the ATR stop remains protective, but a fixed ATR target must not
+            # cut a still-developing trend short.
+            hold_to_peak = position.get("entry_mode") == "CHANNEL_SWING"
+            target_offset = None if hold_to_peak or (strong_trend and not long_body) else atr * target_mult
             stop = entry - sign * stop_offset
             target = entry + sign * target_offset if target_offset is not None else None
             if lock > 0:

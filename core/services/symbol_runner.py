@@ -225,18 +225,12 @@ async def process_single_symbol_runner(
                 channel_action = {"action": "EXIT", "side": None, "reason": emergency}
             elif ck_exit:
                 channel_action = {"action": "EXIT", "side": None, "reason": ck_exit}
-            volume_decay_exit = bool(
-                CHANNEL_VOLUME_DECAY_EXIT_ENABLED and not emergency
-                and channel_action.get("reason") != FADING_EXIT_REASON
-                and volume_decay_exit_ready(
-                    channel_df, existing_pos.get("side"), channel_exit_net_profitable,
-                    CHANNEL_VOLUME_DECAY_REQUIRE_PROFIT)
-            )
-            middle_cross_exit = bool(
-                CHANNEL_MA3_MIDDLE_CROSS_EXIT_ENABLED and not emergency
-                and channel_action.get("reason") != FADING_EXIT_REASON
-                and ma3_middle_cross_against(channel_df, existing_pos.get("side"))
-            )
+            # Normal Channel Swing positions ride the trend to a peak/valley
+            # or ladder lock. MA3 middle-cross and volume-decay are diagnostic
+            # signals here, not standalone exits; emergency and hard-stop
+            # exits above remain active.
+            volume_decay_exit = False
+            middle_cross_exit = False
             if terminal_turn and not emergency and not (profit and profit["triggered"]):
                 channel_action = {"action": "EXIT", "side": None, "reason": FADING_EXIT_REASON}
             elif middle_cross_exit:

@@ -730,7 +730,7 @@ def outside_continuation_ready(frame, side, price=None):
     try:
         if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
             return False
-        if ma3_pivot_reset(frame, side) or ma3_middle_cross_reset(frame):
+        if ma3_pivot_reset(frame, side) or ma3_middle_cross_reset(frame, lookback=4):
             return False
         try:
             previous_ma3 = float(frame.iloc[-2]["ma3"])
