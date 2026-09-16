@@ -1,4 +1,3 @@
-from core.channel_entry_diagnostics import entry_diagnostics
 import asyncio
 import os
 import csv
@@ -601,9 +600,6 @@ async def _load_klines(symbol: str, timeframe: str, limit: int, include_live: bo
             })
             
         entry_block = None
-        if include_live and timeframe == "1m" and engine.is_running:
-            price = float(engine.tickers.get(symbol) or indicators.iloc[-1]["close"])
-            entry_block = entry_diagnostics(engine, symbol, indicators, price, time.time())
         return {"symbol": symbol, "timeframe": timeframe, "data": result, "entry_block": entry_block}
     except HTTPException:
         raise
