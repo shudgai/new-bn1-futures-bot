@@ -5,6 +5,11 @@ import asyncio
 from core.services.symbol_runner import process_single_symbol_runner
 
 @pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
 def mock_engine():
     engine = MagicMock()
     engine.account = MagicMock()
@@ -27,7 +32,7 @@ def mock_engine():
     engine._execute_confirmed_channel_break = AsyncMock()
     return engine
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_symbol_runner_lifecycle_exit_and_reentry(mock_engine):
     # Setup dummy frame with flash crash scenario
     frame = pd.DataFrame([
@@ -85,3 +90,39 @@ async def test_symbol_runner_lifecycle_exit_and_reentry(mock_engine):
     
     # The actual call depends on UnifiedEntryStrategy internals, but at minimum we know it didn't return early due to cooldown.
     assert mock_engine._last_exit_bar_id[symbol] == 3000
+
+    assert not any("處理失敗" in call.args[0] for call in mock_engine.account.log.call_args_list)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("side", ["LONG", "SHORT"])
+async def test_flat_scan_routes_real_unified_signal(mock_engine, side):
+    sign = 1 if side == "LONG" else -1
+    frame = pd.DataFrame([
+        dict(timestamp=i * 60000, open=100 + sign * i,
+             close=100 + sign * (i + 1), high=106, low=94,
+             kc_middle=100 + sign * i, kc_upper=102, kc_lower=98, atr=1)
+        for i in range(4)
+    ])
+    frame.loc[1, "close"] = 100 + sign * 3
+    frame.loc[2, ["open", "close"]] = [100 + sign * 3, 100 + sign * 4]
+    frame["high"] = frame[["open", "close"]].max(axis=1) + .1
+    frame["low"] = frame[["open", "close"]].min(axis=1) - .1
+    await process_single_symbol_runner(
+        mock_engine, "TEST/USDT", 0, None, False,
+        exit_frame=frame, exit_quote=100 + sign * 4,
+    )
+    mock_engine._execute_confirmed_channel_break.assert_awaited_once()
+    assert mock_engine._execute_confirmed_channel_break.call_args.args[3] == side
+    assert not any("處理失敗" in call.args[0] for call in mock_engine.account.log.call_args_list)
+
+
+@pytest.mark.anyio
+async def test_flat_direction_does_not_send_wait_tuple(mock_engine):
+    frame = pd.DataFrame([dict(timestamp=i, kc_middle=100) for i in range(4)])
+    await process_single_symbol_runner(
+        mock_engine, "TEST/USDT", 0, None, False,
+        exit_frame=frame, exit_quote=100,
+    )
+    mock_engine._execute_confirmed_channel_break.assert_not_awaited()
+    assert not any("處理失敗" in call.args[0] for call in mock_engine.account.log.call_args_list)

@@ -1,5 +1,7 @@
 from core.services.exits.hard_stop_service import enforce_hard_stop
+from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS
 import asyncio
+import copy
 import json
 import math
 import os
@@ -451,6 +453,8 @@ class BinanceTestnetAccount:
                 "reason": meta.get("reason") or "Binance Testnet existing position",
                 "signal_score": meta.get("signal_score"),
                 **{key: meta.get(key) for key in ENTRY_CONTEXT_KEYS},
+                **{key: copy.deepcopy(meta[key]) for key in DUAL_TRACK_STATE_KEYS
+                   if meta.get(key) is not None},
                 "mark_price": mark_price,
                 "liquidation_price": float(row.get("liquidationPrice") or 0.0),
                 "unrealized_pnl": float(row.get("unRealizedProfit") or 0.0),
@@ -2242,7 +2246,7 @@ class BinanceTestnetAccount:
                 return False
         # ✅ 修正：若是手動平倉，直接跳過自動冷卻計時器，避免用戶手動平倉卡住
         _now = time.time()
-        strategy_close = str(close_reason).startswith("Channel Swing ")
+        strategy_close = str(close_reason).startswith(("Channel Swing ", "DualTrackExit "))
         if (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
             return False
         self.closing_lock.add(symbol)

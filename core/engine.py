@@ -1513,6 +1513,18 @@ class TradingEngine:
         }
         self.market_surveillance_updated_at = now
 
+    def btc_lead_shadow_status(self) -> dict:
+        """Return the existing read-only BTC shadow-monitoring API contract."""
+        events = copy.deepcopy(getattr(self, "_btc_lead_shadow_events", []))
+        eligible = [event for event in events if not event.get("chop_locked")]
+        delays = [float(event["delay_sec"]) for event in eligible]
+        return {
+            "active": copy.deepcopy(getattr(self, "_btc_lead_shadow_active", {})),
+            "events": events[-30:], "total_events": len(events),
+            "eligible_events": len(eligible),
+            "average_delay_sec": round(sum(delays) / len(delays), 3) if delays else None,
+        }
+
     def market_surveillance_status(self) -> dict:
         return {
             "enabled": bool(FULL_MARKET_SURVEILLANCE_ENABLED),

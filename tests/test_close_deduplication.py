@@ -98,13 +98,14 @@ async def test_inflight_refresh_from_before_close_is_discarded(side, tmp_path, m
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
-async def test_strategy_failure_cooldown_keeps_manual_override(side, tmp_path, monkeypatch):
+@pytest.mark.parametrize("reason", ["Channel Swing middle", "DualTrackExit RATCHET_PROFIT_LOCK_EXIT"])
+async def test_strategy_failure_cooldown_keeps_manual_override(side, reason, tmp_path, monkeypatch):
     a, ex = await account_for(side, tmp_path, monkeypatch)
     create = ex.create_order
     ex.create_order = AsyncMock(side_effect=RuntimeError("order rejected"))
-    assert not await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert not await a.close_position("DOGE/USDT", 100., reason, True)
     assert "DOGE/USDT" in a.positions and not closes(a)
-    assert not await a.close_position("DOGE/USDT", 100., "Channel Swing middle", True)
+    assert not await a.close_position("DOGE/USDT", 100., reason, True)
     assert ex.create_order.await_count == 1
     ex.create_order = create
     assert await a.close_position("DOGE/USDT", 100., "手動平倉", True)

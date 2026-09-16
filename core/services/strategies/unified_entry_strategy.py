@@ -302,8 +302,12 @@ class UnifiedEntryStrategy(IEntryStrategy):
             # 最後一道過濾條件：目標空間
             try:
                 atr = float(frame.iloc[-2]["atr"])
-                if not check_target_space(price, atr, target_price, side):
-                    return False, "WAIT_TARGET_SPACE", {"action": "WAIT"}
+                # 空中加油本質是中繼突破，不檢查目標空間
+                if "REFUELING" not in reason:
+                    if not check_target_space(price, atr, target_price, side):
+                        return False, "WAIT_TARGET_SPACE", {"action": "WAIT"}
+                else:
+                    print(f"[UnifiedEntry] REFUELING signal detected -> Target space check bypassed.", flush=True)
             except (AttributeError, KeyError, TypeError, ValueError, IndexError):
                 return False, "WAIT_TARGET_SPACE_ERROR", {"action": "WAIT"}
                 

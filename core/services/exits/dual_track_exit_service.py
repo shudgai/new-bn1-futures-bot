@@ -7,6 +7,11 @@ import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
 
 
+DUAL_TRACK_STATE_KEYS = (
+    "ratchet_lock_state", "last_valid_swing_low", "last_valid_swing_high",
+)
+
+
 def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
     """
     極端防禦檢測 (最高優先級)：

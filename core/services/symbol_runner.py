@@ -6,7 +6,9 @@ import pandas as pd
 from typing import Dict, Any, List, Tuple
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
-from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+from core.services.exits.dual_track_exit_service import (
+    DUAL_TRACK_STATE_KEYS, DualTrackExitStrategy,
+)
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
 async def process_single_symbol_runner(
@@ -58,8 +60,20 @@ async def process_single_symbol_runner(
                 return signal_progress, detected_candidates
 
             # 2. 雙軌平倉機制 (包含極端防禦與常規波段)
+            meta = engine.account.position_meta.setdefault(symbol, {})
+            for key in DUAL_TRACK_STATE_KEYS:
+                if existing_pos.get(key) is None and meta.get(key) is not None:
+                    existing_pos[key] = copy.deepcopy(meta[key])
             exit_strategy = DualTrackExitStrategy(fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
             exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price)
+            # Persist observations before any awaited order or account refresh.
+            observed = {
+                key: copy.deepcopy(existing_pos[key])
+                for key in DUAL_TRACK_STATE_KEYS if existing_pos.get(key) is not None
+            }
+            if any(meta.get(key) != value for key, value in observed.items()):
+                meta.update(observed)
+                engine.account.save_state()
             
             if exit_reason:
                 engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉...", "INFO")
@@ -95,19 +109,23 @@ async def process_single_symbol_runner(
                 
             # 統一進場策略評估
             entry_strategy = UnifiedEntryStrategy()
-            entry_decision = entry_strategy.evaluate_entry(channel_df, channel_price)
-            
-            if entry_decision and entry_decision.get("action") == "ENTER":
-                direct_side = entry_decision.get("side")
-                reason = entry_decision.get("reason", "UNIFIED_ENTRY")
+            print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
+            for direct_side in ("LONG", "SHORT"):
+                allowed, reason, entry_decision = entry_strategy.evaluate_entry(
+                    channel_df, channel_price, direct_side,
+                )
+                if not allowed or entry_decision.get("action") != "ENTER":
+                    continue
                 engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
-                
                 await engine._execute_confirmed_channel_break(
                     symbol, channel_df, channel_price, direct_side, daily_halt
                 )
+                break
             
         return signal_progress, detected_candidates
 
     except Exception as e:
         engine.account.log(f'⚠️ [{symbol}] 處理失敗: {e}', 'WARNING')
+        import traceback
+        traceback.print_exc()
     return signal_progress, detected_candidates
