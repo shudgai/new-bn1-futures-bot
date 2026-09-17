@@ -959,6 +959,60 @@
                         ctx.markerSignature = markerSignature;
                     }
                     
+                    const pos = (this.bot.positions || []).find(p => p.symbol === symbol);
+                    if (pos) {
+                        const entryPrice = parseFloat(pos.entry_price || 0);
+                        if (entryPrice > 0) {
+                            if (!ctx.entryPriceLine) {
+                                ctx.entryPriceLine = ctx.candlestickSeries.createPriceLine({
+                                    price: entryPrice,
+                                    color: pos.side === 'LONG' ? '#2563eb' : '#7c3aed',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    axisLabelVisible: true,
+                                    title: `開倉 (${pos.side})`,
+                                });
+                            } else {
+                                ctx.entryPriceLine.applyOptions({
+                                    price: entryPrice,
+                                    color: pos.side === 'LONG' ? '#2563eb' : '#7c3aed',
+                                    title: `開倉 (${pos.side})`
+                                });
+                            }
+                        }
+                        
+                        const tp = parseFloat(pos.tp || 0);
+                        const sl = parseFloat(pos.sl || 0);
+                        const stopPrice = tp > 0 ? tp : (sl > 0 ? sl : null);
+                        
+                        if (stopPrice) {
+                            if (!ctx.stopPriceLine) {
+                                ctx.stopPriceLine = ctx.candlestickSeries.createPriceLine({
+                                    price: stopPrice,
+                                    color: '#f59e0b',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                                    axisLabelVisible: true,
+                                    title: '鎖利/停損',
+                                });
+                            } else {
+                                ctx.stopPriceLine.applyOptions({ price: stopPrice });
+                            }
+                        } else if (ctx.stopPriceLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
+                            ctx.stopPriceLine = null;
+                        }
+                    } else {
+                        if (ctx.entryPriceLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.entryPriceLine);
+                            ctx.entryPriceLine = null;
+                        }
+                        if (ctx.stopPriceLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
+                            ctx.stopPriceLine = null;
+                        }
+                    }
+                    
                     if (!ctx.requestHasFit) {
                         ctx.chart.timeScale().fitContent();
                         ctx.requestHasFit = true;
