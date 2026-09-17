@@ -2446,8 +2446,6 @@ class TradingEngine:
         }
         self.rotation_event.set()
 
-    @staticmethod
-
     def _continuous_entry_amount(self) -> float:
         """Allocate configured wallet fraction while preserving a fee/risk buffer."""
         positions = getattr(self.account, "positions", {})
