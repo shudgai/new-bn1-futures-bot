@@ -1138,6 +1138,10 @@
                     }
                 },
                 async authorizedFetch(url, options = {}) {
+                    options.headers = {
+                        ...options.headers,
+                        'x-api-key': 'local_dev_bypass'
+                    };
                     const res = await fetch(url, options);
                     if (!res.ok) {
                         let detail = `操作失敗（HTTP ${res.status}）`;
