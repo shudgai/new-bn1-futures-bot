@@ -142,8 +142,8 @@ def check_ratchet_lock_exit(position: Dict[str, Any], frame: pd.DataFrame, price
         
         state = position.setdefault("ratchet_lock_state", {})
         
-        START_THRESHOLD = 0.35
-        STEP = 0.20
+        START_THRESHOLD = 0.55
+        STEP = 0.30
         
         max_net_atr = max(float(state.get("max_net_atr", 0)), net_atr)
         state["max_net_atr"] = max_net_atr
