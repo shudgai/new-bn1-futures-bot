@@ -2446,6 +2446,46 @@ class TradingEngine:
         }
         self.rotation_event.set()
 
+    def _take_over_manual_position(self, symbol: str, position: dict) -> bool:
+        """Adopt a manually opened position into the Channel Swing manager."""
+        meta = self.account.position_meta.setdefault(symbol, {})
+        entry_mode = str(
+            position.get("entry_mode") or meta.get("entry_mode") or ""
+        ).upper()
+        reason = str(position.get("reason") or meta.get("reason") or "")
+        is_manual = (
+            entry_mode == "MANUAL"
+            or "手動開倉" in reason
+            or "MANUAL" in reason.upper()
+            or position.get("manual_entry") is True
+        )
+        if not is_manual:
+            return False
+        if entry_mode == "CHANNEL_SWING":
+            changed = not (
+                position.get("managed_by_bot") is True
+                and meta.get("managed_by_bot") is True
+            )
+            if changed:
+                position["manual_entry"] = True
+                position["managed_by_bot"] = True
+                meta["manual_entry"] = True
+                meta["managed_by_bot"] = True
+                self.account.save_state()
+            return changed
+        position["entry_mode"] = "CHANNEL_SWING"
+        position["manual_entry"] = True
+        position["managed_by_bot"] = True
+        meta["entry_mode"] = "CHANNEL_SWING"
+        meta["manual_entry"] = True
+        meta["managed_by_bot"] = True
+        self.account.save_state()
+        self.account.log(
+            f"🤖 [手動倉接管] {symbol} {position.get('side')} 已交由 Channel Swing 管理",
+            "INFO",
+        )
+        return True
+
     def _continuous_entry_amount(self) -> float:
         """Allocate configured wallet fraction while preserving a fee/risk buffer."""
         positions = getattr(self.account, "positions", {})
