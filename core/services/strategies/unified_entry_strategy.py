@@ -36,13 +36,13 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
         if is_breakdown:
             return True, "ALLOW_SHORT_BREAKDOWN_MOMENTUM_HIGH_VOL"
 
-        # 觸發 B：MA3 死叉且偏離容許度放寬至 0.35 ATR
-        is_dead_cross = (ma3 <= ma15) and (live_price <= ma15 + 0.35 * atr)
+        # 觸發 B：MA3 死叉且偏離容許度放寬至 0.7 ATR
+        is_dead_cross = (ma3 <= ma15) and (live_price <= ma15 + 0.7 * atr)
         if not is_dead_cross:
             return False, "WAIT_SHORT_TRIGGER"
 
         # 檢查空間限制
-        if (live_price - latest["kc_lower"]) < (0.35 * atr):
+        if (live_price - latest["kc_lower"]) < (0.7 * atr):
             return False, "BLOCK_SHORT_FLOOR_EXHAUSTED"
 
         return True, "ALLOW_SHORT_ENTRY"
@@ -58,13 +58,13 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
         if is_breakout:
             return True, "ALLOW_LONG_BREAKOUT_MOMENTUM_HIGH_VOL"
 
-        # 觸發 B：MA3 金叉且偏離容許度放寬至 0.35 ATR
-        is_golden_cross = (ma3 >= ma15) and (live_price >= ma15 - 0.35 * atr)
+        # 觸發 B：MA3 金叉且偏離容許度放寬至 0.7 ATR
+        is_golden_cross = (ma3 >= ma15) and (live_price >= ma15 - 0.7 * atr)
         if not is_golden_cross:
             return False, "WAIT_LONG_TRIGGER"
 
         # 檢查空間限制
-        if (latest["kc_upper"] - live_price) < (0.35 * atr):
+        if (latest["kc_upper"] - live_price) < (0.7 * atr):
             return False, "BLOCK_LONG_CEILING_EXHAUSTED"
 
         return True, "ALLOW_LONG_ENTRY"
