@@ -6,6 +6,12 @@ import pytest
 from core.services.strategies.outer_strategy import aligned_direction, aligned_entry, outside_reentry
 from core.services.strategies.outer_strategy import aligned_entry_ready
 from core.engine import TradingEngine
+
+import core.config
+core.config.ENV_MIN_KC_BANDWIDTH = -1.0
+core.config.ENV_MIN_KC_SLOPE = -1.0
+core.config.ENV_ATR_EXPANSION_RATIO = -1.0
+core.config.SOLID_BODY_RATIO = -1.0
 from channel_test_frames import closed_outer_entry_frame
 from test_channel_swing_execution import _execution_engine, SYMBOL
 

@@ -42,34 +42,37 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
         prev_close = float(prev_bar["close"])
         prev_body = abs(prev_close - prev_opened)
         
-        # --- 峰谷三點平倉邏輯 ---
-        if "is_high_risk_entry" not in position:
-            entry_price = float(position.get("entry_price", current_price))
-            dist_at_entry = abs(entry_price - float(current_bar.get("kc_middle", entry_price)))
-            position["is_high_risk_entry"] = dist_at_entry > (1.5 * atr)
+        # --- V5.0 動能衰減防禦 (Anti-Early Reversal) ---
+        from core.config import ANTI_REVERSAL_ATR_MULT, FLASH_CRASH_ATR_MULT
+        
+        # 判断是否為外軌外進場
+        if "is_outer_entry" not in position:
+            entry_reason = position.get("reason", "")
+            position["is_outer_entry"] = "OUTER" in entry_reason or "BREAKOUT" in entry_reason
             
-        if position.get("is_high_risk_entry", False):
-            if side == "LONG" and (current_price < opened) and (body_size > 0.2 * atr):
-                return "EXIT_PEAK_VALLEY_RAPID_REVERSAL"
-            if side == "SHORT" and (current_price > opened) and (body_size > 0.2 * atr):
-                return "EXIT_PEAK_VALLEY_RAPID_REVERSAL"
+        if position.get("is_outer_entry", False):
+            # 若 MA3/價格反向轉彎超過 ANTI_REVERSAL_ATR_MULT 且無實體推動
+            if side == "LONG" and (current_price < opened) and (body_size > ANTI_REVERSAL_ATR_MULT * atr):
+                return "EXIT_EARLY_REVERSAL_NO_PROFIT"
+            if side == "SHORT" and (current_price > opened) and (body_size > ANTI_REVERSAL_ATR_MULT * atr):
+                return "EXIT_EARLY_REVERSAL_NO_PROFIT"
         
         if side == "LONG":
-            # (A) 大瀑布檢測
-            if (current_price < opened) and (body_size >= 1.8 * atr):
+            # (A) 大瀑布檢測 (V5.0: 1.5 ATR)
+            if (current_price < opened) and (body_size >= FLASH_CRASH_ATR_MULT * atr):
                 return "EMERGENCY_EXIT_FLASH_CRASH"
-            # (B) 連續兩根異常 K 棒
+            # (B) 連續兩根異常 K 棒 (V5.0: 0.5 ATR)
             if (current_price < opened) and (prev_close < prev_opened):
-                if (body_size >= 1.2 * atr) and (prev_body >= 1.2 * atr):
+                if (body_size >= 0.5 * atr) and (prev_body >= 0.5 * atr):
                     return "EMERGENCY_EXIT_TWO_ANOMALY_BARS"
                     
         elif side == "SHORT":
-            # (A) 大瀑布檢測
-            if (current_price > opened) and (body_size >= 1.8 * atr):
+            # (A) 大瀑布檢測 (V5.0: 1.5 ATR)
+            if (current_price > opened) and (body_size >= FLASH_CRASH_ATR_MULT * atr):
                 return "EMERGENCY_EXIT_FLASH_CRASH"
-            # (B) 連續兩根異常 K 棒
+            # (B) 連續兩根異常 K 棒 (V5.0: 0.5 ATR)
             if (current_price > opened) and (prev_close > prev_opened):
-                if (body_size >= 1.2 * atr) and (prev_body >= 1.2 * atr):
+                if (body_size >= 0.5 * atr) and (prev_body >= 0.5 * atr):
                     return "EMERGENCY_EXIT_TWO_ANOMALY_BARS"
                     
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
@@ -131,13 +134,94 @@ def check_structure_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
     return None
 
 
-def check_ratchet_lock_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005) -> Optional[str]:
+def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005) -> Optional[str]:
     """
-    棘輪鎖利機制：0.35 ATR 起步，每 0.20 ATR 墊高一階。
+    V5.0 動態移動鎖利與回吐空間：
+    Total_Drawdown = (0.2 ATR * 斜率係數) + 0.1 ATR 緩衝區
     """
     try:
-        if frame is None or len(frame) < 2:
+        if frame is None or len(frame) < 3:
             return None
+            
+        side = position.get("side")
+        entry = float(position.get("entry_price") or 0)
+        qty = float(position.get("qty") or 0)
+        atr = float(frame.iloc[-2]["atr"])
+        
+        if not all(math.isfinite(x) and x > 0 for x in (entry, qty, price, atr)):
+            return None
+            
+        sign = 1 if side == "LONG" else -1
+        execution = price * (1 - sign * slippage)
+        net_profit = sign * (execution - entry) * qty - (entry + execution) * qty * fee
+        net_atr = net_profit / (qty * atr) if qty > 0 and atr > 0 else 0
+        
+        state = position.setdefault("ratchet_lock_state", {})
+        
+        # 摩擦損耗防禦：計算動態鎖利門檻
+        position_value = entry * qty
+        fee_cost = position_value * fee * 2
+        slippage_cost = qty * price * slippage
+        total_friction_cost = fee_cost + slippage_cost
+        friction_atr = total_friction_cost / (qty * atr) if qty > 0 and atr > 0 else 0
+        START_THRESHOLD = max(0.55, friction_atr)
+        
+        max_net_atr = max(float(state.get("max_net_atr", 0)), net_atr)
+        state["max_net_atr"] = max_net_atr
+        
+        if max_net_atr >= START_THRESHOLD:
+            # 取得 MA3 與 MA15 計算斜率係數
+            ma3_curr = float(frame.iloc[-1].get("ma3", 0))
+            ma3_prev = float(frame.iloc[-2].get("ma3", 0))
+            ma15_curr = float(frame.iloc[-1].get("ma15", 0))
+            ma15_prev = float(frame.iloc[-2].get("ma15", 0))
+            
+            # 斜率係數計算 (簡化版：若 MA3 斜率極強則減小步長，弱則放大)
+            # 這裡預設係數為 1.0，強勢 < 1.0，弱勢 > 1.0
+            slope_factor = 1.0
+            if ma3_curr > 0 and ma3_prev > 0:
+                ma3_slope = abs(ma3_curr - ma3_prev) / ma3_prev
+                if ma3_slope > 0.005:  # 強勢
+                    slope_factor = 0.5
+                elif ma3_slope < 0.001:  # 弱勢
+                    slope_factor = 1.5
+                    
+            ratchet_step = (0.2 * slope_factor) + 0.1
+            
+            # 計算鎖利線並確保只升不降
+            new_locked_atr = max_net_atr - ratchet_step
+            locked_atr = max(float(state.get("locked_atr", 0)), new_locked_atr)
+            state["locked_atr"] = locked_atr
+            
+            # 終極動能退出 (若外層傳入 velocity 降速標記)
+            if position.get("velocity_slowdown", False):
+                return "EXIT_VELOCITY_SLOWDOWN"
+            
+
+        # V5.1 峰值平倉 (Peak Momentum Exit)
+        if side == "LONG":
+            row = frame.iloc[-1]
+            kc_upper = float(row.get('kc_upper', 0))
+            if price >= kc_upper:
+                # 滯漲判斷: 長上影線 或 實體縮減
+                low = float(row.get('low', price))
+                high = float(row.get('high', price))
+                close = float(row.get('close', price))
+                open_price = float(row.get('open', price))
+                body = abs(close - open_price)
+                upper_wick = high - max(open_price, close)
+                
+                if (body > 0 and upper_wick / body > 1.2) or (body < atr * 0.2):
+                    # 在真實下單邏輯中，這會通知外部平倉 50%
+                    return "EXIT_PEAK_MOMENTUM_PARTIAL"
+
+            # 執行平倉
+            if locked_atr > 0 and net_atr <= locked_atr:
+                return "RATCHET_PROFIT_LOCK_EXIT"
+                
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        pass
+    return None
             
         side = position.get("side")
         entry = float(position.get("entry_price") or 0)
@@ -230,7 +314,7 @@ class DualTrackExitStrategy(IExitStrategy):
                 
         # 3. 【正常級：棘輪鎖利】 (有利潤時鎖利平倉)
         if max_net_atr >= 0.55:
-            ratchet_reason = check_ratchet_lock_exit(position, frame, price, self.fee, self.slippage)
+            ratchet_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage)
             if ratchet_reason:
                 return ratchet_reason
             

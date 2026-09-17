@@ -1228,3 +1228,12 @@ MA5_MIN_ATR_PCT = float(os.getenv("MA5_MIN_ATR_PCT", "0.0005"))
 MA5_MAX_CANDLE_AMPLITUDE_MULT = float(os.getenv("MA5_MAX_CANDLE_AMPLITUDE_MULT", "3.0"))
 MA5_MAX_CLOSE_CHANGE_MULT = float(os.getenv("MA5_MAX_CLOSE_CHANGE_MULT", "3.0"))
 MA5_MARK_PRICE_DEV_PCT = float(os.getenv("MA5_MARK_PRICE_DEV_PCT", "0.005"))
+
+# ====== 【CK V5.0 Strategy Parameters】 ======
+ENV_MIN_KC_BANDWIDTH = float(os.getenv("ENV_MIN_KC_BANDWIDTH", "0.012"))
+ENV_MIN_KC_SLOPE = float(os.getenv("ENV_MIN_KC_SLOPE", "1e-5"))
+ENV_ATR_EXPANSION_RATIO = float(os.getenv("ENV_ATR_EXPANSION_RATIO", "1.0"))
+SOLID_BODY_RATIO = float(os.getenv("SOLID_BODY_RATIO", "0.50"))
+ANTI_REVERSAL_ATR_MULT = float(os.getenv("ANTI_REVERSAL_ATR_MULT", "0.10"))
+FLASH_CRASH_ATR_MULT = float(os.getenv("FLASH_CRASH_ATR_MULT", "1.5"))
+

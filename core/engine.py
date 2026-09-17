@@ -248,6 +248,10 @@ class TradingEngine:
         # BTC 插針偵測：保留最近幾秒的 BTC 即時報價樣本（timestamp, price）。
         # 當窗口內跌幅 >= BTC_FLASH_CRASH_DROP_PCT 時觸發緊急平多。
         self._btc_price_samples: deque = deque(maxlen=200)
+        
+        # --- V5.0 極致點位捕捉引擎 (Velocity Buffer) ---
+        # 紀錄每個幣種最近 10 筆 Tick 資料: (timestamp, price)
+        self.tick_buffers: Dict[str, deque] = collections.defaultdict(lambda: deque(maxlen=10))
         self._btc_flash_crash_last_triggered_at: float = 0.0
         self._market_crash_entry_cooldown_until: float = 0.0
         self.ema_50_1h_cache: Dict[str, float] = {}
@@ -1259,6 +1263,11 @@ class TradingEngine:
                         clean_sym = sym.replace(":USDT", "") if sym.endswith(":USDT") else sym
                         self.tickers[clean_sym] = price
                         self.tickers[sym] = price
+                        
+                        # V5.0 極致點位捕捉: 更新 Tick 速度緩衝區
+                        ts = ticker.get("timestamp") or (time.time() * 1000)
+                        self.tick_buffers[clean_sym].append((ts, price))
+                        
                         self._observe_channel_entry_quote(clean_sym, price, ticker.get("timestamp"))
                     if ticker.get("quoteVolume") is not None:
                         clean_sym = sym.replace(":USDT", "") if sym.endswith(":USDT") else sym
@@ -1819,6 +1828,35 @@ class TradingEngine:
             for trade in getattr(self.account, "trades", [])
         )
 
+    def get_velocity_slowdown(self, symbol: str) -> bool:
+        """
+        V5.0 極致點位捕捉：判斷 Tick 變動速度是否放緩
+        計算連續 3 Tick 的均速是否低於前 5 Tick 的均速 30% 以上
+        """
+        buffer = self.tick_buffers.get(symbol)
+        if not buffer or len(buffer) < 8:
+            return False
+            
+        ticks = list(buffer)
+        
+        def avg_speed(tick_list):
+            if len(tick_list) < 2: return 0
+            total_time = (tick_list[-1][0] - tick_list[0][0]) / 1000.0  # seconds
+            total_dist = sum(abs(tick_list[i][1] - tick_list[i-1][1]) for i in range(1, len(tick_list)))
+            if total_time <= 0: return 0
+            return total_dist / total_time
+            
+        recent_3 = ticks[-3:]
+        prev_5 = ticks[-8:-3]
+        
+        speed_recent = avg_speed(recent_3)
+        speed_prev = avg_speed(prev_5)
+        
+        if speed_prev > 0:
+            drop_ratio = (speed_prev - speed_recent) / speed_prev
+            return drop_ratio >= 0.30
+        return False
+        
     async def _place_structured_entry(
         self, symbol: str, signal: dict, live_price: float, channel_snapshot: dict | None = None
     ) -> bool:

@@ -211,6 +211,30 @@ def aligned_entry(frame, price):
         price = float(price)
         if not math.isfinite(price) or price <= 0 or frame is None or len(frame) < 4:
             return wait
+        
+        # --- V5.0 Environment Filters ---
+        from core.config import ENV_MIN_KC_BANDWIDTH, ENV_MIN_KC_SLOPE, ENV_ATR_EXPANSION_RATIO
+        row = frame.iloc[-1]
+        kc_upper = float(row.get('kc_upper', 0))
+        kc_lower = float(row.get('kc_lower', 0))
+        kc_middle = float(row.get('kc_middle', row.get('ema_20', 0)))
+        if kc_middle > 0 and (kc_upper - kc_lower) / kc_middle < ENV_MIN_KC_BANDWIDTH:
+            return {**wait, "reason": "ENV_FILTER_BANDWIDTH_REJECTED"}
+        
+        # Slope Filter (middle slope)
+        prev_row = frame.iloc[-2]
+        prev_middle = float(prev_row.get('kc_middle', prev_row.get('ema_20', 0)))
+        if abs(kc_middle - prev_middle) < ENV_MIN_KC_SLOPE:
+            return {**wait, "reason": "ENV_FILTER_SLOPE_REJECTED"}
+            
+        # Volatility Filter (Short ATR vs Long ATR average if available)
+        if 'atr' in frame.columns and len(frame) > 4:
+            short_atr = frame['atr'].iloc[-3:].mean()
+            long_atr = frame['atr'].mean()
+            if long_atr > 0 and (short_atr / long_atr) < ENV_ATR_EXPANSION_RATIO:
+                return {**wait, "reason": "ENV_FILTER_VOLATILITY_REJECTED"}
+        # --------------------------------
+        
         for _, row in frame.iloc[-4:].iterrows():
             opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
             if (not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed))
@@ -219,6 +243,69 @@ def aligned_entry(frame, price):
         side = ck_direction(frame)
         if not aligned_direction(frame, side):
             return wait
+            
+        # --- V5.1 Final Final Update (極致防禦與無狀態回顧) ---
+        curr_k = frame.iloc[-1]
+        prev_k = frame.iloc[-2]
+        kc_lower = float(curr_k.get('kc_lower', 0))
+        kc_upper = float(curr_k.get('kc_upper', 0))
+        kc_middle = float(curr_k.get('kc_middle', curr_k.get('ema_20', 0)))
+        atr = float(curr_k.get('atr', 1.0))
+        
+        c_open = float(curr_k.get('open', price))
+        c_close = float(curr_k.get('close', price))
+        c_low = float(curr_k.get('low', price))
+        c_high = float(curr_k.get('high', price))
+        c_body = abs(c_close - c_open)
+        
+        p_open = float(prev_k.get('open', price))
+        p_close = float(prev_k.get('close', price))
+        
+        if side == "SHORT":
+            # 1. 邊界過濾 (防地板空): 若 Price <= LowerBand 或 Prev_Close <= LowerBand -> 拒絕
+            if price <= kc_lower or p_close <= kc_lower:
+                return {**wait, "reason": "ANTI_CHASE_OUTSIDE_LOWER_BAND"}
+                
+            # 2. 乖離限制: (kc_middle - Price) / ATR > 1.5 -> 拒絕
+            if atr > 0 and (kc_middle - price) / atr > 1.5:
+                return {**wait, "reason": "ANTI_CHASE_DISTANCE_LIMIT"}
+                
+            # 3. 反轉過濾 (Bullish Reversal Filter): 陽線或長下影線 -> 拒絕
+            if c_close > c_open:
+                return {**wait, "reason": "ANTI_CHASE_GREEN_CANDLE"}
+            lower_wick = min(c_open, c_close) - c_low
+            if c_body > 0 and (lower_wick / c_body) > 1.0:
+                return {**wait, "reason": "ANTI_CHASE_REJECTION_CANDLE"}
+                
+        elif side == "LONG":
+            # 1. 邊界過濾 (防天花板多): 若 Price >= UpperBand -> 拒絕
+            if price >= kc_upper:
+                return {**wait, "reason": "ANTI_CHASE_OUTSIDE_UPPER_BAND"}
+                
+            # 2. 乖離限制: (Price - kc_middle) / ATR > 1.5 -> 拒絕
+            if atr > 0 and (price - kc_middle) / atr > 1.5:
+                return {**wait, "reason": "ANTI_CHASE_DISTANCE_LIMIT"}
+                
+            # 3. 趨勢對齊: ema_50 斜率若向下則限制
+            if len(frame) > 2:
+                ema50_curr = float(curr_k.get('ema_50', 0))
+                ema50_prev = float(prev_k.get('ema_50', 0))
+                if ema50_curr > 0 and ema50_prev > 0 and (ema50_curr - ema50_prev) <= 0:
+                    return {**wait, "reason": "ANTI_CHASE_TREND_MISALIGNMENT"}
+                    
+            # 4. 過度延伸: 連續 >= 2 根收盤價 > kc_upper 且實體 > 1.2 ATR -> 拒絕
+            if len(frame) >= 2:
+                is_consecutive_overextended = True
+                for i in range(1, 3):
+                    k_row = frame.iloc[-i]
+                    k_close, k_open, k_upper = float(k_row['close']), float(k_row['open']), float(k_row['kc_upper'])
+                    k_body = abs(k_close - k_open)
+                    if not (k_close > k_upper and k_body > 1.2 * atr):
+                        is_consecutive_overextended = False
+                        break
+                if is_consecutive_overextended:
+                    return {**wait, "reason": "ANTI_CHASE_OVEREXTENDED"}
+        # ----------------------------------------
         if not live_ma3_direction_ready(frame, price, side):
             return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}
         if not live_candle_color_ready(frame, price, side):
@@ -265,93 +352,56 @@ def live_candle_color_ready(frame, price, side):
         return False
 
 
-def two_closed_bodies_ready(frame, side):
-    """Require two completed directional bodies; the live candle never counts."""
-    try:
-        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 3:
-            return False
-        sign = 1 if side == "LONG" else -1
-        for _, row in frame.iloc[-3:-1].iterrows():
-            opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
-            if not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed)):
-                return False
-            if not low <= min(opened, closed) <= max(opened, closed) <= high or high <= low:
-                return False
-            if sign * (closed - opened) <= 0 or abs(closed - opened) / (high - low) < .20:
-                return False
-        return True
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return False
-
-
-def three_closed_short_breakout_ready(frame, price):
-    """Allow a small red middle candle between solid closed breakout/confirmation."""
-    try:
-        if frame is None or len(frame) < 4:
-            return False
-        rows = [frame.iloc[i] for i in (-4, -3, -2)]
-        for index, row in enumerate(rows):
-            opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
-            lower, upper = float(row["kc_lower"]), float(row["kc_upper"])
-            if not all(math.isfinite(v) and v > 0 for v in (opened, high, low, closed, lower, upper)):
-                return False
-            if not (low <= closed < opened <= high and lower < upper and closed < lower):
-                return False
-            if index != 1 and (opened - closed) / (high - low) < .20:
-                return False
-        first = rows[0]
-        live = frame.iloc[-1]
-        lower, upper, price = float(live["kc_lower"]), float(live["kc_upper"]), float(price)
-        return (float(first["open"]) >= float(first["kc_lower"])
-                and all(math.isfinite(v) for v in (lower, upper, price))
-                and 0 < price < lower < upper)
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        return False
-
-
-def confirmed_outer_continuation_ready(frame, price, side):
-    """A missed breakout may continue; both closed bodies must finish outside."""
-    if not two_closed_bodies_ready(frame, side):
-        return False
-    try:
-        sign = 1 if side == "LONG" else -1
-        rail = "kc_upper" if side == "LONG" else "kc_lower"
-        price = float(price)
-        if not math.isfinite(price) or price <= 0:
-            return False
-        for offset in (-3, -2, -1):
-            row = frame.iloc[offset]
-            lower, upper = float(row["kc_lower"]), float(row["kc_upper"])
-            if not all(math.isfinite(v) for v in (lower, upper)) or not 0 < lower < upper:
-                return False
-            quoted = price if offset == -1 else float(row["close"])
-            if sign * (quoted - float(row[rail])) <= 0:
-                return False
-        return True
-    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-        return False
-
-
 def confirmed_outer_breakout_ready(frame, price, side, allow_three_short=False):
-    """Require a closed breakout/confirmation, with the three-red short option."""
-    if allow_three_short and side == "SHORT" and three_closed_short_breakout_ready(frame, price):
-        return True
-    if not two_closed_bodies_ready(frame, side):
-        return False
+    """V5.1 Breakout Validation: K1 breakout + K2 solid confirmation."""
     try:
+        from core.config import SOLID_BODY_RATIO
+        if side not in ("LONG", "SHORT") or frame is None or len(frame) < 4:
+            return False
+            
         sign = 1 if side == "LONG" else -1
         rail = "kc_upper" if side == "LONG" else "kc_lower"
-        breakout, confirmation, live = (frame.iloc[i] for i in (-3, -2, -1))
-        for row in (breakout, confirmation, live):
-            lower, upper = float(row["kc_lower"]), float(row["kc_upper"])
-            if not all(math.isfinite(v) for v in (lower, upper)) or not 0 < lower < upper:
-                return False
-        price = float(price)
-        return (math.isfinite(price) and price > 0
-                and sign * (float(breakout["open"]) - float(breakout[rail])) <= 0
-                and sign * (float(breakout["close"]) - float(breakout[rail])) > 0
-                and sign * (float(confirmation["close"]) - float(confirmation[rail])) > 0
-                and sign * (price - float(live[rail])) > 0)
+        
+        # K3 (iloc[-4]), K2 (iloc[-3]), K1 (iloc[-2]), Live (iloc[-1])
+        # Wait, the user defined K2 as the most recently closed candle and K1 as the previous.
+        # In our frame, iloc[-2] is the most recently closed, and iloc[-3] is the one before it.
+        # Let's call them prev_closed (K1) and latest_closed (K2).
+        k1 = frame.iloc[-3]
+        k2 = frame.iloc[-2]
+        live = frame.iloc[-1]
+        
+        # Check K2 (latest closed candle) is a solid directional body
+        k2_open, k2_close, k2_high, k2_low = float(k2['open']), float(k2['close']), float(k2['high']), float(k2['low'])
+        k2_solid = False
+        if (k2_high - k2_low) > 0 and sign * (k2_close - k2_open) > 0:
+            if abs(k2_close - k2_open) / (k2_high - k2_low) >= SOLID_BODY_RATIO:
+                k2_solid = True
+                
+        # Check K1 (previous closed candle) broke the band
+        k1_rail = float(k1[rail])
+        k1_open, k1_close = float(k1['open']), float(k1['close'])
+        k1_broke = (sign * (k1_open - k1_rail) <= 0) and (sign * (k1_close - k1_rail) > 0)
+        
+        # Condition A: K1 broke and K2 is solid
+        if k1_broke and k2_solid:
+            return True
+            
+        # Condition B: K2 is weak body, look back to K3 and K1
+        k3 = frame.iloc[-4]
+        k1_open2, k1_close2, k1_high, k1_low = float(k1['open']), float(k1['close']), float(k1['high']), float(k1['low'])
+        k1_solid = False
+        if (k1_high - k1_low) > 0 and sign * (k1_close2 - k1_open2) > 0:
+            if abs(k1_close2 - k1_open2) / (k1_high - k1_low) >= SOLID_BODY_RATIO:
+                k1_solid = True
+                
+        k3_rail = float(k3[rail])
+        k3_open, k3_close = float(k3['open']), float(k3['close'])
+        k3_broke = (sign * (k3_open - k3_rail) <= 0) and (sign * (k3_close - k3_rail) > 0)
+        
+        if k3_broke and k1_solid and not k2_solid:
+            return True
+
+        return False
     except (AttributeError, TypeError, ValueError, KeyError, IndexError):
         return False
 
