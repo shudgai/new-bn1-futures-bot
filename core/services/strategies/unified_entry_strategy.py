@@ -30,6 +30,20 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
     avg_vol = df["volume"].tail(10).mean()
     is_high_volume = latest["volume"] > (avg_vol * 1.5)
 
+    prev = df.iloc[-2] if len(df) >= 2 else latest
+    latest_open = float(latest["open"])
+    latest_close = float(latest["close"])
+    prev_open = float(prev["open"])
+    prev_close = float(prev["close"])
+
+    # 3. 動能攔截：K 棒顏色防呆 (Momentum Anti-Bounce)
+    if side == "SHORT":
+        if (latest_close > latest_open) and ((latest_close - latest_open) >= 0.2 * atr):
+            return False, "BLOCK_AGAINST_BOUNCE"
+    elif side == "LONG":
+        if (latest_open > latest_close) and ((latest_open - latest_close) >= 0.2 * atr):
+            return False, "BLOCK_AGAINST_BOUNCE"
+
     # --- 空單邏輯 (SHORT) ---
     if side == "SHORT":
         # 規則 A：中軌必須是下降趨勢 (Slope < 0)
@@ -37,10 +51,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
         if kc_slope >= 0:
             return False, "BLOCK_SHORT_KC_MIDDLE_STILL_RISING"
 
-        # 規則 B：大黑 K 摜破中軌起爆，K 線體 >= 0.7 ATR 且帶高量
+        # 規則 B：雙根實體破軌規範 (結構性破壞)
         is_breakdown = (
-            (float(latest["open"]) - float(latest["close"]) >= 0.7 * atr)
-            and (float(latest["close"]) < kc_mid)
+            (latest_open - latest_close >= 0.3 * atr)
+            and (prev_open - prev_close >= 0.3 * atr)
+            and (latest_close < kc_mid)
             and is_high_volume
         )
         if is_breakdown:
@@ -64,10 +79,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
         if kc_slope <= 0:
             return False, "BLOCK_LONG_KC_MIDDLE_STILL_FALLING"
 
-        # 規則 B：大紅 K 突破中軌起爆，K 線體 >= 0.7 ATR 且帶高量
+        # 規則 B：雙根實體破軌規範 (結構性破壞)
         is_breakout = (
-            (float(latest["close"]) - float(latest["open"]) >= 0.7 * atr)
-            and (float(latest["close"]) > kc_mid)
+            (latest_close - latest_open >= 0.3 * atr)
+            and (prev_close - prev_open >= 0.3 * atr)
+            and (latest_close > kc_mid)
             and is_high_volume
         )
         if is_breakout:
