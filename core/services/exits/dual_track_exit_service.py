@@ -78,6 +78,11 @@ def check_structure_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
         if side not in ("LONG", "SHORT"):
             return None
             
+        # 1. 手動開倉豁免早期逃命 (避免人工摸底或測單被秒殺)
+        is_manual = position.get("manual_entry", False) or position.get("is_manual", False)
+        if is_manual:
+            return None
+            
         # 計算 CK 斜率
         key = "kc_middle" if "kc_middle" in frame.columns else "ema_20"
         mid_curr = float(frame.iloc[-2][key])
