@@ -33,9 +33,12 @@ def check_streamlined_entry_signal(df: pd.DataFrame, side: str, live_price: floa
             if kc_middle_slope > 0:
                 return False, "BLOCK_SHORT_KC_MIDDLE_STILL_RISING"
 
-            # 觸發條件 A：大黑 K 摜破中軌起爆 (優先豁免空間檢查)
-            is_breakdown = (float(latest["open"]) - float(latest["close"]) >= 0.5 * atr) and (float(latest["close"]) < kc_mid)
-            if is_breakdown:
+            # 觸發條件 A1：大黑 K 摜破中軌起爆 (優先豁免空間檢查)
+            is_breakdown_mid = (float(latest["open"]) - float(latest["close"]) >= 0.5 * atr) and (float(latest["close"]) < kc_mid)
+            # 觸發條件 A2：強勢跌破下軌 (破軌順勢，實體充足)
+            is_breakdown_lower = (float(latest["close"]) < float(latest["kc_lower"])) and (float(latest["open"]) - float(latest["close"]) >= 0.3 * atr)
+            
+            if is_breakdown_mid or is_breakdown_lower:
                 return True, "ALLOW_SHORT_BREAKDOWN_MOMENTUM"
 
             # 觸發條件 B：MA3 死叉且偏離容許度放寬至 0.35 ATR
@@ -54,9 +57,12 @@ def check_streamlined_entry_signal(df: pd.DataFrame, side: str, live_price: floa
             if kc_middle_slope < 0:
                 return False, "BLOCK_LONG_KC_MIDDLE_STILL_FALLING"
 
-            # 觸發條件 A：大紅 K 突破中軌起爆 (優先豁免空間檢查)
-            is_breakout = (float(latest["close"]) - float(latest["open"]) >= 0.5 * atr) and (float(latest["close"]) > kc_mid)
-            if is_breakout:
+            # 觸發條件 A1：大紅 K 突破中軌起爆 (優先豁免空間檢查)
+            is_breakout_mid = (float(latest["close"]) - float(latest["open"]) >= 0.5 * atr) and (float(latest["close"]) > kc_mid)
+            # 觸發條件 A2：強勢突破上軌 (破軌順勢，實體充足)
+            is_breakout_upper = (float(latest["close"]) > float(latest["kc_upper"])) and (float(latest["close"]) - float(latest["open"]) >= 0.3 * atr)
+            
+            if is_breakout_mid or is_breakout_upper:
                 return True, "ALLOW_LONG_BREAKOUT_MOMENTUM"
 
             # 觸發條件 B：MA3 金叉且偏離容許度放寬至 0.35 ATR
