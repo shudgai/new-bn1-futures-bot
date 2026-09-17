@@ -2487,6 +2487,35 @@ class TradingEngine:
         return True
 
     @staticmethod
+    def _candidate_board_refresh_needed(
+        opened_any: bool, position_count: int, pending_count: int,
+        max_slots: int, seconds_since_refresh: float,
+    ) -> bool:
+        """Refresh after a fill, or while capacity remains without a new fill."""
+        if opened_any:
+            return True
+        committed = max(0, int(position_count)) + max(0, int(pending_count))
+        has_capacity = max_slots <= 0 or committed < max_slots
+        return has_capacity and seconds_since_refresh >= 15.0
+
+    @staticmethod
+    def _is_continuous_wave_position(position: dict, meta: dict | None = None) -> bool:
+        """是否為應交由連續峰谷主循環管理出場的持倉。"""
+        meta = meta or {}
+        entry_mode = str(
+            position.get("entry_mode") or meta.get("entry_mode") or ""
+        ).upper()
+        reason = str(position.get("reason") or meta.get("reason") or "").upper()
+        return bool(
+            entry_mode in ("MA3_MA15_MARKET", "STRONG_LONG_BURST", "CHANNEL_SWING")
+            or any(token in reason for token in (
+                "TROUGH_TURN", "PEAK_TURN", "RANGE_SWING_REVERSE",
+                "KC_MIDDLE_PEAK_REVERSE", "KC_MIDDLE_TROUGH_REVERSE",
+                "CROSS_UP", "CROSS_DOWN", "TREND_LONG", "TREND_SHORT",
+            ))
+        )
+
+    @staticmethod
     def _entry_scan_symbol_snapshot(
         default_symbols: list[str], broad_symbols: list[str],
         positions: dict, pending_orders: dict, entry_scan_allowed: bool,
