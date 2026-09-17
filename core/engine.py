@@ -2486,7 +2486,29 @@ class TradingEngine:
         )
         return True
 
+    @staticmethod
+    def _entry_scan_symbol_snapshot(
+        default_symbols: list[str], broad_symbols: list[str],
+        positions: dict, pending_orders: dict, entry_scan_allowed: bool,
+        max_slots: int,
+    ) -> list[str]:
+        """Scan the safe pool with capacity, or the active board for takeover."""
+        committed = len(positions) + len(pending_orders)
+        has_capacity = max_slots <= 0 or committed < max_slots
+        if (
+            entry_scan_allowed
+            and not pending_orders
+            and (has_capacity or bool(positions))
+        ):
+            entry_symbols = list(broad_symbols)
+        else:
+            entry_symbols = []
+        return list(dict.fromkeys([
+            *positions.keys(), *pending_orders.keys(), *entry_symbols,
+        ]))
+
     def _continuous_entry_amount(self) -> float:
+
         """Allocate configured wallet fraction while preserving a fee/risk buffer."""
         positions = getattr(self.account, "positions", {})
         pending_orders = getattr(self.account, "pending_limit_orders", {})
