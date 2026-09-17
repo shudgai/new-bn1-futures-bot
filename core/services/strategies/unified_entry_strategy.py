@@ -1,107 +1,86 @@
 """Unified Entry Strategy evaluating streamlined entry methods.
 Implements IEntryStrategy interface.
 """
-import math
 from typing import Dict, Any, Tuple
 import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
 
 
-def check_streamlined_entry_signal(df: pd.DataFrame, side: str, live_price: float) -> Tuple[bool, str]:
+def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bool, str]:
     """
-    極簡中庸進場：過濾忽上忽下，放行乾淨起爆與均線交叉
+    極簡中庸進場：優先放行帶量起爆，放寬均線交叉容許度
     """
-    try:
-        latest = df.iloc[-1]
-        atr = float(latest.get("atr", live_price * 0.01))
-        ma3 = float(latest["ma3"])
-        ma15 = float(latest["ma15"])
-        kc_mid = float(latest["kc_middle"])
+    latest = df.iloc[-1]
+    atr = latest.get("atr", live_price * 0.01)
+    ma3 = latest["ma3"]
+    ma15 = latest["ma15"]
+    kc_mid = latest["kc_middle"]
+    
+    # --- 基礎過濾 ---
+    # 1. 帶寬保護：過濾橫盤區間
+    if (latest["kc_upper"] - latest["kc_lower"]) < (1.0 * atr):
+        return False, "BLOCK_BANDWIDTH_TOO_FLAT"
+    
+    # 2. 成交量權重：確保起爆帶有資金支持 (成交量 > 10 根均值 1.1 倍)
+    avg_vol = df["volume"].tail(10).mean()
+    is_high_volume = latest["volume"] > (avg_vol * 1.1)
 
-        # 1. 基礎通道帶寬保護（過濾死水盤）
-        if (float(latest["kc_upper"]) - float(latest["kc_lower"])) < (1.0 * atr):
-            return False, "BLOCK_BANDWIDTH_TOO_FLAT"
+    # --- 空單邏輯 (SHORT) ---
+    if side == "SHORT":
+        if latest.get("kc_middle_slope", 0) > 0:
+            return False, "BLOCK_SHORT_KC_MIDDLE_STILL_RISING"
 
-        # 計算 CK 斜率 fallback
-        if "kc_middle_slope" in latest:
-            kc_middle_slope = float(latest["kc_middle_slope"])
-        else:
-            kc_middle_slope = float(df.iloc[-1]["kc_middle"]) - float(df.iloc[-2]["kc_middle"])
+        # 觸發 A：大黑 K 摜破中軌起爆 (帶量優先豁免)
+        is_breakdown = (latest["open"] - latest["close"] >= 0.5 * atr) and \
+                        (latest["close"] < kc_mid) and is_high_volume
+        if is_breakdown:
+            return True, "ALLOW_SHORT_BREAKDOWN_MOMENTUM_HIGH_VOL"
 
-        # 2. 空單入口 (SHORT)
-        if side == "SHORT":
-            if kc_middle_slope > 0:
-                return False, "BLOCK_SHORT_KC_MIDDLE_STILL_RISING"
+        # 觸發 B：MA3 死叉且偏離容許度放寬至 0.35 ATR
+        is_dead_cross = (ma3 <= ma15) and (live_price <= ma15 + 0.35 * atr)
+        if not is_dead_cross:
+            return False, "WAIT_SHORT_TRIGGER"
 
-            # 觸發條件 A1：大黑 K 摜破中軌起爆 (優先豁免空間檢查)
-            is_breakdown_mid = (float(latest["open"]) - float(latest["close"]) >= 0.5 * atr) and (float(latest["close"]) < kc_mid)
-            # 觸發條件 A2：強勢跌破下軌 (破軌順勢，實體充足)
-            is_breakdown_lower = (float(latest["close"]) < float(latest["kc_lower"])) and (float(latest["open"]) - float(latest["close"]) >= 0.3 * atr)
-            
-            if is_breakdown_mid or is_breakdown_lower:
-                return True, "ALLOW_SHORT_BREAKDOWN_MOMENTUM"
+        # 檢查空間限制
+        if (live_price - latest["kc_lower"]) < (0.35 * atr):
+            return False, "BLOCK_SHORT_FLOOR_EXHAUSTED"
 
-            # 觸發條件 B：MA3 死叉且偏離容許度放寬至 0.35 ATR
-            is_dead_cross = (ma3 <= ma15) and (live_price <= ma15 + 0.35 * atr)
-            if not is_dead_cross:
-                return False, "WAIT_SHORT_TRIGGER"
+        return True, "ALLOW_SHORT_ENTRY"
 
-            # 僅在走觸發 B 時檢查距下軌空間
-            if (live_price - float(latest["kc_lower"])) < (0.35 * atr):
-                return False, "BLOCK_SHORT_FLOOR_EXHAUSTED"
+    # --- 多單邏輯 (LONG) ---
+    elif side == "LONG":
+        if latest.get("kc_middle_slope", 0) < 0:
+            return False, "BLOCK_LONG_KC_MIDDLE_STILL_FALLING"
 
-            return True, "ALLOW_SHORT_ENTRY"
+        # 觸發 A：大紅 K 突破中軌起爆 (帶量優先豁免)
+        is_breakout = (latest["close"] - latest["open"] >= 0.5 * atr) and \
+                       (latest["close"] > kc_mid) and is_high_volume
+        if is_breakout:
+            return True, "ALLOW_LONG_BREAKOUT_MOMENTUM_HIGH_VOL"
 
-        # 3. 多單入口 (LONG)
-        elif side == "LONG":
-            if kc_middle_slope < 0:
-                return False, "BLOCK_LONG_KC_MIDDLE_STILL_FALLING"
+        # 觸發 B：MA3 金叉且偏離容許度放寬至 0.35 ATR
+        is_golden_cross = (ma3 >= ma15) and (live_price >= ma15 - 0.35 * atr)
+        if not is_golden_cross:
+            return False, "WAIT_LONG_TRIGGER"
 
-            # 觸發條件 A1：大紅 K 突破中軌起爆 (優先豁免空間檢查)
-            is_breakout_mid = (float(latest["close"]) - float(latest["open"]) >= 0.5 * atr) and (float(latest["close"]) > kc_mid)
-            # 觸發條件 A2：強勢突破上軌 (破軌順勢，實體充足)
-            is_breakout_upper = (float(latest["close"]) > float(latest["kc_upper"])) and (float(latest["close"]) - float(latest["open"]) >= 0.3 * atr)
-            
-            if is_breakout_mid or is_breakout_upper:
-                return True, "ALLOW_LONG_BREAKOUT_MOMENTUM"
+        # 檢查空間限制
+        if (latest["kc_upper"] - live_price) < (0.35 * atr):
+            return False, "BLOCK_LONG_CEILING_EXHAUSTED"
 
-            # 觸發條件 B：MA3 金叉且偏離容許度放寬至 0.35 ATR
-            is_golden_cross = (ma3 >= ma15) and (live_price >= ma15 - 0.35 * atr)
-            if not is_golden_cross:
-                return False, "WAIT_LONG_TRIGGER"
-
-            # 僅在走觸發 B 時檢查距上軌空間
-            if (float(latest["kc_upper"]) - live_price) < (0.35 * atr):
-                return False, "BLOCK_LONG_CEILING_EXHAUSTED"
-
-            return True, "ALLOW_LONG_ENTRY"
-            
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError) as e:
-        return False, "WAIT_INSUFFICIENT_INDICATORS"
+        return True, "ALLOW_LONG_ENTRY"
 
     return False, "INVALID_SIDE"
 
-
 class UnifiedEntryStrategy(IEntryStrategy):
-    """標準進場策略類別，確保 evaluate_entry 正確包含於類別內部"""
-
-    def evaluate_entry(
-        self,
-        frame: pd.DataFrame,
-        price: float,
-        side: str,
-        **kwargs: Any
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        
-        position = kwargs.get("position")
-        if position and position.get("pivot_reversal_exit_pending"):
-            return False, "WAIT_PIVOT_REVERSAL_UNLOCK", {"action": "WAIT"}
-
+    def evaluate_entry(self, frame, price, side, **kwargs):
         if frame is None or len(frame) < 10 or "kc_middle" not in frame.columns:
             return False, "WAIT_INSUFFICIENT_DATA_OR_INDICATORS", {"action": "WAIT"}
 
-        ok, reason = check_streamlined_entry_signal(frame, side, price)
+        try:
+            ok, reason = check_streamlined_entry_signal(frame, side, price)
+        except Exception:
+            return False, "WAIT_INSUFFICIENT_INDICATORS", {"action": "WAIT"}
+            
         if ok:
             return True, reason, {"action": "ENTER", "side": side, "reason": reason}
-            
         return False, reason, {"action": "WAIT"}
