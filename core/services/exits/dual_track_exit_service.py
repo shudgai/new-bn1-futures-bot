@@ -154,17 +154,26 @@ def check_ratchet_lock_exit(position: Dict[str, Any], frame: pd.DataFrame, price
         
         state = position.setdefault("ratchet_lock_state", {})
         
-        START_THRESHOLD = 0.60
-        STEP = 0.35
+        START_THRESHOLD = 0.55
         
         max_net_atr = max(float(state.get("max_net_atr", 0)), net_atr)
         state["max_net_atr"] = max_net_atr
         
         if max_net_atr >= START_THRESHOLD:
-            # 計算當前鎖定的層級
-            steps_above = math.floor((max_net_atr - START_THRESHOLD) / STEP)
-            locked_atr = START_THRESHOLD + steps_above * STEP - STEP
+            # 2. 動態決定回吐空間 (利潤越高，空間越大)
+            if max_net_atr < 1.0:
+                ratchet_step = 0.25
+            elif max_net_atr < 2.0:
+                ratchet_step = 0.35
+            else:
+                ratchet_step = 0.45
+                
+            # 3. 計算鎖利線並確保只升不降
+            new_locked_atr = max_net_atr - ratchet_step
+            locked_atr = max(float(state.get("locked_atr", 0)), new_locked_atr)
+            state["locked_atr"] = locked_atr
             
+            # 4. 執行平倉
             if locked_atr > 0 and net_atr <= locked_atr:
                 return "RATCHET_PROFIT_LOCK_EXIT"
                 
