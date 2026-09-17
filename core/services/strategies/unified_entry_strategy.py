@@ -26,9 +26,9 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
     if (latest["kc_upper"] - latest["kc_lower"]) < (1.0 * atr):
         return False, "BLOCK_BANDWIDTH_TOO_FLAT"
 
-    # 2. 嚴格成交量檢查 (門檻 1.5 倍)
+    # 2. 嚴格成交量檢查 (門檻 1.3 倍)
     avg_vol = df["volume"].tail(10).mean()
-    is_high_volume = latest["volume"] > (avg_vol * 1.5)
+    is_high_volume = latest["volume"] > (avg_vol * 1.3)
 
     prev = df.iloc[-2] if len(df) >= 2 else latest
     latest_open = float(latest["open"])
@@ -53,8 +53,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
 
         # 規則 B：雙根實體破軌規範 (結構性破壞)
         is_breakdown = (
-            (latest_open - latest_close >= 0.3 * atr)
-            and (prev_open - prev_close >= 0.3 * atr)
+            (latest_open - latest_close >= 0.25 * atr)
+            and (prev_open - prev_close >= 0.25 * atr)
             and (latest_close < kc_mid)
             and is_high_volume
         )
@@ -81,8 +81,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
 
         # 規則 B：雙根實體破軌規範 (結構性破壞)
         is_breakout = (
-            (latest_close - latest_open >= 0.3 * atr)
-            and (prev_close - prev_open >= 0.3 * atr)
+            (latest_close - latest_open >= 0.25 * atr)
+            and (prev_close - prev_open >= 0.25 * atr)
             and (latest_close > kc_mid)
             and is_high_volume
         )
