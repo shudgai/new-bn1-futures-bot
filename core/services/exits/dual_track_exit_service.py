@@ -42,6 +42,18 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
         prev_close = float(prev_bar["close"])
         prev_body = abs(prev_close - prev_opened)
         
+        # --- 峰谷三點平倉邏輯 ---
+        if "is_high_risk_entry" not in position:
+            entry_price = float(position.get("entry_price", current_price))
+            dist_at_entry = abs(entry_price - float(current_bar.get("kc_middle", entry_price)))
+            position["is_high_risk_entry"] = dist_at_entry > (1.5 * atr)
+            
+        if position.get("is_high_risk_entry", False):
+            if side == "LONG" and (current_price < opened) and (body_size > 0.2 * atr):
+                return "EXIT_PEAK_VALLEY_RAPID_REVERSAL"
+            if side == "SHORT" and (current_price > opened) and (body_size > 0.2 * atr):
+                return "EXIT_PEAK_VALLEY_RAPID_REVERSAL"
+        
         if side == "LONG":
             # (A) 大瀑布檢測
             if (current_price < opened) and (body_size >= 1.8 * atr):

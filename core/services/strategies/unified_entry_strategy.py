@@ -17,6 +17,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float) -> tuple[bo
     kc_mid = latest["kc_middle"]
 
     # --- 基礎過濾 ---
+    # 0. 峰谷過濾：防止追高殺跌 ( > 1.5 ATR 直接擋掉)
+    dist_from_mid = abs(live_price - kc_mid)
+    if dist_from_mid > (1.5 * atr):
+        return False, "BLOCK_EXTREME_PEAK_OR_VALLEY"
+
     # 1. 帶寬保護：過濾死水盤
     if (latest["kc_upper"] - latest["kc_lower"]) < (1.0 * atr):
         return False, "BLOCK_BANDWIDTH_TOO_FLAT"
