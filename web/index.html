@@ -576,6 +576,13 @@
                                         : '未啟動' }}
                                 </span>
                             </span>
+                            <span class="chart-pos-info-sep">｜</span>
+                            <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label">未實現盈虧:</span>
+                                <span class="chart-pos-info-value" :style="(bot.positions.find(p => p.symbol === symbol)?.estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
+                                    {{ Number(bot.positions.find(p => p.symbol === symbol)?.estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number(bot.positions.find(p => p.symbol === symbol)?.estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
+                                </span>
+                            </span>
                         </div>
                     </div>
                     <div v-if="chartModal.states[symbol]?.entryBlock" class="chart-entry-notice" role="status">
