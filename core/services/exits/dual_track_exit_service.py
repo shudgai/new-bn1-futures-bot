@@ -197,19 +197,41 @@ class DualTrackExitStrategy(IExitStrategy):
         **kwargs: Any
     ) -> Optional[str]:
         
-        # 1. 極端防禦檢測 (最高優先級)
+        # 0. 提前計算目前利潤狀態 (供防禦分級判斷)
+        max_net_atr = 0.0
+        try:
+            side = position.get("side")
+            entry = float(position.get("entry_price") or 0)
+            qty = float(position.get("qty") or 0)
+            atr = float(frame.iloc[-2]["atr"]) if len(frame) >= 2 else 0.0
+            
+            if entry > 0 and qty > 0 and atr > 0:
+                sign = 1 if side == "LONG" else -1
+                execution = price * (1 - sign * self.slippage)
+                net_profit = sign * (execution - entry) * qty - (entry + execution) * qty * self.fee
+                net_atr = net_profit / (qty * atr)
+                
+                state = position.setdefault("ratchet_lock_state", {})
+                max_net_atr = max(float(state.get("max_net_atr", 0)), net_atr)
+                state["max_net_atr"] = max_net_atr
+        except Exception:
+            pass
+        
+        # 1. 【最高優先級：極端熔斷】 (不論盈虧，保命第一)
         emergency_reason = check_emergency_exit(position, frame, price)
         if emergency_reason:
             return emergency_reason
             
-        # 2. 棘輪鎖利 (觸發即平倉)
-        ratchet_reason = check_ratchet_lock_exit(position, frame, price, self.fee, self.slippage)
-        if ratchet_reason:
-            return ratchet_reason
-            
-        # 3. 常規波段平倉 (CK 轉向前最後峰谷兜底)
+        # 2. 【次高優先級：動能反轉逃命】 (沒利潤時立刻跑)
         structure_reason = check_structure_exit(position, frame, price)
         if structure_reason:
-            return structure_reason
+            if max_net_atr < 0.55:
+                return "EXIT_EARLY_REVERSAL_NO_PROFIT"
+                
+        # 3. 【正常級：棘輪鎖利】 (有利潤時鎖利平倉)
+        if max_net_atr >= 0.55:
+            ratchet_reason = check_ratchet_lock_exit(position, frame, price, self.fee, self.slippage)
+            if ratchet_reason:
+                return ratchet_reason
             
         return None
