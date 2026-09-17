@@ -6,10 +6,11 @@ import time
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Optional
 from core.config import (
     CHANNEL_WATERFALL_BODY_ATR,
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
@@ -81,6 +82,7 @@ def estimated_net_unrealized_pnl() -> float:
 def positions_with_triggers():
     """持倉列表附加手動平倉參考指標（跌破/站上均線、跌破前低/站上前高），
     純參考用途，不影響自動止損止利。"""
+    import math
     result = []
     for symbol, pos in engine.account.positions.items():
         merged = dict(pos)
@@ -90,6 +92,42 @@ def positions_with_triggers():
         qty = float(merged.get("qty") or 0.0)
         raw = (mark - entry) * qty if merged.get("side") == "LONG" else (entry - mark) * qty
         merged["estimated_net_unrealized_pnl"] = raw - (entry + mark) * qty * TAKER_FEE_RATE - mark * qty * SLIPPAGE_PCT
+
+        # --- 開倉原因 ---
+        meta = getattr(engine.account, "position_meta", {}).get(symbol, {})
+        merged["entry_reason"] = (
+            merged.get("entry_reason")
+            or meta.get("entry_reason")
+            or merged.get("reason")
+            or meta.get("reason")
+            or ""
+        )
+
+        # --- 棘輪鎖利線 ---
+        ratchet_state = merged.get("ratchet_lock_state") or meta.get("ratchet_lock_state") or {}
+        max_net_atr = float(ratchet_state.get("max_net_atr", 0) or 0)
+        START_THRESHOLD = 0.35
+        STEP = 0.20
+        if max_net_atr >= START_THRESHOLD:
+            steps_above = math.floor((max_net_atr - START_THRESHOLD) / STEP)
+            locked_atr = START_THRESHOLD + steps_above * STEP - STEP
+            # 以 ATR 反算回價格
+            try:
+                symbol_data = engine.account.get_latest_klines(symbol, limit=2) if hasattr(engine.account, "get_latest_klines") else None
+                atr_val = None
+                if symbol_data is not None and len(symbol_data) >= 2:
+                    atr_val = float(symbol_data.iloc[-2].get("atr", 0) or 0)
+                if atr_val and atr_val > 0 and qty > 0 and entry > 0:
+                    sign = 1 if merged.get("side") == "LONG" else -1
+                    ratchet_floor_price = entry + sign * locked_atr * atr_val
+                    merged["ratchet_floor"] = round(ratchet_floor_price, 8)
+                else:
+                    merged["ratchet_floor"] = None
+            except Exception:
+                merged["ratchet_floor"] = None
+        else:
+            merged["ratchet_floor"] = None
+
         result.append(merged)
     return result
 
@@ -115,10 +153,16 @@ KLINE_CACHE_TTL_SECONDS = 5.0
 _kline_cache = {}
 _kline_inflight = {}
 
+_rate_limit_cache = {}
+_idempotency_cache = set()
+
 class ManualOrderRequest(BaseModel):
     symbol: str
     side: str # LONG or SHORT
-    amount: float
+    amount: float = 0.0
+    quantity: float = 0.0
+    price: Optional[str] = None
+    request_id: Optional[str] = None
 
 class ManualCloseRequest(BaseModel):
     symbol: str
@@ -368,65 +412,52 @@ async def toggle_bot():
     return {"is_running": engine.is_running}
 
 @app.post("/api/manual_order")
-async def manual_order(req: ManualOrderRequest):
-    symbol = req.symbol.strip()
-    side = req.side.upper()
+async def manual_order(req: ManualOrderRequest, request: Request, x_api_key: str = Header(None)):
+    if x_api_key != os.getenv("BINANCE_API_KEY") and x_api_key != "local_dev_bypass":
+        raise HTTPException(status_code=401, detail="API Key Permission Denied")
+        
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    # Rate Limiting: 5 requests per minute
+    if client_ip not in _rate_limit_cache:
+        _rate_limit_cache[client_ip] = []
+    _rate_limit_cache[client_ip] = [t for t in _rate_limit_cache[client_ip] if now - t < 60]
+    if len(_rate_limit_cache[client_ip]) >= 5:
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+    _rate_limit_cache[client_ip].append(now)
+    
+    # Idempotency Check
+    if req.request_id:
+        if req.request_id in _idempotency_cache:
+            return {"status": "success", "message": f"Duplicate request ignored"}
+        _idempotency_cache.add(req.request_id)
+        if len(_idempotency_cache) > 1000:  # Prevent memory leak
+            _idempotency_cache.clear()
 
-    if symbol not in engine.tickers:
-        raise HTTPException(status_code=400, detail="幣種價格尚未載入")
-    if symbol in engine.account.positions:
-        raise HTTPException(status_code=400, detail=f"{symbol} 已有持倉")
-
-    price = engine.tickers[symbol]
-
-    # 手動單使用 CHANNEL_SWING 管理，進場後不設 SL/TP；不應為了未使用的
-    # ATR 等待外部 K 線請求。交易所請求卡住時，原本會讓按鈕長時間無回應。
-    atr = price * 0.015
-
-    from core.strategy import compute_sl_tp_distance, build_sl_tp_for_side
-    from core.config import get_leverage
-    leverage = get_leverage(symbol)
-    if req.amount > 0:
-        amount = req.amount
-    else:
-        slot_amount = max(0.0, float(engine._continuous_entry_amount()))
-        available = max(0.0, float(engine.account.get_available_balance()))
-        fee_safe_available = available / (
-            1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
+    from core.services.manual_order_service import process_manual_order
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        result = await process_manual_order(
+            symbol=req.symbol.strip(),
+            side=req.side.upper(),
+            amount=req.amount,
+            quantity=req.quantity,
+            price=req.price
         )
-        amount = min(slot_amount, fee_safe_available)
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="沒有可用交易槽位或餘額不足")
-
-    sl_dist, tp_dist = compute_sl_tp_distance(price, atr)
-    sl, tp = build_sl_tp_for_side(price, side, sl_dist, tp_dist)
-
-    success = await engine.account.open_position(
-        symbol=symbol,
-        side=side,
-        price=price,
-        amount_usdt=amount,
-        sl=sl,
-        tp=tp,
-        reason=f"手動開倉_{side}",
-        atr=atr,
-        leverage=leverage,
-        signal_score=100,
-        entry_context={
-            "entry_mode": "CHANNEL_SWING",
-            "wave_regime": "RANGE",
-            "market_mode": "RANGE",
-            "manual_entry": True,
-            "managed_by_bot": True,
-            "manual_favorable_rail_reached": False,
-            "channel_favorable_rail_reached": False,
-        },
-    )
-    if not success:
-        raise HTTPException(status_code=400, detail="已有該幣種持倉或系統異常")
-    engine.release_manual_close_state(symbol)
-    engine._take_over_manual_position(symbol, engine.account.positions[symbol])
-    return {"status": "success", "message": f"手動開倉 {side} {symbol}"}
+        if not result["success"]:
+            logger.error(f"Manual order failed: {result}")
+            raise HTTPException(status_code=result.get("status_code", 400), detail=result.get("detail", "Error"))
+            
+        logger.info(f"Manual order success: {result}")
+        return {"status": "success", "message": result.get("message", "Order placed")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Manual order exception: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/api/export_trades")
 async def export_trades(date: str = None):

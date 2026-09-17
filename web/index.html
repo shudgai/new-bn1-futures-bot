@@ -211,6 +211,15 @@
         .chart-entry-notice strong { display: block; font-size: 13px; }
         .chart-pane.has-entry-notice .chart-container { height: calc(100% - 96px); }
         .chart-pane.has-entry-notice .chart-entry-notice { height: 58px; overflow: auto; }
+        .chart-pos-info-bar {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            padding: 5px 12px; background: #f8fafc; border-top: 1px solid var(--border);
+            font-size: 12px; line-height: 1.4; min-height: 28px;
+        }
+        .chart-pos-info-label { color: var(--muted); margin-right: 4px; }
+        .chart-pos-info-value { font-weight: 600; }
+        .chart-pos-info-sep { color: var(--border); }
+        .chart-pane:has(.chart-pos-info-bar) .chart-container { height: calc(100% - 38px - 28px); }
         .chart-status-overlay {
             position: absolute; inset: 0; z-index: 2;
             display: flex; justify-content: center; align-items: center;
@@ -561,6 +570,24 @@
                     <div :id="'tv-chart-' + index" class="chart-container"></div>
                     <div v-if="chartModal.states[symbol] && chartModal.states[symbol].loading" class="chart-status-overlay" style="color:var(--muted)">載入中...</div>
                     <div v-else-if="chartModal.states[symbol] && chartModal.states[symbol].error" class="chart-status-overlay" style="color:var(--down)">{{ chartModal.states[symbol].error }}</div>
+                    <!-- 持倉開倉資訊欄 -->
+                    <div v-if="bot.positions && bot.positions.find(p => p.symbol === symbol)" class="chart-pos-info-bar">
+                        <span class="chart-pos-info-item">
+                            <span class="chart-pos-info-label">進場原因</span>
+                            <span class="chart-pos-info-value" style="font-family:monospace; color:#2563eb">
+                                {{ bot.positions.find(p => p.symbol === symbol)?.entry_reason || '—' }}
+                            </span>
+                        </span>
+                        <span class="chart-pos-info-sep">｜</span>
+                        <span class="chart-pos-info-item">
+                            <span class="chart-pos-info-label">鎖利線</span>
+                            <span class="chart-pos-info-value" :style="bot.positions.find(p => p.symbol === symbol)?.ratchet_floor ? 'color:#f59e0b;font-weight:600' : 'color:var(--muted)'">
+                                {{ bot.positions.find(p => p.symbol === symbol)?.ratchet_floor
+                                    ? formatPrice(bot.positions.find(p => p.symbol === symbol).ratchet_floor)
+                                    : '未啟動' }}
+                            </span>
+                        </span>
+                    </div>
                 </section>
             </div>
         </div>
