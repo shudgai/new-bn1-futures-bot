@@ -14,10 +14,9 @@ DUAL_TRACK_STATE_KEYS = (
 
 def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
     """
-    極端防禦檢測 (最高優先級)：
-    1. 大瀑布 (Flash Crash)：單根反向實體 >= 1.8 ATR
-    2. 連續異常 (Dual Anomaly)：連續兩根反向實體 >= 1.2 ATR
-    3. 市場熔斷標記
+    極端行情斷路器 (最高優先級)：
+    1. 大瀑布 (Flash Crash)：單根跌/漲幅超過 5%
+    2. 連續兩根異常 K 線 (Double Crash)：兩根實體都大於 1.5 ATR 且持續向不利方向推進
     """
     if position.get("emergency_circuit_breaker"):
         return "EMERGENCY_EXIT_CIRCUIT_BREAKER"
@@ -30,55 +29,62 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
         if side not in ("LONG", "SHORT"):
             return None
             
-        current_bar = frame.iloc[-1]
-        prev_bar = frame.iloc[-2]
-        atr = float(frame.iloc[-3]["atr"])
+        last = frame.iloc[-1]
+        prev = frame.iloc[-2]
         
-        opened = float(current_bar["open"])
-        current_price = price
-        body_size = abs(current_price - opened)
+        # --- 定義異常參數 ---
+        waterfall_percent = 0.05  # 單根跌/漲幅超過 5% 視為大瀑布
+        atr_multiplier = 1.5      # 實體大於 1.5 倍 ATR 視為異常
         
-        prev_opened = float(prev_bar["open"])
-        prev_close = float(prev_bar["close"])
-        prev_body = abs(prev_close - prev_opened)
+        last_close = float(last["close"])
+        last_open = float(last["open"])
+        last_atr = float(last.get("atr", price * 0.01))
         
-        # --- V5.0 動能衰減防禦 (Anti-Early Reversal) ---
-        from core.config import ANTI_REVERSAL_ATR_MULT, FLASH_CRASH_ATR_MULT
-        
-        # 判断是否為外軌外進場
-        if "is_outer_entry" not in position:
-            entry_reason = position.get("reason", "")
-            position["is_outer_entry"] = "OUTER" in entry_reason or "BREAKOUT" in entry_reason
-            
-        if position.get("is_outer_entry", False):
-            # 若 MA3/價格反向轉彎超過 ANTI_REVERSAL_ATR_MULT 且無實體推動
-            if side == "LONG" and (current_price < opened) and (body_size > ANTI_REVERSAL_ATR_MULT * atr):
-                return "EXIT_EARLY_REVERSAL_NO_PROFIT"
-            if side == "SHORT" and (current_price > opened) and (body_size > ANTI_REVERSAL_ATR_MULT * atr):
-                return "EXIT_EARLY_REVERSAL_NO_PROFIT"
+        prev_close = float(prev["close"])
+        prev_open = float(prev["open"])
+        prev_atr = float(prev.get("atr", price * 0.01))
         
         if side == "LONG":
-            # (A) 大瀑布檢測 (V5.0: 1.5 ATR)
-            if (current_price < opened) and (body_size >= FLASH_CRASH_ATR_MULT * atr):
-                return "EMERGENCY_EXIT_FLASH_CRASH"
-            # (B) 連續兩根異常 K 棒 (V5.0: 0.5 ATR)
-            if (current_price < opened) and (prev_close < prev_opened):
-                if (body_size >= 0.5 * atr) and (prev_body >= 0.5 * atr):
-                    return "EMERGENCY_EXIT_TWO_ANOMALY_BARS"
-                    
+            # 定義「異常陰線」
+            def is_abnormal_bearish(o, c, atr):
+                return (o - c) > (atr_multiplier * atr) and c < o
+                
+            prev_is_abnormal = is_abnormal_bearish(prev_open, prev_close, prev_atr)
+            last_is_abnormal = is_abnormal_bearish(last_open, last_close, last_atr)
+            
+            # A. 兩根連續大陰線
+            is_double_crash = prev_is_abnormal and last_is_abnormal
+            
+            # B. 單一極大瀑布
+            single_waterfall = (prev_close - last_close) > (prev_close * waterfall_percent)
+            
+            if single_waterfall:
+                return "EXIT_EMERGENCY_WATERFALL_LONG"
+            if is_double_crash:
+                return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_LONG"
+                
         elif side == "SHORT":
-            # (A) 大瀑布檢測 (V5.0: 1.5 ATR)
-            if (current_price > opened) and (body_size >= FLASH_CRASH_ATR_MULT * atr):
-                return "EMERGENCY_EXIT_FLASH_CRASH"
-            # (B) 連續兩根異常 K 棒 (V5.0: 0.5 ATR)
-            if (current_price > opened) and (prev_close > prev_opened):
-                if (body_size >= 0.5 * atr) and (prev_body >= 0.5 * atr):
-                    return "EMERGENCY_EXIT_TWO_ANOMALY_BARS"
-                    
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+            # 定義「異常陽線」 (軋空)
+            def is_abnormal_bullish(o, c, atr):
+                return (c - o) > (atr_multiplier * atr) and c > o
+                
+            prev_is_abnormal = is_abnormal_bullish(prev_open, prev_close, prev_atr)
+            last_is_abnormal = is_abnormal_bullish(last_open, last_close, last_atr)
+            
+            # A. 兩根連續大陽線
+            is_double_crash = prev_is_abnormal and last_is_abnormal
+            
+            # B. 單一極大瀑布 (軋空)
+            single_waterfall = (last_close - prev_close) > (prev_close * waterfall_percent)
+            
+            if single_waterfall:
+                return "EXIT_EMERGENCY_WATERFALL_SHORT"
+            if is_double_crash:
+                return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_SHORT"
+                
+    except Exception:
         pass
     return None
-
 
 def check_structure_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
     """
@@ -204,6 +210,50 @@ def check_trailing_stop_exit(position: dict, frame: 'pd.DataFrame', price: float
         pass
     return None
 
+def check_state_machine_exit(position: dict, frame: 'pd.DataFrame', price: float) -> str | None:
+    """
+    狀態機專屬：極端衰竭期平倉 (EXHAUSTION_ZONE ONLY)
+    完全使用最新一根「已收線 (Closed)」的 K 棒來判斷，拒絕盤中即時價格的雜訊。
+    """
+    try:
+        if frame is None or len(frame) < 3:
+            return None
+            
+        trade_phase = position.get("trade_phase", "TRENDING")
+        if trade_phase != "EXHAUSTION_ZONE":
+            return None
+            
+        side = position.get("side")
+        last_closed = frame.iloc[-2] # 最新一根已經收線的 K 棒
+        
+        atr = float(last_closed.get("atr", price * 0.01))
+        kc_upper_closed = float(last_closed.get("kc_upper", price))
+        kc_lower_closed = float(last_closed.get("kc_lower", price))
+        ma3_closed = float(last_closed.get("ma3", price))
+        
+        c_open = float(last_closed['open'])
+        c_close = float(last_closed['close'])
+        
+        if side == "LONG":
+            back_inside = c_close < kc_upper_closed
+            is_bearish = c_close < c_open and (c_open - c_close) > 0.1 * atr
+            break_ma3 = c_close < ma3_closed
+            
+            if back_inside and is_bearish and break_ma3:
+                return "PEAK_EXHAUSTION_EXIT_LONG"
+                
+        elif side == "SHORT":
+            back_inside = c_close > kc_lower_closed
+            is_bullish = c_close > c_open and (c_close - c_open) > 0.1 * atr
+            break_ma3 = c_close > ma3_closed
+            
+            if back_inside and is_bullish and break_ma3:
+                return "PEAK_EXHAUSTION_EXIT_SHORT"
+                
+    except Exception:
+        pass
+    return None
+
 def check_reversal_exit(position: dict, frame: 'pd.DataFrame', price: float) -> str | None:
     """
     第三層：趨勢徹底反轉 (CK 彎頭或對向破軌)
@@ -247,6 +297,7 @@ class DualTrackExitStrategy(IExitStrategy):
         self.fee = fee
         self.slippage = slippage
 
+
     def evaluate_exit(
         self,
         position: dict,
@@ -255,17 +306,42 @@ class DualTrackExitStrategy(IExitStrategy):
         **kwargs: 'Any'
     ) -> str | None:
         
+        # --- 狀態機管理 (State Machine Management) ---
+        side = position.get("side")
+        trade_phase = position.setdefault("trade_phase", "TRENDING")
+        
+        if frame is not None and len(frame) >= 1:
+            kc_upper = float(frame.iloc[-1].get("kc_upper", price))
+            kc_lower = float(frame.iloc[-1].get("kc_lower", price))
+            
+            if trade_phase == "TRENDING":
+                if side == "LONG" and price > kc_upper:
+                    position["trade_phase"] = "EXHAUSTION_ZONE"
+                elif side == "SHORT" and price < kc_lower:
+                    position["trade_phase"] = "EXHAUSTION_ZONE"
+        # ---------------------------------------------
+        
+        # 0. 災難性平倉 (極端防禦檢測，最高優先)
+        emergency_reason = check_emergency_exit(position, frame, price)
+        if emergency_reason:
+            return emergency_reason
+            
         # 1. 硬性防禦 (保命符)
         hard_stop_reason = check_hard_stop_exit(position, frame, price)
         if hard_stop_reason:
             return hard_stop_reason
             
-        # 2. 趨勢反轉 (真正的出場點)
+        # 2. 狀態機專屬衰竭平倉 (僅 EXHAUSTION_ZONE 觸發)
+        exhaustion_reason = check_state_machine_exit(position, frame, price)
+        if exhaustion_reason:
+            return exhaustion_reason
+            
+        # 3. 趨勢反轉 (真正的結構出場點)
         reversal_reason = check_reversal_exit(position, frame, price)
         if reversal_reason:
             return reversal_reason
             
-        # 3. 寬幅移動止損 (防大深V洗盤)
+        # 4. 寬幅移動止損 (防大深V洗盤)
         trailing_reason = check_trailing_stop_exit(position, frame, price, self.fee, self.slippage)
         if trailing_reason:
             return trailing_reason
