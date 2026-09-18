@@ -29,17 +29,22 @@ class DualTrackExitStrategy:
         if emergency_reason:
             return emergency_reason
             
-        # 1. 唯一平倉點 (峰谷反轉)
+        # 1. 獲利護衛型轉向 (Guarded Reversal - V10)
+        reversal_reason = check_guarded_reversal_exit(position, frame, price)
+        if reversal_reason:
+            return reversal_reason
+            
+        # 2. 唯一平倉點 (峰谷反轉)
         exhaustion_reason = check_peak_exhaustion_exit(position, frame, price)
         if exhaustion_reason:
             return exhaustion_reason
             
-        # 2. 保本機制 (1R Break-Even Only)
-        be_reason = check_break_even_stop(position, frame, price)
-        if be_reason:
-            return be_reason
+        # 3. 結構式移動鎖利 (Swing Trailing - V10)
+        trailing_reason = check_swing_trailing_exit(position, frame, price)
+        if trailing_reason:
+            return trailing_reason
             
-        # 3. 帳戶硬止損
+        # 4. 帳戶硬止損
         return check_hard_stop_exit(position, frame, price)
 
 
@@ -95,10 +100,45 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
     return None
 
 
+def check_guarded_reversal_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
+    """
+    獲利護衛型轉向：
+    1. 必須是獲利狀態。
+    2. 價格放量衝破對側軌道。
+    3. 返回 REVERSAL_EXIT 標籤讓引擎無縫接力。
+    """
+    try:
+        side = position.get("side")
+        entry_price = float(position.get("entry_price") or 0)
+        
+        # 1. 獲利護衛 (不獲利絕不凹單轉向)
+        if side == "LONG" and price <= entry_price:
+            return None
+        if side == "SHORT" and price >= entry_price:
+            return None
+            
+        last = frame.iloc[-1]
+        kc_upper = float(last.get("kc_upper", price))
+        kc_lower = float(last.get("kc_lower", price))
+        current_vol = float(last.get("volume", 0.0))
+        vol_ma_5 = float(last.get("vol_ma_5", 0.0))
+        is_volume_surge = current_vol >= vol_ma_5
+        
+        # 2. 破軌判定
+        if is_volume_surge:
+            if side == "LONG" and price < kc_lower:
+                return "REVERSAL_EXIT_OPPOSITE_RAIL_LONG"
+            elif side == "SHORT" and price > kc_upper:
+                return "REVERSAL_EXIT_OPPOSITE_RAIL_SHORT"
+                
+    except Exception:
+        pass
+    return None
+
+
 def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
     """
     峰谷反轉：價格從軌道外收回軌道內 -> 產生大實體反轉 K 線(>= 0.5) -> 破壞 MA3
-    完全使用最新一根「已收線 (Closed)」的 K 棒判斷。
     """
     try:
         trade_phase = position.get("trade_phase", "TRENDING")
@@ -106,7 +146,7 @@ def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float
             return None
             
         side = position.get("side")
-        last_closed = frame.iloc[-2] # 最新一根已經收線的 K 棒
+        last_closed = frame.iloc[-2]
         
         c_open = float(last_closed["open"])
         c_close = float(last_closed["close"])
@@ -142,9 +182,10 @@ def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float
     return None
 
 
-def check_break_even_stop(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
+def check_swing_trailing_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
     """
-    保本機制：僅在獲利達到 1R 時，將止損點移動到「進場點」。一旦保本，止損點不再移動。
+    結構式移動鎖利 (Swing Trailing)：
+    獲利 1R 後拉保本，接著追蹤波段極值(Swing High/Low)。
     """
     try:
         side = position.get("side")
@@ -161,21 +202,48 @@ def check_break_even_stop(position: dict, frame: pd.DataFrame, price: float) -> 
         sign = 1 if side == "LONG" else -1
         current_profit = sign * (price - entry)
         
-        # 狀態紀錄
-        state = position.setdefault("v9_break_even_state", {})
-        is_break_even_locked = state.get("is_break_even_locked", False)
+        state = position.setdefault("v10_swing_trailing", {})
         
-        # 判斷是否鎖定保本
-        if not is_break_even_locked and current_profit >= initial_risk:
+        # 1. 1R 保本機制
+        is_be_locked = state.get("is_break_even_locked", False)
+        if not is_be_locked and current_profit >= initial_risk:
             state["is_break_even_locked"] = True
-            is_break_even_locked = True
+            state["trailing_sl"] = entry # 保本點
+            is_be_locked = True
             
-        # 如果已經保本，檢查是否跌破進場點
-        if is_break_even_locked:
-            if side == "LONG" and price <= entry:
-                return "BREAK_EVEN_STOP_LONG"
-            elif side == "SHORT" and price >= entry:
-                return "BREAK_EVEN_STOP_SHORT"
+        # 2. 追蹤波段極值 (Swing High/Low)
+        if is_be_locked:
+            last = frame.iloc[-1]
+            atr = float(last.get("atr", price * 0.01))
+            
+            # 以歷史最高/最低價作為 Swing Anchor
+            highest_since = state.get("highest_price", entry)
+            lowest_since = state.get("lowest_price", entry)
+            
+            if price > highest_since:
+                state["highest_price"] = price
+            if price < lowest_since:
+                state["lowest_price"] = price
+                
+            current_trailing_sl = state.get("trailing_sl", entry)
+            
+            if side == "LONG":
+                # 多單：隨著最高點上升，將止損點上移到「最高點 - 1.5 ATR」
+                new_sl = state["highest_price"] - (1.5 * atr)
+                if new_sl > current_trailing_sl:
+                    state["trailing_sl"] = new_sl
+                    
+                if price <= state["trailing_sl"]:
+                    return "EXIT_SWING_TRAILING_LONG"
+                    
+            elif side == "SHORT":
+                # 空單：隨著最低點下降，將止損點下移到「最低點 + 1.5 ATR」
+                new_sl = state["lowest_price"] + (1.5 * atr)
+                if new_sl < current_trailing_sl or current_trailing_sl == entry:
+                    state["trailing_sl"] = new_sl
+                    
+                if price >= state["trailing_sl"]:
+                    return "EXIT_SWING_TRAILING_SHORT"
                 
     except Exception:
         pass
