@@ -228,23 +228,27 @@ def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, p
                     state["partial_exit_triggered"] = True
                     return "LIMIT_EXIT_PEAK_MOMENTUM_PARTIAL"
             
+            # --- 動態空間鎖利引擎 (Adaptive Profit Engine) ---
+            from core.config import BASE_DRAWDOWN, SAFETY_BUFFER
+            
+            # 1. 基礎空間計算
+            current_space = (BASE_DRAWDOWN * slope_factor) + SAFETY_BUFFER
+            
+            # 2. 動態壓縮 (若動能放緩，空間瞬間壓縮 75%)
             if is_velocity_peak:
-                ratchet_step = 0.05
-            else:
-                from core.config import BASE_DRAWDOWN, SAFETY_BUFFER
-                ratchet_step = (BASE_DRAWDOWN * slope_factor) + SAFETY_BUFFER
+                current_space = current_space * 0.25
                 
             # 計算鎖利線並確保只升不降
-            new_locked_atr = max_net_atr - ratchet_step
+            new_locked_atr = max_net_atr - current_space
             locked_atr = max(float(state.get("locked_atr", -999)), new_locked_atr)
             state["locked_atr"] = locked_atr
             
             # 執行平倉判斷
             if net_atr <= locked_atr:
                 if is_velocity_peak:
-                    return "LIMIT_EXIT_VELOCITY_PEAK"
+                    return "LIMIT_EXIT_ADAPTIVE_VELOCITY_PEAK"
                 else:
-                    return "LIMIT_EXIT_DYNAMIC_TRAILING"
+                    return "LIMIT_EXIT_ADAPTIVE_TRAILING"
                     
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         pass
