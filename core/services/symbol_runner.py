@@ -114,6 +114,7 @@ async def process_single_symbol_runner(
                         meta["has_warning_partial_close"] = True
                         # 重新對齊剩餘倉位的保底鎖利 (強制重新計算鎖利距離)
                         existing_pos.pop("v10_phase_trailing", None)
+                        engine.account.log(f"🔄 [鎖利對齊] {symbol} 50% 減倉成功，已強制清除 v10_phase_trailing 狀態，下一根 K 棒將依據剩餘倉位重新計算並對齊保底鎖利點", "INFO")
                         engine.account.save_state()
                 else:
                     engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
@@ -143,12 +144,9 @@ async def process_single_symbol_runner(
                     # 1. 對側破軌轉向 (V10 護衛型接力)
                     # 2. 峰谷三點結構瓦解 → 瞬間轉向捕捉對向動能噴發
                     # 3. Phase Trail 鎖利觸發 → 獲利鎖定後轉向評估
-                    is_structural_reversal = (
-                        "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason
-                        or "DOUBLE_ABNORMAL_REVERSAL" in exit_reason
-                        or "PEAK_EXHAUSTION_EXIT" in exit_reason
-                        or "EXIT_PHASE_TRAIL" in exit_reason
-                    )
+                    # 換手票據發放條件：
+                    # 依據最新防禦架構，嚴格限制只有「峰谷瓦解 (PEAK_EXHAUSTION_EXIT)」才能觸發動能接力
+                    is_structural_reversal = ("PEAK_EXHAUSTION_EXIT" in exit_reason)
                     if is_structural_reversal:
                         # ── 獲利墊片檢查 (Profit-Buffered Relay) ──
                         # 確保我們只有在「有獲利」時才進行轉向接力，若平手或虧損則只平倉不接力
@@ -316,7 +314,8 @@ async def process_single_symbol_runner(
             
             for direct_side in sides_to_try:
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
-                    channel_df, channel_price, direct_side, velocity_drop_ratio=velocity_drop_ratio
+                    channel_df, channel_price, direct_side, velocity_drop_ratio=velocity_drop_ratio,
+                    relay_forced=relay_entry_forced
                 )
                 
                 # 接力確認情況：若一般入場被拒，仍允許接力（繞過 UnifiedEntry 篩選）

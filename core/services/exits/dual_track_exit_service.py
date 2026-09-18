@@ -78,35 +78,25 @@ def check_kc_phase_trailing_stop(
     phase_atr_mult: float = 0.7,
 ) -> Optional[str]:
     """
-    KC 三階段移動止損（Step-wise Phase Trailing Stop）：
+    動態 ATR 鎖利（Dynamic ATR Phase Trailing Stop）：
 
-    設計哲學：
+    設計哲學 (V9.0)：
+    - 捨棄死板的軌道觸碰限制，改用純粹的數學空間 `Floor(Profit / (0.7 * ATR))` 來定義階段。
     - 倉位始終保持完整，不做任何減倉動作
-    - 每到達一個 KC 里程碑，止損點往有利方向推移（棘輪機制）
+    - 每到達一個階段里程碑，止損點往有利方向推移（單向棘輪機制）
     - 確保每個 Phase 的「保底獲利」遞增，鎖住已走過的波段獲利
 
-    Phase 定義（多單 LONG 為例）：
-    - Phase 1：現價首次觸及 KC 中軌（kc_middle）AND 淨利 > 0
-      → 止損點設定為「觸發時現價 - 1 × phase_atr_mult × ATR」
-    - Phase 2：現價觸及 KC 對側外軌（kc_upper for LONG）
-      → 止損點推移為「觸發時現價 - 2 × phase_atr_mult × ATR」
-    - Phase 3：進入 EXHAUSTION_ZONE（超越外軌明顯距離）
-      → 止損點推移為「觸發時現價 - 3 × phase_atr_mult × ATR」
-
-    棘輪機制：止損點只往有利方向移動（多單只升、空單只降）
-
-    Args:
-        position:       持倉字典（含 side、entry_price、size 等）
-        frame:          最新 K 線資料 DataFrame
-        price:          當前最新報價
-        fee:            單邊手續費率（預設 0.04%）
-        slippage:       預估滑點（預設 0.05%）
-        phase_atr_mult: 每個 Phase 的 ATR 止損距離倍數（預設 1.5）
+    Phase 定義：
+    - Current_Phase = math.floor(Current_Profit_Space / (0.7 * ATR))
+    - 止損點動態更新：Max(Current_Stop, Current_Price - (Current_Phase * 0.7 * ATR)) (多單)
+    
+    UI 顯示支援：
+    - 寫入 locked_profit_atr 供前端讀取。
     """
     try:
+        import math
         side = position.get("side")
         entry_price = float(position.get("entry_price") or 0)
-        # position dict 可能用 qty 或 size，兩者都嘗試
         size = float(position.get("size") or position.get("qty") or 0)
 
         if not side or entry_price <= 0 or size <= 0:
@@ -114,25 +104,22 @@ def check_kc_phase_trailing_stop(
         if frame is None or len(frame) < 2:
             return None
 
-        # ── 取 KC 通道值與 ATR ──────────────────────────────────────
+        # ── 取 ATR ──────────────────────────────────────
         last = frame.iloc[-1]
-        kc_upper  = float(last.get("kc_upper",  price))
-        kc_lower  = float(last.get("kc_lower",  price))
-        kc_middle = float(last.get("kc_middle", (kc_upper + kc_lower) / 2.0))
-        # kc_middle 備援：部分 frame 可能用不同欄位名稱
-        if kc_middle == price:
-            kc_middle = float(last.get("kc_basis", (kc_upper + kc_lower) / 2.0))
         atr = float(last.get("atr", price * 0.01))
         if atr <= 0:
             atr = price * 0.01
 
-        # ── 計算當前淨利（僅用於 Phase 1 的 net_pnl > 0 門檻）────────
+        # ── 計算當前淨利與利潤空間 ──────────────────────────────────────
         if side == "LONG":
             gross_pnl = (price - entry_price) * size
+            current_profit_space = price - entry_price
         elif side == "SHORT":
             gross_pnl = (entry_price - price) * size
+            current_profit_space = entry_price - price
         else:
             return None
+            
         notional = price * size
         cost = notional * (2 * fee + slippage)
         net_pnl = gross_pnl - cost
@@ -141,62 +128,35 @@ def check_kc_phase_trailing_stop(
         state = position.setdefault("v10_phase_trailing", {})
         current_phase = state.get("phase", 0)
         current_stop  = state.get("stop_price", None)
-        trade_phase   = position.get("trade_phase", "TRENDING")
-
-        # ── 追蹤進場以來最有利極值（Swing Extreme）────────────────
-        # LONG：最高價（多單越高越有利）
-        # SHORT：最低價（空單越低越有利）
-        if side == "LONG":
-            swing_extreme = max(state.get("swing_extreme", entry_price), price)
-        else:
-            swing_extreme = min(state.get("swing_extreme", entry_price), price)
-        state["swing_extreme"] = swing_extreme
-
-        # ── Phase 升級判斷 (只升不降) ──
-        # Phase 升級必須同時滿足「結構條件」與「利潤空間」，確保不會將止損設在現價前方。
-        # 這裡改用 0.7 ATR 為一階
-        step_net = 0.7 * atr * size
-        new_phase = current_phase
         
-        if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3 and net_pnl >= 3 * step_net:
-            new_phase = 3
-        elif current_phase < 2 and net_pnl >= 2 * step_net:
-            if side == "LONG" and price >= kc_upper:
-                new_phase = 2
-            elif side == "SHORT" and price <= kc_lower:
-                new_phase = 2
-        
-        if current_phase < 1 and new_phase < 2 and net_pnl >= 1 * step_net:
-            if side == "LONG" and price >= kc_middle:
-                new_phase = 1
-            elif side == "SHORT" and price <= kc_middle:
-                new_phase = 1
+        # 扣除成本後的淨利潤空間 (確保是真正賺到的空間)
+        net_profit_space = (net_pnl / size) if size > 0 else 0
 
-        if new_phase > current_phase:
-            state["phase"] = new_phase
-            current_phase = new_phase
+        # ── 階段計算 (Current Phase) ──
+        # 必須淨利大於 0 才有階段
+        if net_profit_space > 0:
+            calculated_phase = math.floor(net_profit_space / (phase_atr_mult * atr))
+            # 確保階段只升不降 (與棘輪概念一致)
+            if calculated_phase > current_phase:
+                current_phase = calculated_phase
+                state["phase"] = current_phase
 
-        # ── 每 tick 動態重算止損點 (雙重防禦) ──
-        # 1. 階段鎖利 (Phase Profit)：確保淨利為 phase * 0.7 ATR
-        # 2. 空間鎖利 (ATR Buffer)：給予現價 0.7 ATR 的呼吸空間
+        # 寫入 locked_profit_atr 供 UI 顯示
+        state["locked_profit_atr"] = current_phase * phase_atr_mult
+        # Ensure it propagates to the position itself for easy extraction by symbol_runner
+        position["locked_profit_atr"] = state["locked_profit_atr"]
+
+        # ── 每 tick 動態重算止損點 (單向棘輪) ──
         if current_phase > 0:
-            target_net = current_phase * step_net
-            gross_needed = target_net + cost
-            if size > 0:
-                if side == "LONG":
-                    phase_stop = entry_price + (gross_needed / size)
-                    atr_stop = price - (0.7 * atr)
-                    # 取距離當前價格較近（對獲利最有利/鎖定最多）的止損點
-                    new_stop = max(phase_stop, atr_stop)
-                else:
-                    phase_stop = entry_price - (gross_needed / size)
-                    atr_stop = price + (0.7 * atr)
-                    # 取距離當前價格較近（對獲利最有利/鎖定最多）的止損點
-                    new_stop = min(phase_stop, atr_stop)
-                
-                # 棘輪：只往有利方向移動 (Ratchet Constraint)
+            distance = current_phase * phase_atr_mult * atr
+            if side == "LONG":
+                new_stop = price - distance
                 current_stop = _update_ratchet_stop(side, current_stop, new_stop)
-                state["stop_price"] = current_stop
+            else:
+                new_stop = price + distance
+                current_stop = _update_ratchet_stop(side, current_stop, new_stop)
+            
+            state["stop_price"] = current_stop
 
         # ── 止損觸發判斷 ───────────────────────────────────────────
         if current_stop is None or current_phase == 0:
@@ -328,9 +288,26 @@ def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float
         c_body     = abs(c_close - c_open)
         body_ratio = c_body / c_height if c_height > 0 else 0
 
+        prev_closed = frame.iloc[-3]
+        p_open  = float(prev_closed["open"])
+        p_close = float(prev_closed["close"])
+        p_high  = float(prev_closed["high"])
+        p_low   = float(prev_closed["low"])
+        p_body  = abs(p_close - p_open)
+
         kc_upper_closed = float(last_closed.get("kc_upper", price))
         kc_lower_closed = float(last_closed.get("kc_lower", price))
+        kc_mid_closed   = float(last_closed.get("kc_middle", (kc_upper_closed + kc_lower_closed) / 2.0))
         ma3_closed      = float(last_closed.get("ma3", price))
+        
+        # 空間門檻：確保這是「結構性瓦解」而非「微幅震盪」
+        # 條件：回調深度 >= 0.5 * ATR
+        atr = float(last_closed.get("atr", price * 0.01))
+        if side == "LONG":
+            space_filter_ok = (c_high - c_close) >= (0.5 * atr)
+        else:
+            space_filter_ok = (c_close - c_low) >= (0.5 * atr)
+
         try:
             recent_vols = [float(frame.iloc[i].get("volume", 0)) for i in range(-7, -2)]
             vol_ma5 = sum(recent_vols[-5:]) / 5.0 if len(recent_vols) >= 5 else 0

@@ -8,7 +8,7 @@ from core.interfaces.entry_interface import IEntryStrategy
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str]:
     """
-    V7.0 動態自適應趨勢引擎 (雙軌進場邏輯)
+    V9.0 動態自適應趨勢引擎 (多軌進場與空間過濾)
     """
     if len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA"
@@ -45,8 +45,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # 成交量數據 (判斷上一根已收線是否有放量)
     prev_vol = float(prev.get("volume", 0.0))
     prev_vol_ma_5 = float(prev.get("vol_ma_5", 0.0))
-    is_volume_surge = prev_vol >= prev_vol_ma_5
+    is_volume_surge = prev_vol >= (1.2 * prev_vol_ma_5)  # 強化為 1.2 倍
     
+
+
     # ==========================================
     # 軌道 A：極值反轉 (大波段)
     # ==========================================
@@ -81,7 +83,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     is_inside_kc = (kc_lower < live_price < kc_upper)
     
     # MA15 攻擊角度 (斜率閾值設定)
-    attack_slope_threshold = 1e-5
+    attack_slope_threshold = 1e-4  # 提高嚴格度
     
     if side == "LONG":
         if is_inside_kc:
@@ -90,8 +92,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             prev_ma15 = float(prev.get("ma15", live_price))
             touched_mid = (prev_low <= prev_kc_mid) or (prev_low <= prev_ma15)
             if touched_mid:
-                # 實體 >= 0.3 扭頭
-                if prev_is_bullish and prev_body_ratio >= 0.3:
+                # 實體 >= 0.4 扭頭 (強化確認)
+                if prev_is_bullish and prev_body_ratio >= 0.4:
                     # MA15 向上攻擊角度
                     if ma15_slope >= attack_slope_threshold:
                         if is_volume_surge:
@@ -104,14 +106,15 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             prev_ma15 = float(prev.get("ma15", live_price))
             touched_mid = (prev_high >= prev_kc_mid) or (prev_high >= prev_ma15)
             if touched_mid:
-                # 實體 >= 0.3 扭頭
-                if prev_is_bearish and prev_body_ratio >= 0.3:
+                # 實體 >= 0.4 扭頭 (強化確認)
+                if prev_is_bearish and prev_body_ratio >= 0.4:
                     # MA15 向下攻擊角度
                     if ma15_slope <= -attack_slope_threshold:
                         if is_volume_surge:
                             track_b_ok = True
                             track_b_reason = "TRACK_B_MID_PULLBACK_SHORT"
-                            
+
+
     # ==========================================
     # 軌道 C：破軌突破 (強勢動能爆發)
     # ==========================================
@@ -119,17 +122,17 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     track_c_reason = ""
     
     if side == "LONG":
-        # 1. 爆發點：上一根已收線 K 線必須實體破軌 (收盤在軌道外，實體比例 >= 0.4，放量)
+        # 1. 爆發點：上一根已收線 K 線必須實體破軌 (收盤在軌道外，實體比例 >= 0.3，放量)
         prev_kc_upper = float(prev.get("kc_upper", live_price))
-        if prev_close > prev_kc_upper and prev_is_bullish and prev_body_ratio >= 0.4 and is_volume_surge:
+        if prev_close > prev_kc_upper and prev_is_bullish and prev_body_ratio >= 0.3 and is_volume_surge:
             # 2. 站穩點：當前價格仍處於當前 KC 上軌外，且高於 MA3
             if live_price > kc_upper and live_price > ma3:
                 track_c_ok = True
                 track_c_reason = "TRACK_C_BREAKOUT_LONG"
     elif side == "SHORT":
-        # 1. 爆發點：上一根已收線 K 線必須實體破軌 (收盤在軌道外，實體比例 >= 0.4，放量)
+        # 1. 爆發點：上一根已收線 K 線必須實體破軌 (收盤在軌道外，實體比例 >= 0.3，放量)
         prev_kc_lower = float(prev.get("kc_lower", live_price))
-        if prev_close < prev_kc_lower and prev_is_bearish and prev_body_ratio >= 0.4 and is_volume_surge:
+        if prev_close < prev_kc_lower and prev_is_bearish and prev_body_ratio >= 0.3 and is_volume_surge:
             # 2. 站穩點：當前價格仍處於當前 KC 下軌外，且低於 MA3
             if live_price < kc_lower and live_price < ma3:
                 track_c_ok = True
@@ -147,6 +150,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         return True, track_reason
 
     return False, "WAIT_NO_TRACK_SIGNAL"
+
 
 
 class UnifiedEntryStrategy(IEntryStrategy):
