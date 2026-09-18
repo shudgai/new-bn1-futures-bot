@@ -168,20 +168,39 @@ async def process_single_symbol_runner(
 
                             # 趨勢接力狀態機（WATERFALL/DOUBLE_ABNORMAL 緊急平倉不接力）
                             is_emergency = ("WATERFALL" in exit_reason or "DOUBLE_ABNORMAL" in exit_reason)
+                            
                             if not is_emergency:
                                 relay_dir = "LONG" if "SHORT" in exit_reason else "SHORT"
-                                if not hasattr(engine, "_trend_relay_watch"):
-                                    engine._trend_relay_watch = {}
-                                engine._trend_relay_watch[symbol] = {
-                                    "direction": relay_dir,
-                                    "exit_bar_id": current_bar_id,
-                                    "touched_structure": False,
-                                    "relay_phase": "WAITING",
-                                }
-                                engine.account.log(
-                                    f"📡 [趨勢接力備戰] {symbol} 等待回調到KC中軌/MA15，確認{relay_dir}接力進場（最多10根K）",
-                                    "INFO"
-                                )
+                                
+                                # ── 趨勢空間過濾 (Trend Space Filter) ──
+                                last_k = channel_df.iloc[-1]
+                                kc_mid = float(last_k.get("kc_middle") or last_k.get("ema_20") or channel_price)
+                                
+                                # 空單平倉(準備換多) 但價格仍在 KC 中軌下方 -> 屏蔽做多
+                                if relay_dir == "LONG" and channel_price < kc_mid:
+                                    engine.account.log(
+                                        f"🛑 [趨勢空間過濾] {symbol} 平空單但價格 ({channel_price:.4f}) 仍在 KC 中軌 ({kc_mid:.4f}) 下方，屏蔽 LONG 接力票據",
+                                        "WARNING"
+                                    )
+                                # 多單平倉(準備換空) 但價格仍在 KC 中軌上方 -> 屏蔽做空
+                                elif relay_dir == "SHORT" and channel_price > kc_mid:
+                                    engine.account.log(
+                                        f"🛑 [趨勢空間過濾] {symbol} 平多單但價格 ({channel_price:.4f}) 仍在 KC 中軌 ({kc_mid:.4f}) 上方，屏蔽 SHORT 接力票據",
+                                        "WARNING"
+                                    )
+                                else:
+                                    if not hasattr(engine, "_trend_relay_watch"):
+                                        engine._trend_relay_watch = {}
+                                    engine._trend_relay_watch[symbol] = {
+                                        "direction": relay_dir,
+                                        "exit_bar_id": current_bar_id,
+                                        "touched_structure": False,
+                                        "relay_phase": "WAITING",
+                                    }
+                                    engine.account.log(
+                                        f"📡 [趨勢接力備戰] {symbol} 等待回調到KC中軌/MA15，確認{relay_dir}接力進場（最多10根K）",
+                                        "INFO"
+                                    )
                         else:
                             engine.account.log(
                                 f"🛑 [拒絕接力] {symbol} [{exit_reason}] 平倉時淨利 ({current_profit_usdt:.2f}U) 不足 2U，不觸發換手接力",
