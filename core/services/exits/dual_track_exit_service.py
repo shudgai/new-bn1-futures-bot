@@ -61,7 +61,9 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
             if single_waterfall:
                 return "EXIT_EMERGENCY_WATERFALL_LONG"
             if is_double_crash:
-                return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_LONG"
+                # 只在「破軌開倉 (TRACK_A)」時觸發連續異常 K 線平倉，並賦予轉向票據
+                if "TRACK_A" in position.get("v8_reason", ""):
+                    return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_REVERSAL_LONG"
                 
         elif side == "SHORT":
             # 定義「異常陽線」 (軋空)
@@ -80,7 +82,9 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
             if single_waterfall:
                 return "EXIT_EMERGENCY_WATERFALL_SHORT"
             if is_double_crash:
-                return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_SHORT"
+                # 只在「破軌開倉 (TRACK_A)」時觸發連續異常 K 線平倉，並賦予轉向票據
+                if "TRACK_A" in position.get("v8_reason", ""):
+                    return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_REVERSAL_SHORT"
                 
     except Exception:
         pass

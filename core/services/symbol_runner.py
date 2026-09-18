@@ -133,11 +133,11 @@ async def process_single_symbol_runner(
                         engine._last_exit_bar_id = {}
                     engine._last_exit_bar_id[symbol] = current_bar_id
                     
-                    if "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason:
+                    if "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason or "DOUBLE_ABNORMAL_REVERSAL" in exit_reason:
                         if not hasattr(engine, "_direct_reverse_ticket"):
                             engine._direct_reverse_ticket = {}
                         engine._direct_reverse_ticket[symbol] = current_bar_id
-                        engine.account.log(f"🎫 [獲發換手票據] {symbol} 對向破軌平倉，豁免次根 K 棒冷卻期", "SUCCESS")
+                        engine.account.log(f"🎫 [獲發換手票據] {symbol} 滿足平倉轉向條件，豁免次根 K 棒冷卻期", "SUCCESS")
                     
                     engine.account.log(f"✅ [狀態重置] {symbol} 平倉完成，已清空歷史狀態，次根 K 棒恢復掃描", "SUCCESS")
                 return signal_progress, detected_candidates
@@ -180,7 +180,7 @@ async def process_single_symbol_runner(
                     continue
                 engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
                 await engine._execute_confirmed_channel_break(
-                    symbol, channel_df, channel_price, direct_side, daily_halt
+                    symbol, channel_df, channel_price, direct_side, daily_halt, v8_reason=reason
                 )
                 break
             
