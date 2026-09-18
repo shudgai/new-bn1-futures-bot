@@ -2586,6 +2586,11 @@ class TradingEngine:
             return 0.0
         import core.config as runtime_config
         target_amount = getattr(runtime_config, "TRADE_AMOUNT_USDT", 150.0)
+        
+        # 交易金額平均分配 (Average distribution across slots)
+        if effective_slots > 0:
+            target_amount = min(target_amount, (wallet_balance * 0.95) / effective_slots)
+            
         return min(target_amount, available * 0.98)
 
     _continuous_entry_price_is_safe = staticmethod(continuous_entry_price_is_safe)
