@@ -601,6 +601,16 @@
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label">保底獲利:</span>
+                                <span class="chart-pos-info-value text-green" style="font-family:monospace; font-weight: 600;">
+                                    {{ (bot.positions.find(p => p.symbol === symbol)?.locked_profit_usdt || 0) > 0 ? '+' : '' }}{{ (bot.positions.find(p => p.symbol === symbol)?.locked_profit_usdt || 0).toFixed(2) }} U
+                                    <span v-if="bot.positions.find(p => p.symbol === symbol)?.locked_phase" style="font-size: 0.85em; opacity: 0.8;">
+                                        (P{{ bot.positions.find(p => p.symbol === symbol)?.locked_phase }})
+                                    </span>
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep">｜</span>
+                            <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">止損價:</span>
                                 <span class="chart-pos-info-value" :style="bot.positions.find(p => p.symbol === symbol)?.ratchet_floor ? 'color:#f59e0b;font-weight:600;font-family:monospace;' : 'color:inherit'">
                                     {{ bot.positions.find(p => p.symbol === symbol)?.ratchet_floor
