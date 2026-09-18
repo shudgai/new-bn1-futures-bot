@@ -1830,7 +1830,7 @@ class TradingEngine:
             for trade in getattr(self.account, "trades", [])
         )
 
-    def get_velocity_slowdown(self, symbol: str) -> bool:
+    def get_velocity_drop_ratio(self, symbol: str) -> float:
         """
         V5.0 極致點位捕捉：判斷 Tick 變動速度是否放緩
         計算連續 3 Tick 的均速是否低於前 5 Tick 的均速 30% 以上
@@ -1855,9 +1855,8 @@ class TradingEngine:
         speed_prev = avg_speed(prev_5)
         
         if speed_prev > 0:
-            drop_ratio = (speed_prev - speed_recent) / speed_prev
-            return drop_ratio >= 0.30
-        return False
+            return (speed_prev - speed_recent) / speed_prev
+        return 0.0
         
     async def _place_structured_entry(
         self, symbol: str, signal: dict, live_price: float, channel_snapshot: dict | None = None

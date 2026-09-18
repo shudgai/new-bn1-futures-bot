@@ -164,7 +164,7 @@ def check_hard_stop_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
     return None
 
 
-def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005, velocity_slowdown: bool = False) -> Optional[str]:
+def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005, velocity_drop_ratio: float = 0.0) -> Optional[str]:
     """
     第二層與第三層：智能動態空間 & 極致動能退出
     """
@@ -213,7 +213,7 @@ def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, p
                     slope_factor = SLOPE_FACTOR_RANGE[1] # 1.5
                     
             # 檢查極致動能標記 (Velocity Slowdown >= 30%)
-            is_velocity_peak = velocity_slowdown
+            is_velocity_peak = (velocity_drop_ratio >= 0.20)
             
             # --- 峰值平倉分批 (Partial Exit) ---
             # 偵測到滯漲 (長影線或實體極小) 且處於目標區
@@ -296,8 +296,8 @@ class DualTrackExitStrategy(IExitStrategy):
             return hard_stop_reason
             
         # 2 & 3. 【第二階與第三階：極致動能收網 & 動態空間鎖利 (保獲利/搶高點)】
-        velocity_slowdown = kwargs.get("velocity_slowdown", False)
-        dynamic_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage, velocity_slowdown)
+        velocity_drop_ratio = kwargs.get("velocity_drop_ratio", 0.0)
+        dynamic_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage, velocity_drop_ratio)
         if dynamic_reason:
             return dynamic_reason
             

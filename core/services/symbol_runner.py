@@ -66,8 +66,8 @@ async def process_single_symbol_runner(
                     existing_pos[key] = copy.deepcopy(meta[key])
             exit_strategy = DualTrackExitStrategy(fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
             
-            velocity_slowdown = engine.get_velocity_slowdown(symbol)
-            exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_slowdown=velocity_slowdown)
+            velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
+            exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_drop_ratio=velocity_drop_ratio)
             # Persist observations before any awaited order or account refresh.
             observed = {
                 key: copy.deepcopy(existing_pos[key])
@@ -145,10 +145,10 @@ async def process_single_symbol_runner(
                 
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
             
-            velocity_slowdown = engine.get_velocity_slowdown(symbol)
+            velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
             for direct_side in ("LONG", "SHORT"):
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
-                    channel_df, channel_price, direct_side, velocity_slowdown=velocity_slowdown
+                    channel_df, channel_price, direct_side, velocity_drop_ratio=velocity_drop_ratio
                 )
                 if not allowed or entry_decision.get("action") != "ENTER":
                     print(f"[{symbol}] {direct_side} Rejected: {reason}", flush=True)
