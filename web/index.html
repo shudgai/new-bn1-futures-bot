@@ -1052,7 +1052,7 @@
                         
                         const tp = parseFloat(pos.tp || 0);
                         const sl = parseFloat(pos.sl || 0);
-                        const stopPrice = tp > 0 ? tp : (sl > 0 ? sl : null);
+                        const stopPrice = tp > 0 ? tp : (sl > 0 ? sl : (parseFloat(pos.stop_price) || null));
                         
                         if (stopPrice) {
                             if (!ctx.stopPriceLine) {
@@ -1062,7 +1062,7 @@
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Dotted,
                                     axisLabelVisible: true,
-                                    title: '鎖利/停損',
+                                    title: '鎖利防線',
                                 });
                             } else {
                                 ctx.stopPriceLine.applyOptions({ price: stopPrice });
@@ -1071,6 +1071,32 @@
                             ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
                             ctx.stopPriceLine = null;
                         }
+                        
+                        const swingExt = parseFloat(pos.swing_extreme || 0);
+                        if (swingExt > 0) {
+                            const currentPrice = currentData.length > 0 ? currentData[currentData.length - 1].close : swingExt;
+                            const distancePct = Math.abs(currentPrice - swingExt) / swingExt;
+                            const isClose = distancePct < 0.001; // 0.1% = 快到谷峰
+                            
+                            const options = {
+                                price: swingExt,
+                                color: isClose ? '#ef4444' : '#10b981', // 接近時變紅色警示
+                                lineWidth: isClose ? 3 : 2,
+                                lineStyle: isClose ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+                                axisLabelVisible: true,
+                                title: isClose ? '⚠️ 接近谷峰' : '波段谷峰',
+                            };
+                            
+                            if (!ctx.swingExtremeLine) {
+                                ctx.swingExtremeLine = ctx.candlestickSeries.createPriceLine(options);
+                            } else {
+                                ctx.swingExtremeLine.applyOptions(options);
+                            }
+                        } else if (ctx.swingExtremeLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.swingExtremeLine);
+                            ctx.swingExtremeLine = null;
+                        }
+
                     } else {
                         if (ctx.entryPriceLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.entryPriceLine);
@@ -1079,6 +1105,10 @@
                         if (ctx.stopPriceLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
                             ctx.stopPriceLine = null;
+                        }
+                        if (ctx.swingExtremeLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.swingExtremeLine);
+                            ctx.swingExtremeLine = null;
                         }
                     }
                     
