@@ -74,7 +74,13 @@ async def process_manual_order(
         if cost > available_balance:
             return {"success": False, "status_code": 400, "detail": "Insufficient Balance"}
 
-        atr = exec_price * 0.015  # Fallback manual ATR
+        # Get real ATR if available, else fallback
+        atr = exec_price * 0.015
+        if symbol in getattr(engine, "data_frames", {}):
+            df = engine.data_frames[symbol]
+            if not df.empty and "atr" in df.columns:
+                atr = float(df["atr"].iloc[-1])
+
         sl_dist, tp_dist = compute_sl_tp_distance(exec_price, atr)
         sl, tp = build_sl_tp_for_side(exec_price, side, sl_dist, tp_dist)
 
@@ -94,6 +100,7 @@ async def process_manual_order(
                 "wave_regime": "RANGE",
                 "market_mode": "RANGE",
                 "manual_entry": True,
+                "source": "MANUAL",
                 "managed_by_bot": True,
                 "manual_favorable_rail_reached": False,
                 "channel_favorable_rail_reached": False,
