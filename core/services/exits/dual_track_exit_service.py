@@ -176,18 +176,25 @@ def check_kc_phase_trailing_stop(
             state["phase"] = new_phase
             current_phase = new_phase
 
-        # ── 每 tick 以固定 0.7 ATR 重算止損點 ──
-        # 止損點 = 確保淨利為 phase * 0.7 ATR 的價格
+        # ── 每 tick 動態重算止損點 (雙重防禦) ──
+        # 1. 階段鎖利 (Phase Profit)：確保淨利為 phase * 0.7 ATR
+        # 2. 空間鎖利 (ATR Buffer)：給予現價 0.7 ATR 的呼吸空間
         if current_phase > 0:
             target_net = current_phase * step_net
             gross_needed = target_net + cost
             if size > 0:
                 if side == "LONG":
-                    new_stop = entry_price + (gross_needed / size)
+                    phase_stop = entry_price + (gross_needed / size)
+                    atr_stop = price - (0.7 * atr)
+                    # 取距離當前價格較近（對獲利最有利/鎖定最多）的止損點
+                    new_stop = max(phase_stop, atr_stop)
                 else:
-                    new_stop = entry_price - (gross_needed / size)
+                    phase_stop = entry_price - (gross_needed / size)
+                    atr_stop = price + (0.7 * atr)
+                    # 取距離當前價格較近（對獲利最有利/鎖定最多）的止損點
+                    new_stop = min(phase_stop, atr_stop)
                 
-                # 棘輪：只往有利方向移動
+                # 棘輪：只往有利方向移動 (Ratchet Constraint)
                 current_stop = _update_ratchet_stop(side, current_stop, new_stop)
                 state["stop_price"] = current_stop
 
