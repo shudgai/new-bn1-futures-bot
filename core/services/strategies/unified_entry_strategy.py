@@ -70,8 +70,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                         track_a_ok = True
                         track_a_reason = "TRACK_A_EXTREME_REVERSAL_SHORT"
                         
-    if track_a_ok:
-        return True, track_a_reason
 
     # ==========================================
     # 軌道 B：中點回踩 (小波段)
@@ -114,8 +112,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                             track_b_ok = True
                             track_b_reason = "TRACK_B_MID_PULLBACK_SHORT"
                             
-    if track_b_ok:
-        return True, track_b_reason
     # ==========================================
     # 軌道 C：破軌突破 (強勢動能爆發)
     # ==========================================
@@ -139,8 +135,40 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                         track_c_ok = True
                         track_c_reason = "TRACK_C_BREAKOUT_SHORT"
                         
-    if track_c_ok:
-        return True, track_c_reason
+    track_reason = ""
+    if track_a_ok:
+        track_reason = track_a_reason
+    elif track_b_ok:
+        track_reason = track_b_reason
+    elif track_c_ok:
+        track_reason = track_c_reason
+        
+    if track_reason:
+        # ==========================================
+        # V9.1 盈虧比空間過濾 (Profit Space Filter)
+        # ==========================================
+        # 1. 計算風險 (Risk)
+        if side == "LONG":
+            risk = max(live_price - prev_low, 1e-8)
+        else:
+            risk = max(prev_high - live_price, 1e-8)
+            
+        # 2. 計算潛在獲利 (Reward)
+        if "TRACK_C" in track_reason:
+            # 破軌突破：目標為一整個通道寬度
+            reward = kc_upper - kc_lower
+        else:
+            # 軌道 A / B：目標為對側軌道
+            if side == "LONG":
+                reward = kc_upper - live_price
+            else:
+                reward = live_price - kc_lower
+                
+        # 3. 過濾條件
+        if reward < 2 * risk:
+            return False, f"WAIT_INSUFFICIENT_REWARD_SPACE_{track_reason}"
+            
+        return True, track_reason
 
     return False, "WAIT_NO_TRACK_SIGNAL"
 

@@ -133,32 +133,15 @@ async def process_single_symbol_runner(
                         engine._last_exit_bar_id = {}
                     engine._last_exit_bar_id[symbol] = current_bar_id
                     
-                    if "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason or "DOUBLE_ABNORMAL_REVERSAL" in exit_reason:
-                        if not hasattr(engine, "_direct_reverse_ticket"):
-                            engine._direct_reverse_ticket = {}
-                        engine._direct_reverse_ticket[symbol] = current_bar_id
-                        engine.account.log(f"🎫 [獲發換手票據] {symbol} 滿足平倉轉向條件，豁免次根 K 棒冷卻期", "SUCCESS")
-                    
                     engine.account.log(f"✅ [狀態重置] {symbol} 平倉完成，已清空歷史狀態，次根 K 棒恢復掃描", "SUCCESS")
                 return signal_progress, detected_candidates
 
         # IDLE 狀態 (空倉掃描)
         else:
-            # --- V5.1 防禦性冷卻機制 (The Safety Net) ---
             # 防重複開倉冷卻 (平倉後必須至少等待 3 根 K 線的呼吸空間)
             if last_exit_bar is not None:
-                ticket_bar_id = getattr(engine, "_direct_reverse_ticket", {}).get(symbol, 0)
-                has_reverse_ticket = (current_bar_id - ticket_bar_id <= 60 * 1000) if ticket_bar_id > 0 else False
-                
-                if not has_reverse_ticket:
-                    if current_bar_id - last_exit_bar < 3 * 60 * 1000:  # 1m K線, 3根 = 3分鐘
-                        return signal_progress, detected_candidates
-                else:
-                    if getattr(engine, "_direct_reverse_ticket_logged", {}).get(symbol) != ticket_bar_id:
-                        engine.account.log(f"🔄 [換手啟動] {symbol} 持有換手票據，跳過冷卻期，立即評估對向進場", "INFO")
-                        if not hasattr(engine, "_direct_reverse_ticket_logged"):
-                            engine._direct_reverse_ticket_logged = {}
-                        engine._direct_reverse_ticket_logged[symbol] = ticket_bar_id
+                if current_bar_id - last_exit_bar < 3 * 60 * 1000:  # 1m K線, 3根 = 3分鐘
+                    return signal_progress, detected_candidates
                 
             # 統一進場策略評估
             entry_strategy = UnifiedEntryStrategy()
