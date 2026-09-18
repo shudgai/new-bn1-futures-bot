@@ -105,7 +105,6 @@ def positions_with_triggers():
 
 
         # --- KC 三階段移動止損線（Phase Trailing Stop）---
-        # 從 position 或 meta 中讀取新的 v10_phase_trailing 狀態
         phase_state = (
             merged.get("v10_phase_trailing")
             or meta.get("v10_phase_trailing")
@@ -115,11 +114,28 @@ def positions_with_triggers():
         current_phase    = phase_state.get("phase", 0)
 
         if phase_stop_price and float(phase_stop_price) > 0 and current_phase > 0:
-            merged["ratchet_floor"] = round(float(phase_stop_price), 8)
-            merged["phase_info"]    = f"P{current_phase}"   # 方便 debug
+            stop_p = float(phase_stop_price)
+            merged["ratchet_floor"] = round(stop_p, 8)
+            merged["phase_info"]    = f"P{current_phase}"
+
+            # ── 計算保底獲利（USDT）──────────────────────────────────
+            # locked_profit = (stop_price - entry) × qty - 雙邊手續費 - 滑點
+            side = merged.get("side", "")
+            if side == "LONG":
+                locked_gross = (stop_p - entry) * qty
+            elif side == "SHORT":
+                locked_gross = (entry - stop_p) * qty
+            else:
+                locked_gross = 0.0
+            fee_cost = (entry + stop_p) * qty * TAKER_FEE_RATE + stop_p * qty * SLIPPAGE_PCT
+            locked_net = locked_gross - fee_cost
+            merged["locked_profit_usdt"] = round(max(0.0, locked_net), 2)
+            merged["locked_phase"]       = current_phase
         else:
-            merged["ratchet_floor"] = None
-            merged["phase_info"]    = None
+            merged["ratchet_floor"]      = None
+            merged["phase_info"]         = None
+            merged["locked_profit_usdt"] = 0.0
+            merged["locked_phase"]       = 0
 
 
         result.append(merged)

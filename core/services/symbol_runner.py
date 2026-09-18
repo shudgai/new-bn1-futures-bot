@@ -136,19 +136,36 @@ async def process_single_symbol_runner(
                     # 換手票據發放條件：
                     # 1. 對側破軌轉向 (V10 護衛型接力)
                     # 2. 峰谷三點結構瓦解 → 瞬間轉向捕捉對向動能噴發
-                    # 3. 階梯鎖利觸發 → 獲利鎖定後轉向評估
+                    # 3. Phase Trail 鎖利觸發 → 獲利鎖定後轉向評估
                     is_structural_reversal = (
                         "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason
                         or "DOUBLE_ABNORMAL_REVERSAL" in exit_reason
                         or "PEAK_EXHAUSTION_EXIT" in exit_reason
-                        or "EXIT_LADDER_LOCK" in exit_reason
+                        or "EXIT_PHASE_TRAIL" in exit_reason
                     )
                     if is_structural_reversal:
                         if not hasattr(engine, "_direct_reverse_ticket"):
                             engine._direct_reverse_ticket = {}
                         engine._direct_reverse_ticket[symbol] = current_bar_id
                         engine.account.log(f"🎫 [峰谷換手票據] {symbol} [{exit_reason}] 結構平倉，瞬間發放接力票據，評估對向動能", "SUCCESS")
-                        
+
+                        # 趨勢接力狀態機（WATERFALL/DOUBLE_ABNORMAL 緊急平倉不接力）
+                        is_emergency = ("WATERFALL" in exit_reason or "DOUBLE_ABNORMAL" in exit_reason)
+                        if not is_emergency:
+                            relay_dir = "LONG" if "SHORT" in exit_reason else "SHORT"
+                            if not hasattr(engine, "_trend_relay_watch"):
+                                engine._trend_relay_watch = {}
+                            engine._trend_relay_watch[symbol] = {
+                                "direction": relay_dir,
+                                "exit_bar_id": current_bar_id,
+                                "touched_structure": False,
+                                "relay_phase": "WAITING",
+                            }
+                            engine.account.log(
+                                f"📡 [趨勢接力備戰] {symbol} 等待回調到KC中軌/MA15，確認{relay_dir}接力進場（最多10根K）",
+                                "INFO"
+                            )
+
                     engine.account.log(f"✅ [狀態重置] {symbol} 平倉完成，已清空歷史狀態，次根 K 棒恢復掃描", "SUCCESS")
                 return signal_progress, detected_candidates
 
@@ -169,7 +186,73 @@ async def process_single_symbol_runner(
                             engine._direct_reverse_ticket_logged = {}
                         engine._direct_reverse_ticket_logged[symbol] = ticket_bar_id
                 
-            # 統一進場策略評估
+            # ── 趨勢接力守門員 ────────────────────────────────────────────
+            relay_watch = getattr(engine, "_trend_relay_watch", {}).get(symbol)
+            relay_entry_forced = False
+            relay_direction    = None
+
+            if relay_watch:
+                relay_dir   = relay_watch["direction"]
+                exit_bar_id = relay_watch["exit_bar_id"]
+                relay_phase = relay_watch["relay_phase"]
+
+                # 超過 10 根 K (10 分鐘) → 清除，回到一般掃描
+                if current_bar_id - exit_bar_id > 10 * 60 * 1000:
+                    engine.account.log(f"⏰ [接力逾時] {symbol} 10根K內未完成接力，清除觀察狀態", "INFO")
+                    engine._trend_relay_watch.pop(symbol, None)
+                    relay_watch = None
+                else:
+                    last_k = channel_df.iloc[-1]
+                    kc_mid = float(last_k.get("kc_middle") or last_k.get("ema_20") or channel_price)
+                    ma15   = float(last_k.get("ma15") or kc_mid)
+                    atr_v  = float(last_k.get("atr") or channel_price * 0.001)
+
+                    # Phase WAITING → TOUCHED：等待現價觸碰 KC中軌 或 MA15
+                    if relay_phase == "WAITING":
+                        if relay_dir == "LONG":
+                            touched = channel_price <= kc_mid + atr_v or channel_price <= ma15 + atr_v
+                        else:
+                            touched = channel_price >= kc_mid - atr_v or channel_price >= ma15 - atr_v
+                        if touched:
+                            relay_watch["touched_structure"] = True
+                            relay_watch["relay_phase"] = "TOUCHED"
+                            relay_phase = "TOUCHED"
+                            engine.account.log(f"📍 [接力觸碰] {symbol} 已觸碰KC中軌/MA15，等待 {relay_dir} 確認K", "INFO")
+
+                    # Phase TOUCHED → CONFIRMED：確認K（實體比 >= 0.4 + 成交量 >= 1.2x）
+                    if relay_phase == "TOUCHED" and len(channel_df) >= 3:
+                        ck        = channel_df.iloc[-2]
+                        ck_open   = float(ck["open"])
+                        ck_close  = float(ck["close"])
+                        ck_high   = float(ck["high"])
+                        ck_low    = float(ck["low"])
+                        ck_vol    = float(ck.get("volume", 0) or 0)
+                        ck_range  = ck_high - ck_low
+                        ck_body   = abs(ck_close - ck_open)
+                        body_ratio = ck_body / ck_range if ck_range > 0 else 0
+
+                        try:
+                            vols    = [float(channel_df.iloc[i].get("volume", 0) or 0) for i in range(-7, -2)]
+                            vol_avg = sum(vols[-5:]) / 5 if len(vols) >= 5 else 0
+                        except Exception:
+                            vol_avg = 0
+
+                        is_confirm = (
+                            (relay_dir == "LONG"  and ck_close > ck_open and body_ratio >= 0.4) or
+                            (relay_dir == "SHORT" and ck_close < ck_open and body_ratio >= 0.4)
+                        )
+                        vol_ok = vol_avg <= 0 or ck_vol >= 1.2 * vol_avg
+
+                        if is_confirm and vol_ok:
+                            relay_entry_forced = True
+                            relay_direction    = relay_dir
+                            engine.account.log(
+                                f"🚀 [接力確認] {symbol} {relay_dir} 確認K出現（實體={body_ratio:.2f}，量OK={vol_ok}），立即接力進場",
+                                "SUCCESS"
+                            )
+                            engine._trend_relay_watch.pop(symbol, None)
+
+            # ── 統一進場策略評估 ──────────────────────────────────────────
             entry_strategy = UnifiedEntryStrategy()
             
             from core.engine import market_crash_entries_paused
@@ -180,13 +263,28 @@ async def process_single_symbol_runner(
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
             
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
-            for direct_side in ("LONG", "SHORT"):
+            
+            # 接力強制方向（選項B寬鬆：高分UnifiedEntry仍可進場，接力方向優先）
+            sides_to_try = (relay_direction, ) if relay_entry_forced else ("LONG", "SHORT")
+            
+            for direct_side in sides_to_try:
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
                     channel_df, channel_price, direct_side, velocity_drop_ratio=velocity_drop_ratio
                 )
-                if not allowed or entry_decision.get("action") != "ENTER":
+                
+                # 接力確認情況：若一般入場被拒，仍允許接力（繞過 UnifiedEntry 篩選）
+                if relay_entry_forced and not allowed:
+                    engine.account.log(f"🔀 [接力強制] {symbol} {direct_side} UnifiedEntry 拒絕但接力條件已確認，強制進場", "INFO")
+                    allowed = True
+                    reason  = f"TREND_RELAY_{direct_side}"
+                    entry_decision = {"action": "ENTER"}
+                elif not allowed or entry_decision.get("action") != "ENTER":
                     print(f"[{symbol}] {direct_side} Rejected: {reason}", flush=True)
+                    # 選項B：非接力期間若是高分也可進兩方
+                    if not relay_entry_forced and relay_watch and relay_watch.get("relay_phase") != "CONFIRMED":
+                        continue   # 接力觀察中且未確認 → 跳過（等回調）
                     continue
+
                 engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
                 await engine._execute_confirmed_channel_break(
                     symbol, channel_df, channel_price, direct_side, daily_halt, v8_reason=reason
