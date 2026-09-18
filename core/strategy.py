@@ -775,6 +775,7 @@ class SuperTrendKeltnerStrategy:
         # Keltner Channels
         df['kc_upper'] = df['ema_20'] + (df['atr'] * KELTNER_ATR_MULTIPLIER)
         df['kc_lower'] = df['ema_20'] - (df['atr'] * KELTNER_ATR_MULTIPLIER)
+        df['kc_middle'] = df['ema_20']
         df['kc_width'] = df['kc_upper'] - df['kc_lower']
 
         # SuperTrend
