@@ -44,7 +44,7 @@ ATR_LEVERAGE_TIERS = [
 def get_atr_based_leverage(atr_pct: float) -> int:
     return LEVERAGE
 
-TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "50.0"))
+TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", "150.0"))
 # 每筆預估最大淨虧損（SL距離 + 雙邊taker fee + 單邊滑價）；<=0 表示停用。
 MAX_TRADE_RISK_USDT = float(os.getenv("MAX_TRADE_RISK_USDT", "0.50"))
 

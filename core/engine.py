@@ -2603,8 +2603,9 @@ class TradingEngine:
         effective_slots = get_effective_slot_count(wallet_balance)
         if effective_slots > 0 and committed >= effective_slots:
             return 0.0
-        # 依照使用者要求「開倉金額是帳戶餘額」，這裡不再受限於 TRADE_AMOUNT_USDT，而是盡可能使用可用餘額 (保留少許作為手續費緩衝)
-        return max(0.0, available * 0.98)
+        import core.config as runtime_config
+        target_amount = getattr(runtime_config, "TRADE_AMOUNT_USDT", 150.0)
+        return min(target_amount, available * 0.98)
 
     _continuous_entry_price_is_safe = staticmethod(continuous_entry_price_is_safe)
 
