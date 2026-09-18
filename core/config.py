@@ -1233,6 +1233,11 @@ MA5_MARK_PRICE_DEV_PCT = float(os.getenv("MA5_MARK_PRICE_DEV_PCT", "0.005"))
 ENV_MIN_KC_BANDWIDTH = float(os.getenv("ENV_MIN_KC_BANDWIDTH", "0.012"))
 ENV_MIN_KC_SLOPE = float(os.getenv("ENV_MIN_KC_SLOPE", "1e-5"))
 ENV_ATR_EXPANSION_RATIO = float(os.getenv("ENV_ATR_EXPANSION_RATIO", "1.0"))
+# --- V5.1 動態空間參數 ---
+BASE_DRAWDOWN = float(os.getenv("BASE_DRAWDOWN", "0.2"))  # 基礎回吐空間 (0.2 ATR)
+SAFETY_BUFFER = float(os.getenv("SAFETY_BUFFER", "0.1"))  # 緩衝區 (0.1 ATR)
+SLOPE_FACTOR_RANGE = (0.5, 1.5)  # 趨勢強弱的斜率縮放係數 (強勢0.5, 弱勢1.5)
+
 SOLID_BODY_RATIO = float(os.getenv("SOLID_BODY_RATIO", "0.50"))
 ANTI_REVERSAL_ATR_MULT = float(os.getenv("ANTI_REVERSAL_ATR_MULT", "0.10"))
 FLASH_CRASH_ATR_MULT = float(os.getenv("FLASH_CRASH_ATR_MULT", "1.5"))

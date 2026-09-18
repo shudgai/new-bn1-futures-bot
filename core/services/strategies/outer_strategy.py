@@ -204,13 +204,30 @@ def live_body_breakout_side(frame, price):
     return None
 
 
-def aligned_entry(frame, price):
+def aligned_entry(frame, price, **kwargs):
     """Closed KC direction with live MA3 outside; missed crosses may continue."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
     try:
         price = float(price)
         if not math.isfinite(price) or price <= 0 or frame is None or len(frame) < 4:
             return wait
+            
+        # --- V5.1 防禦性冷卻機制 (The Safety Net) ---
+        is_system_halted = kwargs.get("is_system_halted", False)
+        if is_system_halted:
+            return {**wait, "reason": "WAIT_SYSTEM_HALT"}
+            
+        last_exit_bar = kwargs.get("last_exit_bar")
+        if last_exit_bar is not None:
+            if 'timestamp' in frame.columns:
+                matches = frame.index[frame['timestamp'] == last_exit_bar].tolist()
+            else:
+                matches = frame.index[frame.index == last_exit_bar].tolist()
+            if matches:
+                last_idx = frame.index.get_loc(matches[0])
+                curr_idx = len(frame) - 1
+                if curr_idx - last_idx < 3:
+                    return {**wait, "reason": "WAIT_COOL_DOWN"}
         
         # --- V5.0 Environment Filters ---
         from core.config import ENV_MIN_KC_BANDWIDTH, ENV_MIN_KC_SLOPE, ENV_ATR_EXPANSION_RATIO
@@ -321,8 +338,8 @@ def aligned_entry(frame, price):
         return wait
 
 
-def aligned_entry_ready(frame, price, side):
-    return side in ('LONG', 'SHORT') and aligned_entry(frame, price).get('side') == side
+def aligned_entry_ready(frame, price, side, **kwargs):
+    return side in ('LONG', 'SHORT') and aligned_entry(frame, price, **kwargs).get('side') == side
 
 
 def live_ma3_direction_ready(frame, price, side):
@@ -467,9 +484,9 @@ def continuation_entry(frame, price):
     return wait
 
 
-def outside_reentry(frame, price, side):
+def outside_reentry(frame, price, side, **kwargs):
     """Use the same confirmed CK trend for normal reentries."""
-    decision = aligned_entry(frame, price)
+    decision = aligned_entry(frame, price, **kwargs)
     if side not in ("LONG", "SHORT") or decision.get("side") != side:
         return {"action": "WAIT", "side": None, "reason": "KC_REENTRY_WAIT"}
     return decision
@@ -504,7 +521,7 @@ class OuterChannelEntryStrategy(IEntryStrategy):
         side: str,
         **kwargs: Any
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        decision = aligned_entry(frame, price)
+        decision = aligned_entry(frame, price, **kwargs)
         if decision.get("action") == "ENTER" and decision.get("side") == side:
             return True, decision.get("reason", "OK"), decision
         return False, decision.get("reason", "WAIT"), decision

@@ -54,11 +54,13 @@ from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.live_pivot_strategy import LivePivot
 from core.services.strategies.direct_reverse_strategy import authorized as reverse_authorized, quote_ready as reverse_quote_ready
 import asyncio
+import collections
+from collections import deque
 import copy
 from core.services.strategies.outer_strategy import (
     LIVE_BODY_BREAKOUT_CODES, ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES,
     outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready,
-    three_closed_short_breakout_ready, aligned_entry, aligned_entry_ready,
+    aligned_entry, aligned_entry_ready,
     live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
 )
 from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
@@ -2354,7 +2356,12 @@ class TradingEngine:
         """Submit on this scan, retaining every structured-order account safety check."""
 
         # Clear CK + aligned live MA3 outside the rail no longer waits for two bodies.
-        if not aligned_entry_ready(frame, price, side):
+        last_exit_bar = getattr(self, "_last_exit_bar_id", {}).get(symbol)
+        
+        from core.engine import market_crash_entries_paused # ensure accessible
+        is_system_halted = market_crash_entries_paused(getattr(self, "_market_crash_entry_cooldown_until", 0.0), time.time())
+        
+        if not aligned_entry_ready(frame, price, side, last_exit_bar=last_exit_bar, is_system_halted=is_system_halted):
             return False
 
         lock = getattr(self, "_channel_break_execution_lock", None)

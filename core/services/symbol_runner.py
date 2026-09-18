@@ -76,12 +76,16 @@ async def process_single_symbol_runner(
                 engine.account.save_state()
             
             if exit_reason:
-                engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉...", "INFO")
+                is_limit_exit = "LIMIT_EXIT" in exit_reason
+                order_type_str = "限價單" if is_limit_exit else "市價單"
+                
+                engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
                 closed = await engine.account.close_position(
                     symbol,
                     channel_price,
                     f"DualTrackExit {exit_reason}",
                     is_manual=True,
+                    is_limit=is_limit_exit
                 )
                 
                 # 平倉成功後，徹底重置狀態機，確保能進入 IDLE 重新掃描
@@ -103,12 +107,20 @@ async def process_single_symbol_runner(
 
         # IDLE 狀態 (空倉掃描)
         else:
-            # 防重複開倉冷卻 (平倉當根禁止開倉，換根即可)
-            if last_exit_bar is not None and last_exit_bar == current_bar_id:
-                return signal_progress, detected_candidates
+            # --- V5.1 防禦性冷卻機制 (The Safety Net) ---
+            # 防重複開倉冷卻 (平倉後必須至少等待 3 根 K 線的呼吸空間)
+            if last_exit_bar is not None:
+                if current_bar_id - last_exit_bar < 3 * 60 * 1000:  # 1m K線, 3根 = 3分鐘
+                    return signal_progress, detected_candidates
                 
             # 統一進場策略評估
             entry_strategy = UnifiedEntryStrategy()
+            
+            from core.engine import market_crash_entries_paused
+            is_system_halted = market_crash_entries_paused(getattr(engine, "_market_crash_entry_cooldown_until", 0.0), time.time())
+            if is_system_halted:
+                return signal_progress, detected_candidates
+                
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
             for direct_side in ("LONG", "SHORT"):
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(

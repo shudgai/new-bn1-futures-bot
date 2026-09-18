@@ -134,10 +134,39 @@ def check_structure_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
     return None
 
 
+def check_hard_stop_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
+    """
+    第一層：硬性保護線 (Hard Stop Loss) —— 「保命符」
+    Entry_Price ± (2.0 * ATR)
+    """
+    try:
+        side = position.get("side")
+        entry = float(position.get("entry_price") or 0)
+        
+        if frame is None or len(frame) < 3 or entry <= 0:
+            return None
+            
+        atr = float(frame.iloc[-2]["atr"])
+        if atr <= 0:
+            return None
+            
+        if side == "LONG":
+            hard_stop = entry - (2.0 * atr)
+            if price <= hard_stop:
+                return "HARD_STOP_EXIT"
+        elif side == "SHORT":
+            hard_stop = entry + (2.0 * atr)
+            if price >= hard_stop:
+                return "HARD_STOP_EXIT"
+                
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
 def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005) -> Optional[str]:
     """
-    V5.0 動態移動鎖利與回吐空間：
-    Total_Drawdown = (0.2 ATR * 斜率係數) + 0.1 ATR 緩衝區
+    第二層與第三層：智能動態空間 & 極致動能退出
     """
     try:
         if frame is None or len(frame) < 3:
@@ -170,97 +199,53 @@ def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, p
         state["max_net_atr"] = max_net_atr
         
         if max_net_atr >= START_THRESHOLD:
-            # 取得 MA3 與 MA15 計算斜率係數
+            # 取得 MA3 計算斜率係數
             ma3_curr = float(frame.iloc[-1].get("ma3", 0))
             ma3_prev = float(frame.iloc[-2].get("ma3", 0))
-            ma15_curr = float(frame.iloc[-1].get("ma15", 0))
-            ma15_prev = float(frame.iloc[-2].get("ma15", 0))
             
-            # 斜率係數計算 (簡化版：若 MA3 斜率極強則減小步長，弱則放大)
-            # 這裡預設係數為 1.0，強勢 < 1.0，弱勢 > 1.0
+            from core.config import SLOPE_FACTOR_RANGE
             slope_factor = 1.0
             if ma3_curr > 0 and ma3_prev > 0:
                 ma3_slope = abs(ma3_curr - ma3_prev) / ma3_prev
                 if ma3_slope > 0.005:  # 強勢
-                    slope_factor = 0.5
+                    slope_factor = SLOPE_FACTOR_RANGE[0] # 0.5
                 elif ma3_slope < 0.001:  # 弱勢
-                    slope_factor = 1.5
+                    slope_factor = SLOPE_FACTOR_RANGE[1] # 1.5
                     
-            ratchet_step = (0.2 * slope_factor) + 0.1
+            # 檢查極致動能標記 (Velocity Slowdown >= 30%)
+            is_velocity_peak = position.get("velocity_slowdown", False)
             
+            # --- 峰值平倉分批 (Partial Exit) ---
+            # 偵測到滯漲 (長影線或實體極小) 且處於目標區
+            curr_bar = frame.iloc[-1]
+            c_open, c_close, c_low, c_high = float(curr_bar['open']), float(curr_bar['close']), float(curr_bar['low']), float(curr_bar['high'])
+            c_body = abs(c_close - c_open)
+            wick = min(c_open, c_close) - c_low if side == "LONG" else c_high - max(c_open, c_close)
+            is_stagnant = (c_body > 0 and (wick / c_body) > 1.5) or (c_body < 0.2 * atr)
+            
+            if is_velocity_peak and is_stagnant:
+                if not state.get("partial_exit_triggered"):
+                    state["partial_exit_triggered"] = True
+                    return "LIMIT_EXIT_PEAK_MOMENTUM_PARTIAL"
+            
+            if is_velocity_peak:
+                ratchet_step = 0.05
+            else:
+                from core.config import BASE_DRAWDOWN, SAFETY_BUFFER
+                ratchet_step = (BASE_DRAWDOWN * slope_factor) + SAFETY_BUFFER
+                
             # 計算鎖利線並確保只升不降
             new_locked_atr = max_net_atr - ratchet_step
-            locked_atr = max(float(state.get("locked_atr", 0)), new_locked_atr)
+            locked_atr = max(float(state.get("locked_atr", -999)), new_locked_atr)
             state["locked_atr"] = locked_atr
             
-            # 終極動能退出 (若外層傳入 velocity 降速標記)
-            if position.get("velocity_slowdown", False):
-                return "EXIT_VELOCITY_SLOWDOWN"
-            
-
-        # V5.1 峰值平倉 (Peak Momentum Exit)
-        if side == "LONG":
-            row = frame.iloc[-1]
-            kc_upper = float(row.get('kc_upper', 0))
-            if price >= kc_upper:
-                # 滯漲判斷: 長上影線 或 實體縮減
-                low = float(row.get('low', price))
-                high = float(row.get('high', price))
-                close = float(row.get('close', price))
-                open_price = float(row.get('open', price))
-                body = abs(close - open_price)
-                upper_wick = high - max(open_price, close)
-                
-                if (body > 0 and upper_wick / body > 1.2) or (body < atr * 0.2):
-                    # 在真實下單邏輯中，這會通知外部平倉 50%
-                    return "EXIT_PEAK_MOMENTUM_PARTIAL"
-
-            # 執行平倉
-            if locked_atr > 0 and net_atr <= locked_atr:
-                return "RATCHET_PROFIT_LOCK_EXIT"
-                
-    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
-        pass
-    return None
-            
-        side = position.get("side")
-        entry = float(position.get("entry_price") or 0)
-        qty = float(position.get("qty") or 0)
-        atr = float(frame.iloc[-2]["atr"])
-        
-        if not all(math.isfinite(x) and x > 0 for x in (entry, qty, price, atr)):
-            return None
-            
-        sign = 1 if side == "LONG" else -1
-        execution = price * (1 - sign * slippage)
-        net_profit = sign * (execution - entry) * qty - (entry + execution) * qty * fee
-        net_atr = net_profit / (qty * atr) if qty > 0 and atr > 0 else 0
-        
-        state = position.setdefault("ratchet_lock_state", {})
-        
-        START_THRESHOLD = 0.55
-        
-        max_net_atr = max(float(state.get("max_net_atr", 0)), net_atr)
-        state["max_net_atr"] = max_net_atr
-        
-        if max_net_atr >= START_THRESHOLD:
-            # 2. 動態決定回吐空間 (利潤越高，空間越大)
-            if max_net_atr < 1.0:
-                ratchet_step = 0.25
-            elif max_net_atr < 2.0:
-                ratchet_step = 0.35
-            else:
-                ratchet_step = 0.45
-                
-            # 3. 計算鎖利線並確保只升不降
-            new_locked_atr = max_net_atr - ratchet_step
-            locked_atr = max(float(state.get("locked_atr", 0)), new_locked_atr)
-            state["locked_atr"] = locked_atr
-            
-            # 4. 執行平倉
-            if locked_atr > 0 and net_atr <= locked_atr:
-                return "RATCHET_PROFIT_LOCK_EXIT"
-                
+            # 執行平倉判斷
+            if net_atr <= locked_atr:
+                if is_velocity_peak:
+                    return "LIMIT_EXIT_VELOCITY_PEAK"
+                else:
+                    return "LIMIT_EXIT_DYNAMIC_TRAILING"
+                    
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         pass
     return None
@@ -301,21 +286,25 @@ class DualTrackExitStrategy(IExitStrategy):
         except Exception:
             pass
         
-        # 1. 【最高優先級：極端熔斷】 (不論盈虧，保命第一)
+        # 1. 【最高優先級：硬性防禦 (保命符)】
+        hard_stop_reason = check_hard_stop_exit(position, frame, price)
+        if hard_stop_reason:
+            return hard_stop_reason
+            
+        # 2. 【緊急防禦 (閃崩/崩潰 避災)】
         emergency_reason = check_emergency_exit(position, frame, price)
         if emergency_reason:
             return emergency_reason
             
-        # 2. 【次高優先級：動能反轉逃命】 (沒利潤時立刻跑)
+        # 3. 【動態鎖利與極致動能 (保獲利/搶高點)】
+        dynamic_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage)
+        if dynamic_reason:
+            return dynamic_reason
+            
+        # 5. 【舊版結構防禦 (備用)】
         structure_reason = check_structure_exit(position, frame, price)
         if structure_reason:
             if max_net_atr < 0.55:
                 return "EXIT_EARLY_REVERSAL_NO_PROFIT"
                 
-        # 3. 【正常級：棘輪鎖利】 (有利潤時鎖利平倉)
-        if max_net_atr >= 0.55:
-            ratchet_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage)
-            if ratchet_reason:
-                return ratchet_reason
-            
         return None

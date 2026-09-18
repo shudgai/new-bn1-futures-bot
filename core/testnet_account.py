@@ -2203,7 +2203,7 @@ class BinanceTestnetAccount:
         self._pending_retry_streak[symbol] = streak + 1
 
     async def close_position(
-        self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False
+        self, symbol: str, current_price: float, close_reason: str, is_manual: bool = False, is_limit: bool = False
     ) -> bool:
         if symbol not in self.positions or symbol in self.closing_lock:
             return False
