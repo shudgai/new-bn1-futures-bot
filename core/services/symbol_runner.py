@@ -65,8 +65,8 @@ async def process_single_symbol_runner(
                 if existing_pos.get(key) is None and meta.get(key) is not None:
                     existing_pos[key] = copy.deepcopy(meta[key])
             exit_strategy = DualTrackExitStrategy(fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
-            from core.engine import get_velocity_slowdown
-            velocity_slowdown = get_velocity_slowdown(engine.tick_buffers.get(symbol, []))
+            
+            velocity_slowdown = engine.get_velocity_slowdown(symbol)
             exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_slowdown=velocity_slowdown)
             # Persist observations before any awaited order or account refresh.
             observed = {
@@ -144,13 +144,14 @@ async def process_single_symbol_runner(
                 return signal_progress, detected_candidates
                 
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
-            from core.engine import get_velocity_slowdown
-            velocity_slowdown = get_velocity_slowdown(engine.tick_buffers.get(symbol, []))
+            
+            velocity_slowdown = engine.get_velocity_slowdown(symbol)
             for direct_side in ("LONG", "SHORT"):
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
                     channel_df, channel_price, direct_side, velocity_slowdown=velocity_slowdown
                 )
                 if not allowed or entry_decision.get("action") != "ENTER":
+                    print(f"[{symbol}] {direct_side} Rejected: {reason}", flush=True)
                     continue
                 engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
                 await engine._execute_confirmed_channel_break(
