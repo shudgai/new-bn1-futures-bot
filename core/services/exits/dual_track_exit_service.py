@@ -454,6 +454,12 @@ def check_warning_partial_close(position: dict, frame: pd.DataFrame, price: floa
         side = position.get("side")
         if not side or len(frame) < 3:
             return None
+            
+        # 1. 正向獲利門檻：虧損狀態下絕對不准減倉
+        entry_price = float(position.get("entry_price", price))
+        gross_pnl = (price - entry_price) if side == "LONG" else (entry_price - price)
+        if gross_pnl <= 0:
+            return None
 
         last_closed = frame.iloc[-2]
         prev_closed = frame.iloc[-3]
