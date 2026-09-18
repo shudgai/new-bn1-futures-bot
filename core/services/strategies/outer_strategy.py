@@ -204,6 +204,28 @@ def live_body_breakout_side(frame, price):
     return None
 
 
+def check_half_channel_oscillation(frame, side):
+    """
+    半區間震盪過濾 (Half-Channel Oscillation Filter)
+    若 CK 方向為多頭，最近 3 根已收盤 K 線收盤價必須在中軌之上；
+    若 CK 方向為空頭，最近 3 根已收盤 K 線收盤價必須在中軌之下。
+    """
+    if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 4:
+        return True  # 無法判斷時預設通過
+        
+    closed_rows = frame.iloc[-4:-1]
+    for _, r in closed_rows.iterrows():
+        r_close = float(r.get('close', 0))
+        r_middle = float(r.get('kc_middle', r.get('ema_20', 0)))
+        
+        if side == 'LONG' and r_close < r_middle:
+            return False
+        if side == 'SHORT' and r_close > r_middle:
+            return False
+            
+    return True
+
+
 def aligned_entry(frame, price, **kwargs):
     """Closed KC direction with live MA3 outside; missed crosses may continue."""
     wait = {"action": "WAIT", "side": None, "reason": "KC_DIRECTION_WAIT"}
@@ -269,6 +291,10 @@ def aligned_entry(frame, price, **kwargs):
         side = ck_direction(frame)
         if not aligned_direction(frame, side):
             return wait
+            
+        # --- Half-Channel Oscillation Filter (半區間震盪過濾) ---
+        if not check_half_channel_oscillation(frame, side):
+            return {**wait, "reason": "REJECTED_BY_OSCILLATION_FILTER"}
             
         # --- V5.1 Final Final Update (極致防禦與無狀態回顧) ---
         curr_k = frame.iloc[-1]

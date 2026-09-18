@@ -1,5 +1,8 @@
 import pandas as pd
 from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 # V10 狀態追蹤鍵列，持久化結構追蹤狀態
 # v10_phase_trailing 取代 v10_ladder：改用 KC 三階段移動止損
@@ -54,165 +57,146 @@ class DualTrackExitStrategy:
             else:
                 return peak_reason
 
-        # 3. KC 三階段移動止損 (動態保底：大波段底線)
-        phase_trail_reason = check_kc_phase_trailing_stop(
+        # 3. 階梯鎖利 (固定 2U 階梯與全平)
+        ladder_reason = check_ladder_profit_locking(
             position, frame, price, self.fee, self.slippage
         )
-        if phase_trail_reason:
-            return phase_trail_reason
-
-        # 4. 預警性減倉 (動能衰竭點：預測性收割 50%)
-        warning_reason = check_warning_partial_close(position, frame, price)
-        if warning_reason:
-            return warning_reason
+        if ladder_reason:
+            return ladder_reason
 
         return None
 
 
-def check_kc_phase_trailing_stop(
+def is_momentum_strong(frame: pd.DataFrame, side: str, current_price: float) -> bool:
+    """
+    評估趨勢慣性：
+    1. 價格斜率：最近 3 根已收線 K 棒收盤價呈現明確順向。
+    2. 震盪頻率：最近 3 根 K 棒未反向穿越中軌。
+    3. 價格位置：目前價格靠近甚至超過外軌 (距離中軌的距離大於 0.5 倍半通道寬)。
+    """
+    if frame is None or len(frame) < 4:
+        return False
+        
+    closed_rows = frame.iloc[-4:-1]
+    
+    closes = []
+    for _, r in closed_rows.iterrows():
+        c_close = float(r.get('close', 0))
+        c_low = float(r.get('low', 0))
+        c_high = float(r.get('high', 0))
+        c_mid = float(r.get('kc_middle', r.get('ema_20', 0)))
+        
+        if side == 'LONG' and c_low <= c_mid:
+            return False
+        if side == 'SHORT' and c_high >= c_mid:
+            return False
+            
+        closes.append(c_close)
+        
+    if side == 'LONG':
+        if not (closes[0] <= closes[1] <= closes[2]):
+            return False
+    else:
+        if not (closes[0] >= closes[1] >= closes[2]):
+            return False
+            
+    last_row = frame.iloc[-1]
+    c_mid = float(last_row.get('kc_middle', last_row.get('ema_20', 0)))
+    c_upper = float(last_row.get('kc_upper', 0))
+    c_lower = float(last_row.get('kc_lower', 0))
+    
+    if side == 'LONG':
+        half_width = c_upper - c_mid
+        if current_price < c_mid + half_width * 0.5:
+            return False
+    else:
+        half_width = c_mid - c_lower
+        if current_price > c_mid - half_width * 0.5:
+            return False
+            
+    return True
+
+def check_ladder_profit_locking(
     position: dict,
     frame: pd.DataFrame,
     price: float,
     fee: float = 0.0004,
     slippage: float = 0.0005,
-    phase_atr_mult: float = 0.7,
 ) -> Optional[str]:
     """
-    動態 ATR 鎖利（Dynamic ATR Phase Trailing Stop）：
-
-    設計哲學 (V9.0)：
-    - 捨棄死板的軌道觸碰限制，改用純粹的數學空間 `Floor(Profit / (0.7 * ATR))` 來定義階段。
-    - 倉位始終保持完整，不做任何減倉動作
-    - 每到達一個階段里程碑，止損點往有利方向推移（單向棘輪機制）
-    - 確保每個 Phase 的「保底獲利」遞增，鎖住已走過的波段獲利
-
-    Phase 定義：
-    - Current_Phase = math.floor(Current_Profit_Space / (0.7 * ATR))
-    - 止損點動態更新：Max(Current_Stop, Current_Price - (Current_Phase * 0.7 * ATR)) (多單)
+    固定 2U 階梯鎖利 (Fixed 2U Profit-Locking Step)
     
-    UI 顯示支援：
-    - 寫入 locked_profit_atr 供前端讀取。
+    4U 鎖 2U、6U 鎖 4U、8U 鎖 6U...
+    保底只升不降。觸發後全平。
     """
     try:
         import math
         side = position.get("side")
         entry_price = float(position.get("entry_price") or 0)
         size = float(position.get("size") or position.get("qty") or 0)
-
+        
         if not side or entry_price <= 0 or size <= 0:
             return None
-        if frame is None or len(frame) < 2:
-            return None
-
-        # ── 取 ATR ──────────────────────────────────────
-        last = frame.iloc[-1]
-        atr = float(last.get("atr", price * 0.01))
-        if atr <= 0:
-            atr = price * 0.01
-
-        # ── 計算當前淨利與利潤空間 ──────────────────────────────────────
+            
         if side == "LONG":
             gross_pnl = (price - entry_price) * size
-            current_profit_space = price - entry_price
-        elif side == "SHORT":
-            gross_pnl = (entry_price - price) * size
-            current_profit_space = entry_price - price
         else:
-            return None
+            gross_pnl = (entry_price - price) * size
             
-        notional = price * size
-        cost = notional * (2 * fee + slippage)
+        cost = price * size * (2 * fee + slippage)
         net_pnl = gross_pnl - cost
-
-        # ── 取/初始化狀態 ──────────────────────────────────────────
-        state = position.setdefault("v10_phase_trailing", {})
-        current_phase = state.get("phase", 0)
-        current_stop  = state.get("stop_price", None)
         
-        # 扣除成本後的淨利潤空間 (確保是真正賺到的空間)
-        net_profit_space = (net_pnl / size) if size > 0 else 0
-
-        # ── 階段計算 (Current Phase) ──
-        # 必須淨利大於 0 才有階段
-        if net_profit_space > 0:
-            calculated_phase = math.floor(net_profit_space / (phase_atr_mult * atr))
-            # 確保階段只升不降 (與棘輪概念一致)
-            if calculated_phase > current_phase:
-                current_phase = calculated_phase
-                state["phase"] = current_phase
-
-        # 寫入 locked_profit_atr 供 UI 顯示
-        state["locked_profit_atr"] = current_phase * phase_atr_mult
-        # Ensure it propagates to the position itself for easy extraction by symbol_runner
-        position["locked_profit_atr"] = state["locked_profit_atr"]
-
-        # ── 每 tick 動態重算止損點 (單向棘輪) ──
-        if current_phase > 0:
-            distance = current_phase * phase_atr_mult * atr
-            if side == "LONG":
-                new_stop = price - distance
-                current_stop = _update_ratchet_stop(side, current_stop, new_stop)
-            else:
-                new_stop = price + distance
-                current_stop = _update_ratchet_stop(side, current_stop, new_stop)
+        state = position.setdefault("v10_phase_trailing", {})
+        current_locked_pnl = state.get("locked_pnl", 0)
+        current_stop = state.get("stop_price", None)
+        
+        target_lock = 0
+        if net_pnl >= 4.0:
+            steps = math.floor((net_pnl - 4.0) / 2.0)
+            target_lock = 2.0 + steps * 2.0
             
-            state["stop_price"] = current_stop
-
-        # ── 止損觸發判斷 ───────────────────────────────────────────
-        if current_stop is None or current_phase == 0:
+        if target_lock > current_locked_pnl:
+            # 趨勢慣性檢查
+            if not is_momentum_strong(frame, side, price):
+                logger.info(f"[LOCK_PROFIT] Momentum slowing, moving SL to lock level {target_lock}U.")
+                current_locked_pnl = target_lock
+                state["locked_pnl"] = current_locked_pnl
+            else:
+                if state.get("last_skip_log") != target_lock:
+                    logger.info(f"[SKIP_LOCK] Strong momentum detected, allowing profit to run. Skipping lock at {target_lock}U.")
+                    state["last_skip_log"] = target_lock
+                
+                # 反推止損價: 考慮手續費緩衝 (粗略以 entry_price 計算)
+                buffer_cost = entry_price * size * (2 * fee + slippage) * 1.1
+                required_gross = current_locked_pnl + buffer_cost
+                required_price_move = required_gross / size
+                
+                if side == "LONG":
+                    new_stop = entry_price + required_price_move
+                else:
+                    new_stop = entry_price - required_price_move
+                    
+                if current_stop is None:
+                    state["stop_price"] = new_stop
+                else:
+                    if side == "LONG":
+                        state["stop_price"] = max(current_stop, new_stop)
+                    else:
+                        state["stop_price"] = min(current_stop, new_stop)
+                    
+        current_stop = state.get("stop_price")
+        
+        if current_stop is None or current_locked_pnl == 0:
             return None
-
+            
         if side == "LONG" and price <= current_stop:
-            return f"EXIT_PHASE_TRAIL_LONG_P{current_phase}"
+            return f"EXIT_LADDER_TRAIL_{int(current_locked_pnl)}U"
         if side == "SHORT" and price >= current_stop:
-            return f"EXIT_PHASE_TRAIL_SHORT_P{current_phase}"
-
+            return f"EXIT_LADDER_TRAIL_{int(current_locked_pnl)}U"
+            
     except Exception:
         pass
     return None
-
-
-def _calc_phase_stop(
-    side: str,
-    trigger_price: float,
-    phase: int,
-    atr_mult: float,
-    atr: float,
-) -> Optional[float]:
-    """計算指定 Phase 的止損價格。
-
-    止損距離 = phase × atr_mult × ATR
-    多單：stop = trigger_price - distance
-    空單：stop = trigger_price + distance
-    """
-    distance = phase * atr_mult * atr
-    if distance <= 0:
-        return None
-    if side == "LONG":
-        return trigger_price - distance
-    elif side == "SHORT":
-        return trigger_price + distance
-    return None
-
-
-def _update_ratchet_stop(
-    side: str,
-    current_stop: Optional[float],
-    new_stop: float,
-) -> float:
-    """棘輪機制：止損點只往有利方向移動。
-
-    多單：只升不降（取較大值）
-    空單：只降不升（取較小值）
-    """
-    if current_stop is None:
-        return new_stop
-    if side == "LONG":
-        return max(current_stop, new_stop)
-    elif side == "SHORT":
-        return min(current_stop, new_stop)
-    return new_stop
-
 
 def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
     """大瀑布與雙重異常 K 線 (斷路器)"""
@@ -436,65 +420,6 @@ def check_hard_stop_exit(position: dict, frame: pd.DataFrame, price: float) -> O
                 return "EXIT_HARD_STOP_LONG"
             elif side == "SHORT" and price >= initial_sl:
                 return "EXIT_HARD_STOP_SHORT"
-    except Exception:
-        pass
-    return None
-
-def check_warning_partial_close(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
-    """
-    預警性減倉 (動能衰竭點)
-    觸發條件：價格觸碰對側外軌（多單碰上軌、空單碰下軌）+ 實體縮小 + 量能萎縮。
-    狀態檢查：如果 has_warning_partial_close 已為 True，則不觸發，避免重複減倉。
-    回傳：PARTIAL_TAKE_PROFIT 執行 50% 減倉。
-    """
-    try:
-        if position.get("has_warning_partial_close"):
-            return None
-
-        side = position.get("side")
-        if not side or len(frame) < 3:
-            return None
-            
-        # 1. 正向獲利門檻：虧損狀態下絕對不准減倉
-        entry_price = float(position.get("entry_price", price))
-        gross_pnl = (price - entry_price) if side == "LONG" else (entry_price - price)
-        if gross_pnl <= 0:
-            return None
-
-        last_closed = frame.iloc[-2]
-        prev_closed = frame.iloc[-3]
-
-        c_open  = float(last_closed["open"])
-        c_close = float(last_closed["close"])
-        c_body  = abs(c_close - c_open)
-        c_vol   = float(last_closed.get("volume", 0))
-
-        p_open  = float(prev_closed["open"])
-        p_close = float(prev_closed["close"])
-        p_body  = abs(p_close - p_open)
-        p_vol   = float(prev_closed.get("volume", 0))
-
-        kc_upper_closed = float(last_closed.get("kc_upper", price))
-        kc_lower_closed = float(last_closed.get("kc_lower", price))
-        atr_closed = float(last_closed.get("atr", price * 0.01))
-
-        # 動能衰竭：實體縮小 且 量能萎縮
-        momentum_slows = (c_body < p_body) and (c_vol < p_vol)
-
-        if side == "LONG":
-            # 空間確認：距離上軌 <= 1.5 * ATR (即代表價格位於靠近極值的高位)
-            distance_to_band = kc_upper_closed - float(last_closed["high"])
-            touches_band = distance_to_band <= (1.5 * atr_closed)
-            if touches_band and momentum_slows:
-                return "PARTIAL_TAKE_PROFIT"
-                
-        elif side == "SHORT":
-            # 空間確認：距離下軌 <= 1.5 * ATR (即代表價格位於靠近極值的低位)
-            distance_to_band = float(last_closed["low"]) - kc_lower_closed
-            touches_band = distance_to_band <= (1.5 * atr_closed)
-            if touches_band and momentum_slows:
-                return "PARTIAL_TAKE_PROFIT"
-
     except Exception:
         pass
     return None

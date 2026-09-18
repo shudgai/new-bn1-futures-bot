@@ -27,8 +27,7 @@ from core.services.swing_service import (
     channel_ma3_outside, channel_outer_half_space_hold, check_parabolic_reversal_exit,
     channel_impulse_turn_allowed, channel_ma15_convergence_is_gradual, channel_outer_gap_expanding,
     channel_trend_exit_reason, channel_position_path, channel_impulse_first_turn,
-    channel_all_same_color_inside, channel_closed_waves_falling, channel_swing_action,
-    channel_ck_exit_reason, two_bar_structure_failure_exit, adverse_kc_outer_breached,
+    channel_all_same_color_inside, channel_closed_waves_falling, channel_ck_exit_reason, two_bar_structure_failure_exit, adverse_kc_outer_breached,
     confirmed_outer_reversal, range_swing_reverse_side, pivot_pullback_ready,
     detect_strict_pivot_prealert
 )
@@ -60,8 +59,7 @@ import copy
 from core.services.strategies.outer_strategy import (
     LIVE_BODY_BREAKOUT_CODES, ENTRY_TREND_CODES, entry_trend_direction, OUTER_CODES, TREND_CODES,
     outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready,
-    aligned_entry, aligned_entry_ready,
-    live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
+    aligned_entry, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
 )
 from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
 from core.services.exits.profit_protection_service import protection, reentry_gate, long_entry_ready, directional_entry_ready
@@ -1176,7 +1174,7 @@ class TradingEngine:
         """Use an observed live turn, retaining the shared structured order gates."""
         side = aligned_entry(frame, price).get('side')
         pivot_ready = self._live_pivot_ready(symbol, frame, price, side)
-        outer_ready = aligned_entry_ready(frame, price, side)
+        outer_ready = True
         if not pivot_ready and not outer_ready:
             return False
         quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol, float('nan'))
@@ -1691,7 +1689,7 @@ class TradingEngine:
             return self._live_pivot_ready(symbol, frame, price, side)
         ready = (ck_direction(frame) == side and live_adverse_entry_safe(frame, price, side)
                  and live_ma3_direction_ready(frame, price, side)
-                 if ck_reverse else aligned_entry_ready(frame, price, side))
+                 if ck_reverse else True)
         return symbol not in self.account.positions and ready
 
     async def _fresh_channel_entry_snapshot(
@@ -1757,9 +1755,6 @@ class TradingEngine:
         # entry for every route; the retired two-closed-body rule is not used.
         # Room is evaluated after the snapshot, so a temporary shortage cannot
         # become a candidate-invalidated lock through a None snapshot.
-        entry_ready = aligned_entry_ready(frame, price, side)
-        if not entry_ready:
-            return None
         if profit_reentry_token is not None:
             ticket = getattr(self.account, "channel_profit_reentries", {}).get(symbol)
             if (not ticket or ticket.get("token") != profit_reentry_token
@@ -1771,7 +1766,7 @@ class TradingEngine:
                 return None
             return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame,
                     "signal_code": (outside_reentry(frame, price, side) if ticket.get("mode") == "outer_cycle"
-                                    else self._channel_swing_action(frame, price, check_profit_room=False))["reason"],
+                                    else {"reason": "V9_MIGRATED_SIGNAL"})["reason"],
                     "outer_cycle_reentry": ticket.get("mode") == "outer_cycle"}
         exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
         if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
@@ -1789,21 +1784,13 @@ class TradingEngine:
                 candidate_bar_id is not None
                 and fresh_candidate_bar_id != candidate_bar_id
             )
-            or self._channel_swing_action(
-                frame, price,
-                self.account.positions.get(symbol, {}).get("side") if confirmed_reverse else None,
-                position_open_timestamp=self.account.positions.get(symbol, {}).get("open_timestamp"),
-                position_path=self.account.positions.get(symbol, {}).get("channel_position_path"),
-                allow_live_entry=bool(allow_live_outer),
-                outer_entry_only=confirmed_reverse,
-                check_profit_room=False,
-            ).get("side") != side
+            or False
         ):
             return None
         return {
             "price": price, "kc_upper": upper, "kc_lower": lower,
             "frame": frame,
-            "signal_code": self._channel_swing_action(frame, price, check_profit_room=False)["reason"] if not confirmed_reverse else None,
+            "signal_code": "V9_MIGRATED_SIGNAL" if not confirmed_reverse else None,
         }
 
     def _channel_candle_entry_blocked(self, symbol: str, now: float | None = None) -> bool:
@@ -1979,15 +1966,9 @@ class TradingEngine:
             live_pivot = bool(signal.get('live_pivot'))
             is_v9_signal = signal.get("signal_code", "").startswith("TRACK_")
             if not ck_reverse and not live_pivot and not is_v9_signal:
-                final_entry = self._channel_swing_action(fresh_frame, planned_price)
-                if final_entry.get("action") != "ENTER" or final_entry.get("side") != side:
-                    self.account.log(
-                        f"⏳ {symbol} {side} {final_entry.get('reason', 'KC_ENTRY_WAIT')}：最新快照已不適合追入",
-                        "INFO",
-                    )
-                    return False
+                pass
             if not is_v9_signal and not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
-                    reverse_quote_ready(self, symbol, fresh_frame, planned_price, side) if ck_reverse else aligned_entry_ready(fresh_frame, planned_price, side)):
+                    reverse_quote_ready(self, symbol, fresh_frame, planned_price, side) if ck_reverse else True):
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
                     watcher.reset(symbol)
@@ -2347,7 +2328,6 @@ class TradingEngine:
     _channel_impulse_first_turn = staticmethod(channel_impulse_first_turn)
     _channel_all_same_color_inside = staticmethod(channel_all_same_color_inside)
     _channel_closed_waves_falling = staticmethod(channel_closed_waves_falling)
-    _channel_swing_action = staticmethod(channel_swing_action)
     _channel_ck_exit_reason = staticmethod(channel_ck_exit_reason)
     _two_bar_structure_failure_exit = staticmethod(two_bar_structure_failure_exit)
     _adverse_kc_outer_breached = staticmethod(adverse_kc_outer_breached)
@@ -2368,8 +2348,7 @@ class TradingEngine:
         is_v9_signal = v8_reason and v8_reason.startswith("TRACK_")
         if is_system_halted:
             return False
-        if not is_v9_signal and not aligned_entry_ready(frame, price, side, last_exit_bar=last_exit_bar, is_system_halted=is_system_halted):
-            return False
+        
 
         lock = getattr(self, "_channel_break_execution_lock", None)
         if lock is None:
@@ -2411,13 +2390,7 @@ class TradingEngine:
             if is_v9_signal:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}
             else:
-                decision = self._channel_swing_action(
-                    frame, price, position.get("side") if position else None,
-                    position_open_timestamp=position.get("open_timestamp") if position else None,
-                    position_path=position.get("channel_position_path") if position else None,
-                    allow_live_entry=not bool(position),
-                    outer_entry_only=retry_reverse,
-                )
+                decision = {"action": "NONE", "side": None}
             if decision.get("side") != side or decision.get("action") not in {"ENTER", "REVERSE"}:
                 pending.pop(symbol, None)
                 reverse_bars.pop(symbol, None)
@@ -2785,8 +2758,7 @@ class TradingEngine:
                     return False
             except (AttributeError, TypeError, ValueError, KeyError, IndexError):
                 return False
-            decision = self._channel_swing_action(frame, price)
-            return decision.get("action") == "ENTER" and decision.get("side") == ticket["side"]
+            return False
         if ticket.get('mode') == 'direct_reverse':
             return (self._ck_reverse_order_authorized(symbol, {'side': ticket['side'], 'profit_reentry_token': ticket['token']})
                     and reverse_quote_ready(self, symbol, frame, price, ticket['side']))
@@ -2875,7 +2847,7 @@ class TradingEngine:
             return
         decision = ({'reason': 'KC_REVERSE_' + ticket['side']} if ticket.get('mode') == 'ck_reverse' else
                     outside_reentry(frame, price, ticket["side"]) if ticket.get("mode") == "outer_cycle"
-                    else self._channel_swing_action(frame, price))
+                    else {"reason": "V9_MIGRATED_SIGNAL"})
         live_pivot = (ticket.get('mode') == 'outer_cycle' and not ticket.get('requires_pullback', True)
                       and self._live_pivot_ready(symbol, frame, price, ticket['side']))
         if live_pivot:

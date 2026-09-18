@@ -33,7 +33,15 @@ def significant_ma3_turn(position, frame, price):
         closed_ma = sum(closes) / 3.
         ma = (sum(closes[-2:]) + price) / 3.
         if not state:
-            position[key] = dict(identity=identity, version=3, extreme=ma, threshold=atr * .10,
+            # 計算通道斜率，如果在強勢趨勢中，則給予 0.15 ATR 的寬容度避免被小抖動洗出；如果趨勢平緩則 0 容忍
+            try:
+                kc_mids = [float(v) for v in frame['kc_middle'].iloc[-4:-1]]
+                kc_slope = sign * (kc_mids[-1] - kc_mids[0]) / 3.0
+                dynamic_threshold = atr * 0.15 if kc_slope > atr * 0.03 else 0.0
+            except:
+                dynamic_threshold = atr * 0.10
+
+            position[key] = dict(identity=identity, version=3, extreme=ma, threshold=dynamic_threshold,
                                  favorable=False, last_bar=bar, pending=False)
             return False
         if bar < state['last_bar']:
@@ -166,35 +174,6 @@ def channel_all_same_color_inside(frame: pd.DataFrame, side: str) -> bool:
 def channel_closed_waves_falling(frame: pd.DataFrame, side: str = "LONG") -> bool:
     return False
 
-def channel_swing_action(
-    frame: pd.DataFrame, live_price: float, current_side: str | None = None,
-    entry_turn_low: float | None = None, entry_turn_high: float | None = None,
-    market_mode: str | None = None, position_open_timestamp: float | None = None,
-    exit_net_profitable: bool = True, entry_kc_upper: float | None = None,
-    entry_kc_lower: float | None = None, peak_pnl_pct: float = 0.0, bars_held: int = 0, entry_outer_chase: bool = False,
-    profit_locked: bool = False, cross_timer_start: float = 0.0,
-    allow_live_entry: bool = False,
-    position_path: dict | None = None,
-    outer_entry_only: bool = False,
-    check_profit_room: bool = True,
-    **kwargs
-) -> dict:
-    """Use one MA3 outer-cross entry and position-aware execution exits."""
-    if str(current_side or "").upper() in ("LONG", "SHORT"):
-        return {"action": "HOLD", "side": None, "reason": "KC_POSITION_EXITS_MANAGED"}
-    if channel_terminal_market(frame):
-        return {
-            "action": "WAIT",
-            "side": None,
-            "reason": "KC_TREND_END_WAIT",
-        }
-    decision = aligned_entry(frame, live_price)
-    if check_profit_room and decision.get("action") == "ENTER":
-        from core.services.rank_service import channel_profit_room
-        room = channel_profit_room(frame, live_price, decision["side"])
-        if not room["allowed"]:
-            return {"action": "WAIT", "side": None, "reason": room["reason"]}
-    return decision
 
 def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
     """Close a position when valid closed CK data is no longer clear for it."""
