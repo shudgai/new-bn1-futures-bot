@@ -40,6 +40,26 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     
     prev_body = abs(prev_close - prev_open)
     
+    # 計算傾斜速度
+    tilt_speed = abs(kc_mid_latest - kc_mid_prev)
+    
+    # 動態設定預期獲利空間門檻
+    required_space_long = 1.5 * atr_prev
+    if tilt_speed > 0.1 * atr_prev:
+        required_space_long = 1.0 * atr_prev
+        # 連續突破補償
+        prev_prev_close = float(prev_prev["close"])
+        if prev_close > kc_mid_prev and prev_prev_close > kc_mid_prev_prev:
+            required_space_long = 0.8 * atr_prev
+
+    required_space_short = 1.5 * atr_prev
+    if tilt_speed > 0.1 * atr_prev:
+        required_space_short = 1.0 * atr_prev
+        # 連續突破補償
+        prev_prev_close = float(prev_prev["close"])
+        if prev_close < kc_mid_prev and prev_prev_close < kc_mid_prev_prev:
+            required_space_short = 0.8 * atr_prev
+    
     if side == "LONG":
         # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
         if prev_body >= 2.0 * atr_prev and prev_is_bullish and prev_close > kc_mid_prev:
@@ -59,10 +79,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if live_price <= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
             
-        # 4. 預期獲利空間過濾 (Expected Profit Space)
+        # 4. 預期獲利空間過濾 (Expected Profit Space, 動態門檻)
         kc_upper_latest = float(latest.get("kc_upper", live_price))
         expected_profit = kc_upper_latest - live_price
-        if expected_profit < (1.5 * atr_prev):
+        if expected_profit < required_space_long:
             return False, "WAIT_PROFIT_SPACE_TOO_SMALL"
             
         return True, "DYNAMIC_TREND_LONG"
@@ -86,10 +106,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if live_price >= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
             
-        # 4. 預期獲利空間過濾 (Expected Profit Space)
+        # 4. 預期獲利空間過濾 (Expected Profit Space, 動態門檻)
         kc_lower_latest = float(latest.get("kc_lower", live_price))
         expected_profit = live_price - kc_lower_latest
-        if expected_profit < (1.5 * atr_prev):
+        if expected_profit < required_space_short:
             return False, "WAIT_PROFIT_SPACE_TOO_SMALL"
             
         return True, "DYNAMIC_TREND_SHORT"
