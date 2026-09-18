@@ -154,8 +154,8 @@ def check_kc_phase_trailing_stop(
 
         # ── Phase 升級判斷 (只升不降) ──
         # Phase 升級必須同時滿足「結構條件」與「利潤空間」，確保不會將止損設在現價前方。
-        # 這裡改用 1 ATR 為一階
-        step_net = atr * size
+        # 這裡改用 0.7 ATR 為一階
+        step_net = 0.7 * atr * size
         new_phase = current_phase
         
         if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3 and net_pnl >= 3 * step_net:
@@ -176,8 +176,8 @@ def check_kc_phase_trailing_stop(
             state["phase"] = new_phase
             current_phase = new_phase
 
-        # ── 每 tick 以固定 1 ATR 重算止損點 ──
-        # 止損點 = 確保淨利為 phase * 1 ATR 的價格
+        # ── 每 tick 以固定 0.7 ATR 重算止損點 ──
+        # 止損點 = 確保淨利為 phase * 0.7 ATR 的價格
         if current_phase > 0:
             target_net = current_phase * step_net
             gross_needed = target_net + cost
