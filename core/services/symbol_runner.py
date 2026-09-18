@@ -65,7 +65,9 @@ async def process_single_symbol_runner(
                 if existing_pos.get(key) is None and meta.get(key) is not None:
                     existing_pos[key] = copy.deepcopy(meta[key])
             exit_strategy = DualTrackExitStrategy(fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
-            exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price)
+            from core.engine import get_velocity_slowdown
+            velocity_slowdown = get_velocity_slowdown(engine.tick_buffers.get(symbol, []))
+            exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_slowdown=velocity_slowdown)
             # Persist observations before any awaited order or account refresh.
             observed = {
                 key: copy.deepcopy(existing_pos[key])

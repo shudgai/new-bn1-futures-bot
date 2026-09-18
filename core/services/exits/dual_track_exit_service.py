@@ -164,7 +164,7 @@ def check_hard_stop_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
     return None
 
 
-def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005) -> Optional[str]:
+def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float, fee: float = 0.0005, slippage: float = 0.0005, velocity_slowdown: bool = False) -> Optional[str]:
     """
     第二層與第三層：智能動態空間 & 極致動能退出
     """
@@ -213,7 +213,7 @@ def check_dynamic_trailing_exit(position: Dict[str, Any], frame: pd.DataFrame, p
                     slope_factor = SLOPE_FACTOR_RANGE[1] # 1.5
                     
             # 檢查極致動能標記 (Velocity Slowdown >= 30%)
-            is_velocity_peak = position.get("velocity_slowdown", False)
+            is_velocity_peak = velocity_slowdown
             
             # --- 峰值平倉分批 (Partial Exit) ---
             # 偵測到滯漲 (長影線或實體極小) 且處於目標區
@@ -286,20 +286,21 @@ class DualTrackExitStrategy(IExitStrategy):
         except Exception:
             pass
         
-        # 1. 【最高優先級：硬性防禦 (保命符)】
+        # 1. 【第一階：硬性防禦 (保命符)】
         hard_stop_reason = check_hard_stop_exit(position, frame, price)
         if hard_stop_reason:
             return hard_stop_reason
             
-        # 2. 【緊急防禦 (閃崩/崩潰 避災)】
+        # 2 & 3. 【第二階與第三階：極致動能收網 & 動態空間鎖利 (保獲利/搶高點)】
+        velocity_slowdown = kwargs.get("velocity_slowdown", False)
+        dynamic_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage, velocity_slowdown)
+        if dynamic_reason:
+            return dynamic_reason
+            
+        # 4. 【第四階：緊急防禦 (閃崩/崩潰 避災)】
         emergency_reason = check_emergency_exit(position, frame, price)
         if emergency_reason:
             return emergency_reason
-            
-        # 3. 【動態鎖利與極致動能 (保獲利/搶高點)】
-        dynamic_reason = check_dynamic_trailing_exit(position, frame, price, self.fee, self.slippage)
-        if dynamic_reason:
-            return dynamic_reason
             
         # 5. 【舊版結構防禦 (備用)】
         structure_reason = check_structure_exit(position, frame, price)
