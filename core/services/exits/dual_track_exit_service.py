@@ -2,7 +2,7 @@ import pandas as pd
 from typing import Dict, Any, Optional
 
 # V10 狀態追蹤鍵列，持久化結構追蹤狀態
-DUAL_TRACK_STATE_KEYS = ["trade_phase", "v10_swing_trailing", "v8_reason"]
+DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_ladder"]
 
 class DualTrackExitStrategy:
     def __init__(self, account=None, fee: float = 0.0004, slippage: float = 0.0005):
@@ -34,23 +34,76 @@ class DualTrackExitStrategy:
         if emergency_reason:
             return emergency_reason
             
-        # 1. 獲利護衛型轉向 (Guarded Reversal - V10)
-        reversal_reason = check_guarded_reversal_exit(position, frame, price)
-        if reversal_reason:
-            return reversal_reason
-            
-        # 2. 唯一平倉點 (峰谷反轉)
+        # 1. 固定階梯鎖利 (4U 鎖 2U，之後每 +2U 再鎖 2U)
+        ladder_reason = check_ladder_profit_lock(position, price, self.fee, self.slippage)
+        if ladder_reason:
+            return ladder_reason
+
+        # 2. 唯一主動平倉點：峰谷三點結構瓦解
         exhaustion_reason = check_peak_exhaustion_exit(position, frame, price)
         if exhaustion_reason:
             return exhaustion_reason
             
-        # 3. 結構式移動鎖利 (Swing Trailing - V10)
-        trailing_reason = check_swing_trailing_exit(position, frame, price)
-        if trailing_reason:
-            return trailing_reason
-            
-        # 4. 帳戶硬止損
+        # 3. 帳戶硬止損
         return check_hard_stop_exit(position, frame, price)
+
+
+def check_ladder_profit_lock(position: dict, price: float, fee: float = 0.0004, slippage: float = 0.0005) -> Optional[str]:
+    """
+    固定階梯鎖利 (Ladder Profit Lock)：
+    - 淨利 >= 4U → 鎖 2U（跌破 2U 就平）
+    - 淨利 >= 6U → 鎖 4U，之後每 +2U 上移一階
+    - 單向棘輪：地板只升不降
+    """
+    try:
+        side = position.get("side")
+        entry_price = float(position.get("entry_price") or 0)
+        size = float(position.get("size") or 0)
+
+        if entry_price <= 0 or size <= 0:
+            return None
+
+        # 計算當前毛利 (USDT)
+        if side == "LONG":
+            gross_pnl = (price - entry_price) * size
+        elif side == "SHORT":
+            gross_pnl = (entry_price - price) * size
+        else:
+            return None
+
+        # 扣除雙邊手續費與滑點
+        notional = price * size
+        cost = notional * (2 * fee + slippage)
+        net_pnl = gross_pnl - cost
+
+        state = position.setdefault("v10_ladder", {})
+
+        # 更新峰值淨利 (只升不降)
+        peak = state.get("peak_net_usdt", 0.0)
+        if net_pnl > peak:
+            state["peak_net_usdt"] = net_pnl
+            peak = net_pnl
+
+        # 計算鎖利地板 (階梯：4U→鎖2U，6U→鎖4U，每+2U再+2U)
+        # 公式：floor = int(peak // 2) * 2 - 2，且 peak 必須 >= 4
+        if peak < 4.0:
+            return None
+
+        locked_floor = (int(peak // 2) * 2) - 2  # e.g. peak=4.x→2, peak=6.x→4
+        locked_floor = max(locked_floor, 2.0)     # 最低地板為 2U
+
+        # 更新最高地板紀錄 (只升不降)
+        current_floor = state.get("locked_floor_usdt", 0.0)
+        if locked_floor > current_floor:
+            state["locked_floor_usdt"] = locked_floor
+
+        # 若當前淨利跌破鎖利地板 → 平倉
+        if net_pnl < state["locked_floor_usdt"]:
+            return f"EXIT_LADDER_LOCK_{side}"
+
+    except Exception:
+        pass
+    return None
 
 
 def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
@@ -99,42 +152,6 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
                 return "EXIT_EMERGENCY_WATERFALL_SHORT"
             if is_double_crash and is_breakout_entry:
                 return "EXIT_EMERGENCY_DOUBLE_ABNORMAL_SHORT"
-                
-    except Exception:
-        pass
-    return None
-
-
-def check_guarded_reversal_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
-    """
-    獲利護衛型轉向：
-    1. 必須是獲利狀態。
-    2. 價格放量衝破對側軌道。
-    3. 返回 REVERSAL_EXIT 標籤讓引擎無縫接力。
-    """
-    try:
-        side = position.get("side")
-        entry_price = float(position.get("entry_price") or 0)
-        
-        # 1. 獲利護衛 (不獲利絕不凹單轉向)
-        if side == "LONG" and price <= entry_price:
-            return None
-        if side == "SHORT" and price >= entry_price:
-            return None
-            
-        last = frame.iloc[-1]
-        kc_upper = float(last.get("kc_upper", price))
-        kc_lower = float(last.get("kc_lower", price))
-        current_vol = float(last.get("volume", 0.0))
-        vol_ma_5 = float(last.get("vol_ma_5", 0.0))
-        is_volume_surge = current_vol >= vol_ma_5
-        
-        # 2. 破軌判定
-        if is_volume_surge:
-            if side == "LONG" and price < kc_lower:
-                return "REVERSAL_EXIT_OPPOSITE_RAIL_LONG"
-            elif side == "SHORT" and price > kc_upper:
-                return "REVERSAL_EXIT_OPPOSITE_RAIL_SHORT"
                 
     except Exception:
         pass
