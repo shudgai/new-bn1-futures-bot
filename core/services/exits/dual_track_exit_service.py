@@ -1,11 +1,16 @@
 import pandas as pd
 from typing import Dict, Any, Optional
 
-class DualTrackExitStrategy:
-    def __init__(self, account):
-        self.account = account
+# V10 狀態追蹤鍵列，持久化結構追蹤狀態
+DUAL_TRACK_STATE_KEYS = ["trade_phase", "v10_swing_trailing", "v8_reason"]
 
-    def evaluate_exit(self, position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
+class DualTrackExitStrategy:
+    def __init__(self, account=None, fee: float = 0.0004, slippage: float = 0.0005):
+        self.account = account
+        self.fee = fee
+        self.slippage = slippage
+
+    def evaluate_exit(self, position: Dict[str, Any], frame: pd.DataFrame, price: float, velocity_drop_ratio: float = 0.0, **kwargs) -> Optional[str]:
         if frame is None or len(frame) < 3:
             return None
             
