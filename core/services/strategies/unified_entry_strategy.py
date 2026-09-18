@@ -119,19 +119,21 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     track_c_reason = ""
     
     if side == "LONG":
-        # 價格衝破 KC 上軌
-        if live_price > kc_upper:
-            if prev_is_bullish and prev_body_ratio >= 0.3:
-                if is_volume_surge:
-                    track_c_ok = True
-                    track_c_reason = "TRACK_C_BREAKOUT_LONG"
+        # 1. 爆發點：上一根已收線 K 線必須實體破軌 (收盤在軌道外，實體比例 >= 0.4，放量)
+        prev_kc_upper = float(prev.get("kc_upper", live_price))
+        if prev_close > prev_kc_upper and prev_is_bullish and prev_body_ratio >= 0.4 and is_volume_surge:
+            # 2. 站穩點：當前價格仍處於當前 KC 上軌外，且高於 MA3
+            if live_price > kc_upper and live_price > ma3:
+                track_c_ok = True
+                track_c_reason = "TRACK_C_BREAKOUT_LONG"
     elif side == "SHORT":
-        # 價格衝破 KC 下軌
-        if live_price < kc_lower:
-            if prev_is_bearish and prev_body_ratio >= 0.3:
-                if is_volume_surge:
-                    track_c_ok = True
-                    track_c_reason = "TRACK_C_BREAKOUT_SHORT"
+        # 1. 爆發點：上一根已收線 K 線必須實體破軌 (收盤在軌道外，實體比例 >= 0.4，放量)
+        prev_kc_lower = float(prev.get("kc_lower", live_price))
+        if prev_close < prev_kc_lower and prev_is_bearish and prev_body_ratio >= 0.4 and is_volume_surge:
+            # 2. 站穩點：當前價格仍處於當前 KC 下軌外，且低於 MA3
+            if live_price < kc_lower and live_price < ma3:
+                track_c_ok = True
+                track_c_reason = "TRACK_C_BREAKOUT_SHORT"
                         
     track_reason = ""
     if track_a_ok:
