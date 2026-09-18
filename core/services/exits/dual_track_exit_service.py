@@ -30,26 +30,43 @@ class DualTrackExitStrategy:
             elif side == "SHORT" and price < kc_lower:
                 position["trade_phase"] = "EXHAUSTION_ZONE"
 
-        # 0. 災難斷路器 (最高優先)
-        emergency_reason = check_emergency_exit(position, frame, price)
-        if emergency_reason:
-            return emergency_reason
-            
-        # 1. KC 三階段移動止損（Phase Trailing Stop）
-        #    每觸及一個 KC 里程碑，止損點往有利方向推移 1.5 ATR
+        # 1. 帳戶硬止損 (真正的防禦線崩塌，最高優先級)
+        hard_stop_reason = check_hard_stop_exit(position, frame, price)
+        if hard_stop_reason:
+            return hard_stop_reason
+
+        # 2. KC 三階段移動止損（Phase Trailing Stop）
+        #    這已經是絕對保證獲利的防線，優先處理
         phase_trail_reason = check_kc_phase_trailing_stop(
             position, frame, price, self.fee, self.slippage
         )
         if phase_trail_reason:
             return phase_trail_reason
 
-        # 2. 唯一主動平倉點：峰谷三點結構瓦解
-        exhaustion_reason = check_peak_exhaustion_exit(position, frame, price)
-        if exhaustion_reason:
-            return exhaustion_reason
-            
-        # 3. 帳戶硬止損
-        return check_hard_stop_exit(position, frame, price)
+        # 3. 主動平倉訊號（包含災難斷路器與峰谷瓦解）
+        active_reason = check_emergency_exit(position, frame, price) or check_peak_exhaustion_exit(position, frame, price)
+        
+        if active_reason:
+            size = float(position.get("size") or position.get("qty") or 0)
+            entry_price = float(position.get("entry_price") or 0)
+            if size > 0 and entry_price > 0:
+                gross_pnl = (price - entry_price) * size if side == "LONG" else (entry_price - price) * size
+                net_pnl = gross_pnl - (price * size * (2 * self.fee + self.slippage))
+                
+                # ── 動態保底平倉 (Dynamic Floor Exit) 機制 ──
+                if net_pnl > 0:
+                    # 情況 A：已經獲利，直接平倉落袋為安
+                    return active_reason
+                else:
+                    # 情況 B：虧損或平手，啟動保本防禦 (暫緩平倉)
+                    # 由於如果破防，前方的 hard_stop_reason 早就攔截了，
+                    # 走到這裡代表「還沒破初始止損防線」，因此給予空間，不執行平倉
+                    return None
+            else:
+                # 萬一沒有 size 或 entry_price (異常狀況)，保守回傳訊號
+                return active_reason
+
+        return None
 
 
 def check_kc_phase_trailing_stop(
