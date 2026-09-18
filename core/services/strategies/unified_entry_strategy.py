@@ -76,66 +76,72 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
         if prev_body >= 2.0 * atr_prev and prev_is_bullish and prev_close > kc_mid_prev:
             return True, "SPECIAL_ENTRY_MOMENTUM_LONG"
-            
-        # 1. 基本趨勢判定 (前一根收盤價必須在中軌之上，且為陽線代表動能向上)
+
+        # 1. 基本趨勢判定
         if not (prev_is_bullish and prev_close > kc_mid_prev):
             return False, "WAIT_NOT_IN_BULL_TREND"
-            
+
         # 2. 通道擴張與傾斜 (Expansion Check)
         is_tilting_up = kc_mid_latest > kc_mid_prev and kc_mid_prev > kc_mid_prev_prev
         is_expanding = kc_width_prev > kc_width_prev_prev
         if not (is_tilting_up and is_expanding):
             return False, "WAIT_NO_EXPANSION"
-            
+
         # 3. 過濾假突破 (最新價絕對不能跌回中軌以內)
         if live_price <= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
-            
+
         # 4. 預期獲利空間過濾 (動態切換)
-        # 趨勢延續中 → 跳過空間過濾，因趨勢已確立，空間是「無限的」
-        if is_trend_continuation_long:
-            return True, "TREND_CONTINUATION_LONG"
-        
-        # 初始進場 → 嚴格計算空間，防止震盪區間虛假突破
         kc_upper_latest = float(latest.get("kc_upper", live_price))
         expected_profit = kc_upper_latest - live_price
-        if expected_profit < required_space_long:
-            return False, "[Skip Order] Initial Breakout Space Insufficient"
-            
-        return True, "DYNAMIC_TREND_LONG"
-        
+
+        if is_trend_continuation_long:
+            # 情境 B：趨勢延續 → 放寬至 0.8 ATR
+            threshold = 0.8 * atr_prev
+            if expected_profit < threshold:
+                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {threshold:.4f})"
+            return True, "TREND_CONTINUATION_LONG"
+        else:
+            # 情境 A：初始破軌 → 嚴格 1.5 ATR (動態調降)
+            if expected_profit < required_space_long:
+                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {required_space_long:.4f})"
+            return True, "INITIAL_BREAKOUT_LONG"
+
     elif side == "SHORT":
         # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
         if prev_body >= 2.0 * atr_prev and prev_is_bearish and prev_close < kc_mid_prev:
             return True, "SPECIAL_ENTRY_MOMENTUM_SHORT"
-            
-        # 1. 基本趨勢判定 (前一根收盤價必須在中軌之下，且為陰線代表動能向下)
+
+        # 1. 基本趨勢判定
         if not (prev_is_bearish and prev_close < kc_mid_prev):
             return False, "WAIT_NOT_IN_BEAR_TREND"
-            
+
         # 2. 通道擴張與傾斜 (Expansion Check)
         is_tilting_down = kc_mid_latest < kc_mid_prev and kc_mid_prev < kc_mid_prev_prev
         is_expanding = kc_width_prev > kc_width_prev_prev
         if not (is_tilting_down and is_expanding):
             return False, "WAIT_NO_EXPANSION"
-            
+
         # 3. 過濾假突破 (最新價絕對不能漲回中軌以內)
         if live_price >= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
-            
+
         # 4. 預期獲利空間過濾 (動態切換)
-        # 趨勢延續中 → 跳過空間過濾
-        if is_trend_continuation_short:
-            return True, "TREND_CONTINUATION_SHORT"
-        
-        # 初始進場 → 嚴格計算空間
         kc_lower_latest = float(latest.get("kc_lower", live_price))
         expected_profit = live_price - kc_lower_latest
-        if expected_profit < required_space_short:
-            return False, "[Skip Order] Initial Breakout Space Insufficient"
-            
-        return True, "DYNAMIC_TREND_SHORT"
-                
+
+        if is_trend_continuation_short:
+            # 情境 B：趨勢延續 → 放寬至 0.8 ATR
+            threshold = 0.8 * atr_prev
+            if expected_profit < threshold:
+                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {threshold:.4f})"
+            return True, "TREND_CONTINUATION_SHORT"
+        else:
+            # 情境 A：初始破軌 → 嚴格 1.5 ATR (動態調降)
+            if expected_profit < required_space_short:
+                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {required_space_short:.4f})"
+            return True, "INITIAL_BREAKOUT_SHORT"
+
     return False, "WAIT_NO_TRACK_SIGNAL"
 
 
