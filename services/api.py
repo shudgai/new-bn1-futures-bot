@@ -132,7 +132,7 @@ def positions_with_triggers():
             merged["locked_profit_usdt"] = round(max(0.0, locked_net), 2)
             merged["locked_phase"]       = current_phase
             merged["stop_price"]         = stop_p
-            merged["swing_extreme"]      = state.get("swing_extreme")
+            merged["swing_extreme"]      = phase_state.get("swing_extreme")
         else:
             merged["ratchet_floor"]      = None
             merged["phase_info"]         = None
