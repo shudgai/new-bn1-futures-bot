@@ -116,7 +116,32 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                             
     if track_b_ok:
         return True, track_b_reason
-        
+    # ==========================================
+    # 軌道 C：破軌突破 (強勢動能爆發)
+    # ==========================================
+    track_c_ok = False
+    track_c_reason = ""
+    
+    if side == "LONG":
+        # 價格放量衝破 KC 上軌，且 MA15 斜率向上攻擊，實體 >= 0.3
+        if live_price > kc_upper:
+            if prev_is_bullish and prev_body_ratio >= 0.3:
+                if ma15_slope >= attack_slope_threshold:
+                    if is_volume_surge:
+                        track_c_ok = True
+                        track_c_reason = "TRACK_C_BREAKOUT_LONG"
+    elif side == "SHORT":
+        # 價格放量衝破 KC 下軌，且 MA15 斜率向下攻擊，實體 >= 0.3
+        if live_price < kc_lower:
+            if prev_is_bearish and prev_body_ratio >= 0.3:
+                if ma15_slope <= -attack_slope_threshold:
+                    if is_volume_surge:
+                        track_c_ok = True
+                        track_c_reason = "TRACK_C_BREAKOUT_SHORT"
+                        
+    if track_c_ok:
+        return True, track_c_reason
+
     return False, "WAIT_NO_TRACK_SIGNAL"
 
 
