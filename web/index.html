@@ -580,9 +580,16 @@
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
                         <div v-if="bot.positions && bot.positions.find(p => p.symbol === symbol)" class="chart-pos-info-bar">
                             <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">開倉金額:</span>
+                                <span class="chart-pos-info-label">開倉價:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; color:#3b82f6; font-weight: 600;">
                                     {{ formatPrice(bot.positions.find(p => p.symbol === symbol)?.entry_price) }}
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep">｜</span>
+                            <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label">本金:</span>
+                                <span class="chart-pos-info-value" style="font-family:monospace; font-weight: 600;">
+                                    {{ (bot.positions.find(p => p.symbol === symbol)?.margin || 0).toFixed(2) }} U
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>

@@ -2589,7 +2589,7 @@ class TradingEngine:
         pending_orders = getattr(self.account, "pending_limit_orders", {})
         committed = len(positions) + len(pending_orders)
         available_fn = getattr(self.account, "get_available_balance", None)
-        available = float(available_fn()) if available_fn else TRADE_AMOUNT_USDT
+        available = float(available_fn()) if available_fn else 0.0
         wallet_fn = getattr(self.account, "get_wallet_balance", None)
         wallet_balance = float(wallet_fn()) if wallet_fn else (
             available + sum(float(pos.get("margin") or 0.0) for pos in positions.values())
@@ -2597,17 +2597,8 @@ class TradingEngine:
         effective_slots = get_effective_slot_count(wallet_balance)
         if effective_slots > 0 and committed >= effective_slots:
             return 0.0
-        fraction = (
-            CONTINUOUS_SINGLE_SLOT_MARGIN_FRACTION
-            if effective_slots == 1
-            else 1.0 / effective_slots
-            if effective_slots > 1
-            else 1.0
-        )
-        return max(
-            0.0,
-            min(available, wallet_balance * fraction, TRADE_AMOUNT_USDT, MAX_SLOT_TRADE_USDT),
-        )
+        # 依照使用者要求「開倉金額是帳戶餘額」，這裡不再受限於 TRADE_AMOUNT_USDT，而是盡可能使用可用餘額 (保留少許作為手續費緩衝)
+        return max(0.0, available * 0.98)
 
     _continuous_entry_price_is_safe = staticmethod(continuous_entry_price_is_safe)
 
