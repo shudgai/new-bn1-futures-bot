@@ -198,7 +198,7 @@
         .market-mode-wait { background:#e2e8f0; color:#475569; }
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; flex: 1; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
-        .chart-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        .chart-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
         .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; display: flex; flex-direction: column; }
         .chart-pane-header { padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
         .chart-symbol-trend { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; font-size: 14px; font-weight: 800; }
@@ -583,6 +583,13 @@
                                 <span class="chart-pos-info-label">開倉金額:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; color:#3b82f6; font-weight: 600;">
                                     {{ formatPrice(bot.positions.find(p => p.symbol === symbol)?.entry_price) }}
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep">｜</span>
+                            <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label">淨利%:</span>
+                                <span :class="['chart-pos-info-value', getPosRoePct(bot.positions.find(p => p.symbol === symbol)) >= 0 ? 'text-green' : 'text-red']" style="font-family:monospace; font-weight: 600;">
+                                    {{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)).toFixed(2) }}%
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
