@@ -101,14 +101,23 @@ async def process_single_symbol_runner(
                     
                 order_type_str = "限價單" if is_limit_exit else "市價單"
                 
-                engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
-                closed = await engine.account.close_position(
-                    symbol,
-                    channel_price,
-                    f"DualTrackExit {exit_reason}",
-                    is_manual=True,
-                    is_limit=is_limit_exit
-                )
+                if exit_reason == "PARTIAL_TAKE_PROFIT":
+                    engine.account.log(f"⚠️ [減倉觸發] {symbol} 滿足減倉條件: {exit_reason}，執行減半倉 ({order_type_str})...", "INFO")
+                    closed = await engine.account.partial_close_position(
+                        symbol,
+                        channel_price,
+                        f"DualTrackExit {exit_reason}",
+                        fraction=0.5
+                    )
+                else:
+                    engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
+                    closed = await engine.account.close_position(
+                        symbol,
+                        channel_price,
+                        f"DualTrackExit {exit_reason}",
+                        is_manual=True,
+                        is_limit=is_limit_exit
+                    )
                 
                 # 平倉成功後，徹底重置狀態機，確保能進入 IDLE 重新掃描
                 if closed and symbol not in engine.account.positions:

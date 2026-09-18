@@ -734,8 +734,10 @@ class SuperTrendKeltnerStrategy:
         df['ma3'] = close.rolling(window=3).mean()
         df['ma5'] = close.rolling(window=5).mean()
         df['ma15'] = close.rolling(window=15).mean()
+        df['ma15_slope'] = df['ma15'] - df['ma15'].shift(1)
 
         # 成交量均線
+        df['vol_ma_5'] = volume.rolling(window=5).mean()
         df['vol_ma_20'] = volume.rolling(window=20).mean()
 
         # RSI

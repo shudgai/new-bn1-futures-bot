@@ -8,121 +8,116 @@ from core.interfaces.entry_interface import IEntryStrategy
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str]:
     """
-    V5.2 ABC Dynamic Defense and Profit Engine (Three-Gate Gatekeeper)
+    V7.0 動態自適應趨勢引擎 (雙軌進場邏輯)
     """
+    if len(df) < 5:
+        return False, "WAIT_INSUFFICIENT_DATA"
+        
     latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) >= 2 else latest
+    prev = df.iloc[-2]
     
     live_price = float(live_price)
-    atr = float(latest.get("atr", live_price * 0.01))
+    
+    # 軌道數據
     kc_upper = float(latest.get("kc_upper", live_price))
     kc_lower = float(latest.get("kc_lower", live_price))
-    kc_middle = float(latest.get("kc_middle", latest.get("ema_20", live_price)))
-    prev_kc_middle = float(prev.get("kc_middle", prev.get("ema_20", live_price)))
-    ema_50 = float(latest.get("ema_50", live_price))
-    prev_ema_50 = float(prev.get("ema_50", live_price))
+    kc_middle = float(latest.get("kc_middle", live_price))
     
-    velocity_drop_ratio = kwargs.get("velocity_drop_ratio", 0.0)
-
-    # ==========================================
-    # 動態趨勢適應 (Trend Strength Index - TSI)
-    # ==========================================
-    atr_expansion = False
-    if len(df) >= 6:
-        recent_atr = df['atr'].iloc[-3:].mean()
-        prev_atr_val = df['atr'].iloc[-6:-3].mean()
-        if prev_atr_val > 0 and (recent_atr / prev_atr_val - 1) >= 0.10:
-            atr_expansion = True
-            
-    # 平滑處理：計算最近 3 根 K 線的 MA3 平均斜率
-    ma3_slopes = []
-    for i in range(-1, min(-5, -len(df)-1), -1):
-        if len(df) >= abs(i) + 1:
-            curr_ma3 = float(df.iloc[i].get("ma3", live_price))
-            prior_ma3 = float(df.iloc[i-1].get("ma3", live_price))
-            ma3_slopes.append(abs(curr_ma3 - prior_ma3))
-        if len(ma3_slopes) >= 3:
-            break
-            
-    avg_ma3_slope = sum(ma3_slopes) / len(ma3_slopes) if ma3_slopes else 0
-    is_high_trend = (avg_ma3_slope >= 0.2 * atr) or atr_expansion
-    trend_state = "High_Trend" if is_high_trend else "Low_Trend"
-
-    if is_high_trend:
-        # Aggressive Mode (High Trend)
-        MAX_DIST_FROM_MID = 2.2
-        VELOCITY_THRESHOLD = 0.40
-        MIN_BANDWIDTH = 0.008
-    else:
-        # Conservative Mode (Low Trend)
-        MAX_DIST_FROM_MID = 1.3
-        VELOCITY_THRESHOLD = 0.20
-        MIN_BANDWIDTH = 0.012
-
-    # ==========================================
-    # 第一道門檻：環境篩選 (The Environment Gate - A)
-    # ==========================================
-    kc_bandwidth = (kc_upper - kc_lower) / kc_middle if kc_middle > 0 else 0
-    is_bandwidth_ok = (kc_bandwidth >= MIN_BANDWIDTH) or atr_expansion
-    kc_slope_abs = abs(kc_middle - prev_kc_middle)
-    is_slope_ok = kc_slope_abs >= 1e-5
+    # MA 數據
+    ma3 = float(latest.get("ma3", live_price))
+    ma15 = float(latest.get("ma15", live_price))
+    ma15_slope = float(latest.get("ma15_slope", 0.0))
     
-    if not (is_bandwidth_ok and is_slope_ok):
-        return False, f"WAIT_ENVIRONMENT_FLAT ({trend_state})"
-
-    # ==========================================
-    # 第二道門檻：空間與趨勢防禦 (The Structure Gate - B)
-    # ==========================================
-    ema_50_slope = ema_50 - prev_ema_50
-    dist_from_mid = abs(live_price - kc_middle)
+    # K 線數據 (取已收線的 prev 當作「反轉 K 線 / 扭頭 K 線」)
+    prev_open = float(prev["open"])
+    prev_close = float(prev["close"])
+    prev_high = float(prev["high"])
+    prev_low = float(prev["low"])
     
-    if dist_from_mid > MAX_DIST_FROM_MID * atr:
-        return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-        
-    is_velocity_slowdown = velocity_drop_ratio >= VELOCITY_THRESHOLD
-
+    prev_candle_height = prev_high - prev_low
+    prev_body = abs(prev_close - prev_open)
+    prev_body_ratio = prev_body / prev_candle_height if prev_candle_height > 0 else 0
+    
+    # 判斷 prev 顏色
+    prev_is_bullish = prev_close > prev_open
+    prev_is_bearish = prev_close < prev_open
+    
+    # 成交量數據
+    current_vol = float(latest.get("volume", 0.0))
+    vol_ma_5 = float(latest.get("vol_ma_5", 0.0))
+    is_volume_surge = current_vol >= vol_ma_5
+    
+    # ==========================================
+    # 軌道 A：極值反轉 (大波段)
+    # ==========================================
+    track_a_ok = False
+    track_a_reason = ""
+    
     if side == "LONG":
-        if ema_50_slope <= 0:
-            return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-            
-        if live_price >= kc_upper:
-            excess = live_price - kc_upper
-            if not (excess <= 0.3 * atr and is_velocity_slowdown):
-                return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-        elif live_price <= kc_lower:
-             return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-             
+        # 價格衝出 KC 下軌後，出現實體 >= 0.5 的反轉 K 線 (紅/陽線)，且突破 MA3
+        if prev_low <= float(prev.get("kc_lower", live_price)) or live_price <= kc_lower:
+            if prev_is_bullish and prev_body_ratio >= 0.5:
+                if live_price > ma3:
+                    if is_volume_surge:
+                        track_a_ok = True
+                        track_a_reason = "TRACK_A_EXTREME_REVERSAL_LONG"
     elif side == "SHORT":
-        if ema_50_slope >= 0:
-            return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-            
-        if live_price <= kc_lower:
-            excess = kc_lower - live_price
-            if not (excess <= 0.3 * atr and is_velocity_slowdown):
-                return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-        elif live_price >= kc_upper:
-             return False, f"REJECTED_OUTSIDE_ZONE ({trend_state})"
-    else:
-        return False, "INVALID_SIDE"
+        # 價格衝出 KC 上軌後，出現實體 >= 0.5 的反轉 K 線 (黑/陰線)，且跌破 MA3
+        if prev_high >= float(prev.get("kc_upper", live_price)) or live_price >= kc_upper:
+            if prev_is_bearish and prev_body_ratio >= 0.5:
+                if live_price < ma3:
+                    if is_volume_surge:
+                        track_a_ok = True
+                        track_a_reason = "TRACK_A_EXTREME_REVERSAL_SHORT"
+                        
+    if track_a_ok:
+        return True, track_a_reason
 
     # ==========================================
-    # 第三道門檻：動能與實體驗證 (The Momentum Gate - C)
+    # 軌道 B：中點回踩 (小波段)
     # ==========================================
-    latest_open = float(latest["open"])
-    latest_close = float(latest["close"])
-    latest_high = float(latest["high"])
-    latest_low = float(latest["low"])
+    track_b_ok = False
+    track_b_reason = ""
     
-    candle_height = latest_high - latest_low
-    solid_body_ratio = abs(latest_close - latest_open) / candle_height if candle_height > 0 else 0
+    # 檢查是否在 KC 內部
+    is_inside_kc = (kc_lower < live_price < kc_upper)
     
-    if solid_body_ratio < 0.50:
-        return False, f"WAIT_MOMENTUM_NOT_READY ({trend_state})"
+    # MA15 攻擊角度 (斜率閾值設定)
+    attack_slope_threshold = 1e-5
+    
+    if side == "LONG":
+        if is_inside_kc:
+            # 回測中軌或 MA15
+            prev_kc_mid = float(prev.get("kc_middle", live_price))
+            prev_ma15 = float(prev.get("ma15", live_price))
+            touched_mid = (prev_low <= prev_kc_mid) or (prev_low <= prev_ma15)
+            if touched_mid:
+                # 實體 >= 0.3 扭頭
+                if prev_is_bullish and prev_body_ratio >= 0.3:
+                    # MA15 向上攻擊角度
+                    if ma15_slope >= attack_slope_threshold:
+                        if is_volume_surge:
+                            track_b_ok = True
+                            track_b_reason = "TRACK_B_MID_PULLBACK_LONG"
+    elif side == "SHORT":
+        if is_inside_kc:
+            # 回測中軌或 MA15
+            prev_kc_mid = float(prev.get("kc_middle", live_price))
+            prev_ma15 = float(prev.get("ma15", live_price))
+            touched_mid = (prev_high >= prev_kc_mid) or (prev_high >= prev_ma15)
+            if touched_mid:
+                # 實體 >= 0.3 扭頭
+                if prev_is_bearish and prev_body_ratio >= 0.3:
+                    # MA15 向下攻擊角度
+                    if ma15_slope <= -attack_slope_threshold:
+                        if is_volume_surge:
+                            track_b_ok = True
+                            track_b_reason = "TRACK_B_MID_PULLBACK_SHORT"
+                            
+    if track_b_ok:
+        return True, track_b_reason
         
-    if not is_velocity_slowdown:
-        return False, f"WAIT_MOMENTUM_NOT_READY ({trend_state})"
-        
-    return True, "ALLOW_ENTRY_LIMIT"
+    return False, "WAIT_NO_TRACK_SIGNAL"
 
 
 class UnifiedEntryStrategy(IEntryStrategy):
@@ -132,8 +127,8 @@ class UnifiedEntryStrategy(IEntryStrategy):
 
         try:
             ok, reason = check_streamlined_entry_signal(frame, side, price, **kwargs)
-        except Exception:
-            return False, "WAIT_INSUFFICIENT_INDICATORS", {"action": "WAIT"}
+        except Exception as e:
+            return False, f"WAIT_ERROR_{e}", {"action": "WAIT"}
 
         if ok:
             return True, reason, {"action": "ENTER", "side": side, "reason": reason}

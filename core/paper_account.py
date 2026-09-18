@@ -1127,6 +1127,7 @@ class PaperAccount:
             pos["qty"] = remaining_qty
             pos["margin"] = pos.get("margin", 0.0) - released_margin
             meta["is_half_closed"] = True
+            pos["is_half_closed"] = True
             self.log(
                 f"💰 [紙上交易/分批止盈] {symbol} 平倉 {fraction:.0%} @ {exec_close_price:.6g} | "
                 f"淨損益: {net_pnl:+.2f} USDT | 剩餘 {remaining_qty:.6g} 繼續持有",

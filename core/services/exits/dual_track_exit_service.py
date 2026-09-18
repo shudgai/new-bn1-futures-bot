@@ -169,42 +169,103 @@ def check_hard_stop_exit(position: dict, frame: 'pd.DataFrame', price: float) ->
         pass
     return None
 
+def check_partial_take_profit(position: dict, frame: 'pd.DataFrame', price: float) -> str | None:
+    """
+    目標一：當價格達到 KC 對稱點 (中軌 -> 對向軌道) 時，平掉 50% 倉位。
+    """
+    if position.get("is_half_closed"):
+        return None
+        
+    if frame is None or len(frame) < 1:
+        return None
+        
+    side = position.get("side")
+    kc_upper = float(frame.iloc[-1].get("kc_upper", price))
+    kc_lower = float(frame.iloc[-1].get("kc_lower", price))
+    
+    if side == "LONG":
+        if price >= kc_upper:
+            return "PARTIAL_TAKE_PROFIT"
+    elif side == "SHORT":
+        if price <= kc_lower:
+            return "PARTIAL_TAKE_PROFIT"
+            
+    return None
+
 def check_trailing_stop_exit(position: dict, frame: 'pd.DataFrame', price: float, fee: float = 0.0005, slippage: float = 0.0005) -> str | None:
     """
-    第二層：寬幅移動止損 (Trailing Stop)
-    目的：鎖定獲利，但給予足夠的寬容度 (1.5 ATR)，避免在趨勢中段被洗出場。
+    第二層：保本與結構式移動鎖利 (Break-Even & Structural Trailing Stop)
+    1. 當獲利 >= 1R 時，止損點移至進場點。
+    2. 當獲利 > 1R 後，止損點跟隨前一個結構點 (Swing High/Low) ± 0.2 ATR，只進不退。
     """
     try:
-        if frame is None or len(frame) < 3:
+        if frame is None or len(frame) < 4:
             return None
             
         side = position.get("side")
         entry = float(position.get("entry_price") or 0)
-        qty = float(position.get("qty") or 0)
-        atr = float(frame.iloc[-2]["atr"])
+        initial_sl = float(position.get("initial_sl") or 0)
         
-        if not (entry > 0 and qty > 0 and atr > 0):
+        # 若沒有 initial_sl，用 2 ATR 估算初始風險
+        atr_current = float(frame.iloc[-1].get("atr", price * 0.01))
+        if initial_sl <= 0:
+            if side == "LONG":
+                initial_sl = entry - 2 * atr_current
+            else:
+                initial_sl = entry + 2 * atr_current
+                
+        if entry <= 0:
             return None
             
-        sign = 1 if side == "LONG" else -1
-        execution = price * (1 - sign * slippage)
-        net_profit = sign * (execution - entry) * qty - (entry + execution) * qty * fee
-        net_atr = net_profit / (qty * atr)
-        
-        state = position.setdefault("ratchet_lock_state", {})
-        max_net_atr = max(float(state.get("max_net_atr", 0)), net_atr)
-        state["max_net_atr"] = max_net_atr
-        
-        # 只有當獲利超過 1.0 ATR 時，才啟動移動止損
-        if max_net_atr > 1.0:
-            # 止損線設在最高獲利回撤 1.5 ATR 的位置
-            locked_atr = max_net_atr - 1.5
-            # 更新鎖利線，只升不降
-            current_locked = max(float(state.get("locked_atr", -999)), locked_atr)
-            state["locked_atr"] = current_locked
+        # 初始風險 (1R)
+        initial_risk = abs(entry - initial_sl)
+        if initial_risk <= 0:
+            initial_risk = 2 * atr_current
             
-            if net_atr <= current_locked:
-                return "TRAILING_STOP_EXIT"
+        # 計算目前未實現利潤
+        sign = 1 if side == "LONG" else -1
+        current_profit = sign * (price - entry)
+        
+        # 狀態紀錄
+        state = position.setdefault("v7_trailing_state", {})
+        current_sl = float(state.get("current_sl", initial_sl))
+        
+        atr = float(frame.iloc[-2].get("atr", atr_current))
+        
+        if side == "LONG":
+            # 獲利 >= 1R
+            if current_profit >= initial_risk:
+                # 至少保本
+                new_sl = max(current_sl, entry)
+                
+                # 尋找前一個結構點 (過去 3 根已收線的最低點)
+                swing_low = float(frame["low"].iloc[-4:-1].min())
+                # 加上 0.2 ATR 緩衝 (多單防插針往外擴)
+                structural_sl = swing_low - (0.2 * atr)
+                
+                # 止損點只進不退
+                new_sl = max(new_sl, structural_sl)
+                state["current_sl"] = new_sl
+                
+            if price <= state.get("current_sl", initial_sl):
+                return "TRAILING_STOP_EXIT_V7"
+                
+        elif side == "SHORT":
+            if current_profit >= initial_risk:
+                # 至少保本
+                new_sl = min(current_sl, entry)
+                
+                # 尋找前一個結構點 (過去 3 根已收線的最高點)
+                swing_high = float(frame["high"].iloc[-4:-1].max())
+                # 加上 0.2 ATR 緩衝 (空單防插針往外擴)
+                structural_sl = swing_high + (0.2 * atr)
+                
+                # 止損點只進不退
+                new_sl = min(new_sl, structural_sl)
+                state["current_sl"] = new_sl
+                
+            if price >= state.get("current_sl", initial_sl):
+                return "TRAILING_STOP_EXIT_V7"
                 
     except Exception:
         pass
@@ -325,6 +386,11 @@ class DualTrackExitStrategy(IExitStrategy):
         emergency_reason = check_emergency_exit(position, frame, price)
         if emergency_reason:
             return emergency_reason
+            
+        # 0.5 目標一：半倉停利 (KC 對稱點)
+        partial_tp_reason = check_partial_take_profit(position, frame, price)
+        if partial_tp_reason:
+            return partial_tp_reason
             
         # 1. 硬性防禦 (保命符)
         hard_stop_reason = check_hard_stop_exit(position, frame, price)
