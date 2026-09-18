@@ -493,17 +493,22 @@ def check_warning_partial_close(position: dict, frame: pd.DataFrame, price: floa
 
         kc_upper_closed = float(last_closed.get("kc_upper", price))
         kc_lower_closed = float(last_closed.get("kc_lower", price))
+        atr_closed = float(last_closed.get("atr", price * 0.01))
 
         # 動能衰竭：實體縮小 且 量能萎縮
         momentum_slows = (c_body < p_body) and (c_vol < p_vol)
 
         if side == "LONG":
-            touches_band = float(last_closed["high"]) >= kc_upper_closed
+            # 空間確認：距離上軌 <= 1.5 * ATR (即代表價格位於靠近極值的高位)
+            distance_to_band = kc_upper_closed - float(last_closed["high"])
+            touches_band = distance_to_band <= (1.5 * atr_closed)
             if touches_band and momentum_slows:
                 return "PARTIAL_TAKE_PROFIT"
                 
         elif side == "SHORT":
-            touches_band = float(last_closed["low"]) <= kc_lower_closed
+            # 空間確認：距離下軌 <= 1.5 * ATR (即代表價格位於靠近極值的低位)
+            distance_to_band = float(last_closed["low"]) - kc_lower_closed
+            touches_band = distance_to_band <= (1.5 * atr_closed)
             if touches_band and momentum_slows:
                 return "PARTIAL_TAKE_PROFIT"
 

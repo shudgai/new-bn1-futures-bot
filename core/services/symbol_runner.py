@@ -112,6 +112,8 @@ async def process_single_symbol_runner(
                     if closed:
                         existing_pos["has_warning_partial_close"] = True
                         meta["has_warning_partial_close"] = True
+                        # 重新對齊剩餘倉位的保底鎖利 (強制重新計算鎖利距離)
+                        existing_pos.pop("v10_phase_trailing", None)
                         engine.account.save_state()
                 else:
                     engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
