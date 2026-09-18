@@ -1977,7 +1977,8 @@ class TradingEngine:
                 return False
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
-            if not ck_reverse and not live_pivot:
+            is_v9_signal = signal.get("signal_code", "").startswith("TRACK_")
+            if not ck_reverse and not live_pivot and not is_v9_signal:
                 final_entry = self._channel_swing_action(fresh_frame, planned_price)
                 if final_entry.get("action") != "ENTER" or final_entry.get("side") != side:
                     self.account.log(
@@ -1985,7 +1986,7 @@ class TradingEngine:
                         "INFO",
                     )
                     return False
-            if not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
+            if not is_v9_signal and not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
                     reverse_quote_ready(self, symbol, fresh_frame, planned_price, side) if ck_reverse else aligned_entry_ready(fresh_frame, planned_price, side)):
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
@@ -1995,7 +1996,7 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
-            if not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
+            if not is_v9_signal and not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
                     self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, ck_reverse=True)
                     if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side)):
                 self.account.log(f"⏳ {symbol} {side} KC_ENTRY_QUOTE_WAIT：報價過期或進場條件失效", "INFO")
@@ -2364,7 +2365,10 @@ class TradingEngine:
         from core.engine import market_crash_entries_paused # ensure accessible
         is_system_halted = market_crash_entries_paused(getattr(self, "_market_crash_entry_cooldown_until", 0.0), time.time())
         
-        if not aligned_entry_ready(frame, price, side, last_exit_bar=last_exit_bar, is_system_halted=is_system_halted):
+        is_v9_signal = v8_reason and v8_reason.startswith("TRACK_")
+        if is_system_halted:
+            return False
+        if not is_v9_signal and not aligned_entry_ready(frame, price, side, last_exit_bar=last_exit_bar, is_system_halted=is_system_halted):
             return False
 
         lock = getattr(self, "_channel_break_execution_lock", None)
@@ -2403,13 +2407,17 @@ class TradingEngine:
             held_side = position.get("side") if position else (
                 ("SHORT" if side == "LONG" else "LONG") if retry_reverse else None
             )
-            decision = self._channel_swing_action(
-                frame, price, position.get("side") if position else None,
-                position_open_timestamp=position.get("open_timestamp") if position else None,
-                position_path=position.get("channel_position_path") if position else None,
-                allow_live_entry=not bool(position),
-                outer_entry_only=retry_reverse,
-            )
+            is_v9_signal = v8_reason and v8_reason.startswith("TRACK_")
+            if is_v9_signal:
+                decision = {"action": "ENTER", "side": side, "reason": v8_reason}
+            else:
+                decision = self._channel_swing_action(
+                    frame, price, position.get("side") if position else None,
+                    position_open_timestamp=position.get("open_timestamp") if position else None,
+                    position_path=position.get("channel_position_path") if position else None,
+                    allow_live_entry=not bool(position),
+                    outer_entry_only=retry_reverse,
+                )
             if decision.get("side") != side or decision.get("action") not in {"ENTER", "REVERSE"}:
                 pending.pop(symbol, None)
                 reverse_bars.pop(symbol, None)
