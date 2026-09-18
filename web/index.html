@@ -569,12 +569,12 @@
                 </div>
             </div>
             <div class="chart-modal-body chart-grid">
-                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': chartModal.states[symbol]?.entryBlock }">
+                <section v-for="(symbol, index) in chartModal.symbols" :key="symbol" class="chart-pane" :class="{ 'has-entry-notice': (chartModal.states[symbol] || {}).entryBlock }">
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ symbol }}</span>
-                            <span class="market-mode-badge" :class="'market-mode-' + (chartModal.states[symbol]?.ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
-                                {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[chartModal.states[symbol]?.ckTrend || 'wait'] }}
+                            <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
+                                {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
                             </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
@@ -582,14 +582,14 @@
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">開倉價:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; color:#3b82f6; font-weight: 600;">
-                                    {{ formatPrice(bot.positions.find(p => p.symbol === symbol)?.entry_price) }}
+                                    {{ formatPrice((getPos(symbol) || {}).entry_price) }}
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">本金:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; font-weight: 600;">
-                                    {{ (bot.positions.find(p => p.symbol === symbol)?.margin || 0).toFixed(2) }} U
+                                    {{ ((getPos(symbol) || {}).margin || 0).toFixed(2) }} U
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
@@ -603,17 +603,17 @@
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">保底獲利:</span>
                                 <span class="chart-pos-info-value text-green" style="font-family:monospace; font-weight: 600;">
-                                    {{ (bot.positions.find(p => p.symbol === symbol)?.locked_profit_usdt || 0) > 0 ? '+' : '' }}{{ (bot.positions.find(p => p.symbol === symbol)?.locked_profit_usdt || 0).toFixed(2) }} U
-                                    <span v-if="bot.positions.find(p => p.symbol === symbol)?.locked_phase" style="font-size: 0.85em; opacity: 0.8;">
-                                        (P{{ bot.positions.find(p => p.symbol === symbol)?.locked_phase }})
+                                    {{ ((getPos(symbol) || {}).locked_profit_usdt || 0) > 0 ? '+' : '' }}{{ ((getPos(symbol) || {}).locked_profit_usdt || 0).toFixed(2) }} U
+                                    <span v-if="(getPos(symbol) || {}).locked_phase" style="font-size: 0.85em; opacity: 0.8;">
+                                        (P{{ (getPos(symbol) || {}).locked_phase }})
                                     </span>
                                 </span>
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">止損價:</span>
-                                <span class="chart-pos-info-value" :style="bot.positions.find(p => p.symbol === symbol)?.ratchet_floor ? 'color:#f59e0b;font-weight:600;font-family:monospace;' : 'color:inherit'">
-                                    {{ bot.positions.find(p => p.symbol === symbol)?.ratchet_floor
+                                <span class="chart-pos-info-value" :style="(getPos(symbol) || {}).ratchet_floor ? 'color:#f59e0b;font-weight:600;font-family:monospace;' : 'color:inherit'">
+                                    {{ (getPos(symbol) || {}).ratchet_floor
                                         ? formatPrice(bot.positions.find(p => p.symbol === symbol).ratchet_floor)
                                         : '未啟動' }}
                                 </span>
@@ -623,15 +623,15 @@
                                 <span class="chart-pos-info-label">保底獲利:</span>
                                 <span
                                     :class="['locked-profit-badge',
-                                        (bot.positions.find(p => p.symbol === symbol)?.locked_profit_usdt || 0) <= 0 ? 'zero' : '',
+                                        ((getPos(symbol) || {}).locked_profit_usdt || 0) <= 0 ? 'zero' : '',
                                         lockedProfitBump[symbol] ? 'bump' : ''
                                     ]"
-                                    :key="bot.positions.find(p => p.symbol === symbol)?.locked_phase"
+                                    :key="(getPos(symbol) || {}).locked_phase"
                                 >
-                                    {{ (bot.positions.find(p => p.symbol === symbol)?.locked_profit_usdt || 0) > 0
+                                    {{ ((getPos(symbol) || {}).locked_profit_usdt || 0) > 0
                                         ? '+' + (bot.positions.find(p => p.symbol === symbol).locked_profit_usdt).toFixed(2) + ' U'
                                         : '未啟動' }}
-                                    <span v-if="bot.positions.find(p => p.symbol === symbol)?.phase_info" style="opacity:0.65;font-size:11px;">
+                                    <span v-if="(getPos(symbol) || {}).phase_info" style="opacity:0.65;font-size:11px;">
                                         ({{ bot.positions.find(p => p.symbol === symbol).phase_info }})
                                     </span>
                                 </span>
@@ -639,13 +639,13 @@
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">未實現盈虧:</span>
-                                <span class="chart-pos-info-value" :style="(bot.positions.find(p => p.symbol === symbol)?.estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
-                                    {{ Number(bot.positions.find(p => p.symbol === symbol)?.estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number(bot.positions.find(p => p.symbol === symbol)?.estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
+                                <span class="chart-pos-info-value" :style="((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
+                                    {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
                                 </span>
                             </span>
                         </div>
                     </div>
-                    <div v-if="chartModal.states[symbol]?.entryBlock" class="chart-entry-notice" role="status">
+                    <div v-if="(chartModal.states[symbol] || {}).entryBlock" class="chart-entry-notice" role="status">
                         <strong>{{ chartModal.states[symbol].entryBlock.message }}</strong>
                         <span>{{ chartModal.states[symbol].entryBlock.detail }}</span>
                     </div>
@@ -949,7 +949,7 @@
 
                 if (window.ResizeObserver) {
                     ctx.resizeObserver = new ResizeObserver(entries => {
-                        const rect = entries[0]?.contentRect;
+                        const rect = (entries[0] || {}).contentRect;
                         if (rect && ctx.chart && rect.width > 0 && rect.height > 0) {
                             ctx.chart.applyOptions({ width: rect.width, height: rect.height });
                         }
@@ -977,8 +977,8 @@
                     // 使用者已切換幣種或圖表已被明確關閉時，不碰新的圖表實體。
                     if (!ctx.chart || !this.chartModal.symbols.includes(symbol)) return;
                     
-                    state.entryBlock = json.cache?.source === 'stale' ? null : (json.entry_block || null);
-                    state.ckTrend = json.cache?.source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
+                    state.entryBlock = (json.cache || {}).source === 'stale' ? null : (json.entry_block || null);
+                    state.ckTrend = (json.cache || {}).source === 'stale' ? 'wait' : this.getClosedCkTrend(json.data);
                     const candles = [];
                     const ma3 = [];
                     const ma15 = [];
@@ -1013,7 +1013,7 @@
                             });
                     });
                     
-                    const referencePrice = Number(candles[candles.length - 1]?.close || 0);
+                    const referencePrice = Number((candles[candles.length - 1] || {}).close || 0);
                     const precision = referencePrice < 0.01 ? 8 : referencePrice < 1 ? 6 : referencePrice < 100 ? 4 : 2;
                     const priceFormat = { type: 'price', precision, minMove: 10 ** -precision };
                     [ctx.candlestickSeries, ctx.ma3Series, ctx.ma15Series,
@@ -1243,6 +1243,9 @@
                     return raw - (pos.entry_price + curr) * pos.qty * feeRate
                         - curr * pos.qty * slippage;
                 },
+                getPos(symbol) {
+                    return (this.bot && this.bot.positions) ? this.bot.positions.find(p => p.symbol === symbol) : null;
+                },
                 getPosRoePct(pos) {
                     const pnl = this.getPosEstimatedNetPnl(pos);
                     if (!pos.margin || pos.margin === 0) return 0;
@@ -1279,7 +1282,7 @@
                         const res = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
-                        const currentTickerTime = Number(this.bot?.ticker_updated_at || 0);
+                        const currentTickerTime = Number((this.bot || {}).ticker_updated_at || 0);
                         const incomingTickerTime = Number(data.ticker_updated_at || 0);
                         if (currentTickerTime > incomingTickerTime) {
                             data.tickers = this.bot.tickers;
@@ -1296,7 +1299,7 @@
                         const res = await fetch('/api/prices?_=' + Date.now(), { cache: 'no-store' });
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
-                        const currentTickerTime = Number(this.bot?.ticker_updated_at || 0);
+                        const currentTickerTime = Number((this.bot || {}).ticker_updated_at || 0);
                         const incomingTickerTime = Number(data.ticker_updated_at || 0);
                         if (incomingTickerTime < currentTickerTime) return;
                         if (data.symbols) this.bot.symbols = data.symbols;
@@ -1429,7 +1432,7 @@
                         this.chartModal.symbols.forEach((symbol, index) => {
                             const container = document.getElementById('tv-chart-' + index);
                             const ctx = (this._charts || {})[symbol];
-                            if (container && ctx?.chart) {
+                            if (container && (ctx || {}).chart) {
                                 ctx.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
                             }
                         });
