@@ -2135,6 +2135,10 @@ class TradingEngine:
             amount, leverage, planned_price,
             planned_price if channel_swing_no_stop else sl,
         )
+        # Track D (趨勢延續) 套用 size_fraction 縮減倉位
+        size_fraction = float(signal.get("size_fraction", 1.0))
+        if size_fraction != 1.0:
+            amount = amount * size_fraction
         if amount < MIN_TRADE_USDT:
             self.account.log(f"🛑 {symbol} 風控縮減後金額 {amount:.2f}U 低於最小交易門檻 {MIN_TRADE_USDT}U，放棄掛單", "WARNING")
             return False
