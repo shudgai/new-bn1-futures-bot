@@ -332,8 +332,19 @@ async def process_single_symbol_runner(
                     continue
 
                 engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
+                
+                # Track D (趨勢延續) 使用 50% 倉位，盈虧比較低，以頻率彌補
+                is_track_d = reason.startswith("TRACK_D_")
+                size_fraction = 0.5 if is_track_d else 1.0
+                if is_track_d:
+                    engine.account.log(
+                        f"📈 [趨勢延續單] {symbol} Track D 觸發，自動套用 50% 基礎倉位（緩步順勢策略）",
+                        "INFO"
+                    )
+                
                 await engine._execute_confirmed_channel_break(
-                    symbol, channel_df, channel_price, direct_side, daily_halt, v8_reason=reason
+                    symbol, channel_df, channel_price, direct_side, daily_halt,
+                    v8_reason=reason, size_fraction=size_fraction
                 )
                 break
             

@@ -171,3 +171,45 @@ def test_entry_trend_relay_bypass():
     ok, reason = check_streamlined_entry_signal(df, "LONG", live_price, relay_forced=True)
     assert ok is True
     assert reason == "TRACK_B_MID_PULLBACK_LONG"
+
+def test_entry_track_d_trend_continuation_short():
+    # KC 通道連續 4 根下降，最近 3 根中 2 根陰線且階梯式收低，即時報價在中軌下方
+    rows = []
+    kc_mids = [105.0, 104.0, 103.0, 102.0, 101.0]
+    for i, mid in enumerate(kc_mids):
+        c = 103.0 - i * 0.5   # 103.0, 102.5, 102.0, 101.5, 101.0 → 陰線階梯下跌
+        o = c + 0.3
+        rows.append({
+            "open": o, "close": c, "high": o + 0.1, "low": c - 0.1,
+            "volume": 80.0, "vol_ma_5": 100.0,
+            "kc_upper": mid + 3, "kc_middle": mid, "kc_lower": mid - 3,
+            # 空頭排列：ma3 必須 < kc_middle，且 live_price 也必須 < ma3 < kc_middle
+            "ma3": mid - 0.3, "ma15": mid + 0.5,
+            "ma15_slope": -0.0003, "atr": 1.0, "ema_20": mid
+        })
+    df = pd.DataFrame(rows)
+    last_mid = kc_mids[-1]       # 101.0
+    # latest ma3 = 101.0 - 0.3 = 100.7
+    live_price = last_mid - 0.8  # 100.2 < ma3(100.7) < kc_middle(101.0) ✓
+    ok, reason = check_streamlined_entry_signal(df, "SHORT", live_price)
+    assert ok is True
+    assert reason == "TRACK_D_TREND_CONT_SHORT"
+
+def test_entry_track_d_blocked_when_not_cascading():
+    # 最近 3 根中有陰線但收盤價未階梯式下跌（反彈），不應觸發 Track D
+    rows = []
+    kc_mids = [105.0, 104.0, 103.0, 102.0, 101.0]
+    closes = [103.0, 102.5, 103.2, 102.8, 102.0]  # 第 3 根反彈，非階梯式
+    for i, (mid, c) in enumerate(zip(kc_mids, closes)):
+        o = c + 0.3
+        rows.append({
+            "open": o, "close": c, "high": o + 0.1, "low": c - 0.1,
+            "volume": 80.0, "vol_ma_5": 100.0,
+            "kc_upper": mid + 3, "kc_middle": mid, "kc_lower": mid - 3,
+            "ma3": mid - 0.5, "ma15": mid + 0.2,
+            "ma15_slope": -0.0003, "atr": 1.0, "ema_20": mid
+        })
+    df = pd.DataFrame(rows)
+    live_price = 101.2
+    ok, reason = check_streamlined_entry_signal(df, "SHORT", live_price)
+    assert ok is False

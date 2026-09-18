@@ -138,18 +138,81 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 track_c_ok = True
                 track_c_reason = "TRACK_C_BREAKOUT_SHORT"
                         
+    # ==========================================
+    # 軌道 D：趨勢延續 (Trend Continuation)
+    # 適用場景：KC 通道方向已確立，價格在通道內緩慢順勢下滑/上升
+    # 不要求放量（陰跌/陽漲往往無量），但要求「階梯式」實體方向
+    # ==========================================
+    track_d_ok = False
+    track_d_reason = ""
+
+    if len(df) >= 5:
+        # L1：取最近 4 根已收線的 kc_middle，確認通道連續方向
+        kc_mids = [float(df.iloc[i].get("kc_middle", 0) or df.iloc[i].get("ema_20", 0)) for i in range(-5, -1)]
+        is_channel_down = all(kc_mids[i] > kc_mids[i + 1] for i in range(len(kc_mids) - 1))
+        is_channel_up   = all(kc_mids[i] < kc_mids[i + 1] for i in range(len(kc_mids) - 1))
+
+        # L2：最近 3 根已收線實體分析
+        recent_bars = [df.iloc[i] for i in range(-4, -1)]  # 3 根已收線
+
+        if side == "SHORT" and is_channel_down and ma3 < kc_middle:
+            bearish_count = 0
+            cascading = True
+            prev_close_ref = None  # 只追蹤有效陰線的收盤位（過濾十字星干擾）
+            for bar in recent_bars:
+                b_open  = float(bar["open"]);  b_close = float(bar["close"])
+                b_high  = float(bar["high"]);  b_low   = float(bar["low"])
+                b_range = b_high - b_low
+                b_body  = abs(b_close - b_open)
+                b_ratio = b_body / b_range if b_range > 0 else 0
+                if b_close < b_open and b_ratio >= 0.25:  # 有效陰線
+                    bearish_count += 1
+                    if prev_close_ref is not None and b_close >= prev_close_ref:
+                        cascading = False  # 有效陰線中收盤未再創新低 → 不是階梯式
+                    prev_close_ref = b_close  # 只用有效陰線更新參考點
+            if bearish_count >= 2 and cascading:
+                # L3：即時確認
+                if live_price < kc_middle and live_price < ma3:
+                    track_d_ok = True
+                    track_d_reason = "TRACK_D_TREND_CONT_SHORT"
+
+        elif side == "LONG" and is_channel_up and ma3 > kc_middle:
+            bullish_count = 0
+            cascading = True
+            prev_close_ref = None  # 只追蹤有效陽線的收盤位
+            for bar in recent_bars:
+                b_open  = float(bar["open"]);  b_close = float(bar["close"])
+                b_high  = float(bar["high"]);  b_low   = float(bar["low"])
+                b_range = b_high - b_low
+                b_body  = abs(b_close - b_open)
+                b_ratio = b_body / b_range if b_range > 0 else 0
+                if b_close > b_open and b_ratio >= 0.25:  # 有效陽線
+                    bullish_count += 1
+                    if prev_close_ref is not None and b_close <= prev_close_ref:
+                        cascading = False  # 有效陽線中收盤未再創新高 → 不是階梯式
+                    prev_close_ref = b_close  # 只用有效陽線更新參考點
+            if bullish_count >= 2 and cascading:
+                # L3：即時確認
+                if live_price > kc_middle and live_price > ma3:
+                    track_d_ok = True
+                    track_d_reason = "TRACK_D_TREND_CONT_LONG"
+
+    # 優先順序：A > C > B > D（D 只在前三者都無訊號時才觸發）
     track_reason = ""
     if track_a_ok:
         track_reason = track_a_reason
-    elif track_b_ok:
-        track_reason = track_b_reason
     elif track_c_ok:
         track_reason = track_c_reason
+    elif track_b_ok:
+        track_reason = track_b_reason
+    elif track_d_ok:
+        track_reason = track_d_reason
         
     if track_reason:
         return True, track_reason
 
     return False, "WAIT_NO_TRACK_SIGNAL"
+
 
 
 
