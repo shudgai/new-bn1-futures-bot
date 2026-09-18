@@ -326,6 +326,8 @@ async def process_single_symbol_runner(
                     entry_decision = {"action": "ENTER"}
                 elif not allowed or entry_decision.get("action") != "ENTER":
                     print(f"[{symbol}] {direct_side} Rejected: {reason}", flush=True)
+                    if reason == "WAIT_PROFIT_SPACE_TOO_SMALL":
+                        engine.account.log(f"[Skip Order] 預期獲利空間不足 ({symbol} {direct_side})，跳過開倉。", "INFO")
                     # 選項B：非接力期間若是高分也可進兩方
                     if not relay_entry_forced and relay_watch and relay_watch.get("relay_phase") != "CONFIRMED":
                         continue   # 接力觀察中且未確認 → 跳過（等回調）
