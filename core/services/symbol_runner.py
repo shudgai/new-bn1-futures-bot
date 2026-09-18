@@ -109,6 +109,10 @@ async def process_single_symbol_runner(
                         f"DualTrackExit {exit_reason}",
                         fraction=0.5
                     )
+                    if closed:
+                        existing_pos["has_warning_partial_close"] = True
+                        meta["has_warning_partial_close"] = True
+                        engine.account.save_state()
                 else:
                     engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
                     closed = await engine.account.close_position(

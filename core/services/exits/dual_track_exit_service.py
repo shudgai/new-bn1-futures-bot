@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 
 # V10 狀態追蹤鍵列，持久化結構追蹤狀態
 # v10_phase_trailing 取代 v10_ladder：改用 KC 三階段移動止損
-DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing"]
+DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close"]
 
 class DualTrackExitStrategy:
     def __init__(self, account=None, fee: float = 0.0004, slippage: float = 0.0005):
@@ -30,41 +30,41 @@ class DualTrackExitStrategy:
             elif side == "SHORT" and price < kc_lower:
                 position["trade_phase"] = "EXHAUSTION_ZONE"
 
-        # 1. 帳戶硬止損 (真正的防禦線崩塌，最高優先級)
+        # 1. 帳戶硬止損與斷路器 (最高優先級：保命防禦)
         hard_stop_reason = check_hard_stop_exit(position, frame, price)
         if hard_stop_reason:
             return hard_stop_reason
+            
+        emergency_reason = check_emergency_exit(position, frame, price)
+        if emergency_reason:
+            return emergency_reason
 
-        # 2. KC 三階段移動止損（Phase Trailing Stop）
-        #    這已經是絕對保證獲利的防線，優先處理
+        # 2. 峰谷全平 (結構瓦解點：結構性收割)
+        peak_reason = check_peak_exhaustion_exit(position, frame, price)
+        if peak_reason:
+            size = float(position.get("size") or position.get("qty") or 0)
+            entry_price = float(position.get("entry_price") or 0)
+            if size > 0 and entry_price > 0:
+                gross_pnl = (price - entry_price) * size if side == "LONG" else (entry_price - price) * size
+                net_pnl = gross_pnl - (price * size * (2 * self.fee + self.slippage))
+                if net_pnl > 0:
+                    return peak_reason
+                else:
+                    return None
+            else:
+                return peak_reason
+
+        # 3. KC 三階段移動止損 (動態保底：大波段底線)
         phase_trail_reason = check_kc_phase_trailing_stop(
             position, frame, price, self.fee, self.slippage
         )
         if phase_trail_reason:
             return phase_trail_reason
 
-        # 3. 主動平倉訊號（包含災難斷路器與峰谷瓦解）
-        active_reason = check_emergency_exit(position, frame, price) or check_peak_exhaustion_exit(position, frame, price)
-        
-        if active_reason:
-            size = float(position.get("size") or position.get("qty") or 0)
-            entry_price = float(position.get("entry_price") or 0)
-            if size > 0 and entry_price > 0:
-                gross_pnl = (price - entry_price) * size if side == "LONG" else (entry_price - price) * size
-                net_pnl = gross_pnl - (price * size * (2 * self.fee + self.slippage))
-                
-                # ── 動態保底平倉 (Dynamic Floor Exit) 機制 ──
-                if net_pnl > 0:
-                    # 情況 A：已經獲利，直接平倉落袋為安
-                    return active_reason
-                else:
-                    # 情況 B：虧損或平手，啟動保本防禦 (暫緩平倉)
-                    # 由於如果破防，前方的 hard_stop_reason 早就攔截了，
-                    # 走到這裡代表「還沒破初始止損防線」，因此給予空間，不執行平倉
-                    return None
-            else:
-                # 萬一沒有 size 或 entry_price (異常狀況)，保守回傳訊號
-                return active_reason
+        # 4. 預警性減倉 (動能衰竭點：預測性收割 50%)
+        warning_reason = check_warning_partial_close(position, frame, price)
+        if warning_reason:
+            return warning_reason
 
         return None
 
@@ -308,27 +308,17 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
 
 def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
     """
-    峰谷三點結構瓦解 (V10.2 三維結構過濾版)
-
-    基礎三點 (AND)：
-      條件一 (空間)：從軌道外收回軌道內
-      條件二 (動能)：大實體反向 K (>= 0.5)
-      條件三 (防線)：收盤跌破 / 突破 MA3
-
-    結構過濾層 (AND，三點均通過才過濾)：
-      過濾一 (空間深度)：收回幅度 >= 0.5 ATR — 過濾掉「剛碰軌就小回」的假訊號
-      過濾二 (成交量)  ：反轉 K 成交量 >= 1.2x 近 5 根均量 — 確保主力真實介入
-      過濾三 (斜率反轉)：MA15 斜率已由正轉負 (多 → 空) 或由負轉正 (空 → 多) — 確認動能真正換手
+    峰谷全平 (結構瓦解點)
+    觸發條件：價格收回軌道內 -> 大實體反轉 K 線 -> 破 MA3。
+    動作：執行全平(剩餘倉位)。
+    目的：在趨勢結構徹底瓦解時，收割最後的獲利。
     """
     try:
-        trade_phase = position.get("trade_phase", "TRENDING")
-        if trade_phase != "EXHAUSTION_ZONE":
-            return None
-
         side = position.get("side")
-        last_closed = frame.iloc[-2]      # 最近一根已收線 K 棒
-        prev_closed  = frame.iloc[-3]      # 前一根，用於計算斜率變化
-
+        if not side or len(frame) < 3:
+            return None
+            
+        last_closed = frame.iloc[-2]
         c_open  = float(last_closed["open"])
         c_close = float(last_closed["close"])
         c_high  = float(last_closed["high"])
@@ -338,27 +328,9 @@ def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float
         c_body     = abs(c_close - c_open)
         body_ratio = c_body / c_height if c_height > 0 else 0
 
-        p_open  = float(prev_closed["open"])
-        p_close = float(prev_closed["close"])
-        p_high  = float(prev_closed["high"])
-        p_low   = float(prev_closed["low"])
-        p_body  = abs(p_close - p_open)
-
         kc_upper_closed = float(last_closed.get("kc_upper", price))
         kc_lower_closed = float(last_closed.get("kc_lower", price))
-        kc_mid_closed   = float(last_closed.get("kc_middle") or last_closed.get("ema_20") or price)
         ma3_closed      = float(last_closed.get("ma3", price))
-        atr_closed      = float(last_closed.get("atr", (c_high - c_low) or price * 0.01))
-
-        # ── 結構過濾層 ──────────────────────────────────────────────
-        # 過濾一：空間深度 >= 0.5 ATR
-        if side == "LONG":
-            retrace_depth = kc_upper_closed - c_close
-        else:
-            retrace_depth = c_close - kc_lower_closed
-        space_filter_ok = retrace_depth >= 0.5 * atr_closed
-
-        # 過濾二：成交量 >= 1.2x 近 5 根均量
         try:
             recent_vols = [float(frame.iloc[i].get("volume", 0)) for i in range(-7, -2)]
             vol_ma5 = sum(recent_vols[-5:]) / 5.0 if len(recent_vols) >= 5 else 0
@@ -490,3 +462,52 @@ def check_hard_stop_exit(position: dict, frame: pd.DataFrame, price: float) -> O
     except Exception:
         pass
     return None
+
+def check_warning_partial_close(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
+    """
+    預警性減倉 (動能衰竭點)
+    觸發條件：價格觸碰對側外軌（多單碰上軌、空單碰下軌）+ 實體縮小 + 量能萎縮。
+    狀態檢查：如果 has_warning_partial_close 已為 True，則不觸發，避免重複減倉。
+    回傳：PARTIAL_TAKE_PROFIT 執行 50% 減倉。
+    """
+    try:
+        if position.get("has_warning_partial_close"):
+            return None
+
+        side = position.get("side")
+        if not side or len(frame) < 3:
+            return None
+
+        last_closed = frame.iloc[-2]
+        prev_closed = frame.iloc[-3]
+
+        c_open  = float(last_closed["open"])
+        c_close = float(last_closed["close"])
+        c_body  = abs(c_close - c_open)
+        c_vol   = float(last_closed.get("volume", 0))
+
+        p_open  = float(prev_closed["open"])
+        p_close = float(prev_closed["close"])
+        p_body  = abs(p_close - p_open)
+        p_vol   = float(prev_closed.get("volume", 0))
+
+        kc_upper_closed = float(last_closed.get("kc_upper", price))
+        kc_lower_closed = float(last_closed.get("kc_lower", price))
+
+        # 動能衰竭：實體縮小 且 量能萎縮
+        momentum_slows = (c_body < p_body) and (c_vol < p_vol)
+
+        if side == "LONG":
+            touches_band = float(last_closed["high"]) >= kc_upper_closed
+            if touches_band and momentum_slows:
+                return "PARTIAL_TAKE_PROFIT"
+                
+        elif side == "SHORT":
+            touches_band = float(last_closed["low"]) <= kc_lower_closed
+            if touches_band and momentum_slows:
+                return "PARTIAL_TAKE_PROFIT"
+
+    except Exception:
+        pass
+    return None
+

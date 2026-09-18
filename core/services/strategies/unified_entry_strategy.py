@@ -42,10 +42,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     prev_is_bullish = prev_close > prev_open
     prev_is_bearish = prev_close < prev_open
     
-    # 成交量數據
-    current_vol = float(latest.get("volume", 0.0))
-    vol_ma_5 = float(latest.get("vol_ma_5", 0.0))
-    is_volume_surge = current_vol >= vol_ma_5
+    # 成交量數據 (判斷上一根已收線是否有放量)
+    prev_vol = float(prev.get("volume", 0.0))
+    prev_vol_ma_5 = float(prev.get("vol_ma_5", 0.0))
+    is_volume_surge = prev_vol >= prev_vol_ma_5
     
     # ==========================================
     # 軌道 A：極值反轉 (大波段)
@@ -119,21 +119,19 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     track_c_reason = ""
     
     if side == "LONG":
-        # 價格放量衝破 KC 上軌，且 MA15 斜率向上攻擊，實體 >= 0.3
+        # 價格衝破 KC 上軌
         if live_price > kc_upper:
             if prev_is_bullish and prev_body_ratio >= 0.3:
-                if ma15_slope >= attack_slope_threshold:
-                    if is_volume_surge:
-                        track_c_ok = True
-                        track_c_reason = "TRACK_C_BREAKOUT_LONG"
+                if is_volume_surge:
+                    track_c_ok = True
+                    track_c_reason = "TRACK_C_BREAKOUT_LONG"
     elif side == "SHORT":
-        # 價格放量衝破 KC 下軌，且 MA15 斜率向下攻擊，實體 >= 0.3
+        # 價格衝破 KC 下軌
         if live_price < kc_lower:
             if prev_is_bearish and prev_body_ratio >= 0.3:
-                if ma15_slope <= -attack_slope_threshold:
-                    if is_volume_surge:
-                        track_c_ok = True
-                        track_c_reason = "TRACK_C_BREAKOUT_SHORT"
+                if is_volume_surge:
+                    track_c_ok = True
+                    track_c_reason = "TRACK_C_BREAKOUT_SHORT"
                         
     track_reason = ""
     if track_a_ok:
@@ -144,30 +142,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         track_reason = track_c_reason
         
     if track_reason:
-        # ==========================================
-        # V9.1 盈虧比空間過濾 (Profit Space Filter)
-        # ==========================================
-        # 1. 計算風險 (Risk)
-        if side == "LONG":
-            risk = max(live_price - prev_low, 1e-8)
-        else:
-            risk = max(prev_high - live_price, 1e-8)
-            
-        # 2. 計算潛在獲利 (Reward)
-        if "TRACK_C" in track_reason:
-            # 破軌突破：目標為一整個通道寬度
-            reward = kc_upper - kc_lower
-        else:
-            # 軌道 A / B：目標為對側軌道
-            if side == "LONG":
-                reward = kc_upper - live_price
-            else:
-                reward = live_price - kc_lower
-                
-        # 3. 過濾條件
-        if reward < 2 * risk:
-            return False, f"WAIT_INSUFFICIENT_REWARD_SPACE_{track_reason}"
-            
         return True, track_reason
 
     return False, "WAIT_NO_TRACK_SIGNAL"
