@@ -195,3 +195,45 @@ def test_trend_signal_does_not_close_or_reverse_held_position(side):
     f = aligned_frame(side)
     held = "SHORT" if side == "LONG" else "LONG"
     assert TradingEngine._channel_swing_action(f, float(f.iloc[-1]["close"]), held)["action"] == "HOLD"
+
+def test_v51_boundary_conditions(monkeypatch):
+    import core.config
+    monkeypatch.setattr(core.config, "ENV_MIN_KC_BANDWIDTH", 0.012)
+    monkeypatch.setattr(core.config, "ENV_MIN_KC_SLOPE", 0.00001)
+    
+    # Base frame setup
+    f = aligned_frame("LONG", "breakout")
+    
+    # 1. Bandwidth boundary
+    # kc_middle = 100, so bandwidth = (upper - lower) / 100
+    f.loc[19, "kc_middle"] = 100.0
+    f.loc[19, "kc_lower"] = 99.0
+    # 1.19% -> upper = 100.19
+    f.loc[19, "kc_upper"] = 100.19
+    assert aligned_entry(f, 100.1)["action"] == "WAIT"
+    assert aligned_entry(f, 100.1)["reason"] == "ENV_FILTER_BANDWIDTH_REJECTED"
+    
+    # 1.21% -> upper = 100.21
+    f.loc[19, "kc_upper"] = 100.21
+    # Check that it passes bandwidth filter (might fail slope if we don't fix it)
+    f.loc[18, "kc_middle"] = 99.99998 # diff = 0.00002 > 0.00001 (Slope pass)
+    assert aligned_entry(f, 100.1)["reason"] != "ENV_FILTER_BANDWIDTH_REJECTED"
+
+    # 2. Slope boundary
+    # 0.000009 -> Wait
+    f.loc[18, "kc_middle"] = 100.0 - 0.000009
+    assert aligned_entry(f, 100.1)["action"] == "WAIT"
+    assert aligned_entry(f, 100.1)["reason"] == "ENV_FILTER_SLOPE_REJECTED"
+    # 0.000011 -> Pass
+    f.loc[18, "kc_middle"] = 100.0 - 0.000011
+    assert aligned_entry(f, 100.1)["reason"] != "ENV_FILTER_SLOPE_REJECTED"
+    
+    # 3. Distance boundary (Strict Band Boundary)
+    # Price > kc_upper -> REJECTED_OUTSIDE_BAND_OVEREXTENDED
+    assert aligned_entry(f, 100.22)["action"] == "WAIT"
+    assert aligned_entry(f, 100.22)["reason"] == "REJECTED_OUTSIDE_BAND_OVEREXTENDED"
+    
+    # Price < kc_lower -> REJECTED_OUTSIDE_BAND_OVEREXTENDED
+    assert aligned_entry(f, 98.99)["action"] == "WAIT"
+    assert aligned_entry(f, 98.99)["reason"] == "REJECTED_OUTSIDE_BAND_OVEREXTENDED"
+

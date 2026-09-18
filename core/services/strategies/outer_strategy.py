@@ -235,7 +235,16 @@ def aligned_entry(frame, price, **kwargs):
         kc_upper = float(row.get('kc_upper', 0))
         kc_lower = float(row.get('kc_lower', 0))
         kc_middle = float(row.get('kc_middle', row.get('ema_20', 0)))
-        if kc_middle > 0 and (kc_upper - kc_lower) / kc_middle < ENV_MIN_KC_BANDWIDTH:
+        # --- V5.2 Dynamic Bandwidth Filter (動態寬度過濾) ---
+        is_bandwidth_ok = (kc_middle > 0 and (kc_upper - kc_lower) / kc_middle >= ENV_MIN_KC_BANDWIDTH)
+        atr_expanding = False
+        if 'atr' in frame.columns and len(frame) > 6:
+            recent_atr = frame['atr'].iloc[-3:].mean()
+            prev_atr = frame['atr'].iloc[-6:-3].mean()
+            if prev_atr > 0 and (recent_atr / prev_atr - 1) >= 0.20:
+                atr_expanding = True
+                
+        if not is_bandwidth_ok and not atr_expanding:
             return {**wait, "reason": "ENV_FILTER_BANDWIDTH_REJECTED"}
         
         # Slope Filter (middle slope)
@@ -279,9 +288,13 @@ def aligned_entry(frame, price, **kwargs):
         p_close = float(prev_k.get('close', price))
         
         if side == "SHORT":
-            # 1. 邊界過濾 (防地板空): 若 Price <= LowerBand 或 Prev_Close <= LowerBand -> 拒絕
+            # 1. 邊界過濾 (防地板空): 若 Price <= LowerBand 或 Prev_Close <= LowerBand -> 檢查緩衝帶
             if price <= kc_lower or p_close <= kc_lower:
-                return {**wait, "reason": "ANTI_CHASE_OUTSIDE_LOWER_BAND"}
+                velocity_slowdown = kwargs.get("velocity_slowdown", False)
+                if (kc_lower - price) <= 0.3 * atr and velocity_slowdown:
+                    pass
+                else:
+                    return {**wait, "reason": "REJECTED_OUTSIDE_BAND_OVEREXTENDED"}
                 
             # 2. 乖離限制: (kc_middle - Price) / ATR > 1.5 -> 拒絕
             if atr > 0 and (kc_middle - price) / atr > 1.5:
@@ -295,9 +308,13 @@ def aligned_entry(frame, price, **kwargs):
                 return {**wait, "reason": "ANTI_CHASE_REJECTION_CANDLE"}
                 
         elif side == "LONG":
-            # 1. 邊界過濾 (防天花板多): 若 Price >= UpperBand -> 拒絕
+            # 1. 邊界過濾 (防天花板多): 若 Price >= UpperBand -> 檢查緩衝帶
             if price >= kc_upper:
-                return {**wait, "reason": "ANTI_CHASE_OUTSIDE_UPPER_BAND"}
+                velocity_slowdown = kwargs.get("velocity_slowdown", False)
+                if (price - kc_upper) <= 0.3 * atr and velocity_slowdown:
+                    pass
+                else:
+                    return {**wait, "reason": "REJECTED_OUTSIDE_BAND_OVEREXTENDED"}
                 
             # 2. 乖離限制: (Price - kc_middle) / ATR > 1.5 -> 拒絕
             if atr > 0 and (price - kc_middle) / atr > 1.5:

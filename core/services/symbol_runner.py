@@ -77,6 +77,26 @@ async def process_single_symbol_runner(
             
             if exit_reason:
                 is_limit_exit = "LIMIT_EXIT" in exit_reason
+                
+                # --- V5.1.1 限價單保險裝置 (Safety Net for Limit Orders) ---
+                if is_limit_exit:
+                    limit_state = meta.setdefault("limit_exit_state", {})
+                    if not limit_state:
+                        limit_state["ticks"] = 0
+                        limit_state["trigger_price"] = channel_price
+                        limit_state["atr"] = float(channel_df.iloc[-2]["atr"]) if len(channel_df) >= 2 else 0.0
+                    else:
+                        limit_state["ticks"] += 1
+                        
+                    if limit_state["ticks"] >= 3:
+                        deviation = abs(channel_price - limit_state.get("trigger_price", channel_price))
+                        if deviation > 0.5 * limit_state.get("atr", 0):
+                            engine.account.log(f"🚨 [限價單保險觸發] {symbol} 限價逾時且價格偏離 > 0.5 ATR，強制轉市價平倉！", "WARNING")
+                            is_limit_exit = False
+                            meta.pop("limit_exit_state", None)
+                else:
+                    meta.pop("limit_exit_state", None)
+                    
                 order_type_str = "限價單" if is_limit_exit else "市價單"
                 
                 engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
@@ -122,9 +142,11 @@ async def process_single_symbol_runner(
                 return signal_progress, detected_candidates
                 
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
+            from core.engine import get_velocity_slowdown
+            velocity_slowdown = get_velocity_slowdown(engine.tick_buffers.get(symbol, []))
             for direct_side in ("LONG", "SHORT"):
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
-                    channel_df, channel_price, direct_side,
+                    channel_df, channel_price, direct_side, velocity_slowdown=velocity_slowdown
                 )
                 if not allowed or entry_decision.get("action") != "ENTER":
                     continue
