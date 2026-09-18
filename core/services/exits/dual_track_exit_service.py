@@ -135,34 +135,42 @@ def check_kc_phase_trailing_stop(
             swing_extreme = min(state.get("swing_extreme", entry_price), price)
         state["swing_extreme"] = swing_extreme
 
-        # ── Phase 升級判斷（只升不降）─────────────────────────────
-        # Phase 3：進入 EXHAUSTION_ZONE（超越外軌）
-        # Phase 2：現價觸及持倉側外軌
-        # Phase 1：現價首次觸及 KC 中軌 AND 淨利 > 0
+        # ── Phase 升級判斷 (只升不降) ──
+        # Phase 升級必須同時滿足「結構條件」與「利潤空間」，確保不會將止損設在現價前方。
+        # Phase 3：進入 EXHAUSTION_ZONE (超越外軌) 且獲利 >= 6U
+        # Phase 2：現價觸及持倉側外軌 且獲利 >= 4U
+        # Phase 1：現價首次觸及 KC 中軌 且獲利 >= 2U
         new_phase = current_phase
-        if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3:
+        if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3 and net_pnl >= 6.0:
             new_phase = 3
-        elif current_phase < 2:
+        elif current_phase < 2 and net_pnl >= 4.0:
             if side == "LONG" and price >= kc_upper:
                 new_phase = 2
             elif side == "SHORT" and price <= kc_lower:
                 new_phase = 2
-        if current_phase < 1 and new_phase < 2:
-            if side == "LONG" and price >= kc_middle and net_pnl > 0:
+        
+        if current_phase < 1 and new_phase < 2 and net_pnl >= 2.0:
+            if side == "LONG" and price >= kc_middle:
                 new_phase = 1
-            elif side == "SHORT" and price <= kc_middle and net_pnl > 0:
+            elif side == "SHORT" and price <= kc_middle:
                 new_phase = 1
 
         if new_phase > current_phase:
             state["phase"] = new_phase
             current_phase = new_phase
 
-        # ── 每 tick 以最新極值重算止損點（棘輪：只往有利方向移動）─
-        # 止損距離 = phase × phase_atr_mult × ATR
-        # 錨點 = swing_extreme（保證止損點永遠在獲利側）
+        # ── 每 tick 以固定 U 數重算止損點 (Fixed 2U Ladder) ──
+        # 止損點 = 確保淨利為 phase * 2U 的價格
         if current_phase > 0:
-            new_stop = _calc_phase_stop(side, swing_extreme, current_phase, phase_atr_mult, atr)
-            if new_stop is not None:
+            target_net = current_phase * 2.0
+            gross_needed = target_net + cost
+            if size > 0:
+                if side == "LONG":
+                    new_stop = entry_price + (gross_needed / size)
+                else:
+                    new_stop = entry_price - (gross_needed / size)
+                
+                # 棘輪：只往有利方向移動
                 current_stop = _update_ratchet_stop(side, current_stop, new_stop)
                 state["stop_price"] = current_stop
 
@@ -306,15 +314,22 @@ def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float
         c_body     = abs(c_close - c_open)
         body_ratio = c_body / c_height if c_height > 0 else 0
 
+        p_open  = float(prev_closed["open"])
+        p_close = float(prev_closed["close"])
+        p_high  = float(prev_closed["high"])
+        p_low   = float(prev_closed["low"])
+        p_body  = abs(p_close - p_open)
+
         kc_upper_closed = float(last_closed.get("kc_upper", price))
         kc_lower_closed = float(last_closed.get("kc_lower", price))
+        kc_mid_closed   = float(last_closed.get("kc_middle") or last_closed.get("ema_20") or price)
         ma3_closed      = float(last_closed.get("ma3", price))
         atr_closed      = float(last_closed.get("atr", (c_high - c_low) or price * 0.01))
 
         # ── 結構過濾層 ──────────────────────────────────────────────
         # 過濾一：空間深度 >= 0.5 ATR
         if side == "LONG":
-            retrace_depth = kc_upper_closed - c_close  # 收回了多深
+            retrace_depth = kc_upper_closed - c_close
         else:
             retrace_depth = c_close - kc_lower_closed
         space_filter_ok = retrace_depth >= 0.5 * atr_closed
@@ -326,38 +341,44 @@ def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float
             c_vol = float(last_closed.get("volume", 0))
             volume_filter_ok = (vol_ma5 <= 0) or (c_vol >= 1.2 * vol_ma5)
         except Exception:
-            volume_filter_ok = True  # 資料缺失時放行，讓基礎三點判斷
+            volume_filter_ok = True  # 資料缺失時放行
 
-        # 過濾三：MA15 斜率反轉 (正 → 負 或 負 → 正)
-        try:
-            ma15_now  = float(last_closed.get("ma15", 0))
-            ma15_prev = float(prev_closed.get("ma15", 0))
-            ma15_slope_now  = float(last_closed.get("ma15_slope",  ma15_now  - ma15_prev))
-            ma15_slope_prev = float(prev_closed.get("ma15_slope",  0))
-            # 只要斜率方向真的對調就算通過 (正→負 或 負→正)
-            slope_filter_ok = (ma15_slope_prev > 0 and ma15_slope_now < 0) or \
-                               (ma15_slope_prev < 0 and ma15_slope_now > 0)
-        except Exception:
-            slope_filter_ok = True
-
-        structural_collapse = space_filter_ok and volume_filter_ok and slope_filter_ok
         # ────────────────────────────────────────────────────────────
 
-        if side == "LONG":
-            back_inside = c_close < kc_upper_closed        # 條件一
-            is_bearish  = c_close < c_open and body_ratio >= 0.5  # 條件二
-            break_ma3   = c_close < ma3_closed              # 條件三
+        # 例外：極端大實體反轉 (超過 70% 比例的吞噬K) -> 繞過中軌防禦
+        is_huge_reversal = body_ratio >= 0.7 and c_body > p_body * 1.5
 
-            if back_inside and is_bearish and break_ma3 and structural_collapse:
-                return "PEAK_EXHAUSTION_EXIT_LONG"
+        if side == "LONG":
+            # 多單防禦線：取 MA3 與 KC中軌 兩者中較低的作為結構防線
+            defense_line = min(ma3_closed, kc_mid_closed)
+            
+            back_inside = c_close < kc_upper_closed
+            is_bearish  = c_close < c_open and body_ratio >= 0.5
+            
+            # 嚴格反轉確認：陰線實體>=前陽線實體 且 破前低 且 帶量
+            strict_reversal = (c_body >= p_body) and (c_close < p_low) and volume_filter_ok
+            
+            break_defense = c_close < defense_line
+
+            if back_inside and is_bearish and space_filter_ok:
+                if (break_defense and strict_reversal) or is_huge_reversal:
+                    return "PEAK_EXHAUSTION_EXIT_LONG"
 
         elif side == "SHORT":
+            # 空單防禦線：取 MA3 與 KC中軌 兩者中較高的作為結構防線
+            defense_line = max(ma3_closed, kc_mid_closed)
+            
             back_inside = c_close > kc_lower_closed
             is_bullish  = c_close > c_open and body_ratio >= 0.5
-            break_ma3   = c_close > ma3_closed
+            
+            # 嚴格反轉確認：陽線實體>=前陰線實體 且 破前高 且 帶量
+            strict_reversal = (c_body >= p_body) and (c_close > p_high) and volume_filter_ok
+            
+            break_defense = c_close > defense_line
 
-            if back_inside and is_bullish and break_ma3 and structural_collapse:
-                return "PEAK_EXHAUSTION_EXIT_SHORT"
+            if back_inside and is_bullish and space_filter_ok:
+                if (break_defense and strict_reversal) or is_huge_reversal:
+                    return "PEAK_EXHAUSTION_EXIT_SHORT"
 
     except Exception:
         pass
