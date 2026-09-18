@@ -144,26 +144,48 @@ async def process_single_symbol_runner(
                         or "EXIT_PHASE_TRAIL" in exit_reason
                     )
                     if is_structural_reversal:
-                        if not hasattr(engine, "_direct_reverse_ticket"):
-                            engine._direct_reverse_ticket = {}
-                        engine._direct_reverse_ticket[symbol] = current_bar_id
-                        engine.account.log(f"🎫 [峰谷換手票據] {symbol} [{exit_reason}] 結構平倉，瞬間發放接力票據，評估對向動能", "SUCCESS")
+                        # ── 獲利墊片檢查 (Profit-Buffered Relay) ──
+                        # 確保我們只有在「有獲利」時才進行轉向接力，若平手或虧損則只平倉不接力
+                        entry_p = float(existing_pos.get("entry_price", channel_price))
+                        qty     = float(existing_pos.get("size") or existing_pos.get("qty") or 0)
+                        side    = existing_pos.get("side", "")
+                        if side == "LONG":
+                            gross_pnl = (channel_price - entry_p) * qty
+                        else:
+                            gross_pnl = (entry_p - channel_price) * qty
+                        
+                        fee_cost = (entry_p + channel_price) * qty * TAKER_FEE_RATE + channel_price * qty * SLIPPAGE_PCT
+                        current_profit_usdt = gross_pnl - fee_cost
 
-                        # 趨勢接力狀態機（WATERFALL/DOUBLE_ABNORMAL 緊急平倉不接力）
-                        is_emergency = ("WATERFALL" in exit_reason or "DOUBLE_ABNORMAL" in exit_reason)
-                        if not is_emergency:
-                            relay_dir = "LONG" if "SHORT" in exit_reason else "SHORT"
-                            if not hasattr(engine, "_trend_relay_watch"):
-                                engine._trend_relay_watch = {}
-                            engine._trend_relay_watch[symbol] = {
-                                "direction": relay_dir,
-                                "exit_bar_id": current_bar_id,
-                                "touched_structure": False,
-                                "relay_phase": "WAITING",
-                            }
+                        if current_profit_usdt > 2.0:
+                            if not hasattr(engine, "_direct_reverse_ticket"):
+                                engine._direct_reverse_ticket = {}
+                            engine._direct_reverse_ticket[symbol] = current_bar_id
                             engine.account.log(
-                                f"📡 [趨勢接力備戰] {symbol} 等待回調到KC中軌/MA15，確認{relay_dir}接力進場（最多10根K）",
-                                "INFO"
+                                f"🎫 [獲利墊片接力] {symbol} [{exit_reason}] 結構平倉 (淨利 {current_profit_usdt:.2f}U > 2U)，發放接力票據", 
+                                "SUCCESS"
+                            )
+
+                            # 趨勢接力狀態機（WATERFALL/DOUBLE_ABNORMAL 緊急平倉不接力）
+                            is_emergency = ("WATERFALL" in exit_reason or "DOUBLE_ABNORMAL" in exit_reason)
+                            if not is_emergency:
+                                relay_dir = "LONG" if "SHORT" in exit_reason else "SHORT"
+                                if not hasattr(engine, "_trend_relay_watch"):
+                                    engine._trend_relay_watch = {}
+                                engine._trend_relay_watch[symbol] = {
+                                    "direction": relay_dir,
+                                    "exit_bar_id": current_bar_id,
+                                    "touched_structure": False,
+                                    "relay_phase": "WAITING",
+                                }
+                                engine.account.log(
+                                    f"📡 [趨勢接力備戰] {symbol} 等待回調到KC中軌/MA15，確認{relay_dir}接力進場（最多10根K）",
+                                    "INFO"
+                                )
+                        else:
+                            engine.account.log(
+                                f"🛑 [拒絕接力] {symbol} [{exit_reason}] 平倉時淨利 ({current_profit_usdt:.2f}U) 不足 2U，不觸發換手接力",
+                                "WARNING"
                             )
 
                     engine.account.log(f"✅ [狀態重置] {symbol} 平倉完成，已清空歷史狀態，次根 K 棒恢復掃描", "SUCCESS")
