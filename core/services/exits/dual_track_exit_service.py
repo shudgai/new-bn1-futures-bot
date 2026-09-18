@@ -152,7 +152,7 @@ def check_hard_stop_exit(position: dict, frame: pd.DataFrame, price: float) -> O
 
 
 def check_momentum_reversal_defense(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
-    """極速動能反噬防禦 (Extreme Momentum Reversal Defense)"""
+    """結構性反轉防禦 (Structural Reversal Defense)"""
     try:
         side = position.get("side")
         if not side or frame is None or len(frame) < 3:
@@ -165,6 +165,9 @@ def check_momentum_reversal_defense(position: dict, frame: pd.DataFrame, price: 
         if atr <= 0:
             return None
             
+        kc_upper = float(latest.get("kc_upper", 0))
+        kc_lower = float(latest.get("kc_lower", 0))
+            
         # 取得最新一根K的屬性 (注意：這可能是未收線的即時報價，所以用 price 計算)
         latest_open = float(latest["open"])
         latest_high = max(float(latest["high"]), price)
@@ -173,51 +176,41 @@ def check_momentum_reversal_defense(position: dict, frame: pd.DataFrame, price: 
         # 取得上一根K的屬性
         prev_open = float(prev["open"])
         prev_close = float(prev["close"])
+        prev_high = float(prev["high"])
+        prev_low = float(prev["low"])
         prev_body = abs(prev_close - prev_open)
         
         if side == "LONG":
             prev_is_bullish = prev_close > prev_open
             
-            # 條件 A：實體吞沒 (Engulfing)
+            # 條件 A：實體吞沒反轉 (嚴格化：必須跌破前一根的最低點)
             latest_is_bearish = price < latest_open
             latest_body = latest_open - price
             if prev_is_bullish and latest_is_bearish:
                 if latest_body >= prev_body:
-                    prev_mid = (prev_close + prev_open) / 2
-                    if price < prev_mid:
-                        return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
+                    if price < prev_low:
+                        return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
             
-            # 條件 B：極端單棒暴跌 (Extreme Single Bar Crash)
-            if (latest_high - price) > 1.5 * atr:
-                return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
-                
-            # 條件 C：極速反轉 (Fast Reversal)
-            two_bar_high = max(latest_high, float(prev["high"]))
-            if (two_bar_high - price) > 1.0 * atr:
-                return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
+            # 條件 B：極端反轉防禦 (反向 > 1.5 ATR 且 穿出對側軌道)
+            if (latest_high - price) > 1.5 * atr and price < kc_lower:
+                return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
                 
         elif side == "SHORT":
             prev_is_bearish = prev_close < prev_open
             
-            # 條件 A：實體吞沒 (Engulfing)
+            # 條件 A：實體吞沒反轉 (嚴格化：必須突破前一根的最高點)
             latest_is_bullish = price > latest_open
             latest_body = price - latest_open
             if prev_is_bearish and latest_is_bullish:
                 if latest_body >= prev_body:
-                    prev_mid = (prev_close + prev_open) / 2
-                    if price > prev_mid:
-                        return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
+                    if price > prev_high:
+                        return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
             
-            # 條件 B：極端單棒暴漲 (Extreme Single Bar Surge)
-            if (price - latest_low) > 1.5 * atr:
-                return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
-                
-            # 條件 C：極速反轉 (Fast Reversal)
-            two_bar_low = min(latest_low, float(prev["low"]))
-            if (price - two_bar_low) > 1.0 * atr:
-                return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
+            # 條件 B：極端反轉防禦 (反向 > 1.5 ATR 且 穿出對側軌道)
+            if (price - latest_low) > 1.5 * atr and price > kc_upper:
+                return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
 
     except Exception as e:
-        logger.error(f"Error in check_momentum_reversal_defense: {e}")
+        logger.error(f"Error in check_momentum_reversal_defense (structural): {e}")
         
     return None

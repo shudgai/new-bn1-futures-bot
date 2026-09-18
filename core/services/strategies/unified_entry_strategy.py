@@ -16,12 +16,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     prev_close = float(prev["close"])
     prev_open = float(prev["open"])
-    prev_high = float(prev["high"])
-    prev_low = float(prev["low"])
-    
-    prev_range = prev_high - prev_low
-    prev_body = abs(prev_close - prev_open)
-    prev_body_ratio = (prev_body / prev_range) if prev_range > 0 else 0
     
     prev_is_bullish = prev_close > prev_open
     prev_is_bearish = prev_close < prev_open
@@ -34,67 +28,71 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     if atr_prev <= 0 or kc_mid_prev == 0 or kc_mid_prev_prev == 0:
         return False, "WAIT_NO_DATA"
+        
+    # 計算通道寬度 (判斷擴張)
+    kc_upper_prev = float(prev.get("kc_upper", kc_mid_prev))
+    kc_lower_prev = float(prev.get("kc_lower", kc_mid_prev))
+    kc_width_prev = kc_upper_prev - kc_lower_prev
     
-    # 嚴格的狙擊手進場過濾 (使用者最新指示)
+    kc_upper_prev_prev = float(prev_prev.get("kc_upper", kc_mid_prev_prev))
+    kc_lower_prev_prev = float(prev_prev.get("kc_lower", kc_mid_prev_prev))
+    kc_width_prev_prev = kc_upper_prev_prev - kc_lower_prev_prev
+    
+    prev_body = abs(prev_close - prev_open)
+    
     if side == "LONG":
-        # 1. 實體強勁突破 (實體佔比 >= 50%)
-        if not (prev_is_bullish and prev_body_ratio >= 0.5):
-            return False, "WAIT_NOT_STRONG_BODY"
+        # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
+        if prev_body >= 2.0 * atr_prev and prev_is_bullish and prev_close > kc_mid_prev:
+            return True, "SPECIAL_ENTRY_MOMENTUM_LONG"
             
-        # 2. 收盤價突破中軌，且必須是「剛剛突破」 (開盤在中軌之下或附近)
-        if prev_close <= kc_mid_prev or prev_open > (kc_mid_prev + 0.2 * atr_prev):
-            return False, "WAIT_NO_BREAKOUT_OR_TOO_LATE"
+        # 1. 基本趨勢判定 (前一根收盤價必須在中軌之上，且為陽線代表動能向上)
+        if not (prev_is_bullish and prev_close > kc_mid_prev):
+            return False, "WAIT_NOT_IN_BULL_TREND"
             
-        # 3. 通道傾斜 (Expansion) - 必須向上
-        if kc_mid_prev <= kc_mid_prev_prev:
+        # 2. 通道擴張與傾斜 (Expansion Check)
+        is_tilting_up = kc_mid_latest > kc_mid_prev and kc_mid_prev > kc_mid_prev_prev
+        is_expanding = kc_width_prev > kc_width_prev_prev
+        if not (is_tilting_up and is_expanding):
             return False, "WAIT_NO_EXPANSION"
             
-        # 4. 突破距離確認 (距離中軌 >= 0.5 ATR)，但不能偏離過遠 (<= 1.5 ATR) 避免追高
-        dist = prev_close - kc_mid_prev
-        if dist < (0.5 * atr_prev) or dist > (1.5 * atr_prev):
-            return False, "WAIT_DISTANCE_INVALID"
-            
-        # 5. 過濾假突破 (最新價絕對不能回補中軌以內)
+        # 3. 過濾假突破 (最新價絕對不能跌回中軌以內)
         if live_price <= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
             
-        # 6. 預期獲利空間過濾 (Expected Profit Space)
+        # 4. 預期獲利空間過濾 (Expected Profit Space)
         kc_upper_latest = float(latest.get("kc_upper", live_price))
         expected_profit = kc_upper_latest - live_price
         if expected_profit < (1.5 * atr_prev):
             return False, "WAIT_PROFIT_SPACE_TOO_SMALL"
             
-        return True, "SNIPER_BREAKOUT_LONG"
+        return True, "DYNAMIC_TREND_LONG"
         
     elif side == "SHORT":
-        # 1. 實體強勁突破 (實體佔比 >= 50%)
-        if not (prev_is_bearish and prev_body_ratio >= 0.5):
-            return False, "WAIT_NOT_STRONG_BODY"
+        # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
+        if prev_body >= 2.0 * atr_prev and prev_is_bearish and prev_close < kc_mid_prev:
+            return True, "SPECIAL_ENTRY_MOMENTUM_SHORT"
             
-        # 2. 收盤價突破中軌，且必須是「剛剛突破」 (開盤在中軌之上或附近)
-        if prev_close >= kc_mid_prev or prev_open < (kc_mid_prev - 0.2 * atr_prev):
-            return False, "WAIT_NO_BREAKOUT_OR_TOO_LATE"
+        # 1. 基本趨勢判定 (前一根收盤價必須在中軌之下，且為陰線代表動能向下)
+        if not (prev_is_bearish and prev_close < kc_mid_prev):
+            return False, "WAIT_NOT_IN_BEAR_TREND"
             
-        # 3. 通道傾斜 (Expansion) - 必須向下
-        if kc_mid_prev >= kc_mid_prev_prev:
+        # 2. 通道擴張與傾斜 (Expansion Check)
+        is_tilting_down = kc_mid_latest < kc_mid_prev and kc_mid_prev < kc_mid_prev_prev
+        is_expanding = kc_width_prev > kc_width_prev_prev
+        if not (is_tilting_down and is_expanding):
             return False, "WAIT_NO_EXPANSION"
             
-        # 4. 突破距離確認 (距離中軌 >= 0.5 ATR)，但不能偏離過遠 (<= 1.5 ATR) 避免追低
-        dist = kc_mid_prev - prev_close
-        if dist < (0.5 * atr_prev) or dist > (1.5 * atr_prev):
-            return False, "WAIT_DISTANCE_INVALID"
-            
-        # 5. 過濾假突破 (最新價絕對不能回補中軌以內)
+        # 3. 過濾假突破 (最新價絕對不能漲回中軌以內)
         if live_price >= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
             
-        # 6. 預期獲利空間過濾 (Expected Profit Space)
+        # 4. 預期獲利空間過濾 (Expected Profit Space)
         kc_lower_latest = float(latest.get("kc_lower", live_price))
         expected_profit = live_price - kc_lower_latest
         if expected_profit < (1.5 * atr_prev):
             return False, "WAIT_PROFIT_SPACE_TOO_SMALL"
             
-        return True, "SNIPER_BREAKOUT_SHORT"
+        return True, "DYNAMIC_TREND_SHORT"
                 
     return False, "WAIT_NO_TRACK_SIGNAL"
 

@@ -333,7 +333,10 @@ async def process_single_symbol_runner(
                         continue   # 接力觀察中且未確認 → 跳過（等回調）
                     continue
 
-                engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
+                if reason.startswith("SPECIAL_ENTRY_MOMENTUM_"):
+                    engine.account.log(f"⚡ [Special Entry] 觸發極端動能特權 (2.0+ ATR Breakout)，果斷進場。 ({symbol} {direct_side})", "INFO")
+                else:
+                    engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
                 
                 # Track D (趨勢延續) 使用 50% 倉位，盈虧比較低，以頻率彌補
                 is_track_d = reason.startswith("TRACK_D_")
