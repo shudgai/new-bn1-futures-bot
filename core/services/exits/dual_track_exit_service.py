@@ -397,11 +397,6 @@ class DualTrackExitStrategy(IExitStrategy):
         if hard_stop_reason:
             return hard_stop_reason
             
-        # 2. 狀態機專屬衰竭平倉 (僅 EXHAUSTION_ZONE 觸發)
-        exhaustion_reason = check_state_machine_exit(position, frame, price)
-        if exhaustion_reason:
-            return exhaustion_reason
-            
         # 3. 趨勢反轉 (真正的結構出場點)
         reversal_reason = check_reversal_exit(position, frame, price)
         if reversal_reason:
