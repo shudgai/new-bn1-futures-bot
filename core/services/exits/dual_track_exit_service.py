@@ -70,6 +70,17 @@ def check_atr_step_trailing_stop(
             state["defense_line"] = defense
             symbol = position.get("symbol", "UNKNOWN")
             logger.info(f"[Protection] {symbol} 已於 {defense:.6g} 掛出 0.5 ATR 初始防禦線保護單")
+            
+            # 特例 K 進場：立即在進場瞬間掛出第一張 1.0 ATR 鎖利單
+            v8_reason = position.get("v8_reason", "")
+            if v8_reason and v8_reason.startswith("SPECIAL_ENTRY_MOMENTUM_"):
+                if side == "LONG":
+                    initial_lock = entry_price - 1.0 * atr
+                else:
+                    initial_lock = entry_price + 1.0 * atr
+                state["profit_lock_line"] = initial_lock
+                state["atr_step"] = 1  # 標記已進入第一階梯，後續繼續正常推進
+                logger.info(f"⚡ [Special Entry] Extreme Momentum - Initial Lock Order Placed at {initial_lock:.6g} ({symbol} {side})")
 
         defense_line = state["defense_line"]
         
