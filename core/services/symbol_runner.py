@@ -133,11 +133,21 @@ async def process_single_symbol_runner(
                         engine._last_exit_bar_id = {}
                     engine._last_exit_bar_id[symbol] = current_bar_id
                     
-                    if "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason or "DOUBLE_ABNORMAL_REVERSAL" in exit_reason:
+                    # 換手票據發放條件：
+                    # 1. 對側破軌轉向 (V10 護衛型接力)
+                    # 2. 峰谷三點結構瓦解 → 瞬間轉向捕捉對向動能噴發
+                    # 3. 階梯鎖利觸發 → 獲利鎖定後轉向評估
+                    is_structural_reversal = (
+                        "REVERSAL_EXIT_OPPOSITE_RAIL" in exit_reason
+                        or "DOUBLE_ABNORMAL_REVERSAL" in exit_reason
+                        or "PEAK_EXHAUSTION_EXIT" in exit_reason
+                        or "EXIT_LADDER_LOCK" in exit_reason
+                    )
+                    if is_structural_reversal:
                         if not hasattr(engine, "_direct_reverse_ticket"):
                             engine._direct_reverse_ticket = {}
                         engine._direct_reverse_ticket[symbol] = current_bar_id
-                        engine.account.log(f"🎫 [獲發換手票據] {symbol} 滿足平倉轉向條件，豁免次根 K 棒冷卻期，準備無縫接力", "SUCCESS")
+                        engine.account.log(f"🎫 [峰谷換手票據] {symbol} [{exit_reason}] 結構平倉，瞬間發放接力票據，評估對向動能", "SUCCESS")
                         
                     engine.account.log(f"✅ [狀態重置] {symbol} 平倉完成，已清空歷史狀態，次根 K 棒恢復掃描", "SUCCESS")
                 return signal_progress, detected_candidates
