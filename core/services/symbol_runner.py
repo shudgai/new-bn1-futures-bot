@@ -335,6 +335,8 @@ async def process_single_symbol_runner(
 
                 if reason.startswith("SPECIAL_ENTRY_MOMENTUM_"):
                     engine.account.log(f"⚡ [Special Entry] Extreme Momentum Triggered (2.0+ ATR) - Bypass Filters. ({symbol} {direct_side})", "INFO")
+                elif reason.startswith("TREND_CONTINUATION_"):
+                    engine.account.log(f"🔥 [Trend Continuation Entry] {symbol} 趨勢已啟動，無視空間限制果斷上車 ({direct_side})", "INFO")
                 else:
                     engine.account.log(f"🚀 [進場觸發] {symbol} 滿足進場條件: {reason} ({direct_side})", "INFO")
                 

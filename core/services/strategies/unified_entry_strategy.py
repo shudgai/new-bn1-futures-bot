@@ -60,6 +60,18 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if prev_close < kc_mid_prev and prev_prev_close < kc_mid_prev_prev:
             required_space_short = 0.8 * atr_prev
     
+    # ── 判斷是否為「趨勢延續」狀態 ──────────────────────────────────────────
+    # 連續兩根已收線 K 棒均在中軌之上 (LONG) / 之下 (SHORT) 則認定為趨勢已啟動
+    prev_prev_close = float(prev_prev["close"])
+    is_trend_continuation_long = (
+        prev_close > kc_mid_prev and
+        prev_prev_close > kc_mid_prev_prev
+    )
+    is_trend_continuation_short = (
+        prev_close < kc_mid_prev and
+        prev_prev_close < kc_mid_prev_prev
+    )
+
     if side == "LONG":
         # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
         if prev_body >= 2.0 * atr_prev and prev_is_bullish and prev_close > kc_mid_prev:
@@ -79,11 +91,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if live_price <= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
             
-        # 4. 預期獲利空間過濾 (Expected Profit Space, 動態門檻)
+        # 4. 預期獲利空間過濾 (動態切換)
+        # 趨勢延續中 → 跳過空間過濾，因趨勢已確立，空間是「無限的」
+        if is_trend_continuation_long:
+            return True, "TREND_CONTINUATION_LONG"
+        
+        # 初始進場 → 嚴格計算空間，防止震盪區間虛假突破
         kc_upper_latest = float(latest.get("kc_upper", live_price))
         expected_profit = kc_upper_latest - live_price
         if expected_profit < required_space_long:
-            return False, "WAIT_PROFIT_SPACE_TOO_SMALL"
+            return False, "[Skip Order] Initial Breakout Space Insufficient"
             
         return True, "DYNAMIC_TREND_LONG"
         
@@ -106,11 +123,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if live_price >= kc_mid_latest:
             return False, "WAIT_PULLBACK_REJECTED"
             
-        # 4. 預期獲利空間過濾 (Expected Profit Space, 動態門檻)
+        # 4. 預期獲利空間過濾 (動態切換)
+        # 趨勢延續中 → 跳過空間過濾
+        if is_trend_continuation_short:
+            return True, "TREND_CONTINUATION_SHORT"
+        
+        # 初始進場 → 嚴格計算空間
         kc_lower_latest = float(latest.get("kc_lower", live_price))
         expected_profit = live_price - kc_lower_latest
         if expected_profit < required_space_short:
-            return False, "WAIT_PROFIT_SPACE_TOO_SMALL"
+            return False, "[Skip Order] Initial Breakout Space Insufficient"
             
         return True, "DYNAMIC_TREND_SHORT"
                 
