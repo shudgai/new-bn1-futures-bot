@@ -57,9 +57,9 @@ class DualTrackExitStrategy:
             else:
                 return peak_reason
 
-        # 3. 階梯鎖利 (固定 2U 階梯與全平)
-        ladder_reason = check_ladder_profit_locking(
-            position, frame, price, self.fee, self.slippage
+        # 3. 動態 ATR 階梯鎖利 (ATR Step Trailing Stop)
+        ladder_reason = check_atr_step_trailing_stop(
+            position, frame, price
         )
         if ladder_reason:
             return ladder_reason
@@ -116,65 +116,57 @@ def is_momentum_strong(frame: pd.DataFrame, side: str, current_price: float) -> 
             
     return True
 
-def check_ladder_profit_locking(
+def check_atr_step_trailing_stop(
     position: dict,
     frame: pd.DataFrame,
     price: float,
-    fee: float = 0.0004,
-    slippage: float = 0.0005,
 ) -> Optional[str]:
     """
-    固定 2U 階梯鎖利 (Fixed 2U Profit-Locking Step)
-    
-    4U 鎖 2U、6U 鎖 4U、8U 鎖 6U...
-    保底只升不降。觸發後全平。
+    動態 ATR 階梯鎖利 (ATR Step Trailing Stop)
+    當最高價格比進入點高出 1.0 ATR 時，止損上移。
     """
     try:
         import math
         side = position.get("side")
         entry_price = float(position.get("entry_price") or 0)
-        size = float(position.get("size") or position.get("qty") or 0)
         
-        if not side or entry_price <= 0 or size <= 0:
+        if not side or entry_price <= 0 or frame is None or len(frame) == 0:
             return None
             
-        if side == "LONG":
-            gross_pnl = (price - entry_price) * size
-        else:
-            gross_pnl = (entry_price - price) * size
+        last_row = frame.iloc[-1]
+        atr = float(last_row.get("atr", 0))
+        if atr <= 0:
+            return None
             
-        cost = price * size * (2 * fee + slippage)
-        net_pnl = gross_pnl - cost
-        
         state = position.setdefault("v10_phase_trailing", {})
-        current_locked_pnl = state.get("locked_pnl", 0)
+        
+        if side == "LONG":
+            distance = price - entry_price
+        else:
+            distance = entry_price - price
+            
+        highest_dist = state.get("highest_distance", 0)
+        if distance > highest_dist:
+            highest_dist = distance
+            state["highest_distance"] = highest_dist
+            
+        current_step = state.get("atr_step", 0)
         current_stop = state.get("stop_price", None)
         
-        target_lock = 0
-        if net_pnl >= 4.0:
-            steps = math.floor((net_pnl - 4.0) / 2.0)
-            target_lock = 2.0 + steps * 2.0
+        target_step = 0
+        if highest_dist >= 1.0 * atr:
+            target_step = math.floor(highest_dist / atr)
             
-        if target_lock > current_locked_pnl:
-            # 趨勢慣性檢查
+        if target_step > current_step:
             if not is_momentum_strong(frame, side, price):
-                logger.info(f"[LOCK_PROFIT] Momentum slowing, moving SL to lock level {target_lock}U.")
-                current_locked_pnl = target_lock
-                state["locked_pnl"] = current_locked_pnl
-            else:
-                if state.get("last_skip_log") != target_lock:
-                    logger.info(f"[SKIP_LOCK] Strong momentum detected, allowing profit to run. Skipping lock at {target_lock}U.")
-                    state["last_skip_log"] = target_lock
+                logger.info(f"[LOCK_PROFIT] Momentum slowing, moving SL to ATR step {target_step}.")
+                state["atr_step"] = target_step
                 
-                # 反推止損價: 考慮手續費緩衝 (粗略以 entry_price 計算)
-                buffer_cost = entry_price * size * (2 * fee + slippage) * 1.1
-                required_gross = current_locked_pnl + buffer_cost
-                required_price_move = required_gross / size
-                
+                # 新的止損 = 進入點 + (階梯數 - 1) * 1.0 ATR
                 if side == "LONG":
-                    new_stop = entry_price + required_price_move
+                    new_stop = entry_price + (target_step - 1) * atr
                 else:
-                    new_stop = entry_price - required_price_move
+                    new_stop = entry_price - (target_step - 1) * atr
                     
                 if current_stop is None:
                     state["stop_price"] = new_stop
@@ -183,19 +175,22 @@ def check_ladder_profit_locking(
                         state["stop_price"] = max(current_stop, new_stop)
                     else:
                         state["stop_price"] = min(current_stop, new_stop)
+            else:
+                if state.get("last_skip_log") != target_step:
+                    logger.info(f"[SKIP_LOCK] Strong momentum detected, skipping lock at ATR step {target_step}.")
+                    state["last_skip_log"] = target_step
                     
         current_stop = state.get("stop_price")
-        
-        if current_stop is None or current_locked_pnl == 0:
+        if current_stop is None or state.get("atr_step", 0) == 0:
             return None
             
         if side == "LONG" and price <= current_stop:
-            return f"EXIT_LADDER_TRAIL_{int(current_locked_pnl)}U"
+            return "EXIT_ATR_TRAIL"
         if side == "SHORT" and price >= current_stop:
-            return f"EXIT_LADDER_TRAIL_{int(current_locked_pnl)}U"
+            return "EXIT_ATR_TRAIL"
             
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Error in check_atr_step_trailing_stop: {e}")
     return None
 
 def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:
