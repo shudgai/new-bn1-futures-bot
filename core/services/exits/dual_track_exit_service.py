@@ -22,17 +22,7 @@ class DualTrackExitStrategy:
         if not side:
             return None
 
-        # 1. 極速動能反噬防禦 (最高優先級)
-        reversal_defense_reason = check_momentum_reversal_defense(position, frame, price)
-        if reversal_defense_reason:
-            return reversal_defense_reason
-
-        # 2. 帳戶硬止損 (極端防禦)
-        hard_stop_reason = check_hard_stop_exit(position, frame, price)
-        if hard_stop_reason:
-            return hard_stop_reason
-
-        # 3. 純機械式：動態防禦 (0.5 ATR) + 階梯限價鎖利 (1.0 ATR)
+        # 唯一平倉邏輯：純機械式 動態防禦 (0.5 ATR) + 階梯限價鎖利 (1.0 ATR)
         ladder_reason = check_atr_step_trailing_stop(
             position, frame, price
         )
@@ -60,8 +50,12 @@ def check_atr_step_trailing_stop(
         if not side or entry_price <= 0 or frame is None or len(frame) == 0:
             return None
             
-        last_row = frame.iloc[-1]
-        atr = float(last_row.get("atr", 0))
+        # 取得過去 20 根 K 棒的 ATR 均值，確保剛開倉時的防禦線不會因為單根 K 棒異常波動而設得太近
+        if len(frame) >= 20:
+            atr = float(frame["atr"].tail(20).mean())
+        else:
+            atr = float(frame.iloc[-1].get("atr", 0))
+            
         if atr <= 0:
             return None
             
@@ -131,86 +125,4 @@ def check_atr_step_trailing_stop(
                 
     except Exception as e:
         logger.error(f"Error in check_atr_step_trailing_stop: {e}")
-    return None
-
-
-
-
-def check_hard_stop_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
-    """硬止損"""
-    try:
-        side = position.get("side")
-        initial_sl = float(position.get("initial_sl") or 0)
-        if initial_sl > 0:
-            if side == "LONG" and price <= initial_sl:
-                return "EXIT_HARD_STOP_LONG"
-            elif side == "SHORT" and price >= initial_sl:
-                return "EXIT_HARD_STOP_SHORT"
-    except Exception:
-        pass
-    return None
-
-
-def check_momentum_reversal_defense(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
-    """結構性反轉防禦 (Structural Reversal Defense)"""
-    try:
-        side = position.get("side")
-        if not side or frame is None or len(frame) < 3:
-            return None
-            
-        latest = frame.iloc[-1]
-        prev = frame.iloc[-2]
-        
-        atr = float(latest.get("atr", 0))
-        if atr <= 0:
-            return None
-            
-        kc_upper = float(latest.get("kc_upper", 0))
-        kc_lower = float(latest.get("kc_lower", 0))
-            
-        # 取得最新一根K的屬性 (注意：這可能是未收線的即時報價，所以用 price 計算)
-        latest_open = float(latest["open"])
-        latest_high = max(float(latest["high"]), price)
-        latest_low = min(float(latest["low"]), price)
-        
-        # 取得上一根K的屬性
-        prev_open = float(prev["open"])
-        prev_close = float(prev["close"])
-        prev_high = float(prev["high"])
-        prev_low = float(prev["low"])
-        prev_body = abs(prev_close - prev_open)
-        
-        if side == "LONG":
-            prev_is_bullish = prev_close > prev_open
-            
-            # 條件 A：實體吞沒反轉 (嚴格化：必須跌破前一根的最低點)
-            latest_is_bearish = price < latest_open
-            latest_body = latest_open - price
-            if prev_is_bullish and latest_is_bearish:
-                if latest_body >= prev_body:
-                    if price < prev_low:
-                        return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
-            
-            # 條件 B：極端反轉防禦 (反向 > 1.5 ATR 且 穿出對側軌道)
-            if (latest_high - price) > 1.5 * atr and price < kc_lower:
-                return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
-                
-        elif side == "SHORT":
-            prev_is_bearish = prev_close < prev_open
-            
-            # 條件 A：實體吞沒反轉 (嚴格化：必須突破前一根的最高點)
-            latest_is_bullish = price > latest_open
-            latest_body = price - latest_open
-            if prev_is_bearish and latest_is_bullish:
-                if latest_body >= prev_body:
-                    if price > prev_high:
-                        return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
-            
-            # 條件 B：極端反轉防禦 (反向 > 1.5 ATR 且 穿出對側軌道)
-            if (price - latest_low) > 1.5 * atr and price > kc_upper:
-                return "EXIT_REVERSAL_STRUCTURE_CONFIRMED"
-
-    except Exception as e:
-        logger.error(f"Error in check_momentum_reversal_defense (structural): {e}")
-        
     return None
