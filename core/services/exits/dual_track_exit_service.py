@@ -160,45 +160,89 @@ def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: f
 
 def check_peak_exhaustion_exit(position: dict, frame: pd.DataFrame, price: float) -> Optional[str]:
     """
-    峰谷反轉：價格從軌道外收回軌道內 -> 產生大實體反轉 K 線(>= 0.5) -> 破壞 MA3
+    峰谷三點結構瓦解 (V10.2 三維結構過濾版)
+
+    基礎三點 (AND)：
+      條件一 (空間)：從軌道外收回軌道內
+      條件二 (動能)：大實體反向 K (>= 0.5)
+      條件三 (防線)：收盤跌破 / 突破 MA3
+
+    結構過濾層 (AND，三點均通過才過濾)：
+      過濾一 (空間深度)：收回幅度 >= 0.5 ATR — 過濾掉「剛碰軌就小回」的假訊號
+      過濾二 (成交量)  ：反轉 K 成交量 >= 1.2x 近 5 根均量 — 確保主力真實介入
+      過濾三 (斜率反轉)：MA15 斜率已由正轉負 (多 → 空) 或由負轉正 (空 → 多) — 確認動能真正換手
     """
     try:
         trade_phase = position.get("trade_phase", "TRENDING")
         if trade_phase != "EXHAUSTION_ZONE":
             return None
-            
+
         side = position.get("side")
-        last_closed = frame.iloc[-2]
-        
-        c_open = float(last_closed["open"])
+        last_closed = frame.iloc[-2]      # 最近一根已收線 K 棒
+        prev_closed  = frame.iloc[-3]      # 前一根，用於計算斜率變化
+
+        c_open  = float(last_closed["open"])
         c_close = float(last_closed["close"])
-        c_high = float(last_closed["high"])
-        c_low = float(last_closed["low"])
-        
-        c_height = c_high - c_low
-        c_body = abs(c_close - c_open)
+        c_high  = float(last_closed["high"])
+        c_low   = float(last_closed["low"])
+
+        c_height   = c_high - c_low
+        c_body     = abs(c_close - c_open)
         body_ratio = c_body / c_height if c_height > 0 else 0
-        
+
         kc_upper_closed = float(last_closed.get("kc_upper", price))
         kc_lower_closed = float(last_closed.get("kc_lower", price))
-        ma3_closed = float(last_closed.get("ma3", price))
-        
+        ma3_closed      = float(last_closed.get("ma3", price))
+        atr_closed      = float(last_closed.get("atr", (c_high - c_low) or price * 0.01))
+
+        # ── 結構過濾層 ──────────────────────────────────────────────
+        # 過濾一：空間深度 >= 0.5 ATR
         if side == "LONG":
-            back_inside = c_close < kc_upper_closed
-            is_bearish = c_close < c_open and body_ratio >= 0.5
-            break_ma3 = c_close < ma3_closed
-            
-            if back_inside and is_bearish and break_ma3:
+            retrace_depth = kc_upper_closed - c_close  # 收回了多深
+        else:
+            retrace_depth = c_close - kc_lower_closed
+        space_filter_ok = retrace_depth >= 0.5 * atr_closed
+
+        # 過濾二：成交量 >= 1.2x 近 5 根均量
+        try:
+            recent_vols = [float(frame.iloc[i].get("volume", 0)) for i in range(-7, -2)]
+            vol_ma5 = sum(recent_vols[-5:]) / 5.0 if len(recent_vols) >= 5 else 0
+            c_vol = float(last_closed.get("volume", 0))
+            volume_filter_ok = (vol_ma5 <= 0) or (c_vol >= 1.2 * vol_ma5)
+        except Exception:
+            volume_filter_ok = True  # 資料缺失時放行，讓基礎三點判斷
+
+        # 過濾三：MA15 斜率反轉 (正 → 負 或 負 → 正)
+        try:
+            ma15_now  = float(last_closed.get("ma15", 0))
+            ma15_prev = float(prev_closed.get("ma15", 0))
+            ma15_slope_now  = float(last_closed.get("ma15_slope",  ma15_now  - ma15_prev))
+            ma15_slope_prev = float(prev_closed.get("ma15_slope",  0))
+            # 只要斜率方向真的對調就算通過 (正→負 或 負→正)
+            slope_filter_ok = (ma15_slope_prev > 0 and ma15_slope_now < 0) or \
+                               (ma15_slope_prev < 0 and ma15_slope_now > 0)
+        except Exception:
+            slope_filter_ok = True
+
+        structural_collapse = space_filter_ok and volume_filter_ok and slope_filter_ok
+        # ────────────────────────────────────────────────────────────
+
+        if side == "LONG":
+            back_inside = c_close < kc_upper_closed        # 條件一
+            is_bearish  = c_close < c_open and body_ratio >= 0.5  # 條件二
+            break_ma3   = c_close < ma3_closed              # 條件三
+
+            if back_inside and is_bearish and break_ma3 and structural_collapse:
                 return "PEAK_EXHAUSTION_EXIT_LONG"
-                
+
         elif side == "SHORT":
             back_inside = c_close > kc_lower_closed
-            is_bullish = c_close > c_open and body_ratio >= 0.5
-            break_ma3 = c_close > ma3_closed
-            
-            if back_inside and is_bullish and break_ma3:
+            is_bullish  = c_close > c_open and body_ratio >= 0.5
+            break_ma3   = c_close > ma3_closed
+
+            if back_inside and is_bullish and break_ma3 and structural_collapse:
                 return "PEAK_EXHAUSTION_EXIT_SHORT"
-                
+
     except Exception:
         pass
     return None
