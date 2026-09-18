@@ -2,7 +2,8 @@ import pandas as pd
 from typing import Dict, Any, Optional
 
 # V10 狀態追蹤鍵列，持久化結構追蹤狀態
-DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_ladder"]
+# v10_phase_trailing 取代 v10_ladder：改用 KC 三階段移動止損
+DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing"]
 
 class DualTrackExitStrategy:
     def __init__(self, account=None, fee: float = 0.0004, slippage: float = 0.0005):
@@ -34,10 +35,13 @@ class DualTrackExitStrategy:
         if emergency_reason:
             return emergency_reason
             
-        # 1. 固定階梯鎖利 (4U 鎖 2U，之後每 +2U 再鎖 2U)
-        ladder_reason = check_ladder_profit_lock(position, price, self.fee, self.slippage)
-        if ladder_reason:
-            return ladder_reason
+        # 1. KC 三階段移動止損（Phase Trailing Stop）
+        #    每觸及一個 KC 里程碑，止損點往有利方向推移 1.5 ATR
+        phase_trail_reason = check_kc_phase_trailing_stop(
+            position, frame, price, self.fee, self.slippage
+        )
+        if phase_trail_reason:
+            return phase_trail_reason
 
         # 2. 唯一主動平倉點：峰谷三點結構瓦解
         exhaustion_reason = check_peak_exhaustion_exit(position, frame, price)
@@ -48,63 +52,174 @@ class DualTrackExitStrategy:
         return check_hard_stop_exit(position, frame, price)
 
 
-def check_ladder_profit_lock(position: dict, price: float, fee: float = 0.0004, slippage: float = 0.0005) -> Optional[str]:
+def check_kc_phase_trailing_stop(
+    position: dict,
+    frame: pd.DataFrame,
+    price: float,
+    fee: float = 0.0004,
+    slippage: float = 0.0005,
+    phase_atr_mult: float = 0.7,
+) -> Optional[str]:
     """
-    固定階梯鎖利 (Ladder Profit Lock)：
-    - 淨利 >= 2U → 鎖 0U（保本，跳破就平）
-    - 淨利 >= 4U → 鎖 2U
-    - 淨利 >= 6U → 鎖 4U，之後每 +2U 上移一階
-    - 單向棘輪：地板只升不降
+    KC 三階段移動止損（Step-wise Phase Trailing Stop）：
+
+    設計哲學：
+    - 倉位始終保持完整，不做任何減倉動作
+    - 每到達一個 KC 里程碑，止損點往有利方向推移（棘輪機制）
+    - 確保每個 Phase 的「保底獲利」遞增，鎖住已走過的波段獲利
+
+    Phase 定義（多單 LONG 為例）：
+    - Phase 1：現價首次觸及 KC 中軌（kc_middle）AND 淨利 > 0
+      → 止損點設定為「觸發時現價 - 1 × phase_atr_mult × ATR」
+    - Phase 2：現價觸及 KC 對側外軌（kc_upper for LONG）
+      → 止損點推移為「觸發時現價 - 2 × phase_atr_mult × ATR」
+    - Phase 3：進入 EXHAUSTION_ZONE（超越外軌明顯距離）
+      → 止損點推移為「觸發時現價 - 3 × phase_atr_mult × ATR」
+
+    棘輪機制：止損點只往有利方向移動（多單只升、空單只降）
+
+    Args:
+        position:       持倉字典（含 side、entry_price、size 等）
+        frame:          最新 K 線資料 DataFrame
+        price:          當前最新報價
+        fee:            單邊手續費率（預設 0.04%）
+        slippage:       預估滑點（預設 0.05%）
+        phase_atr_mult: 每個 Phase 的 ATR 止損距離倍數（預設 1.5）
     """
     try:
         side = position.get("side")
         entry_price = float(position.get("entry_price") or 0)
-        size = float(position.get("size") or 0)
+        # position dict 可能用 qty 或 size，兩者都嘗試
+        size = float(position.get("size") or position.get("qty") or 0)
 
-        if entry_price <= 0 or size <= 0:
+        if not side or entry_price <= 0 or size <= 0:
+            return None
+        if frame is None or len(frame) < 2:
             return None
 
-        # 計算當前毛利 (USDT)
+        # ── 取 KC 通道值與 ATR ──────────────────────────────────────
+        last = frame.iloc[-1]
+        kc_upper  = float(last.get("kc_upper",  price))
+        kc_lower  = float(last.get("kc_lower",  price))
+        kc_middle = float(last.get("kc_middle", (kc_upper + kc_lower) / 2.0))
+        # kc_middle 備援：部分 frame 可能用不同欄位名稱
+        if kc_middle == price:
+            kc_middle = float(last.get("kc_basis", (kc_upper + kc_lower) / 2.0))
+        atr = float(last.get("atr", price * 0.01))
+        if atr <= 0:
+            atr = price * 0.01
+
+        # ── 計算當前淨利（僅用於 Phase 1 的 net_pnl > 0 門檻）────────
         if side == "LONG":
             gross_pnl = (price - entry_price) * size
         elif side == "SHORT":
             gross_pnl = (entry_price - price) * size
         else:
             return None
-
-        # 扣除雙邊手續費與滑點
         notional = price * size
         cost = notional * (2 * fee + slippage)
         net_pnl = gross_pnl - cost
 
-        state = position.setdefault("v10_ladder", {})
+        # ── 取/初始化狀態 ──────────────────────────────────────────
+        state = position.setdefault("v10_phase_trailing", {})
+        current_phase = state.get("phase", 0)
+        current_stop  = state.get("stop_price", None)
+        trade_phase   = position.get("trade_phase", "TRENDING")
 
-        # 更新峰値淨利 (只升不降)
-        peak = state.get("peak_net_usdt", 0.0)
-        if net_pnl > peak:
-            state["peak_net_usdt"] = net_pnl
-            peak = net_pnl
+        # ── 追蹤進場以來最有利極值（Swing Extreme）────────────────
+        # LONG：最高價（多單越高越有利）
+        # SHORT：最低價（空單越低越有利）
+        if side == "LONG":
+            swing_extreme = max(state.get("swing_extreme", entry_price), price)
+        else:
+            swing_extreme = min(state.get("swing_extreme", entry_price), price)
+        state["swing_extreme"] = swing_extreme
 
-        # 計算鎖利地板 (階梯：2U鎖0U，4U鎖2U，6U鎖4U...)
-        # 公式：floor = int(peak // 2) * 2 - 2，且 peak 必須 >= 2
-        if peak < 2.0:
+        # ── Phase 升級判斷（只升不降）─────────────────────────────
+        # Phase 3：進入 EXHAUSTION_ZONE（超越外軌）
+        # Phase 2：現價觸及持倉側外軌
+        # Phase 1：現價首次觸及 KC 中軌 AND 淨利 > 0
+        new_phase = current_phase
+        if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3:
+            new_phase = 3
+        elif current_phase < 2:
+            if side == "LONG" and price >= kc_upper:
+                new_phase = 2
+            elif side == "SHORT" and price <= kc_lower:
+                new_phase = 2
+        if current_phase < 1 and new_phase < 2:
+            if side == "LONG" and price >= kc_middle and net_pnl > 0:
+                new_phase = 1
+            elif side == "SHORT" and price <= kc_middle and net_pnl > 0:
+                new_phase = 1
+
+        if new_phase > current_phase:
+            state["phase"] = new_phase
+            current_phase = new_phase
+
+        # ── 每 tick 以最新極值重算止損點（棘輪：只往有利方向移動）─
+        # 止損距離 = phase × phase_atr_mult × ATR
+        # 錨點 = swing_extreme（保證止損點永遠在獲利側）
+        if current_phase > 0:
+            new_stop = _calc_phase_stop(side, swing_extreme, current_phase, phase_atr_mult, atr)
+            if new_stop is not None:
+                current_stop = _update_ratchet_stop(side, current_stop, new_stop)
+                state["stop_price"] = current_stop
+
+        # ── 止損觸發判斷 ───────────────────────────────────────────
+        if current_stop is None or current_phase == 0:
             return None
 
-        locked_floor = (int(peak // 2) * 2) - 2  # e.g. peak=2.x→0, peak=4.x→2, peak=6.x→4
-        locked_floor = max(locked_floor, 0.0)     # 最低地板為 0U (保本)
-
-        # 更新最高地板紀錄 (只升不降)
-        current_floor = state.get("locked_floor_usdt", 0.0)
-        if locked_floor > current_floor:
-            state["locked_floor_usdt"] = locked_floor
-
-        # 若當前淨利跌破鎖利地板 → 平倉
-        if net_pnl < state["locked_floor_usdt"]:
-            return f"EXIT_LADDER_LOCK_{side}"
+        if side == "LONG" and price <= current_stop:
+            return f"EXIT_PHASE_TRAIL_LONG_P{current_phase}"
+        if side == "SHORT" and price >= current_stop:
+            return f"EXIT_PHASE_TRAIL_SHORT_P{current_phase}"
 
     except Exception:
         pass
     return None
+
+
+def _calc_phase_stop(
+    side: str,
+    trigger_price: float,
+    phase: int,
+    atr_mult: float,
+    atr: float,
+) -> Optional[float]:
+    """計算指定 Phase 的止損價格。
+
+    止損距離 = phase × atr_mult × ATR
+    多單：stop = trigger_price - distance
+    空單：stop = trigger_price + distance
+    """
+    distance = phase * atr_mult * atr
+    if distance <= 0:
+        return None
+    if side == "LONG":
+        return trigger_price - distance
+    elif side == "SHORT":
+        return trigger_price + distance
+    return None
+
+
+def _update_ratchet_stop(
+    side: str,
+    current_stop: Optional[float],
+    new_stop: float,
+) -> float:
+    """棘輪機制：止損點只往有利方向移動。
+
+    多單：只升不降（取較大值）
+    空單：只降不升（取較小值）
+    """
+    if current_stop is None:
+        return new_stop
+    if side == "LONG":
+        return max(current_stop, new_stop)
+    elif side == "SHORT":
+        return min(current_stop, new_stop)
+    return new_stop
 
 
 def check_emergency_exit(position: Dict[str, Any], frame: pd.DataFrame, price: float) -> Optional[str]:

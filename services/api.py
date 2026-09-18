@@ -103,30 +103,24 @@ def positions_with_triggers():
             or ""
         )
 
-        # --- 棘輪鎖利線 ---
-        ratchet_state = merged.get("ratchet_lock_state") or meta.get("ratchet_lock_state") or {}
-        max_net_atr = float(ratchet_state.get("max_net_atr", 0) or 0)
-        START_THRESHOLD = 0.35
-        STEP = 0.20
-        if max_net_atr >= START_THRESHOLD:
-            steps_above = math.floor((max_net_atr - START_THRESHOLD) / STEP)
-            locked_atr = START_THRESHOLD + steps_above * STEP - STEP
-            # 以 ATR 反算回價格
-            try:
-                symbol_data = engine.account.get_latest_klines(symbol, limit=2) if hasattr(engine.account, "get_latest_klines") else None
-                atr_val = None
-                if symbol_data is not None and len(symbol_data) >= 2:
-                    atr_val = float(symbol_data.iloc[-2].get("atr", 0) or 0)
-                if atr_val and atr_val > 0 and qty > 0 and entry > 0:
-                    sign = 1 if merged.get("side") == "LONG" else -1
-                    ratchet_floor_price = entry + sign * locked_atr * atr_val
-                    merged["ratchet_floor"] = round(ratchet_floor_price, 8)
-                else:
-                    merged["ratchet_floor"] = None
-            except Exception:
-                merged["ratchet_floor"] = None
+
+        # --- KC 三階段移動止損線（Phase Trailing Stop）---
+        # 從 position 或 meta 中讀取新的 v10_phase_trailing 狀態
+        phase_state = (
+            merged.get("v10_phase_trailing")
+            or meta.get("v10_phase_trailing")
+            or {}
+        )
+        phase_stop_price = phase_state.get("stop_price")
+        current_phase    = phase_state.get("phase", 0)
+
+        if phase_stop_price and float(phase_stop_price) > 0 and current_phase > 0:
+            merged["ratchet_floor"] = round(float(phase_stop_price), 8)
+            merged["phase_info"]    = f"P{current_phase}"   # 方便 debug
         else:
             merged["ratchet_floor"] = None
+            merged["phase_info"]    = None
+
 
         result.append(merged)
     return result
