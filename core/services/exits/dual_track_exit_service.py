@@ -51,7 +51,8 @@ class DualTrackExitStrategy:
 def check_ladder_profit_lock(position: dict, price: float, fee: float = 0.0004, slippage: float = 0.0005) -> Optional[str]:
     """
     固定階梯鎖利 (Ladder Profit Lock)：
-    - 淨利 >= 4U → 鎖 2U（跌破 2U 就平）
+    - 淨利 >= 2U → 鎖 0U（保本，跳破就平）
+    - 淨利 >= 4U → 鎖 2U
     - 淨利 >= 6U → 鎖 4U，之後每 +2U 上移一階
     - 單向棘輪：地板只升不降
     """
@@ -78,19 +79,19 @@ def check_ladder_profit_lock(position: dict, price: float, fee: float = 0.0004, 
 
         state = position.setdefault("v10_ladder", {})
 
-        # 更新峰值淨利 (只升不降)
+        # 更新峰値淨利 (只升不降)
         peak = state.get("peak_net_usdt", 0.0)
         if net_pnl > peak:
             state["peak_net_usdt"] = net_pnl
             peak = net_pnl
 
-        # 計算鎖利地板 (階梯：4U→鎖2U，6U→鎖4U，每+2U再+2U)
-        # 公式：floor = int(peak // 2) * 2 - 2，且 peak 必須 >= 4
-        if peak < 4.0:
+        # 計算鎖利地板 (階梯：2U鎖0U，4U鎖2U，6U鎖4U...)
+        # 公式：floor = int(peak // 2) * 2 - 2，且 peak 必須 >= 2
+        if peak < 2.0:
             return None
 
-        locked_floor = (int(peak // 2) * 2) - 2  # e.g. peak=4.x→2, peak=6.x→4
-        locked_floor = max(locked_floor, 2.0)     # 最低地板為 2U
+        locked_floor = (int(peak // 2) * 2) - 2  # e.g. peak=2.x→0, peak=4.x→2, peak=6.x→4
+        locked_floor = max(locked_floor, 0.0)     # 最低地板為 0U (保本)
 
         # 更新最高地板紀錄 (只升不降)
         current_floor = state.get("locked_floor_usdt", 0.0)
