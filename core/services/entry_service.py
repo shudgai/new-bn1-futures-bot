@@ -2,8 +2,20 @@ import pandas as pd
 from typing import Dict, Any, Optional
 from core.services.strategies.outer_strategy import ma3_outer_cross_ready, ma3_outer_continuation_ready, live_candle_color_ready
 
-ENTRY_TREND_CODES = {"KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY"}
-LIVE_OUTER_CODES = {"KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT"}
+ENTRY_TREND_CODES = {
+    "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
+    # V9.0 Track codes — must bypass invalid-candidate lock & snapshot strictness
+    "TRACK_A_EXTREME_REVERSAL_LONG", "TRACK_A_EXTREME_REVERSAL_SHORT",
+    "TRACK_B_MID_PULLBACK_LONG",     "TRACK_B_MID_PULLBACK_SHORT",
+    "TRACK_C_BREAKOUT_LONG",         "TRACK_C_BREAKOUT_SHORT",
+    "TRACK_D_TREND_CONT_LONG",       "TRACK_D_TREND_CONT_SHORT",
+}
+LIVE_OUTER_CODES = {
+    "KC_LIVE_UPPER_BREAK_LONG", "KC_LIVE_LOWER_BREAK_SHORT",
+    # V9.0 live-price signals are also treated as live-outer
+    "TRACK_A_EXTREME_REVERSAL_LONG", "TRACK_A_EXTREME_REVERSAL_SHORT",
+    "TRACK_D_TREND_CONT_LONG",       "TRACK_D_TREND_CONT_SHORT",
+}
 
 def channel_candidate_bar_id(frame: pd.DataFrame) -> Optional[Any]:
     if frame is None or frame.empty:
