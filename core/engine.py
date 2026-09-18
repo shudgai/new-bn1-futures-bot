@@ -2351,7 +2351,7 @@ class TradingEngine:
     _pivot_pullback_ready = staticmethod(pivot_pullback_ready)
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
 
-    async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None):
+    async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction: float = 1.0):
         """Submit on this scan, retaining every structured-order account safety check."""
 
         # Clear CK + aligned live MA3 outside the rail no longer waits for two bodies.
@@ -2451,6 +2451,8 @@ class TradingEngine:
             }
             if v8_reason:
                 signal["v8_reason"] = v8_reason
+            if size_fraction != 1.0:
+                signal["size_fraction"] = size_fraction
             # Do not bypass abnormal-market, same-side, stop-cooldown, balance,
             # slot, execution-price or account checks in the existing route.
             opened = await self._place_structured_entry(symbol, signal, price)
