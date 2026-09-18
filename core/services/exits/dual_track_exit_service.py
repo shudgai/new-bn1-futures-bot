@@ -137,19 +137,19 @@ def check_kc_phase_trailing_stop(
 
         # ── Phase 升級判斷 (只升不降) ──
         # Phase 升級必須同時滿足「結構條件」與「利潤空間」，確保不會將止損設在現價前方。
-        # Phase 3：進入 EXHAUSTION_ZONE (超越外軌) 且獲利 >= 6U
-        # Phase 2：現價觸及持倉側外軌 且獲利 >= 4U
-        # Phase 1：現價首次觸及 KC 中軌 且獲利 >= 2U
+        # 這裡改用 1 ATR 為一階
+        step_net = atr * size
         new_phase = current_phase
-        if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3 and net_pnl >= 6.0:
+        
+        if trade_phase == "EXHAUSTION_ZONE" and current_phase < 3 and net_pnl >= 3 * step_net:
             new_phase = 3
-        elif current_phase < 2 and net_pnl >= 4.0:
+        elif current_phase < 2 and net_pnl >= 2 * step_net:
             if side == "LONG" and price >= kc_upper:
                 new_phase = 2
             elif side == "SHORT" and price <= kc_lower:
                 new_phase = 2
         
-        if current_phase < 1 and new_phase < 2 and net_pnl >= 2.0:
+        if current_phase < 1 and new_phase < 2 and net_pnl >= 1 * step_net:
             if side == "LONG" and price >= kc_middle:
                 new_phase = 1
             elif side == "SHORT" and price <= kc_middle:
@@ -159,10 +159,10 @@ def check_kc_phase_trailing_stop(
             state["phase"] = new_phase
             current_phase = new_phase
 
-        # ── 每 tick 以固定 U 數重算止損點 (Fixed 2U Ladder) ──
-        # 止損點 = 確保淨利為 phase * 2U 的價格
+        # ── 每 tick 以固定 1 ATR 重算止損點 ──
+        # 止損點 = 確保淨利為 phase * 1 ATR 的價格
         if current_phase > 0:
-            target_net = current_phase * 2.0
+            target_net = current_phase * step_net
             gross_needed = target_net + cost
             if size > 0:
                 if side == "LONG":
