@@ -101,29 +101,47 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                     return True, "[STANDARD_ENTRY] Explosive MA Cross SHORT", {"action": "ENTER"}
 
     # =========================================================================
-    # 軌道 B-2：衝鋒槍模式 (Aggressive Breakout Path - 無過濾)
+    # 軌道 B-2：強化結構破軌 (Structural Breakout)
     # =========================================================================
-    # 讀取 KC 數據
-    kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
-    kc_lower_prev1 = float(prev_1.get("kc_lower", kc_mid_prev1))
+    # 1. 劇烈反噬冷卻檢測 (Post-Crash Cooldown)
+    post_crash_cooldown_active = False
+    for i in range(2, 5):
+        if len(df) >= i + 1:
+            h_bar = df.iloc[-i - 1]
+            h_body = abs(float(h_bar['close']) - float(h_bar['open']))
+            h_atr = float(h_bar.get('atr', current_atr))
+            if h_body >= 2.0 * h_atr:
+                post_crash_cooldown_active = True
+                break
+                
+    if post_crash_cooldown_active:
+        return False, "FILTERED_COOLDOWN: Post-Crash Cooldown Active", {}
 
-    # 新版衝鋒槍進場規則：只要收盤在軌道外即為破軌
+    # 2. 結構轉折破軌進場
+    kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
+    prev2_close = float(prev_2['close'])
+
     is_breakout_long = (prev_close > kc_upper_prev1) and is_bullish
     is_breakout_short = (prev_close < kc_lower_prev1) and is_bearish
 
     if side == "LONG" and is_breakout_long:
-        # 斜率方向一致性防禦
-        if slope_ma15 >= 0 or slope_middle >= 0:
-            return True, "[AGGRESSIVE_ENTRY] Breakout LONG", {"action": "ENTER"}
+        if slope_ma15 >= 0:
+            # 連續兩根收盤價在中軌上方
+            if prev_close > kc_mid_prev1 and prev2_close > kc_mid_prev2:
+                return True, "[STANDARD_ENTRY] Structural Breakout LONG", {"action": "ENTER"}
+            else:
+                return False, "FILTERED_BREAKOUT: Requires 2 consecutive closes above KC Middle", {}
         else:
-            return False, "FILTERED_AGGRESSIVE: Counter-trend Breakout (Slopes falling)", {}
+            return False, "FILTERED_BREAKOUT: Counter-trend Breakout (MA15 slope falling)", {}
 
     if side == "SHORT" and is_breakout_short:
-        # 斜率方向一致性防禦
-        if slope_ma15 <= 0 or slope_middle <= 0:
-            return True, "[AGGRESSIVE_ENTRY] Breakout SHORT", {"action": "ENTER"}
+        if slope_ma15 <= 0:
+            if prev_close < kc_mid_prev1 and prev2_close < kc_mid_prev2:
+                return True, "[STANDARD_ENTRY] Structural Breakout SHORT", {"action": "ENTER"}
+            else:
+                return False, "FILTERED_BREAKOUT: Requires 2 consecutive closes below KC Middle", {}
         else:
-            return False, "FILTERED_AGGRESSIVE: Counter-trend Breakout (Slopes rising)", {}
+            return False, "FILTERED_BREAKOUT: Counter-trend Breakout (MA15 slope rising)", {}
 
     return False, "NO_VALID_ENTRY_SIGNAL", {}
 
