@@ -88,8 +88,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 if prev_close >= kc_mid_prev1:
                     is_v_shape_reversal = (body_length >= 2.0 * current_atr)
                     space_to_upper = kc_upper_prev1 - live_price
-                    if not is_v_shape_reversal and space_to_upper < 0.5 * current_atr:
-                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
+                    if not is_v_shape_reversal and space_to_upper < 1.0 * current_atr:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 1.0 ATR", {}
                     
                     if is_v_shape_reversal:
                         return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross LONG", {"action": "ENTER"}
@@ -101,8 +101,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 if prev_close <= kc_mid_prev1:
                     is_v_shape_reversal = (body_length >= 2.0 * current_atr)
                     space_to_lower = live_price - kc_lower_prev1
-                    if not is_v_shape_reversal and space_to_lower < 0.5 * current_atr:
-                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
+                    if not is_v_shape_reversal and space_to_lower < 1.0 * current_atr:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 1.0 ATR", {}
                         
                     if is_v_shape_reversal:
                         return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross SHORT", {"action": "ENTER"}

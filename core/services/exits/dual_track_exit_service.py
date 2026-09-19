@@ -116,17 +116,20 @@ class DualTrackExitStrategy(IExitStrategy):
                     logger.warning(f"[ZONE_B_EXIT][SPECIAL_K] Reversal SHORT body={curr_body/atr:.2f}ATR @ {current_price:.6f}")
                     return "[ZONE_B_EXIT] Special K Reversal SHORT"
 
-            # ③ 高利潤觸及軌道（帳面 >=2.0 ATR）
-            if side == "LONG":
-                unrealized_atr = (current_price - entry_price) / atr
-                if unrealized_atr >= HIGH_PROFIT_ATR and current_price <= kc_upper_curr:
-                    logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] LONG profit={unrealized_atr:.2f}ATR touching KC_upper @ {current_price:.6f}")
-                    return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC LONG"
-            else:
-                unrealized_atr = (entry_price - current_price) / atr
-                if unrealized_atr >= HIGH_PROFIT_ATR and current_price >= kc_lower_curr:
-                    logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] SHORT profit={unrealized_atr:.2f}ATR touching KC_lower @ {current_price:.6f}")
-                    return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC SHORT"
+            # ③ 高利潤觸及軌道（帳面 >=2.0 ATR），初根K棒不平倉（給予呼吸空間）
+            is_initial_bar = (position.get("last_evaluated_closed_bar_id") is None)
+            
+            if not is_initial_bar:
+                if side == "LONG":
+                    unrealized_atr = (current_price - entry_price) / atr
+                    if unrealized_atr >= HIGH_PROFIT_ATR and current_price <= kc_upper_curr:
+                        logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] LONG profit={unrealized_atr:.2f}ATR touching KC_upper @ {current_price:.6f}")
+                        return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC LONG"
+                else:
+                    unrealized_atr = (entry_price - current_price) / atr
+                    if unrealized_atr >= HIGH_PROFIT_ATR and current_price >= kc_lower_curr:
+                        logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] SHORT profit={unrealized_atr:.2f}ATR touching KC_lower @ {current_price:.6f}")
+                        return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC SHORT"
 
         # ══════════════════════════════════════════════════════════════
         # 收盤評估（每根 K 棒收盤後觸發一次）
