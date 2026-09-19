@@ -61,15 +61,15 @@ def check_atr_step_trailing_stop(
             
         state = position.setdefault("v10_phase_trailing", {})
         
-        # 1. 處理 0.5 ATR 初始防禦線 (永遠不變)
+        # 1. 處理 1.5 ATR 初始防禦線 (永遠不變)
         if "defense_line" not in state:
             if side == "LONG":
-                defense = entry_price - 0.5 * atr
+                defense = entry_price - 1.5 * atr
             else:
-                defense = entry_price + 0.5 * atr
+                defense = entry_price + 1.5 * atr
             state["defense_line"] = defense
             symbol = position.get("symbol", "UNKNOWN")
-            logger.info(f"[Protection] {symbol} 已於 {defense:.6g} 掛出 0.5 ATR 初始防禦線保護單")
+            logger.info(f"[Protection] {symbol} 已於 {defense:.6g} 掛出 1.5 ATR 初始防禦線保護單")
             
             # 特例 K 進場：立即在進場瞬間掛出第一張 1.0 ATR 鎖利單
             v8_reason = position.get("v8_reason", "")
@@ -127,12 +127,12 @@ def check_atr_step_trailing_stop(
             if profit_lock is not None and price <= profit_lock:
                 return "EXIT_1.0_ATR_PROFIT_LOCK"
             if price <= defense_line:
-                return "EXIT_0.5_ATR_DEFENSE"
+                return "EXIT_1.5_ATR_DEFENSE"
         else:
             if profit_lock is not None and price >= profit_lock:
                 return "EXIT_1.0_ATR_PROFIT_LOCK"
             if price >= defense_line:
-                return "EXIT_0.5_ATR_DEFENSE"
+                return "EXIT_1.5_ATR_DEFENSE"
                 
     except Exception as e:
         logger.error(f"Error in check_atr_step_trailing_stop: {e}")
