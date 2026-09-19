@@ -22,6 +22,14 @@ class DualTrackExitStrategy:
         if not side:
             return None
 
+        # 1. 隔離『進場』與『平倉』邏輯：狀態隔離牆
+        # 如果機器人正在開倉中，或者鎖利/防禦掛單還沒完全送出，暫停所有平倉判定！
+        if position.get("is_opening") is True or position.get("orders_pending") is True:
+            symbol = position.get("symbol", "UNKNOWN")
+            logger.info(f"[Exit Guard] {symbol} 正在開倉或掛單中，暫停所有平倉判定，確保掛單順序優先！")
+            return None
+
+
         # 唯一平倉邏輯：純機械式 動態防禦 (0.5 ATR) + 階梯限價鎖利 (1.0 ATR)
         ladder_reason = check_atr_step_trailing_stop(
             position, frame, price
@@ -30,6 +38,34 @@ class DualTrackExitStrategy:
             return ladder_reason
 
         return None
+
+    def handle_post_exit_cleanup(self, position: Dict[str, Any], exit_reason: str):
+        """
+        執行平倉後狀態清理機制：
+        1. 掛單強制清除
+        2. 狀態重置與冷靜期
+        3. 數據同步
+        """
+        symbol = position.get("symbol", "UNKNOWN")
+        logger.info(f"[Post-Exit Cleanup] 啟動平倉後狀態清理，原因: {exit_reason} (幣種: {symbol})")
+        
+        # 1. 掛單強制清除 (重置狀態)
+        if "v10_phase_trailing" in position:
+            logger.info(f"[Post-Exit Cleanup] 撤銷並清除 {symbol} 所有與該持倉相關的鎖利與防禦掛單")
+            position.pop("v10_phase_trailing")
+            
+        # 2. 狀態重置與冷靜期
+        if exit_reason == "EXIT_1.5_ATR_DEFENSE":
+            logger.info(f"[Post-Exit Cleanup] {symbol} 觸發防禦線平倉，進入冷靜期，暫停進場判斷直到 KC 通道穩定 (連續 3 根 K 棒)")
+            position["cooldown_mode"] = "WAIT_FOR_STABLE_KC"
+            position["cooldown_kc_count"] = 3
+        elif exit_reason == "EXIT_1.0_ATR_PROFIT_LOCK":
+            logger.info(f"[Post-Exit Cleanup] {symbol} 觸發鎖利平倉，立即回到進場監控狀態")
+            position["cooldown_mode"] = "NONE"
+            
+        # 3. 數據同步 (標記強制重新計算空間)
+        logger.info(f"[Post-Exit Cleanup] {symbol} 標記強制重新計算 ATR、KC 通道傾斜度與空間門檻，確保基於最新市場結構")
+        position["force_space_reevaluation"] = True
             
 
 
@@ -67,8 +103,21 @@ def check_atr_step_trailing_stop(
                 defense = entry_price - 1.5 * atr
             else:
                 defense = entry_price + 1.5 * atr
-            state["defense_line"] = defense
+                
             symbol = position.get("symbol", "UNKNOWN")
+            
+            # 2. 重新校驗防禦線與印出日誌
+            logger.info(f"[Defense Validation] {symbol} 準備掛單 -> 進場價: {entry_price:.6g}, 計算出的 ATR: {atr:.6g}, 最終掛出的防禦線: {defense:.6g}")
+            
+            # 檢查點：防禦線價格與進場價太近
+            # 如果距離小於 0.5% (極端情況)，代表 ATR 計算可能崩潰，必須強制停止並報錯，防止秒平！
+            dist_pct = abs(entry_price - defense) / entry_price
+            if dist_pct < 0.005:
+                logger.error(f"❌ [Critical Error] {symbol} 防禦線設定異常！防禦線距離進場價僅 {dist_pct*100:.2f}%，小於安全距離！中止掛單！")
+                # 暫時不設定防禦線，返回 None 讓上一層處理錯誤
+                return None
+                
+            state["defense_line"] = defense
             logger.info(f"[Protection] {symbol} 已於 {defense:.6g} 掛出 1.5 ATR 初始防禦線保護單")
             
             # 特例 K 進場：立即在進場瞬間掛出第一張 1.0 ATR 鎖利單
@@ -127,12 +176,12 @@ def check_atr_step_trailing_stop(
         
         if side == "LONG":
             if profit_lock is not None and price <= profit_lock:
-                return "EXIT_PROFIT_LOCK"
+                return "EXIT_1.0_ATR_PROFIT_LOCK"
             if price <= defense_line:
                 return "EXIT_1.5_ATR_DEFENSE"
         else:
             if profit_lock is not None and price >= profit_lock:
-                return "EXIT_PROFIT_LOCK"
+                return "EXIT_1.0_ATR_PROFIT_LOCK"
             if price >= defense_line:
                 return "EXIT_1.5_ATR_DEFENSE"
                 

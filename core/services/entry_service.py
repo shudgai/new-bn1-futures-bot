@@ -117,3 +117,108 @@ def channel_immediate_outer_break_action(
     elif price < kc_lower and ma3 < kc_lower:
         return channel_strong_first_outer_touch_action(frame, price, "SHORT")
     return {"action": "WAIT", "side": None, "reason": "INSIDE_KC"}
+
+def evaluate_dynamic_priority_entry(
+    frame: pd.DataFrame, side: str, expected_profit_space: float, state: dict = None
+) -> Dict[str, Any]:
+    """
+    動態優先級進場系統 (三級優先權)
+    整合了空間動態門檻與趨勢權限的合一進場邏輯，並加入『趨勢鎖定』補償機制
+    """
+    if state is None:
+        state = {}
+        
+    if frame is None or len(frame) < 3:
+        return {"action": "WAIT", "reason": "INSUFFICIENT_DATA"}
+        
+    curr = frame.iloc[-1]
+    prev = frame.iloc[-2]
+    prev2 = frame.iloc[-3]
+    
+    atr = float(curr.get("atr", 0))
+    if atr <= 0:
+        return {"action": "WAIT", "reason": "INVALID_ATR"}
+        
+    # K 棒特徵
+    prev_body = abs(float(prev["close"]) - float(prev["open"]))
+    prev_is_long = float(prev["close"]) > float(prev["open"])
+    prev_is_short = float(prev["close"]) < float(prev["open"])
+    
+    # 通道擴張判斷
+    curr_kc_width = float(curr["kc_upper"]) - float(curr["kc_lower"])
+    prev_kc_width = float(prev["kc_upper"]) - float(prev["kc_lower"])
+    is_expanding = curr_kc_width > prev_kc_width
+    
+    # 判斷實體是否收在中軌之外 (LONG: 實體下緣 > 中軌, SHORT: 實體上緣 < 中軌)
+    def is_body_outside_mid(row, direction):
+        if direction == "LONG":
+            return min(float(row["close"]), float(row["open"])) > float(row["kc_middle"])
+        else:
+            return max(float(row["close"]), float(row["open"])) < float(row["kc_middle"])
+            
+    prev_outside_mid = is_body_outside_mid(prev, side)
+    prev2_outside_mid = is_body_outside_mid(prev2, side)
+    
+    # 3. 狀態清除：如果回落到中軌內，或通道停止擴張並開始收斂，清除『趨勢鎖定模式』
+    if state.get("trend_locked_side") == side:
+        if not prev_outside_mid or not is_expanding:
+            state.pop("trend_locked_side", None)
+            
+    # === 1. 最高優先級：極端動能特權 (Extreme Momentum) ===
+    # 條件：前一根 K 棒實體 >= 2.0 ATR
+    if prev_body >= 2.0 * atr:
+        if (side == "LONG" and prev_is_long) or (side == "SHORT" and prev_is_short):
+            state.pop("trend_locked_side", None) # 進場即清除鎖定
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": f"SPECIAL_ENTRY_MOMENTUM_{side}",
+                "tag": "[Special Entry] Extreme Momentum"
+            }
+            
+    # === 補償機制：趨勢鎖定下的進場規則 ===
+    if state.get("trend_locked_side") == side and is_expanding:
+        if expected_profit_space >= 0.8 * atr:
+            state.pop("trend_locked_side", None) # 進場即清除鎖定
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": f"TREND_CONTINUATION_LOCKED_{side}",
+                "tag": "[Entry] Trend Continuation (Locked)"
+            }
+            
+    # === 2. 次高優先級：趨勢延續進場 (Trend Continuation) ===
+    # 條件：價格已連續兩根 K 棒實體收在 KC 中軌之外，且通道寬度正在擴張
+    if prev_outside_mid and prev2_outside_mid and is_expanding:
+        if expected_profit_space >= 0.3 * atr:
+            state.pop("trend_locked_side", None)
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": f"TREND_CONTINUATION_{side}",
+                "tag": "[Entry] Trend Continuation"
+            }
+        else:
+            return {"action": "WAIT", "reason": "SPACE_TOO_SMALL_FOR_CONTINUATION"}
+            
+    # === 3. 標準優先級：初始破軌進場 (Initial Breakout) ===
+    # 條件：價格剛開始突破 KC 中軌 (前一根破，前兩根沒破)，且通道正在擴張
+    if prev_outside_mid and not prev2_outside_mid and is_expanding:
+        if expected_profit_space >= 1.5 * atr:
+            state.pop("trend_locked_side", None)
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": f"INITIAL_BREAKOUT_{side}",
+                "tag": "[Entry] Initial Breakout"
+            }
+        else:
+            # 建立『趨勢鎖定』狀態
+            state["trend_locked_side"] = side
+            return {
+                "action": "WAIT", 
+                "reason": "INITIAL_SPACE_INSUFFICIENT_LOCKED",
+                "tag": "[Skip Order] Initial Space Insufficient - Entering Trend Lock."
+            }
+            
+    return {"action": "WAIT", "reason": "NO_DYNAMIC_ENTRY_CONDITION_MET"}
