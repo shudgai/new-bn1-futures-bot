@@ -97,16 +97,18 @@ def check_atr_step_trailing_stop(
             
         current_step = state.get("atr_step", 0)
         target_step = 0
-        if highest_dist >= 1.0 * atr:
-            target_step = math.floor(highest_dist / atr)
+        if highest_dist >= 0.7 * atr:
+            target_step = math.floor(highest_dist / (0.7 * atr))
             
         # 3. 如果到達新階梯，撤銷舊單並掛出新單
         if target_step > current_step:
             state["atr_step"] = target_step
+            lock_dist = (target_step - 1) * 0.7
+                
             if side == "LONG":
-                new_lock = entry_price + (target_step - 1) * atr
+                new_lock = entry_price + lock_dist * atr
             else:
-                new_lock = entry_price - (target_step - 1) * atr
+                new_lock = entry_price - lock_dist * atr
             
             # 若已有舊鎖利單，確保方向正確 (不會往下退)
             old_lock = state.get("profit_lock_line")
@@ -125,12 +127,12 @@ def check_atr_step_trailing_stop(
         
         if side == "LONG":
             if profit_lock is not None and price <= profit_lock:
-                return "EXIT_1.0_ATR_PROFIT_LOCK"
+                return "EXIT_PROFIT_LOCK"
             if price <= defense_line:
                 return "EXIT_1.5_ATR_DEFENSE"
         else:
             if profit_lock is not None and price >= profit_lock:
-                return "EXIT_1.0_ATR_PROFIT_LOCK"
+                return "EXIT_PROFIT_LOCK"
             if price >= defense_line:
                 return "EXIT_1.5_ATR_DEFENSE"
                 
