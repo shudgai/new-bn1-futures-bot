@@ -116,15 +116,15 @@ class DualTrackExitStrategy(IExitStrategy):
                     logger.warning(f"[ZONE_B_EXIT][SPECIAL_K] Reversal SHORT body={curr_body/atr:.2f}ATR @ {current_price:.6f}")
                     return "[ZONE_B_EXIT] Special K Reversal SHORT"
 
-            # ③ 高利潤觸及對側 KC 軌（帳面 >=2.0 ATR）
+            # ③ 高利潤觸及軌道（帳面 >=2.0 ATR）
             if side == "LONG":
                 unrealized_atr = (current_price - entry_price) / atr
-                if unrealized_atr >= HIGH_PROFIT_ATR and current_price >= kc_upper_curr:
+                if unrealized_atr >= HIGH_PROFIT_ATR and current_price <= kc_upper_curr:
                     logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] LONG profit={unrealized_atr:.2f}ATR touching KC_upper @ {current_price:.6f}")
                     return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC LONG"
             else:
                 unrealized_atr = (entry_price - current_price) / atr
-                if unrealized_atr >= HIGH_PROFIT_ATR and current_price <= kc_lower_curr:
+                if unrealized_atr >= HIGH_PROFIT_ATR and current_price >= kc_lower_curr:
                     logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] SHORT profit={unrealized_atr:.2f}ATR touching KC_lower @ {current_price:.6f}")
                     return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC SHORT"
 
@@ -162,25 +162,47 @@ class DualTrackExitStrategy(IExitStrategy):
             logger.info(f"[MODE→ZONE_B] SHORT 跌破 KC 下軌 close={close_p:.6f}  trailing={prev_high:.6f}")
 
         # ══════════════════════════════════════════════════════════════
-        # ZONE B 收盤：前K低/高點護航追蹤
+        # ZONE B 收盤：階梯護航（Step-Wise Guard）= Max(階梯鎖利, 前K極值)
         # ══════════════════════════════════════════════════════════════
         if is_super and not just_entered:
+            unrealized_profit_atr = (close_p - entry_price) / atr if side == "LONG" else (entry_price - close_p) / atr
+            
+            # A線：計算階梯鎖利防線 (每進展 1.5 ATR 推進防線，保留 1.0 ATR 回吐空間)
+            locked_level = int(unrealized_profit_atr / 1.5)
+            step_atr = max(0.0, (locked_level * 1.5) - 1.0)
+            
             if side == "LONG":
+                step_line = entry_price + step_atr * atr
+                guard_line = prev_low
+                new_trail = max(step_line, guard_line)
+                
                 current_trail = position.get("super_trend_trailing_stop", float("-inf"))
-                new_trail     = max(current_trail, prev_low)
-                position["super_trend_trailing_stop"] = new_trail
-                logger.debug(f"[ZONE_B] LONG trailing→{new_trail:.6f}  close={close_p:.6f}")
-                if close_p < new_trail:
-                    logger.warning(f"[ZONE_B_EXIT][SUPER_TREND] LONG Bar Close < Prev Low {new_trail:.6f}")
-                    return "[ZONE_B_EXIT] Super Trend — Bar Close Below Prev Low (LONG)"
+                if new_trail > current_trail:
+                    position["super_trend_trailing_stop"] = new_trail
+                    if new_trail == step_line and new_trail != guard_line:
+                        logger.info(f"[STEP_LOCK_UPDATE] LONG trailing→{new_trail:.6f} (Step ATR: {step_atr:.2f})")
+                    else:
+                        logger.info(f"[TRAILING_GUARD_UPDATE] LONG trailing→{new_trail:.6f} (Prev Low)")
+                
+                if close_p < position["super_trend_trailing_stop"]:
+                    logger.warning(f"[ZONE_B_EXIT][SUPER_TREND] LONG Bar Close < Trailing Stop {position['super_trend_trailing_stop']:.6f}")
+                    return "[ZONE_B_EXIT] Super Trend — Bar Close Below Trailing Stop (LONG)"
             else:
+                step_line = entry_price - step_atr * atr
+                guard_line = prev_high
+                new_trail = min(step_line, guard_line)
+                
                 current_trail = position.get("super_trend_trailing_stop", float("inf"))
-                new_trail     = min(current_trail, prev_high)
-                position["super_trend_trailing_stop"] = new_trail
-                logger.debug(f"[ZONE_B] SHORT trailing→{new_trail:.6f}  close={close_p:.6f}")
-                if close_p > new_trail:
-                    logger.warning(f"[ZONE_B_EXIT][SUPER_TREND] SHORT Bar Close > Prev High {new_trail:.6f}")
-                    return "[ZONE_B_EXIT] Super Trend — Bar Close Above Prev High (SHORT)"
+                if new_trail < current_trail:
+                    position["super_trend_trailing_stop"] = new_trail
+                    if new_trail == step_line and new_trail != guard_line:
+                        logger.info(f"[STEP_LOCK_UPDATE] SHORT trailing→{new_trail:.6f} (Step ATR: {step_atr:.2f})")
+                    else:
+                        logger.info(f"[TRAILING_GUARD_UPDATE] SHORT trailing→{new_trail:.6f} (Prev High)")
+                
+                if close_p > position["super_trend_trailing_stop"]:
+                    logger.warning(f"[ZONE_B_EXIT][SUPER_TREND] SHORT Bar Close > Trailing Stop {position['super_trend_trailing_stop']:.6f}")
+                    return "[ZONE_B_EXIT] Super Trend — Bar Close Above Trailing Stop (SHORT)"
             return None  # 還在護航中，不平倉
 
         # ZONE A：通道內，收盤無任何出場條件
