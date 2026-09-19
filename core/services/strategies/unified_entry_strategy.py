@@ -7,168 +7,137 @@ from core.interfaces.entry_interface import IEntryStrategy
 
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str]:
+    """
+    解鎖版全動態進場系統：
+    - 移除初始破軌空間門檻 (由階梯鎖利接管利潤管理)
+    - 引入中軌斜率 (Slope) 作為通道擴張替代條件
+    - 結構反轉與特例 K 絕對豁免空間檢查
+    """
     if df is None or len(df) < 5:
-        return False, ""
-        
-    prev = df.iloc[-2]
-    prev_prev = df.iloc[-3]
-    latest = df.iloc[-1]
+        return False, "WAIT_INSUFFICIENT_DATA"
 
-    prev_close = float(prev["close"])
-    prev_open = float(prev["open"])
+    latest = df.iloc[-1]       # 當前即時 K 棒
+    prev_1 = df.iloc[-2]       # 剛收盤確認信號的 K 棒
+    prev_2 = df.iloc[-3]       # 前兩根 K 棒
     
-    prev_is_bullish = prev_close > prev_open
-    prev_is_bearish = prev_close < prev_open
-    
-    # 取得中軌與 ATR
-    kc_mid_prev = float(prev.get("kc_middle", prev.get("ema_20", 0)))
-    kc_mid_prev_prev = float(prev_prev.get("kc_middle", prev_prev.get("ema_20", 0)))
-    kc_mid_latest = float(latest.get("kc_middle", latest.get("ema_20", 0)))
-    atr_prev = float(prev.get("atr", 0))
+    current_atr = float(prev_1.get('atr', 0))
+    if current_atr <= 0:
+        return False, "WAIT_INVALID_ATR"
 
-    if atr_prev <= 0 or kc_mid_prev == 0 or kc_mid_prev_prev == 0:
-        return False, "WAIT_NO_DATA"
-        
-    # 計算通道寬度 (判斷擴張)
-    kc_upper_prev = float(prev.get("kc_upper", kc_mid_prev))
-    kc_lower_prev = float(prev.get("kc_lower", kc_mid_prev))
-    kc_width_prev = kc_upper_prev - kc_lower_prev
-    
-    kc_upper_prev_prev = float(prev_prev.get("kc_upper", kc_mid_prev_prev))
-    kc_lower_prev_prev = float(prev_prev.get("kc_lower", kc_mid_prev_prev))
-    kc_width_prev_prev = kc_upper_prev_prev - kc_lower_prev_prev
-    
+    # 計算前一根收盤 K 棒實體與總長
+    prev_open = float(prev_1['open'])
+    prev_close = float(prev_1['close'])
+    prev_high = float(prev_1['high'])
+    prev_low = float(prev_1['low'])
+
     prev_body = abs(prev_close - prev_open)
-    
-    # 計算傾斜速度
-    tilt_speed = abs(kc_mid_latest - kc_mid_prev)
-    
-    # 動態設定預期獲利空間門檻
-    required_space_long = 1.5 * atr_prev
-    if tilt_speed > 0.1 * atr_prev:
-        required_space_long = 1.0 * atr_prev
-        # 連續突破補償
-        prev_prev_close = float(prev_prev["close"])
-        if prev_close > kc_mid_prev and prev_prev_close > kc_mid_prev_prev:
-            required_space_long = 0.8 * atr_prev
+    prev_range = prev_high - prev_low
+    prev_body_ratio = prev_body / prev_range if prev_range > 0 else 0.0
 
-    required_space_short = 1.5 * atr_prev
-    if tilt_speed > 0.1 * atr_prev:
-        required_space_short = 1.0 * atr_prev
-        # 連續突破補償
-        prev_prev_close = float(prev_prev["close"])
-        if prev_close < kc_mid_prev and prev_prev_close < kc_mid_prev_prev:
-            required_space_short = 0.8 * atr_prev
-    
-    # ── 判斷是否為「趨勢延續」狀態 ──────────────────────────────────────────
-    # 連續兩根已收線 K 棒均在中軌之上 (LONG) / 之下 (SHORT) 則認定為趨勢已啟動
-    prev_prev_close = float(prev_prev["close"])
-    is_trend_continuation_long = (
-        prev_close > kc_mid_prev and
-        prev_prev_close > kc_mid_prev_prev
-    )
-    is_trend_continuation_short = (
-        prev_close < kc_mid_prev and
-        prev_prev_close < kc_mid_prev_prev
-    )
-
-    # ── 讀取 MA3 / MA15 (用於反轉進場) ──────────────────────────────────────
-    ma3_prev = float(prev.get("ma3", 0)) if "ma3" in prev.index else 0.0
-    ma3_prev_prev = float(prev_prev.get("ma3", 0)) if "ma3" in prev_prev.index else 0.0
-    ma15_prev = float(prev.get("ma15", 0)) if "ma15" in prev.index else 0.0
-    ma15_prev_prev = float(prev_prev.get("ma15", 0)) if "ma15" in prev_prev.index else 0.0
-    has_ma = (ma3_prev > 0 and ma15_prev > 0 and ma3_prev_prev > 0 and ma15_prev_prev > 0)
-
-    # ── 結構性反轉進場檢測 (Reversal Entry) ─────────────────────────────────
-    if has_ma and side == "SHORT":
-        dist_above_mid = prev_close - kc_mid_prev
-        is_overheated = dist_above_mid >= 1.5 * atr_prev
-        is_death_cross = (ma3_prev_prev >= ma15_prev_prev) and (ma3_prev < ma15_prev)
-        if is_overheated and is_death_cross and prev_is_bearish:
-            return True, "REVERSAL_ENTRY_SHORT"
-
-    if has_ma and side == "LONG":
-        dist_below_mid = kc_mid_prev - prev_close
-        is_oversold = dist_below_mid >= 1.5 * atr_prev
-        is_golden_cross = (ma3_prev_prev <= ma15_prev_prev) and (ma3_prev > ma15_prev)
-        if is_oversold and is_golden_cross and prev_is_bullish:
-            return True, "REVERSAL_ENTRY_LONG"
-
-    if side == "LONG":
-        # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
-        if prev_body >= 2.0 * atr_prev and prev_is_bullish and prev_close > kc_mid_prev:
+    # -------------------------------------------------------------
+    # 優先級 1：【特例 K】極端爆發模式 (絕對優先，無視一切過濾)
+    # -------------------------------------------------------------
+    if prev_body >= 2.0 * current_atr:
+        if side == "LONG" and prev_close > prev_open:
             return True, "SPECIAL_ENTRY_MOMENTUM_LONG"
-
-        # 1. 基本趨勢判定
-        if not (prev_is_bullish and prev_close > kc_mid_prev):
-            return False, "WAIT_NOT_IN_BULL_TREND"
-
-        # 2. 通道擴張與傾斜 (Expansion Check)
-        is_tilting_up = kc_mid_latest > kc_mid_prev and kc_mid_prev > kc_mid_prev_prev
-        is_expanding = kc_width_prev > kc_width_prev_prev
-        if not (is_tilting_up and is_expanding):
-            return False, "WAIT_NO_EXPANSION"
-
-        # 3. 過濾假突破 (最新價絕對不能跌回中軌以內)
-        if live_price <= kc_mid_latest:
-            return False, "WAIT_PULLBACK_REJECTED"
-
-        # 4. 預期獲利空間過濾 (動態切換)
-        kc_upper_latest = float(latest.get("kc_upper", live_price))
-        expected_profit = kc_upper_latest - live_price
-
-        if is_trend_continuation_long:
-            # 情境 B：趨勢延續 → 放寬至 0.8 ATR
-            threshold = 0.8 * atr_prev
-            if expected_profit < threshold:
-                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {threshold:.4f})"
-            return True, "TREND_CONTINUATION_LONG"
-        else:
-            # 情境 A：初始破軌 → 嚴格 1.5 ATR (動態調降)
-            if expected_profit < required_space_long:
-                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {required_space_long:.4f})"
-            return True, "INITIAL_BREAKOUT_LONG"
-
-    elif side == "SHORT":
-        # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
-        if prev_body >= 2.0 * atr_prev and prev_is_bearish and prev_close < kc_mid_prev:
+        elif side == "SHORT" and prev_close < prev_open:
             return True, "SPECIAL_ENTRY_MOMENTUM_SHORT"
 
-        # 1. 基本趨勢判定
-        if not (prev_is_bearish and prev_close < kc_mid_prev):
-            return False, "WAIT_NOT_IN_BEAR_TREND"
+    # 基礎品質過濾：進場前一根實體比例必須 >= 60%
+    if prev_body_ratio < 0.60:
+        return False, f"WAIT_FILTERED_BODY_RATIO_{prev_body_ratio:.2f}"
 
-        # 2. 通道擴張與傾斜 (Expansion Check)
-        is_tilting_down = kc_mid_latest < kc_mid_prev and kc_mid_prev < kc_mid_prev_prev
-        is_expanding = kc_width_prev > kc_width_prev_prev
-        if not (is_tilting_down and is_expanding):
-            return False, "WAIT_NO_EXPANSION"
+    # 讀取 MA3 / MA15
+    ma3_prev1 = float(prev_1.get('ma3', 0))
+    ma15_prev1 = float(prev_1.get('ma15', 0))
+    ma3_prev2 = float(prev_2.get('ma3', 0))
+    ma15_prev2 = float(prev_2.get('ma15', 0))
+    has_ma = (ma3_prev1 > 0 and ma15_prev1 > 0 and ma3_prev2 > 0 and ma15_prev2 > 0)
+    
+    # 讀取 KC 數據
+    kc_mid_prev1 = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0)))
+    kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
+    
+    kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
+    kc_lower_prev1 = float(prev_1.get("kc_lower", kc_mid_prev1))
+    kc_upper_prev2 = float(prev_2.get("kc_upper", kc_mid_prev2))
+    kc_lower_prev2 = float(prev_2.get("kc_lower", kc_mid_prev2))
 
-        # 3. 過濾假突破 (最新價絕對不能漲回中軌以內)
-        if live_price >= kc_mid_latest:
-            return False, "WAIT_PULLBACK_REJECTED"
+    # -------------------------------------------------------------
+    # 2. 中軌斜率與通道動能判定
+    # -------------------------------------------------------------
+    middle_slope = kc_mid_prev1 - kc_mid_prev2
+    current_width = kc_upper_prev1 - kc_lower_prev1
+    prev_width = kc_upper_prev2 - kc_lower_prev2
+    is_expanding = current_width > prev_width
+    
+    # 斜率達標門檻 (單根斜率變動達 0.08 ATR 視為顯著傾斜)
+    slope_threshold = 0.08 * current_atr
+    is_steep_slope_up = middle_slope >= slope_threshold
+    is_steep_slope_down = middle_slope <= -slope_threshold
 
-        # 4. 預期獲利空間過濾 (動態切換)
-        kc_lower_latest = float(latest.get("kc_lower", live_price))
-        expected_profit = live_price - kc_lower_latest
+    # 通道啟動判定：物理寬度變大 OR 中軌劇烈傾斜
+    trend_started_long = is_expanding or is_steep_slope_up
+    trend_started_short = is_expanding or is_steep_slope_down
 
-        if is_trend_continuation_short:
-            # 情境 B：趨勢延續 → 放寬至 0.8 ATR
-            threshold = 0.8 * atr_prev
-            if expected_profit < threshold:
-                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {threshold:.4f})"
-            return True, "TREND_CONTINUATION_SHORT"
-        else:
-            # 情境 A：初始破軌 → 嚴格 1.5 ATR (動態調降)
-            if expected_profit < required_space_short:
-                return False, f"[Skip Order] Space Insufficient (Target: {expected_profit:.4f} < {required_space_short:.4f})"
-            return True, "INITIAL_BREAKOUT_SHORT"
+    dist_from_middle_atr = abs(prev_close - kc_mid_prev1) / current_atr
+    cooldown_active = kwargs.get("cooldown_active", False)
+    prev2_close = float(prev_2['close'])
 
-    return False, "WAIT_NO_TRACK_SIGNAL"
+    # -------------------------------------------------------------
+    # 優先級 2：【結構反轉模式】 (極端區域 + MA 死叉/金叉，絕對豁免空間)
+    # -------------------------------------------------------------
+    if has_ma:
+        # 做空反轉：處於頂部極端區 (>= 1.5 ATR) + MA3 死叉 MA15 + 實體陰線
+        ma_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
+        if side == "SHORT" and dist_from_middle_atr >= 1.5 and ma_cross_down and (prev_close < prev_open):
+            return True, "REVERSAL_ENTRY_SHORT"
 
+        # 做多反轉：處於底部極端區 (>= 1.5 ATR) + MA3 金叉 MA15 + 實體陽線
+        ma_cross_up = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
+        if side == "LONG" and dist_from_middle_atr >= 1.5 and ma_cross_up and (prev_close > prev_open):
+            return True, "REVERSAL_ENTRY_LONG"
 
+    # -------------------------------------------------------------
+    # 優先級 3 & 4：【初始破軌模式】與【趨勢延續模式】
+    # -------------------------------------------------------------
+    if side == "LONG":
+        # 初始破軌：收盤上穿中軌 + 趨勢啟動 (寬度擴張或中軌上翹)
+        initial_break_long = (prev_close > kc_mid_prev1) and (prev2_close <= kc_mid_prev2)
+        if initial_break_long and trend_started_long and not cooldown_active:
+            return True, "INITIAL_BREAKOUT_UNLOCKED_LONG"
 
+        # 趨勢延續
+        continuation_long = (prev_close > kc_mid_prev1) and (middle_slope > 0)
+        if continuation_long and trend_started_long:
+            target_long = kc_upper_prev1 + (middle_slope * 2)
+            eval_price = live_price if live_price > 0 else prev_close
+            space_long_atr = (target_long - eval_price) / current_atr
+            if space_long_atr >= 0.5:
+                if is_steep_slope_up:
+                    return True, "TREND_CONT_UNLOCKED_EXEMPT_LONG"
+                elif not cooldown_active:
+                    return True, "TREND_CONT_UNLOCKED_LONG"
 
+    elif side == "SHORT":
+        # 初始破軌：收盤下穿中軌 + 趨勢啟動 (寬度擴張或中軌下俯)
+        initial_break_short = (prev_close < kc_mid_prev1) and (prev2_close >= kc_mid_prev2)
+        if initial_break_short and trend_started_short and not cooldown_active:
+            return True, "INITIAL_BREAKOUT_UNLOCKED_SHORT"
+
+        # 趨勢延續
+        continuation_short = (prev_close < kc_mid_prev1) and (middle_slope < 0)
+        if continuation_short and trend_started_short:
+            target_short = kc_lower_prev1 + (middle_slope * 2)
+            eval_price = live_price if live_price > 0 else prev_close
+            space_short_atr = (eval_price - target_short) / current_atr
+            if space_short_atr >= 0.5:
+                if is_steep_slope_down:
+                    return True, "TREND_CONT_UNLOCKED_EXEMPT_SHORT"
+                elif not cooldown_active:
+                    return True, "TREND_CONT_UNLOCKED_SHORT"
+
+    return False, "WAIT_NO_VALID_ENTRY_CONDITIONS"
 
 
 class UnifiedEntryStrategy(IEntryStrategy):

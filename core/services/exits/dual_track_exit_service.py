@@ -29,6 +29,41 @@ class DualTrackExitStrategy:
             logger.info(f"[Exit Guard] {symbol} 正在開倉或掛單中，暫停所有平倉判定，確保掛單順序優先！")
             return None
 
+        # 極速反噬防禦 (Emergency Escape): 最高優先級
+        curr = frame.iloc[-1]
+        prev = frame.iloc[-2]
+        atr = float(curr.get("atr", 0))
+        
+        curr_open = float(curr["open"])
+        curr_close = float(curr["close"])
+        prev_open = float(prev["open"])
+        prev_close = float(prev["close"])
+        
+        curr_body = abs(curr_close - curr_open)
+        
+        is_curr_red = curr_close < curr_open
+        is_curr_green = curr_close > curr_open
+        is_prev_red = prev_close < prev_open
+        is_prev_green = prev_close > prev_open
+        
+        # 條件 A: 單根 K 棒反向幅度超過 1.5 ATR
+        # 條件 B: 實體吞沒形態 (Engulfing Reversal)
+        if atr > 0:
+            if side == "LONG":
+                if is_curr_red and curr_body > 1.5 * atr:
+                    logger.warning(f"[Emergency Escape] {position.get('symbol')} 單根爆跌 > 1.5 ATR，觸發緊急市價平倉！")
+                    return "EXIT_EMERGENCY_REVERSAL"
+                if is_curr_red and is_prev_green and curr_open >= prev_close and curr_close <= prev_open:
+                    logger.warning(f"[Emergency Escape] {position.get('symbol')} 遭遇看跌吞沒形態 (Bearish Engulfing)，觸發緊急市價平倉！")
+                    return "EXIT_EMERGENCY_REVERSAL"
+            elif side == "SHORT":
+                if is_curr_green and curr_body > 1.5 * atr:
+                    logger.warning(f"[Emergency Escape] {position.get('symbol')} 單根爆漲 > 1.5 ATR，觸發緊急市價平倉！")
+                    return "EXIT_EMERGENCY_REVERSAL"
+                if is_curr_green and is_prev_red and curr_open <= prev_close and curr_close >= prev_open:
+                    logger.warning(f"[Emergency Escape] {position.get('symbol')} 遭遇看漲吞沒形態 (Bullish Engulfing)，觸發緊急市價平倉！")
+                    return "EXIT_EMERGENCY_REVERSAL"
+
 
         # 唯一平倉邏輯：純機械式 動態防禦 (0.5 ATR) + 階梯限價鎖利 (1.0 ATR)
         ladder_reason = check_atr_step_trailing_stop(
@@ -99,10 +134,18 @@ def check_atr_step_trailing_stop(
         
         # 1. 處理 1.5 ATR 初始防禦線 (永遠不變)
         if "defense_line" not in state:
+            v8_reason = position.get("v8_reason", position.get("reason", ""))
+            
             if side == "LONG":
                 defense = entry_price - 1.5 * atr
+                if "REVERSAL_ENTRY_LONG" in v8_reason:
+                    prev_low = float(frame.iloc[-2]['low'])
+                    defense = min(defense, prev_low)
             else:
                 defense = entry_price + 1.5 * atr
+                if "REVERSAL_ENTRY_SHORT" in v8_reason:
+                    prev_high = float(frame.iloc[-2]['high'])
+                    defense = max(defense, prev_high)
                 
             symbol = position.get("symbol", "UNKNOWN")
             

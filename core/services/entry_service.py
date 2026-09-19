@@ -176,6 +176,39 @@ def evaluate_dynamic_priority_entry(
                 "tag": "[Special Entry] Extreme Momentum"
             }
             
+    # === 2. 新增 - 次高優先級：結構反轉模式 (Structural Reversal) ===
+    # 條件：價格距離中軌 >= 1.5 ATR + MA3/MA15 交叉 + 反轉K棒 (順向)
+    # 判斷與中軌距離
+    curr_kc_mid = float(curr["kc_middle"])
+    dist_to_mid = abs(float(prev["close"]) - curr_kc_mid)
+    
+    # 判斷 MA3/MA15 交叉 (以前一根的收盤狀態為準)
+    prev_ma3 = float(prev.get("ma3", 0))
+    prev_ma15 = float(prev.get("ma15", 0))
+    prev2_ma3 = float(prev2.get("ma3", 0))
+    prev2_ma15 = float(prev2.get("ma15", 0))
+    
+    is_ma_cross_long = prev_ma3 > prev_ma15 and prev2_ma3 <= prev2_ma15
+    is_ma_cross_short = prev_ma3 < prev_ma15 and prev2_ma3 >= prev2_ma15
+    
+    if dist_to_mid >= 1.5 * atr:
+        if side == "LONG" and is_ma_cross_long and prev_is_long:
+            state.pop("trend_locked_side", None)
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": "STRUCTURAL_REVERSAL_LONG",
+                "tag": "[Entry] Structural Reversal (Long)"
+            }
+        elif side == "SHORT" and is_ma_cross_short and prev_is_short:
+            state.pop("trend_locked_side", None)
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": "STRUCTURAL_REVERSAL_SHORT",
+                "tag": "[Entry] Structural Reversal (Short)"
+            }
+            
     # === 補償機制：趨勢鎖定下的進場規則 ===
     if state.get("trend_locked_side") == side and is_expanding:
         if expected_profit_space >= 0.8 * atr:
@@ -187,10 +220,10 @@ def evaluate_dynamic_priority_entry(
                 "tag": "[Entry] Trend Continuation (Locked)"
             }
             
-    # === 2. 次高優先級：趨勢延續進場 (Trend Continuation) ===
+    # === 3. 第三優先級：趨勢延續進場 (Trend Continuation) ===
     # 條件：價格已連續兩根 K 棒實體收在 KC 中軌之外，且通道寬度正在擴張
     if prev_outside_mid and prev2_outside_mid and is_expanding:
-        if expected_profit_space >= 0.3 * atr:
+        if expected_profit_space >= 0.8 * atr: # Updated to 0.8 ATR based on summary
             state.pop("trend_locked_side", None)
             return {
                 "action": "ENTER",
@@ -201,7 +234,7 @@ def evaluate_dynamic_priority_entry(
         else:
             return {"action": "WAIT", "reason": "SPACE_TOO_SMALL_FOR_CONTINUATION"}
             
-    # === 3. 標準優先級：初始破軌進場 (Initial Breakout) ===
+    # === 4. 第四優先級：初始破軌進場 (Initial Breakout) ===
     # 條件：價格剛開始突破 KC 中軌 (前一根破，前兩根沒破)，且通道正在擴張
     if prev_outside_mid and not prev2_outside_mid and is_expanding:
         if expected_profit_space >= 1.5 * atr:
