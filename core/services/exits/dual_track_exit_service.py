@@ -6,7 +6,7 @@ import math
 logger = logging.getLogger(__name__)
 
 # V10 狀態追蹤鍵列，持久化結構追蹤狀態
-DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close", "last_evaluated_closed_bar_id"]
+DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close", "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop"]
 
 class DualTrackExitStrategy:
     def __init__(self, fee: float = 0.0004, slippage: float = 0.0005):
@@ -96,21 +96,33 @@ class DualTrackExitStrategy:
                 logger.warning(f"[Emergency Escape] {position.get('symbol')} 逆勢單遭遇反向K棒且MA3上彎 (SHORT)！保本逃命！")
                 return "[FAST_EXIT] Counter-Trend Escape"
 
-        # 3. Profit Waiver (High Profit Target)
+        # 3. Profit Waiver (High Profit Target) or Super Trend Check
         unrealized_profit = (price - entry_price) if side == "LONG" else (entry_price - price)
         kc_upper = float(curr.get("kc_upper", float('inf')))
         kc_lower = float(curr.get("kc_lower", 0.0))
         
-        if unrealized_profit >= 1.5 * atr:
-            if (side == "LONG" and price >= kc_upper) or (side == "SHORT" and price <= kc_lower):
-                logger.warning(f"[FAST_EXIT] High Profit Target (>= 1.5 ATR) on {position.get('symbol')}! Taking profit.")
-                return "[FAST_EXIT] High Profit Target"
-                
-        # 4. Special K Volatility
+        in_super_trend = position.get("super_trend_mode", False)
+        
+        # 4. Special K Volatility (Always active)
         if curr_body >= 2.0 * atr:
             if (side == "LONG" and price >= kc_upper) or (side == "SHORT" and price <= kc_lower):
                 logger.warning(f"[FAST_EXIT] Special K (>= 2.0 ATR Body) on {position.get('symbol')}! Taking profit.")
                 return "[FAST_EXIT] Special K"
+                
+        if in_super_trend:
+            trailing_stop = position.get("super_trend_trailing_stop")
+            if trailing_stop is not None:
+                if side == "LONG" and price < trailing_stop:
+                    logger.warning(f"[TREND_TRAILING_EXIT] - Trailing stop hit at Candle Low on {position.get('symbol')}")
+                    return "[TREND_TRAILING_EXIT] - Trailing stop hit at Candle Low"
+                elif side == "SHORT" and price > trailing_stop:
+                    logger.warning(f"[TREND_TRAILING_EXIT] - Trailing stop hit at Candle High on {position.get('symbol')}")
+                    return "[TREND_TRAILING_EXIT] - Trailing stop hit at Candle High"
+        else:
+            if unrealized_profit >= 1.5 * atr:
+                if (side == "LONG" and price >= kc_upper) or (side == "SHORT" and price <= kc_lower):
+                    logger.warning(f"[FAST_EXIT] High Profit Target (>= 1.5 ATR) on {position.get('symbol')}! Taking profit.")
+                    return "[FAST_EXIT] High Profit Target"
 
         # END OF BAR CHECKS (STANDARD EXIT)
         prev_timestamp = float(prev.get("timestamp", prev.name))
@@ -119,16 +131,32 @@ class DualTrackExitStrategy:
         if last_closed_bar is None or prev_timestamp > last_closed_bar:
             # A new bar just closed! Evaluate standard trailing lock exit on the CLOSED bar
             position["last_evaluated_closed_bar_id"] = prev_timestamp
-            
-            # Update trailing lock levels based on the closed bar's high/low
-            # We use the previous bar because it just closed.
             closed_price = float(prev["close"])
-            ladder_reason = check_atr_step_trailing_stop(position, frame, closed_price)
-            if ladder_reason:
-                logger.info(f"[STANDARD_EXIT] {position.get('symbol')} Trend exhausted at close. ({ladder_reason})")
-                return ladder_reason
+            
+            # Check for Super Trend Mode entry or update
+            kc_upper_prev = float(prev.get("kc_upper", float('inf')))
+            kc_lower_prev = float(prev.get("kc_lower", 0.0))
+            
+            if not in_super_trend:
+                if (side == "LONG" and closed_price > kc_upper_prev) or (side == "SHORT" and closed_price < kc_lower_prev):
+                    position["super_trend_mode"] = True
+                    in_super_trend = True
+                    logger.info(f"[MODE_CHANGE] - Entered Super_Trend_Mode (Trailing Active) for {position.get('symbol')}")
+            
+            if in_super_trend:
+                if side == "LONG":
+                    position["super_trend_trailing_stop"] = float(prev["low"])
+                elif side == "SHORT":
+                    position["super_trend_trailing_stop"] = float(prev["high"])
             else:
-                logger.info(f"[HOLDING_WAIT_CLOSE] {position.get('symbol')} No close-based exit triggered. Holding for next candle.")
+                # Update trailing lock levels based on the closed bar's high/low
+                # We use the previous bar because it just closed.
+                ladder_reason = check_atr_step_trailing_stop(position, frame, closed_price)
+                if ladder_reason:
+                    logger.info(f"[STANDARD_EXIT] {position.get('symbol')} Trend exhausted at close. ({ladder_reason})")
+                    return ladder_reason
+                else:
+                    logger.info(f"[HOLDING_WAIT_CLOSE] {position.get('symbol')} No close-based exit triggered. Holding for next candle.")
 
         return None
 
