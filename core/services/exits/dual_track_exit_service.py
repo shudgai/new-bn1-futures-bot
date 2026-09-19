@@ -92,9 +92,10 @@ class DualTrackExitStrategy(IExitStrategy):
         curr_body  = abs(curr_close - curr_open)
         prev_open  = float(prev_1["open"])
 
-        # ══════════════════════════════════════════════════════════════
         # 第一層：絕對保命（ZONE A & B 共用，Zone B 只會使用凍結的保命線，無盤中鎖利更新）
         # ══════════════════════════════════════════════════════════════
+        # 讓前端介面能讀取到防線
+        position["stop_price"] = position.get("super_trend_trailing_stop") if is_super else active_stop
         if side == "LONG" and current_price <= active_stop:
             tag = "EXIT_PROFIT_PROTECT_HIT" if state["last_locked_level"] > 0 else "EXIT_HARD_STOP_1.5_ATR"
             logger.warning(f"[ZONE_A_EXIT][HARD_STOP] {tag} @ {current_price:.6f}")
