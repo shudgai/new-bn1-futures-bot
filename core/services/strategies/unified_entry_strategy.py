@@ -4,6 +4,7 @@ from core.interfaces.entry_interface import IEntryStrategy
 
 
 def check_structural_alignment(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
+    """嚴格版（Track B/R/C 使用）：MA15 與 MA3 必須同向，無特例。"""
     ma15_prev1 = float(prev_1.get('ma15', 0))
     ma15_prev2 = float(prev_2.get('ma15', 0))
     ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
@@ -26,6 +27,44 @@ def check_structural_alignment(side: str, prev_1: pd.Series, prev_2: pd.Series, 
         if not ma3_ok: return False, "FILTERED_DUAL_RESONANCE: MA3 not falling"
         return True, "OK"
         
+    return False, "INVALID_SIDE"
+
+
+def check_structural_alignment_relaxed(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
+    """寬鬆版（Track A / Track P 使用）：只要 MA15 沒有強烈反向即可通過。
+    
+    暴力破軌初期 MA15 因計算橫盤區間而滯後，此版本允許 MA15 持平或輕微逆向，
+    只要 MA15 逆向斜率未超過 0.05 ATR 即視為「不強烈反向」，不攔截進場。
+    MA3 仍須至少不強力反向（允許微弱逆向）。
+    """
+    ma15_prev1 = float(prev_1.get('ma15', 0))
+    ma15_prev2 = float(prev_2.get('ma15', 0))
+    ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
+    ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
+
+    slope_ma15 = ma15_prev1 - ma15_prev2
+    slope_ma3 = ma3_prev1 - ma3_prev2
+    # 強烈反向門檻：斜率超過 0.05 ATR 才視為崩盤式反向，否則放行
+    strong_reversal_threshold = 0.05 * current_atr
+
+    if side == "LONG":
+        ma15_strongly_falling = slope_ma15 < -strong_reversal_threshold
+        ma3_strongly_falling  = slope_ma3  < -strong_reversal_threshold
+        if ma15_strongly_falling:
+            return False, f"FILTERED_TRACK_AP: MA15 strongly falling ({slope_ma15:.6f} < -{strong_reversal_threshold:.6f})"
+        if ma3_strongly_falling:
+            return False, f"FILTERED_TRACK_AP: MA3 strongly falling ({slope_ma3:.6f} < -{strong_reversal_threshold:.6f})"
+        return True, "OK"
+
+    elif side == "SHORT":
+        ma15_strongly_rising = slope_ma15 > strong_reversal_threshold
+        ma3_strongly_rising  = slope_ma3  > strong_reversal_threshold
+        if ma15_strongly_rising:
+            return False, f"FILTERED_TRACK_AP: MA15 strongly rising ({slope_ma15:.6f} > {strong_reversal_threshold:.6f})"
+        if ma3_strongly_rising:
+            return False, f"FILTERED_TRACK_AP: MA3 strongly rising ({slope_ma3:.6f} > {strong_reversal_threshold:.6f})"
+        return True, "OK"
+
     return False, "INVALID_SIDE"
 
 def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
@@ -95,12 +134,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     slope_ma15 = ma15_prev1 - ma15_prev2
 
     # =========================================================================
-    # 全局雙重共振守門員 (Global Dual Resonance Gatekeeper)
+    # 全局守門員：Track A/P 使用寬鬆版（MA15 不強烈反向即可）
+    #             Track B/R/C/0/V 在各軌道前使用嚴格版
     # =========================================================================
-    # 取消任何特例豁免，所有的開倉動作必須同時滿足 M3 與 MA15 同向
-    is_aligned, reject_reason = check_structural_alignment(side, prev_1, prev_2, current_atr)
-    if not is_aligned:
-        return False, reject_reason, {}
+    # 先用寬鬆版做初步篩查（攔截崩盤式反向）
+    relaxed_aligned, relaxed_reject = check_structural_alignment_relaxed(side, prev_1, prev_2, current_atr)
+    if not relaxed_aligned:
+        return False, relaxed_reject, {}
+
+    # 嚴格版結果暫存供 B/R/C 使用（不在此處直接攔截）
+    strict_aligned, strict_reject = check_structural_alignment(side, prev_1, prev_2, current_atr)
 
     pin_passed, pin_reject_reason = check_extreme_pin_defense(side, prev_1, prev_2, current_atr)
     if not pin_passed:
@@ -108,7 +151,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
 
     # =========================================================================
-    # 軌道 V：V型轉折進場 (V-Shape Reversal Entry) - 最高優先級
+    # 軌道 V：V型轉折進場 (使用寬鬆守門員，已通過)
     # =========================================================================
     if len(df) >= 25:
         recent_20_bars = df.iloc[-21:-1]
@@ -161,7 +204,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 return True, "[ANTICIPATED_ENTRY] Live Momentum Breakout SHORT", {"action": "ENTER"}
 
     # =========================================================================
-    # 軌道 A：特例快速進場路徑 (Extreme Volatility Path - 絕對優先)
+    # 軌道 A：特例快速進場（極端動能，使用寬鬆守門員，已通過）
     # =========================================================================
     dist_from_middle = abs(prev_close - kc_mid_prev1)
 
@@ -178,30 +221,37 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             return False, "FILTERED_EXTREME_DOJI", {}
 
     # =========================================================================
-    # 軌道 P：平台破位優先特權 (Platform Breakdown Exemption)
+    # 軌道 P：平台破位（使用寬鬆守門員；次根確認放寬至 50% 緩衝）
     # =========================================================================
     if len(df) >= 6:
-        # 取前 2~5 根 K 棒作為整理平台 (iloc[-6:-2])
         platform_bars = df.iloc[-6:-2]
-        
+
         if side == "LONG":
             is_solid_breakout = is_bullish and (body_length >= 1.0 * current_atr)
             recent_max_high = float(platform_bars['high'].max())
             broke_platform = prev_close > recent_max_high
-            
-            # 平台破位判定 (已通過全局結構審查)
+            # ✅ 放寬：次根收盤只需超過平台最高點的 50% 緩衝位即可
+            # 即允許回踩至（平台最高點 − 0.5 × 突破實體長度）仍視為有效破軌
+            breakout_body = prev_close - recent_max_high
+            buffer_floor = recent_max_high - 0.5 * max(breakout_body, 0)
             if is_solid_breakout and broke_platform and prev_close > kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG", {"action": "ENTER"}
-                
+                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (relaxed MA15)", {"action": "ENTER"}
+
         elif side == "SHORT":
             is_solid_breakout = is_bearish and (body_length >= 1.0 * current_atr)
             recent_min_low = float(platform_bars['low'].min())
             broke_platform = prev_close < recent_min_low
-            
-            # 平台破位判定 (享有結構豁免權)
+            # ✅ 放寬：次根收盤只需低於平台最低點的 50% 緩衝位即可
+            breakout_body = recent_min_low - prev_close
+            buffer_ceiling = recent_min_low + 0.5 * max(breakout_body, 0)
             if is_solid_breakout and broke_platform and prev_close < kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT", {"action": "ENTER"}
+                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (relaxed MA15)", {"action": "ENTER"}
 
+    # =========================================================================
+    # 軌道 B/R/C：嚴格雙重共振守門員（MA15 必須同向）
+    # =========================================================================
+    if not strict_aligned:
+        return False, strict_reject, {}
 
     # =========================================================================
     # 軌道 B-1：結構性爆發金叉 (Explosive MA Cross)
