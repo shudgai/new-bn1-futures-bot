@@ -14,27 +14,30 @@ def check_structural_alignment(side: str, prev_1: pd.Series, prev_2: pd.Series, 
     slope_kc_mid = kc_mid_prev1 - kc_mid_prev2
     
     if side == "LONG":
-        ma15_ok = slope_ma15 > 0.05 * current_atr
+        # 放寬斜率要求，只要大於 0.02 ATR 即視為有傾角
+        ma15_ok = slope_ma15 > 0.02 * current_atr
         kc_mid_ok = slope_kc_mid > 0
-        alignment_ok = (close_prev1 > kc_mid_prev1) and (kc_mid_prev1 >= ma15_prev1)
-        distance_ok = (close_prev1 - ma15_prev1) > (current_atr * 0.5)
+        # 移除了 KC_Middle 和 MA15 的排列約束，因為 EMA20 和 SMA15 誰快誰慢在不同波動率下會交叉，容易誤攔
+        alignment_ok = (close_prev1 > kc_mid_prev1) and (close_prev1 > ma15_prev1)
+        # 放寬空間過濾，0.3 ATR
+        distance_ok = (close_prev1 - ma15_prev1) > (current_atr * 0.3)
         
-        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending up"
+        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending up (needs >0.02 ATR slope)"
         if not kc_mid_ok: return False, "FILTERED_STRUCTURE: KC Middle not trending up"
-        if not alignment_ok: return False, "FILTERED_STRUCTURE: MA Alignment Bullish failed"
-        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.5 ATR)"
+        if not alignment_ok: return False, "FILTERED_STRUCTURE: Price not above both KC_Mid and MA15"
+        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.3 ATR)"
         return True, "OK"
         
     elif side == "SHORT":
-        ma15_ok = slope_ma15 < -0.05 * current_atr
+        ma15_ok = slope_ma15 < -0.02 * current_atr
         kc_mid_ok = slope_kc_mid < 0
-        alignment_ok = (close_prev1 < kc_mid_prev1) and (kc_mid_prev1 <= ma15_prev1)
-        distance_ok = (ma15_prev1 - close_prev1) > (current_atr * 0.5)
+        alignment_ok = (close_prev1 < kc_mid_prev1) and (close_prev1 < ma15_prev1)
+        distance_ok = (ma15_prev1 - close_prev1) > (current_atr * 0.3)
         
-        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending down"
+        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending down (needs <-0.02 ATR slope)"
         if not kc_mid_ok: return False, "FILTERED_STRUCTURE: KC Middle not trending down"
-        if not alignment_ok: return False, "FILTERED_STRUCTURE: MA Alignment Bearish failed"
-        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.5 ATR)"
+        if not alignment_ok: return False, "FILTERED_STRUCTURE: Price not below both KC_Mid and MA15"
+        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.3 ATR)"
         return True, "OK"
         
     return False, "INVALID_SIDE"
@@ -113,14 +116,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 return True, "[V_REVERSAL_ENTRY] Extreme Top V-Shape SHORT", {"action": "ENTER"}
 
     # =========================================================================
-    # 全局結構審查 (Global Structural Gatekeeper)
-    # =========================================================================
-    # 除了 V型轉折 (逆勢摸底) 以外，所有順勢進場皆須受結構與均線引力過濾
-    is_aligned, reject_reason = check_structural_alignment(side, prev_1, prev_2, current_atr)
-    if not is_aligned:
-        return False, reject_reason, {}
-
-    # =========================================================================
     # 軌道 0：盤中動能預判 (Intra-bar Anticipation - 預防滑價與追高殺低)
     # =========================================================================
     latest_vol = float(latest.get("volume", 0))
@@ -178,9 +173,17 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             recent_min_low = float(platform_bars['low'].min())
             broke_platform = prev_close < recent_min_low
             
-            # 平台破位判定 (已通過全局結構審查)
+            # 平台破位判定 (享有結構豁免權)
             if is_solid_breakout and broke_platform and prev_close < kc_mid_prev1:
                 return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT", {"action": "ENTER"}
+
+    # =========================================================================
+    # 趨勢結構審查 (Trend Structural Gatekeeper)
+    # =========================================================================
+    # 進入常規順勢進場 (Track B, R, C) 前，必須受嚴格的 MA15 結構與均線引力過濾
+    is_aligned, reject_reason = check_structural_alignment(side, prev_1, prev_2, current_atr)
+    if not is_aligned:
+        return False, reject_reason, {}
 
     # =========================================================================
     # 軌道 B-1：結構性爆發金叉 (Explosive MA Cross)
