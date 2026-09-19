@@ -120,8 +120,12 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     body_length = abs(prev_close - prev_open)
     candle_range = prev_high - prev_low
+    body_ratio = body_length / candle_range if candle_range > 0 else 0
     # 實體突破要求：實體長度必須佔整根 K 棒長度的 60% 以上，過濾長影線陷阱
-    is_solid_body = (body_length >= 0.60 * candle_range) if candle_range > 0 else False
+    is_solid_body = (body_ratio >= 0.60)
+
+    # 動能優先權 (Momentum Priority)：極端動能爆發 (實體波幅 >= 1.2 ATR 且實體比例 >= 0.7)
+    is_extreme_momentum = (body_length >= 1.2 * current_atr) and (body_ratio >= 0.7)
 
     # 判斷多空方向 (收盤價 > 開盤價為陽線做多，反之為陰線做空)
     is_bullish = prev_close > prev_open
@@ -272,9 +276,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         return False, "FILTERED_COMPRESSION_ZONE: Market is in low volatility compression", {}
 
     # =========================================================================
-    # 下方軌道 (B, R, C) 使用嚴格版守門員 (MA15 >= 0)必須同向）
+    # 下方軌道 (B, R, C) 使用嚴格版守門員 (MA15 必須同向)
+    # 動能優先權：若 K 棒具備極端動能 (is_extreme_momentum)，給予趨勢豁免權，無視嚴格對齊
     # =========================================================================
-    if not strict_aligned:
+    if not strict_aligned and not is_extreme_momentum:
         return False, strict_reject, {}
 
     # =========================================================================
@@ -284,7 +289,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
     slope_ma3 = ma3_prev1 - ma3_prev2
     
-    body_ratio = body_length / candle_range if candle_range > 0 else 0
     kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
     kc_lower_prev1 = float(prev_1.get("kc_lower", kc_mid_prev1))
 
