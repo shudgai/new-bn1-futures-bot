@@ -87,6 +87,7 @@ from core.config import (
     OUTER_RUN_NET_GIVEBACK_USDT,
     ENABLE_BOUNCE_TARGET_EXIT,
     EXHAUSTION_SNIPER_GRACE_SEC, EXHAUSTION_SNIPER_STOP_LOSS_PCT,
+    MIN_HOLD_SEC_FOR_STRATEGY_EXIT,
 )
 from core.strategy import compute_sl_tp_distance, validate_sl_tp_pair
 from core.notifier import notify_email
@@ -686,6 +687,12 @@ class BinanceTestnetAccount:
 
             old_sl = pos.get("sl", 0.0)
             now_ts = time.time()
+            # ✅ 最小持倉防火牆：計算已持倉秒數
+            _open_ts = float(pos.get("open_timestamp") or meta.get("open_timestamp") or now_ts)
+            hold_secs = now_ts - _open_ts
+            # 策略型平倉（指標/均線/通道訊號）是否已製過最小持倉秒數
+            _strategy_exit_ok = (MIN_HOLD_SEC_FOR_STRATEGY_EXIT <= 0
+                                 or hold_secs >= MIN_HOLD_SEC_FOR_STRATEGY_EXIT)
 
             liq_p = pos.get("liquidation_price", 0.0)
             if liq_p > 0:
@@ -780,6 +787,17 @@ class BinanceTestnetAccount:
                 # 交易所的 1.2% STOP_MARKET 繼續有效；前三分鐘不移動保護線，
                 # 也不執行任何獲利／技術型出場。
                 continue
+            # ✅ 策略型平倉防火牆：進場後未滿 MIN_HOLD_SEC_FOR_STRATEGY_EXIT 秒，小心記錄並跳過所有策略型出場
+            if not _strategy_exit_ok and (is_structure_exit_mode or is_channel_swing):
+                _remaining = MIN_HOLD_SEC_FOR_STRATEGY_EXIT - hold_secs
+                if _remaining > 10:  # 僅在超過 10 秒剪剩時印 log，避免散沙訊息
+                    self.log(
+                        f"⏳ [最小持倉防火牆] {symbol} {side} 進場後 {hold_secs:.0f}秒 "
+                        f"未滿 {MIN_HOLD_SEC_FOR_STRATEGY_EXIT:.0f}秒，屯蔽策略型平倉 "
+                        f"（剩餘 {_remaining:.0f}秒）",
+                        "INFO",
+                    )
+                continue
             # RANGE／TREND 結構出場交由主引擎；Channel Swing 額外只保留大瀑布防護。
             if is_structure_exit_mode or is_channel_swing:
                 # Channel Swing exits exclusively through confirmed opposite
@@ -869,9 +887,10 @@ class BinanceTestnetAccount:
                 and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
             )
             if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
-                # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
-                await self.close_position(symbol, curr_p, "峰值回吐平倉")
-                continue
+                if _strategy_exit_ok:
+                    # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
+                    await self.close_position(symbol, curr_p, "峰值回吐平倉")
+                    continue
 
             if (
                 ENABLE_BOUNCE_TARGET_EXIT
@@ -879,10 +898,11 @@ class BinanceTestnetAccount:
                 and bounce_target_pct > 0
                 and pnl_pct + 1e-12 >= bounce_target_pct
             ):
-                await self.close_position(
-                    symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
-                )
-                continue
+                if _strategy_exit_ok:
+                    await self.close_position(
+                        symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
+                    )
+                    continue
 
             if (
                 meta.get("profit_profile") == "BOUNCE"
@@ -892,8 +912,9 @@ class BinanceTestnetAccount:
                 and highest_pnl < BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT
                 and pnl_pct <= 0
             ):
-                await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
-                continue
+                if _strategy_exit_ok:
+                    await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
+                    continue
 
             # 第一階段在 +0.5% 鎖住；之後依峰值級距保留70%／80%／85%。沿用既有
             # STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
@@ -1057,8 +1078,9 @@ class BinanceTestnetAccount:
                         # 更有利方向收緊，避免同一輪建立後又立即取消替換。
                         continue
                 if meta.get("early_profit_guard_armed") and pnl_pct <= early_guard_exit:
-                    await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
-                    continue
+                    if _strategy_exit_ok:
+                        await self.close_position(symbol, curr_p, "反彈早期獲利保護回吐平倉")
+                        continue
 
             # ── 急速逆向閃崩偵測（Rapid Adverse Drop Guard）──
             # 在單次 ticker 更新周期（約 5 秒）內，若持倉方向屑生急速逆向移動超過門檣

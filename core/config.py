@@ -127,6 +127,11 @@ else:
     BOTTOM_OVERSOLD_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERSOLD_RSI_15M_LIMIT", "35.0"))
     BOTTOM_OVERBOUGHT_RSI_15M_LIMIT = float(os.getenv("BOTTOM_OVERBOUGHT_RSI_15M_LIMIT", "65.0"))
     CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO = float(os.getenv("CLOSE_ON_PROFIT_MIN_PNL_TO_FEE_RATIO", "3.0"))
+# 策略型平倉（指標/均線/通道出場）的最小持倉秒數。
+# 進場後未滿此時間，所有策略型出場訊號被屏蔽，防止「進場即出場」的閃現洗出。
+# 硬性停損（HARD_STOP、閃崩、本地 SL 觀察線、動態本金防線）完全不受此限制。
+# 設為 0 停用此保護（不建議）；預設 60 秒 = 1 根 1m K 棒收盤時間。
+MIN_HOLD_SEC_FOR_STRATEGY_EXIT = 0 if IS_TESTING else float(os.getenv("MIN_HOLD_SEC_FOR_STRATEGY_EXIT", "60"))
 # 是否在交易所端掛出「初始虧損停損」條件單。停用時仍會在本地保留
 # 計算出的 SL 作為觀察線，並由 MAX_ACCEPTABLE_LOSS_PCT 控制最終強制退出；
 # 獲利後的移動保本／移動停利不受此開關影響。

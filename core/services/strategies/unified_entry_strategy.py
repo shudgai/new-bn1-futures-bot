@@ -120,6 +120,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     body_length = abs(prev_close - prev_open)
     candle_range = prev_high - prev_low
+    # 實體突破要求：實體長度必須佔整根 K 棒長度的 60% 以上，過濾長影線陷阱
+    is_solid_body = (body_length >= 0.60 * candle_range) if candle_range > 0 else False
 
     # 判斷多空方向 (收盤價 > 開盤價為陽線做多，反之為陰線做空)
     is_bullish = prev_close > prev_open
@@ -132,6 +134,20 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     ma15_prev1 = float(prev_1.get('ma15', 0))
     ma15_prev2 = float(prev_2.get('ma15', 0))
     slope_ma15 = ma15_prev1 - ma15_prev2
+
+    # =========================================================================
+    # 橫盤區間過濾 (Volatility Filter)
+    # =========================================================================
+    is_compression_zone = False
+    if len(df) >= 7:
+        past_5_bars = df.iloc[-6:-1]
+        avg_atr_5 = float(past_5_bars['atr'].astype(float).mean())
+        recent_5_high = float(past_5_bars['high'].astype(float).max())
+        recent_5_low = float(past_5_bars['low'].astype(float).min())
+        recent_5_range = recent_5_high - recent_5_low
+        # 規則：5 根 K 棒的總振幅小於 1.5 倍平均 ATR，視為極度壓縮的橫盤雜訊區間
+        if recent_5_range < (avg_atr_5 * 1.5):
+            is_compression_zone = True
 
     # =========================================================================
     # 全局守門員：Track A/P 使用寬鬆版（MA15 不強烈反向即可）
@@ -153,7 +169,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # =========================================================================
     # 軌道 V：V型轉折進場 (使用寬鬆守門員，已通過)
     # =========================================================================
-    if len(df) >= 25:
+    if len(df) >= 25 and not is_compression_zone:
         recent_20_bars = df.iloc[-21:-1]
         
         rsi_prev1 = float(prev_1.get('rsi', 50))
@@ -191,7 +207,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     avg_vol = (float(prev_1.get("volume", 1)) + float(prev_2.get("volume", 1))) / 2.0 + 1e-9
     is_volume_burst = latest_vol > avg_vol * 1.5
     
-    if is_volume_burst:
+    if is_volume_burst and not is_compression_zone:
         kc_upper_live = float(latest.get("kc_upper", kc_mid_prev1))
         kc_lower_live = float(latest.get("kc_lower", kc_mid_prev1))
         
@@ -205,10 +221,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     # =========================================================================
     # 軌道 A：特例快速進場（極端動能，使用寬鬆守門員，已通過）
+    # 不受 is_compression_zone 限制，因為它是極端動能爆發
     # =========================================================================
     dist_from_middle = abs(prev_close - kc_mid_prev1)
 
-    if body_length >= 1.3 * current_atr:
+    if body_length >= 1.3 * current_atr and is_solid_body:
         if side == "LONG" and is_bullish:
             return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)", {"action": "ENTER"}
         elif side == "SHORT" and is_bearish:
@@ -222,12 +239,13 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     # =========================================================================
     # 軌道 P：平台破位（使用寬鬆守門員；次根確認放寬至 50% 緩衝）
+    # 不受 is_compression_zone 限制
     # =========================================================================
     if len(df) >= 6:
         platform_bars = df.iloc[-6:-2]
 
         if side == "LONG":
-            is_solid_breakout = is_bullish and (body_length >= 1.0 * current_atr)
+            is_solid_breakout = is_bullish and (body_length >= 1.0 * current_atr) and is_solid_body
             recent_max_high = float(platform_bars['high'].max())
             broke_platform = prev_close > recent_max_high
             # ✅ 放寬：次根收盤只需超過平台最高點的 50% 緩衝位即可
@@ -238,7 +256,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (relaxed MA15)", {"action": "ENTER"}
 
         elif side == "SHORT":
-            is_solid_breakout = is_bearish and (body_length >= 1.0 * current_atr)
+            is_solid_breakout = is_bearish and (body_length >= 1.0 * current_atr) and is_solid_body
             recent_min_low = float(platform_bars['low'].min())
             broke_platform = prev_close < recent_min_low
             # ✅ 放寬：次根收盤只需低於平台最低點的 50% 緩衝位即可
@@ -248,7 +266,13 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (relaxed MA15)", {"action": "ENTER"}
 
     # =========================================================================
-    # 軌道 B/R/C：嚴格雙重共振守門員（MA15 必須同向）
+    # 若處於靜默模式（橫盤壓縮區），則在此處短路返回，屏蔽後續所有常規進場軌道
+    # =========================================================================
+    if is_compression_zone:
+        return False, "FILTERED_COMPRESSION_ZONE: Market is in low volatility compression", {}
+
+    # =========================================================================
+    # 下方軌道 (B, R, C) 使用嚴格版守門員 (MA15 >= 0)必須同向）
     # =========================================================================
     if not strict_aligned:
         return False, strict_reject, {}
