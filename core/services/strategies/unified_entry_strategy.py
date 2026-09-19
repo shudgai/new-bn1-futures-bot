@@ -96,7 +96,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # -------------------------------------------------------------------------
     # 軌道 B-1：結構反轉進場 (修正版：MA5 + 大趨勢斜率對齊 + 空間緩衝)
     # -------------------------------------------------------------------------
-    min_space_buffer_atr = 0.5
+    min_space_buffer_atr = 1.0
     buffer_threshold = min_space_buffer_atr * current_atr
     
     ma5_prev1 = float(prev_1.get('ma5', prev_1.get('ema_5', 0)))
