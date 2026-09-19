@@ -4,7 +4,8 @@ import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
 
 DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close",
-                          "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop"]
+                          "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
+                          "active_stop_price", "max_profit_atr", "sl", "defense_line"]
 
 logger = logging.getLogger("DualTrackExit")
 
@@ -32,6 +33,7 @@ class DualTrackExitStrategy(IExitStrategy):
         
         position["defense_line"] = defense_line
         position["active_stop_price"] = defense_line
+        position["sl"] = defense_line  # 給 UI 與核心系統看的通用欄位
         position["highest_price"] = entry_price
         position["lowest_price"] = entry_price
         position["is_trailing_active"] = False
