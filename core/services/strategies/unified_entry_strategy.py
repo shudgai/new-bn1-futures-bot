@@ -68,7 +68,40 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             return False, "FILTERED_EXTREME_DOJI", {}
 
     # =========================================================================
-    # 軌道 B：衝鋒槍模式 (Aggressive Breakout Path - 無過濾)
+    # 軌道 B-1：結構性爆發金叉 (Explosive MA Cross)
+    # =========================================================================
+    ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
+    ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
+    slope_ma3 = ma3_prev1 - ma3_prev2
+    
+    body_ratio = body_length / candle_range if candle_range > 0 else 0
+    kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
+    kc_lower_prev1 = float(prev_1.get("kc_lower", kc_mid_prev1))
+
+    if ma3_prev1 > 0 and ma15_prev1 > 0 and ma3_prev2 > 0 and ma15_prev2 > 0:
+        ma3_cross_up = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
+        ma3_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
+
+        # 多頭金叉
+        if side == "LONG" and is_bullish and ma3_cross_up:
+            if (slope_ma3 / current_atr) >= 0.4 and body_ratio >= 0.60:
+                if prev_close >= kc_mid_prev1:
+                    space_to_upper = kc_upper_prev1 - live_price
+                    if space_to_upper < 0.5 * current_atr:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
+                    return True, "[STANDARD_ENTRY] Explosive MA Cross LONG", {"action": "ENTER"}
+
+        # 空頭死叉
+        if side == "SHORT" and is_bearish and ma3_cross_down:
+            if (slope_ma3 / current_atr) <= -0.4 and body_ratio >= 0.60:
+                if prev_close <= kc_mid_prev1:
+                    space_to_lower = live_price - kc_lower_prev1
+                    if space_to_lower < 0.5 * current_atr:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
+                    return True, "[STANDARD_ENTRY] Explosive MA Cross SHORT", {"action": "ENTER"}
+
+    # =========================================================================
+    # 軌道 B-2：衝鋒槍模式 (Aggressive Breakout Path - 無過濾)
     # =========================================================================
     # 讀取 KC 數據
     kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
