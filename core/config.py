@@ -863,6 +863,9 @@ NET_PROFIT_GUARANTEE_BUFFER = float(os.getenv("NET_PROFIT_GUARANTEE_BUFFER", "0.
 # --- 手續費與滑點預留設定 ---
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.0005")) # 0.05% 吃單手續費（Binance USDM 合約 VIP0 Taker 費率）
 SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.0001"))     # 0.01% 市價單估計滑點預留（單邊）
+# 成交後實際滑點超過此值即記錄 WARNING，以便分析市場流動性或系統延遲問題
+# 0 = 停用滑點警告；預設 0.05%（= 5x 正常估計值），暴力行情中會明顯觸發
+CLOSE_SLIPPAGE_WARN_PCT = float(os.getenv("CLOSE_SLIPPAGE_WARN_PCT", "0.0005"))
 
 # 階梯式移動停利：峰值達 0.35% 後，至少鎖住 0.25% 價格利潤；
 # 峰值繼續擴大時保留至少 70%，保護線只往有利方向移動。

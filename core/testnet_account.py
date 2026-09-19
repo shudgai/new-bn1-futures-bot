@@ -17,6 +17,7 @@ from core.config import (
     BINANCE_SECRET,
     TAKER_FEE_RATE,
     SLIPPAGE_PCT,
+    CLOSE_SLIPPAGE_WARN_PCT,
     MAX_DAILY_LOSS_PCT,
     MIN_OPEN_SIGNAL_SCORE,
     DEFAULT_SYMBOLS,
@@ -2249,8 +2250,11 @@ class BinanceTestnetAccount:
         self.last_closed_at[symbol] = _now
         position = dict(self.positions[symbol])
         try:
-            await self._cancel_all_orders(symbol)
+            # ✅ A. 極速執行：HARD_STOP 優先送出市價平倉單，跳過撤單等待；一般平倉照舊先撤單
             close_side = "sell" if position["side"] == "LONG" else "buy"
+            is_hard_stop_now = "HARD_STOP" in str(close_reason)
+            if not is_hard_stop_now:
+                await self._cancel_all_orders(symbol)
             order = await self.exchange.create_order(
                 symbol,
                 "market",
@@ -2259,7 +2263,24 @@ class BinanceTestnetAccount:
                 None,
                 {"reduceOnly": True, "newOrderRespType": "RESULT"},
             )
+            # HARD_STOP 送完市價單後再撤剩餘委託，不阻塞成交確認
+            if is_hard_stop_now:
+                try:
+                    await self._cancel_all_orders(symbol)
+                except Exception:
+                    pass
             execution_price = float(order.get("average") or current_price)
+            # ✅ B. 滑點稽核：計算實際成交滑點，超出門檻即記錄 WARNING
+            if CLOSE_SLIPPAGE_WARN_PCT > 0 and current_price > 0:
+                side_sign = 1 if position["side"] == "LONG" else -1
+                actual_slippage = side_sign * (current_price - execution_price) / current_price
+                if actual_slippage > CLOSE_SLIPPAGE_WARN_PCT:
+                    self.log(
+                        f"⚠️ [滑點警告] {symbol} {position['side']} 平倉滑點 {actual_slippage:.4%} "
+                        f"超出門檻 {CLOSE_SLIPPAGE_WARN_PCT:.4%} "
+                        f"（觸發價: {current_price:.6g} → 成交均價: {execution_price:.6g}，原因: {close_reason}）",
+                        "WARNING",
+                    )
             raw_pnl = (
                 (execution_price - position["entry_price"]) * position["qty"]
                 if position["side"] == "LONG"
