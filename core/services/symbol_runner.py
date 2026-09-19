@@ -307,6 +307,18 @@ async def process_single_symbol_runner(
                 
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
             
+            # 診斷日誌：印出前一根K棒的實體/ATR比例，讓您清楚看到是否接近特例K門檻
+            try:
+                _prev = channel_df.iloc[-2]
+                _atr = float(_prev.get("atr", 0))
+                _body = abs(float(_prev["close"]) - float(_prev["open"]))
+                _ratio = _body / _atr if _atr > 0 else 0
+                if _ratio >= 1.5:  # 只在接近門檻時才印，避免日誌太吵
+                    _tag = "🔥 SPECIAL_ENTRY_ELIGIBLE" if _ratio >= 2.0 else f"⚠️ NEAR_SPECIAL_ENTRY"
+                    print(f"[UnifiedEntry] {symbol} prev bar body/ATR = {_ratio:.2f}x  {_tag}", flush=True)
+            except Exception:
+                pass
+            
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
             
             # 接力強制方向（選項B寬鬆：高分UnifiedEntry仍可進場，接力方向優先）
