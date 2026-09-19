@@ -78,24 +78,40 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     middle_slope = kc_mid_prev1 - kc_mid_prev2
 
     # -------------------------------------------------------------------------
-    # 軌道 B-1：結構反轉進場 (極端區域 MA3/MA15 收盤交叉，豁免空間門檻)
+    # 軌道 B-1：結構反轉進場 (修正版：MA5 + 大趨勢斜率對齊)
     # -------------------------------------------------------------------------
-    ma3_prev1 = float(prev_1.get('ma3', 0))
+    ma5_prev1 = float(prev_1.get('ma5', prev_1.get('ema_5', 0)))
+    ma5_prev2 = float(prev_2.get('ma5', prev_2.get('ema_5', 0)))
     ma15_prev1 = float(prev_1.get('ma15', 0))
-    ma3_prev2 = float(prev_2.get('ma3', 0))
     ma15_prev2 = float(prev_2.get('ma15', 0))
-    has_ma = (ma3_prev1 > 0 and ma15_prev1 > 0 and ma3_prev2 > 0 and ma15_prev2 > 0)
+    
+    if ma5_prev1 == 0 and len(df) >= 5:
+        # Fallback if ma5 is not pre-calculated
+        ma5_series = df['close'].rolling(window=5).mean()
+        ma5_prev1 = float(ma5_series.iloc[-2])
+        ma5_prev2 = float(ma5_series.iloc[-3])
+
+    has_ma = (ma5_prev1 > 0 and ma15_prev1 > 0 and ma5_prev2 > 0 and ma15_prev2 > 0)
 
     if has_ma:
+        slope_ma15 = ma15_prev1 - ma15_prev2
+        slope_middle = kc_mid_prev1 - kc_mid_prev2
+        
         dist_from_middle_atr = abs(prev_close - kc_mid_prev1) / current_atr
         if dist_from_middle_atr >= 1.5:
-            ma_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
-            ma_cross_up   = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
+            ma_cross_down = (ma5_prev2 >= ma15_prev2) and (ma5_prev1 < ma15_prev1)
+            ma_cross_up   = (ma5_prev2 <= ma15_prev2) and (ma5_prev1 > ma15_prev1)
 
             if side == "SHORT" and ma_cross_down and is_bearish:
-                return True, "[STANDARD_ENTRY] Structural Reversal SHORT"
+                if slope_ma15 <= 0 or slope_middle <= 0:
+                    return True, "[STANDARD_ENTRY] Trend-Aligned MA Cross SHORT"
+                else:
+                    return False, "FILTERED: Counter-trend MA cross (MA15/Middle rising)"
             if side == "LONG" and ma_cross_up and is_bullish:
-                return True, "[STANDARD_ENTRY] Structural Reversal LONG"
+                if slope_ma15 >= 0 or slope_middle >= 0:
+                    return True, "[STANDARD_ENTRY] Trend-Aligned MA Cross LONG"
+                else:
+                    return False, "FILTERED: Counter-trend MA cross (MA15/Middle falling)"
 
     # -------------------------------------------------------------------------
     # 軌道 B-2：常規趨勢進場 (初始破軌 與 趨勢延續)

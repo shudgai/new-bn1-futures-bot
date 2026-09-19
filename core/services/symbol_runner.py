@@ -347,8 +347,8 @@ async def process_single_symbol_runner(
 
                 if "[SPECIAL_ENTRY] Extreme Impulse" in reason:
                     engine.account.log(f"⚡ [Special Entry] Extreme Momentum Triggered (2.0+ ATR) - Bypass Filters. ({symbol} {direct_side})", "INFO")
-                elif "Structural Reversal" in reason:
-                    engine.account.log(f"📉 [Reversal Entry] {symbol} MA3 交叉 MA15 + KC 極端位置，結構性反轉進場 ({direct_side})", "INFO")
+                elif "Trend-Aligned MA Cross" in reason:
+                    engine.account.log(f"📉 [Reversal Entry] {symbol} MA5 交叉 MA15 + 順應大級別斜率，結構性反轉進場 ({direct_side})", "INFO")
                 elif "Trend Continuation" in reason:
                     engine.account.log(f"🔥 [Entry] Trend Continuation — {symbol} 趨勢已啟動，動態空間門檻通過，果斷上車 ({direct_side})", "INFO")
                 elif "Initial Breakout" in reason:
