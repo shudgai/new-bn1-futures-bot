@@ -6,41 +6,54 @@ from core.interfaces.entry_interface import IEntryStrategy
 def check_structural_alignment(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
     ma15_prev1 = float(prev_1.get('ma15', 0))
     ma15_prev2 = float(prev_2.get('ma15', 0))
-    kc_mid_prev1 = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0)))
-    kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
-    close_prev1 = float(prev_1['close'])
+    ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
+    ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
     
     slope_ma15 = ma15_prev1 - ma15_prev2
-    slope_kc_mid = kc_mid_prev1 - kc_mid_prev2
+    slope_ma3 = ma3_prev1 - ma3_prev2
     
     if side == "LONG":
-        # 放寬斜率要求，只要大於 0.02 ATR 即視為有傾角
-        ma15_ok = slope_ma15 > 0.02 * current_atr
-        kc_mid_ok = slope_kc_mid > 0
-        # 移除了 KC_Middle 和 MA15 的排列約束，因為 EMA20 和 SMA15 誰快誰慢在不同波動率下會交叉，容易誤攔
-        alignment_ok = (close_prev1 > kc_mid_prev1) and (close_prev1 > ma15_prev1)
-        # 放寬空間過濾，0.3 ATR
-        distance_ok = (close_prev1 - ma15_prev1) > (current_atr * 0.3)
-        
-        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending up (needs >0.02 ATR slope)"
-        if not kc_mid_ok: return False, "FILTERED_STRUCTURE: KC Middle not trending up"
-        if not alignment_ok: return False, "FILTERED_STRUCTURE: Price not above both KC_Mid and MA15"
-        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.3 ATR)"
+        ma15_ok = slope_ma15 >= 0
+        ma3_ok = slope_ma3 > 1e-9
+        if not ma15_ok: return False, "FILTERED_DUAL_RESONANCE: MA15 is falling"
+        if not ma3_ok: return False, "FILTERED_DUAL_RESONANCE: MA3 not rising"
         return True, "OK"
         
     elif side == "SHORT":
-        ma15_ok = slope_ma15 < -0.02 * current_atr
-        kc_mid_ok = slope_kc_mid < 0
-        alignment_ok = (close_prev1 < kc_mid_prev1) and (close_prev1 < ma15_prev1)
-        distance_ok = (ma15_prev1 - close_prev1) > (current_atr * 0.3)
-        
-        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending down (needs <-0.02 ATR slope)"
-        if not kc_mid_ok: return False, "FILTERED_STRUCTURE: KC Middle not trending down"
-        if not alignment_ok: return False, "FILTERED_STRUCTURE: Price not below both KC_Mid and MA15"
-        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.3 ATR)"
+        ma15_ok = slope_ma15 <= 0
+        ma3_ok = slope_ma3 < -1e-9
+        if not ma15_ok: return False, "FILTERED_DUAL_RESONANCE: MA15 is rising"
+        if not ma3_ok: return False, "FILTERED_DUAL_RESONANCE: MA3 not falling"
         return True, "OK"
         
     return False, "INVALID_SIDE"
+
+def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
+    prev1_range = float(prev_1['high']) - float(prev_1['low'])
+    prev1_body = abs(float(prev_1['close']) - float(prev_1['open']))
+    
+    prev2_range = float(prev_2['high']) - float(prev_2['low'])
+    prev2_body = abs(float(prev_2['close']) - float(prev_2['open']))
+    
+    is_prev1_extreme = (prev1_range >= 1.5 * current_atr or prev1_body >= 1.5 * current_atr)
+    is_prev2_extreme = (prev2_range >= 1.5 * current_atr or prev2_body >= 1.5 * current_atr)
+    
+    if is_prev2_extreme:
+        if side == "LONG":
+            if float(prev_1['close']) <= float(prev_2['close']):
+                return False, "FILTERED_EXTREME_PIN: Next bar failed to close above extreme candle's close"
+            else:
+                return True, "OK"
+        elif side == "SHORT":
+            if float(prev_1['close']) >= float(prev_2['close']):
+                return False, "FILTERED_EXTREME_PIN: Next bar failed to close below extreme candle's close"
+            else:
+                return True, "OK"
+                
+    if is_prev1_extreme:
+        return False, "FILTERED_EXTREME_PIN: Prev1 is extreme (>=1.5 ATR), waiting for next bar confirmation"
+        
+    return True, "OK"
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
@@ -80,6 +93,18 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     ma15_prev1 = float(prev_1.get('ma15', 0))
     ma15_prev2 = float(prev_2.get('ma15', 0))
     slope_ma15 = ma15_prev1 - ma15_prev2
+
+    # =========================================================================
+    # 全局雙重共振守門員 (Global Dual Resonance Gatekeeper)
+    # =========================================================================
+    # 取消任何特例豁免，所有的開倉動作必須同時滿足 M3 與 MA15 同向
+    is_aligned, reject_reason = check_structural_alignment(side, prev_1, prev_2, current_atr)
+    if not is_aligned:
+        return False, reject_reason, {}
+
+    pin_passed, pin_reject_reason = check_extreme_pin_defense(side, prev_1, prev_2, current_atr)
+    if not pin_passed:
+        return False, pin_reject_reason, {}
 
 
     # =========================================================================
@@ -177,13 +202,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             if is_solid_breakout and broke_platform and prev_close < kc_mid_prev1:
                 return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT", {"action": "ENTER"}
 
-    # =========================================================================
-    # 趨勢結構審查 (Trend Structural Gatekeeper)
-    # =========================================================================
-    # 進入常規順勢進場 (Track B, R, C) 前，必須受嚴格的 MA15 結構與均線引力過濾
-    is_aligned, reject_reason = check_structural_alignment(side, prev_1, prev_2, current_atr)
-    if not is_aligned:
-        return False, reject_reason, {}
 
     # =========================================================================
     # 軌道 B-1：結構性爆發金叉 (Explosive MA Cross)
@@ -229,6 +247,42 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # =========================================================================
     # 軌道 B-2：強化結構破軌 (Structural Breakout)
     # =========================================================================
+    prev1_range = prev_high - prev_low
+    prev1_body = body_length
+    is_prev1_extreme = (prev1_range >= 1.5 * current_atr or prev1_body >= 1.5 * current_atr)
+    
+    prev2_range = float(prev_2['high']) - float(prev_2['low'])
+    prev2_body = abs(float(prev_2['close']) - float(prev_2['open']))
+    is_prev2_extreme = (prev2_range >= 1.5 * current_atr or prev2_body >= 1.5 * current_atr)
+    
+    is_struct_long = (prev_close > kc_mid_prev1) and (prev_close > ma15_prev1)
+    is_struct_short = (prev_close < kc_mid_prev1) and (prev_close < ma15_prev1)
+    
+    is_mom_long = is_bullish and (body_length >= 0.8 * current_atr) and (body_ratio >= 0.5)
+    is_mom_short = is_bearish and (body_length >= 0.8 * current_atr) and (body_ratio >= 0.5)
+
+    if side == "LONG":
+        if is_struct_long and is_mom_long and not is_prev1_extreme:
+            return True, "[STRUCTURAL_BREAKOUT] Momentum Breakout LONG", {"action": "ENTER"}
+            
+        is_struct_long2 = (float(prev_2['close']) > kc_mid_prev2) and (float(prev_2['close']) > ma15_prev2)
+        is_mom_long2 = (float(prev_2['close']) > float(prev_2['open'])) and (prev2_body >= 0.8 * current_atr) and ((prev2_body / prev2_range) >= 0.5 if prev2_range > 0 else False)
+        
+        if is_struct_long2 and is_mom_long2 and is_prev2_extreme:
+            if prev_close > float(prev_2['close']):
+                return True, "[DELAYED_BREAKOUT] Momentum LONG", {"action": "ENTER"}
+                
+    elif side == "SHORT":
+        if is_struct_short and is_mom_short and not is_prev1_extreme:
+            return True, "[STRUCTURAL_BREAKOUT] Momentum Breakout SHORT", {"action": "ENTER"}
+            
+        is_struct_short2 = (float(prev_2['close']) < kc_mid_prev2) and (float(prev_2['close']) < ma15_prev2)
+        is_mom_short2 = (float(prev_2['close']) < float(prev_2['open'])) and (prev2_body >= 0.8 * current_atr) and ((prev2_body / prev2_range) >= 0.5 if prev2_range > 0 else False)
+        
+        if is_struct_short2 and is_mom_short2 and is_prev2_extreme:
+            if prev_close < float(prev_2['close']):
+                return True, "[DELAYED_BREAKOUT] Momentum SHORT", {"action": "ENTER"}
+
     # 1. 劇烈反噬冷卻檢測 (Post-Crash Cooldown)
     post_crash_cooldown_active = False
     for i in range(2, 5):
