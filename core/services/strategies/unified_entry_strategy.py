@@ -140,6 +140,22 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     cooldown_active = kwargs.get("cooldown_active", False)
 
     if dist_from_middle > 2.0 * current_atr:
+        # ── 斜率特權豁免（Trend Privilege）────────────────────────────
+        # 以 ATR 無量綱化斜率，門檻 0.5 代表「每根 K 棒中軌移動 0.5 倍 ATR」
+        STRONG_SLOPE_THRESHOLD = 0.5
+        norm_slope_ma15   = slope_ma15   / current_atr
+        norm_slope_middle = slope_middle / current_atr
+
+        privilege_long  = (norm_slope_ma15 > STRONG_SLOPE_THRESHOLD or norm_slope_middle > STRONG_SLOPE_THRESHOLD)
+        privilege_short = (norm_slope_ma15 < -STRONG_SLOPE_THRESHOLD or norm_slope_middle < -STRONG_SLOPE_THRESHOLD)
+
+        if side == "LONG" and is_bullish and privilege_long:
+            return True, "[TREND_PRIVILEGE_ENTRY] Extreme Distance Waived (Strong Bull Slope) LONG", {"action": "ENTER", "is_privileged": True}
+
+        if side == "SHORT" and is_bearish and privilege_short:
+            return True, "[TREND_PRIVILEGE_ENTRY] Extreme Distance Waived (Strong Bear Slope) SHORT", {"action": "ENTER", "is_privileged": True}
+
+        # 弱勢/震盪：依然攔截
         return False, "FILTERED_EXTREME_DISTANCE: Price too far from KC Middle (>2.0 ATR)", {}
 
     # --- 沿軌跟進 (Band Riding Re-entry) ---
