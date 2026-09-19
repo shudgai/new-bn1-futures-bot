@@ -64,7 +64,7 @@ async def process_single_symbol_runner(
             for key in DUAL_TRACK_STATE_KEYS:
                 if existing_pos.get(key) is None and meta.get(key) is not None:
                     existing_pos[key] = copy.deepcopy(meta[key])
-            exit_strategy = DualTrackExitStrategy(fee=TAKER_FEE_RATE, slippage=SLIPPAGE_PCT)
+            exit_strategy = DualTrackExitStrategy()
             
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
             exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_drop_ratio=velocity_drop_ratio)

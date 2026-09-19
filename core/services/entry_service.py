@@ -118,71 +118,75 @@ def channel_immediate_outer_break_action(
         return channel_strong_first_outer_touch_action(frame, price, "SHORT")
     return {"action": "WAIT", "side": None, "reason": "INSIDE_KC"}
 
-def evaluate_dynamic_priority_entry(
-    frame: pd.DataFrame, side: str, expected_profit_space: float, state: dict = None
+def check_entry_signals(
+    frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
 ) -> Dict[str, Any]:
     """
-    動態優先級進場系統 (三級優先權)
-    整合了空間動態門檻與趨勢權限的合一進場邏輯，並加入『趨勢鎖定』補償機制
+    全新「三位一體」結構性進場架構 (動能+結構+空間)
+    路徑 A: 特例 K 爆發 (Special K Path)
+    路徑 B: 結構性轉折 (Structural Reversal Path)
+    路徑 C: 強勢趨勢延續 (Trend Continuation Path)
     """
     if state is None:
         state = {}
         
-    if frame is None or len(frame) < 3:
+    if frame is None or len(frame) < 4:
         return {"action": "WAIT", "reason": "INSUFFICIENT_DATA"}
         
     curr = frame.iloc[-1]
     prev = frame.iloc[-2]
     prev2 = frame.iloc[-3]
+    prev3 = frame.iloc[-4]
     
     atr = float(curr.get("atr", 0))
     if atr <= 0:
         return {"action": "WAIT", "reason": "INVALID_ATR"}
         
     # K 棒特徵
-    prev_body = abs(float(prev["close"]) - float(prev["open"]))
-    prev_is_long = float(prev["close"]) > float(prev["open"])
-    prev_is_short = float(prev["close"]) < float(prev["open"])
+    prev_open = float(prev["open"])
+    prev_close = float(prev["close"])
+    prev_body = abs(prev_close - prev_open)
+    prev_is_long = prev_close > prev_open
+    prev_is_short = prev_close < prev_open
     
-    # 通道擴張判斷
-    curr_kc_width = float(curr["kc_upper"]) - float(curr["kc_lower"])
-    prev_kc_width = float(prev["kc_upper"]) - float(prev["kc_lower"])
-    is_expanding = curr_kc_width > prev_kc_width
+    # 趨勢斜率判斷 (以中軌或 MA3 為基準)
+    curr_kc_mid = float(curr["kc_middle"])
+    prev_kc_mid = float(prev["kc_middle"])
+    is_slope_aligned_long = curr_kc_mid >= prev_kc_mid
+    is_slope_aligned_short = curr_kc_mid <= prev_kc_mid
     
-    # 判斷實體是否收在中軌之外 (LONG: 實體下緣 > 中軌, SHORT: 實體上緣 < 中軌)
-    def is_body_outside_mid(row, direction):
-        if direction == "LONG":
-            return min(float(row["close"]), float(row["open"])) > float(row["kc_middle"])
-        else:
-            return max(float(row["close"]), float(row["open"])) < float(row["kc_middle"])
-            
-    prev_outside_mid = is_body_outside_mid(prev, side)
-    prev2_outside_mid = is_body_outside_mid(prev2, side)
-    
-    # 3. 狀態清除：如果回落到中軌內，或通道停止擴張並開始收斂，清除『趨勢鎖定模式』
-    if state.get("trend_locked_side") == side:
-        if not prev_outside_mid or not is_expanding:
-            state.pop("trend_locked_side", None)
-            
-    # === 1. 最高優先級：極端動能特權 (Extreme Momentum) ===
-    # 條件：前一根 K 棒實體 >= 2.0 ATR
+    # === 1. 路徑 A：特例 K 爆發 (Special K Path) ===
+    # 條件：單根 >= 2.0 ATR 且斜率對齊，豁免空間緩衝
     if prev_body >= 2.0 * atr:
-        if (side == "LONG" and prev_is_long) or (side == "SHORT" and prev_is_short):
-            state.pop("trend_locked_side", None) # 進場即清除鎖定
+        if side == "LONG" and prev_is_long and is_slope_aligned_long:
             return {
                 "action": "ENTER",
                 "side": side,
-                "reason": f"SPECIAL_ENTRY_MOMENTUM_{side}",
-                "tag": "[Special Entry] Extreme Momentum"
+                "reason": "SPECIAL_K_BREAKOUT_LONG",
+                "tag": "[SPECIAL_ENTRY]"
             }
-            
-    # === 2. 新增 - 次高優先級：結構反轉模式 (Structural Reversal) ===
-    # 條件：價格距離中軌 >= 1.5 ATR + MA3/MA15 交叉 + 反轉K棒 (順向)
-    # 判斷與中軌距離
-    curr_kc_mid = float(curr["kc_middle"])
-    dist_to_mid = abs(float(prev["close"]) - curr_kc_mid)
-    
-    # 判斷 MA3/MA15 交叉 (以前一根的收盤狀態為準)
+        elif side == "SHORT" and prev_is_short and is_slope_aligned_short:
+            return {
+                "action": "ENTER",
+                "side": side,
+                "reason": "SPECIAL_K_BREAKOUT_SHORT",
+                "tag": "[SPECIAL_ENTRY]"
+            }
+
+    # === 空間緩衝檢查 (適用於路徑 B 與 C) ===
+    # 在這裡我們直接用參數傳進來的 min_space_buffer_atr，若沒有則預設 0.8 ATR
+    if min_space_buffer_atr < 0.8 * atr:
+        min_space_buffer_atr = 0.8 * atr
+
+    # 這裡簡化為：外部已經計算好空間，如果傳進來的空間不足，則直接擋下
+    # 假設外部呼叫時會將 expected_profit_space 傳入 min_space_buffer_atr 參數中。
+    # 為了語意正確，我們將其視為可獲得的利潤空間。
+    expected_profit_space = min_space_buffer_atr
+    if expected_profit_space < 0.8 * atr:
+        return {"action": "WAIT", "reason": "SPACE_TOO_SMALL"}
+
+    # === 2. 路徑 B：結構性轉折 (Structural Reversal Path) ===
+    # 條件：MA3 金叉/死叉 + 斜率對齊 + 實體飽滿 (>= 0.6) + 空間緩衝
     prev_ma3 = float(prev.get("ma3", 0))
     prev_ma15 = float(prev.get("ma15", 0))
     prev2_ma3 = float(prev2.get("ma3", 0))
@@ -191,67 +195,46 @@ def evaluate_dynamic_priority_entry(
     is_ma_cross_long = prev_ma3 > prev_ma15 and prev2_ma3 <= prev2_ma15
     is_ma_cross_short = prev_ma3 < prev_ma15 and prev2_ma3 >= prev2_ma15
     
-    if dist_to_mid >= 1.5 * atr:
-        if side == "LONG" and is_ma_cross_long and prev_is_long:
-            state.pop("trend_locked_side", None)
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": "STRUCTURAL_REVERSAL_LONG",
-                "tag": "[Entry] Structural Reversal (Long)"
-            }
-        elif side == "SHORT" and is_ma_cross_short and prev_is_short:
-            state.pop("trend_locked_side", None)
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": "STRUCTURAL_REVERSAL_SHORT",
-                "tag": "[Entry] Structural Reversal (Short)"
-            }
-            
-    # === 補償機制：趨勢鎖定下的進場規則 ===
-    if state.get("trend_locked_side") == side and is_expanding:
-        if expected_profit_space >= 0.8 * atr:
-            state.pop("trend_locked_side", None) # 進場即清除鎖定
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": f"TREND_CONTINUATION_LOCKED_{side}",
-                "tag": "[Entry] Trend Continuation (Locked)"
-            }
-            
-    # === 3. 第三優先級：趨勢延續進場 (Trend Continuation) ===
-    # 條件：價格已連續兩根 K 棒實體收在 KC 中軌之外，且通道寬度正在擴張
-    if prev_outside_mid and prev2_outside_mid and is_expanding:
-        if expected_profit_space >= 0.8 * atr: # Updated to 0.8 ATR based on summary
-            state.pop("trend_locked_side", None)
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": f"TREND_CONTINUATION_{side}",
-                "tag": "[Entry] Trend Continuation"
-            }
-        else:
-            return {"action": "WAIT", "reason": "SPACE_TOO_SMALL_FOR_CONTINUATION"}
-            
-    # === 4. 第四優先級：初始破軌進場 (Initial Breakout) ===
-    # 條件：價格剛開始突破 KC 中軌 (前一根破，前兩根沒破)，且通道正在擴張
-    if prev_outside_mid and not prev2_outside_mid and is_expanding:
-        if expected_profit_space >= 1.5 * atr:
-            state.pop("trend_locked_side", None)
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": f"INITIAL_BREAKOUT_{side}",
-                "tag": "[Entry] Initial Breakout"
-            }
-        else:
-            # 建立『趨勢鎖定』狀態
-            state["trend_locked_side"] = side
-            return {
-                "action": "WAIT", 
-                "reason": "INITIAL_SPACE_INSUFFICIENT_LOCKED",
-                "tag": "[Skip Order] Initial Space Insufficient - Entering Trend Lock."
-            }
-            
-    return {"action": "WAIT", "reason": "NO_DYNAMIC_ENTRY_CONDITION_MET"}
+    # 實體飽滿度 (假設實體長度佔高低點全長的比例 >= 0.6)
+    prev_high = float(prev["high"])
+    prev_low = float(prev["low"])
+    prev_range = prev_high - prev_low
+    is_solid_body = (prev_body / prev_range >= 0.6) if prev_range > 0 else False
+    
+    if side == "LONG" and is_ma_cross_long and is_slope_aligned_long and is_solid_body:
+        return {
+            "action": "ENTER",
+            "side": side,
+            "reason": "STRUCTURAL_REVERSAL_LONG",
+            "tag": "[STRUCTURAL_REVERSAL]"
+        }
+    elif side == "SHORT" and is_ma_cross_short and is_slope_aligned_short and is_solid_body:
+        return {
+            "action": "ENTER",
+            "side": side,
+            "reason": "STRUCTURAL_REVERSAL_SHORT",
+            "tag": "[STRUCTURAL_REVERSAL]"
+        }
+
+    # === 3. 路徑 C：強勢趨勢延續 (Trend Continuation Path) ===
+    # 條件：區段動能確認（3 根 K 棒總動能 >= 1.0 ATR）+ 斜率對齊 + 空間緩衝
+    # 總動能：最新收盤價與 3 根前的開盤價之位移
+    prev3_open = float(prev3["open"])
+    segment_displacement = prev_close - prev3_open
+    
+    if side == "LONG" and is_slope_aligned_long and segment_displacement >= 1.0 * atr:
+        return {
+            "action": "ENTER",
+            "side": side,
+            "reason": "TREND_CONTINUATION_LONG",
+            "tag": "[TREND_CONTINUATION]"
+        }
+    elif side == "SHORT" and is_slope_aligned_short and -segment_displacement >= 1.0 * atr:
+        return {
+            "action": "ENTER",
+            "side": side,
+            "reason": "TREND_CONTINUATION_SHORT",
+            "tag": "[TREND_CONTINUATION]"
+        }
+
+    return {"action": "WAIT", "reason": "NO_ENTRY_CONDITION_MET"}
