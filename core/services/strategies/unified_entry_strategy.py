@@ -239,61 +239,53 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     # =========================================================================
     # 軌道 A：特例快速進場（極端動能，使用寬鬆守門員，已通過）
-    # 重構：突破根為 prev_2，確認根為 prev_1
+    # 重構：取消次根確認，直接以剛收盤的 prev_1 作為突破根，見突破即進場
     # 不受 is_compression_zone 限制，因為它是極端動能爆發
     # =========================================================================
-    prev2_open = float(prev_2['open'])
-    prev2_close = float(prev_2['close'])
-    prev2_high = float(prev_2['high'])
-    prev2_low = float(prev_2['low'])
-    prev2_body = abs(prev2_close - prev2_open)
-    prev2_range = prev2_high - prev2_low
-    is_prev2_solid = (prev2_body / prev2_range >= 0.60) if prev2_range > 0 else False
-    is_prev2_bullish = prev2_close > prev2_open
-    is_prev2_bearish = prev2_close < prev2_open
+    prev1_open = float(prev_1['open'])
+    prev1_close = float(prev_1['close'])
+    prev1_high = float(prev_1['high'])
+    prev1_low = float(prev_1['low'])
+    prev1_body = abs(prev1_close - prev1_open)
+    prev1_range = prev1_high - prev1_low
+    # 放寬實體比例要求至 40%
+    is_prev1_solid = (prev1_body / prev1_range >= 0.40) if prev1_range > 0 else False
+    is_prev1_bullish = prev1_close > prev1_open
+    is_prev1_bearish = prev1_close < prev1_open
 
-    if prev2_body >= 1.2 * current_atr and is_prev2_solid:
-        if side == "LONG" and is_prev2_bullish:
-            # 放寬次根確認：prev_1 的收盤價只要高於 prev_2 實體的 50% 即可
-            threshold = prev2_open + 0.5 * prev2_body
-            if prev_close > threshold:
-                return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (relaxed next-bar)", {"action": "ENTER"}
-        elif side == "SHORT" and is_prev2_bearish:
-            threshold = prev2_open - 0.5 * prev2_body
-            if prev_close < threshold:
-                return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (relaxed next-bar)", {"action": "ENTER"}
+    if prev1_body >= 1.2 * current_atr and is_prev1_solid:
+        if side == "LONG" and is_prev1_bullish:
+            # 取消次根確認，直接進場
+            return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (No confirmation needed)", {"action": "ENTER"}
+        elif side == "SHORT" and is_prev1_bearish:
+            return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (No confirmation needed)", {"action": "ENTER"}
 
     # =========================================================================
-    # 軌道 P：平台破位（使用寬鬆守門員；次根確認放寬至 50% 緩衝）
-    # 重構：突破根為 prev_2，確認根為 prev_1
+    # 軌道 P：平台破位（使用寬鬆守門員；取消次根確認）
+    # 重構：取消次根確認，直接以剛收盤的 prev_1 作為突破根
     # 不受 is_compression_zone 限制
     # =========================================================================
     if len(df) >= 7:
-        platform_bars = df.iloc[-7:-3] # prev_6 到 prev_3 為震盪平台
+        # prev_6 到 prev_2 為震盪平台 (因為 prev_1 已經是突破根)
+        platform_bars = df.iloc[-7:-2] 
 
         if side == "LONG":
-            is_solid_breakout = is_prev2_bullish and (prev2_body >= 1.0 * current_atr) and is_prev2_solid
+            is_solid_breakout = is_prev1_bullish and (prev1_body >= 1.0 * current_atr) and is_prev1_solid
             recent_max_high = float(platform_bars['high'].max())
-            broke_platform = prev2_close > recent_max_high
+            broke_platform = prev1_close > recent_max_high
             
-            # ✅ 放寬：次根(prev_1)收盤只需超過平台最高點的 50% 緩衝位即可
-            breakout_body = prev2_close - recent_max_high
-            buffer_floor = recent_max_high - 0.5 * max(breakout_body, 0)
-            
-            if is_solid_breakout and broke_platform and prev_close > buffer_floor and prev_close > kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (relaxed next-bar)", {"action": "ENTER"}
+            # 取消次根確認，直接進場
+            if is_solid_breakout and broke_platform and prev1_close > kc_mid_prev1:
+                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (No confirmation needed)", {"action": "ENTER"}
 
         elif side == "SHORT":
-            is_solid_breakout = is_prev2_bearish and (prev2_body >= 1.0 * current_atr) and is_prev2_solid
+            is_solid_breakout = is_prev1_bearish and (prev1_body >= 1.0 * current_atr) and is_prev1_solid
             recent_min_low = float(platform_bars['low'].min())
-            broke_platform = prev2_close < recent_min_low
+            broke_platform = prev1_close < recent_min_low
             
-            # ✅ 放寬：次根(prev_1)收盤只需低於平台最低點的 50% 緩衝位即可
-            breakout_body = recent_min_low - prev2_close
-            buffer_ceiling = recent_min_low + 0.5 * max(breakout_body, 0)
-            
-            if is_solid_breakout and broke_platform and prev_close < buffer_ceiling and prev_close < kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (relaxed next-bar)", {"action": "ENTER"}
+            # 取消次根確認，直接進場
+            if is_solid_breakout and broke_platform and prev1_close < kc_mid_prev1:
+                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (No confirmation needed)", {"action": "ENTER"}
 
     # =========================================================================
     # 若處於靜默模式（橫盤壓縮區），則在此處短路返回，屏蔽後續所有常規進場軌道
