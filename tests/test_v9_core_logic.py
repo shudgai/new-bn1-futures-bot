@@ -164,7 +164,7 @@ def test_entry_track_d_trend_continuation_short():
     live_price = last_mid - 0.8  # 100.2 < ma3(100.7) < kc_middle(101.0) ✓
     ok, reason = check_streamlined_entry_signal(df, "SHORT", live_price)
     assert ok is True
-    assert reason == "[STANDARD_ENTRY] Trend Continuation SHORT (Exempt Cooldown)"
+    assert reason == "[STANDARD_ENTRY] Aligned Trend Continuation SHORT"
 
 def test_entry_track_d_blocked_when_not_cascading():
     # 最近 3 根中有陰線但收盤價未階梯式下跌（反彈），不應觸發 Track D

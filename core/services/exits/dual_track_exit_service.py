@@ -73,6 +73,29 @@ class DualTrackExitStrategy:
                 logger.warning(f"[Emergency Escape] {position.get('symbol')} 觸發極速反噬防禦 (SHORT)！市價平倉！")
                 return "EXIT_MOMENTUM_REVERSAL_DEFENSE"
 
+        # 2.5 Counter-Trend Escape (逆勢單極速逃生機制)
+        ma15_prev1 = float(prev.get('ma15', 0))
+        ma15_prev2 = float(frame.iloc[-3].get('ma15', 0)) if len(frame) >= 3 else ma15_prev1
+        slope_ma15 = ma15_prev1 - ma15_prev2
+        
+        is_counter_trend = False
+        if side == "LONG" and slope_ma15 < 0:
+            is_counter_trend = True
+        elif side == "SHORT" and slope_ma15 > 0:
+            is_counter_trend = True
+            
+        if is_counter_trend:
+            ma3_curr = float(curr.get('ma3', 0))
+            ma3_prev = float(prev.get('ma3', 0))
+            slope_ma3 = ma3_curr - ma3_prev
+            
+            if side == "LONG" and is_curr_red and slope_ma3 < 0:
+                logger.warning(f"[Emergency Escape] {position.get('symbol')} 逆勢單遭遇反向K棒且MA3下彎 (LONG)！保本逃命！")
+                return "[FAST_EXIT] Counter-Trend Escape"
+            elif side == "SHORT" and is_curr_green and slope_ma3 > 0:
+                logger.warning(f"[Emergency Escape] {position.get('symbol')} 逆勢單遭遇反向K棒且MA3上彎 (SHORT)！保本逃命！")
+                return "[FAST_EXIT] Counter-Trend Escape"
+
         # 3. Profit Waiver (High Profit Target)
         unrealized_profit = (price - entry_price) if side == "LONG" else (entry_price - price)
         kc_upper = float(curr.get("kc_upper", float('inf')))

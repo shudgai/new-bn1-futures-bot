@@ -1,6 +1,3 @@
-"""Unified Entry Strategy evaluating streamlined entry methods.
-Implements IEntryStrategy interface.
-"""
 from typing import Dict, Any, Tuple
 import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
@@ -18,6 +15,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     latest = df.iloc[-1]       # 當前剛開盤或實時 K 棒
     prev_1 = df.iloc[-2]       # 剛收盤確認信號的 K 棒
     prev_2 = df.iloc[-3]       # 前一根對照 K 棒
+    prev_3 = df.iloc[-4]
 
     current_atr = float(prev_1.get('atr', 0))
     if current_atr <= 0:
@@ -73,9 +71,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     prev_width = kc_upper_prev2 - kc_lower_prev2
     width_diff = current_width - prev_width
     is_expanding = width_diff > 0
-    is_fast_expanding = width_diff >= (0.15 * current_atr)
 
-    middle_slope = kc_mid_prev1 - kc_mid_prev2
+    slope_middle = kc_mid_prev1 - kc_mid_prev2
 
     # -------------------------------------------------------------------------
     # 軌道 B-1：結構反轉進場 (修正版：MA5 + 大趨勢斜率對齊)
@@ -92,11 +89,9 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         ma5_prev2 = float(ma5_series.iloc[-3])
 
     has_ma = (ma5_prev1 > 0 and ma15_prev1 > 0 and ma5_prev2 > 0 and ma15_prev2 > 0)
+    slope_ma15 = ma15_prev1 - ma15_prev2
 
     if has_ma:
-        slope_ma15 = ma15_prev1 - ma15_prev2
-        slope_middle = kc_mid_prev1 - kc_mid_prev2
-        
         dist_from_middle_atr = abs(prev_close - kc_mid_prev1) / current_atr
         if dist_from_middle_atr >= 1.5:
             ma_cross_down = (ma5_prev2 >= ma15_prev2) and (ma5_prev1 < ma15_prev1)
@@ -118,44 +113,52 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # -------------------------------------------------------------------------
     prev2_close = float(prev_2['close'])
     cooldown_active = kwargs.get("cooldown_active", False)
+    
+    min_space_buffer_atr = 0.5
+    buffer_threshold = min_space_buffer_atr * current_atr
 
     if side == "LONG" and is_bullish:
-        long_target = kc_upper_prev1 + (middle_slope * 2)
-        space_long_atr = (long_target - prev_close) / current_atr
+        if slope_ma15 < 0 and slope_middle < 0:
+            return False, "FILTERED_COUNTER_TREND_LONG (MA15 falling)"
+            
+        space_to_upper = kc_upper_prev1 - prev_close
+        if space_to_upper < buffer_threshold:
+            return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT"
 
-        # 初始破軌：上穿中軌 + 通道擴張 (移除 1.5 ATR 死鎖)
+        # 初始破軌：上穿中軌 + 通道擴張
         initial_break_long = (prev_close > kc_mid_prev1) and (prev2_close <= kc_mid_prev2)
-        if initial_break_long and (is_expanding or middle_slope > 0) and not cooldown_active:
+        if initial_break_long and (is_expanding or slope_middle > 0) and not cooldown_active:
             return True, "[STANDARD_ENTRY] Initial Breakout LONG"
 
-        # 趨勢延續：中軌外 + 擴張 + 動態空間檢驗
-        continuation_long = (prev_close > kc_mid_prev1) and (middle_slope > 0)
-        if continuation_long and is_expanding:
-            req_space = 0.6 if is_fast_expanding else 0.8
-            if space_long_atr >= req_space:
-                if is_fast_expanding:
-                    return True, "[STANDARD_ENTRY] Trend Continuation LONG (Exempt Cooldown)"
-                elif not cooldown_active:
-                    return True, "[STANDARD_ENTRY] Trend Continuation LONG"
+        # 趨勢延續
+        continuation_long = (prev_close > kc_mid_prev1) and (slope_middle > 0)
+        if continuation_long and is_expanding and not cooldown_active:
+            return True, "[STANDARD_ENTRY] Trend Continuation LONG"
 
     elif side == "SHORT" and is_bearish:
-        short_target = kc_lower_prev1 + (middle_slope * 2)
-        space_short_atr = (prev_close - short_target) / current_atr
+        is_trend_aligned_short = (slope_ma15 <= 0) or (slope_middle <= 0)
+        if not is_trend_aligned_short:
+            return False, "FILTERED_COUNTER_TREND_SHORT: Fighting Strong Bullish Trend (MA15 rising)"
+            
+        space_to_lower = prev_close - kc_lower_prev1
+        if space_to_lower < buffer_threshold:
+            return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT"
+            
+        is_strong_body = body_length >= (0.8 * current_atr)
+        is_consecutive_below = (prev_close < kc_mid_prev1) and (prev2_close < kc_mid_prev2)
+        
+        if not (is_strong_body or is_consecutive_below):
+            return False, "FILTERED_SHORT_MOMENTUM_WEAK (Need >=0.8 ATR body or 2 bars below middle)"
 
-        # 初始破軌：下穿中軌 + 通道擴張
+        # 初始破軌
         initial_break_short = (prev_close < kc_mid_prev1) and (prev2_close >= kc_mid_prev2)
-        if initial_break_short and (is_expanding or middle_slope < 0) and not cooldown_active:
-            return True, "[STANDARD_ENTRY] Initial Breakout SHORT"
+        if initial_break_short and (is_expanding or slope_middle < 0) and not cooldown_active:
+            return True, "[STANDARD_ENTRY] Aligned Initial Breakout SHORT"
 
-        # 趨勢延續：中軌外 + 擴張 + 動態空間檢驗
-        continuation_short = (prev_close < kc_mid_prev1) and (middle_slope < 0)
-        if continuation_short and is_expanding:
-            req_space = 0.6 if is_fast_expanding else 0.8
-            if space_short_atr >= req_space:
-                if is_fast_expanding:
-                    return True, "[STANDARD_ENTRY] Trend Continuation SHORT (Exempt Cooldown)"
-                elif not cooldown_active:
-                    return True, "[STANDARD_ENTRY] Trend Continuation SHORT"
+        # 趨勢延續
+        continuation_short = (prev_close < kc_mid_prev1) and (slope_middle < 0)
+        if continuation_short and is_expanding and not cooldown_active:
+            return True, "[STANDARD_ENTRY] Aligned Trend Continuation SHORT"
 
     return False, "NO_VALID_ENTRY_SIGNAL"
 
