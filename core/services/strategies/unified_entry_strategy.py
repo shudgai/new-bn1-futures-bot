@@ -142,6 +142,13 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     slope_ma15 = ma15_prev1 - ma15_prev2
 
     # =========================================================================
+    # 極端動能過熱過濾 (Momentum Exhaustion Filter)
+    # 目的：如果前一根 K 線實體過大（> 2.0 ATR），判定為動能透支，暫停進場追價。
+    # =========================================================================
+    if body_length > 2.0 * current_atr:
+        return False, f"FILTERED_MOMENTUM_EXHAUSTION: Prev candle body ({body_length:.6f}) > 2.0 ATR", {}
+
+    # =========================================================================
     # 區域進場封鎖 (Opposite Zone Entry Block)
     # 目的：避免在瀑布/噴發的極端行情中逆勢接刀。
     # =========================================================================

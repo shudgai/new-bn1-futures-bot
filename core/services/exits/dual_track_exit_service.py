@@ -9,7 +9,7 @@ DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_
 logger = logging.getLogger("DualTrackExit")
 
 # 統一 ATR 門檻常數
-HARD_STOP_ATR        = 1.5   # 絕對保命線 (層級一)
+HARD_STOP_ATR        = 2.0   # 絕對保命線 (層級一)
 SPECIAL_K_ATR        = 2.0   # 特例 K 反向實體 (層級二)
 HIGH_PROFIT_ATR      = 2.0   # 盤中高利潤逃生門檻 (層級二)
 
@@ -65,15 +65,7 @@ class DualTrackExitStrategy(IExitStrategy):
         
         active_stop = position.get("active_stop_price", position.get("defense_line", entry_price))
         
-        # ══════════════════════════════════════════════════════════════
-        # 優先級 1：極端風險防禦 (硬停損 1.5 ATR - 盤中即時觸發)
-        # ══════════════════════════════════════════════════════════════
-        if side == "LONG" and current_price <= active_stop:
-            logger.warning(f"[EXIT_HARD_STOP] LONG hit 1.5 ATR stop @ {current_price:.6f}")
-            return "EXIT_HARD_STOP_1.5_ATR"
-        if side == "SHORT" and current_price >= active_stop:
-            logger.warning(f"[EXIT_HARD_STOP] SHORT hit 1.5 ATR stop @ {current_price:.6f}")
-            return "EXIT_HARD_STOP_1.5_ATR"
+        # (原盤中即時觸發的硬停損 1.5 ATR 已移除，改至下方進行 2.0 ATR 收盤確認)
 
         # =====================================================================
         # 以下所有邏輯，僅在「有新的 K 棒收盤時」才進行評估 (Close-only Check)
@@ -102,7 +94,17 @@ class DualTrackExitStrategy(IExitStrategy):
         prev2_body = abs(prev2_close - prev2_open)
 
         # ══════════════════════════════════════════════════════════════
-        # 優先級 1：極端風險防禦 (大瀑布 / 連續異常)
+        # 優先級 1：極端風險防禦 (硬停損 2.0 ATR - 收盤價確認)
+        # ══════════════════════════════════════════════════════════════
+        if side == "LONG" and curr_close <= active_stop:
+            logger.warning(f"[EXIT_HARD_STOP] LONG hit 2.0 ATR stop (Close Confirmed) @ {curr_close:.6f}")
+            return "EXIT_HARD_STOP_2.0_ATR"
+        if side == "SHORT" and curr_close >= active_stop:
+            logger.warning(f"[EXIT_HARD_STOP] SHORT hit 2.0 ATR stop (Close Confirmed) @ {curr_close:.6f}")
+            return "EXIT_HARD_STOP_2.0_ATR"
+
+        # ══════════════════════════════════════════════════════════════
+        # 優先級 1.5：極端風險防禦 (大瀑布 / 連續異常)
         # ══════════════════════════════════════════════════════════════
         is_waterfall = prev1_body >= 3.0 * atr
         
@@ -135,7 +137,7 @@ class DualTrackExitStrategy(IExitStrategy):
         # ══════════════════════════════════════════════════════════════
         # 優先級 2：固定鎖利 (硬性保底 3.0 ATR)
         # ══════════════════════════════════════════════════════════════
-        FIXED_TP_ATR = 0.75
+        FIXED_TP_ATR = 3.0
         if unrealized_profit_atr >= FIXED_TP_ATR:
             logger.warning(f"[EXIT_FIXED_TAKE_PROFIT] {side} hit fixed take profit ({FIXED_TP_ATR} ATR) @ {curr_close:.6f}")
             return "EXIT_FIXED_TAKE_PROFIT"
@@ -146,6 +148,21 @@ class DualTrackExitStrategy(IExitStrategy):
         TRAILING_STOP_ATR = 0.75
         if max_profit_atr >= TRAILING_STOP_ATR:
             locked_profit_atr = max_profit_atr - TRAILING_STOP_ATR
+            
+            # 實時更新實體與視覺止損線 (Trailing Stop Line Update)
+            if side == "LONG":
+                new_stop = entry_price + (locked_profit_atr * atr)
+                if new_stop > position.get("sl", 0.0):
+                    position["sl"] = new_stop
+                    position["active_stop_price"] = new_stop
+            else:
+                new_stop = entry_price - (locked_profit_atr * atr)
+                current_sl = position.get("sl", float('inf'))
+                if current_sl <= 0.0: current_sl = float('inf')
+                if new_stop < current_sl:
+                    position["sl"] = new_stop
+                    position["active_stop_price"] = new_stop
+            
             if unrealized_profit_atr <= locked_profit_atr:
                 logger.warning(f"[EXIT_DYNAMIC_PROFIT_HARVEST] {side} profit dropped to {unrealized_profit_atr:.2f} ATR (locked: {locked_profit_atr:.2f} ATR) @ {curr_close:.6f}")
                 return "EXIT_DYNAMIC_PROFIT_HARVEST"

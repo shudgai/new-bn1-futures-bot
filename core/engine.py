@@ -2127,18 +2127,49 @@ class TradingEngine:
                     )
                     return False
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
-        if channel_swing_no_stop:
-            available_bal = max(0.0, float(self.account.get_available_balance()))
-            fee_safe_available = available_bal / (
-                1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
-            )
-            amount = min(self._continuous_entry_amount(), fee_safe_available)
+        
+        wallet_fn = getattr(self.account, "get_wallet_balance", None)
+        wallet_balance = float(wallet_fn()) if wallet_fn else 0.0
+        available_bal = max(0.0, float(self.account.get_available_balance()))
+        
+        # 1% Max Risk 動態開倉量 (Dynamic Position Sizing)
+        if wallet_balance > 0:
+            max_loss_usdt = wallet_balance * 0.01
+            entry_price_val = float(planned_price or 0.0)
+            
+            if channel_swing_no_stop:
+                # CHANNEL_SWING 使用 2.0 ATR 作為理論止損距離
+                stop_pct = (2.0 * atr) / entry_price_val if entry_price_val > 0 else 0.0
+            else:
+                original_sl = signal.get("sl") or sl
+                stop_pct = abs(entry_price_val - float(original_sl)) / entry_price_val if entry_price_val > 0 else 0.0
+                
+            from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
+            loss_pct_on_notional = stop_pct + 2 * max(TAKER_FEE_RATE, 0.0) + max(SLIPPAGE_PCT, 0.0)
+            
+            if loss_pct_on_notional > 0:
+                target_notional = max_loss_usdt / loss_pct_on_notional
+                if target_notional < 5.0:
+                    target_notional = 5.0
+                amount = target_notional / leverage
+                projected_risk = max_loss_usdt
+            else:
+                amount = self._continuous_entry_amount()
+                amount, projected_risk = cap_margin_to_trade_risk(
+                    amount, leverage, planned_price, sl
+                )
         else:
-            amount = self._continuous_entry_amount()
-        amount, projected_risk = cap_margin_to_trade_risk(
-            amount, leverage, planned_price,
-            planned_price if channel_swing_no_stop else sl,
-        )
+            if channel_swing_no_stop:
+                fee_safe_available = available_bal / (
+                    1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
+                )
+                amount = min(self._continuous_entry_amount(), fee_safe_available)
+            else:
+                amount = self._continuous_entry_amount()
+            amount, projected_risk = cap_margin_to_trade_risk(
+                amount, leverage, planned_price,
+                planned_price if channel_swing_no_stop else sl,
+            )
         # Track D (趨勢延續) 套用 size_fraction 縮減倉位
         size_fraction = float(signal.get("size_fraction", 1.0))
         if size_fraction != 1.0:
