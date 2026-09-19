@@ -86,18 +86,26 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if side == "LONG" and is_bullish and ma3_cross_up:
             if (slope_ma3 / current_atr) >= 0.4 and body_ratio >= 0.60:
                 if prev_close >= kc_mid_prev1:
+                    is_v_shape_reversal = (body_length >= 2.0 * current_atr)
                     space_to_upper = kc_upper_prev1 - live_price
-                    if space_to_upper < 0.5 * current_atr:
+                    if not is_v_shape_reversal and space_to_upper < 0.5 * current_atr:
                         return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
+                    
+                    if is_v_shape_reversal:
+                        return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross LONG", {"action": "ENTER"}
                     return True, "[STANDARD_ENTRY] Explosive MA Cross LONG", {"action": "ENTER"}
 
         # 空頭死叉
         if side == "SHORT" and is_bearish and ma3_cross_down:
             if (slope_ma3 / current_atr) <= -0.4 and body_ratio >= 0.60:
                 if prev_close <= kc_mid_prev1:
+                    is_v_shape_reversal = (body_length >= 2.0 * current_atr)
                     space_to_lower = live_price - kc_lower_prev1
-                    if space_to_lower < 0.5 * current_atr:
+                    if not is_v_shape_reversal and space_to_lower < 0.5 * current_atr:
                         return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
+                        
+                    if is_v_shape_reversal:
+                        return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross SHORT", {"action": "ENTER"}
                     return True, "[STANDARD_ENTRY] Explosive Death Cross SHORT", {"action": "ENTER"}
 
     # =========================================================================
