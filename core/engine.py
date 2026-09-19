@@ -806,27 +806,32 @@ class TradingEngine:
                             trigger = self.position_triggers.get(symbol, {})
                             kc_upper = float(trigger.get("kc_upper") or 0)
                             kc_lower = float(trigger.get("kc_lower") or 0)
-                            leverage = max(float(position.get("leverage") or config.LEVERAGE), 1.0)
-                            max_loss_pct = max(
-                                float(config.MIN_SL_DISTANCE_PCT),
-                                float(config.MAX_POSITION_MARGIN_LOSS_RATIO) / leverage,
+                            prev_1_high = float(trigger.get("prev_1_high") or 0)
+                            prev_1_low = float(trigger.get("prev_1_low") or 0)
+
+                            # 區域崩盤防禦 1: 對向外軌破裂
+                            is_opposite_kc_breached = (
+                                kc_upper > 0 
+                                and kc_lower > 0 
+                                and self._adverse_kc_outer_breached(side, live_price, kc_upper, kc_lower)
                             )
-                            if (
-                                pnl_pct <= -max_loss_pct
-                                and kc_upper > 0
-                                and kc_lower > 0
-                                and self._adverse_kc_outer_breached(
-                                    side, live_price, kc_upper, kc_lower,
-                                )
-                            ):
+                            
+                            # 區域崩盤防禦 2: 結構破裂 (跌破前低/突破前高)
+                            is_structure_broken = False
+                            if side == "LONG" and prev_1_low > 0 and live_price < prev_1_low:
+                                is_structure_broken = True
+                            elif side == "SHORT" and prev_1_high > 0 and live_price > prev_1_high:
+                                is_structure_broken = True
+
+                            if is_opposite_kc_breached or is_structure_broken:
+                                reason = "對向外軌破裂" if is_opposite_kc_breached else "結構破裂(跌破前低/突破前高)"
                                 self.account.log(
-                                    f"🆘 [Channel Swing 緊急停損] {symbol} {side} "
-                                    f"逆向破 KC 外軌且虧損達 {max_loss_pct:.2%}，停止死抱",
+                                    f"🆘 [區域崩盤防禦] {symbol} {side} {reason}，緊急市價跳車！",
                                     "WARNING",
                                 )
                                 await self.account.close_position(
                                     symbol, live_price,
-                                    f"Channel Swing KC 破軌緊急停損 ({max_loss_pct:.2%})",
+                                    f"Channel Swing 區域崩盤防禦 ({reason})",
                                 )
                             continue
                 import asyncio
@@ -875,6 +880,9 @@ class TradingEngine:
                         if df.empty:
                             continue
                     trigger = compute_position_trigger(df, position.get("side"))
+                    if not df_closed.empty:
+                        trigger["prev_1_high"] = float(df_closed.iloc[-1]['high'])
+                        trigger["prev_1_low"] = float(df_closed.iloc[-1]['low'])
                     trigger["updated_at"] = time.time()
                     # 有利潤時價格仍延續原方向但量能萎縮 -> 主力收手動能耗盡的
                     # 反轉警訊。純顯示用（UI 用愛心圖示提示），不觸發任何平倉。

@@ -140,6 +140,18 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     slope_ma15 = ma15_prev1 - ma15_prev2
 
     # =========================================================================
+    # 區域進場封鎖 (Opposite Zone Entry Block)
+    # 目的：避免在瀑布/噴發的極端行情中逆勢接刀。
+    # =========================================================================
+    kc_upper_live = float(latest.get("kc_upper", kc_mid_prev1))
+    kc_lower_live = float(latest.get("kc_lower", kc_mid_prev1))
+    
+    if side == "LONG" and live_price < kc_lower_live:
+        return False, "BLOCKED_OPPOSITE_ZONE_LONG: Price is below KC lower band", {}
+    if side == "SHORT" and live_price > kc_upper_live:
+        return False, "BLOCKED_OPPOSITE_ZONE_SHORT: Price is above KC upper band", {}
+
+    # =========================================================================
     # 橫盤區間過濾 (Volatility Filter)
     # =========================================================================
     is_compression_zone = False
