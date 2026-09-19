@@ -41,7 +41,7 @@ class DualTrackExitStrategy(IExitStrategy):
 
     def evaluate_exit(self, position: Dict[str, Any], frame: pd.DataFrame,
                       current_price: float, **kwargs) -> Optional[str]:
-        if frame is None or len(frame) < 3:
+        if frame is None or len(frame) < 4:
             return None
 
         side        = position.get("side", "LONG")
@@ -52,6 +52,8 @@ class DualTrackExitStrategy(IExitStrategy):
 
         curr   = frame.iloc[-1]
         prev_1 = frame.iloc[-2]
+        prev_2 = frame.iloc[-3]
+        prev_3 = frame.iloc[-4]
 
         atr = float(prev_1.get("atr", 1.0))
         if atr <= 0:
@@ -64,7 +66,7 @@ class DualTrackExitStrategy(IExitStrategy):
         active_stop = position.get("active_stop_price", position.get("defense_line", entry_price))
         
         # ══════════════════════════════════════════════════════════════
-        # 層級一：絕對保命 (1.5 ATR 硬停損)
+        # 優先級 1：極端風險防禦 (硬停損 1.5 ATR - 盤中即時觸發)
         # ══════════════════════════════════════════════════════════════
         if side == "LONG" and current_price <= active_stop:
             logger.warning(f"[EXIT_HARD_STOP] LONG hit 1.5 ATR stop @ {current_price:.6f}")
@@ -73,80 +75,110 @@ class DualTrackExitStrategy(IExitStrategy):
             logger.warning(f"[EXIT_HARD_STOP] SHORT hit 1.5 ATR stop @ {current_price:.6f}")
             return "EXIT_HARD_STOP_1.5_ATR"
 
-        # ══════════════════════════════════════════════════════════════
-        # 層級二：移動止盈 (Trailing Stop) - 品種動態適應
-        # ══════════════════════════════════════════════════════════════
-        # 定義品種參數
-        if "1000PEPE" in symbol:
-            activation_atr = 3.0
-            callback_atr = 2.0
-        else:
-            activation_atr = 2.0
-            callback_atr = 1.5
+        # =====================================================================
+        # 以下所有邏輯，僅在「有新的 K 棒收盤時」才進行評估 (Close-only Check)
+        # =====================================================================
+        bar_id = prev_1.name if hasattr(prev_1, "name") else str(prev_1.to_dict())
+        if position.get("last_evaluated_closed_bar_id") == bar_id:
+            return None  # 盤中跳動，忽略
+            
+        # 記錄已評估的收盤 K 棒
+        position["last_evaluated_closed_bar_id"] = bar_id
 
+        curr_close = float(prev_1["close"])
+        kc_upper = float(prev_1.get("kc_upper", curr_close))
+        kc_lower = float(prev_1.get("kc_lower", curr_close))
+        
+        prev1_open = float(prev_1["open"])
+        prev2_open = float(prev_2["open"])
+        prev2_close = float(prev_2["close"])
+        
+        prev1_is_green = curr_close > prev1_open
+        prev1_is_red = curr_close < prev1_open
+        prev2_is_green = prev2_close > prev2_open
+        prev2_is_red = prev2_close < prev2_open
+        
+        prev1_body = abs(curr_close - prev1_open)
+        prev2_body = abs(prev2_close - prev2_open)
+
+        # ══════════════════════════════════════════════════════════════
+        # 優先級 1：極端風險防禦 (大瀑布 / 連續異常)
+        # ══════════════════════════════════════════════════════════════
+        is_waterfall = prev1_body >= 3.0 * atr
+        
+        # 判斷是否為反向的連續異常
         if side == "LONG":
-            unrealized_profit_atr = (current_price - entry_price) / atr
-            position["highest_price"] = max(position.get("highest_price", entry_price), current_price)
+            prev1_is_reverse = prev1_is_red
+            prev2_is_reverse = prev2_is_red
+        else:
+            prev1_is_reverse = prev1_is_green
+            prev2_is_reverse = prev2_is_green
             
-            # 判斷是否啟動
-            if not position.get("is_trailing_active", False) and unrealized_profit_atr >= activation_atr:
-                position["is_trailing_active"] = True
-                logger.info(f"[TRAILING_ACTIVATED] LONG profit reached {activation_atr} ATR. Tracking highest price.")
-                
-            if position.get("is_trailing_active", False):
-                trailing_stop = position["highest_price"] - (callback_atr * atr)
-                if current_price <= trailing_stop:
-                    logger.warning(f"[EXIT_TRAILING_STOP] LONG hit callback {callback_atr} ATR from peak {position['highest_price']:.6f} @ {current_price:.6f}")
-                    return "EXIT_TRAILING_STOP"
-                    
-        if side == "SHORT":
-            unrealized_profit_atr = (entry_price - current_price) / atr
-            position["lowest_price"] = min(position.get("lowest_price", entry_price), current_price)
-            
-            # 判斷是否啟動
-            if not position.get("is_trailing_active", False) and unrealized_profit_atr >= activation_atr:
-                position["is_trailing_active"] = True
-                logger.info(f"[TRAILING_ACTIVATED] SHORT profit reached {activation_atr} ATR. Tracking lowest price.")
-                
-            if position.get("is_trailing_active", False):
-                trailing_stop = position["lowest_price"] + (callback_atr * atr)
-                if current_price >= trailing_stop:
-                    logger.warning(f"[EXIT_TRAILING_STOP] SHORT hit callback {callback_atr} ATR from peak {position['lowest_price']:.6f} @ {current_price:.6f}")
-                    return "EXIT_TRAILING_STOP"
+        is_consecutive_extreme = (prev1_body >= 1.5 * atr) and (prev2_body >= 1.5 * atr) and prev1_is_reverse and prev2_is_reverse
+        
+        if is_waterfall or is_consecutive_extreme:
+            logger.warning(f"[EXIT_EXTREME_RISK_MELTDOWN] {side} hit meltdown protection @ {curr_close:.6f}")
+            return "EXIT_EXTREME_RISK_MELTDOWN"
 
         # ══════════════════════════════════════════════════════════════
-        # 層級三：真實峰谷平倉 (True Peak Exit) - 多重過濾機制
+        # 優先級 2：動態獲利收割 (移動止盈)
         # ══════════════════════════════════════════════════════════════
-        if len(frame) >= 3:
-            prev_2 = frame.iloc[-3]
-            ma3_prev1 = float(prev_1.get("ma3", 0.0))
-            ma3_prev2 = float(prev_2.get("ma3", 0.0))
-            ma15_prev1 = float(prev_1.get("ma15", 0.0))
-            ma15_prev2 = float(prev_2.get("ma15", 0.0))
-            rsi_prev1 = float(prev_1.get("rsi", 50.0))
+        if side == "LONG":
+            unrealized_profit_atr = (curr_close - entry_price) / atr
+        else:
+            unrealized_profit_atr = (entry_price - curr_close) / atr
             
-            # 加入最小轉彎幅度門檻 (防止微小抖動)，依據規則設為 0.10 * ATR
-            min_turn_threshold = atr * 0.10
+        max_profit_atr = position.get("max_profit_atr", 0.0)
+        max_profit_atr = max(max_profit_atr, unrealized_profit_atr)
+        position["max_profit_atr"] = max_profit_atr
 
-            ma3_turning_down = (ma3_prev2 - ma3_prev1) > min_turn_threshold
-            ma3_turning_up = (ma3_prev1 - ma3_prev2) > min_turn_threshold
-            ma15_turning_down = (ma15_prev2 - ma15_prev1) > min_turn_threshold
-            ma15_turning_up = (ma15_prev1 - ma15_prev2) > min_turn_threshold
+        # 啟動門檻：最高浮盈達到 0.7 ATR
+        if max_profit_atr >= 0.7:
+            locked_profit_atr = max_profit_atr - 0.7
+            if unrealized_profit_atr <= locked_profit_atr:
+                logger.warning(f"[EXIT_DYNAMIC_PROFIT_HARVEST] {side} profit dropped to {unrealized_profit_atr:.2f} ATR (locked: {locked_profit_atr:.2f} ATR) @ {curr_close:.6f}")
+                return "EXIT_DYNAMIC_PROFIT_HARVEST"
 
-            if side == "LONG" and ma3_turning_down:
-                if ma15_turning_down or rsi_prev1 > 75:
-                    profit_pct = (current_price - entry_price) / entry_price * 100
-                    logger.warning(f"[LOG]: Exit Type: TRUE_PEAK | MA3_Turn: Yes | MA15_Turn: {'Yes' if ma15_turning_down else 'No'} | RSI: {rsi_prev1:.1f} | Entry: {entry_price:.6f} | Exit: {current_price:.6f} | Profit: +{profit_pct:.2f}%")
-                    return "EXIT_TRUE_PEAK_REVERSAL"
+        # ══════════════════════════════════════════════════════════════
+        # 優先級 3：結構性反轉 (站回異側軌道內 + 連續反向K)
+        # ══════════════════════════════════════════════════════════════
+        if side == "LONG":
+            # 多單：跌破下軌內部 + 連2紅
+            if curr_close < kc_lower and (prev1_is_red and prev2_is_red):
+                logger.warning(f"[EXIT_STRUCTURAL_REVERSAL] LONG structural reversal @ {curr_close:.6f}")
+                return "EXIT_STRUCTURAL_REVERSAL"
+        elif side == "SHORT":
+            # 空單：站上上軌內部 + 連2綠
+            if curr_close > kc_upper and (prev1_is_green and prev2_is_green):
+                logger.warning(f"[EXIT_STRUCTURAL_REVERSAL] SHORT structural reversal @ {curr_close:.6f}")
+                return "EXIT_STRUCTURAL_REVERSAL"
 
-            if side == "SHORT" and ma3_turning_up:
-                if ma15_turning_up or rsi_prev1 < 25:
-                    profit_pct = (entry_price - current_price) / entry_price * 100
-                    logger.warning(f"[LOG]: Exit Type: TRUE_PEAK | MA3_Turn: Yes | MA15_Turn: {'Yes' if ma15_turning_up else 'No'} | RSI: {rsi_prev1:.1f} | Entry: {entry_price:.6f} | Exit: {current_price:.6f} | Profit: +{profit_pct:.2f}%")
-                    return "EXIT_TRUE_PEAK_REVERSAL"
+        # ══════════════════════════════════════════════════════════════
+        # 優先級 4：結構性峰值收割 (MA3轉向 + 站回同側軌道內 + MA15轉向)
+        # ══════════════════════════════════════════════════════════════
+        ma3_prev1 = float(prev_1.get("ma3", prev_1.get("ema_3", 0.0)))
+        ma3_prev2 = float(prev_2.get("ma3", prev_2.get("ema_3", 0.0)))
+        ma15_prev1 = float(prev_1.get("ma15", 0.0))
+        ma15_prev2 = float(prev_2.get("ma15", 0.0))
+        
+        min_turn_threshold = atr * 0.10
+        ma3_turning_down = (ma3_prev2 - ma3_prev1) > min_turn_threshold
+        ma3_turning_up = (ma3_prev1 - ma3_prev2) > min_turn_threshold
+        ma15_turning_down = (ma15_prev2 - ma15_prev1) > min_turn_threshold
+        ma15_turning_up = (ma15_prev1 - ma15_prev2) > min_turn_threshold
+        
+        if side == "LONG":
+            # 站回上軌內 = curr_close <= kc_upper
+            if ma3_turning_down and (curr_close <= kc_upper) and ma15_turning_down:
+                logger.warning(f"[EXIT_TRUE_PEAK_REVERSAL] LONG true peak reversal @ {curr_close:.6f}")
+                return "EXIT_TRUE_PEAK_REVERSAL"
+        elif side == "SHORT":
+            # 站回下軌內 = curr_close >= kc_lower
+            if ma3_turning_up and (curr_close >= kc_lower) and ma15_turning_up:
+                logger.warning(f"[EXIT_TRUE_PEAK_REVERSAL] SHORT true peak reversal @ {curr_close:.6f}")
+                return "EXIT_TRUE_PEAK_REVERSAL"
 
         return None
-
     def handle_post_exit_cleanup(self, position: Dict[str, Any], exit_reason: str):
         symbol = position.get("symbol", "UNKNOWN")
         logger.info(f"[Post-Exit] {exit_reason} ({symbol})")
