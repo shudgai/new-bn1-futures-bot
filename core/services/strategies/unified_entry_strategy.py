@@ -3,6 +3,42 @@ import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
 
 
+def check_structural_alignment(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
+    ma15_prev1 = float(prev_1.get('ma15', 0))
+    ma15_prev2 = float(prev_2.get('ma15', 0))
+    kc_mid_prev1 = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0)))
+    kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
+    close_prev1 = float(prev_1['close'])
+    
+    slope_ma15 = ma15_prev1 - ma15_prev2
+    slope_kc_mid = kc_mid_prev1 - kc_mid_prev2
+    
+    if side == "LONG":
+        ma15_ok = slope_ma15 > 0.05 * current_atr
+        kc_mid_ok = slope_kc_mid > 0
+        alignment_ok = (close_prev1 > kc_mid_prev1) and (kc_mid_prev1 >= ma15_prev1)
+        distance_ok = (close_prev1 - ma15_prev1) > (current_atr * 0.5)
+        
+        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending up"
+        if not kc_mid_ok: return False, "FILTERED_STRUCTURE: KC Middle not trending up"
+        if not alignment_ok: return False, "FILTERED_STRUCTURE: MA Alignment Bullish failed"
+        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.5 ATR)"
+        return True, "OK"
+        
+    elif side == "SHORT":
+        ma15_ok = slope_ma15 < -0.05 * current_atr
+        kc_mid_ok = slope_kc_mid < 0
+        alignment_ok = (close_prev1 < kc_mid_prev1) and (kc_mid_prev1 <= ma15_prev1)
+        distance_ok = (ma15_prev1 - close_prev1) > (current_atr * 0.5)
+        
+        if not ma15_ok: return False, "FILTERED_STRUCTURE: MA15 not trending down"
+        if not kc_mid_ok: return False, "FILTERED_STRUCTURE: KC Middle not trending down"
+        if not alignment_ok: return False, "FILTERED_STRUCTURE: MA Alignment Bearish failed"
+        if not distance_ok: return False, "FILTERED_STRUCTURE: Price too close to MA15 (<0.5 ATR)"
+        return True, "OK"
+        
+    return False, "INVALID_SIDE"
+
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
     雙軌進場檢驗架構：
@@ -42,23 +78,77 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     ma15_prev2 = float(prev_2.get('ma15', 0))
     slope_ma15 = ma15_prev1 - ma15_prev2
 
-    # --- 強勢趨勢判定 (Strong Trend Detection) ---
-    is_strong_bear_trend = (slope_ma15 < -0.05 * current_atr) and (slope_middle < -0.05 * current_atr)
-    is_strong_bull_trend = (slope_ma15 > 0.05 * current_atr) and (slope_middle > 0.05 * current_atr)
+
+    # =========================================================================
+    # 軌道 V：V型轉折進場 (V-Shape Reversal Entry) - 最高優先級
+    # =========================================================================
+    if len(df) >= 25:
+        recent_20_bars = df.iloc[-21:-1]
+        
+        rsi_prev1 = float(prev_1.get('rsi', 50))
+        rsi_prev2 = float(prev_2.get('rsi', 50))
+        ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
+        ma15_prev1 = float(prev_1.get('ma15', 0))
+        ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
+        ma15_prev2 = float(prev_2.get('ma15', 0))
+        
+        if side == "LONG":
+            recent_low = float(recent_20_bars['low'].min())
+            low_in_recent_3 = any(float(bar['low']) == recent_low for _, bar in df.iloc[-4:-1].iterrows())
+            structure_break = recent_low < float(prev_1.get('kc_lower', kc_mid_prev1))
+            ma_cross_up = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
+            rsi_rebound = (rsi_prev2 < 30) and (rsi_prev1 > rsi_prev2)
+            
+            if low_in_recent_3 and structure_break and ma_cross_up and rsi_rebound:
+                return True, "[V_REVERSAL_ENTRY] Extreme Bottom V-Shape LONG", {"action": "ENTER"}
+                
+        elif side == "SHORT":
+            recent_high = float(recent_20_bars['high'].max())
+            high_in_recent_3 = any(float(bar['high']) == recent_high for _, bar in df.iloc[-4:-1].iterrows())
+            structure_break = recent_high > float(prev_1.get('kc_upper', kc_mid_prev1))
+            ma_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
+            rsi_rebound = (rsi_prev2 > 70) and (rsi_prev1 < rsi_prev2)
+            
+            if high_in_recent_3 and structure_break and ma_cross_down and rsi_rebound:
+                return True, "[V_REVERSAL_ENTRY] Extreme Top V-Shape SHORT", {"action": "ENTER"}
+
+    # =========================================================================
+    # 全局結構審查 (Global Structural Gatekeeper)
+    # =========================================================================
+    # 除了 V型轉折 (逆勢摸底) 以外，所有順勢進場皆須受結構與均線引力過濾
+    is_aligned, reject_reason = check_structural_alignment(side, prev_1, prev_2, current_atr)
+    if not is_aligned:
+        return False, reject_reason, {}
+
+    # =========================================================================
+    # 軌道 0：盤中動能預判 (Intra-bar Anticipation - 預防滑價與追高殺低)
+    # =========================================================================
+    latest_vol = float(latest.get("volume", 0))
+    # 避免除以零，取過去兩根平均量
+    avg_vol = (float(prev_1.get("volume", 1)) + float(prev_2.get("volume", 1))) / 2.0 + 1e-9
+    is_volume_burst = latest_vol > avg_vol * 1.5
+    
+    if is_volume_burst:
+        kc_upper_live = float(latest.get("kc_upper", kc_mid_prev1))
+        kc_lower_live = float(latest.get("kc_lower", kc_mid_prev1))
+        
+        # 預判條件：價格大幅度貫穿 (超越外軌 0.3 ATR) 且大趨勢強力支持
+        if side == "LONG":
+            if live_price > kc_upper_live + 0.3 * current_atr:
+                return True, "[ANTICIPATED_ENTRY] Live Momentum Breakout LONG", {"action": "ENTER"}
+        elif side == "SHORT":
+            if live_price < kc_lower_live - 0.3 * current_atr:
+                return True, "[ANTICIPATED_ENTRY] Live Momentum Breakout SHORT", {"action": "ENTER"}
 
     # =========================================================================
     # 軌道 A：特例快速進場路徑 (Extreme Volatility Path - 絕對優先)
     # =========================================================================
     dist_from_middle = abs(prev_close - kc_mid_prev1)
 
-    if body_length >= 2.0 * current_atr:
+    if body_length >= 1.3 * current_atr:
         if side == "LONG" and is_bullish:
-            if is_strong_bear_trend:
-                return False, "FILTERED_EXTREME_COUNTER_TREND: Fighting Strong Bearish Trend", {}
             return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)", {"action": "ENTER"}
         elif side == "SHORT" and is_bearish:
-            if is_strong_bull_trend:
-                return False, "FILTERED_EXTREME_COUNTER_TREND: Fighting Strong Bullish Trend", {}
             return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (MARKET)", {"action": "ENTER"}
         elif side == "LONG" and not is_bullish:
             pass # wrong side
@@ -66,6 +156,31 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             pass # wrong side
         else:
             return False, "FILTERED_EXTREME_DOJI", {}
+
+    # =========================================================================
+    # 軌道 P：平台破位優先特權 (Platform Breakdown Exemption)
+    # =========================================================================
+    if len(df) >= 6:
+        # 取前 2~5 根 K 棒作為整理平台 (iloc[-6:-2])
+        platform_bars = df.iloc[-6:-2]
+        
+        if side == "LONG":
+            is_solid_breakout = is_bullish and (body_length >= 1.0 * current_atr)
+            recent_max_high = float(platform_bars['high'].max())
+            broke_platform = prev_close > recent_max_high
+            
+            # 平台破位判定 (已通過全局結構審查)
+            if is_solid_breakout and broke_platform and prev_close > kc_mid_prev1:
+                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG", {"action": "ENTER"}
+                
+        elif side == "SHORT":
+            is_solid_breakout = is_bearish and (body_length >= 1.0 * current_atr)
+            recent_min_low = float(platform_bars['low'].min())
+            broke_platform = prev_close < recent_min_low
+            
+            # 平台破位判定 (已通過全局結構審查)
+            if is_solid_breakout and broke_platform and prev_close < kc_mid_prev1:
+                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT", {"action": "ENTER"}
 
     # =========================================================================
     # 軌道 B-1：結構性爆發金叉 (Explosive MA Cross)
@@ -84,12 +199,12 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
         # 多頭金叉
         if side == "LONG" and is_bullish and ma3_cross_up:
-            if (slope_ma3 / current_atr) >= 0.4 and body_ratio >= 0.60:
+            if (slope_ma3 / current_atr) >= 0.4 and body_ratio >= 0.45:
                 if prev_close >= kc_mid_prev1:
                     is_v_shape_reversal = (body_length >= 2.0 * current_atr)
                     space_to_upper = kc_upper_prev1 - live_price
-                    if not is_v_shape_reversal and space_to_upper < 1.0 * current_atr:
-                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 1.0 ATR", {}
+                    if not is_v_shape_reversal and space_to_upper < 0.3 * current_atr:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.3 ATR", {}
                     
                     if is_v_shape_reversal:
                         return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross LONG", {"action": "ENTER"}
@@ -97,12 +212,12 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
         # 空頭死叉
         if side == "SHORT" and is_bearish and ma3_cross_down:
-            if (slope_ma3 / current_atr) <= -0.4 and body_ratio >= 0.60:
+            if (slope_ma3 / current_atr) <= -0.4 and body_ratio >= 0.45:
                 if prev_close <= kc_mid_prev1:
                     is_v_shape_reversal = (body_length >= 2.0 * current_atr)
                     space_to_lower = live_price - kc_lower_prev1
-                    if not is_v_shape_reversal and space_to_lower < 1.0 * current_atr:
-                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 1.0 ATR", {}
+                    if not is_v_shape_reversal and space_to_lower < 0.3 * current_atr:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.3 ATR", {}
                         
                     if is_v_shape_reversal:
                         return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross SHORT", {"action": "ENTER"}
@@ -124,56 +239,76 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 
     if post_crash_cooldown_active:
         return False, "FILTERED_COOLDOWN: Post-Crash Cooldown Active", {}
+    # =========================================================================
+    # 軌道 R：中繼二次破位追單 (Trend Re-entry)
+    # =========================================================================
+    if len(df) >= 5:
+        # 取得前 2~4 根 K 棒作為整理平台參考 (iloc[-5:-2])
+        platform_bars = df.iloc[-5:-2] 
+        curr_body_size = body_length
+        
+        if side == "LONG":
+            # 趨勢鎖定 (MA15 強烈向上且價格在中軌上方)
+            trend_up = (slope_ma15 > 0.05 * current_atr) and (prev_close > kc_mid_prev1)
+            # 飽滿實體
+            is_solid_green = is_bullish and (curr_body_size >= 0.8 * current_atr)
+            # 突破整理平台
+            recent_max_high = float(platform_bars['high'].max())
+            broke_platform = prev_close > recent_max_high
+            
+            if trend_up and is_solid_green and broke_platform:
+                return True, "[TREND_REENTRY] Bullish Continuation LONG", {"action": "ENTER"}
+                
+        elif side == "SHORT":
+            # 趨勢鎖定 (MA15 強烈向下且價格在中軌下方)
+            trend_down = (slope_ma15 < -0.05 * current_atr) and (prev_close < kc_mid_prev1)
+            # 飽滿實體
+            is_solid_red = is_bearish and (curr_body_size >= 0.8 * current_atr)
+            # 跌破整理平台
+            recent_min_low = float(platform_bars['low'].min())
+            broke_platform = prev_close < recent_min_low
+            
+            if trend_down and is_solid_red and broke_platform:
+                return True, "[TREND_REENTRY] Bearish Continuation SHORT", {"action": "ENTER"}
+    # =========================================================================
+    # 軌道 C：動能確認進場 (Momentum-Validated Entry)
+    # =========================================================================
+    # 時間窗口：回溯過去 3 根已收 K 棒 (prev_1, prev_2, prev_3)
+    history_bars = [prev_1, prev_2, prev_3]
+    
+    # 尋找最近的「破軌基準點」
+    breakout_anchor_close_long = None
+    breakout_anchor_close_short = None
+    
+    # prev_1, prev_2, prev_3 依序檢查 (越近越好，找到即 break)
+    for bar in history_bars:
+        bar_close = float(bar['close'])
+        bar_kc_upper = float(bar.get('kc_upper', kc_mid_prev1))
+        bar_kc_lower = float(bar.get('kc_lower', kc_mid_prev1))
+        
+        if bar_close > bar_kc_upper and breakout_anchor_close_long is None:
+            breakout_anchor_close_long = bar_close
+            
+        if bar_close < bar_kc_lower and breakout_anchor_close_short is None:
+            breakout_anchor_close_short = bar_close
 
-    # 2. 結構破軌進場（3根區段動能確認）
-    kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
-    kc_mid_prev3 = float(prev_3.get("kc_middle", prev_3.get("ema_20", 0)))
-    prev2_close = float(prev_2['close'])
-    prev3_close = float(prev_3['close'])
-    prev2_body  = abs(prev2_close - float(prev_2['open']))
-    prev3_body  = abs(prev3_close - float(prev_3['open']))
-
-    # 最近3根K棒為：prev_1(最新已收)、prev_2、prev_3
-    seg_bodies = body_length + prev2_body + prev3_body   # 3根實體總和
-
-    is_breakout_long  = (prev_close > kc_upper_prev1) and is_bullish
-    is_breakout_short = (prev_close < kc_lower_prev1) and is_bearish
-
-    if side == "LONG" and is_breakout_long:
-        if slope_ma15 >= 0:
-            if slope_ma3 <= 0:
-                return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 <= 0)", {}
-            # 【3根區段動能確認】
-            # 條件1：3根中至少2根收盤在中軌上方
-            closes_above = sum([
-                prev_close  > kc_mid_prev1,
-                prev2_close > kc_mid_prev2,
-                prev3_close > kc_mid_prev3,
-            ])
-            # 條件2：3根實體總和 >= 1.0 ATR
-            if closes_above >= 2 and seg_bodies >= 1.0 * current_atr:
-                return True, "[STANDARD_ENTRY] Segmental Momentum Breakout LONG", {"action": "ENTER"}
+    # 動能驗證 (要求距離破位基準點至少 0.8 ATR 的位移)
+    MOMENTUM_THRESHOLD = 0.8 * current_atr
+    
+    if side == "LONG" and breakout_anchor_close_long is not None:
+        if (live_price - breakout_anchor_close_long) >= MOMENTUM_THRESHOLD:
+            # 趨勢對齊確認
+            if slope_ma15 >= 0: 
+                return True, "[CONFIRMED_ENTRY] Momentum-Validated LONG", {"action": "ENTER"}
             else:
-                return False, f"FILTERED_BREAKOUT: Seg Momentum Insufficient (above={closes_above}/3, body={seg_bodies/current_atr:.2f}ATR)", {}
-        else:
-            return False, "FILTERED_BREAKOUT: Counter-trend (MA15 falling)", {}
-
-    if side == "SHORT" and is_breakout_short:
-        if slope_ma15 <= 0:
-            if slope_ma3 >= 0:
-                return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 >= 0)", {}
-            # 【3根區段動能確認】
-            closes_below = sum([
-                prev_close  < kc_mid_prev1,
-                prev2_close < kc_mid_prev2,
-                prev3_close < kc_mid_prev3,
-            ])
-            if closes_below >= 2 and seg_bodies >= 1.0 * current_atr:
-                return True, "[STANDARD_ENTRY] Segmental Momentum Breakout SHORT", {"action": "ENTER"}
+                return False, "FILTERED_CONFIRMATION: Counter-trend (MA15 falling)", {}
+                
+    if side == "SHORT" and breakout_anchor_close_short is not None:
+        if (breakout_anchor_close_short - live_price) >= MOMENTUM_THRESHOLD:
+            if slope_ma15 <= 0:
+                return True, "[CONFIRMED_ENTRY] Momentum-Validated SHORT", {"action": "ENTER"}
             else:
-                return False, f"FILTERED_BREAKOUT: Seg Momentum Insufficient (below={closes_below}/3, body={seg_bodies/current_atr:.2f}ATR)", {}
-        else:
-            return False, "FILTERED_BREAKOUT: Counter-trend (MA15 rising)", {}
+                return False, "FILTERED_CONFIRMATION: Counter-trend (MA15 rising)", {}
 
     return False, "NO_VALID_ENTRY_SIGNAL", {}
 
