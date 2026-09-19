@@ -91,18 +91,18 @@ def test_dynamic_atr_phase_jump():
     # Check Phase 1 Jump
     reason = check_atr_step_trailing_stop(position, df, 101.0)
     assert reason is None 
-    assert position["v10_phase_trailing"]["atr_step"] == 1
-    assert position["v10_phase_trailing"]["profit_lock_line"] == 100.0 # entry_price
+    assert position["v10_phase_trailing"]["last_locked_level"] == 1
+    assert position["v10_phase_trailing"]["active_stop_price"] == 100.0 # entry_price
     
     # Check Phase 2 Jump (price = 102.0 => net profit 2.0. 2.0 / 0.7 = 2.85 -> Phase 2)
     reason2 = check_atr_step_trailing_stop(position, df, 102.0)
     assert reason2 is None
-    assert position["v10_phase_trailing"]["atr_step"] == 2
-    assert position["v10_phase_trailing"]["profit_lock_line"] == 100.0 + 0.7 * 1.0  # 100.7
+    assert position["v10_phase_trailing"]["last_locked_level"] == 2
+    assert position["v10_phase_trailing"]["active_stop_price"] == 100.0 + 0.7 * 1.0  # 100.7
     
-    # Check Retreat triggers Exit
-    reason3 = check_atr_step_trailing_stop(position, df, 100.5)
-    assert reason3 == "EXIT_1.0_ATR_PROFIT_LOCK"
+    # Check Exit on fallback to active_stop_price
+    reason = check_atr_step_trailing_stop(position, df, 100.6)
+    assert reason == "EXIT_0.7_ATR_PROFIT_LOCK"
 
 def test_ratchet_lock_no_retreat():
     # 棘輪機制：止損不會往下退
@@ -111,15 +111,16 @@ def test_ratchet_lock_no_retreat():
         "entry_price": 100.0,
         "size": 1.0,
         "v10_phase_trailing": {
-            "atr_step": 1,
-            "profit_lock_line": 100.3
+            "last_locked_level": 1,
+            "active_stop_price": 100.3,
+            "defense_line": 98.5
         }
     }
     data = [_default_row(), _default_row({"atr": 1.0})]
     df = pd.DataFrame(data)
     
     check_atr_step_trailing_stop(position, df, 100.8)
-    assert position["v10_phase_trailing"]["profit_lock_line"] == 100.3
+    assert position["v10_phase_trailing"]["active_stop_price"] == 100.3
 
 
 def test_entry_trend_relay_bypass():

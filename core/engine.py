@@ -1975,10 +1975,13 @@ class TradingEngine:
                 return False
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
-            is_v9_signal = signal.get("signal_code", "").startswith("TRACK_")
-            if not ck_reverse and not live_pivot and not is_v9_signal:
+            sig_code = signal.get("signal_code", "")
+            is_valid_entry = sig_code and any(sig_code.startswith(prefix) for prefix in [
+                "TRACK_", "SPECIAL_ENTRY_", "REVERSAL_ENTRY_", "INITIAL_BREAKOUT_", "TREND_CONT_"
+            ])
+            if not ck_reverse and not live_pivot and not is_valid_entry:
                 pass
-            if not is_v9_signal and not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
+            if not is_valid_entry and not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
                     reverse_quote_ready(self, symbol, fresh_frame, planned_price, side) if ck_reverse else True):
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
@@ -1988,7 +1991,7 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
-            if not is_v9_signal and not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
+            if not is_valid_entry and not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
                     self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, ck_reverse=True)
                     if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side)):
                 self.account.log(f"⏳ {symbol} {side} KC_ENTRY_QUOTE_WAIT：報價過期或進場條件失效", "INFO")
@@ -2356,7 +2359,9 @@ class TradingEngine:
         from core.engine import market_crash_entries_paused # ensure accessible
         is_system_halted = market_crash_entries_paused(getattr(self, "_market_crash_entry_cooldown_until", 0.0), time.time())
         
-        is_v9_signal = v8_reason and v8_reason.startswith("TRACK_")
+        is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
+            "TRACK_", "SPECIAL_ENTRY_", "REVERSAL_ENTRY_", "INITIAL_BREAKOUT_", "TREND_CONT_"
+        ])
         if is_system_halted:
             return False
         
@@ -2397,8 +2402,10 @@ class TradingEngine:
             held_side = position.get("side") if position else (
                 ("SHORT" if side == "LONG" else "LONG") if retry_reverse else None
             )
-            is_v9_signal = v8_reason and v8_reason.startswith("TRACK_")
-            if is_v9_signal:
+            is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
+                "TRACK_", "SPECIAL_ENTRY_", "REVERSAL_ENTRY_", "INITIAL_BREAKOUT_", "TREND_CONT_"
+            ])
+            if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}
             else:
                 decision = {"action": "NONE", "side": None}
