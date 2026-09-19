@@ -77,7 +77,7 @@
         .card-title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
 
         /* Coins strip */
-        .coin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
+        .coin-grid { display: flex; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; gap: 12px; margin-bottom: 20px; padding-bottom: 4px; }
         .coin-card { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: all 0.2s; }
         .coin-card:hover { border-color: var(--primary); transform: translateY(-1px); }
         .coin-name { font-size: 12px; font-weight: 700; color: var(--muted); }
@@ -131,7 +131,6 @@
         @media (max-width: 860px) {
             .container { grid-template-columns: 1fr; margin: 12px auto; padding: 0 10px; }
             .stats-grid, .stats-grid-6 { grid-template-columns: repeat(2, 1fr); }
-            .coin-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
             .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
             .topbar .logo { flex-wrap: wrap; font-size: 17px; }
             .strategy-panel { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
@@ -198,7 +197,7 @@
         .market-mode-wait { background:#e2e8f0; color:#475569; }
         .chart-modal-close { cursor: pointer; font-size: 20px; color: var(--muted); background: none; border: none; }
         .chart-modal-body { padding: 16px; flex: 1; width: 100%; position: relative; resize: vertical; overflow: hidden; min-height: 200px; }
-        .chart-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+        .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
         .chart-pane { min-width: 0; height: 100%; position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: #fff; display: flex; flex-direction: column; }
         .chart-pane-header { padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
         .chart-symbol-trend { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; font-size: 14px; font-weight: 800; }
@@ -562,6 +561,7 @@
                 </div>
                 <div class="chart-header-actions">
                     <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
+                    <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
             </div>
@@ -738,7 +738,6 @@
                             price: this.getCurrPrice(sym),
                             direction: (this.bot.symbol_directions || {})[sym] || ''
                         }))
-                        .filter(item => item.price !== null && item.price !== undefined)
                         .sort((a, b) => a.name.localeCompare(b.name));
                 },
                 chartMarketMode() {

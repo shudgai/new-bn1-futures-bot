@@ -1141,7 +1141,18 @@ class TradingEngine:
                 *DEFAULT_SYMBOLS,
                 *self.account.positions.keys(),
             ]))
-            tickers = await self.exchange.fetch_tickers(monitored_symbols)
+            # 過濾掉像「龙虾/USDT」這種含有中文的模擬幣種，避免 CCXT fetch_tickers 整批報錯崩潰
+            import re
+            valid_monitored = [
+                sym for sym in monitored_symbols 
+                if re.match(r'^[A-Za-z0-9/:-]+$', sym)
+            ]
+            
+            if valid_monitored:
+                tickers = await self.exchange.fetch_tickers(valid_monitored)
+            else:
+                tickers = {}
+                
             for sym, t in tickers.items():
                 if 'last' in t and t['last'] is not None:
                     price = float(t['last'])
@@ -2564,7 +2575,7 @@ class TradingEngine:
         ):
             entry_symbols = list(broad_symbols)
         else:
-            entry_symbols = []
+            entry_symbols = list(default_symbols)  # 為了讓前端 UI 永遠抓得到預設幣種價格
         return list(dict.fromkeys([
             *positions.keys(), *pending_orders.keys(), *entry_symbols,
         ]))
@@ -2989,7 +3000,7 @@ class TradingEngine:
                     # 固定幣種模式只掃 DEFAULT_SYMBOLS 與既有持倉。
                     wallet_balance = float(self.account.get_wallet_balance())
                     
-                    active_trade_symbols = ["龙虾/USDT", "1000PEPE/USDT"]
+                    active_trade_symbols = list(DEFAULT_SYMBOLS)
                         
                     effective_slot_limit = get_effective_slot_count(wallet_balance)
                     # 輪替模式使用市場短名單 + active_trade_symbols + 已達標候選；
