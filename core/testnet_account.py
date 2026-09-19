@@ -1112,6 +1112,7 @@ class BinanceTestnetAccount:
 
             # 停用交易所初始停損時，old_sl 是純本地觀察線；啟用時則完全
             # 交給交易所 STOP_MARKET 處理，不再需要限價未成交後備。
+            # ✅ 修正：穿越觀察線即立即平倉，不再額外等待虧損達標（移除舊的「耐心等待」邏輯）
             if not ENABLE_EXCHANGE_INITIAL_STOP_LOSS and old_sl > 0:
                 breached = (
                     (side == "LONG" and mark_p <= old_sl)
@@ -1119,16 +1120,9 @@ class BinanceTestnetAccount:
                 )
                 if breached:
                     current_loss_pct = (mark_p - entry_p) / entry_p if side == "LONG" else (entry_p - mark_p) / entry_p
-                    if MAX_ACCEPTABLE_LOSS_PCT < 0 and current_loss_pct > MAX_ACCEPTABLE_LOSS_PCT:
-                        self.log(
-                            f"⏸️ [{symbol}] 止損已觸發但虧損 {current_loss_pct:.2%} 未超過允許值 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，"
-                            f"耐心等待利潤回來... (止損價: {old_sl}, 目前價: {mark_p:.6f})",
-                            "INFO",
-                        )
-                        continue
                     self.log(
                         f"🚨 {symbol} 本地停損觀察線已穿越（標記價 {mark_p:.6f}，觀察線 {old_sl}），"
-                        f"虧損 {current_loss_pct:.2%} 超過限制 {MAX_ACCEPTABLE_LOSS_PCT:.2%}，強制市價平倉",
+                        f"虧損 {current_loss_pct:.2%}，觸線即市價平倉",
                         "DANGER",
                     )
                     await self.close_position(symbol, curr_p, "本地最大虧損門檻觸發")
@@ -2244,10 +2238,12 @@ class BinanceTestnetAccount:
                     "WARNING"
                 )
                 return False
-        # ✅ 修正：若是手動平倉，直接跳過自動冷卻計時器，避免用戶手動平倉卡住
+        # ✅ 修正：HARD_STOP 具最高優先權，無條件跳過冷卻計時器；
+        #          一般策略平倉仍受冷卻保護，手動平倉也跳過。
         _now = time.time()
+        is_hard_stop_close = "HARD_STOP" in str(close_reason)
         strategy_close = str(close_reason).startswith(("Channel Swing ", "DualTrackExit "))
-        if (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
+        if not is_hard_stop_close and (not is_manual or strategy_close) and _now < self._close_retry_after.get(symbol, 0.0):
             return False
         self.closing_lock.add(symbol)
         self.last_closed_at[symbol] = _now
@@ -2315,10 +2311,12 @@ class BinanceTestnetAccount:
                     pass
             return True
         except Exception as exc:
-            # ✅ 修正 Bug2：失敗後登記冷卻時間，30 秒後主迴圈才允許再試
-            self._close_retry_after[symbol] = time.time() + 30.0
+            # ✅ 修正：HARD_STOP 失敗後冷卻縮短至 5 秒快速重試；一般失敗維持 30 秒冷卻
+            is_hard_stop_close = "HARD_STOP" in str(close_reason)
+            cooldown_secs = 5.0 if is_hard_stop_close else 30.0
+            self._close_retry_after[symbol] = time.time() + cooldown_secs
             self.log(
-                f"🚨 Binance Testnet 平倉失敗 {symbol}（30 秒後自動重試）："
+                f"🚨 Binance Testnet 平倉失敗 {symbol}（{'HARD_STOP 5' if is_hard_stop_close else '30'} 秒後自動重試）："
                 f"{type(exc).__name__}: {exc}",
                 "DANGER",
             )

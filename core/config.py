@@ -145,7 +145,7 @@ MAX_ACCEPTABLE_LOSS_PCT = 0.0 if IS_TESTING else float(os.getenv("MAX_ACCEPTABLE
 # 單筆動態金額防線：最大毛虧損不得超過該筆實際投入保證金的比例。
 # 使用比例而非固定 USDT，未來本金變動時不必重新修改程式。
 MAX_POSITION_MARGIN_LOSS_RATIO = max(
-    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.15"))
+    0.0, float(os.getenv("MAX_POSITION_MARGIN_LOSS_RATIO", "0.05"))
 )
 
 
