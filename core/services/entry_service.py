@@ -118,6 +118,60 @@ def channel_immediate_outer_break_action(
         return channel_strong_first_outer_touch_action(frame, price, "SHORT")
     return {"action": "WAIT", "side": None, "reason": "INSIDE_KC"}
 
+def is_safe_to_enter(curr: pd.Series, prev: pd.Series, side: str, atr: float) -> Optional[str]:
+    """
+    環境安全檢查 (Context Check)：
+    避免機器人在動能枯竭、極端噴發、或接近峰谷極端區域時被誘騙進場。
+    若安全則回傳 None，否則回傳拒絕原因。
+    """
+    # 1. 極端異常波動率過濾 (Volatility Spike Filter)
+    # 如果當前 K 棒高低差 > 3.0 ATR，代表市場處於瘋狂狀態
+    curr_high = float(curr["high"])
+    curr_low = float(curr["low"])
+    if (curr_high - curr_low) > 3.0 * atr:
+        return "REJECTED_BY_EXTREME_VOLATILITY"
+
+    # 2. 極端 RSI 過濾 (遠離峰谷極值)
+    rsi = float(curr.get("rsi", 50))
+    if side == "LONG" and rsi > 75:
+        return "REJECTED_BY_OVERBOUGHT"
+    if side == "SHORT" and rsi < 25:
+        return "REJECTED_BY_OVERSOLD"
+        
+    # 3. MA15 乖離率過濾 (防止過度擴張)
+    # 如果當前價格偏離 MA15 超過 5%，嚴格禁止進場
+    curr_close = float(curr["close"])
+    ma15 = float(curr.get("ma15", curr_close))
+    if ma15 > 0:
+        deviation = abs(curr_close - ma15) / ma15
+        if deviation > 0.05:
+            return "REJECTED_BY_MA15_DEVIATION"
+
+    # 4. 動能枯竭判定 (Momentum Exhaustion)
+    # 如果價格處於同向推進，但當前實體小於上一根實體的 50%，動能正在衰退
+    curr_open = float(curr["open"])
+    curr_close = float(curr["close"])
+    prev_open = float(prev["open"])
+    prev_close = float(prev["close"])
+    
+    curr_body = abs(curr_close - curr_open)
+    prev_body = abs(prev_close - prev_open)
+    
+    curr_is_long = curr_close > curr_open
+    curr_is_short = curr_close < curr_open
+    prev_is_long = prev_close > prev_open
+    prev_is_short = prev_close < prev_open
+    
+    if side == "LONG" and curr_is_long and prev_is_long:
+        if curr_body < prev_body * 0.5:
+            return "REJECTED_BY_EXHAUSTION"
+            
+    if side == "SHORT" and curr_is_short and prev_is_short:
+        if curr_body < prev_body * 0.5:
+            return "REJECTED_BY_EXHAUSTION"
+
+    return None
+
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
 ) -> Dict[str, Any]:
@@ -141,6 +195,11 @@ def check_entry_signals(
     atr = float(curr.get("atr", 0))
     if atr <= 0:
         return {"action": "WAIT", "reason": "INVALID_ATR"}
+
+    # === 環境安全檢查 (Context Check) ===
+    unsafe_reason = is_safe_to_enter(curr, prev, side, atr)
+    if unsafe_reason:
+        return {"action": "WAIT", "reason": unsafe_reason}
         
     # K 棒特徵
     prev_open = float(prev["open"])

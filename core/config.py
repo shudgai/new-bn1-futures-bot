@@ -97,7 +97,7 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.5"))
 # 所有「有固定 TP」的初始訂單都必須通過這個毛風報比硬下限；淨風報比
 # 仍由下方 MIN_NET_REWARD_RISK（含手續費）採用更嚴格的門檻。
 MIN_REWARD_RISK_RATIO = float(os.getenv("MIN_REWARD_RISK_RATIO", "1.5"))
-DISABLE_TAKE_PROFIT = os.getenv("DISABLE_TAKE_PROFIT", "false").lower() == "true"
+DISABLE_TAKE_PROFIT = True
 # 正數時，所有新倉使用固定的無槓桿 TP 百分比（0.002 = 0.2%）；0 維持 ATR 動態 TP。
 FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0.002")))
 # 唯一獲利出場：峰值每跨一個階梯，鎖利線維持落後一階。
