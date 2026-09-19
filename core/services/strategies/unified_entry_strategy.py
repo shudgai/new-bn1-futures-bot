@@ -75,8 +75,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     slope_middle = kc_mid_prev1 - kc_mid_prev2
 
     # -------------------------------------------------------------------------
-    # 軌道 B-1：結構反轉進場 (修正版：MA5 + 大趨勢斜率對齊)
+    # 軌道 B-1：結構反轉進場 (修正版：MA5 + 大趨勢斜率對齊 + 空間緩衝)
     # -------------------------------------------------------------------------
+    min_space_buffer_atr = 0.5
+    buffer_threshold = min_space_buffer_atr * current_atr
+    
     ma5_prev1 = float(prev_1.get('ma5', prev_1.get('ema_5', 0)))
     ma5_prev2 = float(prev_2.get('ma5', prev_2.get('ema_5', 0)))
     ma15_prev1 = float(prev_1.get('ma15', 0))
@@ -99,11 +102,17 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
             if side == "SHORT" and ma_cross_down and is_bearish:
                 if slope_ma15 <= 0 or slope_middle <= 0:
+                    space_to_lower = prev_close - kc_lower_prev1
+                    if space_to_lower < buffer_threshold:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT"
                     return True, "[STANDARD_ENTRY] Trend-Aligned MA Cross SHORT"
                 else:
                     return False, "FILTERED: Counter-trend MA cross (MA15/Middle rising)"
             if side == "LONG" and ma_cross_up and is_bullish:
                 if slope_ma15 >= 0 or slope_middle >= 0:
+                    space_to_upper = kc_upper_prev1 - prev_close
+                    if space_to_upper < buffer_threshold:
+                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT"
                     return True, "[STANDARD_ENTRY] Trend-Aligned MA Cross LONG"
                 else:
                     return False, "FILTERED: Counter-trend MA cross (MA15/Middle falling)"
@@ -113,9 +122,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # -------------------------------------------------------------------------
     prev2_close = float(prev_2['close'])
     cooldown_active = kwargs.get("cooldown_active", False)
-    
-    min_space_buffer_atr = 0.5
-    buffer_threshold = min_space_buffer_atr * current_atr
 
     if side == "LONG" and is_bullish:
         if slope_ma15 < 0 and slope_middle < 0:
