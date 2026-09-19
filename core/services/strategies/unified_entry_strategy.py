@@ -72,6 +72,28 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         prev_prev_close < kc_mid_prev_prev
     )
 
+    # ── 讀取 MA3 / MA15 (用於反轉進場) ──────────────────────────────────────
+    ma3_prev = float(prev.get("ma3", 0)) if "ma3" in prev.index else 0.0
+    ma3_prev_prev = float(prev_prev.get("ma3", 0)) if "ma3" in prev_prev.index else 0.0
+    ma15_prev = float(prev.get("ma15", 0)) if "ma15" in prev.index else 0.0
+    ma15_prev_prev = float(prev_prev.get("ma15", 0)) if "ma15" in prev_prev.index else 0.0
+    has_ma = (ma3_prev > 0 and ma15_prev > 0 and ma3_prev_prev > 0 and ma15_prev_prev > 0)
+
+    # ── 結構性反轉進場檢測 (Reversal Entry) ─────────────────────────────────
+    if has_ma and side == "SHORT":
+        dist_above_mid = prev_close - kc_mid_prev
+        is_overheated = dist_above_mid >= 1.5 * atr_prev
+        is_death_cross = (ma3_prev_prev >= ma15_prev_prev) and (ma3_prev < ma15_prev)
+        if is_overheated and is_death_cross and prev_is_bearish:
+            return True, "REVERSAL_ENTRY_SHORT"
+
+    if has_ma and side == "LONG":
+        dist_below_mid = kc_mid_prev - prev_close
+        is_oversold = dist_below_mid >= 1.5 * atr_prev
+        is_golden_cross = (ma3_prev_prev <= ma15_prev_prev) and (ma3_prev > ma15_prev)
+        if is_oversold and is_golden_cross and prev_is_bullish:
+            return True, "REVERSAL_ENTRY_LONG"
+
     if side == "LONG":
         # === 0. 極端動能特權 (Extreme Momentum Privilege) ===
         if prev_body >= 2.0 * atr_prev and prev_is_bullish and prev_close > kc_mid_prev:
