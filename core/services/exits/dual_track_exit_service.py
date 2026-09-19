@@ -127,12 +127,12 @@ def check_atr_step_trailing_stop(
             
             if side == "LONG":
                 defense = entry_price - 1.5 * atr
-                if "REVERSAL_ENTRY_LONG" in v8_reason:
+                if "[STANDARD_ENTRY] Structural Reversal LONG" in v8_reason:
                     prev_low = float(frame.iloc[-2]['low'])
                     defense = min(defense, prev_low)
             else:
                 defense = entry_price + 1.5 * atr
-                if "REVERSAL_ENTRY_SHORT" in v8_reason:
+                if "[STANDARD_ENTRY] Structural Reversal SHORT" in v8_reason:
                     prev_high = float(frame.iloc[-2]['high'])
                     defense = max(defense, prev_high)
                 
@@ -141,7 +141,7 @@ def check_atr_step_trailing_stop(
             state["last_locked_level"] = 0
             
             # 特例 K 進場：立即在進場瞬間推進一檔
-            if v8_reason and v8_reason.startswith("SPECIAL_ENTRY_MOMENTUM_"):
+            if v8_reason and ("[SPECIAL_ENTRY] Extreme Impulse" in v8_reason):
                 state["last_locked_level"] = 1
                 if side == "LONG":
                     state["active_stop_price"] = entry_price

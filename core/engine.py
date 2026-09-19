@@ -1977,7 +1977,7 @@ class TradingEngine:
             live_pivot = bool(signal.get('live_pivot'))
             sig_code = signal.get("signal_code", "")
             is_valid_entry = sig_code and any(sig_code.startswith(prefix) for prefix in [
-                "TRACK_", "SPECIAL_ENTRY_", "REVERSAL_ENTRY_", "INITIAL_BREAKOUT_", "TREND_CONT_"
+                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]"
             ])
             if not ck_reverse and not live_pivot and not is_valid_entry:
                 pass
@@ -2360,7 +2360,7 @@ class TradingEngine:
         is_system_halted = market_crash_entries_paused(getattr(self, "_market_crash_entry_cooldown_until", 0.0), time.time())
         
         is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
-            "TRACK_", "SPECIAL_ENTRY_", "REVERSAL_ENTRY_", "INITIAL_BREAKOUT_", "TREND_CONT_"
+            "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]"
         ])
         if is_system_halted:
             return False
@@ -2403,7 +2403,7 @@ class TradingEngine:
                 ("SHORT" if side == "LONG" else "LONG") if retry_reverse else None
             )
             is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
-                "TRACK_", "SPECIAL_ENTRY_", "REVERSAL_ENTRY_", "INITIAL_BREAKOUT_", "TREND_CONT_"
+                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]"
             ])
             if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}

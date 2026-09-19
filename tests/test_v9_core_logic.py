@@ -37,7 +37,7 @@ def test_entry_track_c_breakout():
     live_price = 103.0 # > kc_upper and > ma3
     ok, reason = check_streamlined_entry_signal(df, "LONG", live_price)
     assert ok is True
-    assert reason == "SPECIAL_ENTRY_MOMENTUM_LONG"
+    assert reason == "[SPECIAL_ENTRY] Extreme Impulse LONG (>=2.0 ATR)"
 
 def test_entry_track_c_structural_collapse():
     # 上一根實體破軌，但最新報價跌破 MA3 (結構瓦解)
@@ -55,7 +55,7 @@ def test_entry_track_c_structural_collapse():
     live_price = 101.0 # < ma3
     ok, reason = check_streamlined_entry_signal(df, "LONG", live_price)
     assert ok is True
-    assert reason == "SPECIAL_ENTRY_MOMENTUM_LONG"
+    assert reason == "[SPECIAL_ENTRY] Extreme Impulse LONG (>=2.0 ATR)"
 
 def test_entry_track_b_mid_pullback():
     # 回測中軌，大實體扭頭(>=0.4)，量大，斜率向上
@@ -75,7 +75,7 @@ def test_entry_track_b_mid_pullback():
     live_price = 102.5
     ok, reason = check_streamlined_entry_signal(df, "LONG", live_price)
     assert ok is True
-    assert reason == "SPECIAL_ENTRY_MOMENTUM_LONG"
+    assert reason == "[SPECIAL_ENTRY] Extreme Impulse LONG (>=2.0 ATR)"
 
 def test_dynamic_atr_phase_jump():
     # 測試 0.7 ATR 階段跳躍
@@ -141,7 +141,7 @@ def test_entry_trend_relay_bypass():
     
     ok, reason = check_streamlined_entry_signal(df, "LONG", live_price, relay_forced=True)
     assert ok is True
-    assert reason == "SPECIAL_ENTRY_MOMENTUM_LONG"
+    assert reason == "[SPECIAL_ENTRY] Extreme Impulse LONG (>=2.0 ATR)"
 
 def test_entry_track_d_trend_continuation_short():
     # KC 通道連續 4 根下降，最近 3 根中 2 根陰線且階梯式收低，即時報價在中軌下方
@@ -164,7 +164,7 @@ def test_entry_track_d_trend_continuation_short():
     live_price = last_mid - 0.8  # 100.2 < ma3(100.7) < kc_middle(101.0) ✓
     ok, reason = check_streamlined_entry_signal(df, "SHORT", live_price)
     assert ok is True
-    assert reason == "TREND_CONT_UNLOCKED_EXEMPT_SHORT"
+    assert reason == "[STANDARD_ENTRY] Trend Continuation SHORT (Exempt Cooldown)"
 
 def test_entry_track_d_blocked_when_not_cascading():
     # 最近 3 根中有陰線但收盤價未階梯式下跌（反彈），不應觸發 Track D
