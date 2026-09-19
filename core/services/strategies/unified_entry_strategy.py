@@ -98,7 +98,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                     space_to_lower = live_price - kc_lower_prev1
                     if space_to_lower < 0.5 * current_atr:
                         return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.5 ATR", {}
-                    return True, "[STANDARD_ENTRY] Explosive MA Cross SHORT", {"action": "ENTER"}
+                    return True, "[STANDARD_ENTRY] Explosive Death Cross SHORT", {"action": "ENTER"}
 
     # =========================================================================
     # 軌道 B-2：強化結構破軌 (Structural Breakout)
