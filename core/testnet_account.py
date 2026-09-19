@@ -886,17 +886,18 @@ class BinanceTestnetAccount:
                             "SUCCESS",
                         )
 
-            giveback_pct = highest_pnl - pnl_pct
+            # 將 1.0 ATR 容忍改回更靈敏的 15% 比例防護，符合極限反應要求
+            profit_giveback_ratio = (highest_pnl - pnl_pct) / highest_pnl if highest_pnl > 0 else 0.0
             profit_alert = (
                 highest_pnl >= atr_075
                 and pnl_pct > 0
-                and giveback_pct >= atr_100
+                and profit_giveback_ratio >= 0.15
             )
             if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
-                if _strategy_exit_ok:
-                    # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
-                    await self.close_position(symbol, curr_p, "峰值回吐平倉")
-                    continue
+                # 【快速通道 (Fast Path)】強制移除 _strategy_exit_ok 限制，觸發瞬間立即市價逃生！
+                # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
+                await self.close_position(symbol, curr_p, "峰值回吐平倉 (15% 緊急防護)")
+                continue
 
             if (
                 ENABLE_BOUNCE_TARGET_EXIT
