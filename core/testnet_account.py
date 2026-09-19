@@ -728,6 +728,14 @@ class BinanceTestnetAccount:
             if stored_highest_pnl is None or highest_pnl > float(stored_highest_pnl):
                 meta["highest_pnl_pct"] = highest_pnl
                 meta["peak_profit_updated_at"] = now_ts
+                
+            # --- 動態 ATR 防禦錨點計算 (0.75 ATR 邏輯對齊) ---
+            atr_val = float(meta.get("atr") or entry_p * 0.015)
+            atr_pct = atr_val / entry_p if entry_p > 0 else 0.015
+            atr_075 = atr_pct * 0.75
+            atr_050 = atr_pct * 0.50
+            atr_100 = atr_pct * 1.00
+            atr_025 = atr_pct * 0.25
             wave_regime = str(
                 pos.get("wave_regime") or meta.get("wave_regime") or ""
             ).upper()
@@ -846,21 +854,21 @@ class BinanceTestnetAccount:
                     meta["bounce_capture_ratio"] = bounce_capture_ratio
                     meta["bounce_target_pct"] = bounce_target_pct
 
-            # 唯一獲利出場：峰值每跨一個 0.2% 階梯，鎖利線同步上移。
+            # 唯一獲利出場：峰值每跨一個 0.5 ATR 階梯，鎖利線同步上移。
             if (
                 ENABLE_FIXED_PROFIT_LOCK_LADDER
-                and FIXED_PROFIT_LOCK_LADDER_STEP_PCT > 0
-                and FIXED_PROFIT_LOCK_LADDER_FIRST_PCT > 0
+                and atr_050 > 0
+                and atr_075 > 0
                 and entry_p > 0
             ):
                 completed_steps = math.floor(
-                    max(0.0, highest_pnl - FIXED_PROFIT_LOCK_LADDER_FIRST_PCT)
-                    / FIXED_PROFIT_LOCK_LADDER_STEP_PCT + 1e-12
+                    max(0.0, highest_pnl - atr_075)
+                    / atr_050 + 1e-12
                 )
                 lock_pct = (
-                    FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
-                    + completed_steps * FIXED_PROFIT_LOCK_LADDER_STEP_PCT
-                    if highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_LADDER_FIRST_PCT
+                    atr_075
+                    + completed_steps * atr_050
+                    if highest_pnl + 1e-12 >= atr_075
                     else 0.0
                 )
                 if lock_pct > 0:
@@ -878,13 +886,11 @@ class BinanceTestnetAccount:
                             "SUCCESS",
                         )
 
-            profit_giveback_ratio = (
-                (highest_pnl - pnl_pct) / highest_pnl if highest_pnl > 0 else 0.0
-            )
+            giveback_pct = highest_pnl - pnl_pct
             profit_alert = (
-                highest_pnl >= PROFIT_ALERT_MIN_PEAK_PCT
+                highest_pnl >= atr_075
                 and pnl_pct > 0
-                and profit_giveback_ratio >= PROFIT_ALERT_GIVEBACK_RATIO
+                and giveback_pct >= atr_100
             )
             if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
                 if _strategy_exit_ok:
@@ -916,21 +922,20 @@ class BinanceTestnetAccount:
                     await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
                     continue
 
-            # 第一階段在 +0.5% 鎖住；之後依峰值級距保留70%／80%／85%。沿用既有
-            # STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
+            # 第一階段在 0.75 ATR 鎖住 0.25 ATR；之後依峰值級距保留70%／80%／90%。
+            # 沿用既有 STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
             fixed_pct_active = (
                 ENABLE_FIXED_PROFIT_LOCK_PCT
                 and bool(pos.get("outer_run_active") or meta.get("outer_run_active"))
-                and FIXED_PROFIT_LOCK_TRIGGER_PCT > 0
-                and highest_pnl + 1e-12 >= FIXED_PROFIT_LOCK_TRIGGER_PCT
+                and highest_pnl + 1e-12 >= atr_075
             )
             profit_bank_active = (
                 ENABLE_PROFIT_BANK
-                and highest_pnl + 1e-12 >= PROFIT_BANK_TRIGGER_PCT
+                and highest_pnl + 1e-12 >= atr_075
             )
             if fixed_pct_active or profit_bank_active:
                 if fixed_pct_active:
-                    bank_lock_pct = FIXED_PROFIT_LOCK_FLOOR_PCT
+                    bank_lock_pct = atr_025
                 else:
                     bank_lock_pct = min(
                         max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
