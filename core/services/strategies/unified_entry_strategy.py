@@ -134,6 +134,9 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     if side == "LONG" and is_breakout_long:
         if slope_ma15 >= 0:
+            # 【動能對齊】MA3 必須正向（多頭動能正在發力）
+            if slope_ma3 <= 0:
+                return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 <= 0)", {}
             # 連續兩根收盤價在中軌上方
             if prev_close > kc_mid_prev1 and prev2_close > kc_mid_prev2:
                 return True, "[STANDARD_ENTRY] Structural Breakout LONG", {"action": "ENTER"}
@@ -144,6 +147,9 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     if side == "SHORT" and is_breakout_short:
         if slope_ma15 <= 0:
+            # 【動能對齊】MA3 必須負向（空頭動能正在發力）
+            if slope_ma3 >= 0:
+                return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 >= 0)", {}
             if prev_close < kc_mid_prev1 and prev2_close < kc_mid_prev2:
                 return True, "[STANDARD_ENTRY] Structural Breakout SHORT", {"action": "ENTER"}
             else:
