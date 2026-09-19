@@ -69,6 +69,23 @@ class DualTrackExitStrategy(IExitStrategy):
         active_stop = state.get("active_stop_price", state["defense_line"])
         is_super    = position.get("super_trend_mode", False)
 
+        # ── ZONE A 盤中階梯鎖利更新（Zone B 護航模式完全忽略盤中更新） ──
+        if not is_super:
+            unrealized_profit_atr = (current_price - entry_price) / atr if side == "LONG" else (entry_price - current_price) / atr
+            if unrealized_profit_atr >= 1.5:
+                locked_level = int(unrealized_profit_atr / 1.5)
+                if locked_level > state.get("last_locked_level", 0):
+                    step_atr = (locked_level * 1.5) - 1.0
+                    new_active_stop = entry_price + step_atr * atr if side == "LONG" else entry_price - step_atr * atr
+                    state["last_locked_level"] = locked_level
+                    if side == "LONG":
+                        state["active_stop_price"] = max(state.get("active_stop_price", float("-inf")), new_active_stop)
+                    else:
+                        state["active_stop_price"] = min(state.get("active_stop_price", float("inf")), new_active_stop)
+                    logger.info(f"[ZONE_A_STEP_LOCK] Level {locked_level}, new stop: {state['active_stop_price']:.6f}")
+                    
+            active_stop = state.get("active_stop_price", state["defense_line"])
+
         # 盤中即時資料
         curr_open  = float(curr["open"])
         curr_close = float(curr.get("close", current_price))
@@ -76,7 +93,7 @@ class DualTrackExitStrategy(IExitStrategy):
         prev_open  = float(prev_1["open"])
 
         # ══════════════════════════════════════════════════════════════
-        # 第一層：絕對保命（ZONE A & B 共用）
+        # 第一層：絕對保命（ZONE A & B 共用，Zone B 只會使用凍結的保命線，無盤中鎖利更新）
         # ══════════════════════════════════════════════════════════════
         if side == "LONG" and current_price <= active_stop:
             tag = "EXIT_PROFIT_PROTECT_HIT" if state["last_locked_level"] > 0 else "EXIT_HARD_STOP_1.5_ATR"
