@@ -859,11 +859,13 @@ class BinanceTestnetAccount:
             # 終極防禦體系：分階段動態防禦系統 (TieredExitManager)
             # =========================================================================
             if "defense_state" not in meta:
+                mode = pos.get("entry_context", {}).get("defense_mode", "TREND")
                 meta["defense_state"] = PositionDefenseState(
                     entry_price=entry_p,
                     qty=float(pos.get("qty") or 0.0),
                     side=side,
-                    snapshot_atr=atr_val if atr_val > 0 else entry_p * 0.015
+                    snapshot_atr=atr_val if atr_val > 0 else entry_p * 0.015,
+                    mode=mode
                 )
                 if old_sl > 0:
                     meta["defense_state"].current_sl_price = old_sl

@@ -2449,6 +2449,26 @@ class TradingEngine:
                                   "confirmed CK middle trend" if decision["reason"] in TREND_CODES else
                                   "closed breakout continuation" if decision["reason"] in {"KC_CONTINUATION_LONG", "KC_CONTINUATION_SHORT"} else
                                   "next live breakout candle")
+            # -------------------------------------------------------------
+            # 動能判定 (EXPLOSIVE vs TREND)
+            # -------------------------------------------------------------
+            try:
+                # 判定為 EXPLOSIVE 的條件：
+                # 1. 進場當下 (或剛收盤) 的單根 K 棒實體波幅 >= 1.5 ATR。
+                # 2. 或者過去 3 根 K 棒的最高與最低點落差 >= 2.0 ATR。
+                recent_klines = frame.iloc[-4:-1] if len(frame) >= 4 else frame.iloc[:-1] # 取最近 3 根 K 棒
+                current_atr = float(latest.get("atr") or abs(price) * 0.015)
+                
+                latest_body = abs(float(latest["close"]) - float(latest["open"]))
+                
+                high_3 = float(recent_klines["high"].max())
+                low_3 = float(recent_klines["low"].min())
+                range_3 = high_3 - low_3
+                
+                defense_mode = "EXPLOSIVE" if (latest_body >= 1.5 * current_atr) or (range_3 >= 2.0 * current_atr) else "TREND"
+            except Exception:
+                defense_mode = "TREND"
+
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
                 "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
@@ -2457,6 +2477,7 @@ class TradingEngine:
                 "reason": f"Channel Swing {decision['reason']} {confirmation_label} {side}",
                 "channel_reversal": bool(position or retry_reverse),
                 "atr": float(latest.get("atr") or abs(price) * .015),
+                "defense_mode": defense_mode, # 終極彈性防禦系統模式
                 "profit_profile": "TREND_EXTENSION", "wave_regime": "TREND",
                 **{f"signal_candle_{k}": float(latest[k]) for k in ("open", "high", "low", "close")},
             }

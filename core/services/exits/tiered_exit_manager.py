@@ -2,11 +2,12 @@ import math
 import time
 
 class PositionDefenseState:
-    def __init__(self, entry_price: float, qty: float, side: str, snapshot_atr: float):
+    def __init__(self, entry_price: float, qty: float, side: str, snapshot_atr: float, mode: str = "TREND"):
         self.entry_price = entry_price
         self.qty = qty
         self.side = side
         self.snapshot_atr = snapshot_atr
+        self.mode = mode  # "EXPLOSIVE" or "TREND"
         
         # 0: 未啟動, 1: 保本, 2: 階梯鎖利, 3: 極限防禦
         self.stage = 0
@@ -23,18 +24,27 @@ class PositionDefenseState:
 class TieredExitManager:
     def __init__(self, 
                  stage1_trigger_atr=0.75, 
-                 stage2_trigger_atr=1.5, 
-                 stage2_buffer_atr=0.7, 
                  stage3_trigger_atr=2.5, 
-                 stage3_giveback_ratio=0.15,
                  fee_buffer_pct=0.001): # 預設千分之一的保本手續費緩衝
         
+        # 共通觸發條件
         self.stage1_trigger_atr = stage1_trigger_atr
-        self.stage2_trigger_atr = stage2_trigger_atr
-        self.stage2_buffer_atr = stage2_buffer_atr
         self.stage3_trigger_atr = stage3_trigger_atr
-        self.stage3_giveback_ratio = stage3_giveback_ratio
         self.fee_buffer_pct = fee_buffer_pct
+        
+        # 動態模式參數
+        self.modes = {
+            "EXPLOSIVE": {
+                "stage2_trigger_atr": 1.5,
+                "stage2_buffer_atr": 0.4,   # 極速反應模式：緩衝縮小至 0.4 ATR
+                "stage3_giveback_ratio": 0.15 # 緊縮回吐 15%
+            },
+            "TREND": {
+                "stage2_trigger_atr": 1.5,
+                "stage2_buffer_atr": 1.0,   # 寬容呼吸模式：緩衝放寬至 1.0 ATR
+                "stage3_giveback_ratio": 0.15 # 趨勢模式同樣保留極端崩盤防護
+            }
+        }
 
     def _ratchet_sl(self, state: PositionDefenseState, new_sl: float) -> bool:
         """
@@ -64,6 +74,8 @@ class TieredExitManager:
         if state.snapshot_atr <= 0:
             return {"action": "NONE"}
 
+        mode_params = self.modes.get(state.mode, self.modes["TREND"])
+
         # 計算當前利潤 (價格差)
         if state.side == "LONG":
             pnl_price = live_price - state.entry_price
@@ -88,32 +100,32 @@ class TieredExitManager:
             
             # 動態比例回吐
             giveback_ratio = (state.highest_pnl_pct - current_pnl_pct) / state.highest_pnl_pct if state.highest_pnl_pct > 0 else 0.0
-            if current_pnl_pct > 0 and giveback_ratio >= self.stage3_giveback_ratio:
+            if current_pnl_pct > 0 and giveback_ratio >= mode_params["stage3_giveback_ratio"]:
                 return {
                     "action": "MARKET_EXIT", 
-                    "reason": f"極限防禦觸發 (峰值縮水 >= {self.stage3_giveback_ratio:.0%})"
+                    "reason": f"極限防禦觸發 ({state.mode} 模式, 峰值縮水 >= {mode_params['stage3_giveback_ratio']:.0%})"
                 }
 
         # ---------------------------------------------------------
         # Stage 2: 階梯式鎖利 (Highest PnL >= 1.5 ATR)
         # ---------------------------------------------------------
-        if state.highest_pnl_atr >= self.stage2_trigger_atr:
+        if state.highest_pnl_atr >= mode_params["stage2_trigger_atr"]:
             if state.stage < 2:
                 state.stage = 2
             
-            # 防禦線 = 最高價 - 0.7 ATR
+            # 防禦線 = 最高價 - Buffer ATR
             if state.side == "LONG":
                 highest_price = state.entry_price + (state.highest_pnl_atr * state.snapshot_atr)
-                new_sl = highest_price - (self.stage2_buffer_atr * state.snapshot_atr)
+                new_sl = highest_price - (mode_params["stage2_buffer_atr"] * state.snapshot_atr)
             else:
                 lowest_price = state.entry_price - (state.highest_pnl_atr * state.snapshot_atr)
-                new_sl = lowest_price + (self.stage2_buffer_atr * state.snapshot_atr)
+                new_sl = lowest_price + (mode_params["stage2_buffer_atr"] * state.snapshot_atr)
                 
             if self._ratchet_sl(state, new_sl):
                 return {
                     "action": "UPDATE_SL",
                     "sl_price": state.current_sl_price,
-                    "reason": "第二階段階梯鎖利更新"
+                    "reason": f"第二階段階梯鎖利更新 ({state.mode} 模式, Buffer {mode_params['stage2_buffer_atr']} ATR)"
                 }
 
         # ---------------------------------------------------------
@@ -133,7 +145,7 @@ class TieredExitManager:
                 return {
                     "action": "UPDATE_SL",
                     "sl_price": state.current_sl_price,
-                    "reason": "第一階段保本鎖利"
+                    "reason": f"第一階段保本鎖利 ({state.mode} 模式)"
                 }
 
         return {"action": "NONE"}
