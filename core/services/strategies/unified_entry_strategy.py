@@ -79,13 +79,15 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
     
     if is_prev2_extreme:
         if side == "LONG":
-            if float(prev_1['close']) <= float(prev_2['close']):
-                return False, "FILTERED_EXTREME_PIN: Next bar failed to close above extreme candle's close"
+            threshold = float(prev_2['open']) + 0.5 * prev2_body
+            if float(prev_1['close']) <= threshold:
+                return False, "FILTERED_EXTREME_PIN: Next bar failed to hold 50% of extreme candle's body"
             else:
                 return True, "OK"
         elif side == "SHORT":
-            if float(prev_1['close']) >= float(prev_2['close']):
-                return False, "FILTERED_EXTREME_PIN: Next bar failed to close below extreme candle's close"
+            threshold = float(prev_2['open']) - 0.5 * prev2_body
+            if float(prev_1['close']) >= threshold:
+                return False, "FILTERED_EXTREME_PIN: Next bar failed to hold 50% of extreme candle's body"
             else:
                 return True, "OK"
                 
@@ -237,49 +239,61 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
 
     # =========================================================================
     # 軌道 A：特例快速進場（極端動能，使用寬鬆守門員，已通過）
+    # 重構：突破根為 prev_2，確認根為 prev_1
     # 不受 is_compression_zone 限制，因為它是極端動能爆發
     # =========================================================================
-    dist_from_middle = abs(prev_close - kc_mid_prev1)
+    prev2_open = float(prev_2['open'])
+    prev2_close = float(prev_2['close'])
+    prev2_high = float(prev_2['high'])
+    prev2_low = float(prev_2['low'])
+    prev2_body = abs(prev2_close - prev2_open)
+    prev2_range = prev2_high - prev2_low
+    is_prev2_solid = (prev2_body / prev2_range >= 0.60) if prev2_range > 0 else False
+    is_prev2_bullish = prev2_close > prev2_open
+    is_prev2_bearish = prev2_close < prev2_open
 
-    if body_length >= 1.3 * current_atr and is_solid_body:
-        if side == "LONG" and is_bullish:
-            return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)", {"action": "ENTER"}
-        elif side == "SHORT" and is_bearish:
-            return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (MARKET)", {"action": "ENTER"}
-        elif side == "LONG" and not is_bullish:
-            pass # wrong side
-        elif side == "SHORT" and not is_bearish:
-            pass # wrong side
-        else:
-            return False, "FILTERED_EXTREME_DOJI", {}
+    if prev2_body >= 1.2 * current_atr and is_prev2_solid:
+        if side == "LONG" and is_prev2_bullish:
+            # 放寬次根確認：prev_1 的收盤價只要高於 prev_2 實體的 50% 即可
+            threshold = prev2_open + 0.5 * prev2_body
+            if prev_close > threshold:
+                return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (relaxed next-bar)", {"action": "ENTER"}
+        elif side == "SHORT" and is_prev2_bearish:
+            threshold = prev2_open - 0.5 * prev2_body
+            if prev_close < threshold:
+                return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (relaxed next-bar)", {"action": "ENTER"}
 
     # =========================================================================
     # 軌道 P：平台破位（使用寬鬆守門員；次根確認放寬至 50% 緩衝）
+    # 重構：突破根為 prev_2，確認根為 prev_1
     # 不受 is_compression_zone 限制
     # =========================================================================
-    if len(df) >= 6:
-        platform_bars = df.iloc[-6:-2]
+    if len(df) >= 7:
+        platform_bars = df.iloc[-7:-3] # prev_6 到 prev_3 為震盪平台
 
         if side == "LONG":
-            is_solid_breakout = is_bullish and (body_length >= 1.0 * current_atr) and is_solid_body
+            is_solid_breakout = is_prev2_bullish and (prev2_body >= 1.0 * current_atr) and is_prev2_solid
             recent_max_high = float(platform_bars['high'].max())
-            broke_platform = prev_close > recent_max_high
-            # ✅ 放寬：次根收盤只需超過平台最高點的 50% 緩衝位即可
-            # 即允許回踩至（平台最高點 − 0.5 × 突破實體長度）仍視為有效破軌
-            breakout_body = prev_close - recent_max_high
+            broke_platform = prev2_close > recent_max_high
+            
+            # ✅ 放寬：次根(prev_1)收盤只需超過平台最高點的 50% 緩衝位即可
+            breakout_body = prev2_close - recent_max_high
             buffer_floor = recent_max_high - 0.5 * max(breakout_body, 0)
-            if is_solid_breakout and broke_platform and prev_close > kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (relaxed MA15)", {"action": "ENTER"}
+            
+            if is_solid_breakout and broke_platform and prev_close > buffer_floor and prev_close > kc_mid_prev1:
+                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (relaxed next-bar)", {"action": "ENTER"}
 
         elif side == "SHORT":
-            is_solid_breakout = is_bearish and (body_length >= 1.0 * current_atr) and is_solid_body
+            is_solid_breakout = is_prev2_bearish and (prev2_body >= 1.0 * current_atr) and is_prev2_solid
             recent_min_low = float(platform_bars['low'].min())
-            broke_platform = prev_close < recent_min_low
-            # ✅ 放寬：次根收盤只需低於平台最低點的 50% 緩衝位即可
-            breakout_body = recent_min_low - prev_close
+            broke_platform = prev2_close < recent_min_low
+            
+            # ✅ 放寬：次根(prev_1)收盤只需低於平台最低點的 50% 緩衝位即可
+            breakout_body = recent_min_low - prev2_close
             buffer_ceiling = recent_min_low + 0.5 * max(breakout_body, 0)
-            if is_solid_breakout and broke_platform and prev_close < kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (relaxed MA15)", {"action": "ENTER"}
+            
+            if is_solid_breakout and broke_platform and prev_close < buffer_ceiling and prev_close < kc_mid_prev1:
+                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (relaxed next-bar)", {"action": "ENTER"}
 
     # =========================================================================
     # 若處於靜默模式（橫盤壓縮區），則在此處短路返回，屏蔽後續所有常規進場軌道
