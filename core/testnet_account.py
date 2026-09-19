@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from core.services.exits.tiered_exit_manager import TieredExitManager, PositionDefenseState
 from core.config import (
     BINANCE_API_KEY,
     BINANCE_SECRET,
@@ -854,115 +855,57 @@ class BinanceTestnetAccount:
                     meta["bounce_capture_ratio"] = bounce_capture_ratio
                     meta["bounce_target_pct"] = bounce_target_pct
 
-            # 唯一獲利出場：峰值每跨一個 0.5 ATR 階梯，鎖利線同步上移。
-            if (
-                ENABLE_FIXED_PROFIT_LOCK_LADDER
-                and atr_050 > 0
-                and atr_075 > 0
-                and entry_p > 0
-            ):
-                completed_steps = math.floor(
-                    max(0.0, highest_pnl - atr_075)
-                    / atr_050 + 1e-12
+            # =========================================================================
+            # 終極防禦體系：分階段動態防禦系統 (TieredExitManager)
+            # =========================================================================
+            if "defense_state" not in meta:
+                meta["defense_state"] = PositionDefenseState(
+                    entry_price=entry_p,
+                    qty=float(pos.get("qty") or 0.0),
+                    side=side,
+                    snapshot_atr=atr_val if atr_val > 0 else entry_p * 0.015
                 )
-                lock_pct = (
-                    atr_075
-                    + completed_steps * atr_050
-                    if highest_pnl + 1e-12 >= atr_075
-                    else 0.0
-                )
-                if lock_pct > 0:
-                    ladder_sl = entry_p * (1.0 + lock_pct if side == "LONG" else 1.0 - lock_pct)
-                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                    improves = (
-                        ladder_sl > current_sl + entry_p * 1e-12 if side == "LONG"
-                        else current_sl <= 0.0 or ladder_sl < current_sl - entry_p * 1e-12
-                    )
-                    if improves and await self.trail_stop_loss(symbol, ladder_sl, mark_profit_locked=True):
-                        meta["fixed_profit_lock_ladder"] = True
-                        meta["fixed_profit_lock_pct"] = lock_pct
-                        self.log(
-                            f"🔐 [固定階梯鎖利] {symbol} 峰值 {highest_pnl:.2%} → 鎖利 {lock_pct:.2%}",
-                            "SUCCESS",
-                        )
+                if old_sl > 0:
+                    meta["defense_state"].current_sl_price = old_sl
 
-            # 將 1.0 ATR 容忍改回更靈敏的 15% 比例防護，符合極限反應要求
-            profit_giveback_ratio = (highest_pnl - pnl_pct) / highest_pnl if highest_pnl > 0 else 0.0
-            profit_alert = (
-                highest_pnl >= atr_075
-                and pnl_pct > 0
-                and profit_giveback_ratio >= 0.15
+            defense_state = meta["defense_state"]
+            
+            # 使用環境變數或預設參數初始化防禦系統
+            # 參數對齊：Stage1=0.75 ATR, Stage2=1.5 ATR, Buffer=0.7 ATR, Stage3=2.5 ATR, Giveback=15%
+            from core.services.exits.tiered_exit_manager import TieredExitManager
+            exit_manager = TieredExitManager(
+                stage1_trigger_atr=0.75,
+                stage2_trigger_atr=1.5,
+                stage2_buffer_atr=0.7,
+                stage3_trigger_atr=2.5,
+                stage3_giveback_ratio=0.15,
+                fee_buffer_pct=0.001
             )
-            if ENABLE_PROFIT_GIVEBACK_EXIT and profit_alert:
-                # 【快速通道 (Fast Path)】強制移除 _strategy_exit_ok 限制，觸發瞬間立即市價逃生！
-                # 峰值回吐平倉優先於後續的本地止損判斷，避免先被 Stop-Loss 搶走。
-                await self.close_position(symbol, curr_p, "峰值回吐平倉 (15% 緊急防護)")
+            
+            defense_result = exit_manager.update_tick(defense_state, curr_p)
+            
+            if defense_result["action"] == "MARKET_EXIT":
+                await self.close_position(symbol, curr_p, defense_result["reason"])
                 continue
-
-            if (
-                ENABLE_BOUNCE_TARGET_EXIT
-                and meta.get("profit_profile") == "BOUNCE"
-                and bounce_target_pct > 0
-                and pnl_pct + 1e-12 >= bounce_target_pct
-            ):
-                if _strategy_exit_ok:
-                    await self.close_position(
-                        symbol, curr_p, f"反彈空間{bounce_capture_ratio:.0%}目標平倉"
-                    )
-                    continue
-
-            if (
-                meta.get("profit_profile") == "BOUNCE"
-                and BOUNCE_NO_FOLLOW_THROUGH_SEC > 0
-                and now_ts - float(meta.get("open_timestamp") or now_ts)
-                    >= BOUNCE_NO_FOLLOW_THROUGH_SEC
-                and highest_pnl < BOUNCE_NO_FOLLOW_THROUGH_MIN_MFE_PCT
-                and pnl_pct <= 0
-            ):
-                if _strategy_exit_ok:
-                    await self.close_position(symbol, curr_p, "反彈逾時未延續平倉")
-                    continue
-
-            # 第一階段在 0.75 ATR 鎖住 0.25 ATR；之後依峰值級距保留70%／80%／90%。
-            # 沿用既有 STOP_MARKET 安全撤換流程，實盤模擬與紙上帳戶一致。
-            fixed_pct_active = (
-                ENABLE_FIXED_PROFIT_LOCK_PCT
-                and bool(pos.get("outer_run_active") or meta.get("outer_run_active"))
-                and highest_pnl + 1e-12 >= atr_075
-            )
-            profit_bank_active = (
-                ENABLE_PROFIT_BANK
-                and highest_pnl + 1e-12 >= atr_075
-            )
-            if fixed_pct_active or profit_bank_active:
-                if fixed_pct_active:
-                    bank_lock_pct = atr_025
-                else:
-                    bank_lock_pct = min(
-                        max(PROFIT_BANK_LOCK_PCT, highest_pnl * get_profit_bank_capture_ratio(highest_pnl, PROFIT_BANK_CAPTURE_RATIO)),
-                        max(0.0, highest_pnl - SLIPPAGE_PCT),
-                    )
-                raw_bank_sl = entry_p * (
-                    1.0 + bank_lock_pct
-                    if side == "LONG" else 1.0 - bank_lock_pct
-                )
-                bank_sl = float(self.exchange.price_to_precision(symbol, raw_bank_sl))
-                min_step = entry_p * (
-                    0.00001 if fixed_pct_active else PROFIT_BANK_MIN_STEP_PCT
-                )
+                
+            elif defense_result["action"] == "UPDATE_SL":
+                new_sl = defense_result["sl_price"]
+                # 保留與交易所同步的掛單邏輯
                 improves = (
-                    bank_sl > old_sl + min_step if side == "LONG"
-                    else old_sl <= 0.0 or bank_sl < old_sl - min_step
+                    new_sl > old_sl + entry_p * 1e-6 if side == "LONG"
+                    else old_sl <= 0.0 or new_sl < old_sl - entry_p * 1e-6
                 )
                 if improves:
                     protection_installed = not ENABLE_EXCHANGE_INITIAL_STOP_LOSS
                     close_side_bank = "sell" if side == "LONG" else "buy"
                     tp_price = float(meta.get("tp") or pos.get("tp") or 0.0)
+                    
                     if ENABLE_EXCHANGE_INITIAL_STOP_LOSS:
                         try:
+                            # 執行清理：先取消所有舊掛單，確保防禦線乾淨
                             await self._cancel_all_orders(symbol)
                             await self._create_protection_order(
-                                symbol, close_side_bank, "STOP_MARKET", pos["qty"], bank_sl,
+                                symbol, close_side_bank, "STOP_MARKET", pos["qty"], new_sl,
                             )
                             protection_installed = True
                             if tp_price > 0 and not DISABLE_TAKE_PROFIT:
@@ -973,7 +916,7 @@ class BinanceTestnetAccount:
                                     )
                                 except Exception as tp_exc:
                                     self.log(
-                                        f"⚠️ [淨利入庫] {symbol} 入庫停損已建立，但 TP 重掛失敗："
+                                        f"⚠️ [防禦體系] {symbol} 止損已建立，但 TP 重掛失敗："
                                         f"{type(tp_exc).__name__}: {tp_exc}",
                                         "WARNING",
                                     )
@@ -993,30 +936,21 @@ class BinanceTestnetAccount:
                                 except Exception:
                                     pass
                             self.log(
-                                f"⚠️ [淨利入庫] {symbol} 保護單建立失敗："
+                                f"⚠️ [防禦體系] {symbol} 保護單更新失敗："
                                 f"{type(exc).__name__}: {exc}；"
-                                f"{'已恢復原停損' if restored else '原停損恢復失敗，下輪重試'}",
+                                f"{'已恢復原防禦線' if restored else '原防禦線恢復失敗'}",
                                 "WARNING" if restored else "DANGER",
                             )
+                            
                     if protection_installed:
-                        meta["sl"] = bank_sl
-                        pos["sl"] = bank_sl
+                        meta["sl"] = new_sl
+                        pos["sl"] = new_sl
                         meta["is_breakeven_moved"] = True
                         pos["is_breakeven_moved"] = True
-                        if fixed_pct_active:
-                            meta["fixed_profit_lock_pct_armed"] = True
-                            pos["fixed_profit_lock_pct_armed"] = True
-                        else:
-                            meta["profit_bank_armed"] = True
-                            pos["profit_bank_armed"] = True
-                        old_sl = bank_sl
-                        label = (
-                            f"0.5%觸發／固定鎖{FIXED_PROFIT_LOCK_FLOOR_PCT:.1%}"
-                            if fixed_pct_active else "階梯移動停利"
-                        )
+                        old_sl = new_sl
                         self.log(
-                            f"📈 [{label}] {symbol} 峰值 {highest_pnl:.4%}，"
-                            f"已鎖 {bank_lock_pct:.4%}，保護線上移至 {bank_sl:.6g}",
+                            f"🛡️ [{defense_result['reason']}] {symbol} 峰值 {highest_pnl:.4%}，"
+                            f"防禦線棘輪上移至 {new_sl:.6g}",
                             "SUCCESS",
                         )
 
