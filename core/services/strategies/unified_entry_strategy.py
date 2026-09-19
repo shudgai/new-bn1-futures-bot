@@ -125,53 +125,58 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     if post_crash_cooldown_active:
         return False, "FILTERED_COOLDOWN: Post-Crash Cooldown Active", {}
 
-    # 2. 結構轉折破軌進場（雙根連續動能確認）
+    # 2. 結構破軌進場（3根區段動能確認）
     kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
-    kc_upper_prev2 = float(prev_2.get("kc_upper", kc_mid_prev2))
-    kc_lower_prev2 = float(prev_2.get("kc_lower", kc_mid_prev2))
+    kc_mid_prev3 = float(prev_3.get("kc_middle", prev_3.get("ema_20", 0)))
     prev2_close = float(prev_2['close'])
-    prev2_open  = float(prev_2['open'])
-    prev2_body  = abs(prev2_close - prev2_open)
+    prev3_close = float(prev_3['close'])
+    prev2_body  = abs(prev2_close - float(prev_2['open']))
+    prev3_body  = abs(prev3_close - float(prev_3['open']))
+
+    # 最近3根K棒為：prev_1(最新已收)、prev_2、prev_3
+    seg_bodies = body_length + prev2_body + prev3_body   # 3根實體總和
 
     is_breakout_long  = (prev_close > kc_upper_prev1) and is_bullish
     is_breakout_short = (prev_close < kc_lower_prev1) and is_bearish
 
     if side == "LONG" and is_breakout_long:
         if slope_ma15 >= 0:
-            # 【動能對齊】MA3 必須正向
             if slope_ma3 <= 0:
                 return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 <= 0)", {}
-            # 【雙根連續動能確認】
-            # 第一根（prev_1）：實體 >= 0.5 ATR，收盤在中軌上方
-            # 第二根（prev_2）：實體 >= 0.5 ATR，收盤在中軌上方
-            # 雙根實體總和 >= 1.0 ATR
-            bar1_ok = (body_length >= 0.5 * current_atr) and (prev_close > kc_mid_prev1)
-            bar2_ok = (prev2_body >= 0.5 * current_atr) and (prev2_close > kc_mid_prev2)
-            combined_ok = (body_length + prev2_body) >= 1.0 * current_atr
-            if bar1_ok and bar2_ok and combined_ok:
-                return True, "[STANDARD_ENTRY] Structural Breakout LONG (Dual-Bar Confirmed)", {"action": "ENTER"}
+            # 【3根區段動能確認】
+            # 條件1：3根中至少2根收盤在中軌上方
+            closes_above = sum([
+                prev_close  > kc_mid_prev1,
+                prev2_close > kc_mid_prev2,
+                prev3_close > kc_mid_prev3,
+            ])
+            # 條件2：3根實體總和 >= 1.0 ATR
+            if closes_above >= 2 and seg_bodies >= 1.0 * current_atr:
+                return True, "[STANDARD_ENTRY] Segmental Momentum Breakout LONG", {"action": "ENTER"}
             else:
-                return False, "FILTERED_BREAKOUT: Dual-Bar Momentum Insufficient", {}
+                return False, f"FILTERED_BREAKOUT: Seg Momentum Insufficient (above={closes_above}/3, body={seg_bodies/current_atr:.2f}ATR)", {}
         else:
-            return False, "FILTERED_BREAKOUT: Counter-trend Breakout (MA15 slope falling)", {}
+            return False, "FILTERED_BREAKOUT: Counter-trend (MA15 falling)", {}
 
     if side == "SHORT" and is_breakout_short:
         if slope_ma15 <= 0:
-            # 【動能對齊】MA3 必須負向
             if slope_ma3 >= 0:
                 return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 >= 0)", {}
-            # 【雙根連續動能確認】
-            bar1_ok = (body_length >= 0.5 * current_atr) and (prev_close < kc_mid_prev1)
-            bar2_ok = (prev2_body >= 0.5 * current_atr) and (prev2_close < kc_mid_prev2)
-            combined_ok = (body_length + prev2_body) >= 1.0 * current_atr
-            if bar1_ok and bar2_ok and combined_ok:
-                return True, "[STANDARD_ENTRY] Structural Breakout SHORT (Dual-Bar Confirmed)", {"action": "ENTER"}
+            # 【3根區段動能確認】
+            closes_below = sum([
+                prev_close  < kc_mid_prev1,
+                prev2_close < kc_mid_prev2,
+                prev3_close < kc_mid_prev3,
+            ])
+            if closes_below >= 2 and seg_bodies >= 1.0 * current_atr:
+                return True, "[STANDARD_ENTRY] Segmental Momentum Breakout SHORT", {"action": "ENTER"}
             else:
-                return False, "FILTERED_BREAKOUT: Dual-Bar Momentum Insufficient", {}
+                return False, f"FILTERED_BREAKOUT: Seg Momentum Insufficient (below={closes_below}/3, body={seg_bodies/current_atr:.2f}ATR)", {}
         else:
-            return False, "FILTERED_BREAKOUT: Counter-trend Breakout (MA15 slope rising)", {}
+            return False, "FILTERED_BREAKOUT: Counter-trend (MA15 rising)", {}
 
     return False, "NO_VALID_ENTRY_SIGNAL", {}
+
 
 
 class UnifiedEntryStrategy(IEntryStrategy):
