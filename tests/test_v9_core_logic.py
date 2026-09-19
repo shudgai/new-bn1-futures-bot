@@ -184,3 +184,24 @@ def test_entry_track_d_blocked_when_not_cascading():
     live_price = 101.2
     ok, reason = check_streamlined_entry_signal(df, "SHORT", live_price)
     assert ok is False
+
+def test_entry_filtered_extreme_distance():
+    rows = []
+    # Create an extreme distance scenario
+    mid = 100.0
+    for i in range(5):
+        c = 105.0 + i  # Prices moving up far away from mid
+        o = c - 0.5
+        rows.append({
+            "open": o, "close": c, "high": c + 0.1, "low": o - 0.1,
+            "volume": 80.0, "vol_ma_5": 100.0,
+            "kc_upper": mid + 2.0, "kc_middle": mid, "kc_lower": mid - 2.0,
+            "ma3": c - 0.1, "ma15": mid - 1.0,
+            "ma15_slope": 0.01, "atr": 1.0, "ema_20": mid,
+            "ma5": c - 0.2
+        })
+    df = pd.DataFrame(rows)
+    # The last close is 109.0, middle is 100.0. Distance is 9.0, which is > 2.0 * atr (2.0)
+    ok, reason = check_streamlined_entry_signal(df, "LONG", 109.0)
+    assert ok is False
+    assert "FILTERED_EXTREME_DISTANCE" in reason

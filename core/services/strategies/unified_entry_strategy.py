@@ -123,6 +123,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     prev2_close = float(prev_2['close'])
     cooldown_active = kwargs.get("cooldown_active", False)
 
+    dist_from_middle = abs(prev_close - kc_mid_prev1)
+    if dist_from_middle > 2.0 * current_atr:
+        return False, "FILTERED_EXTREME_DISTANCE: Price too far from KC Middle (>2.0 ATR)"
+
     if side == "LONG" and is_bullish:
         if slope_ma15 < 0 and slope_middle < 0:
             return False, "FILTERED_COUNTER_TREND_LONG (MA15 falling)"

@@ -128,8 +128,7 @@ class DualTrackExitStrategy:
                 logger.info(f"[STANDARD_EXIT] {position.get('symbol')} Trend exhausted at close. ({ladder_reason})")
                 return ladder_reason
             else:
-                # If no exit, we just log HOLDING_INTRADAY periodically (handled elsewhere, or implicitly here)
-                pass
+                logger.info(f"[HOLDING_WAIT_CLOSE] {position.get('symbol')} No close-based exit triggered. Holding for next candle.")
 
         return None
 
