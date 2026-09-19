@@ -55,17 +55,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         if side == "LONG" and is_bullish:
             if is_strong_bear_trend:
                 return False, "FILTERED_EXTREME_COUNTER_TREND: Fighting Strong Bearish Trend", {}
-            if dist_from_middle > 2.0 * current_atr:
-                target_price = prev_close - (body_length * 0.5)
-                return True, "[SPECIAL_ENTRY] Overextended Impulse LONG (Limit Order)", {"action": "ENTER_LIMIT", "target_price": target_price}
-            return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (>=2.0 ATR)", {"action": "ENTER"}
+            return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)", {"action": "ENTER"}
         elif side == "SHORT" and is_bearish:
             if is_strong_bull_trend:
                 return False, "FILTERED_EXTREME_COUNTER_TREND: Fighting Strong Bullish Trend", {}
-            if dist_from_middle > 2.0 * current_atr:
-                target_price = prev_close + (body_length * 0.5)
-                return True, "[SPECIAL_ENTRY] Overextended Impulse SHORT (Limit Order)", {"action": "ENTER_LIMIT", "target_price": target_price}
-            return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (>=2.0 ATR)", {"action": "ENTER"}
+            return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (MARKET)", {"action": "ENTER"}
         elif side == "LONG" and not is_bullish:
             pass # wrong side
         elif side == "SHORT" and not is_bearish:
