@@ -125,35 +125,49 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     if post_crash_cooldown_active:
         return False, "FILTERED_COOLDOWN: Post-Crash Cooldown Active", {}
 
-    # 2. 結構轉折破軌進場
+    # 2. 結構轉折破軌進場（雙根連續動能確認）
     kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
+    kc_upper_prev2 = float(prev_2.get("kc_upper", kc_mid_prev2))
+    kc_lower_prev2 = float(prev_2.get("kc_lower", kc_mid_prev2))
     prev2_close = float(prev_2['close'])
+    prev2_open  = float(prev_2['open'])
+    prev2_body  = abs(prev2_close - prev2_open)
 
-    is_breakout_long = (prev_close > kc_upper_prev1) and is_bullish
+    is_breakout_long  = (prev_close > kc_upper_prev1) and is_bullish
     is_breakout_short = (prev_close < kc_lower_prev1) and is_bearish
 
     if side == "LONG" and is_breakout_long:
         if slope_ma15 >= 0:
-            # 【動能對齊】MA3 必須正向（多頭動能正在發力）
+            # 【動能對齊】MA3 必須正向
             if slope_ma3 <= 0:
                 return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 <= 0)", {}
-            # 連續兩根收盤價在中軌上方
-            if prev_close > kc_mid_prev1 and prev2_close > kc_mid_prev2:
-                return True, "[STANDARD_ENTRY] Structural Breakout LONG", {"action": "ENTER"}
+            # 【雙根連續動能確認】
+            # 第一根（prev_1）：實體 >= 0.5 ATR，收盤在中軌上方
+            # 第二根（prev_2）：實體 >= 0.5 ATR，收盤在中軌上方
+            # 雙根實體總和 >= 1.0 ATR
+            bar1_ok = (body_length >= 0.5 * current_atr) and (prev_close > kc_mid_prev1)
+            bar2_ok = (prev2_body >= 0.5 * current_atr) and (prev2_close > kc_mid_prev2)
+            combined_ok = (body_length + prev2_body) >= 1.0 * current_atr
+            if bar1_ok and bar2_ok and combined_ok:
+                return True, "[STANDARD_ENTRY] Structural Breakout LONG (Dual-Bar Confirmed)", {"action": "ENTER"}
             else:
-                return False, "FILTERED_BREAKOUT: Requires 2 consecutive closes above KC Middle", {}
+                return False, "FILTERED_BREAKOUT: Dual-Bar Momentum Insufficient", {}
         else:
             return False, "FILTERED_BREAKOUT: Counter-trend Breakout (MA15 slope falling)", {}
 
     if side == "SHORT" and is_breakout_short:
         if slope_ma15 <= 0:
-            # 【動能對齊】MA3 必須負向（空頭動能正在發力）
+            # 【動能對齊】MA3 必須負向
             if slope_ma3 >= 0:
                 return False, "FILTERED_BREAKOUT: MA3 Momentum Not Aligned (slope_ma3 >= 0)", {}
-            if prev_close < kc_mid_prev1 and prev2_close < kc_mid_prev2:
-                return True, "[STANDARD_ENTRY] Structural Breakout SHORT", {"action": "ENTER"}
+            # 【雙根連續動能確認】
+            bar1_ok = (body_length >= 0.5 * current_atr) and (prev_close < kc_mid_prev1)
+            bar2_ok = (prev2_body >= 0.5 * current_atr) and (prev2_close < kc_mid_prev2)
+            combined_ok = (body_length + prev2_body) >= 1.0 * current_atr
+            if bar1_ok and bar2_ok and combined_ok:
+                return True, "[STANDARD_ENTRY] Structural Breakout SHORT (Dual-Bar Confirmed)", {"action": "ENTER"}
             else:
-                return False, "FILTERED_BREAKOUT: Requires 2 consecutive closes below KC Middle", {}
+                return False, "FILTERED_BREAKOUT: Dual-Bar Momentum Insufficient", {}
         else:
             return False, "FILTERED_BREAKOUT: Counter-trend Breakout (MA15 slope rising)", {}
 

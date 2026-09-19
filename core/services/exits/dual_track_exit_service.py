@@ -130,13 +130,12 @@ class DualTrackExitStrategy(IExitStrategy):
                     return "EXIT_CRASH_DEFENSE (SHORT BigBody>=2.0ATR > PrevOpen)"
 
         # ══════════════════════════════════════════════════════════════
-        # ZONE B 盤中：特例 K 與高利潤快速逃生
+        # ZONE B 盤中：特例 K 即時逃生（唯一盤中出場授權）
+        # 道理：KC 軌道就是我們的目標，不因帳面盈利觸及邊界而提前逃跑
+        # 護航模式收盤跌破前K最低才是唯一出場點
         # ══════════════════════════════════════════════════════════════
         if is_super:
-            kc_upper_curr = float(curr.get("kc_upper", float("inf")))
-            kc_lower_curr = float(curr.get("kc_lower", 0.0))
-
-            # ② 特例 K（>=2.0 ATR 反向）
+            # 特例 K（>= 2.0 ATR 反向實體）—— 唯一盤中逃生觸發
             if curr_body >= SPECIAL_K_ATR * atr:
                 if side == "LONG" and current_price < curr_open:
                     logger.warning(f"[ZONE_B_EXIT][SPECIAL_K] Reversal LONG body={curr_body/atr:.2f}ATR @ {current_price:.6f}")
@@ -144,21 +143,8 @@ class DualTrackExitStrategy(IExitStrategy):
                 if side == "SHORT" and current_price > curr_open:
                     logger.warning(f"[ZONE_B_EXIT][SPECIAL_K] Reversal SHORT body={curr_body/atr:.2f}ATR @ {current_price:.6f}")
                     return "[ZONE_B_EXIT] Special K Reversal SHORT"
+            # 其他盤中波動（包含高利潤觸軌）：一律忽略，等收盤確認
 
-            # ③ 高利潤觸及軌道（帳面 >=2.0 ATR），初根K棒不平倉（給予呼吸空間）
-            is_initial_bar = (position.get("last_evaluated_closed_bar_id") is None)
-            
-            if not is_initial_bar:
-                if side == "LONG":
-                    unrealized_atr = (current_price - entry_price) / atr
-                    if unrealized_atr >= HIGH_PROFIT_ATR and current_price <= kc_upper_curr:
-                        logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] LONG profit={unrealized_atr:.2f}ATR touching KC_upper @ {current_price:.6f}")
-                        return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC LONG"
-                else:
-                    unrealized_atr = (entry_price - current_price) / atr
-                    if unrealized_atr >= HIGH_PROFIT_ATR and current_price >= kc_lower_curr:
-                        logger.warning(f"[ZONE_B_EXIT][HIGH_PROFIT] SHORT profit={unrealized_atr:.2f}ATR touching KC_lower @ {current_price:.6f}")
-                        return "[ZONE_B_EXIT] High Profit (>=2.0ATR) Touching KC SHORT"
 
         # ══════════════════════════════════════════════════════════════
         # 收盤評估（每根 K 棒收盤後觸發一次）
