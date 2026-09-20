@@ -117,10 +117,16 @@ async def process_single_symbol_runner(
                         engine.account.log(f"🔄 [鎖利對齊] {symbol} 50% 減倉成功，已強制清除 v10_phase_trailing 狀態，下一根 K 棒將依據剩餘倉位重新計算並對齊保底鎖利點", "INFO")
                         engine.account.save_state()
                 else:
+                    # 錨點保全結算 (The Final Harvest)
+                    exit_price = channel_price
+                    if meta.get("guaranteed_exit_price"):
+                        exit_price = meta.get("guaranteed_exit_price")
+                        engine.account.log(f"🛡️ [錨點保全] {symbol} 使用保全錨點價格平倉: {exit_price:.6f} (當時市價: {channel_price:.6f})", "INFO")
+
                     engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
                     closed = await engine.account.close_position(
                         symbol,
-                        channel_price,
+                        exit_price,
                         f"DualTrackExit {exit_reason}",
                         is_manual=True,
                         is_limit=is_limit_exit
