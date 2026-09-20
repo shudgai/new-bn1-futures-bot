@@ -385,7 +385,7 @@
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
-                                    <div style="margin-top: 6px; font-size: 12px; font-weight: 800; text-align: center; border-radius: 4px; padding: 4px;" :style="getLockedProfitAmount(pos) > 0 ? 'color: #f59e0b; background: rgba(245, 158, 11, 0.1);' : 'color: var(--muted); background: #f1f5f9;'">
+                                    <div style="margin-top: 6px; font-size: 12px; font-weight: 800; text-align: center; border-radius: 4px; padding: 4px;" :style="getLockedProfitAmount(pos) > 0 ? 'color: #22c55e; background: rgba(34,197,94,0.1);' : 'color: #ef4444; background: rgba(239,68,68,0.1);'">
                                         🔒 防禦/鎖利: {{ getLockedProfitAmount(pos) > 0 ? '+' : '' }}{{ getLockedProfitAmount(pos).toFixed(2) }} USDT
                                     </div>
                                 </td>
@@ -619,8 +619,8 @@
                             </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label" :style="getLockedProfitAmount(getPos(symbol)) > 0 ? 'color: #f59e0b; font-weight: bold;' : 'color: var(--muted);'">🔒防禦/鎖利:</span>
-                                <span class="chart-pos-info-value" :style="getLockedProfitAmount(getPos(symbol)) > 0 ? 'color:#f59e0b; font-family:monospace; font-weight:bold;' : 'color:var(--muted); font-family:monospace;'">
+                                <span class="chart-pos-info-label" :style="getLockedProfitAmount(getPos(symbol)) > 0 ? 'color: #22c55e; font-weight: bold;' : 'color: #ef4444; font-weight: bold;'">🔒防禦/鎖利:</span>
+                                <span class="chart-pos-info-value" :style="getLockedProfitAmount(getPos(symbol)) > 0 ? 'color:#22c55e; font-family:monospace; font-weight:bold;' : 'color:#ef4444; font-family:monospace; font-weight:bold;'">
                                     {{ getLockedProfitAmount(getPos(symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(getPos(symbol)).toFixed(4) }} USDT
                                 </span>
                             </span>
