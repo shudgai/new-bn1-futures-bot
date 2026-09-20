@@ -321,6 +321,9 @@ async def process_single_symbol_runner(
             
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
             
+            # 確保 meta 在無持倉時也能正確讀取 (用於結構空間冷卻等過濾)
+            meta = engine.account.position_meta.get(symbol, {})
+            
             # 接力強制方向（選項B寬鬆：高分UnifiedEntry仍可進場，接力方向優先）
             sides_to_try = (relay_direction, ) if relay_entry_forced else ("LONG", "SHORT")
             
