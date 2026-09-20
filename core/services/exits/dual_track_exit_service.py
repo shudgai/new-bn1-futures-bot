@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Any, Optional
 import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
+from core.config import TAKER_FEE_RATE
 
 DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close",
                           "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
@@ -85,26 +86,38 @@ class DualTrackExitStrategy(IExitStrategy):
         kc_lower = float(prev_1.get("kc_lower", curr_close))
         
         # ══════════════════════════════════════════════════════════════
-        # 【動態錨點核心】持續追蹤最高獲利點 (Dynamic Anchor)
+        # 【動態錨點核心】持續追蹤最高獲利點 (Dynamic Anchor) - 實戰手續費扣除版
         # ══════════════════════════════════════════════════════════════
+        # 預估雙邊手續費
+        estimated_fees = entry_price * TAKER_FEE_RATE * 2.0
+
         if "profit_anchor_price" not in position:
-            position["profit_anchor_price"] = entry_price
-            position["profit_lock_display_sl"] = entry_price
+            if side == "LONG":
+                initial_anchor = entry_price + (0.7 * atr) - estimated_fees
+            else:
+                initial_anchor = entry_price - (0.7 * atr) + estimated_fees
+            position["profit_anchor_price"] = initial_anchor
+            position["profit_lock_display_sl"] = initial_anchor
 
         current_anchor = position.get("profit_anchor_price", entry_price)
         anchor_updated = False
         
-        if side == "LONG" and curr_close > current_anchor:
-            position["profit_anchor_price"] = curr_close
-            position["profit_lock_display_sl"] = curr_close
-            anchor_updated = True
-        elif side == "SHORT" and curr_close < current_anchor:
-            position["profit_anchor_price"] = curr_close
-            position["profit_lock_display_sl"] = curr_close
-            anchor_updated = True
+        # 動態更新時，將當前價格扣除手續費，確保紀錄的是「純利潤錨點」
+        if side == "LONG":
+            dynamic_anchor = curr_close - estimated_fees
+            if dynamic_anchor > current_anchor:
+                position["profit_anchor_price"] = dynamic_anchor
+                position["profit_lock_display_sl"] = dynamic_anchor
+                anchor_updated = True
+        elif side == "SHORT":
+            dynamic_anchor = curr_close + estimated_fees
+            if dynamic_anchor < current_anchor:
+                position["profit_anchor_price"] = dynamic_anchor
+                position["profit_lock_display_sl"] = dynamic_anchor
+                anchor_updated = True
             
         if anchor_updated:
-            logger.info(f"[DYNAMIC_ANCHOR_UPDATE] {symbol} {side} 創下新高！動態錨點更新為: {position['profit_anchor_price']:.6f}")
+            logger.info(f"[DYNAMIC_ANCHOR_UPDATE] {symbol} {side} 創下新高！扣除手續費後純利潤錨點更新為: {position['profit_anchor_price']:.6f}")
         
         prev1_open = float(prev_1["open"])
         prev2_open = float(prev_2["open"])
@@ -202,47 +215,51 @@ class DualTrackExitStrategy(IExitStrategy):
         # 優先級 3：結構防線 (EXIT_STRUCTURE_BREAKDOWN)
         # 核心哲學：只要中軌沒破，就死死抱住；一旦結構崩潰，就帶走鎖定的錨點獲利。
         # ══════════════════════════════════════════════════════════════
-        def trigger_harvest():
+        def trigger_harvest(exec_price):
             # ══════════════════════════════════════════════════════════════
             # 錨點保全結算 (The Final Harvest)
             # 哲學：「中軌沒破就死死抱著，結構崩潰就帶走最高點」
             # ══════════════════════════════════════════════════════════════
             anchor = position.get("profit_anchor_price")
-            entry_p = position.get("entry_price", entry_price)
+            entry_p = float(position.get("entry_price", entry_price))
             
             if anchor:
-                anchor_profit = abs(anchor - entry_p)
+                if side == "LONG":
+                    anchor_profit = anchor - entry_p
+                else:
+                    anchor_profit = entry_p - anchor
                 
-                # 如果當前價格劣於錨點價格，強制結算在錨點
-                if (side == "LONG" and curr_close < anchor) or (side == "SHORT" and curr_close > anchor):
+                # 如果當前價格劣於錨點價格，強制記錄在錨點 (確保帶走高度)
+                if (side == "LONG" and exec_price < anchor) or (side == "SHORT" and exec_price > anchor):
                     position["guaranteed_exit_price"] = anchor
                     logger.info(
-                        f"[FINAL_HARVEST] 結構崩潰！當前價 {curr_close:.6f} 劣於動態錨點 {anchor:.6f}。"
-                        f"強制保全最高獲利高度（保證金價差: {anchor_profit:.6f}）！"
+                        f"[FINAL_HARVEST] 結構崩潰！即時市價 {exec_price:.6f} 劣於動態錨點 {anchor:.6f}。"
+                        f"發送市價平倉！(保證金純利潤防線: {anchor_profit:.6f})"
                     )
                 else:
                     logger.info(
-                        f"[FINAL_HARVEST] 結構崩潰，當前價 {curr_close:.6f} 優於或等於動態錨點 {anchor:.6f}。"
-                        f"以市價結算。"
+                        f"[FINAL_HARVEST] 結構崩潰，即時市價 {exec_price:.6f} 優於或等於動態錨點 {anchor:.6f}。"
+                        f"立即發送市價結算。"
                     )
             else:
                 logger.warning(f"[FINAL_HARVEST_WARN] {symbol} 結構崩潰但無錨點資料，直接市價結算。")
             
             # 記錄 Breakdown_High/Low 以供後續進場過濾 (Structural Space Cooling)
-            position["structural_breakdown_barrier_price"] = curr_close
+            position["structural_breakdown_barrier_price"] = exec_price
             position["structural_breakdown_side"] = side
             return "EXIT_STRUCTURE_BREAKDOWN"
 
+        # 優先級 3: 結構防線使用 current_price (即時價格) 判定，而非等待收盤
         if side == "LONG":
-            if curr_close < kc_mid_prev1:
-                if ma3_turning_down or ma15_turning_down or (touched_kc and curr_close < ma3_prev1):
-                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] LONG structural breakdown + momentum loss @ {curr_close:.6f}")
-                    return trigger_harvest()
+            if current_price < kc_mid_prev1:
+                if ma3_turning_down or ma15_turning_down or (touched_kc and current_price < ma3_prev1):
+                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] LONG structural breakdown + momentum loss @ {current_price:.6f}")
+                    return trigger_harvest(current_price)
         elif side == "SHORT":
-            if curr_close > kc_mid_prev1:
-                if ma3_turning_up or ma15_turning_up or (touched_kc and curr_close > ma3_prev1):
-                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] SHORT structural breakdown + momentum loss @ {curr_close:.6f}")
-                    return trigger_harvest()
+            if current_price > kc_mid_prev1:
+                if ma3_turning_up or ma15_turning_up or (touched_kc and current_price > ma3_prev1):
+                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] SHORT structural breakdown + momentum loss @ {current_price:.6f}")
+                    return trigger_harvest(current_price)
 
         return None
 
