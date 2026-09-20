@@ -114,6 +114,21 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     if current_atr <= 0:
         return False, "INVALID_ATR", {}
 
+    # ══════════════════════════════════════════════════════════════
+    # [結構空間冷卻] Structural Space Cooling
+    # ══════════════════════════════════════════════════════════════
+    meta = kwargs.get("meta", {})
+    if "structural_breakdown_barrier_price" in meta:
+        barrier_price = meta["structural_breakdown_barrier_price"]
+        barrier_side = meta.get("structural_breakdown_side")
+        
+        # 僅過濾同向的進場。必須要價格突破「前一次崩壞前的結構高/低點」才能再次進場
+        if side == barrier_side:
+            if side == "LONG" and live_price <= barrier_price:
+                return False, f"FILTERED_STRUCTURAL_COOLING: Waiting to break Breakdown_High {barrier_price:.6f}", {}
+            elif side == "SHORT" and live_price >= barrier_price:
+                return False, f"FILTERED_STRUCTURAL_COOLING: Waiting to break Breakdown_Low {barrier_price:.6f}", {}
+
     # K 棒幾何特徵計算
     prev_open = float(prev_1['open'])
     prev_close = float(prev_1['close'])

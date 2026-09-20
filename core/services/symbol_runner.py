@@ -327,7 +327,7 @@ async def process_single_symbol_runner(
             for direct_side in sides_to_try:
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
                     channel_df, channel_price, direct_side, velocity_drop_ratio=velocity_drop_ratio,
-                    relay_forced=relay_entry_forced
+                    relay_forced=relay_entry_forced, meta=meta
                 )
                 
                 # 接力確認情況：若一般入場被拒，仍允許接力（繞過 UnifiedEntry 篩選）

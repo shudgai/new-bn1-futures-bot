@@ -5,7 +5,9 @@ from core.interfaces.exit_interface import IExitStrategy
 
 DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close",
                           "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
-                          "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer"]
+                          "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer",
+                          "structural_breakdown_barrier_price", "structural_breakdown_side",
+                          "profit_protection_active"]
 
 logger = logging.getLogger("DualTrackExit")
 
@@ -174,42 +176,26 @@ class DualTrackExitStrategy(IExitStrategy):
             logger.error(f"Error evaluating emergency CK reversal: {e}")
 
         # ══════════════════════════════════════════════════════════════
-        # 優先級 2：動態獲利收割 (移動止盈)
+        # 優先級 2：蒸發德的平倉控制 (獲利保護狀態標記)
         # ══════════════════════════════════════════════════════════════
+        # 當獲利達到 0.7 ATR，系統進入「獲利保護狀態」。
+        # 此後【平倉權歸歸 KC 中軌防線（Priority 3）】，移動止盈排除在外。
+        PROFIT_PROTECTION_ACTIVATION_ATR = 0.7  # 啟動門檻
         if side == "LONG":
             unrealized_profit_atr = (curr_close - entry_price) / atr
         else:
             unrealized_profit_atr = (entry_price - curr_close) / atr
-            
+
         max_profit_atr = position.get("max_profit_atr", 0.0)
         max_profit_atr = max(max_profit_atr, unrealized_profit_atr)
         position["max_profit_atr"] = max_profit_atr
 
-
-        # ══════════════════════════════════════════════════════════════
-        # 優先級 2.5：動態獲利收割 (移動止盈)
-        # ══════════════════════════════════════════════════════════════
-        TRAILING_ACTIVATION_ATR = 0.3  # [優化] 啟動門檻從 0.6 降至 0.3 (讓防禦線更快浮出水面)
-        TRAILING_BUFFER_ATR = 0.8      # 容忍回撤空間
-        if max_profit_atr >= TRAILING_ACTIVATION_ATR:
-            locked_profit_atr = max_profit_atr - TRAILING_BUFFER_ATR
-            
-            # [邏輯拉直] 獨立判斷，嚴禁污染 active_stop_price 或 sl (保護 Priority 1 硬停損)
-            if side == "LONG":
-                new_calculated_stop = entry_price + (locked_profit_atr * atr)
-            else:
-                new_calculated_stop = entry_price - (locked_profit_atr * atr)
-                    
-            # [Debug Logger] 詳細追蹤防線變更
-            logger.info(
-                f"[{position.get('symbol')}] 方向: {side} | "
-                f"獨立追蹤止盈線: {new_calculated_stop:.6f} | "
-                f"ATR: {atr:.6f} | LockATR: {locked_profit_atr:.2f}"
-            )
-            
-            if unrealized_profit_atr <= locked_profit_atr:
-                logger.warning(f"[EXIT_DYNAMIC_PROFIT_HARVEST] {side} profit dropped to {unrealized_profit_atr:.2f} ATR (locked: {locked_profit_atr:.2f} ATR) @ {curr_close:.6f}")
-                return "EXIT_DYNAMIC_PROFIT_HARVEST"
+        if max_profit_atr >= PROFIT_PROTECTION_ACTIVATION_ATR and not position.get("profit_protection_active"):
+            position["profit_protection_active"] = True
+            logger.info(f"[PROFIT_PROTECTION] {side} entered protection state @ max_profit {max_profit_atr:.2f} ATR. KC Middle is now the SOLE exit judge.")
+        
+        if position.get("profit_protection_active"):
+            logger.info(f"[PROFIT_PROTECTION] {side} 獲利保護狀態激活中，將平倉決策權全部移交 KC 中軌防線。當前獲利: {unrealized_profit_atr:.2f} ATR")
 
         # 提前計算均線以供後續邏輯使用
         ma3_prev1 = float(prev_1.get("ma3", prev_1.get("ema_3", 0.0)))
@@ -233,11 +219,17 @@ class DualTrackExitStrategy(IExitStrategy):
             if curr_close < kc_mid_prev1:
                 if ma3_turning_down or ma15_turning_down or (touched_kc and curr_close < ma3_prev1):
                     logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] LONG structural breakdown + momentum loss @ {curr_close:.6f}")
+                    # 記錄 Breakdown_High 以供後續進場過濾 (Structural Space Cooling)
+                    position["structural_breakdown_barrier_price"] = entry_price + (max_profit_atr * atr)
+                    position["structural_breakdown_side"] = "LONG"
                     return "EXIT_STRUCTURE_BREAKDOWN"
         elif side == "SHORT":
             if curr_close > kc_mid_prev1:
                 if ma3_turning_up or ma15_turning_up or (touched_kc and curr_close > ma3_prev1):
                     logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] SHORT structural breakdown + momentum loss @ {curr_close:.6f}")
+                    # 記錄 Breakdown_Low 以供後續進場過濾 (Structural Space Cooling)
+                    position["structural_breakdown_barrier_price"] = entry_price - (max_profit_atr * atr)
+                    position["structural_breakdown_side"] = "SHORT"
                     return "EXIT_STRUCTURE_BREAKDOWN"
 
         return None
