@@ -79,18 +79,21 @@ class DualTrackExitStrategy(IExitStrategy):
             locked_profit_atr_now = max(0.0, max_profit_atr_now * lock_ratio)
             if side == "LONG":
                 new_lock_price_now = entry_price + (locked_profit_atr_now * atr)
-                current_sl_now = float(position.get("active_stop_price") or position.get("sl") or 0.0)
-                new_sl_now = max(current_sl_now, new_lock_price_now)
+                current_lock = float(position.get("profit_lock_display_sl") or 0.0)
+                # 防退機制：只往上走
+                new_lock_now = max(current_lock, new_lock_price_now)
             else:
                 new_lock_price_now = entry_price - (locked_profit_atr_now * atr)
-                current_sl_now = float(position.get("active_stop_price") or position.get("sl") or float("inf"))
-                if current_sl_now <= 0 or current_sl_now >= float("inf"):
-                    current_sl_now = entry_price + (2.0 * atr)
-                new_sl_now = min(current_sl_now, new_lock_price_now)
-            if position.get("sl") != new_sl_now or position.get("active_stop_price") != new_sl_now:
-                position["sl"] = new_sl_now
-                position["active_stop_price"] = new_sl_now
-                logger.info(f"[PROFIT_LOCK_INSTANT] {side} SL 立即更新 → {new_sl_now:.6f} (locked {locked_profit_atr_now:.2f} ATR)")
+                current_lock = float(position.get("profit_lock_display_sl") or float("inf"))
+                if current_lock <= 0 or current_lock >= float("inf"):
+                    current_lock = entry_price + (2.0 * atr)
+                # 防退機制：只往下走
+                new_lock_now = min(current_lock, new_lock_price_now)
+            if position.get("profit_lock_display_sl") != new_lock_now:
+                # 【重要】只更新展示用欄位，不觸碰真正的 sl / active_stop_price
+                # paper_account.py 使用的硬停損防線不受影響
+                position["profit_lock_display_sl"] = new_lock_now
+                logger.info(f"[PROFIT_LOCK_INSTANT] {side} 鎖利顯示線更新 → {new_lock_now:.6f} (locked {locked_profit_atr_now:.2f} ATR, 不觸碰硬停損)")
 
         # =====================================================================
         # 以下所有邏輯，僅在「有新的 K 棒收盤時」才進行評估 (Close-only Check)

@@ -1261,8 +1261,10 @@
                     return this.getEstimatedPnlAt(pos, pos.sl);
                 },
                 getLockedProfitAmount(pos) {
-                    if (!pos || !pos.sl || pos.sl === 0) return 0;
-                    return this.getEstimatedLossAtSL(pos);
+                    // 使用獨立的顯示欄位，不干擾硬停損 sl
+                    const displaySl = pos && pos.profit_lock_display_sl;
+                    if (!displaySl || displaySl === 0) return this.getEstimatedLossAtSL(pos);
+                    return this.getEstimatedPnlAt(pos, displaySl);
                 },
                 async fetchStatus() {
                     try {
