@@ -195,7 +195,32 @@ class DualTrackExitStrategy(IExitStrategy):
             logger.info(f"[PROFIT_PROTECTION] {side} entered protection state @ max_profit {max_profit_atr:.2f} ATR. KC Middle is now the SOLE exit judge.")
         
         if position.get("profit_protection_active"):
-            logger.info(f"[PROFIT_PROTECTION] {side} 獲利保護狀態激活中，將平倉決策權全部移交 KC 中軌防線。當前獲利: {unrealized_profit_atr:.2f} ATR")
+            # 鎖利線 = 最高獲利的 50%（最少保本）
+            # 作用：只更新 SL/active_stop_price 作為保險箱，不觸發平倉
+            # 平倉決策權 100% 留給 Priority 3 KC 中軌結構防線
+            lock_ratio = 0.5  # 鎖住最高利潤的 50%
+            locked_profit_atr = max(0.0, max_profit_atr * lock_ratio)
+            
+            if side == "LONG":
+                new_lock_price = entry_price + (locked_profit_atr * atr)
+                current_sl = float(position.get("active_stop_price") or position.get("sl") or 0.0)
+                # 防退機制：鎖利線只能往上走，不能後退
+                new_sl = max(current_sl, new_lock_price)
+            else:
+                new_lock_price = entry_price - (locked_profit_atr * atr)
+                current_sl = float(position.get("active_stop_price") or position.get("sl") or float("inf"))
+                if current_sl <= 0 or current_sl == float("inf"):
+                    current_sl = entry_price + (2.0 * atr)
+                # 防退機制：空單鎖利線只能往下走，不能後退
+                new_sl = min(current_sl, new_lock_price)
+
+            # 更新 SL（只更新，不觸發平倉）
+            position["sl"] = new_sl
+            position["active_stop_price"] = new_sl
+            logger.info(
+                f"[PROFIT_PROTECTION] {side} 鎖利線已更新 → {new_sl:.6f} "
+                f"(最高利潤: {max_profit_atr:.2f} ATR, 鎖住: {locked_profit_atr:.2f} ATR, 當前: {unrealized_profit_atr:.2f} ATR)"
+            )
 
         # 提前計算均線以供後續邏輯使用
         ma3_prev1 = float(prev_1.get("ma3", prev_1.get("ema_3", 0.0)))
