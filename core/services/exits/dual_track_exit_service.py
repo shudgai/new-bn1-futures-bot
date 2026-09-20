@@ -7,7 +7,9 @@ DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_
                           "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
                           "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer",
                           "structural_breakdown_barrier_price", "structural_breakdown_side",
-                          "profit_protection_active", "profit_anchor_price", "guaranteed_exit_price"]
+                          "profit_protection_active", "profit_anchor_price", "guaranteed_exit_price",
+                          "entry_atr",           # ← 開倉 ATR 快照（靜態錨點核心，重啟後必須還原）
+                          "profit_lock_display_sl"]  # ← UI 鎖利顯示，等於開倉時錨點，全週期不變
 
 logger = logging.getLogger("DualTrackExit")
 
@@ -32,23 +34,26 @@ class DualTrackExitStrategy(IExitStrategy):
         position["active_stop_price"] = defense_line
         position["sl"] = defense_line  # 給 UI 與核心系統看的通用欄位
         
-        # 實作「開倉即錨定」機制 (Instant Anchor Point)
-        # 錨點初始化：開倉瞬間立刻計算並紀錄預設獲利錨點
-        anchor_atr = 0.7
-        if side == "LONG":
-            profit_anchor_price = entry_price + (anchor_atr * atr)
-        else:
-            profit_anchor_price = entry_price - (anchor_atr * atr)
-            
-        position["profit_anchor_price"] = profit_anchor_price
-        position["profit_lock_display_sl"] = profit_anchor_price
+        position["entry_atr"] = atr  # ← 開倉瞬間 ATR 快照，全交易週期不變
+        
+        # ══════════════════════════════════════════════════════════════
+        # 【動態錨點核心】開倉即初始化
+        # 錨點初始化：開倉時設定為開倉價，隨後將動態追蹤最高獲利點
+        # ══════════════════════════════════════════════════════════════
+        position["profit_anchor_price"] = entry_price
+        position["profit_lock_display_sl"] = entry_price  # UI 顯示專用
         
         position["highest_price"] = entry_price
         position["lowest_price"] = entry_price
         position["is_trailing_active"] = False
         position["last_evaluated_closed_bar_id"] = None
         
-        logger.info(f"[STATE_PURGE] Position initialized. Hard Stop: {defense_line:.6f}, Profit Anchor: {profit_anchor_price:.6f}")
+        logger.info(
+            f"[ANCHOR_INITIALIZED] Position initialized. "
+            f"Entry: {entry_price:.6f} | ATR(snapshot): {atr:.6f} | "
+            f"Hard Stop: {defense_line:.6f} | "
+            f"Initial Anchor: {entry_price:.6f}"
+        )
 
     def evaluate_exit(self, position: Dict[str, Any], frame: pd.DataFrame,
                       current_price: float, **kwargs) -> Optional[str]:
@@ -75,34 +80,31 @@ class DualTrackExitStrategy(IExitStrategy):
         
         active_stop = position.get("active_stop_price", position.get("defense_line", entry_price))
         
-        # ══════════════════════════════════════════════════════════════
-        # 廢除動態啟動門檻：開倉即錨定
-        # (這裡不需要再更新 profit_anchor_price，因為已在 initialize_position 鎖定)
-        # ══════════════════════════════════════════════════════════════
-        # 確保舊倉位也有錨點
-        if "profit_anchor_price" not in position:
-            anchor_atr = 0.7
-            if side == "LONG":
-                position["profit_anchor_price"] = entry_price + (anchor_atr * atr)
-            else:
-                position["profit_anchor_price"] = entry_price - (anchor_atr * atr)
-            position["profit_lock_display_sl"] = position["profit_anchor_price"]
-
-        # =====================================================================
-        # 以下所有邏輯，僅在「有新的 K 棒收盤時」才進行評估 (Close-only Check)
-        # =====================================================================
-        bar_id = prev_1.get("timestamp")
-        if not bar_id:
-            bar_id = prev_1.name if hasattr(prev_1, "name") else str(prev_1.to_dict())
-            
-        if position.get("last_evaluated_closed_bar_id") == bar_id:
-            return None  # 盤中跳動，忽略
-            
-        position["last_evaluated_closed_bar_id"] = bar_id
-
         curr_close = float(prev_1["close"])
         kc_upper = float(prev_1.get("kc_upper", curr_close))
         kc_lower = float(prev_1.get("kc_lower", curr_close))
+        
+        # ══════════════════════════════════════════════════════════════
+        # 【動態錨點核心】持續追蹤最高獲利點 (Dynamic Anchor)
+        # ══════════════════════════════════════════════════════════════
+        if "profit_anchor_price" not in position:
+            position["profit_anchor_price"] = entry_price
+            position["profit_lock_display_sl"] = entry_price
+
+        current_anchor = position.get("profit_anchor_price", entry_price)
+        anchor_updated = False
+        
+        if side == "LONG" and curr_close > current_anchor:
+            position["profit_anchor_price"] = curr_close
+            position["profit_lock_display_sl"] = curr_close
+            anchor_updated = True
+        elif side == "SHORT" and curr_close < current_anchor:
+            position["profit_anchor_price"] = curr_close
+            position["profit_lock_display_sl"] = curr_close
+            anchor_updated = True
+            
+        if anchor_updated:
+            logger.info(f"[DYNAMIC_ANCHOR_UPDATE] {symbol} {side} 創下新高！動態錨點更新為: {position['profit_anchor_price']:.6f}")
         
         prev1_open = float(prev_1["open"])
         prev2_open = float(prev_2["open"])
@@ -201,13 +203,30 @@ class DualTrackExitStrategy(IExitStrategy):
         # 核心哲學：只要中軌沒破，就死死抱住；一旦結構崩潰，就帶走鎖定的錨點獲利。
         # ══════════════════════════════════════════════════════════════
         def trigger_harvest():
+            # ══════════════════════════════════════════════════════════════
             # 錨點保全結算 (The Final Harvest)
+            # 哲學：「中軌沒破就死死抱著，結構崩潰就帶走最高點」
+            # ══════════════════════════════════════════════════════════════
             anchor = position.get("profit_anchor_price")
+            entry_p = position.get("entry_price", entry_price)
+            
             if anchor:
+                anchor_profit = abs(anchor - entry_p)
+                
                 # 如果當前價格劣於錨點價格，強制結算在錨點
                 if (side == "LONG" and curr_close < anchor) or (side == "SHORT" and curr_close > anchor):
                     position["guaranteed_exit_price"] = anchor
-                    logger.info(f"[FINAL_HARVEST] 結構崩潰，當前價 {curr_close:.6f} 劣於錨點 {anchor:.6f}。強制保全錨點獲利！")
+                    logger.info(
+                        f"[FINAL_HARVEST] 結構崩潰！當前價 {curr_close:.6f} 劣於動態錨點 {anchor:.6f}。"
+                        f"強制保全最高獲利高度（保證金價差: {anchor_profit:.6f}）！"
+                    )
+                else:
+                    logger.info(
+                        f"[FINAL_HARVEST] 結構崩潰，當前價 {curr_close:.6f} 優於或等於動態錨點 {anchor:.6f}。"
+                        f"以市價結算。"
+                    )
+            else:
+                logger.warning(f"[FINAL_HARVEST_WARN] {symbol} 結構崩潰但無錨點資料，直接市價結算。")
             
             # 記錄 Breakdown_High/Low 以供後續進場過濾 (Structural Space Cooling)
             position["structural_breakdown_barrier_price"] = curr_close
