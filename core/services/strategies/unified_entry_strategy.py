@@ -98,9 +98,11 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
-    雙軌進場檢驗架構：
-    - 軌道 A：特例快速進場路徑 (Extreme Volatility Path) -> 絕對優先、短路返回
-    - 軌道 B：標準精準進場路徑 (Standard Precision Path) -> 多重確認、過濾雜訊
+    雙軌進場檢驗架構 (嚴格版)：
+    進場必須滿足以下兩個條件之一，才能觸發開倉：
+    - 門檻 A：結構破位 (Structure Break)
+    - 門檻 B：動能轉向 (Momentum Cross)
+    沒有這兩個門檻，絕不開倉。
     """
     if df is None or len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
@@ -108,384 +110,92 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     latest = df.iloc[-1]       # 當前剛開盤或實時 K 棒
     prev_1 = df.iloc[-2]       # 剛收盤確認信號的 K 棒
     prev_2 = df.iloc[-3]       # 前一根對照 K 棒
-    prev_3 = df.iloc[-4]
 
     current_atr = float(prev_1.get('atr', 0))
     if current_atr <= 0:
         return False, "INVALID_ATR", {}
 
-    # ══════════════════════════════════════════════════════════════
-    # [結構空間冷卻] Structural Space Cooling
-    # ══════════════════════════════════════════════════════════════
-    meta = kwargs.get("meta", {})
-    if "structural_breakdown_barrier_price" in meta:
-        barrier_price = meta["structural_breakdown_barrier_price"]
-        barrier_side = meta.get("structural_breakdown_side")
-        
-        # 僅過濾同向的進場。必須要價格突破「前一次崩壞前的結構高/低點」才能再次進場
-        if side == barrier_side:
-            if side == "LONG" and live_price <= barrier_price:
-                return False, f"FILTERED_STRUCTURAL_COOLING: Waiting to break Breakdown_High {barrier_price:.6f}", {}
-            elif side == "SHORT" and live_price >= barrier_price:
-                return False, f"FILTERED_STRUCTURAL_COOLING: Waiting to break Breakdown_Low {barrier_price:.6f}", {}
-
-    # K 棒幾何特徵計算
-    prev_open = float(prev_1['open'])
-    prev_close = float(prev_1['close'])
-    prev_high = float(prev_1['high'])
-    prev_low = float(prev_1['low'])
-
-    body_length = abs(prev_close - prev_open)
-    candle_range = prev_high - prev_low
-    body_ratio = body_length / candle_range if candle_range > 0 else 0
-    # 實體突破要求：實體長度必須佔整根 K 棒長度的 60% 以上，過濾長影線陷阱
-    is_solid_body = (body_ratio >= 0.60)
-
-    # 動能優先權 (Momentum Priority)：極端動能爆發 (實體波幅 >= 1.2 ATR 且實體比例 >= 0.7)
-    is_extreme_momentum = (body_length >= 1.2 * current_atr) and (body_ratio >= 0.7)
-
-    # 判斷多空方向 (收盤價 > 開盤價為陽線做多，反之為陰線做空)
-    is_bullish = prev_close > prev_open
-    is_bearish = prev_close < prev_open
-
     kc_mid_prev1 = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0)))
-    kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0)))
-    slope_middle = kc_mid_prev1 - kc_mid_prev2
-
-    ma15_prev1 = float(prev_1.get('ma15', 0))
-    ma15_prev2 = float(prev_2.get('ma15', 0))
-    slope_ma15 = ma15_prev1 - ma15_prev2
-
-    # =========================================================================
-    # 極端動能過熱過濾 (Momentum Exhaustion Filter)
-    # 目的：如果前一根 K 線實體過大（> 2.0 ATR），判定為動能透支，暫停進場追價。
-    # =========================================================================
-    if body_length > 2.0 * current_atr:
-        return False, f"FILTERED_MOMENTUM_EXHAUSTION: Prev candle body ({body_length:.6f}) > 2.0 ATR", {}
-
-    # =========================================================================
-    # 區域進場封鎖 (Opposite Zone Entry Block)
-    # 目的：避免在瀑布/噴發的極端行情中逆勢接刀。
-    # =========================================================================
     kc_upper_live = float(latest.get("kc_upper", kc_mid_prev1))
     kc_lower_live = float(latest.get("kc_lower", kc_mid_prev1))
     
-    if side == "LONG" and live_price < kc_lower_live:
-        return False, "BLOCKED_OPPOSITE_ZONE_LONG: Price is below KC lower band", {}
-    if side == "SHORT" and live_price > kc_upper_live:
-        return False, "BLOCKED_OPPOSITE_ZONE_SHORT: Price is above KC upper band", {}
-
-    # =========================================================================
-    # 橫盤區間過濾 (Volatility Filter)
-    # =========================================================================
-    is_compression_zone = False
-    if len(df) >= 7:
-        past_5_bars = df.iloc[-6:-1]
-        avg_atr_5 = float(past_5_bars['atr'].astype(float).mean())
-        recent_5_high = float(past_5_bars['high'].astype(float).max())
-        recent_5_low = float(past_5_bars['low'].astype(float).min())
-        recent_5_range = recent_5_high - recent_5_low
-        # 規則：5 根 K 棒的總振幅小於 1.5 倍平均 ATR，視為極度壓縮的橫盤雜訊區間
-        if recent_5_range < (avg_atr_5 * 1.5):
-            is_compression_zone = True
-
-    # =========================================================================
-    # 全局守門員：Track A/P 使用寬鬆版（MA15 不強烈反向即可）
-    #             Track B/R/C/0/V 在各軌道前使用嚴格版
-    # =========================================================================
-    # 先用寬鬆版做初步篩查（攔截崩盤式反向）
-    relaxed_aligned, relaxed_reject = check_structural_alignment_relaxed(side, prev_1, prev_2, current_atr)
-    if not relaxed_aligned:
-        return False, relaxed_reject, {}
-
-    # 嚴格版結果暫存供 B/R/C 使用（不在此處直接攔截）
-    strict_aligned, strict_reject = check_structural_alignment(side, prev_1, prev_2, current_atr)
-
-    pin_passed, pin_reject_reason = check_extreme_pin_defense(side, prev_1, prev_2, current_atr)
-    if not pin_passed:
-        return False, pin_reject_reason, {}
-
-
-    # =========================================================================
-    # 軌道 V：V型轉折進場 (使用寬鬆守門員，已通過)
-    # =========================================================================
-    if len(df) >= 25 and not is_compression_zone:
-        recent_20_bars = df.iloc[-21:-1]
-        
-        rsi_prev1 = float(prev_1.get('rsi', 50))
-        rsi_prev2 = float(prev_2.get('rsi', 50))
-        ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
-        ma15_prev1 = float(prev_1.get('ma15', 0))
-        ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
-        ma15_prev2 = float(prev_2.get('ma15', 0))
-        
-        if side == "LONG":
-            recent_low = float(recent_20_bars['low'].min())
-            low_in_recent_3 = any(float(bar['low']) == recent_low for _, bar in df.iloc[-4:-1].iterrows())
-            structure_break = recent_low < float(prev_1.get('kc_lower', kc_mid_prev1))
-            ma_cross_up = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
-            rsi_rebound = (rsi_prev2 < 30) and (rsi_prev1 > rsi_prev2)
-            
-            if low_in_recent_3 and structure_break and ma_cross_up and rsi_rebound:
-                return True, "[V_REVERSAL_ENTRY] Extreme Bottom V-Shape LONG", {"action": "ENTER"}
-                
-        elif side == "SHORT":
-            recent_high = float(recent_20_bars['high'].max())
-            high_in_recent_3 = any(float(bar['high']) == recent_high for _, bar in df.iloc[-4:-1].iterrows())
-            structure_break = recent_high > float(prev_1.get('kc_upper', kc_mid_prev1))
-            ma_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
-            rsi_rebound = (rsi_prev2 > 70) and (rsi_prev1 < rsi_prev2)
-            
-            if high_in_recent_3 and structure_break and ma_cross_down and rsi_rebound:
-                return True, "[V_REVERSAL_ENTRY] Extreme Top V-Shape SHORT", {"action": "ENTER"}
-
-    # =========================================================================
-    # 軌道 0：盤中動能預判 (Intra-bar Anticipation - 預防滑價與追高殺低)
-    # =========================================================================
-    latest_vol = float(latest.get("volume", 0))
-    # 避免除以零，取過去兩根平均量
-    avg_vol = (float(prev_1.get("volume", 1)) + float(prev_2.get("volume", 1))) / 2.0 + 1e-9
-    is_volume_burst = latest_vol > avg_vol * 1.5
-    
-    if is_volume_burst and not is_compression_zone:
-        kc_upper_live = float(latest.get("kc_upper", kc_mid_prev1))
-        kc_lower_live = float(latest.get("kc_lower", kc_mid_prev1))
-        
-        # 預判條件：價格大幅度貫穿 (超越外軌 0.3 ATR) 且大趨勢強力支持
-        if side == "LONG":
-            if live_price > kc_upper_live + 0.3 * current_atr:
-                return True, "[ANTICIPATED_ENTRY] Live Momentum Breakout LONG", {"action": "ENTER"}
-        elif side == "SHORT":
-            if live_price < kc_lower_live - 0.3 * current_atr:
-                return True, "[ANTICIPATED_ENTRY] Live Momentum Breakout SHORT", {"action": "ENTER"}
-
-    # =========================================================================
-    # 軌道 A：特例快速進場（極端動能，使用寬鬆守門員，已通過）
-    # 重構：取消次根確認，直接以剛收盤的 prev_1 作為突破根，見突破即進場
-    # 不受 is_compression_zone 限制，因為它是極端動能爆發
-    # =========================================================================
-    prev1_open = float(prev_1['open'])
-    prev1_close = float(prev_1['close'])
-    prev1_high = float(prev_1['high'])
-    prev1_low = float(prev_1['low'])
-    prev1_body = abs(prev1_close - prev1_open)
-    prev1_range = prev1_high - prev1_low
-    # 放寬實體比例要求至 40%
-    is_prev1_solid = (prev1_body / prev1_range >= 0.40) if prev1_range > 0 else False
-    is_prev1_bullish = prev1_close > prev1_open
-    is_prev1_bearish = prev1_close < prev1_open
-
-    if prev1_body >= 1.2 * current_atr and is_prev1_solid:
-        if side == "LONG" and is_prev1_bullish:
-            # 取消次根確認，直接進場
-            return True, "[SPECIAL_ENTRY] Extreme Impulse LONG (No confirmation needed)", {"action": "ENTER"}
-        elif side == "SHORT" and is_prev1_bearish:
-            return True, "[SPECIAL_ENTRY] Extreme Impulse SHORT (No confirmation needed)", {"action": "ENTER"}
-
-    # =========================================================================
-    # 軌道 P：平台破位（使用寬鬆守門員；取消次根確認）
-    # 重構：取消次根確認，直接以剛收盤的 prev_1 作為突破根
-    # 不受 is_compression_zone 限制
-    # =========================================================================
-    if len(df) >= 7:
-        # prev_6 到 prev_2 為震盪平台 (因為 prev_1 已經是突破根)
-        platform_bars = df.iloc[-7:-2] 
-
-        if side == "LONG":
-            is_solid_breakout = is_prev1_bullish and (prev1_body >= 1.0 * current_atr) and is_prev1_solid
-            recent_max_high = float(platform_bars['high'].max())
-            broke_platform = prev1_close > recent_max_high
-            
-            # 取消次根確認，直接進場
-            if is_solid_breakout and broke_platform and prev1_close > kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bullish Breakout LONG (No confirmation needed)", {"action": "ENTER"}
-
-        elif side == "SHORT":
-            is_solid_breakout = is_prev1_bearish and (prev1_body >= 1.0 * current_atr) and is_prev1_solid
-            recent_min_low = float(platform_bars['low'].min())
-            broke_platform = prev1_close < recent_min_low
-            
-            # 取消次根確認，直接進場
-            if is_solid_breakout and broke_platform and prev1_close < kc_mid_prev1:
-                return True, "[PLATFORM_BREAKDOWN] Structural Bearish Breakout SHORT (No confirmation needed)", {"action": "ENTER"}
-
-    # =========================================================================
-    # 若處於靜默模式（橫盤壓縮區），則在此處短路返回，屏蔽後續所有常規進場軌道
-    # =========================================================================
-    if is_compression_zone:
-        return False, "FILTERED_COMPRESSION_ZONE: Market is in low volatility compression", {}
-
-    # =========================================================================
-    # 下方軌道 (B, R, C) 使用嚴格版守門員 (MA15 必須同向)
-    # 動能優先權：若 K 棒具備極端動能 (is_extreme_momentum)，給予趨勢豁免權，無視嚴格對齊
-    # =========================================================================
-    if not strict_aligned and not is_extreme_momentum:
-        return False, strict_reject, {}
-
-    # =========================================================================
-    # 軌道 B-1：結構性爆發金叉 (Explosive MA Cross)
-    # =========================================================================
+    ma15_prev1 = float(prev_1.get('ma15', 0))
+    ma15_prev2 = float(prev_2.get('ma15', 0))
     ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
     ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
-    slope_ma3 = ma3_prev1 - ma3_prev2
-    
-    kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
-    kc_lower_prev1 = float(prev_1.get("kc_lower", kc_mid_prev1))
-
-    if ma3_prev1 > 0 and ma15_prev1 > 0 and ma3_prev2 > 0 and ma15_prev2 > 0:
-        ma3_cross_up = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
-        ma3_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
-
-        # 多頭金叉
-        if side == "LONG" and is_bullish and ma3_cross_up:
-            if (slope_ma3 / current_atr) >= 0.4 and body_ratio >= 0.45:
-                if prev_close >= kc_mid_prev1:
-                    is_v_shape_reversal = (body_length >= 2.0 * current_atr)
-                    space_to_upper = kc_upper_prev1 - live_price
-                    if not is_v_shape_reversal and space_to_upper < 0.3 * current_atr:
-                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.3 ATR", {}
-                    
-                    if is_v_shape_reversal:
-                        return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross LONG", {"action": "ENTER"}
-                    return True, "[STANDARD_ENTRY] Explosive MA Cross LONG", {"action": "ENTER"}
-
-        # 空頭死叉
-        if side == "SHORT" and is_bearish and ma3_cross_down:
-            if (slope_ma3 / current_atr) <= -0.4 and body_ratio >= 0.45:
-                if prev_close <= kc_mid_prev1:
-                    is_v_shape_reversal = (body_length >= 2.0 * current_atr)
-                    space_to_lower = live_price - kc_lower_prev1
-                    if not is_v_shape_reversal and space_to_lower < 0.3 * current_atr:
-                        return False, "FILTERED_SPACE_BUFFER_TOO_TIGHT: < 0.3 ATR", {}
-                        
-                    if is_v_shape_reversal:
-                        return True, "[V_SHAPE_REVERSAL_ENTRY] Explosive V-Cross SHORT", {"action": "ENTER"}
-                    return True, "[STANDARD_ENTRY] Explosive Death Cross SHORT", {"action": "ENTER"}
 
     # =========================================================================
-    # 軌道 B-2：強化結構破軌 (Structural Breakout)
+    # 盤整過濾器 (Consolidation Filter)
+    # 確保只在有動能的狀態下開倉，避免橫盤區間的虛假破位
     # =========================================================================
-    prev1_range = prev_high - prev_low
-    prev1_body = body_length
-    is_prev1_extreme = (prev1_range >= 1.5 * current_atr or prev1_body >= 1.5 * current_atr)
-    
-    prev2_range = float(prev_2['high']) - float(prev_2['low'])
-    prev2_body = abs(float(prev_2['close']) - float(prev_2['open']))
-    is_prev2_extreme = (prev2_range >= 1.5 * current_atr or prev2_body >= 1.5 * current_atr)
-    
-    is_struct_long = (prev_close > kc_mid_prev1) and (prev_close > ma15_prev1)
-    is_struct_short = (prev_close < kc_mid_prev1) and (prev_close < ma15_prev1)
-    
-    is_mom_long = is_bullish and (body_length >= 0.8 * current_atr) and (body_ratio >= 0.5)
-    is_mom_short = is_bearish and (body_length >= 0.8 * current_atr) and (body_ratio >= 0.5)
+    lookback = min(len(df) - 1, 6)  # 取最近 6 根已收線 K 棒 (約 30~90 分鐘)
+    if lookback > 0:
+        recent_bars_for_consolidation = df.iloc[-lookback-1:-1]
+        consolidation_high = float(recent_bars_for_consolidation['high'].max())
+        consolidation_low = float(recent_bars_for_consolidation['low'].min())
+        consolidation_range = consolidation_high - consolidation_low
+        
+        # 門檻：波動範圍小於 0.5 * ATR 視為盤整區
+        consolidation_threshold = 0.5 * current_atr
+        
+        if consolidation_range < consolidation_threshold:
+            return False, f"FILTERED_CONSOLIDATION: Price range ({consolidation_range:.6f}) < threshold ({consolidation_threshold:.6f}), blocked fake breakout", {}
 
+    # =========================================================================
+    # 門檻 A：結構破位 (Structure Break)
+    # 多單 (LONG)：必須是「破底（破下軌）」
+    # 空單 (SHORT)：必須是「破頂（破上軌）」
+    # =========================================================================
+    passed_structure_break = False
+    structure_reason = ""
+    if side == "LONG" and live_price < kc_lower_live:
+        passed_structure_break = True
+        structure_reason = "[STRUCTURAL_BREAK] Price strictly broke lower KC band (LONG)"
+    elif side == "SHORT" and live_price > kc_upper_live:
+        passed_structure_break = True
+        structure_reason = "[STRUCTURAL_BREAK] Price strictly broke upper KC band (SHORT)"
+
+    # =========================================================================
+    # 門檻 B：動能轉向 (Momentum Cross)
+    # 必須滿足「峰谷轉向（先升後跌）」，且同時伴隨「MA3 與 MA15 發生明顯交叉（或同向轉向）」。
+    # =========================================================================
+    passed_momentum_cross = False
+    momentum_reason = ""
+    
+    # 計算峰谷轉向
+    recent_bars = df.iloc[-5:-1]
+    recent_high = float(recent_bars['high'].max())
+    recent_low = float(recent_bars['low'].min())
+    
+    # 先跌後升 (LONG)：價格比近期低點明顯回升
+    pivot_turn_long = live_price > recent_low + (0.1 * current_atr) 
+    # 先升後跌 (SHORT)：價格比近期高點明顯回落
+    pivot_turn_short = live_price < recent_high - (0.1 * current_atr) 
+    
+    # 均線交叉或同向確認
+    ma3_cross_up = (ma3_prev2 <= ma15_prev2) and (ma3_prev1 > ma15_prev1)
+    ma3_cross_down = (ma3_prev2 >= ma15_prev2) and (ma3_prev1 < ma15_prev1)
+    ma3_trend_up = (ma3_prev1 > ma15_prev1) and (ma3_prev1 - ma3_prev2 > 0.02 * current_atr)
+    ma3_trend_down = (ma3_prev1 < ma15_prev1) and (ma3_prev2 - ma3_prev1 > 0.02 * current_atr)
+    
     if side == "LONG":
-        if is_struct_long and is_mom_long and not is_prev1_extreme:
-            return True, "[STRUCTURAL_BREAKOUT] Momentum Breakout LONG", {"action": "ENTER"}
-            
-        is_struct_long2 = (float(prev_2['close']) > kc_mid_prev2) and (float(prev_2['close']) > ma15_prev2)
-        is_mom_long2 = (float(prev_2['close']) > float(prev_2['open'])) and (prev2_body >= 0.8 * current_atr) and ((prev2_body / prev2_range) >= 0.5 if prev2_range > 0 else False)
-        
-        if is_struct_long2 and is_mom_long2 and is_prev2_extreme:
-            if prev_close > float(prev_2['close']):
-                return True, "[DELAYED_BREAKOUT] Momentum LONG", {"action": "ENTER"}
-                
+        if pivot_turn_long and (ma3_cross_up or ma3_trend_up):
+            passed_momentum_cross = True
+            momentum_reason = "[MOMENTUM_CROSS] MA3 crossed/trended UP with Pivot Turn (LONG)"
     elif side == "SHORT":
-        if is_struct_short and is_mom_short and not is_prev1_extreme:
-            return True, "[STRUCTURAL_BREAKOUT] Momentum Breakout SHORT", {"action": "ENTER"}
-            
-        is_struct_short2 = (float(prev_2['close']) < kc_mid_prev2) and (float(prev_2['close']) < ma15_prev2)
-        is_mom_short2 = (float(prev_2['close']) < float(prev_2['open'])) and (prev2_body >= 0.8 * current_atr) and ((prev2_body / prev2_range) >= 0.5 if prev2_range > 0 else False)
-        
-        if is_struct_short2 and is_mom_short2 and is_prev2_extreme:
-            if prev_close < float(prev_2['close']):
-                return True, "[DELAYED_BREAKOUT] Momentum SHORT", {"action": "ENTER"}
+        if pivot_turn_short and (ma3_cross_down or ma3_trend_down):
+            passed_momentum_cross = True
+            momentum_reason = "[MOMENTUM_CROSS] MA3 crossed/trended DOWN with Pivot Turn (SHORT)"
 
-    # 1. 劇烈反噬冷卻檢測 (Post-Crash Cooldown)
-    post_crash_cooldown_active = False
-    for i in range(2, 5):
-        if len(df) >= i + 1:
-            h_bar = df.iloc[-i - 1]
-            h_body = abs(float(h_bar['close']) - float(h_bar['open']))
-            h_atr = float(h_bar.get('atr', current_atr))
-            if h_body >= 2.0 * h_atr:
-                post_crash_cooldown_active = True
-                break
-                
-    if post_crash_cooldown_active:
-        return False, "FILTERED_COOLDOWN: Post-Crash Cooldown Active", {}
     # =========================================================================
-    # 軌道 R：中繼二次破位追單 (Trend Re-entry)
+    # 最終進場許可閘門
     # =========================================================================
-    if len(df) >= 5:
-        # 取得前 2~4 根 K 棒作為整理平台參考 (iloc[-5:-2])
-        platform_bars = df.iloc[-5:-2] 
-        curr_body_size = body_length
-        
-        if side == "LONG":
-            # 趨勢鎖定 (MA15 強烈向上且價格在中軌上方)
-            trend_up = (slope_ma15 > 0.05 * current_atr) and (prev_close > kc_mid_prev1)
-            # 飽滿實體
-            is_solid_green = is_bullish and (curr_body_size >= 0.8 * current_atr)
-            # 突破整理平台
-            recent_max_high = float(platform_bars['high'].max())
-            broke_platform = prev_close > recent_max_high
-            
-            if trend_up and is_solid_green and broke_platform:
-                return True, "[TREND_REENTRY] Bullish Continuation LONG", {"action": "ENTER"}
-                
-        elif side == "SHORT":
-            # 趨勢鎖定 (MA15 強烈向下且價格在中軌下方)
-            trend_down = (slope_ma15 < -0.05 * current_atr) and (prev_close < kc_mid_prev1)
-            # 飽滿實體
-            is_solid_red = is_bearish and (curr_body_size >= 0.8 * current_atr)
-            # 跌破整理平台
-            recent_min_low = float(platform_bars['low'].min())
-            broke_platform = prev_close < recent_min_low
-            
-            if trend_down and is_solid_red and broke_platform:
-                return True, "[TREND_REENTRY] Bearish Continuation SHORT", {"action": "ENTER"}
-    # =========================================================================
-    # 軌道 C：動能確認進場 (Momentum-Validated Entry)
-    # =========================================================================
-    # 時間窗口：回溯過去 3 根已收 K 棒 (prev_1, prev_2, prev_3)
-    history_bars = [prev_1, prev_2, prev_3]
-    
-    # 尋找最近的「破軌基準點」
-    breakout_anchor_close_long = None
-    breakout_anchor_close_short = None
-    
-    # prev_1, prev_2, prev_3 依序檢查 (越近越好，找到即 break)
-    for bar in history_bars:
-        bar_close = float(bar['close'])
-        bar_kc_upper = float(bar.get('kc_upper', kc_mid_prev1))
-        bar_kc_lower = float(bar.get('kc_lower', kc_mid_prev1))
-        
-        if bar_close > bar_kc_upper and breakout_anchor_close_long is None:
-            breakout_anchor_close_long = bar_close
-            
-        if bar_close < bar_kc_lower and breakout_anchor_close_short is None:
-            breakout_anchor_close_short = bar_close
+    if passed_structure_break:
+        return True, structure_reason, {"action": "ENTER"}
+    if passed_momentum_cross:
+        return True, momentum_reason, {"action": "ENTER"}
 
-    # 動能驗證 (要求距離破位基準點至少 0.8 ATR 的位移)
-    MOMENTUM_THRESHOLD = 0.8 * current_atr
-    
-    if side == "LONG" and breakout_anchor_close_long is not None:
-        if (live_price - breakout_anchor_close_long) >= MOMENTUM_THRESHOLD:
-            # 趨勢對齊確認
-            if slope_ma15 >= 0: 
-                return True, "[CONFIRMED_ENTRY] Momentum-Validated LONG", {"action": "ENTER"}
-            else:
-                return False, "FILTERED_CONFIRMATION: Counter-trend (MA15 falling)", {}
-                
-    if side == "SHORT" and breakout_anchor_close_short is not None:
-        if (breakout_anchor_close_short - live_price) >= MOMENTUM_THRESHOLD:
-            if slope_ma15 <= 0:
-                return True, "[CONFIRMED_ENTRY] Momentum-Validated SHORT", {"action": "ENTER"}
-            else:
-                return False, "FILTERED_CONFIRMATION: Counter-trend (MA15 rising)", {}
-
-    return False, "NO_VALID_ENTRY_SIGNAL", {}
+    return False, "FILTERED_NO_STRUCTURAL_OR_MOMENTUM_CONFIRMATION", {}
 
 
 
