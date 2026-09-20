@@ -142,18 +142,38 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
             return False, f"FILTERED_CONSOLIDATION: Price range ({consolidation_range:.6f}) < threshold ({consolidation_threshold:.6f}), blocked fake breakout", {}
 
     # =========================================================================
-    # 門檻 A：結構破位 (Structure Break)
-    # 多單 (LONG)：必須是「破底（破下軌）」
-    # 空單 (SHORT)：必須是「破頂（破上軌）」
+    # 門檻 A：結構破位 (Structure Breakout)
+    # 條件：價格實質性地破位，且為了過濾假突破，必須伴隨「連續兩根實體 K 線」站穩在軌道外。
     # =========================================================================
     passed_structure_break = False
     structure_reason = ""
-    if side == "LONG" and live_price < kc_lower_live:
-        passed_structure_break = True
-        structure_reason = "[STRUCTURAL_BREAK] Price strictly broke lower KC band (LONG)"
-    elif side == "SHORT" and live_price > kc_upper_live:
-        passed_structure_break = True
-        structure_reason = "[STRUCTURAL_BREAK] Price strictly broke upper KC band (SHORT)"
+    
+    # 判斷 K 線是否為實體 (排除十字星)
+    prev1_body = abs(float(prev_1['close']) - float(prev_1['open']))
+    prev2_body = abs(float(prev_2['close']) - float(prev_2['open']))
+    prev1_is_solid = prev1_body >= 0.15 * current_atr
+    prev2_is_solid = prev2_body >= 0.15 * current_atr
+    
+    kc_lower_prev1 = float(prev_1.get("kc_lower", kc_mid_prev1))
+    kc_upper_prev1 = float(prev_1.get("kc_upper", kc_mid_prev1))
+    kc_lower_prev2 = float(prev_2.get("kc_lower", kc_mid_prev1))
+    kc_upper_prev2 = float(prev_2.get("kc_upper", kc_mid_prev1))
+
+    if side == "LONG":
+        prev1_outside = float(prev_1['close']) < kc_lower_prev1
+        prev2_outside = float(prev_2['close']) < kc_lower_prev2
+        
+        if live_price < kc_lower_live and prev1_outside and prev2_outside and prev1_is_solid and prev2_is_solid:
+            passed_structure_break = True
+            structure_reason = "[STRUCTURAL_BREAK] Price strictly broke lower KC band with 2 consecutive solid candles (LONG)"
+            
+    elif side == "SHORT":
+        prev1_outside = float(prev_1['close']) > kc_upper_prev1
+        prev2_outside = float(prev_2['close']) > kc_upper_prev2
+        
+        if live_price > kc_upper_live and prev1_outside and prev2_outside and prev1_is_solid and prev2_is_solid:
+            passed_structure_break = True
+            structure_reason = "[STRUCTURAL_BREAK] Price strictly broke upper KC band with 2 consecutive solid candles (SHORT)"
 
     # =========================================================================
     # 門檻 B：動能轉向 (Momentum Cross)

@@ -1,0 +1,31 @@
+--- dual_track_exit_service.py
++++ dual_track_exit_service_new.py
+@@ -37,6 +37,7 @@
+         position["lowest_price"] = entry_price
+         position["is_trailing_active"] = False
+         position["last_evaluated_closed_bar_id"] = None
++        position["peak_warning_active"] = False
+         
+         logger.info(f"[STATE_PURGE] Position initialized. Hard Stop: {defense_line:.6f}")
+ 
+@@ -69,178 +70,165 @@
+         if side == "LONG" and current_price <= active_stop:
+             logger.warning(f"[EXIT_HARD_STOP] LONG hit 1.5 ATR stop @ {current_price:.6f}")
+             return "EXIT_HARD_STOP_1.5_ATR"
+         if side == "SHORT" and current_price >= active_stop:
+             logger.warning(f"[EXIT_HARD_STOP] SHORT hit 1.5 ATR stop @ {current_price:.6f}")
+             return "EXIT_HARD_STOP_1.5_ATR"
+ 
++        # =====================================================================
++        # 以下所有邏輯，僅在「有新的 K 棒收盤時」才進行評估 (Close-only Check)
++        # =====================================================================
++        bar_id = prev_1.name if hasattr(prev_1, "name") else str(prev_1.to_dict())
++        if position.get("last_evaluated_closed_bar_id") == bar_id:
++            return None  # 盤中跳動，忽略
++            
++        # 記錄已評估的收盤 K 棒
++        position["last_evaluated_closed_bar_id"] = bar_id
++
+         # ══════════════════════════════════════════════════════════════
+         # 決策樹層級 2：強勢區護航 (Trend Buffer) & 實體重心防禦
+         # ══════════════════════════════════════════════════════════════
