@@ -75,7 +75,7 @@ class DualTrackExitStrategy(IExitStrategy):
         # ══════════════════════════════════════════════════════════════
         if position.get("profit_protection_active"):
             max_profit_atr_now = float(position.get("max_profit_atr", 0.0))
-            lock_ratio = 0.5
+            lock_ratio = 0.8
             locked_profit_atr_now = max(0.0, max_profit_atr_now * lock_ratio)
             if side == "LONG":
                 new_lock_price_now = entry_price + (locked_profit_atr_now * atr)
@@ -221,7 +221,7 @@ class DualTrackExitStrategy(IExitStrategy):
             # 鎖利線 = 最高獲利的 50%（最少保本）
             # 作用：只更新 SL/active_stop_price 作為保險箱，不觸發平倉
             # 平倉決策權 100% 留給 Priority 3 KC 中軌結構防線
-            lock_ratio = 0.5  # 鎖住最高利潤的 50%
+            lock_ratio = 0.8  # 鎖住最高利潤的 80%
             locked_profit_atr = max(0.0, max_profit_atr * lock_ratio)
             
             if side == "LONG":
