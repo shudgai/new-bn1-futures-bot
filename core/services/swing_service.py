@@ -207,8 +207,11 @@ def channel_ck_exit_reason(frame: pd.DataFrame, side: str) -> str | None:
 def two_bar_structure_failure_exit(frame: pd.DataFrame, side: str) -> bool:
     return False
 
-def adverse_kc_outer_breached(frame: pd.DataFrame, side: str, price: float) -> bool:
-    return False
+def adverse_kc_outer_breached(side: str, price: float, kc_upper: float, kc_lower: float) -> bool:
+    if side == "LONG":
+        return price < kc_lower
+    else:
+        return price > kc_upper
 
 def confirmed_outer_reversal(frame: pd.DataFrame, side: str) -> bool:
     return False

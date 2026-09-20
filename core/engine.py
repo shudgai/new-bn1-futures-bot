@@ -803,36 +803,8 @@ class TradingEngine:
                             highest_pnl = float(position.get("peak_pnl_pct") or pnl_pct)
                             if pnl_pct > highest_pnl:
                                 position["peak_pnl_pct"] = pnl_pct
-                            trigger = self.position_triggers.get(symbol, {})
-                            kc_upper = float(trigger.get("kc_upper") or 0)
-                            kc_lower = float(trigger.get("kc_lower") or 0)
-                            prev_1_high = float(trigger.get("prev_1_high") or 0)
-                            prev_1_low = float(trigger.get("prev_1_low") or 0)
-
-                            # 區域崩盤防禦 1: 對向外軌破裂
-                            is_opposite_kc_breached = (
-                                kc_upper > 0 
-                                and kc_lower > 0 
-                                and self._adverse_kc_outer_breached(side, live_price, kc_upper, kc_lower)
-                            )
-                            
-                            # 區域崩盤防禦 2: 結構破裂 (跌破前低/突破前高)
-                            is_structure_broken = False
-                            if side == "LONG" and prev_1_low > 0 and live_price < prev_1_low:
-                                is_structure_broken = True
-                            elif side == "SHORT" and prev_1_high > 0 and live_price > prev_1_high:
-                                is_structure_broken = True
-
-                            if is_opposite_kc_breached or is_structure_broken:
-                                reason = "對向外軌破裂" if is_opposite_kc_breached else "結構破裂(跌破前低/突破前高)"
-                                self.account.log(
-                                    f"🆘 [區域崩盤防禦] {symbol} {side} {reason}，緊急市價跳車！",
-                                    "WARNING",
-                                )
-                                await self.account.close_position(
-                                    symbol, live_price,
-                                    f"Channel Swing 區域崩盤防禦 ({reason})",
-                                )
+                            # 所有的平倉權力已收歸中央 (dual_track_exit_service.py)
+                            # engine.py 的 fixed_stop_loss_loop 僅負責更新 peak_pnl_pct，禁止直接越權平倉。
                             continue
                 import asyncio
                 await asyncio.sleep(10)
@@ -931,111 +903,7 @@ class TradingEngine:
                 )
                 await asyncio.sleep(STRUCTURED_EXIT_INTERVAL_SEC)
 
-    async def _run_trend_follow_exits(self):
-        """背景任務：大週期 (15m) EMA20 收線確認趨勢移動止損與分批止盈。"""
-        while self.is_running:
-            try:
-                if CONTINUOUS_PIVOT_ONLY:
-                    await asyncio.sleep(30)
-                    continue
-                if ENABLE_TREND_FOLLOW_EXIT or any(
-                    str(pos.get("market_mode") or self.account.position_meta.get(sym, {}).get("market_mode") or "").upper()
-                    in ("BULL", "BEAR")
-                    for sym, pos in self.account.positions.items()
-                ):
-                    for symbol, position in list(self.account.positions.items()):
-                        position_meta = self.account.position_meta.get(symbol, {})
-                        if self._is_continuous_wave_position(position, position_meta):
-                            continue
-                        macro_trend_mode = str(
-                            position.get("market_mode") or position_meta.get("market_mode") or ""
-                        ).upper() in ("BULL", "BEAR")
-                        if not ENABLE_TREND_FOLLOW_EXIT and not macro_trend_mode:
-                            continue
 
-                        # 0a. 若已由 Binance 原生毫秒級 Trailing Stop 接管（Tier 2+），
-                        # 屏蔽微觀趨勢平倉，放手博取大波段。Tier 1 只是本地移到保本價
-                        # （仍是靜態單，不是交易所主動追蹤），不算「已接管」，這裡不能
-                        # 跳過，否則 Tier 1 到 Tier 2 之間的空窗期會完全沒有 15m 趨勢
-                        # 止損防護。
-                        if position_meta.get("native_trailing_tier", 0) >= 2:
-                            continue
-
-                        # 0b. 1H 大週期趨勢過濾器：大級別方向與持倉不一致時，跳過 15m EMA20 止損以防橫盤雙巴
-                        st_dir_1h = self.st_direction_1h_cache.get(symbol)
-                        if st_dir_1h is not None:
-                            side = position["side"]
-                            is_aligned = (side == "LONG" and st_dir_1h == 1) or (side == "SHORT" and st_dir_1h == -1)
-                            if not is_aligned:
-                                continue
-
-
-
-                        # 底點預掛在轉彎前承接，前30分鐘的15m EMA逆向通常仍是
-                        # 原回撤的一部分；讓固定交易所SL控風險，不用軟退出砍掉。
-                        bottom_grace, _bottom_age = self._bottom_entry_grace(
-                            position, time.time()
-                        )
-                        if bottom_grace:
-                            continue
-
-                        # 2. 檢查大週期 (15m) EMA20 收線與 ATR 緩衝帶跌破/突破 (連續兩根 K 棒收線確認)
-                        df = await self.fetch_klines(symbol, timeframe="15m", limit=50)
-                        if df.empty or len(df) < 20:
-                            continue
-
-                        # 計算 15m ATR 肯特納帶狀緩衝
-                        high_low = df['high'] - df['low']
-                        high_cp = (df['high'] - df['close'].shift()).abs()
-                        low_cp = (df['low'] - df['close'].shift()).abs()
-                        df['tr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-                        df['atr'] = df['tr'].rolling(window=14).mean()
-                        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-
-                        # 取最後兩根已收盤的 K 棒
-                        last_bar = df.iloc[-1]
-                        prev_bar = df.iloc[-2]
-
-                        close_p1 = float(last_bar['close'])
-                        ema20_val1 = float(last_bar['ema_20'])
-                        atr_val1 = float(last_bar['atr']) if not pd.isna(last_bar['atr']) else close_p1 * 0.015
-                        buffer1 = max(close_p1 * 0.003, 0.5 * atr_val1)
-
-                        close_p2 = float(prev_bar['close'])
-                        ema20_val2 = float(prev_bar['ema_20'])
-                        atr_val2 = float(prev_bar['atr']) if not pd.isna(prev_bar['atr']) else close_p2 * 0.015
-                        buffer2 = max(close_p2 * 0.003, 0.5 * atr_val2)
-
-                        side = position["side"]
-                        curr_p = self.tickers.get(symbol) or close_p1
-
-                        if side == "LONG":
-                            if close_p1 < (ema20_val1 - buffer1) and close_p2 < (ema20_val2 - buffer2):
-                                self.account.log(
-                                    f"📉 [EMA20趨勢止損] {symbol} 連續兩根 15m 收線跌破 EMA20 緩衝帶 (收盤={close_p2:.6g}/{close_p1:.6g}, 均線={ema20_val2:.6g}/{ema20_val1:.6g}, 緩衝={buffer2:.6g}/{buffer1:.6g})，執行平倉",
-                                    "WARNING"
-                                )
-                                if DISABLE_STOP_LOSS:
-                                    self.account.log(f"⏸️ [自動停損已停用] 跳過 15m EMA20 自動平倉 {symbol}", "INFO")
-                                else:
-                                    await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體跌破EMA20緩衝")
-                        elif side == "SHORT":
-                            if close_p1 > (ema20_val1 + buffer1) and close_p2 > (ema20_val2 + buffer2):
-                                self.account.log(
-                                    f"📈 [EMA20趨勢止損] {symbol} 連續兩根 15m 收線突破 EMA20 緩衝帶 (收盤={close_p2:.6g}/{close_p1:.6g}, 均線={ema20_val2:.6g}/{ema20_val1:.6g}, 緩衝={buffer2:.6g}/{buffer1:.6g})，執行平倉",
-                                    "WARNING"
-                                )
-                                if DISABLE_STOP_LOSS:
-                                    self.account.log(f"⏸️ [自動停損已停用] 跳過 15m EMA20 自動平倉 {symbol}", "INFO")
-                                else:
-                                    await self.account.close_position(symbol, curr_p, "15m連續兩根收線實體突破EMA20緩衝")
-
-                await asyncio.sleep(30)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                self.account.log(f"⚠️ [大週期趨勢止損] 偵測失敗：{type(exc).__name__}: {exc}", "WARNING")
-                await asyncio.sleep(30)
 
     async def _run_trailing_sl_loop(self):
         """背景任務（雙模式）：
@@ -1985,7 +1853,8 @@ class TradingEngine:
             live_pivot = bool(signal.get('live_pivot'))
             sig_code = signal.get("signal_code", "")
             is_valid_entry = sig_code and any(sig_code.startswith(prefix) for prefix in [
-                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]"
+                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
+                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]"
             ])
             if not ck_reverse and not live_pivot and not is_valid_entry:
                 pass
@@ -2399,7 +2268,8 @@ class TradingEngine:
         is_system_halted = market_crash_entries_paused(getattr(self, "_market_crash_entry_cooldown_until", 0.0), time.time())
         
         is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
-            "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]"
+            "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
+            "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]"
         ])
         if is_system_halted:
             return False
@@ -2442,7 +2312,8 @@ class TradingEngine:
                 ("SHORT" if side == "LONG" else "LONG") if retry_reverse else None
             )
             is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
-                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]"
+                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]", 
+                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]"
             ])
             if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}

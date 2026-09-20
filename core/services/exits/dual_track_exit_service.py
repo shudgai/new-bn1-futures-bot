@@ -5,7 +5,7 @@ from core.interfaces.exit_interface import IExitStrategy
 
 DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close",
                           "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
-                          "active_stop_price", "max_profit_atr", "sl", "defense_line"]
+                          "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer"]
 
 logger = logging.getLogger("DualTrackExit")
 
@@ -72,7 +72,11 @@ class DualTrackExitStrategy(IExitStrategy):
         # =====================================================================
         # 以下所有邏輯，僅在「有新的 K 棒收盤時」才進行評估 (Close-only Check)
         # =====================================================================
-        bar_id = prev_1.name if hasattr(prev_1, "name") else str(prev_1.to_dict())
+        # 修正：DataFrame 的 .name 只是整數索引，必須使用真正的 timestamp
+        bar_id = prev_1.get("timestamp")
+        if not bar_id:
+            bar_id = prev_1.name if hasattr(prev_1, "name") else str(prev_1.to_dict())
+            
         if position.get("last_evaluated_closed_bar_id") == bar_id:
             return None  # 盤中跳動，忽略
             
@@ -94,6 +98,18 @@ class DualTrackExitStrategy(IExitStrategy):
         
         prev1_body = abs(curr_close - prev1_open)
         prev2_body = abs(prev2_close - prev2_open)
+
+        # ══════════════════════════════════════════════════════════════
+        # 高警覺狀態：追蹤是否曾觸及 KC 外軌 (KC Upper Rail Breakout)
+        # ══════════════════════════════════════════════════════════════
+        touched_kc = position.get("touched_kc_outer", False)
+        if not touched_kc:
+            if side == "LONG" and curr_close >= kc_upper:
+                touched_kc = True
+            elif side == "SHORT" and curr_close <= kc_lower:
+                touched_kc = True
+            if touched_kc:
+                position["touched_kc_outer"] = True
 
         # ══════════════════════════════════════════════════════════════
         # 優先級 1：極端風險防禦 (硬停損 2.0 ATR - 收盤價確認)
@@ -123,6 +139,39 @@ class DualTrackExitStrategy(IExitStrategy):
         if is_waterfall or is_consecutive_extreme:
             logger.warning(f"[EXIT_EXTREME_RISK_MELTDOWN] {side} hit meltdown protection @ {curr_close:.6f}")
             return "EXIT_EXTREME_RISK_MELTDOWN"
+            
+        # ══════════════════════════════════════════════════════════════
+        # [緊急救命] 最高優先級：CK 翻向即刻平倉 (Trend Reversal)
+        # ══════════════════════════════════════════════════════════════
+        # 為了確保與 UI 標籤的完全一致，此處獨立抓取 kc_middle 的趨勢
+        try:
+            kc_mid_prev1 = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0.0)))
+            kc_mid_prev2 = float(prev_2.get("kc_middle", prev_2.get("ema_20", 0.0)))
+            kc_mid_prev3 = float(df.iloc[-4].get("kc_middle", df.iloc[-4].get("ema_20", 0.0))) if len(df) >= 4 else 0.0
+            
+            # 判斷標籤是否連續兩根翻轉 (即連續兩段斜率皆反轉)
+            ui_ck_trend = None
+            if kc_mid_prev1 > kc_mid_prev2 and kc_mid_prev2 > kc_mid_prev3:
+                ui_ck_trend = "LONG"
+            elif kc_mid_prev1 < kc_mid_prev2 and kc_mid_prev2 < kc_mid_prev3:
+                ui_ck_trend = "SHORT"
+                
+            # 增加空間緩衝 (Spatial Buffer):
+            # 若為多單，不僅標籤要翻轉為空頭，價格還必須跌破 KC 中軌。
+            # 若為空單，不僅標籤要翻轉為多頭，價格還必須突破 KC 中軌。
+            is_spatial_break = False
+            if side == "LONG" and curr_close < kc_mid_prev1:
+                is_spatial_break = True
+            elif side == "SHORT" and curr_close > kc_mid_prev1:
+                is_spatial_break = True
+                
+            logger.info(f"[{symbol}] 目前讀取的 CK 方向為：{ui_ck_trend} (側邊: {side}), 空間破位: {is_spatial_break}")
+            
+            if ui_ck_trend and ui_ck_trend != side and is_spatial_break:
+                logger.critical(f"[EMERGENCY_EXIT_CK_REVERSAL] {side} position EMERGENCY CLOSED due to CK reversing to {ui_ck_trend} and breaking KC Middle @ {curr_close:.6f}")
+                return "EXIT_CK_REVERSAL"
+        except Exception as e:
+            logger.error(f"Error evaluating emergency CK reversal: {e}")
 
         # ══════════════════════════════════════════════════════════════
         # 優先級 2：動態獲利收割 (移動止盈)
@@ -136,77 +185,60 @@ class DualTrackExitStrategy(IExitStrategy):
         max_profit_atr = max(max_profit_atr, unrealized_profit_atr)
         position["max_profit_atr"] = max_profit_atr
 
-        # ══════════════════════════════════════════════════════════════
-        # 優先級 2：固定鎖利 (硬性保底 3.0 ATR)
-        # ══════════════════════════════════════════════════════════════
-        FIXED_TP_ATR = 3.0
-        if unrealized_profit_atr >= FIXED_TP_ATR:
-            logger.warning(f"[EXIT_FIXED_TAKE_PROFIT] {side} hit fixed take profit ({FIXED_TP_ATR} ATR) @ {curr_close:.6f}")
-            return "EXIT_FIXED_TAKE_PROFIT"
 
         # ══════════════════════════════════════════════════════════════
-        # 優先級 2.5：動態獲利收割 (移動止盈 0.75 ATR 啟動 / 0.75 ATR 回撤)
+        # 優先級 2.5：動態獲利收割 (移動止盈)
         # ══════════════════════════════════════════════════════════════
-        TRAILING_STOP_ATR = 0.75
-        if max_profit_atr >= TRAILING_STOP_ATR:
-            locked_profit_atr = max_profit_atr - TRAILING_STOP_ATR
+        TRAILING_ACTIVATION_ATR = 0.3  # [優化] 啟動門檻從 0.6 降至 0.3 (讓防禦線更快浮出水面)
+        TRAILING_BUFFER_ATR = 0.8      # 容忍回撤空間
+        if max_profit_atr >= TRAILING_ACTIVATION_ATR:
+            locked_profit_atr = max_profit_atr - TRAILING_BUFFER_ATR
             
-            # 實時更新實體與視覺止損線 (Trailing Stop Line Update)
+            # [邏輯拉直] 獨立判斷，嚴禁污染 active_stop_price 或 sl (保護 Priority 1 硬停損)
             if side == "LONG":
-                new_stop = entry_price + (locked_profit_atr * atr)
-                if new_stop > position.get("sl", 0.0):
-                    position["sl"] = new_stop
-                    position["active_stop_price"] = new_stop
+                new_calculated_stop = entry_price + (locked_profit_atr * atr)
             else:
-                new_stop = entry_price - (locked_profit_atr * atr)
-                current_sl = position.get("sl", float('inf'))
-                if current_sl <= 0.0: current_sl = float('inf')
-                if new_stop < current_sl:
-                    position["sl"] = new_stop
-                    position["active_stop_price"] = new_stop
+                new_calculated_stop = entry_price - (locked_profit_atr * atr)
+                    
+            # [Debug Logger] 詳細追蹤防線變更
+            logger.info(
+                f"[{position.get('symbol')}] 方向: {side} | "
+                f"獨立追蹤止盈線: {new_calculated_stop:.6f} | "
+                f"ATR: {atr:.6f} | LockATR: {locked_profit_atr:.2f}"
+            )
             
             if unrealized_profit_atr <= locked_profit_atr:
                 logger.warning(f"[EXIT_DYNAMIC_PROFIT_HARVEST] {side} profit dropped to {unrealized_profit_atr:.2f} ATR (locked: {locked_profit_atr:.2f} ATR) @ {curr_close:.6f}")
                 return "EXIT_DYNAMIC_PROFIT_HARVEST"
 
-        # ══════════════════════════════════════════════════════════════
-        # 優先級 3：結構性反轉 (站回異側軌道內 + 連續反向K)
-        # ══════════════════════════════════════════════════════════════
-        if side == "LONG":
-            # 多單：跌破下軌內部 + 連2紅
-            if curr_close < kc_lower and (prev1_is_red and prev2_is_red):
-                logger.warning(f"[EXIT_STRUCTURAL_REVERSAL] LONG structural reversal @ {curr_close:.6f}")
-                return "EXIT_STRUCTURAL_REVERSAL"
-        elif side == "SHORT":
-            # 空單：站上上軌內部 + 連2綠
-            if curr_close > kc_upper and (prev1_is_green and prev2_is_green):
-                logger.warning(f"[EXIT_STRUCTURAL_REVERSAL] SHORT structural reversal @ {curr_close:.6f}")
-                return "EXIT_STRUCTURAL_REVERSAL"
-
-        # ══════════════════════════════════════════════════════════════
-        # 優先級 4：結構性峰值收割 (MA3轉向 + 站回同側軌道內 + MA15轉向)
-        # ══════════════════════════════════════════════════════════════
+        # 提前計算均線以供後續邏輯使用
         ma3_prev1 = float(prev_1.get("ma3", prev_1.get("ema_3", 0.0)))
         ma3_prev2 = float(prev_2.get("ma3", prev_2.get("ema_3", 0.0)))
         ma15_prev1 = float(prev_1.get("ma15", 0.0))
         ma15_prev2 = float(prev_2.get("ma15", 0.0))
+        kc_mid_prev1 = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0.0)))
         
         min_turn_threshold = atr * 0.10
         ma3_turning_down = (ma3_prev2 - ma3_prev1) > min_turn_threshold
         ma3_turning_up = (ma3_prev1 - ma3_prev2) > min_turn_threshold
         ma15_turning_down = (ma15_prev2 - ma15_prev1) > min_turn_threshold
         ma15_turning_up = (ma15_prev1 - ma15_prev2) > min_turn_threshold
-        
+
+        # ══════════════════════════════════════════════════════════════
+        # 優先級 3：結構損壞平倉 (EXIT_STRUCTURE_BREAKDOWN)
+        # ══════════════════════════════════════════════════════════════
+        # 合併原先的 EXIT_HIGH_ALERT_MA3 與 EXIT_TRUE_PEAK_REVERSAL，消除冗餘。
+        # 核心哲學：只要「價格跌破 KC 中軌」，且「均線(MA3/MA15) 顯示動能衰竭」，即判定結構損壞。
         if side == "LONG":
-            # 站回上軌內 = curr_close <= kc_upper
-            if ma3_turning_down and (curr_close <= kc_upper) and ma15_turning_down:
-                logger.warning(f"[EXIT_TRUE_PEAK_REVERSAL] LONG true peak reversal @ {curr_close:.6f}")
-                return "EXIT_TRUE_PEAK_REVERSAL"
+            if curr_close < kc_mid_prev1:
+                if ma3_turning_down or ma15_turning_down or (touched_kc and curr_close < ma3_prev1):
+                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] LONG structural breakdown + momentum loss @ {curr_close:.6f}")
+                    return "EXIT_STRUCTURE_BREAKDOWN"
         elif side == "SHORT":
-            # 站回下軌內 = curr_close >= kc_lower
-            if ma3_turning_up and (curr_close >= kc_lower) and ma15_turning_up:
-                logger.warning(f"[EXIT_TRUE_PEAK_REVERSAL] SHORT true peak reversal @ {curr_close:.6f}")
-                return "EXIT_TRUE_PEAK_REVERSAL"
+            if curr_close > kc_mid_prev1:
+                if ma3_turning_up or ma15_turning_up or (touched_kc and curr_close > ma3_prev1):
+                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] SHORT structural breakdown + momentum loss @ {curr_close:.6f}")
+                    return "EXIT_STRUCTURE_BREAKDOWN"
 
         return None
     def handle_post_exit_cleanup(self, position: Dict[str, Any], exit_reason: str):

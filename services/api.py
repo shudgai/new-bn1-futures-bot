@@ -102,16 +102,36 @@ def positions_with_triggers():
             or meta.get("reason")
             or ""
         )
+        
+        # --- 止損止盈 ---
+        merged["sl"] = float(merged.get("sl") or meta.get("sl") or meta.get("active_stop_price") or meta.get("defense_line") or 0.0)
+        merged["tp"] = float(merged.get("tp") or meta.get("tp") or 0.0)
 
 
-        # --- KC 三階段移動止損線（Phase Trailing Stop）---
+        # --- 動態利潤分層護航 (三段式) 對接 UI ---
+        active_stop_price = merged.get("active_stop_price") or meta.get("active_stop_price")
+        max_profit_atr = float(merged.get("max_profit_atr") or meta.get("max_profit_atr") or 0.0)
+        
+        # 兼容舊版 v10_phase_trailing 邏輯，若新版已啟動，直接蓋過
         phase_state = (
             merged.get("v10_phase_trailing")
             or meta.get("v10_phase_trailing")
             or {}
         )
-        phase_stop_price = phase_state.get("stop_price")
-        current_phase    = phase_state.get("phase", 0)
+        
+        if active_stop_price:
+            phase_stop_price = active_stop_price
+            if max_profit_atr >= 2.0:
+                current_phase = 3
+            elif max_profit_atr >= 1.0:
+                current_phase = 2
+            elif max_profit_atr >= 0.8:
+                current_phase = 1
+            else:
+                current_phase = 1
+        else:
+            phase_stop_price = phase_state.get("stop_price")
+            current_phase    = phase_state.get("phase", 0)
 
         if phase_stop_price and float(phase_stop_price) > 0 and current_phase > 0:
             stop_p = float(phase_stop_price)

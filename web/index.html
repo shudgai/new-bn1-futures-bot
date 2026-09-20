@@ -385,6 +385,9 @@
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
+                                    <div style="margin-top: 6px; font-size: 12px; font-weight: 800; text-align: center; border-radius: 4px; padding: 4px;" :style="getLockedProfitAmount(pos) > 0 ? 'color: #f59e0b; background: rgba(245, 158, 11, 0.1);' : 'color: var(--muted); background: #f1f5f9;'">
+                                        🔒 防禦/鎖利: {{ getLockedProfitAmount(pos) > 0 ? '+' : '' }}{{ getLockedProfitAmount(pos).toFixed(2) }} USDT
+                                    </div>
                                 </td>
                                 <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
                                 <td :style="pos.trigger && pos.trigger.strong ? {background:'rgba(239,68,68,0.15)', borderRadius:'4px'} : {}" :title="pos.trigger && pos.trigger.strong ? '均線＋前低/前高同時觸發，訊號較強' : ''">
@@ -596,16 +599,7 @@
                                     {{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)) > 0 ? '+' : '' }}{{ getPosRoePct(bot.positions.find(p => p.symbol === symbol)).toFixed(2) }}%
                                 </span>
                             </span>
-                            <span class="chart-pos-info-sep">｜</span>
-                            <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">保底獲利:</span>
-                                <span class="chart-pos-info-value text-green" style="font-family:monospace; font-weight: 600;">
-                                    {{ ((getPos(symbol) || {}).locked_profit_usdt || 0) > 0 ? '+' : '' }}{{ ((getPos(symbol) || {}).locked_profit_usdt || 0).toFixed(2) }} U
-                                    <span v-if="(getPos(symbol) || {}).locked_phase" style="font-size: 0.85em; opacity: 0.8;">
-                                        (P{{ (getPos(symbol) || {}).locked_phase }})
-                                    </span>
-                                </span>
-                            </span>
+
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">止損價:</span>
@@ -615,29 +609,19 @@
                                         : '未啟動' }}
                                 </span>
                             </span>
-                            <span class="chart-pos-info-sep">｜</span>
-                            <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">保底獲利:</span>
-                                <span
-                                    :class="['locked-profit-badge',
-                                        ((getPos(symbol) || {}).locked_profit_usdt || 0) <= 0 ? 'zero' : '',
-                                        lockedProfitBump[symbol] ? 'bump' : ''
-                                    ]"
-                                    :key="(getPos(symbol) || {}).locked_phase"
-                                >
-                                    {{ ((getPos(symbol) || {}).locked_profit_usdt || 0) > 0
-                                        ? '+' + (bot.positions.find(p => p.symbol === symbol).locked_profit_usdt).toFixed(2) + ' U'
-                                        : '未啟動' }}
-                                    <span v-if="(getPos(symbol) || {}).phase_info" style="opacity:0.65;font-size:11px;">
-                                        ({{ bot.positions.find(p => p.symbol === symbol).phase_info }})
-                                    </span>
-                                </span>
-                            </span>
+
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">未實現盈虧:</span>
                                 <span class="chart-pos-info-value" :style="((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
                                     {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep">｜</span>
+                            <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label" :style="getLockedProfitAmount(getPos(symbol)) > 0 ? 'color: #f59e0b; font-weight: bold;' : 'color: var(--muted);'">🔒防禦/鎖利:</span>
+                                <span class="chart-pos-info-value" :style="getLockedProfitAmount(getPos(symbol)) > 0 ? 'color:#f59e0b; font-family:monospace; font-weight:bold;' : 'color:var(--muted); font-family:monospace;'">
+                                    {{ getLockedProfitAmount(getPos(symbol)) > 0 ? '+' : '' }}{{ getLockedProfitAmount(getPos(symbol)).toFixed(4) }} USDT
                                 </span>
                             </span>
                         </div>
@@ -1261,10 +1245,13 @@
                 getEstimatedPnlAt(pos, exitPrice) {
                     if (!pos || !exitPrice || !pos.entry_price || !pos.qty) return 0;
                     const feeRate = this.bot.taker_fee_rate || 0.0005;
+                    const pEntry = Number(pos.entry_price);
+                    const pExit = Number(exitPrice);
+                    const pQty = Number(pos.qty);
                     const raw = pos.side === 'LONG'
-                        ? (exitPrice - pos.entry_price) * pos.qty
-                        : (pos.entry_price - exitPrice) * pos.qty;
-                    const fee = (pos.entry_price + exitPrice) * pos.qty * feeRate;
+                        ? (pExit - pEntry) * pQty
+                        : (pEntry - pExit) * pQty;
+                    const fee = (pEntry + pExit) * pQty * feeRate;
                     return raw - fee;
                 },
                 getEstimatedProfitAtTP(pos) {
@@ -1272,6 +1259,10 @@
                 },
                 getEstimatedLossAtSL(pos) {
                     return this.getEstimatedPnlAt(pos, pos.sl);
+                },
+                getLockedProfitAmount(pos) {
+                    if (!pos || !pos.sl || pos.sl === 0) return 0;
+                    return this.getEstimatedLossAtSL(pos);
                 },
                 async fetchStatus() {
                     try {

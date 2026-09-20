@@ -65,13 +65,19 @@ def ck_direction(frame):
                or not row[0] < row[1] < row[2] for row in rows):
             return None
         a, b = rows
+        direction = None
         if b[1] > a[1] and b[2] >= a[2]:
-            return 'LONG'
-        if b[1] < a[1] and b[0] <= a[0]:
-            return 'SHORT'
+            direction = 'LONG'
+        elif b[1] < a[1] and b[0] <= a[0]:
+            direction = 'SHORT'
+            
+        import logging
+        if direction:
+            logging.getLogger("OuterStrategy").info(f"偵測到 CK 翻向為：{direction}")
+        
+        return direction
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return None
-    return None
 
 
 def live_adverse_entry_safe(frame, price, side):
