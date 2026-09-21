@@ -2107,7 +2107,7 @@ class TradingEngine:
             "btc_regime_at_entry": signal.get("btc_regime_mode", "ALIGNED"),
             "btc_direction_1h_at_entry": self.btc_1h_st_direction,
             "btc_score_penalty": int(signal.get("btc_score_penalty") or 0),
-            "profit_profile": profit_profile,
+            "profit_profile": signal.get("profit_profile", "TREND_EXTENSION"),
             "profit_room_pct": float(signal.get("profit_room_pct") or 0.0),
             "bounce_capture_ratio": float(signal.get("bounce_capture_ratio") or 0.0),
             "bounce_target_pct": float(signal.get("bounce_target_pct") or 0.0),
