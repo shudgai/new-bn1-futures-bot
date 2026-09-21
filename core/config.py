@@ -449,6 +449,13 @@ PEAK_EXIT_ATR_MULTIPLIER = float(os.getenv("PEAK_EXIT_ATR_MULTIPLIER", "0.75"))
 USE_MA_STRUCTURE_FILTER = os.getenv("USE_MA_STRUCTURE_FILTER", "false").lower() == "true"
 MA_PERIOD = int(os.getenv("MA_PERIOD", "10"))
 
+# --- 峰谷與量能平倉配置 ---
+ENABLE_PEAK_VOLUME_EXIT = os.getenv("ENABLE_PEAK_VOLUME_EXIT", "true").lower() == "true"
+PEAK_FALLBACK_ATR_MULTIPLIER = float(os.getenv("PEAK_FALLBACK_ATR_MULTIPLIER", "0.75"))
+VOLUME_WEAKNESS_AVG_PERIOD = int(os.getenv("VOLUME_WEAKNESS_AVG_PERIOD", "20"))
+VOLUME_WEAKNESS_THRESHOLD = float(os.getenv("VOLUME_WEAKNESS_THRESHOLD", "0.6"))
+VOLUME_RECOVERY_THRESHOLD = float(os.getenv("VOLUME_RECOVERY_THRESHOLD", "1.2"))
+
 
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制

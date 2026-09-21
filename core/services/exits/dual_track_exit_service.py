@@ -98,40 +98,50 @@ class DualTrackExitStrategy(IExitStrategy):
                     position["profit_lock_display_sl"] = current_price  # UI 即時同步
 
         # ══════════════════════════════════════════════════════════════
-        # 【新增】峰谷偵測平倉 (Peak/Valley Exit)
+        # 【新增】峰谷與量能衰竭平倉 (Peak/Valley + Volume Weakness Exit)
         # ══════════════════════════════════════════════════════════════
-        from core.config import ENABLE_PEAK_VALLEY_EXIT, PEAK_EXIT_ATR_MULTIPLIER, USE_MA_STRUCTURE_FILTER, MA_PERIOD
-        if ENABLE_PEAK_VALLEY_EXIT and current_price > 0:
+        from core.config import ENABLE_PEAK_VOLUME_EXIT, PEAK_FALLBACK_ATR_MULTIPLIER, VOLUME_WEAKNESS_AVG_PERIOD, VOLUME_WEAKNESS_THRESHOLD
+        if getattr(core.config, 'ENABLE_PEAK_VOLUME_EXIT', True) and current_price > 0:
             peak = position.get("price_peak_value")
             if peak is not None and atr > 0:
-                offset = atr * PEAK_EXIT_ATR_MULTIPLIER
-                should_exit = False
+                fallback = peak - current_price if side == "LONG" else current_price - peak
+                threshold = atr * PEAK_FALLBACK_ATR_MULTIPLIER
                 
-                if side == "LONG":
-                    trigger_price = peak - offset
-                    if current_price < trigger_price:
-                        should_exit = True
+                is_significant_fallback = fallback > threshold
+                
+                # 判斷結構破壞 (MA3 作為支撐/壓力基準)
+                ma_val = float(prev_1.get("ma3", prev_1.get("ema_3", prev_1.get("ema_10", 0.0))))
+                if ma_val > 0:
+                    structure_broken = (current_price < ma_val) if side == "LONG" else (current_price > ma_val)
                 else:
-                    trigger_price = peak + offset
-                    if current_price > trigger_price:
-                        should_exit = True
+                    structure_broken = True # 若無 MA 數據，預設放行
                 
-                if should_exit and USE_MA_STRUCTURE_FILTER:
-                    ma_key = f"ma_{MA_PERIOD}"
-                    # Fallback to ema_20 if specified MA is missing
-                    ma_val = float(prev_1.get(ma_key, prev_1.get("ema_20", 0.0)))
-                    if ma_val > 0:
-                        if side == "LONG" and current_price > ma_val:
-                            should_exit = False
-                        elif side == "SHORT" and current_price < ma_val:
-                            should_exit = False
-
-                if should_exit:
-                    position["guaranteed_exit_price"] = peak  # 可以用 peak 結算，或由系統直接以市價平倉
+                # 計算量能衰竭
+                try:
+                    current_volume = float(prev_1.get("volume", 0))
+                    # 取過去 N 根已收線的量能平均
+                    if len(frame) > VOLUME_WEAKNESS_AVG_PERIOD:
+                        vol_slice = frame['volume'].iloc[-(VOLUME_WEAKNESS_AVG_PERIOD + 1):-1]
+                        volume_avg = float(vol_slice.mean())
+                    else:
+                        volume_avg = float(frame['volume'].iloc[:-1].mean())
+                        
+                    is_volume_weak = current_volume < (volume_avg * VOLUME_WEAKNESS_THRESHOLD)
+                except Exception:
+                    is_volume_weak = False
+                    volume_avg = 0.0
+                
+                # 最終判定：結構破壞 + 幅度足夠
+                # (量能衰竭作為輔助確認，即便量沒縮，只要結構破壞+回落夠深也平倉)
+                if structure_broken and is_significant_fallback:
+                    position["guaranteed_exit_price"] = peak
+                    # 標記平倉後進入量能冷卻期
+                    position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
                     logger.warning(
-                        f"[EXIT_PEAK_VALLEY] {side} 結構回落觸發！Peak={peak:.6f}, Trigger={trigger_price:.6f}, Current={current_price:.6f}"
+                        f"[TRUE_PEAK_EXIT] {side} 真峰谷結構破壞！Broke MA={ma_val:.6f}, Fallback={fallback:.6f} > {threshold:.6f}, "
+                        f"Vol_Weak={is_volume_weak} (Vol={current_volume:.2f}, Avg={volume_avg:.2f})"
                     )
-                    return "EXIT_PEAK_VALLEY_BREAK"
+                    return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
 
         # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
@@ -233,10 +243,12 @@ class DualTrackExitStrategy(IExitStrategy):
         symbol = position.get("symbol", "UNKNOWN")
         logger.info(f"[Post-Exit] {exit_reason} ({symbol})")
 
+        # 保留原有的硬止損冷卻
         if exit_reason and exit_reason.startswith("EXIT_HARD_STOP"):
             position["cooldown_mode"]     = "WAIT_FOR_STABLE_KC"
             position["cooldown_kc_count"] = 2
-        else:
+        # 若是 Peak Volume Exit，保留在 evaluate_exit 中設置的 WAIT_FOR_VOLUME_RECOVERY
+        elif position.get("cooldown_mode") != "WAIT_FOR_VOLUME_RECOVERY":
             position["cooldown_mode"] = "NONE"
 
         position["force_space_reevaluation"] = True

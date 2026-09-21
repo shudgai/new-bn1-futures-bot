@@ -112,17 +112,24 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     prev_candle = df.iloc[-3]
 
     close = float(current_candle['close'])
+    open_p = float(current_candle['open'])
     kc_upper = float(current_candle.get('kc_upper', 0))
     kc_lower = float(current_candle.get('kc_lower', 0))
     ma3 = float(current_candle.get('ma3', current_candle.get('ema_3', 0)))
 
     prev_close = float(prev_candle['close'])
+    prev_open = float(prev_candle['open'])
     prev_kc_upper = float(prev_candle.get('kc_upper', 0))
     prev_kc_lower = float(prev_candle.get('kc_lower', 0))
     prev_ma3 = float(prev_candle.get('ma3', prev_candle.get('ema_3', 0)))
 
     if side == "LONG":
-        # 定義「健康站在外側」
+        # 1. 判斷 K 線顏色 (陽燭)
+        is_curr_bullish = close > open_p
+        is_prev_bullish = prev_close > prev_open
+        is_color_consistent_long = is_curr_bullish and is_prev_bullish
+        
+        # 2. 定義「健康站在外側」
         is_outside_kc = close > kc_upper
         is_above_ma3 = close > ma3
         is_healthy_outside = is_outside_kc and is_above_ma3
@@ -132,18 +139,23 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         was_healthy_outside = was_outside_kc and was_above_ma3
 
         # 子情況 1：延續開倉 (Continuation)
-        # 條件：前一根已收線已經在外側，且當前已收線仍在健康外側
-        if was_healthy_outside and is_healthy_outside:
+        # 條件：前一根已收線已經在外側，且當前已收線仍在健康外側，並且當前是陽燭
+        if was_healthy_outside and is_healthy_outside and is_curr_bullish:
             return True, "🚀 [Continuation] LONG: 延續追車直入", {"action": "ENTER", "is_breakout": True}
             
         # 子情況 2：首倉開倉 (First Entry)
-        # 條件：前一根「突破」了 KC (Close > KC_Upper)，當前「確認」站在 KC 及 MA3 外側
+        # 條件：前一根「突破」了 KC (Close > KC_Upper)，當前「確認」站在 KC 及 MA3 外側，且兩根顏色皆為陽燭
         prev_broke_kc = prev_close > prev_kc_upper
-        if prev_broke_kc and is_healthy_outside:
-            return True, "🚀 [First Entry] LONG: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
+        if prev_broke_kc and is_healthy_outside and is_color_consistent_long:
+            return True, "🚀 [First Entry] LONG: 兩根同色破軌確認", {"action": "ENTER", "is_breakout": True}
 
     elif side == "SHORT":
-        # 定義「健康站在外側」
+        # 1. 判斷 K 線顏色 (陰燭)
+        is_curr_bearish = close < open_p
+        is_prev_bearish = prev_close < prev_open
+        is_color_consistent_short = is_curr_bearish and is_prev_bearish
+        
+        # 2. 定義「健康站在外側」
         is_outside_kc = close < kc_lower
         is_below_ma3 = close < ma3
         is_healthy_outside = is_outside_kc and is_below_ma3
@@ -153,13 +165,15 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         was_healthy_outside = was_outside_kc and was_below_ma3
 
         # 子情況 1：延續開倉 (Continuation)
-        if was_healthy_outside and is_healthy_outside:
+        # 條件：前一根已收線已經在外側，且當前已收線仍在健康外側，並且當前是陰燭
+        if was_healthy_outside and is_healthy_outside and is_curr_bearish:
             return True, "🚀 [Continuation] SHORT: 延續追車直入", {"action": "ENTER", "is_breakout": True}
             
         # 子情況 2：首倉開倉 (First Entry)
+        # 條件：前一根「突破」了 KC，當前「確認」站在外側，且兩根皆為陰燭
         prev_broke_kc = prev_close < prev_kc_lower
-        if prev_broke_kc and is_healthy_outside:
-            return True, "🚀 [First Entry] SHORT: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
+        if prev_broke_kc and is_healthy_outside and is_color_consistent_short:
+            return True, "🚀 [First Entry] SHORT: 兩根同色破軌確認", {"action": "ENTER", "is_breakout": True}
 
     return False, "FILTERED_NOT_PURE_BREAKOUT", {}
 
@@ -169,6 +183,37 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if frame is None or len(frame) < 10 or ("kc_middle" not in frame.columns and "ema_20" not in frame.columns):
             return False, "WAIT_INSUFFICIENT_DATA_OR_INDICATORS", {"action": "WAIT"}
+
+        # --- 處理 COOLDOWN 狀態 (量能衰竭平倉後的冷卻期) ---
+        meta = kwargs.get("meta", {})
+        if meta.get("cooldown_mode") == "WAIT_FOR_VOLUME_RECOVERY":
+            try:
+                import core.config as config
+                current_volume = float(frame['volume'].iloc[-2]) # 使用剛收線的 K 線判斷
+                
+                avg_period = getattr(config, 'VOLUME_WEAKNESS_AVG_PERIOD', 20)
+                recovery_thresh = getattr(config, 'VOLUME_RECOVERY_THRESHOLD', 1.2)
+                
+                if len(frame) > avg_period + 1:
+                    vol_slice = frame['volume'].iloc[-(avg_period + 2):-2]
+                    volume_avg = float(vol_slice.mean())
+                else:
+                    volume_avg = float(frame['volume'].iloc[:-2].mean())
+                    
+                is_volume_strong = current_volume > (volume_avg * recovery_thresh)
+                
+                close = float(frame['close'].iloc[-2])
+                kc_upper = float(frame.get('kc_upper', frame).iloc[-2])
+                kc_lower = float(frame.get('kc_lower', frame).iloc[-2])
+                is_outside = (close > kc_upper) if side == "LONG" else (close < kc_lower)
+                
+                if is_outside and is_volume_strong:
+                    meta["cooldown_mode"] = "NONE"  # 解除冷卻
+                    # 允許後續繼續評估開倉
+                else:
+                    return False, f"WAIT_VOLUME_RECOVERY (Vol={current_volume:.2f}, Avg={volume_avg:.2f})", {"action": "WAIT"}
+            except Exception as e:
+                return False, f"WAIT_VOLUME_RECOVERY_ERROR_{e}", {"action": "WAIT"}
 
         try:
             ok, reason, action_dict = check_streamlined_entry_signal(frame, side, price, **kwargs)
