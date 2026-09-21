@@ -130,8 +130,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     c1, g1, r1, solid1, kc_up1, kc_dn1, ma3_1, body1 = get_kline_stats(prev_2)
     c2, g2, r2, solid2, kc_up2, kc_dn2, ma3_2, body2 = get_kline_stats(prev_1)
 
-    # 判定 prev_1 (剛收盤的那根) 是否為極端動能 K 線 (實體 >= 1.5 ATR)
-    is_prev1_extreme = body2 >= 1.5 * current_atr
+    # 判定 prev_1 (剛收盤的那根) 是否為極端動能 K 線 (實體 >= 1.0 ATR)
+    is_prev1_extreme = body2 >= 1.0 * current_atr
 
     # 判定過去 5 根是否有任何一根曾經發生過有效破軌
     recent_5 = df.iloc[-6:-1] if len(df) >= 6 else df.iloc[:-1]
