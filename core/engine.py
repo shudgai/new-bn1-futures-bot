@@ -1967,34 +1967,109 @@ class TradingEngine:
             sl = 0.0
             initial_risk = 0.0
         structured_net_rr = None
-        profit_profile = signal.get("profit_profile")
-        if not profit_profile:
-            profit_profile = "TREND_EXTENSION" if entry_mode != "SUPPORT_PULLBACK" else "BOUNCE"
+        # -------------------------------------------------------------
+        # 動態盈虧比 (Dynamic RRR) 與 停損/止盈設定
+        # -------------------------------------------------------------
+        momentum_multi = float(signal.get("momentum_multi", 1.0))
+        
+        # 1. 停損點 (Risk) 計算
+        if channel_swing_no_stop:
+            # 優先參考前一個階梯的支撐位 (前低/前高)，若無則使用當前回調區間的最低點，保底 2.0 ATR
+            swing_low = float(signal.get("swing_low", 0.0))
+            swing_high = float(signal.get("swing_high", 0.0))
+            
+            if side == "LONG":
+                sl = swing_low if swing_low > 0 else (planned_price - 2.0 * atr)
+                if planned_price - sl < 0.5 * atr: # 防呆，避免SL過近
+                    sl = planned_price - 2.0 * atr
+            else:
+                sl = swing_high if swing_high > 0 else (planned_price + 2.0 * atr)
+                if sl - planned_price < 0.5 * atr:
+                    sl = planned_price + 2.0 * atr
+            
+            # 取消 channel_swing_no_stop 的 0 停損設定，改為有實質停損點以利計算盈虧比
+            channel_swing_no_stop = False
+            signal["sl"] = sl
 
-        if profit_profile == "BOUNCE":
-            reward_pct = float(signal.get("bounce_target_pct") or 0.0)
-            if reward_pct <= 0 and entry_mode == "SUPPORT_PULLBACK":
-                self.account.log(
-                    f"🛑 {symbol} 反彈單未計算到獲利空間 (bounce_target_pct=0)，拒絕掛單",
-                    "WARNING",
-                )
-                return False
-            if reward_pct > 0:
-                structured_net_rr, _, _ = compute_net_reward_risk(
-                    planned_price, sl, reward_pct,
-                )
-                required_net_rr = (
-                    STRUCTURED_MIN_NET_REWARD_RISK
-                    if STRUCTURED_NET_RR_FILTER_ENABLED
-                    else STRUCTURED_NET_RR_HARD_FLOOR
-                )
-                if structured_net_rr + 1e-12 < required_net_rr:
-                    self.account.log(
-                        f"🛑 {symbol} 結構反彈單淨風報比 {structured_net_rr:.2f}:1 低於 "
-                        f"{required_net_rr:.2f}:1（已含雙邊費用與出場滑價），拒絕掛單",
-                        "WARNING",
-                    )
-                    return False
+        # 2. 止盈目標 (Reward) 計算
+        if side == "LONG":
+            target_price = float(signal.get("swing_high_30", 0.0))
+            if target_price <= planned_price:
+                target_price = planned_price + 1.5 * atr
+            # 若前高距離太近（低於 1.5 * ATR），則以 1.5 * ATR 作為預設目標
+            if target_price - planned_price < 1.5 * atr:
+                target_price = planned_price + 1.5 * atr
+            reward_pct = (target_price - planned_price) / planned_price
+        else:
+            target_price = float(signal.get("swing_low_30", 0.0))
+            if target_price >= planned_price or target_price <= 0:
+                target_price = planned_price - 1.5 * atr
+            if planned_price - target_price < 1.5 * atr:
+                target_price = planned_price - 1.5 * atr
+            reward_pct = (planned_price - target_price) / planned_price
+
+        # 3. 計算淨盈虧比 (RRR)
+        structured_net_rr, _, _ = compute_net_reward_risk(planned_price, sl, reward_pct)
+        
+        # 4. 分級進場權重 (Tiered Entry Logic)
+        tier = 3
+        if structured_net_rr >= 1.5:
+            tier = 1
+        elif structured_net_rr >= 1.0:
+            tier = 2
+            
+        # [HUNTER] 動態加分：MA3 雙重確認
+        is_ma3_cross = signal.get("is_ma3_cross", False)
+        if is_ma3_cross and tier > 1:
+            tier = 1
+            
+        # 動態盈虧容錯 (Dynamic RRR Tolerance)
+        is_retesting = "Retest" in v8_reason
+        atr_inflation = signal.get("atr_inflation", 1.0)
+        
+        if is_retesting:
+            tier3_mom_threshold = 0.8
+            tier2_mom_threshold = 0.6
+        else:
+            # 依據 ATR 通膨係數動態下調特權門檻 (高波動動態鬆綁)
+            if atr_inflation > 2.5:
+                tier3_mom_threshold = 1.2
+            elif atr_inflation > 1.5:
+                tier3_mom_threshold = 1.5
+            else:
+                tier3_mom_threshold = 2.0
+            tier2_mom_threshold = 1.2
+            
+        allowed = False
+        if tier == 1:
+            allowed = True
+            if is_ma3_cross and structured_net_rr < 1.5:
+                self.account.log(f"🟢 {symbol} Tier 1 雙重確認 (RRR={structured_net_rr:.2f}:1, MA3/MA15 Cross) 強制升級放行", "SUCCESS")
+            else:
+                self.account.log(f"🟢 {symbol} Tier 1 極優質機會 (RRR={structured_net_rr:.2f}:1) 放行", "SUCCESS")
+        elif tier == 2:
+            if momentum_multi >= tier2_mom_threshold:
+                allowed = True
+                if is_retesting and momentum_multi < 1.2:
+                    self.account.log(f"🟡 {symbol} Tier 2 結構護航容錯 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 放行", "SUCCESS")
+                else:
+                    self.account.log(f"🟡 {symbol} Tier 2 動能補償 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 放行", "SUCCESS")
+            else:
+                self.account.log(f"🛑 {symbol} Tier 2 (RRR={structured_net_rr:.2f}:1) 但動能不足 ({momentum_multi:.2f}x < {tier2_mom_threshold}) 拒絕", "WARNING")
+        elif tier == 3:
+            if momentum_multi >= tier3_mom_threshold:
+                allowed = True
+                if is_retesting and momentum_multi < 2.0:
+                    self.account.log(f"🔥 {symbol} Tier 3 結構回踩護航 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 容錯放行", "SUCCESS")
+                elif not is_retesting and atr_inflation > 1.5 and momentum_multi < 2.0:
+                    self.account.log(f"🟡 {symbol} Tier 3 高波動動態鬆綁 (ATR通膨={atr_inflation:.1f}x) 容錯放行", "SUCCESS")
+                else:
+                    self.account.log(f"🔥 {symbol} Tier 3 結構極度強勢爆發！(RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 強制放行", "SUCCESS")
+            else:
+                self.account.log(f"🛑 {symbol} Tier 3 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 盈虧比太差且無極端動能，拒絕", "WARNING")
+                
+        if not allowed:
+            return False
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol, score)
         
         wallet_fn = getattr(self.account, "get_wallet_balance", None)
@@ -2269,7 +2344,7 @@ class TradingEngine:
         
         is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
             "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
-            "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]"
+            "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]"
         ])
         if is_system_halted:
             return False
@@ -2313,7 +2388,7 @@ class TradingEngine:
             )
             is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
                 "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]", 
-                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]"
+                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]"
             ])
             if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}
@@ -2362,14 +2437,40 @@ class TradingEngine:
                 current_atr = float(latest.get("atr") or abs(price) * 0.015)
                 
                 latest_body = abs(float(latest["close"]) - float(latest["open"]))
+                latest_vol = float(latest.get("volume", 0.0))
                 
                 high_3 = float(recent_klines["high"].max())
                 low_3 = float(recent_klines["low"].min())
                 range_3 = high_3 - low_3
                 
                 defense_mode = "EXPLOSIVE" if (latest_body >= 1.5 * current_atr) or (range_3 >= 2.0 * current_atr) else "TREND"
+                
+                # 計算動能倍數 (Momentum Multiplier) = 當前動能 / 前5根平均動能
+                past_5_klines = frame.iloc[-7:-2] if len(frame) >= 7 else frame.iloc[:-2]
+                if not past_5_klines.empty:
+                    past_momenta = [abs(float(row["close"]) - float(row["open"])) * float(row.get("volume", 0)) for _, row in past_5_klines.iterrows()]
+                    avg_past_momentum = sum(past_momenta) / len(past_momenta) if past_momenta else 0.0
+                else:
+                    avg_past_momentum = 0.0
+                
+                current_momentum = latest_body * latest_vol
+                momentum_multi = (current_momentum / avg_past_momentum) if avg_past_momentum > 0 else 1.0
+                
+                # 計算最近 30 根的前高與前低 (作為止盈目標與停損參考)
+                past_30 = frame.iloc[-31:-1] if len(frame) > 31 else frame.iloc[:-1]
+                swing_high_30 = float(past_30["high"].max()) if not past_30.empty else 0.0
+                swing_low_30 = float(past_30["low"].min()) if not past_30.empty else 0.0
+                
+                # 計算最近 10 根的前高與前低 (作為近期停損參考)
+                past_10 = frame.iloc[-11:-1] if len(frame) > 11 else frame.iloc[:-1]
+                swing_high_10 = float(past_10["high"].max()) if not past_10.empty else 0.0
+                swing_low_10 = float(past_10["low"].min()) if not past_10.empty else 0.0
+                
             except Exception:
                 defense_mode = "TREND"
+                momentum_multi = 1.0
+                swing_high_30, swing_low_30 = 0.0, 0.0
+                swing_high_10, swing_low_10 = 0.0, 0.0
 
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
@@ -2380,6 +2481,11 @@ class TradingEngine:
                 "channel_reversal": bool(position or retry_reverse),
                 "atr": float(latest.get("atr") or abs(price) * .015),
                 "defense_mode": defense_mode, # 終極彈性防禦系統模式
+                "momentum_multi": momentum_multi,
+                "swing_high_30": swing_high_30,
+                "swing_low_30": swing_low_30,
+                "swing_high": swing_high_10,
+                "swing_low": swing_low_10,
                 "profit_profile": "TREND_EXTENSION", "wave_regime": "TREND",
                 **{f"signal_candle_{k}": float(latest[k]) for k in ("open", "high", "low", "close")},
             }

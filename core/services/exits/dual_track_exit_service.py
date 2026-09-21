@@ -249,16 +249,18 @@ class DualTrackExitStrategy(IExitStrategy):
             position["structural_breakdown_side"] = side
             return "EXIT_STRUCTURE_BREAKDOWN"
 
-        # 優先級 3: 結構防線使用 current_price (即時價格) 判定，而非等待收盤
+        # 優先級 3: 結構防線使用已收盤 K 線 (prev_1) 判定，避免被下影線/上影線掃出
         if side == "LONG":
-            if current_price < kc_mid_prev1:
-                if ma3_turning_down or ma15_turning_down or (touched_kc and current_price < ma3_prev1):
-                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] LONG structural breakdown + momentum loss @ {current_price:.6f}")
+            prev1_is_red = curr_close < float(prev_1["open"])
+            if prev1_is_red and curr_close < kc_mid_prev1:
+                if ma3_turning_down or ma15_turning_down or (touched_kc and curr_close < ma3_prev1):
+                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] LONG structural breakdown + momentum loss @ {curr_close:.6f}")
                     return trigger_harvest(current_price)
         elif side == "SHORT":
-            if current_price > kc_mid_prev1:
-                if ma3_turning_up or ma15_turning_up or (touched_kc and current_price > ma3_prev1):
-                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] SHORT structural breakdown + momentum loss @ {current_price:.6f}")
+            prev1_is_green = curr_close > float(prev_1["open"])
+            if prev1_is_green and curr_close > kc_mid_prev1:
+                if ma3_turning_up or ma15_turning_up or (touched_kc and curr_close > ma3_prev1):
+                    logger.warning(f"[EXIT_STRUCTURE_BREAKDOWN] SHORT structural breakdown + momentum loss @ {curr_close:.6f}")
                     return trigger_harvest(current_price)
 
         return None

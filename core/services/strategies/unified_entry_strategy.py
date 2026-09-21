@@ -118,62 +118,128 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     kc_mid_live = float(latest.get("kc_middle", 0))
     ma15_live = float(latest.get('ma15', 0))
     
-    # 建立『回調待命區』(15-bar lookback for a single strong breakout candle)
+    # (Extreme Impulse logic will be evaluated after Retest logic as a fallback)
+    latest_body = abs(float(latest['close']) - float(latest['open']))
+    recent_klines = df.iloc[-4:-1] if len(df) >= 4 else df.iloc[:-1] # 取最近 3 根已收盤 K 棒
+    high_3 = float(recent_klines["high"].max()) if not recent_klines.empty else 0.0
+    low_3 = float(recent_klines["low"].min()) if not recent_klines.empty else 0.0
+    range_3 = high_3 - low_3 if high_3 > 0 else 0.0
+    is_extreme_body = (latest_body > 1.5 * current_atr) or (range_3 >= 2.0 * current_atr)
+
+    # 1. 動態階梯記憶 (Dynamic Stair-Stepping Memory)
+    # 自動更新基準高點為最近的局部破軌，且容許波段延續 (最長記憶 60 根)，除非跌穿反向軌道破壞結構。
     breakout_found = False
     breakout_bars_ago = 0
-    max_lookback = min(15, len(df) - 1)
+    max_lookback = min(60, len(df) - 1)
     
-    for i in range(1, max_lookback + 1):
-        p_cand = df.iloc[-(i + 1)] 
-        p_body = abs(float(p_cand['close']) - float(p_cand['open']))
-        p_solid = p_body >= 0.15 * current_atr
-        
-        if side == "LONG":
+    if side == "LONG":
+        for i in range(1, max_lookback + 1):
+            p_cand = df.iloc[-(i + 1)]
+            # 若途中跌破下軌 (看收盤價，容許插針洗盤)，代表多頭結構已被破壞，清空記憶
+            if float(p_cand['close']) < float(p_cand.get("kc_lower", kc_lower_live)):
+                break
+                
+            p_body = abs(float(p_cand['close']) - float(p_cand['open']))
+            p_solid = p_body >= 0.15 * current_atr
             p_green = float(p_cand['close']) > float(p_cand['open'])
             p_out = float(p_cand['close']) > float(p_cand.get("kc_upper", kc_upper_live))
+            
             if p_solid and p_green and p_out:
                 breakout_found = True
                 breakout_bars_ago = i
                 break
-        elif side == "SHORT":
+                
+    elif side == "SHORT":
+        for i in range(1, max_lookback + 1):
+            p_cand = df.iloc[-(i + 1)]
+            # 若途中突破上軌 (看收盤價，容許插針洗盤)，代表空頭結構已被破壞，清空記憶
+            if float(p_cand['close']) > float(p_cand.get("kc_upper", kc_upper_live)):
+                break
+                
+            p_body = abs(float(p_cand['close']) - float(p_cand['open']))
+            p_solid = p_body >= 0.15 * current_atr
             p_red = float(p_cand['close']) < float(p_cand['open'])
             p_out = float(p_cand['close']) < float(p_cand.get("kc_lower", kc_lower_live))
+            
             if p_solid and p_red and p_out:
                 breakout_found = True
                 breakout_bars_ago = i
                 break
 
     if not breakout_found:
+        # 如果沒有 Breakout Memory，看是否當下直接極端爆發 (特權通道)
+        if side == "LONG":
+            latest_green = float(latest['close']) > float(latest['open'])
+            latest_out = live_price > kc_upper_live
+            if is_extreme_body and latest_green and latest_out:
+                return True, "[HUNTER] Extreme Impulse Breakout (No Memory)", {"action": "ENTER"}
+        elif side == "SHORT":
+            latest_red = float(latest['close']) < float(latest['open'])
+            latest_out = live_price < kc_lower_live
+            if is_extreme_body and latest_red and latest_out:
+                return True, "[HUNTER] Extreme Impulse Breakout (No Memory)", {"action": "ENTER"}
         return False, "FILTERED_NO_BREAKOUT_MEMORY", {}
         
     # 在待命模式下，檢查是否回調到紅線 (MA15) 或 KC 邊緣附近
     retest_margin = 0.8 * current_atr
     
     if side == "LONG":
-        is_near_ma15 = (ma15_live - retest_margin) <= live_price <= (ma15_live + retest_margin)
-        is_near_kc_upper = (kc_upper_live - retest_margin) <= live_price <= (kc_upper_live + retest_margin)
-        is_near_kc_mid = (kc_mid_live - retest_margin) <= live_price <= (kc_mid_live + retest_margin)
+        latest_low = float(latest.get('low', live_price))
+        is_near_ma15 = latest_low <= (ma15_live + retest_margin)
+        is_near_kc_upper = latest_low <= (kc_upper_live + retest_margin)
+        is_near_kc_mid = latest_low <= (kc_mid_live + retest_margin)
         
         is_retesting = is_near_ma15 or is_near_kc_upper or is_near_kc_mid
         is_closing_above_ma15 = live_price > ma15_live
         
+        # 情況一：標準回調確認 (優先)
         if is_retesting and is_closing_above_ma15:
-            return True, f"[HUNTER] LONG Retest after {breakout_bars_ago} bars", {"action": "ENTER"}
-        else:
-            return False, f"FILTERED_WAITING_RETEST_LONG (Near support: {is_retesting}, Above MA15: {is_closing_above_ma15})", {}
+            ma3_live = float(latest.get('ma3', 0))
+            ma3_prev = float(prev_1.get('ma3', 0))
+            ma15_prev = float(prev_1.get('ma15', 0))
+            is_ma3_cross = (ma3_prev < ma15_prev) and (ma3_live >= ma15_live)
+            
+            reason = f"[HUNTER] LONG Retest after {breakout_bars_ago} bars"
+            if is_ma3_cross:
+                reason += " (High Momentum Cross)"
+            return True, reason, {"action": "ENTER", "is_ma3_cross": is_ma3_cross}
+            
+        # 情況二：無回調點但極端爆發 (特權通道)
+        latest_green = float(latest['close']) > float(latest['open'])
+        latest_out = live_price > kc_upper_live
+        if is_extreme_body and latest_green and latest_out:
+            return True, "[HUNTER] Extreme Impulse Breakout (Bypass Retest)", {"action": "ENTER"}
+            
+        return False, f"FILTERED_WAITING_RETEST_LONG (Near support: {is_retesting}, Above MA15: {is_closing_above_ma15})", {}
             
     elif side == "SHORT":
-        is_near_ma15 = (ma15_live - retest_margin) <= live_price <= (ma15_live + retest_margin)
-        is_near_kc_lower = (kc_lower_live - retest_margin) <= live_price <= (kc_lower_live + retest_margin)
-        is_near_kc_mid = (kc_mid_live - retest_margin) <= live_price <= (kc_mid_live + retest_margin)
+        latest_high = float(latest.get('high', live_price))
+        is_near_ma15 = latest_high >= (ma15_live - retest_margin)
+        is_near_kc_lower = latest_high >= (kc_lower_live - retest_margin)
+        is_near_kc_mid = latest_high >= (kc_mid_live - retest_margin)
         
         is_retesting = is_near_ma15 or is_near_kc_lower or is_near_kc_mid
         is_closing_below_ma15 = live_price < ma15_live
         
+        # 情況一：標準回調確認 (優先)
         if is_retesting and is_closing_below_ma15:
-            return True, f"[HUNTER] SHORT Retest after {breakout_bars_ago} bars", {"action": "ENTER"}
-        else:
-            return False, f"FILTERED_WAITING_RETEST_SHORT (Near support: {is_retesting}, Below MA15: {is_closing_below_ma15})", {}
+            ma3_live = float(latest.get('ma3', 0))
+            ma3_prev = float(prev_1.get('ma3', 0))
+            ma15_prev = float(prev_1.get('ma15', 0))
+            is_ma3_cross = (ma3_prev > ma15_prev) and (ma3_live <= ma15_live)
+            
+            reason = f"[HUNTER] SHORT Retest after {breakout_bars_ago} bars"
+            if is_ma3_cross:
+                reason += " (High Momentum Cross)"
+            return True, reason, {"action": "ENTER", "is_ma3_cross": is_ma3_cross}
+            
+        # 情況二：無回調點但極端爆發 (特權通道)
+        latest_red = float(latest['close']) < float(latest['open'])
+        latest_out = live_price < kc_lower_live
+        if is_extreme_body and latest_red and latest_out:
+            return True, "[HUNTER] Extreme Impulse Breakout (Bypass Retest)", {"action": "ENTER"}
+            
+        return False, f"FILTERED_WAITING_RETEST_SHORT (Near support: {is_retesting}, Below MA15: {is_closing_below_ma15})", {}
 
 
 
@@ -190,5 +256,16 @@ class UnifiedEntryStrategy(IEntryStrategy):
         if ok:
             base_dict = {"action": "ENTER", "side": side, "reason": reason}
             base_dict.update(action_dict)
+            
+            # 計算 ATR 通膨係數 (ATR Inflation Ratio)
+            try:
+                current_atr = float(frame.iloc[-2].get('atr', 0))
+                past_120 = frame['atr'].tail(120)
+                avg_atr = float(past_120.mean()) if not past_120.empty else current_atr
+                atr_inflation = (current_atr / avg_atr) if avg_atr > 0 else 1.0
+                base_dict["atr_inflation"] = atr_inflation
+            except Exception:
+                base_dict["atr_inflation"] = 1.0
+                
             return True, reason, base_dict
         return False, reason, {"action": "WAIT"}
