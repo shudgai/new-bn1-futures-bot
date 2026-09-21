@@ -133,14 +133,33 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     # 判定 prev_1 (剛收盤的那根) 是否為極端動能 K 線 (實體 >= 1.5 ATR)
     is_prev1_extreme = body2 >= 1.5 * current_atr
 
+    # 判定過去 5 根是否有任何一根曾經發生過有效破軌
+    recent_5 = df.iloc[-6:-1] if len(df) >= 6 else df.iloc[:-1]
+    has_recent_long_breakout = False
+    has_recent_short_breakout = False
+    for _, row in recent_5.iterrows():
+        c, is_g, is_r, is_sol, up, dn, _, _ = get_kline_stats(row)
+        if is_g and is_sol and c > up:
+            has_recent_long_breakout = True
+        if is_r and is_sol and c < dn:
+            has_recent_short_breakout = True
+            
+    live_ma3 = float(latest.get("ma3", 0))
+
     if side == "LONG":
         # 常規：兩根破軌 (第一根破軌, 第二根站上 KC 外及 MA3 外)
         cond_regular = (g1 and solid1 and c1 > kc_up1) and (g2 and solid2 and c2 > kc_up2 and c2 > ma3_2)
         # 極端：單根大爆發 (剛收盤的這根大於 1.5 ATR 且破軌)
         cond_extreme = (g2 and solid2 and c2 > kc_up2) and is_prev1_extreme
+        # 追車/延續：最近 5 根內有破軌過，且現在價格與 MA3 都還在軌外
+        cond_continuation = has_recent_long_breakout and (live_price > kc_upper_live) and (live_ma3 > kc_upper_live)
 
-        if (cond_regular or cond_extreme) and (live_price > kc_upper_live):
-            reason = "🚀 [1-Candle Extreme] LONG: 極端爆發直入" if cond_extreme else "🚀 [2-Candle Breakout] LONG: 兩根破軌確認"
+        if cond_regular or cond_extreme or cond_continuation:
+            reason = (
+                "🚀 [1-Candle Extreme] LONG: 極端爆發直入" if cond_extreme else
+                "🚀 [2-Candle Breakout] LONG: 兩根破軌確認" if cond_regular else
+                "🚀 [Continuation] LONG: 延續追車直入"
+            )
             return True, reason, {"action": "ENTER"}
             
     elif side == "SHORT":
@@ -148,12 +167,18 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         cond_regular = (r1 and solid1 and c1 < kc_dn1) and (r2 and solid2 and c2 < kc_dn2 and c2 < ma3_2)
         # 極端：單根大瀑布 (剛收盤的這根大於 1.5 ATR 且破軌)
         cond_extreme = (r2 and solid2 and c2 < kc_dn2) and is_prev1_extreme
+        # 追車/延續：最近 5 根內有破軌過，且現在價格與 MA3 都還在軌外
+        cond_continuation = has_recent_short_breakout and (live_price < kc_lower_live) and (live_ma3 < kc_lower_live)
 
-        if (cond_regular or cond_extreme) and (live_price < kc_lower_live):
-            reason = "🚀 [1-Candle Extreme] SHORT: 極端瀑布直入" if cond_extreme else "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認"
+        if cond_regular or cond_extreme or cond_continuation:
+            reason = (
+                "🚀 [1-Candle Extreme] SHORT: 極端瀑布直入" if cond_extreme else
+                "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認" if cond_regular else
+                "🚀 [Continuation] SHORT: 延續追車直入"
+            )
             return True, reason, {"action": "ENTER"}
 
-    return False, "FILTERED_NOT_2_CANDLE_BREAKOUT", {}
+    return False, "FILTERED_NOT_2_CANDLE_BREAKOUT_OR_CONTINUATION", {}
 
 
 
