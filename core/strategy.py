@@ -727,6 +727,7 @@ class SuperTrendKeltnerStrategy:
         df['atr'] = tr.rolling(window=self.atr_period).mean()
 
         # EMAs
+        df['ema_10'] = close.ewm(span=10, adjust=False).mean()
         df['ema_20'] = close.ewm(span=20, adjust=False).mean()
         df['ema_50'] = close.ewm(span=50, adjust=False).mean()
 

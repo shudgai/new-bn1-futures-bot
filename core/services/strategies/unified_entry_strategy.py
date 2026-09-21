@@ -125,8 +125,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     kc_upper_live = float(latest.get("kc_upper", 0))
     kc_lower_live = float(latest.get("kc_lower", 0))
     
-    kc_mid1 = float(prev_2.get('kc_middle', 0))
-    kc_mid2 = float(prev_1.get('kc_middle', 0))
+    kc_mid1 = float(prev_2.get('kc_middle', prev_2.get('ema_20', 0)))
+    kc_mid2 = float(prev_1.get('kc_middle', prev_1.get('ema_20', 0)))
 
     if side == "LONG":
         kc_going_up = (kc_mid2 > kc_mid1)
