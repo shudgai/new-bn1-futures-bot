@@ -162,7 +162,7 @@ class DualTrackExitStrategy(IExitStrategy):
         # ══════════════════════════════════════════════════════════════
         # 優先級 1.5：極端風險防禦 (大瀑布 / 連續異常)
         # ══════════════════════════════════════════════════════════════
-        is_waterfall = prev1_body >= 3.0 * atr
+        is_waterfall = prev1_body >= 2.0 * atr
         
         if side == "LONG":
             prev1_is_reverse = prev1_is_red
