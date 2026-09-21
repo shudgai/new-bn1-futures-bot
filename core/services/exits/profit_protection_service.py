@@ -97,6 +97,7 @@ def protection(position, price, fee, slippage, frame=None):
     state['stop_price'] = stop
     state['net_floor_price'] = stop
     state['pending'] = bool(state.get('pending')) or net <= locked
+    position['profit_lock_display_sl'] = stop  # 更新 UI 顯示的鎖利價位
     return {'triggered': state['pending'], 'stop_price': stop,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
             'locked_net': locked, 'peak_net': state['peak_net'], 'retracement_fraction': .20}
