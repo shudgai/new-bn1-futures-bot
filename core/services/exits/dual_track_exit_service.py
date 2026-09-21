@@ -88,57 +88,13 @@ class DualTrackExitStrategy(IExitStrategy):
         kc_lower = float(prev_1.get("kc_lower", curr_close))
         
         # ══════════════════════════════════════════════════════════════
-        # 【動態護城河鎖利】Dynamic Shield Trailing Profit Lock
-        # 邏輯：有利潤就建立防線 (peak - 0.5ATR)，隨峰值上移，觸點即平
-        # 不等中軌、不等收盤 — 防線碰到就立刻落袋為安
+        # 【動態護城河已停用】Dynamic Shield DISABLED (選項3)
+        # 唯一出場訊號：KC 中軌實體穿越 (EXIT_KC_MID_BODY_CROSS)
+        # 大瀑布/連續異常保險仍保留作為最後防線
         # ══════════════════════════════════════════════════════════════
-        SHIELD_TRAIL_ATR    = 0.5   # 防線距峰值的回撤容忍空間
-        estimated_fees      = entry_price * TAKER_FEE_RATE * 2.0
+        estimated_fees = entry_price * TAKER_FEE_RATE * 2.0
 
-        # 追蹤歷史最優即時價格 (peak_price)
-        current_peak = position.get("dynamic_shield_peak", None)
-        if side == "LONG":
-            new_peak = current_price if (current_peak is None or current_price > current_peak) else current_peak
-        else:
-            new_peak = current_price if (current_peak is None or current_price < current_peak) else current_peak
-        position["dynamic_shield_peak"] = new_peak
 
-        # 判斷是否已有純利潤（扣除手續費後）
-        if side == "LONG":
-            net_profit_at_peak = new_peak - entry_price - estimated_fees
-        else:
-            net_profit_at_peak = entry_price - new_peak - estimated_fees
-
-        # 只要峰值有正向淨利，就啟動動態防線
-        if net_profit_at_peak > 0:
-            if side == "LONG":
-                dynamic_shield = new_peak - SHIELD_TRAIL_ATR * atr
-            else:
-                dynamic_shield = new_peak + SHIELD_TRAIL_ATR * atr
-
-            # 防線只能往有利方向移動（單向棘輪），不能退後
-            old_shield = position.get("dynamic_shield_price", None)
-            if old_shield is None:
-                position["dynamic_shield_price"] = dynamic_shield
-                position["profit_lock_display_sl"] = dynamic_shield
-                logger.info(f"[DYNAMIC_SHIELD_ARMED] {symbol} {side} 防線啟動 @ {dynamic_shield:.6f} (峰值: {new_peak:.6f}, 容忍: {SHIELD_TRAIL_ATR} ATR)")
-            else:
-                improved = (dynamic_shield > old_shield) if side == "LONG" else (dynamic_shield < old_shield)
-                if improved:
-                    position["dynamic_shield_price"] = dynamic_shield
-                    position["profit_lock_display_sl"] = dynamic_shield
-                    logger.info(f"[DYNAMIC_SHIELD_UPDATE] {symbol} {side} 防線上移 → {dynamic_shield:.6f} (峰值: {new_peak:.6f})")
-
-            # ★ 觸點即平：只要即時價格回撤碰到防線，立刻平倉 ★
-            active_shield = position.get("dynamic_shield_price", None)
-            if active_shield is not None:
-                if side == "LONG" and current_price <= active_shield:
-                    logger.warning(f"[EXIT_DYNAMIC_SHIELD] LONG 獲利回撤觸及動態防線 {active_shield:.6f} Instant Tick Exit @ {current_price:.6f}")
-                    return "EXIT_DYNAMIC_SHIELD"
-                elif side == "SHORT" and current_price >= active_shield:
-                    logger.warning(f"[EXIT_DYNAMIC_SHIELD] SHORT 獲利回撤觸及動態防線 {active_shield:.6f} Instant Tick Exit @ {current_price:.6f}")
-                    return "EXIT_DYNAMIC_SHIELD"
-        
         prev1_open = float(prev_1["open"])
         prev2_open = float(prev_2["open"])
         prev2_close = float(prev_2["close"])
