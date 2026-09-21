@@ -140,14 +140,14 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         cond_regular = (g1 and solid1 and c1 > kc_up1) and (g2 and solid2 and c2 > kc_up2 and c2 > ma3_2)
         # 極端：單根大爆發 (剛收盤的這根大於 1.5 ATR 且破軌)
         cond_extreme = (g2 and solid2 and c2 > kc_up2) and is_prev1_extreme
-        # 追車/延續：現在價格與 MA3 都還在軌外，直接上車 (無須限制前幾根)
-        cond_continuation = (live_price > kc_upper_live) and (live_ma3 > kc_upper_live)
+        # 追車/延續：價格在軌外，且即時 MA3 正在向上移動 (允許 MA3 些微滯後在軌內)
+        cond_continuation = (live_price > kc_upper_live) and (live_ma3 > ma3_2)
 
         if cond_regular or cond_extreme or cond_continuation:
             reason = (
                 "🚀 [1-Candle Extreme] LONG: 極端爆發直入" if cond_extreme else
                 "🚀 [2-Candle Breakout] LONG: 兩根破軌確認" if cond_regular else
-                "🚀 [Continuation] LONG: 延續追車直入"
+                "🚀 [Continuation] LONG: 延續追車直入 (MA3向上)"
             )
             return True, reason, {"action": "ENTER"}
             
@@ -156,8 +156,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         cond_regular = (r1 and solid1 and c1 < kc_dn1) and (r2 and solid2 and c2 < kc_dn2 and c2 < ma3_2)
         # 極端：單根大瀑布 (剛收盤的這根大於 1.5 ATR 且破軌)
         cond_extreme = (r2 and solid2 and c2 < kc_dn2) and is_prev1_extreme
-        # 追車/延續：現在價格與 MA3 都還在軌外，直接上車 (無須限制前幾根)
-        cond_continuation = (live_price < kc_lower_live) and (live_ma3 < kc_lower_live)
+        # 追車/延續：價格在軌外，且即時 MA3 正在向下移動 (允許 MA3 些微滯後在軌內)
+        cond_continuation = (live_price < kc_lower_live) and (live_ma3 < ma3_2)
 
         if cond_regular or cond_extreme or cond_continuation:
             reason = (
