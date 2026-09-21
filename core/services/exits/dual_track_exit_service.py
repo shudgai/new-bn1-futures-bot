@@ -92,6 +92,26 @@ class DualTrackExitStrategy(IExitStrategy):
         # 【MA3 峰谷反轉出口】MA3 Peak/Valley Reversal (0.10 ATR)
         # 邏輯：觀察 MA3 順向推進，從峰頂/谷底反向至少 0.10 ATR 則平倉
         # ══════════════════════════════════════════════════════════════
+        # 判斷 CK 是否進入連續衰退 (最近 4 根已收線 K 棒，3段區間嚴格連續縮小)
+        ck_decaying = False
+        if len(frame) >= 5:
+            prev_4 = frame.iloc[-5]
+            kc_mid_1 = float(prev_1.get("kc_middle", 0.0))
+            kc_mid_2 = float(prev_2.get("kc_middle", 0.0))
+            kc_mid_3 = float(prev_3.get("kc_middle", 0.0))
+            kc_mid_4 = float(prev_4.get("kc_middle", 0.0))
+            
+            d3 = kc_mid_1 - kc_mid_2
+            d2 = kc_mid_2 - kc_mid_3
+            d1 = kc_mid_3 - kc_mid_4
+            
+            if side == "LONG":
+                if d1 > 0 and d2 > 0 and d3 > 0 and d1 > d2 > d3:
+                    ck_decaying = True
+            else:
+                if d1 < 0 and d2 < 0 and d3 < 0 and d1 < d2 < d3:
+                    ck_decaying = True
+
         MA3_REVERSAL_ATR = 0.10
         live_ma3 = float(curr.get("ma3", curr.get("ema_3", 0.0)))
         
@@ -103,15 +123,17 @@ class DualTrackExitStrategy(IExitStrategy):
                     position["ma3_peak_value"] = live_ma3
                 elif ma3_peak is not None:
                     if live_ma3 <= ma3_peak - (MA3_REVERSAL_ATR * atr):
-                        logger.warning(f"[EXIT_MA3_REVERSAL] LONG MA3 從峰值 {ma3_peak:.6f} 反向回落 > {MA3_REVERSAL_ATR} ATR, 即時 MA3={live_ma3:.6f}")
-                        return "EXIT_MA3_REVERSAL"
+                        if ck_decaying:
+                            logger.warning(f"[EXIT_MA3_REVERSAL] LONG MA3 從峰值 {ma3_peak:.6f} 反向回落 > {MA3_REVERSAL_ATR} ATR, 且 CK 已進入衰退, 即時 MA3={live_ma3:.6f}")
+                            return "EXIT_MA3_REVERSAL"
             else:
                 if ma3_peak is None or live_ma3 < ma3_peak:
                     position["ma3_peak_value"] = live_ma3
                 elif ma3_peak is not None:
                     if live_ma3 >= ma3_peak + (MA3_REVERSAL_ATR * atr):
-                        logger.warning(f"[EXIT_MA3_REVERSAL] SHORT MA3 從谷底 {ma3_peak:.6f} 反向回升 > {MA3_REVERSAL_ATR} ATR, 即時 MA3={live_ma3:.6f}")
-                        return "EXIT_MA3_REVERSAL"
+                        if ck_decaying:
+                            logger.warning(f"[EXIT_MA3_REVERSAL] SHORT MA3 從谷底 {ma3_peak:.6f} 反向回升 > {MA3_REVERSAL_ATR} ATR, 且 CK 已進入衰退, 即時 MA3={live_ma3:.6f}")
+                            return "EXIT_MA3_REVERSAL"
                         
         estimated_fees = entry_price * TAKER_FEE_RATE * 2.0
 
