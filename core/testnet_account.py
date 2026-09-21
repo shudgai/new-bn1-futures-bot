@@ -1135,6 +1135,7 @@ class BinanceTestnetAccount:
                             if new_sl_price > old_sl:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
+                                pos["profit_lock_display_sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
                                 meta["native_trailing_tier"] = 1
@@ -1157,6 +1158,7 @@ class BinanceTestnetAccount:
                             if new_sl_price < old_sl or old_sl == 0.0:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
+                                pos["profit_lock_display_sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
                                 meta["native_trailing_tier"] = 1
@@ -1305,6 +1307,7 @@ class BinanceTestnetAccount:
                             if new_sl_price > old_sl:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
+                                pos["profit_lock_display_sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
                                 self.log(f"📈 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {trailing_callback:.4%} 平倉）", "SUCCESS")
@@ -1328,6 +1331,7 @@ class BinanceTestnetAccount:
                             if new_sl_price < old_sl or old_sl == 0.0:
                                 meta["sl"] = new_sl_price
                                 pos["sl"] = new_sl_price
+                                pos["profit_lock_display_sl"] = new_sl_price
                                 meta["is_breakeven_moved"] = True
                                 pos["is_breakeven_moved"] = True
                                 self.log(f"📉 [移動止利] {symbol} 無槓桿利潤峰值 {highest_pnl:.4%}，止利線推至 {new_sl_price}（回吐 {trailing_callback:.4%} 平倉）", "SUCCESS")

@@ -1485,6 +1485,7 @@ class PaperAccount:
                     )
                     if improves_usdt:
                         pos["sl"] = meta["sl"] = floor_sl
+                        pos["profit_lock_display_sl"] = floor_sl  # 同步給前端顯示真實鎖利價位
                         current_sl = floor_sl
                         pos["is_breakeven_moved"] = meta["is_breakeven_moved"] = True
                         pos["profit_lock_usdt_armed"] = meta["profit_lock_usdt_armed"] = True
