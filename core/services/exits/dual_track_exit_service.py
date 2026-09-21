@@ -144,14 +144,28 @@ class DualTrackExitStrategy(IExitStrategy):
                 position["touched_kc_outer"] = True
 
         # ══════════════════════════════════════════════════════════════
-        # 優先級 1：極端風險防禦 (硬停損 2.0 ATR - 收盤價確認)
+        # 【二合一終極版：雙重空間判定 (Dual-Zone Detection)】
+        # 核心要求：拒絕收盤價、極速定格 (Instant Tick Exit)
         # ══════════════════════════════════════════════════════════════
-        if side == "LONG" and curr_close <= active_stop:
-            logger.warning(f"[EXIT_HARD_STOP] LONG hit 2.0 ATR stop (Close Confirmed) @ {curr_close:.6f}")
+        
+        # 1. 結構防禦區 (Structural Defense - Waterfall): 2.0 ATR
+        if side == "LONG" and current_price <= active_stop:
+            logger.warning(f"[EXIT_HARD_STOP] LONG hit Structural Defense (2.0 ATR) Instant Tick Exit @ {current_price:.6f}")
             return "EXIT_HARD_STOP_2.0_ATR"
-        if side == "SHORT" and curr_close >= active_stop:
-            logger.warning(f"[EXIT_HARD_STOP] SHORT hit 2.0 ATR stop (Close Confirmed) @ {curr_close:.6f}")
+        if side == "SHORT" and current_price >= active_stop:
+            logger.warning(f"[EXIT_HARD_STOP] SHORT hit Structural Defense (2.0 ATR) Instant Tick Exit @ {current_price:.6f}")
             return "EXIT_HARD_STOP_2.0_ATR"
+            
+        # 2. 戰術獲利區 (Tactical Profit - Pivot): 1.0 ATR
+        is_pivot_entry = position.get("v8_reason", "").find("PIVOT_TURN") != -1
+        if is_pivot_entry:
+            pivot_stop = (entry_price - 1.0 * atr) if side == "LONG" else (entry_price + 1.0 * atr)
+            if side == "LONG" and current_price <= pivot_stop:
+                logger.warning(f"[EXIT_PIVOT_SHIELD] LONG hit Tactical Profit Shield (1.0 ATR) Instant Tick Exit @ {current_price:.6f}")
+                return "EXIT_PIVOT_SHIELD_1.0_ATR"
+            if side == "SHORT" and current_price >= pivot_stop:
+                logger.warning(f"[EXIT_PIVOT_SHIELD] SHORT hit Tactical Profit Shield (1.0 ATR) Instant Tick Exit @ {current_price:.6f}")
+                return "EXIT_PIVOT_SHIELD_1.0_ATR"
 
         # ══════════════════════════════════════════════════════════════
         # 優先級 1.5：極端風險防禦 (大瀑布 / 連續異常)
