@@ -164,19 +164,35 @@ class DualTrackExitStrategy(IExitStrategy):
                 position["touched_kc_outer"] = True
 
         # ══════════════════════════════════════════════════════════════
-        # 【二合一終極版：雙重空間判定 (Dual-Zone Detection)】
-        # 核心要求：拒絕收盤價、極速定格 (Instant Tick Exit)
+        # 【中軌防禦 — KC Body Cross Exit】
+        # 邏輯：
+        #   - 在外軌外側持倉時，不以「開倉價 ± 2.0 ATR」硬性停損
+        #   - 只有當最後一根已收盤 K 線的「實體 (Close)」穿越過 KC 中軌時才平倉
+        #   - 使用已收盤的 prev_1 close，避免盤中影線誤觸發
+        #   - 緊急情況（未曾觸及外軌、或即時價跌穿 2.0 ATR 硬底線）仍保留保命線
         # ══════════════════════════════════════════════════════════════
+        kc_mid = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0.0)))
         
-        # 1. 結構防禦區 (Structural Defense - Waterfall): 2.0 ATR
-        if side == "LONG" and current_price <= active_stop:
-            logger.warning(f"[EXIT_HARD_STOP] LONG hit Structural Defense (2.0 ATR) Instant Tick Exit @ {current_price:.6f}")
-            return "EXIT_HARD_STOP_2.0_ATR"
-        if side == "SHORT" and current_price >= active_stop:
-            logger.warning(f"[EXIT_HARD_STOP] SHORT hit Structural Defense (2.0 ATR) Instant Tick Exit @ {current_price:.6f}")
-            return "EXIT_HARD_STOP_2.0_ATR"
-            
-        # 2. 戰術獲利區 (Tactical Profit - Pivot): 1.0 ATR
+        # 緊急保命線：未曾站上外軌的情況下，仍用 2.0 ATR 硬停損保命
+        # （避免開倉後行情從未突破外軌就反轉，失去所有保護）
+        if not touched_kc:
+            if side == "LONG" and current_price <= active_stop:
+                logger.warning(f"[EXIT_HARD_STOP] LONG (未觸外軌) 2.0 ATR 保命線觸發 @ {current_price:.6f}")
+                return "EXIT_HARD_STOP_2.0_ATR"
+            if side == "SHORT" and current_price >= active_stop:
+                logger.warning(f"[EXIT_HARD_STOP] SHORT (未觸外軌) 2.0 ATR 保命線觸發 @ {current_price:.6f}")
+                return "EXIT_HARD_STOP_2.0_ATR"
+
+        # KC 中軌實體穿越平倉（使用已收盤 K 線的 close，不用影線）
+        if kc_mid > 0:
+            if side == "LONG" and curr_close < kc_mid:
+                logger.warning(f"[EXIT_KC_MID_CROSS] LONG 已收線實體收盤穿越 KC 中軌 {kc_mid:.6f} @ close {curr_close:.6f}")
+                return "EXIT_KC_MID_BODY_CROSS"
+            if side == "SHORT" and curr_close > kc_mid:
+                logger.warning(f"[EXIT_KC_MID_CROSS] SHORT 已收線實體收盤穿越 KC 中軌 {kc_mid:.6f} @ close {curr_close:.6f}")
+                return "EXIT_KC_MID_BODY_CROSS"
+
+        # 戰術獲利區 (Tactical Profit - Pivot): 1.0 ATR
         is_pivot_entry = position.get("v8_reason", "").find("PIVOT_TURN") != -1
         if is_pivot_entry:
             pivot_stop = (entry_price - 1.0 * atr) if side == "LONG" else (entry_price + 1.0 * atr)
