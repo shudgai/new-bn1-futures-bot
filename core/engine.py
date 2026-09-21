@@ -2028,44 +2028,24 @@ class TradingEngine:
         wallet_balance = float(wallet_fn()) if wallet_fn else 0.0
         available_bal = max(0.0, float(self.account.get_available_balance()))
         
-        # 1% Max Risk 動態開倉量 (Dynamic Position Sizing)
-        if wallet_balance > 0:
-            max_loss_usdt = wallet_balance * 0.01
-            entry_price_val = float(planned_price or 0.0)
-            
-            if channel_swing_no_stop:
-                # CHANNEL_SWING 使用 2.0 ATR 作為理論止損距離
-                stop_pct = (2.0 * atr) / entry_price_val if entry_price_val > 0 else 0.0
-            else:
-                original_sl = signal.get("sl") or sl
-                stop_pct = abs(entry_price_val - float(original_sl)) / entry_price_val if entry_price_val > 0 else 0.0
-                
-            from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
-            loss_pct_on_notional = stop_pct + 2 * max(TAKER_FEE_RATE, 0.0) + max(SLIPPAGE_PCT, 0.0)
-            
-            if loss_pct_on_notional > 0:
-                target_notional = max_loss_usdt / loss_pct_on_notional
-                if target_notional < 5.0:
-                    target_notional = 5.0
-                amount = target_notional / leverage
-                projected_risk = max_loss_usdt
-            else:
-                amount = self._continuous_entry_amount()
-                amount, projected_risk = cap_margin_to_trade_risk(
-                    amount, leverage, planned_price, sl
-                )
+        # 全倉分割動態開倉量 (Full Margin Split Position Sizing)
+        active_positions_count = len(self.account.positions)
+        
+        # 為了預留手續費與滑點空間，安全係數設為 0.98
+        safe_margin_ratio = 0.98
+        
+        if active_positions_count == 0:
+            # 第一個幣種開倉：使用總帳戶餘額的 50% 作為保證金
+            target_margin = (wallet_balance * 0.50) * safe_margin_ratio
+            amount = target_margin * leverage
+            self.account.log(f"💰 {symbol} 目前空手 (0持倉)，分配 50% 總保證金 ({target_margin:.2f}U)，放大後部位價值: {amount:.2f}U", "INFO")
         else:
-            if channel_swing_no_stop:
-                fee_safe_available = available_bal / (
-                    1.0 + leverage * max(TAKER_FEE_RATE, 0.0)
-                )
-                amount = min(self._continuous_entry_amount(), fee_safe_available)
-            else:
-                amount = self._continuous_entry_amount()
-            amount, projected_risk = cap_margin_to_trade_risk(
-                amount, leverage, planned_price,
-                planned_price if channel_swing_no_stop else sl,
-            )
+            # 第二個幣種，或是平倉後重開：使用所有的可用餘額
+            target_margin = available_bal * safe_margin_ratio
+            amount = target_margin * leverage
+            self.account.log(f"💰 {symbol} 目前已有持倉 ({active_positions_count}個)，使用 100% 可用餘額 ({target_margin:.2f}U)，放大後部位價值: {amount:.2f}U", "INFO")
+            
+        projected_risk = target_margin # 僅作紀錄，不再用它來阻擋
         # Track D (趨勢延續) 套用 size_fraction 縮減倉位
         size_fraction = float(signal.get("size_fraction", 1.0))
         if size_fraction != 1.0:
