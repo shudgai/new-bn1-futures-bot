@@ -1245,9 +1245,9 @@ class PaperAccount:
             ).upper() == "PIVOT_TURN"
 
             # ================================================================
-            # 🛡️ PIVOT_TURN 三道緊急斷路器（最高優先級，在所有其他出場邏輯之前）
+            # 🛡️ 緊急斷路器（最高優先級，適用所有進場模式）
             # ================================================================
-            if is_pivot_turn and position_atr > 0:
+            if position_atr > 0:
                 # 防線二：KC 中軌結構性破壞
                 if PIVOT_TURN_KC_MIDDLE_EXIT:
                     entry_kc_mid = float(pos.get("entry_kc_middle") or meta.get("entry_kc_middle") or 0.0)
@@ -1281,7 +1281,7 @@ class PaperAccount:
 
                 pivot_emergency_reason = (
                     f"KC中軌跌破({entry_kc_mid:.6g})-結構性破壞" if kc_middle_broken
-                    else f"反向動能過載 {adverse_move/position_atr:.1f}ATR(>{PIVOT_TURN_COUNTER_BODY_ATR}ATR)" if counter_body_triggered
+                    else f"急速反向 {adverse_move/position_atr:.1f}ATR(>{PIVOT_TURN_COUNTER_BODY_ATR}ATR)" if counter_body_triggered
                     else f"極端波動斷路器 {(pivot_intra_high-pivot_intra_low)/position_atr:.1f}ATR(>{PIVOT_TURN_VOLATILITY_ATR_LIMIT}ATR)" if volatility_breaker
                     else None
                 )
@@ -1289,12 +1289,12 @@ class PaperAccount:
                 if pivot_emergency_reason:
                     self._rapid_drop_cooldown[symbol] = now_ts
                     self.log(
-                        f"🚨 [PIVOT斷路器] {symbol} {side} {pivot_emergency_reason}，強制市價平倉！",
+                        f"🚨 [緊急斷路器] {symbol} {side} {pivot_emergency_reason}，強制市價平倉！",
                         "DANGER",
                     )
                     await self.close_position(
                         symbol, curr_p,
-                        f"PIVOT斷路器:{pivot_emergency_reason}",
+                        f"緊急斷路:{pivot_emergency_reason}",
                         is_manual=True,
                     )
                     continue
