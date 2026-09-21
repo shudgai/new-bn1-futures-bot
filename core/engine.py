@@ -1762,6 +1762,11 @@ class TradingEngine:
         if entry_mode != "CHANNEL_SWING":
             self.account.log(f"🛑 {symbol} 舊策略 {entry_mode} 已停用", "WARNING")
             return False
+            
+        # 【強制檢查】最高入場憲法：純粹破軌開倉
+        if not signal.get("is_breakout", False):
+            self.account.log(f"🛑 {symbol} 絕對禁止：若非破軌觸發，則禁止下單！(Logic Drift Prevention)", "ERROR")
+            return False
         signal_volume_ratio = signal.get("volume_ratio")
         import core.config as runtime_config
         min_entry_volume_ratio = (

@@ -98,15 +98,14 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
-    雙軌並行進場入口：
-    1. 常規兩根破軌：第一根破軌，第二根健康站上 KC 及 MA3 外，最新價在軌外。
-    2. 極端單根直入：第一根實體大於 1.5 ATR 且破軌，最新價在軌外，免等第二根確認。
+    純粹破軌開倉 (Pure Breakout Entry)：
+    - 第一步：上一根 K 線收盤破軌（觸發訊號）
+    - 第二步：即時價格處於軌道外側（健康站穩）
     """
     if df is None or len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
 
     prev_1 = df.iloc[-2] # 剛收盤的這根
-    prev_2 = df.iloc[-3] # 前一根
     latest = df.iloc[-1] # 當前未收線
 
     # 取得指標
@@ -117,60 +116,31 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
     kc_upper_live = float(latest.get("kc_upper", 0))
     kc_lower_live = float(latest.get("kc_lower", 0))
     
-    # 輔助函式：計算實體比例
-    def get_kline_stats(row):
-        o, c, h, l = float(row['open']), float(row['close']), float(row['high']), float(row['low'])
-        body = abs(c - o)
-        rng = h - l
-        is_green = c > o
-        is_red = c < o
-        is_solid = (body / rng >= 0.2) if rng > 0 else False
-        return c, is_green, is_red, is_solid, float(row.get('kc_upper', 0)), float(row.get('kc_lower', 0)), float(row.get('ma3', 0)), body
-
-    c1, g1, r1, solid1, kc_up1, kc_dn1, ma3_1, body1 = get_kline_stats(prev_2)
-    c2, g2, r2, solid2, kc_up2, kc_dn2, ma3_2, body2 = get_kline_stats(prev_1)
-
-    # 判定 prev_1 (剛收盤的那根) 是否為極端動能 K 線 (實體 >= 1.0 ATR)
-    is_prev1_extreme = body2 >= 1.0 * current_atr
-            
-    live_ma3 = float(latest.get("ma3", 0))
+    c2 = float(prev_1['close'])
+    kc_up2 = float(prev_1.get('kc_upper', 0))
+    kc_dn2 = float(prev_1.get('kc_lower', 0))
 
     if side == "LONG":
-        # 常規：兩根破軌 (第一根破軌, 第二根站上 KC 外及 MA3 外)
-        cond_regular = (g1 and solid1 and c1 > kc_up1) and (g2 and solid2 and c2 > kc_up2 and c2 > ma3_2)
-        # 極端：單根大爆發 (剛收盤的這根大於 1.0 ATR 且破軌)
-        cond_extreme = (g2 and solid2 and c2 > kc_up2) and is_prev1_extreme
-        # 延續追車：只要即時價格在軌外，且最後一根已收線也在軌外（確認已真實破軌），就允許延續進場
-        # live_ma3 == 0 代表即時K線MA3尚未計算完畢，此時只看價格是否在軌外即可
-        ma3_rising = (live_ma3 > ma3_2) if live_ma3 > 0 else True  # MA3未計算時放行
-        cond_continuation = (live_price > kc_upper_live) and (c2 > kc_up2) and ma3_rising
-
-        if cond_regular or cond_extreme or cond_continuation:
-            reason = (
-                "🚀 [1-Candle Extreme] LONG: 極端爆發直入" if cond_extreme else
-                "🚀 [2-Candle Breakout] LONG: 兩根破軌確認" if cond_regular else
-                "🚀 [Continuation] LONG: 延續追車直入 (價格持續在軌外)"
-            )
-            return True, reason, {"action": "ENTER"}
+        # 1. 破軌觸發：上一根 K 線收盤是否在軌道外？
+        is_breakout_trigger = (c2 > kc_up2)
+        
+        # 2. 健康站穩：最新即時價是否保持在軌道外？
+        is_healthy_stand = (live_price > kc_upper_live)
+        
+        if is_breakout_trigger and is_healthy_stand:
+            return True, "🚀 [Pure Breakout] LONG: 破軌且站穩外側", {"action": "ENTER", "is_breakout": True}
             
     elif side == "SHORT":
-        # 常規：兩根破軌 (第一根破軌, 第二根跌出 KC 外及 MA3 外)
-        cond_regular = (r1 and solid1 and c1 < kc_dn1) and (r2 and solid2 and c2 < kc_dn2 and c2 < ma3_2)
-        # 極端：單根大瀑布 (剛收盤的這根大於 1.0 ATR 且破軌)
-        cond_extreme = (r2 and solid2 and c2 < kc_dn2) and is_prev1_extreme
-        # 延續追車：只要即時價格在軌外，且最後一根已收線也在軌外（確認已真實破軌），就允許延續進場
-        ma3_falling = (live_ma3 < ma3_2) if live_ma3 > 0 else True  # MA3未計算時放行
-        cond_continuation = (live_price < kc_lower_live) and (c2 < kc_dn2) and ma3_falling
+        # 1. 破軌觸發：上一根 K 線收盤是否在軌道外？
+        is_breakout_trigger = (c2 < kc_dn2)
+        
+        # 2. 健康站穩：最新即時價是否保持在軌道外？
+        is_healthy_stand = (live_price < kc_lower_live)
+        
+        if is_breakout_trigger and is_healthy_stand:
+            return True, "🚀 [Pure Breakout] SHORT: 破軌且站穩外側", {"action": "ENTER", "is_breakout": True}
 
-        if cond_regular or cond_extreme or cond_continuation:
-            reason = (
-                "🚀 [1-Candle Extreme] SHORT: 極端瀑布直入" if cond_extreme else
-                "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認" if cond_regular else
-                "🚀 [Continuation] SHORT: 延續追車直入 (價格持續在軌外)"
-            )
-            return True, reason, {"action": "ENTER"}
-
-    return False, "FILTERED_NOT_2_CANDLE_BREAKOUT_OR_CONTINUATION", {}
+    return False, "FILTERED_NOT_PURE_BREAKOUT", {}
 
 
 
