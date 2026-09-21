@@ -2037,13 +2037,13 @@ class TradingEngine:
         if active_positions_count == 0:
             # 第一個幣種開倉：使用總帳戶餘額的 50% 作為保證金
             target_margin = (wallet_balance * 0.50) * safe_margin_ratio
-            amount = target_margin * leverage
-            self.account.log(f"💰 {symbol} 目前空手 (0持倉)，分配 50% 總保證金 ({target_margin:.2f}U)，放大後部位價值: {amount:.2f}U", "INFO")
+            amount = target_margin
+            self.account.log(f"💰 {symbol} 目前空手 (0持倉)，分配 50% 總保證金 ({target_margin:.2f}U) 作為開倉保證金", "INFO")
         else:
             # 第二個幣種，或是平倉後重開：使用所有的可用餘額
             target_margin = available_bal * safe_margin_ratio
-            amount = target_margin * leverage
-            self.account.log(f"💰 {symbol} 目前已有持倉 ({active_positions_count}個)，使用 100% 可用餘額 ({target_margin:.2f}U)，放大後部位價值: {amount:.2f}U", "INFO")
+            amount = target_margin
+            self.account.log(f"💰 {symbol} 目前已有持倉 ({active_positions_count}個)，使用 100% 可用餘額 ({target_margin:.2f}U) 作為開倉保證金", "INFO")
             
         projected_risk = target_margin # 僅作紀錄，不再用它來阻擋
         # Track D (趨勢延續) 套用 size_fraction 縮減倉位
