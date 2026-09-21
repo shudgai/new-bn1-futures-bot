@@ -2008,65 +2008,17 @@ class TradingEngine:
                 target_price = planned_price - 1.5 * atr
             reward_pct = (planned_price - target_price) / planned_price
 
-        # 3. 計算淨盈虧比 (RRR)
+        # 3. 計算淨盈虧比 (RRR) (僅保留計算供日後參考，不作為阻擋條件)
         structured_net_rr, _, _ = compute_net_reward_risk(planned_price, sl, reward_pct)
         
-        # 4. 分級進場權重 (Tiered Entry Logic)
-        tier = 3
-        if structured_net_rr >= 1.5:
-            tier = 1
-        elif structured_net_rr >= 1.0:
-            tier = 2
-            
-        # [HUNTER] 動態加分：MA3 雙重確認
+        # 4. 純結構驅動 (Pure Structural Entry)
+        # 根據使用者指示，拔除 RRR 與動能倍數的干擾，只要策略回傳 True 就直接放行
+        allowed = True
         is_ma3_cross = signal.get("is_ma3_cross", False)
-        if is_ma3_cross and tier > 1:
-            tier = 1
-            
-        # 動態盈虧容錯 (Dynamic RRR Tolerance)
-        is_retesting = "Retest" in v8_reason
-        atr_inflation = signal.get("atr_inflation", 1.0)
-        
-        if is_retesting:
-            tier3_mom_threshold = 0.8
-            tier2_mom_threshold = 0.6
+        if is_ma3_cross:
+            self.account.log(f"🟢 {symbol} 純結構驅動：均線確認 (MA3 Cross)，無視盈虧比，果斷開倉！", "SUCCESS")
         else:
-            # 依據 ATR 通膨係數動態下調特權門檻 (高波動動態鬆綁)
-            if atr_inflation > 2.5:
-                tier3_mom_threshold = 1.2
-            elif atr_inflation > 1.5:
-                tier3_mom_threshold = 1.5
-            else:
-                tier3_mom_threshold = 2.0
-            tier2_mom_threshold = 1.2
-            
-        allowed = False
-        if tier == 1:
-            allowed = True
-            if is_ma3_cross and structured_net_rr < 1.5:
-                self.account.log(f"🟢 {symbol} Tier 1 雙重確認 (RRR={structured_net_rr:.2f}:1, MA3/MA15 Cross) 強制升級放行", "SUCCESS")
-            else:
-                self.account.log(f"🟢 {symbol} Tier 1 極優質機會 (RRR={structured_net_rr:.2f}:1) 放行", "SUCCESS")
-        elif tier == 2:
-            if momentum_multi >= tier2_mom_threshold:
-                allowed = True
-                if is_retesting and momentum_multi < 1.2:
-                    self.account.log(f"🟡 {symbol} Tier 2 結構護航容錯 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 放行", "SUCCESS")
-                else:
-                    self.account.log(f"🟡 {symbol} Tier 2 動能補償 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 放行", "SUCCESS")
-            else:
-                self.account.log(f"🛑 {symbol} Tier 2 (RRR={structured_net_rr:.2f}:1) 但動能不足 ({momentum_multi:.2f}x < {tier2_mom_threshold}) 拒絕", "WARNING")
-        elif tier == 3:
-            if momentum_multi >= tier3_mom_threshold:
-                allowed = True
-                if is_retesting and momentum_multi < 2.0:
-                    self.account.log(f"🔥 {symbol} Tier 3 結構回踩護航 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 容錯放行", "SUCCESS")
-                elif not is_retesting and atr_inflation > 1.5 and momentum_multi < 2.0:
-                    self.account.log(f"🟡 {symbol} Tier 3 高波動動態鬆綁 (ATR通膨={atr_inflation:.1f}x) 容錯放行", "SUCCESS")
-                else:
-                    self.account.log(f"🔥 {symbol} Tier 3 結構極度強勢爆發！(RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 強制放行", "SUCCESS")
-            else:
-                self.account.log(f"🛑 {symbol} Tier 3 (RRR={structured_net_rr:.2f}:1, Mom={momentum_multi:.2f}x) 盈虧比太差且無極端動能，拒絕", "WARNING")
+            self.account.log(f"🟢 {symbol} 純結構驅動：偵測到破軌或回踩結構，無視盈虧比，果斷開倉！", "SUCCESS")
                 
         if not allowed:
             return False
