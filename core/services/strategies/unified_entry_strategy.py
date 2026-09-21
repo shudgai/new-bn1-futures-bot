@@ -98,140 +98,56 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
-    雙軌進場檢驗架構 (HUNTER 版)：
-    1. 尋找過去 15 根內是否有強勢突破 (第一根強勢實體穿出軌道)。
-    2. 如果有突破標記，進入回調待命區。
-    3. 在待命區內，只要價格回落到支撐區間 (KC上/下軌、中軌、MA15)，且目前 K 線收盤價站穩均線，立刻開倉。
+    極簡兩根破軌唯一入口：
+    第一根破軌，第二根健康站上 KC 及 MA3 外，最新價在軌外。
     """
-    if df is None or len(df) < 15:
+    if df is None or len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
 
-    latest = df.iloc[-1]
-    prev_1 = df.iloc[-2]
-    
-    current_atr = float(prev_1.get('atr', 0))
-    if current_atr <= 0:
-        return False, "INVALID_ATR", {}
+    prev_1 = df.iloc[-2] # 第二根 (確認)
+    prev_2 = df.iloc[-3] # 第一根 (破軌)
+    latest = df.iloc[-1] # 當前未收線
 
+    # 取得指標
     kc_upper_live = float(latest.get("kc_upper", 0))
     kc_lower_live = float(latest.get("kc_lower", 0))
-    kc_mid_live = float(latest.get("kc_middle", 0))
-    ma15_live = float(latest.get('ma15', 0))
     
-    # (Extreme Impulse logic will be evaluated after Retest logic as a fallback)
-    latest_body = abs(float(latest['close']) - float(latest['open']))
-    recent_klines = df.iloc[-4:-1] if len(df) >= 4 else df.iloc[:-1] # 取最近 3 根已收盤 K 棒
-    high_3 = float(recent_klines["high"].max()) if not recent_klines.empty else 0.0
-    low_3 = float(recent_klines["low"].min()) if not recent_klines.empty else 0.0
-    range_3 = high_3 - low_3 if high_3 > 0 else 0.0
-    is_extreme_body = (latest_body > 1.5 * current_atr) or (range_3 >= 2.0 * current_atr)
+    # 輔助函式：計算實體比例
+    def get_kline_stats(row):
+        o, c, h, l = float(row['open']), float(row['close']), float(row['high']), float(row['low'])
+        body = abs(c - o)
+        rng = h - l
+        is_green = c > o
+        is_red = c < o
+        is_solid = (body / rng >= 0.2) if rng > 0 else False
+        return c, is_green, is_red, is_solid, float(row.get('kc_upper', 0)), float(row.get('kc_lower', 0)), float(row.get('ma3', 0))
 
-    # 1. 動態階梯記憶 (Dynamic Stair-Stepping Memory)
-    # 自動更新基準高點為最近的局部破軌，且容許波段延續 (最長記憶 60 根)，除非跌穿反向軌道破壞結構。
-    breakout_found = False
-    breakout_bars_ago = 0
-    max_lookback = min(60, len(df) - 1)
-    
+    c1, g1, r1, solid1, kc_up1, kc_dn1, ma3_1 = get_kline_stats(prev_2)
+    c2, g2, r2, solid2, kc_up2, kc_dn2, ma3_2 = get_kline_stats(prev_1)
+
     if side == "LONG":
-        for i in range(1, max_lookback + 1):
-            p_cand = df.iloc[-(i + 1)]
-            # 若途中跌破下軌 (看收盤價，容許插針洗盤)，代表多頭結構已被破壞，清空記憶
-            if float(p_cand['close']) < float(p_cand.get("kc_lower", kc_lower_live)):
-                break
-                
-            p_body = abs(float(p_cand['close']) - float(p_cand['open']))
-            p_solid = p_body >= 0.15 * current_atr
-            p_green = float(p_cand['close']) > float(p_cand['open'])
-            p_out = float(p_cand['close']) > float(p_cand.get("kc_upper", kc_upper_live))
-            
-            if p_solid and p_green and p_out:
-                breakout_found = True
-                breakout_bars_ago = i
-                break
-                
-    elif side == "SHORT":
-        for i in range(1, max_lookback + 1):
-            p_cand = df.iloc[-(i + 1)]
-            # 若途中突破上軌 (看收盤價，容許插針洗盤)，代表空頭結構已被破壞，清空記憶
-            if float(p_cand['close']) > float(p_cand.get("kc_upper", kc_upper_live)):
-                break
-                
-            p_body = abs(float(p_cand['close']) - float(p_cand['open']))
-            p_solid = p_body >= 0.15 * current_atr
-            p_red = float(p_cand['close']) < float(p_cand['open'])
-            p_out = float(p_cand['close']) < float(p_cand.get("kc_lower", kc_lower_live))
-            
-            if p_solid and p_red and p_out:
-                breakout_found = True
-                breakout_bars_ago = i
-                break
+        # 1. 第一根破軌
+        cond1 = g1 and solid1 and (c1 > kc_up1)
+        # 2. 第二根站上 KC 外及 MA3 外
+        cond2 = g2 and solid2 and (c2 > kc_up2) and (c2 > ma3_2)
+        # 3. 最新價嚴格在軌外
+        cond3 = live_price > kc_upper_live
 
-    if not breakout_found:
-        # 結構純化：嚴格要求破軌記憶，無例外。
-        # 即使出現極端爆發 K 線，沒有破軌記憶就不開倉。
-        return False, "FILTERED_NO_BREAKOUT_MEMORY", {}
-
-        
-    # 在待命模式下，檢查是否回調到紅線 (MA15) 或 KC 邊緣附近
-    retest_margin = 0.8 * current_atr
-    
-    if side == "LONG":
-        latest_low = float(latest.get('low', live_price))
-        is_near_ma15 = latest_low <= (ma15_live + retest_margin)
-        is_near_kc_upper = latest_low <= (kc_upper_live + retest_margin)
-        is_near_kc_mid = latest_low <= (kc_mid_live + retest_margin)
-        
-        is_retesting = is_near_ma15 or is_near_kc_upper or is_near_kc_mid
-        is_closing_above_ma15 = live_price > ma15_live
-        
-        # 情況一：標準回調確認 (優先)
-        if is_retesting and is_closing_above_ma15:
-            ma3_live = float(latest.get('ma3', 0))
-            ma3_prev = float(prev_1.get('ma3', 0))
-            ma15_prev = float(prev_1.get('ma15', 0))
-            is_ma3_cross = (ma3_prev < ma15_prev) and (ma3_live >= ma15_live)
-            
-            reason = f"[HUNTER] LONG Retest after {breakout_bars_ago} bars"
-            if is_ma3_cross:
-                reason += " (High Momentum Cross)"
-            return True, reason, {"action": "ENTER", "is_ma3_cross": is_ma3_cross}
-            
-        # 情況二：無回調點但極端爆發 (特權通道)
-        latest_green = float(latest['close']) > float(latest['open'])
-        latest_out = live_price > kc_upper_live
-        if is_extreme_body and latest_green and latest_out:
-            return True, "[HUNTER] Extreme Impulse Breakout (Bypass Retest)", {"action": "ENTER"}
-            
-        return False, f"FILTERED_WAITING_RETEST_LONG (Near support: {is_retesting}, Above MA15: {is_closing_above_ma15})", {}
+        if cond1 and cond2 and cond3:
+            return True, "🚀 [2-Candle Breakout] LONG: 兩根破軌確認", {"action": "ENTER"}
             
     elif side == "SHORT":
-        latest_high = float(latest.get('high', live_price))
-        is_near_ma15 = latest_high >= (ma15_live - retest_margin)
-        is_near_kc_lower = latest_high >= (kc_lower_live - retest_margin)
-        is_near_kc_mid = latest_high >= (kc_mid_live - retest_margin)
-        
-        is_retesting = is_near_ma15 or is_near_kc_lower or is_near_kc_mid
-        is_closing_below_ma15 = live_price < ma15_live
-        
-        # 情況一：標準回調確認 (優先)
-        if is_retesting and is_closing_below_ma15:
-            ma3_live = float(latest.get('ma3', 0))
-            ma3_prev = float(prev_1.get('ma3', 0))
-            ma15_prev = float(prev_1.get('ma15', 0))
-            is_ma3_cross = (ma3_prev > ma15_prev) and (ma3_live <= ma15_live)
-            
-            reason = f"[HUNTER] SHORT Retest after {breakout_bars_ago} bars"
-            if is_ma3_cross:
-                reason += " (High Momentum Cross)"
-            return True, reason, {"action": "ENTER", "is_ma3_cross": is_ma3_cross}
-            
-        # 情況二：無回調點但極端爆發 (特權通道)
-        latest_red = float(latest['close']) < float(latest['open'])
-        latest_out = live_price < kc_lower_live
-        if is_extreme_body and latest_red and latest_out:
-            return True, "[HUNTER] Extreme Impulse Breakout (Bypass Retest)", {"action": "ENTER"}
-            
-        return False, f"FILTERED_WAITING_RETEST_SHORT (Near support: {is_retesting}, Below MA15: {is_closing_below_ma15})", {}
+        # 1. 第一根破軌
+        cond1 = r1 and solid1 and (c1 < kc_dn1)
+        # 2. 第二根跌出 KC 外及 MA3 外
+        cond2 = r2 and solid2 and (c2 < kc_dn2) and (c2 < ma3_2)
+        # 3. 最新價嚴格在軌外
+        cond3 = live_price < kc_lower_live
+
+        if cond1 and cond2 and cond3:
+            return True, "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認", {"action": "ENTER"}
+
+    return False, "FILTERED_NOT_2_CANDLE_BREAKOUT", {}
 
 
 
