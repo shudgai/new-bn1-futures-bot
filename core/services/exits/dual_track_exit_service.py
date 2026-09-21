@@ -12,7 +12,8 @@ DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_
                           "entry_atr",
                           "dynamic_shield_peak",    # ← 追蹤歷史最優即時價格（峰值）
                           "dynamic_shield_price",   # ← 動態護城河防線（觸點即平）
-                          "profit_lock_display_sl"] # ← UI 鎖利顯示
+                          "profit_lock_display_sl", # ← UI 鎖利顯示
+                          "ma3_peak_value"]         # ← MA3 峰谷追蹤
 
 logger = logging.getLogger("DualTrackExit")
 
@@ -88,12 +89,31 @@ class DualTrackExitStrategy(IExitStrategy):
         kc_lower = float(prev_1.get("kc_lower", curr_close))
         
         # ══════════════════════════════════════════════════════════════
-        # 【動態護城河已停用】Dynamic Shield DISABLED (選項3)
-        # 唯一出場訊號：KC 中軌實體穿越 (EXIT_KC_MID_BODY_CROSS)
-        # 大瀑布/連續異常保險仍保留作為最後防線
+        # 【MA3 峰谷反轉出口】MA3 Peak/Valley Reversal (0.10 ATR)
+        # 邏輯：觀察 MA3 順向推進，從峰頂/谷底反向至少 0.10 ATR 則平倉
         # ══════════════════════════════════════════════════════════════
+        MA3_REVERSAL_ATR = 0.10
+        live_ma3 = float(curr.get("ma3", curr.get("ema_3", 0.0)))
+        
+        if live_ma3 > 0:
+            ma3_peak = position.get("ma3_peak_value", None)
+            
+            if side == "LONG":
+                if ma3_peak is None or live_ma3 > ma3_peak:
+                    position["ma3_peak_value"] = live_ma3
+                elif ma3_peak is not None:
+                    if live_ma3 <= ma3_peak - (MA3_REVERSAL_ATR * atr):
+                        logger.warning(f"[EXIT_MA3_REVERSAL] LONG MA3 從峰值 {ma3_peak:.6f} 反向回落 > {MA3_REVERSAL_ATR} ATR, 即時 MA3={live_ma3:.6f}")
+                        return "EXIT_MA3_REVERSAL"
+            else:
+                if ma3_peak is None or live_ma3 < ma3_peak:
+                    position["ma3_peak_value"] = live_ma3
+                elif ma3_peak is not None:
+                    if live_ma3 >= ma3_peak + (MA3_REVERSAL_ATR * atr):
+                        logger.warning(f"[EXIT_MA3_REVERSAL] SHORT MA3 從谷底 {ma3_peak:.6f} 反向回升 > {MA3_REVERSAL_ATR} ATR, 即時 MA3={live_ma3:.6f}")
+                        return "EXIT_MA3_REVERSAL"
+                        
         estimated_fees = entry_price * TAKER_FEE_RATE * 2.0
-
 
         prev1_open = float(prev_1["open"])
         prev2_open = float(prev_2["open"])
