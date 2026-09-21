@@ -109,14 +109,7 @@ class DualTrackExitStrategy(IExitStrategy):
                 
                 is_significant_fallback = fallback > threshold
                 
-                # 判斷結構破壞 (MA3 作為支撐/壓力基準)
-                ma_val = float(prev_1.get("ma3", prev_1.get("ema_3", prev_1.get("ema_10", 0.0))))
-                if ma_val > 0:
-                    structure_broken = (current_price < ma_val) if side == "LONG" else (current_price > ma_val)
-                else:
-                    structure_broken = True # 若無 MA 數據，預設放行
-                
-                # 計算量能衰竭
+                # 計算量能衰竭 (僅做日誌參考，不干預明確的平倉點)
                 try:
                     current_volume = float(prev_1.get("volume", 0))
                     # 取過去 N 根已收線的量能平均
@@ -131,17 +124,25 @@ class DualTrackExitStrategy(IExitStrategy):
                     is_volume_weak = False
                     volume_avg = 0.0
                 
-                # 最終判定：結構破壞 + 幅度足夠
-                # (量能衰竭作為輔助確認，即便量沒縮，只要結構破壞+回落夠深也平倉)
-                if structure_broken and is_significant_fallback:
+                # 最終判定：純粹依賴明確的平倉點 (Peak - 0.75*ATR)
+                if is_significant_fallback:
                     position["guaranteed_exit_price"] = peak
                     # 標記平倉後進入量能冷卻期
                     position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
+                    
+                    exit_point = peak - threshold if side == "LONG" else peak + threshold
+                    
                     logger.warning(
-                        f"[TRUE_PEAK_EXIT] {side} 真峰谷結構破壞！Broke MA={ma_val:.6f}, Fallback={fallback:.6f} > {threshold:.6f}, "
-                        f"Vol_Weak={is_volume_weak} (Vol={current_volume:.2f}, Avg={volume_avg:.2f})"
+                        f"[TRUE_PEAK_EXIT] {side} 真峰谷確認 (跌破精確平倉點)！"
+                        f"Current: {current_price:.6f}, Exit Point: {exit_point:.6f} (Peak: {peak:.6f}, ATR: {atr:.6f}), "
+                        f"Vol_Weak: {is_volume_weak} (Vol: {current_volume:.2f}, Avg: {volume_avg:.2f})"
                     )
                     return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
+                else:
+                    exit_point = peak - threshold if side == "LONG" else peak + threshold
+                    distance_to_exit = current_price - exit_point if side == "LONG" else exit_point - current_price
+                    # 這邊可以加入 debug 紀錄（可選）
+                    # logger.debug(f"🟢 [HOLD] {side} Price {current_price:.2f} above Exit Point {exit_point:.2f} (Buffer: {distance_to_exit:.2f})")
 
         # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
