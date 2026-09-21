@@ -98,67 +98,68 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
-    純粹破軌開倉 (Pure Breakout Entry)：
-    - 第一步：上一根 K 線收盤破軌（觸發訊號）
-    - 第二步：即時價格處於軌道外側（健康站穩）
+    嚴格拆分狀態的純粹破軌開倉 (Pure Breakout Entry)：
+    - 狀態 1：首倉開倉 (First Entry) = 前一收盤破軌 + 最新收盤站穩 (KC外側且MA3外側)
+    - 狀態 2：延續開倉 (Continuation) = 前一收盤站穩 + 最新收盤站穩
+    這裡使用已收線 (df.iloc[-2]) 作為判斷基準，避免未收線跳動假訊號。
     """
     if df is None or len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
 
-    prev_1 = df.iloc[-2] # 剛收盤的這根
-    prev_2 = df.iloc[-3]
-    latest = df.iloc[-1] # 當前未收線
+    # 取已收線的 K 線數據
+    # df.iloc[-1] 是未收線(Live)，iloc[-2] 是剛收線(Current Confirmed)，iloc[-3] 是前一根收線(Prev Confirmed)
+    current_candle = df.iloc[-2]
+    prev_candle = df.iloc[-3]
 
-    c1 = float(prev_2['close'])
-    o1 = float(prev_2['open'])
-    c2 = float(prev_1['close'])
-    o2 = float(prev_1['open'])
-    
-    kc_up1 = float(prev_2.get('kc_upper', 0))
-    kc_up2 = float(prev_1.get('kc_upper', 0))
-    kc_dn1 = float(prev_2.get('kc_lower', 0))
-    kc_dn2 = float(prev_1.get('kc_lower', 0))
-    
-    ma3_2 = float(prev_1.get('ma3', 0))
-    live_ma3 = float(latest.get('ma3', 0))
-    
-    kc_upper_live = float(latest.get("kc_upper", 0))
-    kc_lower_live = float(latest.get("kc_lower", 0))
-    
-    kc_mid1 = float(prev_2.get('kc_middle', prev_2.get('ema_20', 0)))
-    kc_mid2 = float(prev_1.get('kc_middle', prev_1.get('ema_20', 0)))
+    close = float(current_candle['close'])
+    kc_upper = float(current_candle.get('kc_upper', 0))
+    kc_lower = float(current_candle.get('kc_lower', 0))
+    ma3 = float(current_candle.get('ma3', current_candle.get('ema_3', 0)))
+
+    prev_close = float(prev_candle['close'])
+    prev_kc_upper = float(prev_candle.get('kc_upper', 0))
+    prev_kc_lower = float(prev_candle.get('kc_lower', 0))
+    prev_ma3 = float(prev_candle.get('ma3', prev_candle.get('ema_3', 0)))
 
     if side == "LONG":
-        kc_going_up = (kc_mid2 > kc_mid1)
-        ma3_cross_up = (ma3_2 <= kc_up2) and (live_ma3 > kc_upper_live)
-        price_outside = (live_price > kc_upper_live)
+        # 定義「健康站在外側」
+        is_outside_kc = close > kc_upper
+        is_above_ma3 = close > ma3
+        is_healthy_outside = is_outside_kc and is_above_ma3
         
-        cond_ma3_cross = kc_going_up and ma3_cross_up and price_outside
-        cond_2_candle = (c1 > o1) and (c1 > kc_up1) and (c2 > o2) and (c2 > kc_up2) and price_outside
-        cond_continuation = (c2 > kc_up2) and price_outside and (live_ma3 > ma3_2 if live_ma3 > 0 else True)
-        
-        if cond_ma3_cross:
-            return True, "🚀 [MA3 Cross] LONG: MA3穿越KC外軌", {"action": "ENTER", "is_breakout": True}
-        elif cond_2_candle:
-            return True, "🚀 [2-Candle Breakout] LONG: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
-        elif cond_continuation:
+        was_outside_kc = prev_close > prev_kc_upper
+        was_above_ma3 = prev_close > prev_ma3
+        was_healthy_outside = was_outside_kc and was_above_ma3
+
+        # 子情況 1：延續開倉 (Continuation)
+        # 條件：前一根已收線已經在外側，且當前已收線仍在健康外側
+        if was_healthy_outside and is_healthy_outside:
             return True, "🚀 [Continuation] LONG: 延續追車直入", {"action": "ENTER", "is_breakout": True}
             
+        # 子情況 2：首倉開倉 (First Entry)
+        # 條件：前一根「突破」了 KC (Close > KC_Upper)，當前「確認」站在 KC 及 MA3 外側
+        prev_broke_kc = prev_close > prev_kc_upper
+        if prev_broke_kc and is_healthy_outside:
+            return True, "🚀 [First Entry] LONG: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
+
     elif side == "SHORT":
-        kc_going_down = (kc_mid2 < kc_mid1)
-        ma3_cross_dn = (ma3_2 >= kc_dn2) and (live_ma3 < kc_lower_live)
-        price_outside = (live_price < kc_lower_live)
+        # 定義「健康站在外側」
+        is_outside_kc = close < kc_lower
+        is_below_ma3 = close < ma3
+        is_healthy_outside = is_outside_kc and is_below_ma3
         
-        cond_ma3_cross = kc_going_down and ma3_cross_dn and price_outside
-        cond_2_candle = (c1 < o1) and (c1 < kc_dn1) and (c2 < o2) and (c2 < kc_dn2) and price_outside
-        cond_continuation = (c2 < kc_dn2) and price_outside and (live_ma3 < ma3_2 if live_ma3 > 0 else True)
-        
-        if cond_ma3_cross:
-            return True, "🚀 [MA3 Cross] SHORT: MA3穿越KC外軌", {"action": "ENTER", "is_breakout": True}
-        elif cond_2_candle:
-            return True, "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
-        elif cond_continuation:
+        was_outside_kc = prev_close < prev_kc_lower
+        was_below_ma3 = prev_close < prev_ma3
+        was_healthy_outside = was_outside_kc and was_below_ma3
+
+        # 子情況 1：延續開倉 (Continuation)
+        if was_healthy_outside and is_healthy_outside:
             return True, "🚀 [Continuation] SHORT: 延續追車直入", {"action": "ENTER", "is_breakout": True}
+            
+        # 子情況 2：首倉開倉 (First Entry)
+        prev_broke_kc = prev_close < prev_kc_lower
+        if prev_broke_kc and is_healthy_outside:
+            return True, "🚀 [First Entry] SHORT: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
 
     return False, "FILTERED_NOT_PURE_BREAKOUT", {}
 

@@ -98,6 +98,42 @@ class DualTrackExitStrategy(IExitStrategy):
                     position["profit_lock_display_sl"] = current_price  # UI 即時同步
 
         # ══════════════════════════════════════════════════════════════
+        # 【新增】峰谷偵測平倉 (Peak/Valley Exit)
+        # ══════════════════════════════════════════════════════════════
+        from core.config import ENABLE_PEAK_VALLEY_EXIT, PEAK_EXIT_ATR_MULTIPLIER, USE_MA_STRUCTURE_FILTER, MA_PERIOD
+        if ENABLE_PEAK_VALLEY_EXIT and current_price > 0:
+            peak = position.get("price_peak_value")
+            if peak is not None and atr > 0:
+                offset = atr * PEAK_EXIT_ATR_MULTIPLIER
+                should_exit = False
+                
+                if side == "LONG":
+                    trigger_price = peak - offset
+                    if current_price < trigger_price:
+                        should_exit = True
+                else:
+                    trigger_price = peak + offset
+                    if current_price > trigger_price:
+                        should_exit = True
+                
+                if should_exit and USE_MA_STRUCTURE_FILTER:
+                    ma_key = f"ma_{MA_PERIOD}"
+                    # Fallback to ema_20 if specified MA is missing
+                    ma_val = float(prev_1.get(ma_key, prev_1.get("ema_20", 0.0)))
+                    if ma_val > 0:
+                        if side == "LONG" and current_price > ma_val:
+                            should_exit = False
+                        elif side == "SHORT" and current_price < ma_val:
+                            should_exit = False
+
+                if should_exit:
+                    position["guaranteed_exit_price"] = peak  # 可以用 peak 結算，或由系統直接以市價平倉
+                    logger.warning(
+                        f"[EXIT_PEAK_VALLEY] {side} 結構回落觸發！Peak={peak:.6f}, Trigger={trigger_price:.6f}, Current={current_price:.6f}"
+                    )
+                    return "EXIT_PEAK_VALLEY_BREAK"
+
+        # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
         # 以動態錨點作為結算依據（拿走路程中的最高點利潤）
         # ══════════════════════════════════════════════════════════════

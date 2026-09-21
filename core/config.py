@@ -443,6 +443,13 @@ TRAILING_SL_ATR_MULT = float(os.getenv("TRAILING_SL_ATR_MULT", "3.0"))
 MIN_NET_REWARD_RISK = float(os.getenv("MIN_NET_REWARD_RISK", "1.5"))
 ENTRY_MIN_QUALITY_BONUS = int(os.getenv("ENTRY_MIN_QUALITY_BONUS", "3"))
 
+# --- 峰谷偵測平倉 (Peak/Valley Exit) ---
+ENABLE_PEAK_VALLEY_EXIT = os.getenv("ENABLE_PEAK_VALLEY_EXIT", "true").lower() == "true"
+PEAK_EXIT_ATR_MULTIPLIER = float(os.getenv("PEAK_EXIT_ATR_MULTIPLIER", "0.75"))
+USE_MA_STRUCTURE_FILTER = os.getenv("USE_MA_STRUCTURE_FILTER", "false").lower() == "true"
+MA_PERIOD = int(os.getenv("MA_PERIOD", "10"))
+
+
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 # 關閉整體移動停利/移動止損機制，僅保留手動平倉行為
