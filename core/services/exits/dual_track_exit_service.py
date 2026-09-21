@@ -89,8 +89,8 @@ class DualTrackExitStrategy(IExitStrategy):
         kc_lower = float(prev_1.get("kc_lower", curr_close))
         
         # ══════════════════════════════════════════════════════════════
-        # 【MA3 峰谷反轉出口】MA3 Peak/Valley Reversal (0.50 ATR)
-        # 邏輯：觀察 MA3 順向推進，從峰頂/谷底反向至少 0.50 ATR 則平倉
+        # 【真峰谷三點式鎖利 - 條件一】Price Peak/Valley Reversal (0.50 ATR)
+        # 邏輯：精確追蹤即時最高/最低價，從極值反向至少 0.50 ATR 且 CK 衰退則平倉
         # ══════════════════════════════════════════════════════════════
         # 判斷 CK 是否進入連續衰退 (最近 4 根已收線 K 棒，3段區間嚴格連續縮小)
         ck_decaying = False
@@ -112,28 +112,36 @@ class DualTrackExitStrategy(IExitStrategy):
                 if d1 < 0 and d2 < 0 and d3 < 0 and d1 < d2 < d3:
                     ck_decaying = True
 
-        MA3_REVERSAL_ATR = 0.50
-        live_ma3 = float(curr.get("ma3", curr.get("ema_3", 0.0)))
+        PRICE_REVERSAL_ATR = 0.50
         
-        if live_ma3 > 0:
-            ma3_peak = position.get("ma3_peak_value", None)
+        if current_price > 0:
+            price_peak = position.get("price_peak_value", None)
             
             if side == "LONG":
-                if ma3_peak is None or live_ma3 > ma3_peak:
-                    position["ma3_peak_value"] = live_ma3
-                elif ma3_peak is not None:
-                    if live_ma3 <= ma3_peak - (MA3_REVERSAL_ATR * atr):
+                if price_peak is None or current_price > price_peak:
+                    position["price_peak_value"] = current_price
+                elif price_peak is not None:
+                    if current_price <= price_peak - (PRICE_REVERSAL_ATR * atr):
                         if ck_decaying:
-                            logger.warning(f"[EXIT_MA3_REVERSAL] LONG MA3 從峰值 {ma3_peak:.6f} 反向回落 > {MA3_REVERSAL_ATR} ATR, 且 CK 已進入衰退, 即時 MA3={live_ma3:.6f}")
-                            return "EXIT_MA3_REVERSAL"
+                            logger.warning(f"[EXIT_TRUE_PEAK_REVERSAL] LONG 價格從真峰值 {price_peak:.6f} 反向回落 >= {PRICE_REVERSAL_ATR} ATR, 且 CK 已進入衰退, 即時價格={current_price:.6f}")
+                            return "EXIT_TRUE_PEAK_REVERSAL"
             else:
-                if ma3_peak is None or live_ma3 < ma3_peak:
-                    position["ma3_peak_value"] = live_ma3
-                elif ma3_peak is not None:
-                    if live_ma3 >= ma3_peak + (MA3_REVERSAL_ATR * atr):
+                if price_peak is None or current_price < price_peak:
+                    position["price_peak_value"] = current_price
+                elif price_peak is not None:
+                    if current_price >= price_peak + (PRICE_REVERSAL_ATR * atr):
                         if ck_decaying:
-                            logger.warning(f"[EXIT_MA3_REVERSAL] SHORT MA3 從谷底 {ma3_peak:.6f} 反向回升 > {MA3_REVERSAL_ATR} ATR, 且 CK 已進入衰退, 即時 MA3={live_ma3:.6f}")
-                            return "EXIT_MA3_REVERSAL"
+                            logger.warning(f"[EXIT_TRUE_PEAK_REVERSAL] SHORT 價格從真谷底 {price_peak:.6f} 反向回升 >= {PRICE_REVERSAL_ATR} ATR, 且 CK 已進入衰退, 即時價格={current_price:.6f}")
+                            return "EXIT_TRUE_PEAK_REVERSAL"
+
+        # ══════════════════════════════════════════════════════════════
+        # 【真峰谷三點式鎖利 - 條件二】目標獲利達標 (Take Profit Target)
+        # ══════════════════════════════════════════════════════════════
+        tp_price = position.get("take_profit_price") or position.get("tp")
+        if tp_price:
+            if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
+                logger.warning(f"[EXIT_TAKE_PROFIT_TARGET] {side} 價格 {current_price:.6f} 觸及預設目標獲利 {tp_price:.6f}，毫秒級即時平倉")
+                return "EXIT_TAKE_PROFIT_TARGET"
                         
         estimated_fees = entry_price * TAKER_FEE_RATE * 2.0
 
