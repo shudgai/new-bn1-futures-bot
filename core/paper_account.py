@@ -1363,12 +1363,6 @@ class PaperAccount:
 
             if await enforce_hard_stop(self, symbol, curr_p):
                 continue
-            if is_channel_swing:
-                # Cross-lock is a reference price only; Channel Swing exits
-                # exclusively through the confirmed opposite KC breakout.
-                pos["peak_pnl_pct"] = highest_pnl
-                total_unrealized += unrealized
-                continue
             if CONTINUOUS_PIVOT_ONLY:
                 pos["sl"] = meta["sl"] = 0.0
                 pos["tp"] = meta["tp"] = 0.0
