@@ -608,6 +608,8 @@ def detect_ma3_ma15_cross_and_turn(df, allow_live_pivot=False):
     df = df.copy()
     if 'ma3' not in df.columns:
         df['ma3'] = df['close'].rolling(window=3).mean()
+    if 'ema_10' not in df.columns:
+        df['ema_10'] = df['close'].ewm(span=10, adjust=False).mean()
     if 'ema_20' not in df.columns:
         df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
     if 'ma15' not in df.columns:
@@ -1050,6 +1052,8 @@ def compute_position_trigger(df: pd.DataFrame, side: str, ma_period: int = 20, l
         df['ma5'] = df['close'].rolling(window=5).mean()
     if 'ma3' not in df.columns:
         df['ma3'] = df['close'].rolling(window=3).mean()
+    if 'ema_10' not in df.columns:
+        df['ema_10'] = df['close'].ewm(span=10, adjust=False).mean()
     if 'ema_20' not in df.columns:
         df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
 

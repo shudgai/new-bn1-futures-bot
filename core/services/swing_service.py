@@ -33,15 +33,7 @@ def significant_ma3_turn(position, frame, price):
         closed_ma = sum(closes) / 3.
         ma = (sum(closes[-2:]) + price) / 3.
         if not state:
-            # 計算通道斜率，如果在強勢趨勢中，則給予 0.15 ATR 的寬容度避免被小抖動洗出；如果趨勢平緩則 0 容忍
-            try:
-                kc_mids = [float(v) for v in frame['kc_middle'].iloc[-4:-1]]
-                kc_slope = sign * (kc_mids[-1] - kc_mids[0]) / 3.0
-                dynamic_threshold = atr * 0.15 if kc_slope > atr * 0.03 else 0.0
-            except:
-                dynamic_threshold = atr * 0.10
-
-            position[key] = dict(identity=identity, version=3, extreme=ma, threshold=dynamic_threshold,
+            position[key] = dict(identity=identity, version=3, extreme=ma,
                                  favorable=False, last_bar=bar, pending=False)
             return False
         if bar < state['last_bar']:
@@ -52,11 +44,28 @@ def significant_ma3_turn(position, frame, price):
         if advance > 0:
             state['extreme'] = ma
             state['favorable'] = state['favorable'] or sign * (ma - closed_ma) > 0
-        elif (state['favorable']
-              and -sign * (price - closes[0]) / 3. >= state['threshold'] - abs(ma) * 1e-12
-              and -advance >= state['threshold'] - abs(ma) * 1e-12):
-            state['pending'] = True
-            return True
+            
+        if state['favorable']:
+            ma3_current = ma
+            ema10 = float(frame.iloc[-1].get('ema_10', price))
+            symbol = position.get('symbol', 'UNKNOWN')
+            
+            if side == 'LONG':
+                if price < ma3_current:
+                    if ma3_current < ema10:
+                        state['pending'] = True
+                        print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (Close={price:.6f} < MA3={ma3_current:.6f} < EMA10={ema10:.6f})", flush=True)
+                        return True
+                    else:
+                        print(f"[{symbol}] Price retraced MA3, but structure intact (MA3>EMA10). Holding position.", flush=True)
+            elif side == 'SHORT':
+                if price > ma3_current:
+                    if ma3_current > ema10:
+                        state['pending'] = True
+                        print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (Close={price:.6f} > MA3={ma3_current:.6f} > EMA10={ema10:.6f})", flush=True)
+                        return True
+                    else:
+                        print(f"[{symbol}] Price retraced MA3, but structure intact (MA3<EMA10). Holding position.", flush=True)
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         position.pop(key, None)
     return False

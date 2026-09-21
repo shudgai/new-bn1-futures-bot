@@ -2299,10 +2299,10 @@ class TradingEngine:
             if position:
                 return False
             exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
-            if not position and exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
-                "ENTER", False, side, frame, exit_info, symbol, live_price=price,
-            ):
-                return False
+            if not position and exit_info and exit_info.get("require_new_closed_break"):
+                is_blocked = self._channel_peak_exit_reentry_blocked("ENTER", False, side, frame, exit_info, symbol, live_price=price)
+                if is_blocked and not is_valid_entry:
+                    return False
             bar_id = self._channel_candidate_bar_id(frame)
             used = getattr(self, "_channel_used_confirmation", None)
             if used is None:

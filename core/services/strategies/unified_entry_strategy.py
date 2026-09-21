@@ -169,4 +169,6 @@ class UnifiedEntryStrategy(IEntryStrategy):
                 base_dict["atr_inflation"] = 1.0
                 
             return True, reason, base_dict
+            
+        # 若為非破軌，強制回傳 WAIT，確保不會被其它可能殘留的阻擋邏輯（如 BLOCK_LONG_MACRO_WAVE_EXHAUSTED）污染。
         return False, reason, {"action": "WAIT"}
