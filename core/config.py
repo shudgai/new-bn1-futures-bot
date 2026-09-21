@@ -529,14 +529,21 @@ DISASTER_STOP_MULTIPLIER = float(os.getenv("DISASTER_STOP_MULTIPLIER", "1.0"))
 #   以 50x 槓桿換算，倉位在單一 ticker 週期內已虧損約 20%。
 # RAPID_DROP_COOLDOWN_SEC：閃崩觸發後的冷卻秒數，防止在劇烈震盪中
 #   連續多次平倉（通常此時部位已平，冷卻保護只是防禦重入後再次觸發）。
-# 關閉閃崩自動平倉偵測，避免非手動情況下自動市價平倉
-ENABLE_RAPID_ADVERSE_DROP = os.getenv("ENABLE_RAPID_ADVERSE_DROP", "false").lower() == "true"
+ENABLE_RAPID_ADVERSE_DROP = os.getenv("ENABLE_RAPID_ADVERSE_DROP", "true").lower() == "true"
 RAPID_ADVERSE_DROP_PCT    = float(os.getenv("RAPID_ADVERSE_DROP_PCT", "0.004"))
 RAPID_DROP_COOLDOWN_SEC   = float(os.getenv("RAPID_DROP_COOLDOWN_SEC", "30"))
 RAPID_ADVERSE_SPEED_PCT = float(os.getenv("RAPID_ADVERSE_SPEED_PCT", "0.008"))
 RAPID_ADVERSE_SPEED_WINDOW_SEC = max(1.0, float(os.getenv("RAPID_ADVERSE_SPEED_WINDOW_SEC", "10")))
 PIVOT_FAILURE_BUFFER_ATR = max(0.0, float(os.getenv("PIVOT_FAILURE_BUFFER_ATR", "1.0")))
 PIVOT_FAILURE_MIN_PCT = max(0.0, float(os.getenv("PIVOT_FAILURE_MIN_PCT", "0.004")))
+
+# --- PIVOT_TURN 專屬緊急斷路器參數 ---
+# 防線一：反向動能過載 — 從入場點起逆向偏移超過此 ATR 倍數即強制離場
+PIVOT_TURN_COUNTER_BODY_ATR = max(0.0, float(os.getenv("PIVOT_TURN_COUNTER_BODY_ATR", "1.5")))
+# 防線二：KC 中軌結構性破壞開關 — 價格離開入場側 KC 中軌即強制離場
+PIVOT_TURN_KC_MIDDLE_EXIT = os.getenv("PIVOT_TURN_KC_MIDDLE_EXIT", "true").lower() == "true"
+# 防線三：極端波動斷路器 — 持倉期間高低差超過此 ATR 倍數即強制離場並進入冷卻
+PIVOT_TURN_VOLATILITY_ATR_LIMIT = max(0.0, float(os.getenv("PIVOT_TURN_VOLATILITY_ATR_LIMIT", "3.0")))
 
 # --- BTC 大盤方向守門員 ---
 # BTC_REGIME_FILTER_ENABLED：開啟後，BTC/USDT 1h SuperTrend 方向將作為

@@ -90,6 +90,7 @@ from core.config import (
     ENABLE_RAPID_ADVERSE_DROP, RAPID_ADVERSE_DROP_PCT, RAPID_DROP_COOLDOWN_SEC,
     RAPID_ADVERSE_SPEED_PCT, RAPID_ADVERSE_SPEED_WINDOW_SEC,
     PIVOT_FAILURE_BUFFER_ATR, PIVOT_FAILURE_MIN_PCT,
+    PIVOT_TURN_COUNTER_BODY_ATR, PIVOT_TURN_KC_MIDDLE_EXIT, PIVOT_TURN_VOLATILITY_ATR_LIMIT,
 )
 from core.strategy import compute_net_reward_risk, compute_sl_tp_distance, validate_sl_tp_pair
 
@@ -1239,6 +1240,65 @@ class PaperAccount:
             is_channel_swing = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper() == "CHANNEL_SWING"
+            is_pivot_turn = str(
+                pos.get("entry_mode") or meta.get("entry_mode") or ""
+            ).upper() == "PIVOT_TURN"
+
+            # ================================================================
+            # 🛡️ PIVOT_TURN 三道緊急斷路器（最高優先級，在所有其他出場邏輯之前）
+            # ================================================================
+            if is_pivot_turn and position_atr > 0:
+                # 防線二：KC 中軌結構性破壞
+                if PIVOT_TURN_KC_MIDDLE_EXIT:
+                    entry_kc_mid = float(pos.get("entry_kc_middle") or meta.get("entry_kc_middle") or 0.0)
+                    kc_middle_broken = (
+                        entry_kc_mid > 0
+                        and ((side == "LONG" and curr_p < entry_kc_mid)
+                             or (side == "SHORT" and curr_p > entry_kc_mid))
+                    )
+                else:
+                    kc_middle_broken = False
+
+                # 防線一：追蹤最大逆向偏移（代理大陰線／大陽線判斷）
+                pivot_worst = float(meta.get("pivot_worst_price") or curr_p)
+                if side == "LONG":
+                    pivot_worst = min(pivot_worst, curr_p)
+                else:
+                    pivot_worst = max(pivot_worst, curr_p)
+                meta["pivot_worst_price"] = pivot_worst
+                adverse_move = abs(entry_p - pivot_worst)
+                counter_body_triggered = adverse_move > position_atr * PIVOT_TURN_COUNTER_BODY_ATR
+
+                # 防線三：持倉期間極端波動（高低差 > N ATR）
+                pivot_intra_high = max(float(meta.get("pivot_intra_high") or curr_p), curr_p)
+                pivot_intra_low  = min(float(meta.get("pivot_intra_low")  or curr_p), curr_p)
+                meta["pivot_intra_high"] = pivot_intra_high
+                meta["pivot_intra_low"]  = pivot_intra_low
+                volatility_breaker = (
+                    PIVOT_TURN_VOLATILITY_ATR_LIMIT > 0
+                    and (pivot_intra_high - pivot_intra_low) > position_atr * PIVOT_TURN_VOLATILITY_ATR_LIMIT
+                )
+
+                pivot_emergency_reason = (
+                    f"KC中軌跌破({entry_kc_mid:.6g})-結構性破壞" if kc_middle_broken
+                    else f"反向動能過載 {adverse_move/position_atr:.1f}ATR(>{PIVOT_TURN_COUNTER_BODY_ATR}ATR)" if counter_body_triggered
+                    else f"極端波動斷路器 {(pivot_intra_high-pivot_intra_low)/position_atr:.1f}ATR(>{PIVOT_TURN_VOLATILITY_ATR_LIMIT}ATR)" if volatility_breaker
+                    else None
+                )
+
+                if pivot_emergency_reason:
+                    self._rapid_drop_cooldown[symbol] = now_ts
+                    self.log(
+                        f"🚨 [PIVOT斷路器] {symbol} {side} {pivot_emergency_reason}，強制市價平倉！",
+                        "DANGER",
+                    )
+                    await self.close_position(
+                        symbol, curr_p,
+                        f"PIVOT斷路器:{pivot_emergency_reason}",
+                        is_manual=True,
+                    )
+                    continue
+
             # Channel Swing ignores ticker-only exits; retain the emergency
             # guard for the other pivot modes with their original thresholds.
             rapid_adverse_triggered = bool(
