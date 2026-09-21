@@ -1417,11 +1417,9 @@ class PaperAccount:
                     step_floor_usdt = minimum_profit_floor + completed_steps * ladder_step
                     floor_price_move = step_floor_usdt / max(qty, 1e-12)
                     if entry_mode == "CHANNEL_SWING":
+                        # 使用者明確要求 4U 鎖 2U 階梯，取消 ATR 緩衝
                         fee_floor_move = minimum_profit_floor / max(qty, 1e-12)
-                        floor_price_move = max(
-                            fee_floor_move,
-                            floor_price_move - position_atr * PROFIT_LOCK_ATR_BUFFER_MULTIPLIER,
-                        )
+                        floor_price_move = max(fee_floor_move, floor_price_move)
                     floor_sl = (
                         entry_p + floor_price_move
                         if side == "LONG" else entry_p - floor_price_move
@@ -1622,11 +1620,9 @@ class PaperAccount:
                     notional_units = qty
                     floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
                     if entry_mode == "CHANNEL_SWING":
+                        # 使用者明確要求 4U 鎖 2U 階梯，取消 ATR 緩衝
                         fee_floor_move = minimum_profit_floor / max(notional_units, 1e-12)
-                        floor_price_move = max(
-                            fee_floor_move,
-                            floor_price_move - position_atr * PROFIT_LOCK_ATR_BUFFER_MULTIPLIER,
-                        )
+                        floor_price_move = max(fee_floor_move, floor_price_move)
                     if side == "LONG":
                         floor_sl = entry_p + floor_price_move
                     else:
