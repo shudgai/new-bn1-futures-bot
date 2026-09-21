@@ -1538,6 +1538,9 @@ class PaperAccount:
                     (pos.get("outer_run_active") or meta.get("outer_run_active"))
                     and (pos.get("is_breakeven_moved") or meta.get("is_breakeven_moved"))
                 )
+                is_u_ladder_armed = bool(
+                    pos.get("profit_lock_usdt_armed") or meta.get("profit_lock_usdt_armed")
+                )
                 hard_stop_hit = (
                     current_sl > 0
                     and ((side == "LONG" and curr_p <= current_sl)
@@ -1545,10 +1548,9 @@ class PaperAccount:
                 )
                 if (
                     hard_stop_hit
-                    and not outer_run_profit_lock_hold
-                    and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY
+                    and (is_u_ladder_armed or (not outer_run_profit_lock_hold and not CONTINUOUS_OUTER_RAIL_EXIT_ONLY))
                 ):
-                    await self.close_position(symbol, current_sl, "觸發止損 (Stop-Loss)")
+                    await self.close_position(symbol, current_sl, "觸發階梯鎖利/止損 (Ladder Lock/Stop-Loss)")
                     continue
                 pos["peak_pnl_pct"] = highest_pnl
                 total_unrealized += unrealized
