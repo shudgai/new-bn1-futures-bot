@@ -98,17 +98,22 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
 
 def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
     """
-    極簡兩根破軌唯一入口：
-    第一根破軌，第二根健康站上 KC 及 MA3 外，最新價在軌外。
+    雙軌並行進場入口：
+    1. 常規兩根破軌：第一根破軌，第二根健康站上 KC 及 MA3 外，最新價在軌外。
+    2. 極端單根直入：第一根實體大於 1.5 ATR 且破軌，最新價在軌外，免等第二根確認。
     """
     if df is None or len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
 
-    prev_1 = df.iloc[-2] # 第二根 (確認)
-    prev_2 = df.iloc[-3] # 第一根 (破軌)
+    prev_1 = df.iloc[-2] # 剛收盤的這根
+    prev_2 = df.iloc[-3] # 前一根
     latest = df.iloc[-1] # 當前未收線
 
     # 取得指標
+    current_atr = float(prev_1.get('atr', 0))
+    if current_atr <= 0:
+        return False, "INVALID_ATR", {}
+
     kc_upper_live = float(latest.get("kc_upper", 0))
     kc_lower_live = float(latest.get("kc_lower", 0))
     
@@ -120,32 +125,33 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         is_green = c > o
         is_red = c < o
         is_solid = (body / rng >= 0.2) if rng > 0 else False
-        return c, is_green, is_red, is_solid, float(row.get('kc_upper', 0)), float(row.get('kc_lower', 0)), float(row.get('ma3', 0))
+        return c, is_green, is_red, is_solid, float(row.get('kc_upper', 0)), float(row.get('kc_lower', 0)), float(row.get('ma3', 0)), body
 
-    c1, g1, r1, solid1, kc_up1, kc_dn1, ma3_1 = get_kline_stats(prev_2)
-    c2, g2, r2, solid2, kc_up2, kc_dn2, ma3_2 = get_kline_stats(prev_1)
+    c1, g1, r1, solid1, kc_up1, kc_dn1, ma3_1, body1 = get_kline_stats(prev_2)
+    c2, g2, r2, solid2, kc_up2, kc_dn2, ma3_2, body2 = get_kline_stats(prev_1)
+
+    # 判定 prev_1 (剛收盤的那根) 是否為極端動能 K 線 (實體 >= 1.5 ATR)
+    is_prev1_extreme = body2 >= 1.5 * current_atr
 
     if side == "LONG":
-        # 1. 第一根破軌
-        cond1 = g1 and solid1 and (c1 > kc_up1)
-        # 2. 第二根站上 KC 外及 MA3 外
-        cond2 = g2 and solid2 and (c2 > kc_up2) and (c2 > ma3_2)
-        # 3. 最新價嚴格在軌外
-        cond3 = live_price > kc_upper_live
+        # 常規：兩根破軌 (第一根破軌, 第二根站上 KC 外及 MA3 外)
+        cond_regular = (g1 and solid1 and c1 > kc_up1) and (g2 and solid2 and c2 > kc_up2 and c2 > ma3_2)
+        # 極端：單根大爆發 (剛收盤的這根大於 1.5 ATR 且破軌)
+        cond_extreme = (g2 and solid2 and c2 > kc_up2) and is_prev1_extreme
 
-        if cond1 and cond2 and cond3:
-            return True, "🚀 [2-Candle Breakout] LONG: 兩根破軌確認", {"action": "ENTER"}
+        if (cond_regular or cond_extreme) and (live_price > kc_upper_live):
+            reason = "🚀 [1-Candle Extreme] LONG: 極端爆發直入" if cond_extreme else "🚀 [2-Candle Breakout] LONG: 兩根破軌確認"
+            return True, reason, {"action": "ENTER"}
             
     elif side == "SHORT":
-        # 1. 第一根破軌
-        cond1 = r1 and solid1 and (c1 < kc_dn1)
-        # 2. 第二根跌出 KC 外及 MA3 外
-        cond2 = r2 and solid2 and (c2 < kc_dn2) and (c2 < ma3_2)
-        # 3. 最新價嚴格在軌外
-        cond3 = live_price < kc_lower_live
+        # 常規：兩根破軌 (第一根破軌, 第二根跌出 KC 外及 MA3 外)
+        cond_regular = (r1 and solid1 and c1 < kc_dn1) and (r2 and solid2 and c2 < kc_dn2 and c2 < ma3_2)
+        # 極端：單根大瀑布 (剛收盤的這根大於 1.5 ATR 且破軌)
+        cond_extreme = (r2 and solid2 and c2 < kc_dn2) and is_prev1_extreme
 
-        if cond1 and cond2 and cond3:
-            return True, "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認", {"action": "ENTER"}
+        if (cond_regular or cond_extreme) and (live_price < kc_lower_live):
+            reason = "🚀 [1-Candle Extreme] SHORT: 極端瀑布直入" if cond_extreme else "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認"
+            return True, reason, {"action": "ENTER"}
 
     return False, "FILTERED_NOT_2_CANDLE_BREAKOUT", {}
 
