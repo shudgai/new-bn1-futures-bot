@@ -106,39 +106,59 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         return False, "WAIT_INSUFFICIENT_DATA", {}
 
     prev_1 = df.iloc[-2] # 剛收盤的這根
+    prev_2 = df.iloc[-3]
     latest = df.iloc[-1] # 當前未收線
 
-    # 取得指標
-    current_atr = float(prev_1.get('atr', 0))
-    if current_atr <= 0:
-        return False, "INVALID_ATR", {}
-
+    c1 = float(prev_2['close'])
+    o1 = float(prev_2['open'])
+    c2 = float(prev_1['close'])
+    o2 = float(prev_1['open'])
+    
+    kc_up1 = float(prev_2.get('kc_upper', 0))
+    kc_up2 = float(prev_1.get('kc_upper', 0))
+    kc_dn1 = float(prev_2.get('kc_lower', 0))
+    kc_dn2 = float(prev_1.get('kc_lower', 0))
+    
+    ma3_2 = float(prev_1.get('ma3', 0))
+    live_ma3 = float(latest.get('ma3', 0))
+    
     kc_upper_live = float(latest.get("kc_upper", 0))
     kc_lower_live = float(latest.get("kc_lower", 0))
     
-    c2 = float(prev_1['close'])
-    kc_up2 = float(prev_1.get('kc_upper', 0))
-    kc_dn2 = float(prev_1.get('kc_lower', 0))
+    kc_mid1 = float(prev_2.get('kc_middle', 0))
+    kc_mid2 = float(prev_1.get('kc_middle', 0))
 
     if side == "LONG":
-        # 1. 破軌觸發：上一根 K 線收盤是否在軌道外？
-        is_breakout_trigger = (c2 > kc_up2)
+        kc_going_up = (kc_mid2 > kc_mid1)
+        ma3_cross_up = (ma3_2 <= kc_up2) and (live_ma3 > kc_upper_live)
+        price_outside = (live_price > kc_upper_live)
         
-        # 2. 健康站穩：最新即時價是否保持在軌道外？
-        is_healthy_stand = (live_price > kc_upper_live)
+        cond_ma3_cross = kc_going_up and ma3_cross_up and price_outside
+        cond_2_candle = (c1 > o1) and (c1 > kc_up1) and (c2 > o2) and (c2 > kc_up2) and price_outside
+        cond_continuation = (c2 > kc_up2) and price_outside and (live_ma3 > ma3_2 if live_ma3 > 0 else True)
         
-        if is_breakout_trigger and is_healthy_stand:
-            return True, "🚀 [Pure Breakout] LONG: 破軌且站穩外側", {"action": "ENTER", "is_breakout": True}
+        if cond_ma3_cross:
+            return True, "🚀 [MA3 Cross] LONG: MA3穿越KC外軌", {"action": "ENTER", "is_breakout": True}
+        elif cond_2_candle:
+            return True, "🚀 [2-Candle Breakout] LONG: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
+        elif cond_continuation:
+            return True, "🚀 [Continuation] LONG: 延續追車直入", {"action": "ENTER", "is_breakout": True}
             
     elif side == "SHORT":
-        # 1. 破軌觸發：上一根 K 線收盤是否在軌道外？
-        is_breakout_trigger = (c2 < kc_dn2)
+        kc_going_down = (kc_mid2 < kc_mid1)
+        ma3_cross_dn = (ma3_2 >= kc_dn2) and (live_ma3 < kc_lower_live)
+        price_outside = (live_price < kc_lower_live)
         
-        # 2. 健康站穩：最新即時價是否保持在軌道外？
-        is_healthy_stand = (live_price < kc_lower_live)
+        cond_ma3_cross = kc_going_down and ma3_cross_dn and price_outside
+        cond_2_candle = (c1 < o1) and (c1 < kc_dn1) and (c2 < o2) and (c2 < kc_dn2) and price_outside
+        cond_continuation = (c2 < kc_dn2) and price_outside and (live_ma3 < ma3_2 if live_ma3 > 0 else True)
         
-        if is_breakout_trigger and is_healthy_stand:
-            return True, "🚀 [Pure Breakout] SHORT: 破軌且站穩外側", {"action": "ENTER", "is_breakout": True}
+        if cond_ma3_cross:
+            return True, "🚀 [MA3 Cross] SHORT: MA3穿越KC外軌", {"action": "ENTER", "is_breakout": True}
+        elif cond_2_candle:
+            return True, "🚀 [2-Candle Breakout] SHORT: 兩根破軌確認", {"action": "ENTER", "is_breakout": True}
+        elif cond_continuation:
+            return True, "🚀 [Continuation] SHORT: 延續追車直入", {"action": "ENTER", "is_breakout": True}
 
     return False, "FILTERED_NOT_PURE_BREAKOUT", {}
 
