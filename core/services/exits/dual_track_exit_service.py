@@ -120,6 +120,7 @@ class DualTrackExitStrategy(IExitStrategy):
             if side == "LONG":
                 if price_peak is None or current_price > price_peak:
                     position["price_peak_value"] = current_price
+                    position["profit_lock_display_sl"] = current_price  # 視覺邏輯同步：動態錨點
                 elif price_peak is not None:
                     if current_price <= price_peak - (PRICE_REVERSAL_ATR * atr):
                         if ck_decaying:
@@ -128,6 +129,7 @@ class DualTrackExitStrategy(IExitStrategy):
             else:
                 if price_peak is None or current_price < price_peak:
                     position["price_peak_value"] = current_price
+                    position["profit_lock_display_sl"] = current_price  # 視覺邏輯同步：動態錨點
                 elif price_peak is not None:
                     if current_price >= price_peak + (PRICE_REVERSAL_ATR * atr):
                         if ck_decaying:
@@ -224,7 +226,13 @@ class DualTrackExitStrategy(IExitStrategy):
         is_consecutive_extreme = (prev1_body >= 1.5 * atr) and (prev2_body >= 1.5 * atr) and prev1_is_reverse and prev2_is_reverse
         
         if is_waterfall or is_consecutive_extreme:
-            logger.warning(f"[EXIT_EXTREME_RISK_MELTDOWN] {side} hit meltdown protection @ {curr_close:.6f}")
+            # 極限逃生：即時鎖利平倉，以動態錨點作為結算依據
+            dynamic_anchor = position.get("price_peak_value")
+            if dynamic_anchor:
+                position["guaranteed_exit_price"] = dynamic_anchor
+                logger.warning(f"[EXIT_EXTREME_RISK_MELTDOWN] {side} 觸發大瀑布極端防禦，立即以動態錨點 {dynamic_anchor:.6f} 結算！")
+            else:
+                logger.warning(f"[EXIT_EXTREME_RISK_MELTDOWN] {side} hit meltdown protection @ {curr_close:.6f}")
             return "EXIT_EXTREME_RISK_MELTDOWN"
             
         # ══════════════════════════════════════════════════════════════
