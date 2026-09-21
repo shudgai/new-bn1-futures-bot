@@ -102,15 +102,15 @@ class DualTrackExitStrategy(IExitStrategy):
         current_anchor = position.get("profit_anchor_price", entry_price)
         anchor_updated = False
         
-        # 動態更新時，將當前價格扣除手續費，確保紀錄的是「純利潤錨點」
+        # 動態更新時，將當前即時價格(current_price)扣除手續費，確保紀錄的是「純利潤錨點」
         if side == "LONG":
-            dynamic_anchor = curr_close - estimated_fees
+            dynamic_anchor = current_price - estimated_fees
             if dynamic_anchor > current_anchor:
                 position["profit_anchor_price"] = dynamic_anchor
                 position["profit_lock_display_sl"] = dynamic_anchor
                 anchor_updated = True
         elif side == "SHORT":
-            dynamic_anchor = curr_close + estimated_fees
+            dynamic_anchor = current_price + estimated_fees
             if dynamic_anchor < current_anchor:
                 position["profit_anchor_price"] = dynamic_anchor
                 position["profit_lock_display_sl"] = dynamic_anchor
