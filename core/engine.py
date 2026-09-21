@@ -2276,7 +2276,8 @@ class TradingEngine:
         
         is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
             "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
-            "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]"
+            "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]",
+            "🚀"  # ← UnifiedEntryStrategy 新版進場訊號 (2-Candle Breakout / Continuation / Extreme)
         ])
         if is_system_halted:
             return False
@@ -2320,7 +2321,8 @@ class TradingEngine:
             )
             is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
                 "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]", 
-                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]"
+                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]",
+                "🚀"  # ← UnifiedEntryStrategy 新版進場訊號
             ])
             if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}
