@@ -2414,6 +2414,7 @@ class TradingEngine:
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
                 "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
+                "is_breakout": True,  # UnifiedEntryStrategy 所有入口均屬破軌類型
                 "signal_code": decision["reason"], "live_outer": decision["reason"] in LIVE_OUTER_CODES,
                 "candidate_bar_id": self._channel_candidate_bar_id(frame),
                 "reason": f"Channel Swing {decision['reason']} {confirmation_label} {side}",
