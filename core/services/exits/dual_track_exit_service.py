@@ -93,9 +93,9 @@ class DualTrackExitStrategy(IExitStrategy):
 
         if "profit_anchor_price" not in position:
             if side == "LONG":
-                initial_anchor = entry_price + (0.7 * atr) - estimated_fees
+                initial_anchor = entry_price + estimated_fees
             else:
-                initial_anchor = entry_price - (0.7 * atr) + estimated_fees
+                initial_anchor = entry_price - estimated_fees
             position["profit_anchor_price"] = initial_anchor
             position["profit_lock_display_sl"] = initial_anchor
 
