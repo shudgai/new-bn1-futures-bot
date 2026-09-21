@@ -1600,58 +1600,56 @@ class PaperAccount:
                 trailing_gap_usdt = get_profit_lock_giveback_usdt(
                     peak_usdt, margin_usdt
                 )
-                activation_peak_usdt = max(
-                    PROFIT_LOCK_TRIGGER_USDT * lock_scale,
-                    minimum_profit_floor,
-                )
-
-                # 必須先完整賺到「最低保護＋級距回吐」才啟動，避免剛蓋過
-                # 手續費就把保護線貼在最高點，隨即被正常1m震動洗掉。
-                if peak_usdt + 1e-9 >= activation_peak_usdt and qty > 0 and entry_p > 0:
-                    # 第一階鎖固定 U 地板；峰值每增加一個設定步距，
-                    # 保護線同步增加同樣 U 數（目前為 1U、3U、5U……）。
-                    ladder_step = get_profit_lock_ladder_step_usdt(
-                        profit_profile, wave_regime
-                    ) * lock_scale
-                    completed_steps = math.floor(
-                        max(0.0, peak_usdt - activation_peak_usdt) / ladder_step + 1e-9
-                    )
-                    step_floor_usdt = minimum_profit_floor + completed_steps * ladder_step
-                    notional_units = qty
-                    floor_price_move = step_floor_usdt / max(notional_units, 1e-12)
-                    if entry_mode == "CHANNEL_SWING":
-                        # 使用者明確要求 4U 鎖 2U 階梯，取消 ATR 緩衝
-                        fee_floor_move = minimum_profit_floor / max(notional_units, 1e-12)
-                        floor_price_move = max(fee_floor_move, floor_price_move)
-                    if side == "LONG":
-                        floor_sl = entry_p + floor_price_move
-                    else:
-                        floor_sl = entry_p - floor_price_move
-
-                    current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
-                    improves_usdt = (
-                        floor_sl > current_sl + entry_p * 1e-12 if side == "LONG"
-                        else current_sl <= 0 or floor_sl < current_sl - entry_p * 1e-12
-                    )
-                    
-                    if improves_usdt:
-                        pos["sl"] = floor_sl
-                        meta["sl"] = floor_sl
-                        pos["is_breakeven_moved"] = True
-                        meta["is_breakeven_moved"] = True
-                        pos["profit_lock_usdt_armed"] = True
-                        meta["profit_lock_usdt_armed"] = True
-                        mode = f"{ladder_step:g}U_LADDER_{trailing_gap_usdt:g}U_GAP"
-                        pos["profit_lock_mode"] = mode
-                        meta["profit_lock_mode"] = mode
-                        profit_lock_updated_this_cycle = True
+                # -------------------------------------------------------------
+                # 替換為 ATR 階梯鎖利邏輯 (0.7 ATR 啟動保本，每 0.7 ATR 推進)
+                # -------------------------------------------------------------
+                position_atr = float(meta.get("atr") or pos.get("atr") or 0.0)
+                if position_atr > 0 and qty > 0 and entry_p > 0:
+                    current_atr_profit = (curr_p - entry_p) / position_atr if side == "LONG" else (entry_p - curr_p) / position_atr
+                    peak_atr_key = "profit_lock_peak_atr"
+                    previous_peak_atr = float(meta.get(peak_atr_key) or 0.0)
+                    peak_atr = max(previous_peak_atr, current_atr_profit)
+                    if peak_atr > previous_peak_atr:
+                        meta[peak_atr_key] = peak_atr
                         
-                        self.log(
-                            f"🔐 [動態鎖利] {symbol} 峰值 {peak_usdt:.2f}U "
-                            f"→ 每{ladder_step:g}U階梯鎖 {step_floor_usdt:.2f}U"
-                            f"（保留{trailing_gap_usdt:g}U空間），保護線 {floor_sl:.6g}",
-                            "SUCCESS",
+                    activation_peak_atr = 0.7
+                    ladder_step_atr = 0.7
+                    
+                    if peak_atr + 1e-9 >= activation_peak_atr:
+                        completed_steps = math.floor((peak_atr - activation_peak_atr) / ladder_step_atr + 1e-9)
+                        
+                        locked_atr = completed_steps * ladder_step_atr
+                        step_floor_price_move = (minimum_profit_floor / max(qty, 1e-12)) + (locked_atr * position_atr)
+                        
+                        if side == "LONG":
+                            floor_sl = entry_p + step_floor_price_move
+                        else:
+                            floor_sl = entry_p - step_floor_price_move
+                            
+                        current_sl = float(pos.get("sl") or meta.get("sl") or 0.0)
+                        improves_atr = (
+                            floor_sl > current_sl + entry_p * 1e-12 if side == "LONG"
+                            else current_sl <= 0 or floor_sl < current_sl - entry_p * 1e-12
                         )
+                        
+                        if improves_atr:
+                            pos["sl"] = floor_sl
+                            meta["sl"] = floor_sl
+                            pos["is_breakeven_moved"] = True
+                            meta["is_breakeven_moved"] = True
+                            pos["profit_lock_atr_armed"] = True
+                            meta["profit_lock_atr_armed"] = True
+                            mode = f"{ladder_step_atr:g}ATR_LADDER"
+                            pos["profit_lock_mode"] = mode
+                            meta["profit_lock_mode"] = mode
+                            profit_lock_updated_this_cycle = True
+                            
+                            self.log(
+                                f"🔐 [動態ATR鎖利] {symbol} 峰值 {peak_atr:.2f} ATR "
+                                f"→ 已鎖 {locked_atr:.2f} ATR (保護線 {floor_sl:.6g})",
+                                "SUCCESS"
+                            )
+
 
             bounce_capture_ratio = float(
                 pos.get("bounce_capture_ratio")
