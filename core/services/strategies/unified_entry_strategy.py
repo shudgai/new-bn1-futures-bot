@@ -167,18 +167,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
                 break
 
     if not breakout_found:
-        # 如果沒有 Breakout Memory，看是否當下直接極端爆發 (特權通道)
-        if side == "LONG":
-            latest_green = float(latest['close']) > float(latest['open'])
-            latest_out = live_price > kc_upper_live
-            if is_extreme_body and latest_green and latest_out:
-                return True, "[HUNTER] Extreme Impulse Breakout (No Memory)", {"action": "ENTER"}
-        elif side == "SHORT":
-            latest_red = float(latest['close']) < float(latest['open'])
-            latest_out = live_price < kc_lower_live
-            if is_extreme_body and latest_red and latest_out:
-                return True, "[HUNTER] Extreme Impulse Breakout (No Memory)", {"action": "ENTER"}
+        # 結構純化：嚴格要求破軌記憶，無例外。
+        # 即使出現極端爆發 K 線，沒有破軌記憶就不開倉。
         return False, "FILTERED_NO_BREAKOUT_MEMORY", {}
+
         
     # 在待命模式下，檢查是否回調到紅線 (MA15) 或 KC 邊緣附近
     retest_margin = 0.8 * current_atr
