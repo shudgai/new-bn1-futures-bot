@@ -316,6 +316,15 @@ class ProfitProtectionExitStrategy(IExitStrategy):
         price: float,
         **kwargs: Any
     ) -> Optional[str]:
+        # 1. 優先檢查異常 K 線與大瀑布
+        from core.guards.abnormal_guard import channel_adverse_exit_reason
+        if frame is not None and not frame.empty and 'atr' in frame.iloc[-2]:
+            atr = float(frame.iloc[-2]['atr'])
+            adverse_reason = channel_adverse_exit_reason(frame, position.get('side', ''), price, atr)
+            if adverse_reason:
+                return f"PROFIT_PROTECTION_ABNORMAL_EXIT {adverse_reason}"
+
+        # 2. 執行常規保護與階梯鎖利
         result = protection(position, price, self.fee, self.slippage, frame)
         if result and result.get('triggered'):
             return result.get('reason', "PROFIT_PROTECTION_DRAWDOWN_EXIT")
