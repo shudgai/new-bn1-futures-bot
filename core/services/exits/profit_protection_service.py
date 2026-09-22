@@ -106,18 +106,42 @@ def protection(position, price, fee, slippage, frame=None):
             triggered = True
             exit_reason = f'EXIT_PEAK_DRAWDOWN: 峰值回撤達 {profit_drawdown_ratio*100:.1f}%，搶先鎖利全平'
 
-    # 4. 短均線實時破位攔截 (MA3 即時穿透)
+    # 4. 短均線實時破位與 KC 保護 (MA3 & KC Protection)
     if not triggered and peak_net >= 2.5 and frame is not None and len(frame) > 0:
         live_candle = frame.iloc[-1]
         live_close = float(live_candle['close'])
-        # 綁定敏銳度最高的 MA3
         ma_3 = float(live_candle.get('ma3', live_candle.get('ema_3', live_close)))
-        if side == 'LONG' and price < ma_3:
-            triggered = True
-            exit_reason = 'EXIT_MA3_BREACH: 多單現價跌破 MA3，短頂確立秒平'
-        elif side == 'SHORT' and price > ma_3:
-            triggered = True
-            exit_reason = 'EXIT_MA3_BREACH: 空單現價站上 MA3，短底確立秒平'
+        kc_upper = float(live_candle.get('kc_upper', 0))
+        kc_lower = float(live_candle.get('kc_lower', 0))
+        atr = float(live_candle.get('atr', 0))
+        ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', live_close)))
+        
+        bias_atr = abs(price - ema_base) / atr if atr > 0 else 0
+        
+        # 1. 【核心保護層】：KC 軌外保護期
+        is_in_kc_breakout_zone = False
+        if side == 'LONG' and price > kc_upper and bias_atr < 2.0:
+            is_in_kc_breakout_zone = True
+        elif side == 'SHORT' and price < kc_lower and bias_atr < 2.0:
+            is_in_kc_breakout_zone = True
+
+        if not is_in_kc_breakout_zone:
+            # 2. 【收割層】：極限乖離時 (Bias >= 2.0 ATR) 才允許 MA3 搶跑
+            if bias_atr >= 2.0:
+                if side == 'LONG' and price < ma_3:
+                    triggered = True
+                    exit_reason = 'EXIT_EXTREME_MA3: 乖離過熱且跌破 MA3，搶先全平'
+                elif side == 'SHORT' and price > ma_3:
+                    triggered = True
+                    exit_reason = 'EXIT_EXTREME_MA3: 負乖離過熱且站上 MA3，搶先全平'
+            else:
+                # 3. 【常規離場】：跌回 KC 軌道內且跌破短均線
+                if side == 'LONG' and live_close < kc_upper and live_close < ma_3:
+                    triggered = True
+                    exit_reason = 'EXIT_FALL_BACK_KC: 跌回軌道內且失守短均線，全平離場'
+                elif side == 'SHORT' and live_close > kc_lower and live_close > ma_3:
+                    triggered = True
+                    exit_reason = 'EXIT_FALL_BACK_KC: 漲回軌道內且站上短均線，全平離場'
 
     # 5. 動態資金階梯鎖利 (放大本金時的波段防線)
     locked_net = float(state.get('locked_net', 0.0))
