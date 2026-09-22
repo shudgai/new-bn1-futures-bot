@@ -231,7 +231,8 @@ async def process_single_symbol_runner(
             
             if allowed and entry_decision.get("entry_type") == "PYRAMID":
                 engine.account.log(f"🔺 [滿足加倉條件] {symbol} {existing_pos['side']} ({reason})，準備執行加倉", "INFO")
-                amount_usdt = engine.account.default_trade_amount
+                from core.config import TRADE_AMOUNT_USDT
+                amount_usdt = TRADE_AMOUNT_USDT
                 success = await engine.account.open_position(
                     symbol,
                     amount_usdt,
