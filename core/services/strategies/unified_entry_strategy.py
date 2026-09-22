@@ -177,6 +177,18 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         live_close = float(live_candle['close'])
         live_open = float(live_candle['open'])
         live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
+        live_atr = float(live_candle.get('atr', 0))
+
+        # =========================================================================
+        # 動態波段動能竭盡硬防線 (ATR-Based Wave Extension Block)
+        # =========================================================================
+        if len(df) >= 30 and live_atr > 0:
+            lookback_bars = 30
+            wave_low = float(df['low'].iloc[-lookback_bars:].min())
+            max_extension_atr = 4.5 * live_atr
+            accumulated_rise = live_close - wave_low
+            if accumulated_rise >= max_extension_atr:
+                return False, f"🛑 BLOCKED_WAVE_EXHAUSTED (Rise {accumulated_rise:.4f} >= {max_extension_atr:.4f})", {}
 
         # -----------------------------------------------------------------
         # 均線拐頭與斜率硬防線 (MA Slope Block) - 絕不在峰谷轉折處逆勢開單
@@ -299,6 +311,18 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         live_close = float(live_candle['close'])
         live_open = float(live_candle['open'])
         live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
+        live_atr = float(live_candle.get('atr', 0))
+
+        # =========================================================================
+        # 動態波段動能竭盡硬防線 (ATR-Based Wave Extension Block)
+        # =========================================================================
+        if len(df) >= 30 and live_atr > 0:
+            lookback_bars = 30
+            wave_high = float(df['high'].iloc[-lookback_bars:].max())
+            max_extension_atr = 4.5 * live_atr
+            accumulated_drop = wave_high - live_close
+            if accumulated_drop >= max_extension_atr:
+                return False, f"🛑 BLOCKED_WAVE_EXHAUSTED (Drop {accumulated_drop:.4f} >= {max_extension_atr:.4f})", {}
 
         # -----------------------------------------------------------------
         # 均線拐頭與斜率硬防線 (MA Slope Block) - 絕不在峰谷轉折處逆勢開單
