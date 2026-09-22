@@ -173,32 +173,34 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         symbol = kwargs.get('symbol', '')
         
         # 🛡️ 最終開空過濾邏輯 (Short Entry Filters) - 防止追殺恐慌
-        # 1. 核心過濾：極端超賣禁止 (下軌過濾)
-        if close < kc_lower:
-            return False, "BLOCKED_PANIC_SHORT (Close < Lower Band)", {}
-            
-        # 2. RSI 極端值過濾
+        # ⚠️ 延續開倉 (Continuation) 本身就需在下軌外，下軌過濾僅封鎖首倉。
+        is_potential_continuation = (prev_close < prev_kc_lower) and (close < kc_lower)
+
+        # 1. 核心過濾：極端超賣禁止 (下軌過濾) — 僅首倉適用，延續開倉豁免
+        if close < kc_lower and not is_potential_continuation:
+            return False, "BLOCKED_PANIC_SHORT (Close < Lower Band, First Entry only)", {}
+
+        # 2. RSI 極端值過濾（延續開倉亦適用）
         rsi_limit = 25 if "PEPE" in symbol else 30
         rsi_val = float(current_candle.get('rsi', 50))
         if 'rsi' in current_candle and rsi_val < rsi_limit:
             return False, f"BLOCKED_PANIC_SHORT (RSI {rsi_val:.1f} < {rsi_limit})", {}
-            
-        # 3. 乖離率限制 (Bias Limit) — 以 MA7 為錨點，與出場邏輯保持一致
+
+        # 3. 乖離率限制 (Bias Limit) — 以 MA7 為錨點（延續開倉亦適用）
         ma_7 = float(current_candle.get('ma7', current_candle.get('ema_20', current_candle.get('kc_middle', close))))
         atr = float(current_candle.get('atr', 0))
         bias_atr = 1.8 if "PEPE" in symbol else 1.5
         if atr > 0 and (ma_7 - close) > bias_atr * atr:
             return False, f"BLOCKED_PANIC_SHORT (Bias > {bias_atr} ATR)", {}
-            
-        # 4. 動能過濾：恐慌棒識別 (Climax Candle Filter)
+
+        # 4. 動能過濾：恐慌棒識別 (Climax Candle Filter)（延續開倉亦適用）
         body_len = abs(close - open_p)
         body_series = (df['close'] - df['open']).abs()
-        # 計算過去 10 根 K 線的平均實體長度 (不含未收線的 iloc[-1])
         if len(body_series) >= 11:
             avg_body = float(body_series.iloc[-11:-1].mean())
         else:
             avg_body = float(body_series.iloc[:-1].mean()) if len(body_series) > 1 else atr
-            
+
         body_limit = 2.5 if "PEPE" in symbol else 2.0
         if avg_body > 0 and body_len > body_limit * avg_body:
             return False, f"BLOCKED_PANIC_SHORT (Body > {body_limit}x AvgBody)", {}
