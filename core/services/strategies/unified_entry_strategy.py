@@ -123,6 +123,40 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
     prev_kc_lower = float(prev_candle.get('kc_lower', 0))
     prev_ma3 = float(prev_candle.get('ma3', prev_candle.get('ema_3', 0)))
 
+    # =========================================================================
+    # 絕對硬防線：橫盤死水區一票否決 (Sideways Consolidation Block)
+    # =========================================================================
+    current_atr_val = float(current_candle.get('atr', 0))
+    if current_atr_val > 0:
+        # 1. 均線走平禁開（缺乏方向斜率）
+        ma3_change = abs(ma3 - prev_ma3)
+        min_slope_threshold = 0.15 * current_atr_val
+        if ma3_change < min_slope_threshold:
+            return False, f"🛑 BLOCKED_SIDEWAYS (MA3 flat: {ma3_change:.5f} < {min_slope_threshold:.5f})", {}
+
+        # 2. 窄幅橫盤箱體禁開（K棒實體壓縮）
+        # 最近 4 根已收線 K 棒 (-5 到 -2)
+        if len(df) >= 6:
+            recent_4_bars = df.iloc[-5:-1]
+            recent_high = float(recent_4_bars['high'].max())
+            recent_low = float(recent_4_bars['low'].min())
+            if (recent_high - recent_low) < (0.8 * current_atr_val):
+                return False, "🛑 BLOCKED_SIDEWAYS (Narrow range box)", {}
+
+        # 3. 均線纏繞禁開
+        # 最近 3 根已收線 K 棒 (-4 到 -2)
+        if len(df) >= 5:
+            cross_count = 0
+            for i in range(-4, -1):
+                b = df.iloc[i]
+                b_low = float(b['low'])
+                b_high = float(b['high'])
+                b_ma3 = float(b.get('ma3', b.get('ema_3', 0)))
+                if b_low <= b_ma3 and b_high >= b_ma3:
+                    cross_count += 1
+            if cross_count >= 2:
+                return False, "🛑 BLOCKED_SIDEWAYS (MA3 entanglement)", {}
+
     if side == "LONG":
         symbol = kwargs.get('symbol', '')
         
