@@ -223,7 +223,7 @@ async def process_single_symbol_runner(
             # ── 新增: 加倉 (Pyramiding) 評估 ────────────────────────────────────────────
             # 當前仍持倉，且未觸發平倉時，評估是否滿足延續加倉條件
             # (UnifiedEntryStrategy is already imported globally)
-            entry_strategy = UnifiedEntryStrategy(engine.account.config)
+            entry_strategy = UnifiedEntryStrategy()
             
             allowed, reason, entry_decision = entry_strategy.evaluate_entry(
                 channel_df, channel_price, existing_pos["side"], velocity_drop_ratio=velocity_drop_ratio, meta=meta, existing_pos=existing_pos
