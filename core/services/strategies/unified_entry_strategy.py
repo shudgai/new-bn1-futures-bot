@@ -124,6 +124,38 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
     prev_ma3 = float(prev_candle.get('ma3', prev_candle.get('ema_3', 0)))
 
     if side == "LONG":
+        symbol = kwargs.get('symbol', '')
+
+        # 🛡️ 最終開多過濾邏輯 (Long Entry Filters) - 防止天花板追多
+        # ⚠️ 延續開倉 (Continuation) 本身就需在上軌外，上軌過濾僅封鎖首倉。
+        is_potential_continuation_long = (prev_close > prev_kc_upper) and (close > kc_upper)
+
+        # 1. 核心過濾：K 線收黑或跌破 MA7 禁多 (動能已熄火)
+        ma7 = float(current_candle.get('ma7', current_candle.get('ma5', current_candle.get('ma3', close))))
+        if close < open_p:
+            return False, "BLOCKED_PANIC_LONG (Bearish candle, momentum lost)", {}
+        if close < ma7 and ma7 > 0:
+            return False, f"BLOCKED_PANIC_LONG (Close {close:.6f} < MA7 {ma7:.6f})", {}
+
+        # 2. 衝出上軌或正乖離過大禁多 — 僅首倉適用，延續開倉豁免
+        if close > kc_upper and not is_potential_continuation_long:
+            return False, "BLOCKED_PANIC_LONG (Close > Upper Band, First Entry only)", {}
+        atr_l = float(current_candle.get('atr', 0))
+        bias_atr_l = 1.8 if "PEPE" in symbol else 1.5
+        if atr_l > 0 and (close - ma7) > bias_atr_l * atr_l:
+            return False, f"BLOCKED_PANIC_LONG (Bias > {bias_atr_l} ATR above MA7)", {}
+
+        # 3. 末端爆發巨棒禁多 (Climax Candle — 已無後續利潤空間)
+        body_len_l = abs(close - open_p)
+        body_series_l = (df['close'] - df['open']).abs()
+        if len(body_series_l) >= 11:
+            avg_body_l = float(body_series_l.iloc[-11:-1].mean())
+        else:
+            avg_body_l = float(body_series_l.iloc[:-1].mean()) if len(body_series_l) > 1 else atr_l
+        body_limit_l = 2.5 if "PEPE" in symbol else 2.0
+        if avg_body_l > 0 and body_len_l > body_limit_l * avg_body_l:
+            return False, f"BLOCKED_PANIC_LONG (Body > {body_limit_l}x AvgBody, climax candle)", {}
+
         # 1. 判斷 K 線顏色 (陽燭)
         is_curr_bullish = close > open_p
         is_prev_bullish = prev_close > prev_open
@@ -137,6 +169,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         was_outside_kc = prev_close > prev_kc_upper
         was_above_ma3 = prev_close > prev_ma3
         was_healthy_outside = was_outside_kc and was_above_ma3
+
 
         # --- 情境 1：無倉位 (NO_POSITION) ---
         if position_status == 'NO_POSITION':
