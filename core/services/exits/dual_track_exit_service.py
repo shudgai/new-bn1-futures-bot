@@ -39,7 +39,7 @@ class DualTrackExitStrategy(IExitStrategy):
         position["sl"]                    = defense_line   # UI 通用欄位
         position["entry_atr"]             = atr            # 開倉快照 ATR，全程不變
 
-        position["is_trend_confirmed"]    = False
+        position["trailing_stop_price"]   = None
         position["max_price_since_entry"] = entry_price
         position["min_price_since_entry"] = entry_price
 
@@ -102,86 +102,117 @@ class DualTrackExitStrategy(IExitStrategy):
                     position["profit_lock_display_sl"] = current_price
 
         # ══════════════════════════════════════════════════════════════
-        # 【動態趨勢風控】 Stage 1: 趨勢確認與失敗 / Stage 2: 峰谷平倉
+        # 【即刻保本鎖與動態移動止損】 Phase 1 & Phase 2
         # ══════════════════════════════════════════════════════════════
-        from core.config import ENTRY_CONFIRMATION_ATR_MULTIPLIER, BREAKEVEN_BUFFER_ATR, ENABLE_PEAK_VOLUME_EXIT, PEAK_FALLBACK_ATR_MULTIPLIER, PEAK_VOL_WEAK_THRESHOLD
+        from core.config import BREAKEVEN_ACTIVATE_ATR, TRAILING_STOP_ACTIVATE_ATR, TRAILING_STOP_DISTANCE_ATR
         
-        confirm_dist = ENTRY_CONFIRMATION_ATR_MULTIPLIER * atr
-        breakeven_buffer = BREAKEVEN_BUFFER_ATR * atr
-        half_confirm = confirm_dist * 0.6
+        profit_atr = 0.0
+        peak = position.get("price_peak_value", entry_price)
         
-        is_trend_confirmed = position.get("is_trend_confirmed", False)
-        
-        # 檢查趨勢確認
-        if not is_trend_confirmed:
-            if side == "LONG" and position.get("max_price_since_entry", entry_price) > (entry_price + confirm_dist):
-                position["is_trend_confirmed"] = True
-                is_trend_confirmed = True
-                logger.info(f"✅ [Trend Confirmed] LONG moved > {confirm_dist:.4f}")
-            elif side == "SHORT" and position.get("min_price_since_entry", entry_price) < (entry_price - confirm_dist):
-                position["is_trend_confirmed"] = True
-                is_trend_confirmed = True
-                logger.info(f"✅ [Trend Confirmed] SHORT moved > {confirm_dist:.4f}")
-                
-        if not is_trend_confirmed:
-            # Stage 1: 趨勢未確認，檢查是否「趨勢失敗」 (Trend Failure)
-            # 若曾經上漲過一小段，但又跌回保本線附近，視為動量枯竭，直接撤退
-            if side == "LONG":
-                if position.get("max_price_since_entry", entry_price) > (entry_price + half_confirm) and current_price < (entry_price + breakeven_buffer):
-                    logger.warning("📉 [Trend Failed] LONG returned to breakeven zone. Momentum exhausted.")
-                    position["guaranteed_exit_price"] = entry_price
-                    return "EXIT_TREND_FAILURE_BREAKEVEN_RETURN"
-            else:
-                if position.get("min_price_since_entry", entry_price) < (entry_price - half_confirm) and current_price > (entry_price - breakeven_buffer):
-                    logger.warning("📉 [Trend Failed] SHORT returned to breakeven zone. Momentum exhausted.")
-                    position["guaranteed_exit_price"] = entry_price
-                    return "EXIT_TREND_FAILURE_BREAKEVEN_RETURN"
+        if side == "LONG":
+            profit_atr = (peak - entry_price) / atr
+            
+            # Phase 1: 浮盈 > 0.1 ATR -> 止損線設為入場價 (加手續費)
+            if profit_atr > BREAKEVEN_ACTIVATE_ATR:
+                be_price = entry_price * (1 + TAKER_FEE_RATE)
+                ts_price = position.get("trailing_stop_price")
+                if ts_price is None or ts_price < be_price:
+                    position["trailing_stop_price"] = be_price
+                    logger.info(f"🔒 [Breakeven Lock] LONG: Stop at Entry {be_price:.6f}")
+                    
+            # Phase 2: 浮盈 > 1.0 ATR -> 止損線跟隨最高價 - 1.5 ATR
+            if profit_atr > TRAILING_STOP_ACTIVATE_ATR:
+                target_stop = peak - (TRAILING_STOP_DISTANCE_ATR * atr)
+                target_stop = max(target_stop, entry_price * (1 + TAKER_FEE_RATE))
+                ts_price = position.get("trailing_stop_price")
+                if ts_price is None or target_stop > ts_price:
+                    position["trailing_stop_price"] = target_stop
+                    logger.info(f"📈 [Trailing Stop] LONG: Stop at {target_stop:.6f}")
         else:
-            # Stage 2: 趨勢已確認，啟用峰谷三重共振平倉
-            if ENABLE_PEAK_VOLUME_EXIT and current_price > 0:
-                peak = position.get("price_peak_value")
-                if peak is not None and atr > 0:
-                    fallback = peak - current_price if side == "LONG" else current_price - peak
-                    threshold = atr * PEAK_FALLBACK_ATR_MULTIPLIER
+            profit_atr = (entry_price - peak) / atr
+            
+            if profit_atr > BREAKEVEN_ACTIVATE_ATR:
+                be_price = entry_price * (1 - TAKER_FEE_RATE)
+                ts_price = position.get("trailing_stop_price")
+                if ts_price is None or ts_price > be_price:
+                    position["trailing_stop_price"] = be_price
+                    logger.info(f"🔒 [Breakeven Lock] SHORT: Stop at Entry {be_price:.6f}")
                     
-                    is_significant_fallback = fallback > threshold
+            if profit_atr > TRAILING_STOP_ACTIVATE_ATR:
+                target_stop = peak + (TRAILING_STOP_DISTANCE_ATR * atr)
+                target_stop = min(target_stop, entry_price * (1 - TAKER_FEE_RATE))
+                ts_price = position.get("trailing_stop_price")
+                if ts_price is None or target_stop < ts_price:
+                    position["trailing_stop_price"] = target_stop
+                    logger.info(f"📉 [Trailing Stop] SHORT: Stop at {target_stop:.6f}")
                     
-                    if len(frame) >= 4:
-                        recent_3_k = frame.iloc[-4:-1]
-                        structural_low = float(recent_3_k['low'].min())
-                        structural_high = float(recent_3_k['high'].max())
+        # 檢查是否觸發止損線
+        ts_price = position.get("trailing_stop_price")
+        if ts_price is not None:
+            is_triggered = False
+            locked_profit = 0
+            if side == "LONG" and current_price <= ts_price:
+                is_triggered = True
+                locked_profit = ts_price - entry_price
+            elif side == "SHORT" and current_price >= ts_price:
+                is_triggered = True
+                locked_profit = entry_price - ts_price
+                
+            if is_triggered:
+                position["guaranteed_exit_price"] = ts_price
+                if locked_profit > (entry_price * 0.001):  # 大於千分之一視為鎖利
+                    logger.warning(f"🛑 [Trailing Stop Hit] {side} Locked Profit. Exit at {ts_price:.6f}")
+                else:
+                    logger.warning(f"🛑 [Breakeven Stop Hit] {side} Exit at Break-even {ts_price:.6f}")
+                return "EXIT_TRAILING_BREAKEVEN_STOP"
+
+        # ══════════════════════════════════════════════════════════════
+        # 【第三防線】峰谷與量能衰竭平倉 (True Peak Triple Confirmation)
+        # ══════════════════════════════════════════════════════════════
+        from core.config import ENABLE_PEAK_VOLUME_EXIT, PEAK_FALLBACK_ATR_MULTIPLIER, PEAK_VOL_WEAK_THRESHOLD
+        if ENABLE_PEAK_VOLUME_EXIT and current_price > 0:
+            if peak is not None and atr > 0:
+                fallback = peak - current_price if side == "LONG" else current_price - peak
+                threshold = atr * PEAK_FALLBACK_ATR_MULTIPLIER
+                
+                is_significant_fallback = fallback > threshold
+                
+                if len(frame) >= 4:
+                    recent_3_k = frame.iloc[-4:-1]
+                    structural_low = float(recent_3_k['low'].min())
+                    structural_high = float(recent_3_k['high'].max())
+                else:
+                    structural_low = current_price - atr
+                    structural_high = current_price + atr
+                    
+                is_structure_broken = current_price < structural_low if side == "LONG" else current_price > structural_high
+                
+                try:
+                    current_volume = float(prev_1.get("volume", 0))
+                    if len(frame) >= 5:
+                        recent_3_vol = frame['volume'].iloc[-5:-2]
+                        volume_avg = float(recent_3_vol.mean())
                     else:
-                        structural_low = current_price - atr
-                        structural_high = current_price + atr
+                        volume_avg = float(frame['volume'].iloc[:-2].mean())
                         
-                    is_structure_broken = current_price < structural_low if side == "LONG" else current_price > structural_high
-                    
-                    try:
-                        current_volume = float(prev_1.get("volume", 0))
-                        if len(frame) >= 5:
-                            recent_3_vol = frame['volume'].iloc[-5:-2]
-                            volume_avg = float(recent_3_vol.mean())
-                        else:
-                            volume_avg = float(frame['volume'].iloc[:-2].mean())
-                            
-                        is_momentum_exhausted = current_volume < (volume_avg * PEAK_VOL_WEAK_THRESHOLD)
-                    except Exception:
-                        is_momentum_exhausted = False
-                        volume_avg = 0.0
-                        current_volume = 0.0
-                    
-                    is_triple_confirmed = is_significant_fallback and is_structure_broken and is_momentum_exhausted
-                    
-                    if is_triple_confirmed:
-                        position["guaranteed_exit_price"] = peak
-                        position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
-                        logger.warning(
-                            f"📉 [TRUE_PEAK_EXIT] {side} 真峰谷三重共振確認！"
-                            f"Current: {current_price:.6f}, Peak: {peak:.6f}, "
-                            f"Structure Broken: {is_structure_broken} (Ref: {structural_low:.6f}/{structural_high:.6f}), "
-                            f"Vol Exhausted: {is_momentum_exhausted} (Vol: {current_volume:.2f} < Avg: {volume_avg * PEAK_VOL_WEAK_THRESHOLD:.2f})"
-                        )
-                        return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
+                    is_momentum_exhausted = current_volume < (volume_avg * PEAK_VOL_WEAK_THRESHOLD)
+                except Exception:
+                    is_momentum_exhausted = False
+                    volume_avg = 0.0
+                    current_volume = 0.0
+                
+                is_triple_confirmed = is_significant_fallback and is_structure_broken and is_momentum_exhausted
+                
+                if is_triple_confirmed:
+                    position["guaranteed_exit_price"] = peak
+                    position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
+                    logger.warning(
+                        f"📉 [TRUE_PEAK_EXIT] {side} 真峰谷三重共振確認！"
+                        f"Current: {current_price:.6f}, Peak: {peak:.6f}, "
+                        f"Structure Broken: {is_structure_broken} (Ref: {structural_low:.6f}/{structural_high:.6f}), "
+                        f"Vol Exhausted: {is_momentum_exhausted} (Vol: {current_volume:.2f} < Avg: {volume_avg * PEAK_VOL_WEAK_THRESHOLD:.2f})"
+                    )
+                    return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
 
         # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
