@@ -1859,7 +1859,8 @@ class TradingEngine:
             sig_code = signal.get("signal_code", "")
             is_valid_entry = sig_code and any(sig_code.startswith(prefix) for prefix in [
                 "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
-                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]"
+                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]",
+                "🚀", "📉"
             ])
             if not ck_reverse and not live_pivot and not is_valid_entry:
                 pass
@@ -2282,7 +2283,7 @@ class TradingEngine:
         is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
             "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
             "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]",
-            "🚀"  # ← UnifiedEntryStrategy 新版進場訊號 (2-Candle Breakout / Continuation / Extreme)
+            "🚀", "📉"  # ← UnifiedEntryStrategy 新版進場訊號 (2-Candle Breakout / Continuation / Extreme)
         ])
         if is_system_halted:
             return False
@@ -2327,7 +2328,7 @@ class TradingEngine:
             is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
                 "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]", 
                 "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]",
-                "🚀"  # ← UnifiedEntryStrategy 新版進場訊號
+                "🚀", "📉"  # ← UnifiedEntryStrategy 新版進場訊號
             ])
             if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}
