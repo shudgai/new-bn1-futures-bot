@@ -1043,19 +1043,43 @@ class TradingEngine:
                     self.ticker_volumes[sym] = float(t['quoteVolume'])
             self.last_ticker_success_ts = time.time()
         except Exception as e:
-            # 原本這裡整個吞掉例外，抓價失敗時 self.tickers 會停在上一次的
-            # 舊報價，止損/止利判斷、訊號評分全部悄悄用過期價格繼續跑，
-            # 不會有任何紀錄。改成量測「已經幾秒沒更新」並每 30 秒記一次
-            # WARNING，讓抓價持續失敗這件事至少看得到，不是無聲無息。
             now = time.time()
-            stale_sec = now - self.last_ticker_success_ts
-            if now - self._last_stale_ticker_log >= 30:
-                self._last_stale_ticker_log = now
-                self.account.log(
-                    f"⚠️ 抓取即時報價失敗（{type(e).__name__}: {e}），"
-                    f"報價已 {stale_sec:.0f} 秒未更新",
-                    "WARNING",
-                )
+            stale_sec = now - getattr(self, 'last_ticker_success_ts', now)
+            
+            from core.config import ENABLE_DYNAMIC_WATCHDOG, WATCHDOG_BASE_TIMEOUT_SECONDS, WATCHDOG_MAX_TIMEOUT_SECONDS
+            if ENABLE_DYNAMIC_WATCHDOG:
+                if stale_sec > WATCHDOG_MAX_TIMEOUT_SECONDS:
+                    active_positions = list(self.account.positions.keys())
+                    if active_positions:
+                        self.account.log(
+                            f"🚨 [WATCHDOG CRITICAL] Data stream lost for {stale_sec:.1f}s "
+                            f"(Limit: {WATCHDOG_MAX_TIMEOUT_SECONDS}s). Forcing position close.", 
+                            "CRITICAL"
+                        )
+                        for sym in active_positions:
+                            try:
+                                asyncio.create_task(self.account.close_position(sym, reason="Watchdog Critical Timeout"))
+                                self.account.log(f"⚠️ [WATCHDOG] Position {sym} closed due to data loss.", "WARNING")
+                            except Exception as ex:
+                                self.account.log(f"🔥 [WATCHDOG FAIL] Close attempt failed for {sym}: {ex}", "CRITICAL")
+                        # 重置計時器，防止在平倉過程中重複觸發
+                        self.last_ticker_success_ts = now
+                elif stale_sec > WATCHDOG_BASE_TIMEOUT_SECONDS:
+                    if now - getattr(self, '_last_stale_ticker_log', 0) >= 10:
+                        self._last_stale_ticker_log = now
+                        self.account.log(
+                            f"⚠️ [WATCHDOG WARN] Data delay: {stale_sec:.1f}s "
+                            f"(Base: {WATCHDOG_BASE_TIMEOUT_SECONDS}s).",
+                            "WARNING"
+                        )
+            else:
+                if now - getattr(self, '_last_stale_ticker_log', 0) >= 30:
+                    self._last_stale_ticker_log = now
+                    self.account.log(
+                        f"⚠️ 抓取即時報價失敗（{type(e).__name__}: {e}），"
+                        f"報價已 {stale_sec:.0f} 秒未更新",
+                        "WARNING",
+                    )
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
         """Use an observed live turn, retaining the shared structured order gates."""
