@@ -125,17 +125,44 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
     if side == "LONG":
         symbol = kwargs.get('symbol', '')
+        
+        # ══════════════════════════════════════════════════════════════════
+        # 🚨 第一層：絕對硬防線 (Absolute Hard Blocks - Live Candle)
+        # 只要觸發任何一條，立即 return False，後續邏輯完全不執行
+        # ══════════════════════════════════════════════════════════════════
+        live_candle = df.iloc[-1]
+        live_close = float(live_candle['close'])
+        live_open = float(live_candle['open'])
+        live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
+        
+        # 1.1 收黑禁多 (Bearish Candle Block) - 使用當前未收線(Live)的報價
+        if live_close < live_open:
+            return False, "🛑 BLOCKED_PANIC_LONG (Live Bearish Candle, momentum lost)", {}
+            
+        # 1.2 短均線失守禁多 (Short MA Breach Block)
+        if live_close < live_ma7 and live_ma7 > 0:
+            return False, f"🛑 BLOCKED_PANIC_LONG (Live Close {live_close:.6f} < Live MA7 {live_ma7:.6f})", {}
+
+        # 1.3 連續陽線動能衰竭禁多：連續 4 根陽線，防止天花板追多
+        bullish_count = 0
+        for i in range(1, min(6, len(df))):
+            c = df.iloc[-i]
+            if float(c['close']) > float(c['open']):
+                bullish_count += 1
+            else:
+                break
+        if bullish_count >= 4:
+            return False, f"🛑 BLOCKED_PANIC_LONG (Consecutive Bullish: {bullish_count} >= 4)", {}
+
+        # 1.4 全局極限正乖離一票否決：Bias > 2.5 ATR
+        live_atr = float(live_candle.get('atr', 0))
+        live_ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', live_close)))
+        if live_atr > 0 and (live_close - live_ema_base) > 2.5 * live_atr:
+            return False, f"🛑 BLOCKED_PANIC_LONG (Bias > 2.5 ATR)", {}
 
         # 🛡️ 最終開多過濾邏輯 (Long Entry Filters) - 防止天花板追多
         # ⚠️ 延續開倉 (Continuation) 本身就需在上軌外，上軌過濾僅封鎖首倉。
         is_potential_continuation_long = (prev_close > prev_kc_upper) and (close > kc_upper)
-
-        # 1. 核心過濾：K 線收黑或跌破 MA7 禁多 (動能已熄火)
-        ma7 = float(current_candle.get('ma7', current_candle.get('ma5', current_candle.get('ma3', close))))
-        if close < open_p:
-            return False, "BLOCKED_PANIC_LONG (Bearish candle, momentum lost)", {}
-        if close < ma7 and ma7 > 0:
-            return False, f"BLOCKED_PANIC_LONG (Close {close:.6f} < MA7 {ma7:.6f})", {}
 
         # 2. 衝出上軌或正乖離過大禁多 — 僅首倉適用，延續開倉豁免
         if close > kc_upper and not is_potential_continuation_long:
@@ -206,18 +233,38 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         symbol = kwargs.get('symbol', '')
 
         # ══════════════════════════════════════════════════════════════════
-        # 🛡️ [HARD FILTER — 做空前置對稱門檻] 防止在地板大陽線追空
-        # 與做多側「收黑/跌破MA7禁多」完全對稱，必須放在所有條件最前面
+        # 🚨 第一層：絕對硬防線 (Absolute Hard Blocks - Live Candle)
+        # 防止在地板大陽線追空，必須放在所有條件最前面
         # ══════════════════════════════════════════════════════════════════
+        live_candle = df.iloc[-1]
+        live_close = float(live_candle['close'])
+        live_open = float(live_candle['open'])
+        live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
 
-        # [Hard Filter 1] 收紅禁空：當根為陽線（Close > Open），動能仍在多方，嚴禁做空
-        if close > open_p:
-            return False, "BLOCKED_PANIC_SHORT (Bullish candle — Close > Open, momentum on long side)", {}
+        # 1.1 收紅禁空 (Bullish Candle Block) - 使用當前未收線(Live)的報價
+        if live_close > live_open:
+            return False, "🛑 BLOCKED_PANIC_SHORT (Live Bullish candle — Close > Open, momentum on long side)", {}
 
-        # [Hard Filter 2] 站上短均線禁空：收盤仍在 MA7 之上，代表短線均線未確認空方，嚴禁做空
-        ma7_s = float(current_candle.get('ma7', current_candle.get('ma5', current_candle.get('ma3', close))))
-        if close > ma7_s and ma7_s > 0:
-            return False, f"BLOCKED_PANIC_SHORT (Close {close:.6f} > MA7 {ma7_s:.6f})", {}
+        # 1.2 站上短均線禁空 (Short MA Breach Block)
+        if live_close > live_ma7 and live_ma7 > 0:
+            return False, f"🛑 BLOCKED_PANIC_SHORT (Live Close {live_close:.6f} > Live MA7 {live_ma7:.6f})", {}
+
+        # 2.3 連續陰線動能衰竭禁空：連續 4 根陰線，防止地板追空
+        bearish_count = 0
+        for i in range(1, min(6, len(df))):
+            c = df.iloc[-i]
+            if float(c['close']) < float(c['open']):
+                bearish_count += 1
+            else:
+                break
+        if bearish_count >= 4:
+            return False, f"🛑 BLOCKED_PANIC_SHORT (Consecutive Bearish: {bearish_count} >= 4)", {}
+
+        # 2.4 全局極限負乖離一票否決：Bias < -2.5 ATR
+        live_atr = float(live_candle.get('atr', 0))
+        live_ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', live_close)))
+        if live_atr > 0 and (live_ema_base - live_close) > 2.5 * live_atr:
+            return False, f"🛑 BLOCKED_PANIC_SHORT (Bias < -2.5 ATR)", {}
 
         # ══════════════════════════════════════════════════════════════════
 

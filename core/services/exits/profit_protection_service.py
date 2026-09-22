@@ -58,49 +58,87 @@ def trend_style(frame, side, opened_at=None):
 
 
 def protection(position, price, fee, slippage, frame=None):
-    """Arm at 0.5 USDT net, then close on a 20% drawdown of peak net profit."""
+    """Dynamic Ladder Lock: step_unit = max(2.0, margin*0.015). Lock steps at 2x step."""
     entry = float(position.get('entry_price') or 0)
     qty = float(position.get('qty') or 0)
+    margin = float(position.get('margin') or 0)
     side = position.get('side')
+    
     if side not in ('LONG', 'SHORT') or not all(math.isfinite(x) and x > 0 for x in (entry, qty, price)):
         return None
+        
     sign = 1 if side == 'LONG' else -1
     execution = price * (1 - sign * slippage)
     gross = sign * (price - entry) * qty
     net = sign * (execution - entry) * qty - (entry + execution) * qty * fee
+    
     state = position.setdefault('channel_profit_protection', {})
     identity = [side, position.get('open_timestamp'), entry, qty]
     if state.get('identity') != identity:
         state.clear()
         state['identity'] = identity
-    policy = 'net_peak_giveback_v1'
+        
+    policy = 'dynamic_ladder_v2'
     if state.get('policy') != policy:
-        known = state.get('policy') == 'fixed_net_steps_v1'
-        peak = float(state.get('peak_net', net)) if known else net
-        floor = float(state.get('locked_net', 0.)) if known else 0.
-        pending = bool(state.get('pending')) if known else False
         state.clear()
-        state.update(identity=identity, policy=policy, peak_net=max(net, peak),
-                     locked_net=max(0., floor), pending=pending)
+        state.update(identity=identity, policy=policy, peak_net=net, locked_net=0.0, pending=False)
+        
     state['peak_net'] = max(float(state.get('peak_net', net)), net)
     state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
-    state['armed'] = bool(state.get('armed')) or state['peak_net'] >= 0.5 - 1e-10 or state['locked_net'] > 0.
-    if not state['armed']:
+    
+    peak_net = state['peak_net']
+    
+    # 1. 計算動態階梯步長單位 (Step Unit)
+    # 規則：以當前開倉保證金的 1.5% 為一步長，最低保底 2.0 USDT
+    step_unit = max(2.0, margin * 0.015)
+    
+    triggered = False
+    stop_price = 0.0
+    locked_net = float(state.get('locked_net', 0.0))
+    
+    # 3. 階梯保護邏輯（浮盈達 2 個 step_unit 啟動防守）
+    if peak_net >= step_unit * 2:
+        # 達到 2 個單位鎖 1 個單位，達到 3 個單位鎖 2 個單位
+        locked_level = int(peak_net / step_unit) - 1
+        lock_profit_u = locked_level * step_unit
+        
+        # 確保 locked_net 只會變大，不會變小
+        locked_net = max(locked_net, lock_profit_u)
+        state['locked_net'] = locked_net
+        
+        # 逆推鎖定淨利對應的價格
+        if side == 'LONG':
+            stop = (entry * (1 + fee) + locked_net / qty) / ((1 - slippage) * (1 - fee))
+        else:
+            stop = (entry * (1 - fee) - locked_net / qty) / ((1 + slippage) * (1 + fee))
+        stop_price = stop
+        
+        # 當利潤回吐跌破鎖定線時，強制 100% 市價全平，保住階梯利潤
+        if net <= locked_net:
+            triggered = True
+            
+        # 4. 峰谷轉折即時攔截：已達鎖利門檻但收盤跌破/站上短均線，認定短頂/短底確立，搶跑全平
+        if frame is not None and len(frame) > 0 and not triggered:
+            live_candle = frame.iloc[-1]
+            live_close = float(live_candle['close'])
+            ma_short = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
+            if side == 'LONG' and live_close < ma_short:
+                triggered = True
+            elif side == 'SHORT' and live_close > ma_short:
+                triggered = True
+
+    state['pending'] = bool(state.get('pending')) or triggered
+    if stop_price > 0:
+        state['stop_price'] = stop_price
+        state['net_floor_price'] = stop_price
+        position['profit_lock_display_sl'] = stop_price
+
+    if not state.get('pending') and locked_net <= 0:
         return None
-    locked = max(float(state['locked_net']), state['peak_net'] * .80)
-    state['locked_net'] = locked
-    state['retracement_fraction'] = .20
-    if side == 'LONG':
-        stop = (entry * (1 + fee) + locked / qty) / ((1 - slippage) * (1 - fee))
-    else:
-        stop = (entry * (1 - fee) - locked / qty) / ((1 + slippage) * (1 + fee))
-    state['stop_price'] = stop
-    state['net_floor_price'] = stop
-    state['pending'] = bool(state.get('pending')) or net <= locked
-    position['profit_lock_display_sl'] = stop  # 更新 UI 顯示的鎖利價位
-    return {'triggered': state['pending'], 'stop_price': stop,
+
+    return {'triggered': state['pending'], 'stop_price': stop_price,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
-            'locked_net': locked, 'peak_net': state['peak_net'], 'retracement_fraction': .20}
+            'locked_net': locked_net, 'peak_net': peak_net, 'retracement_fraction': 0.0}
 
 
 def abnormal_long_bar(frame, price):

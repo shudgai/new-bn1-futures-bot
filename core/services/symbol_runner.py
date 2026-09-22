@@ -234,11 +234,14 @@ async def process_single_symbol_runner(
                 from core.config import TRADE_AMOUNT_USDT
                 amount_usdt = TRADE_AMOUNT_USDT
                 success = await engine.account.open_position(
-                    symbol,
-                    amount_usdt,
-                    channel_price,
-                    existing_pos["side"],
-                    f"PYRAMID: {reason}"
+                    symbol=symbol,
+                    side=existing_pos["side"],
+                    price=channel_price,
+                    amount_usdt=amount_usdt,
+                    sl=existing_pos.get("sl", 0.0),
+                    tp=existing_pos.get("tp", 0.0),
+                    reason=f"PYRAMID: {reason}",
+                    entry_context={"entry_mode": "PYRAMID"}
                 )
                 if success:
                     engine.account.log(f"✅ [加倉成功] {symbol} 已增加新倉位！", "SUCCESS")
