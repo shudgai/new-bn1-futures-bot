@@ -183,10 +183,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         # -----------------------------------------------------------------
         ma_3_slope = ma3 - prev_ma3
         # 1. MA3 走平或下彎（轉彎見頂），嚴禁做多
-        if ma_3_slope <= 0:
+        if ma_3_slope <= 0 and not is_exempt_from_sideways:
             return False, "🛑 BLOCKED_MA3_SLOPE (MA3 is flat or falling)", {}
         # 2. 當前價格跌破 MA3，禁多
-        if live_close <= ma3:
+        if live_close <= ma3 and not is_exempt_from_sideways:
             return False, "🛑 BLOCKED_MA3_PRICE (Live Close <= MA3)", {}
         
         # 1.1 收黑禁多 (Bearish Candle Block) - 使用當前未收線(Live)的報價
@@ -197,16 +197,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         if live_close < live_ma7 and live_ma7 > 0:
             return False, f"🛑 BLOCKED_PANIC_LONG (Live Close {live_close:.6f} < Live MA7 {live_ma7:.6f})", {}
 
-        # 1.3 連續陽線動能衰竭禁多：連續 4 根陽線，防止天花板追多
+        # 1.3 連續陽線動能衰竭禁多：連續 6 根陽線，防止天花板追多
         bullish_count = 0
-        for i in range(1, min(6, len(df))):
+        for i in range(1, min(8, len(df))):
             c = df.iloc[-i]
             if float(c['close']) > float(c['open']):
                 bullish_count += 1
             else:
                 break
-        if bullish_count >= 4:
-            return False, f"🛑 BLOCKED_PANIC_LONG (Consecutive Bullish: {bullish_count} >= 4)", {}
+        if bullish_count >= 6 and not is_exempt_from_sideways:
+            return False, f"🛑 BLOCKED_PANIC_LONG (Consecutive Bullish: {bullish_count} >= 6)", {}
 
         # 1.4 全局極限正乖離一票否決：Bias > 2.5 ATR
         live_atr = float(live_candle.get('atr', 0))
@@ -301,10 +301,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         # -----------------------------------------------------------------
         ma_3_slope = ma3 - prev_ma3
         # 1. MA3 走平或翹頭（轉彎打底），嚴禁做空
-        if ma_3_slope >= 0:
+        if ma_3_slope >= 0 and not is_exempt_from_sideways:
             return False, "🛑 BLOCKED_MA3_SLOPE (MA3 is flat or rising)", {}
         # 2. 當前價格距離 MA3 向上反撲，或前一根已出長下影線打底，禁空
-        if live_close >= ma3:
+        if live_close >= ma3 and not is_exempt_from_sideways:
             return False, "🛑 BLOCKED_MA3_PRICE (Live Close >= MA3)", {}
 
         # 1.1 收紅禁空 (Bullish Candle Block) - 使用當前未收線(Live)的報價
@@ -315,16 +315,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         if live_close > live_ma7 and live_ma7 > 0:
             return False, f"🛑 BLOCKED_PANIC_SHORT (Live Close {live_close:.6f} > Live MA7 {live_ma7:.6f})", {}
 
-        # 2.3 連續陰線動能衰竭禁空：連續 4 根陰線，防止地板追空
+        # 2.3 連續陰線動能衰竭禁空：連續 6 根陰線，防止地板追空
         bearish_count = 0
-        for i in range(1, min(6, len(df))):
+        for i in range(1, min(8, len(df))):
             c = df.iloc[-i]
             if float(c['close']) < float(c['open']):
                 bearish_count += 1
             else:
                 break
-        if bearish_count >= 4:
-            return False, f"🛑 BLOCKED_PANIC_SHORT (Consecutive Bearish: {bearish_count} >= 4)", {}
+        if bearish_count >= 6 and not is_exempt_from_sideways:
+            return False, f"🛑 BLOCKED_PANIC_SHORT (Consecutive Bearish: {bearish_count} >= 6)", {}
 
         # 2.4 全局極限負乖離一票否決：Bias < -2.5 ATR
         live_atr = float(live_candle.get('atr', 0))
