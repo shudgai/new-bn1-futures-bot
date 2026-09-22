@@ -92,9 +92,25 @@ def protection(position, price, fee, slippage, frame=None):
     exit_reason = ""
     stop_price = 0.0
 
+    # 0. 絕對安全網：實時最大虧損硬止損與破中軌熔斷 (不等收盤，Ticker 秒平)
+    max_allowed_loss_u = -3.0
+    if net <= max_allowed_loss_u:
+        triggered = True
+        exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制 ({net:.2f}U <= {max_allowed_loss_u}U)，即刻市價全平止損！'
+
+    if not triggered and frame is not None and len(frame) > 0:
+        live_candle = frame.iloc[-1]
+        ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', price)))
+        if side == 'LONG' and price < ema_base:
+            triggered = True
+            exit_reason = 'EMERGENCY_TREND_BREAK: 多單即時現價跌破基準中軌，趨勢破位即刻止損！'
+        elif side == 'SHORT' and price > ema_base:
+            triggered = True
+            exit_reason = 'EMERGENCY_TREND_BREAK: 空單即時現價站上基準中軌，趨勢破位即刻止損！'
+
     # 2. 絕對保本防線：早鳥微利防守 (Break-Even Guard)
     fee_buffer = 0.5
-    if peak_net >= 2.5:
+    if not triggered and peak_net >= 2.5:
         if net <= fee_buffer:
             triggered = True
             exit_reason = 'EXIT_BREAK_EVEN: 微利回吐保本觸發，市價全平'
