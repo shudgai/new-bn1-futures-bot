@@ -214,7 +214,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
             return False, "BLOCKED_PANIC_SHORT (Close < Lower Band, First Entry only)", {}
 
         # 2. RSI 極端值過濾（延續開倉亦適用）
-        rsi_limit = 25 if "PEPE" in symbol else 30
+        rsi_limit = 25  # 龍蝦與 PEPE 均用 25，30 過於保守會封鎖正常下跌趨勢
         rsi_val = float(current_candle.get('rsi', 50))
         if 'rsi' in current_candle and rsi_val < rsi_limit:
             return False, f"BLOCKED_PANIC_SHORT (RSI {rsi_val:.1f} < {rsi_limit})", {}
