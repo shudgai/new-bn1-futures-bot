@@ -204,22 +204,38 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
     elif side == "SHORT":
         symbol = kwargs.get('symbol', '')
-        
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🛡️ [HARD FILTER — 做空前置對稱門檻] 防止在地板大陽線追空
+        # 與做多側「收黑/跌破MA7禁多」完全對稱，必須放在所有條件最前面
+        # ══════════════════════════════════════════════════════════════════
+
+        # [Hard Filter 1] 收紅禁空：當根為陽線（Close > Open），動能仍在多方，嚴禁做空
+        if close > open_p:
+            return False, "BLOCKED_PANIC_SHORT (Bullish candle — Close > Open, momentum on long side)", {}
+
+        # [Hard Filter 2] 站上短均線禁空：收盤仍在 MA7 之上，代表短線均線未確認空方，嚴禁做空
+        ma7_s = float(current_candle.get('ma7', current_candle.get('ma5', current_candle.get('ma3', close))))
+        if close > ma7_s and ma7_s > 0:
+            return False, f"BLOCKED_PANIC_SHORT (Close {close:.6f} > MA7 {ma7_s:.6f})", {}
+
+        # ══════════════════════════════════════════════════════════════════
+
         # 🛡️ 最終開空過濾邏輯 (Short Entry Filters) - 防止追殺恐慌
         # ⚠️ 延續開倉 (Continuation) 本身就需在下軌外，下軌過濾僅封鎖首倉。
         is_potential_continuation = (prev_close < prev_kc_lower) and (close < kc_lower)
 
-        # 1. 核心過濾：極端超賣禁止 (下軌過濾) — 僅首倉適用，延續開倉豁免
+        # 3. 核心過濾：極端超賣禁止 (下軌過濾) — 僅首倉適用，延續開倉豁免
         if close < kc_lower and not is_potential_continuation:
             return False, "BLOCKED_PANIC_SHORT (Close < Lower Band, First Entry only)", {}
 
-        # 2. RSI 極端值過濾（延續開倉亦適用）
+        # 4. RSI 極端值過濾（延續開倉亦適用）
         rsi_limit = 25  # 龍蝦與 PEPE 均用 25，30 過於保守會封鎖正常下跌趨勢
         rsi_val = float(current_candle.get('rsi', 50))
         if 'rsi' in current_candle and rsi_val < rsi_limit:
             return False, f"BLOCKED_PANIC_SHORT (RSI {rsi_val:.1f} < {rsi_limit})", {}
 
-        # 3. 乖離率限制 (Bias Limit) — 以 MA7 為錨點（延續開倉亦適用）
+        # 5. 乖離率限制 (Bias Limit) — 以 MA7 為錨點（延續開倉亦適用）
         ma_7 = float(current_candle.get('ma7', current_candle.get('ema_20', current_candle.get('kc_middle', close))))
         atr = float(current_candle.get('atr', 0))
         bias_atr = 1.8 if "PEPE" in symbol else 1.5
