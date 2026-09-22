@@ -183,11 +183,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         if 'rsi' in current_candle and rsi_val < rsi_limit:
             return False, f"BLOCKED_PANIC_SHORT (RSI {rsi_val:.1f} < {rsi_limit})", {}
             
-        # 3. 乖離率限制 (Bias Limit)
-        ma_20 = float(current_candle.get('ema_20', current_candle.get('kc_middle', close)))
+        # 3. 乖離率限制 (Bias Limit) — 以 MA7 為錨點，與出場邏輯保持一致
+        ma_7 = float(current_candle.get('ma7', current_candle.get('ema_20', current_candle.get('kc_middle', close))))
         atr = float(current_candle.get('atr', 0))
         bias_atr = 1.8 if "PEPE" in symbol else 1.5
-        if atr > 0 and (ma_20 - close) > bias_atr * atr:
+        if atr > 0 and (ma_7 - close) > bias_atr * atr:
             return False, f"BLOCKED_PANIC_SHORT (Bias > {bias_atr} ATR)", {}
             
         # 4. 動能過濾：恐慌棒識別 (Climax Candle Filter)

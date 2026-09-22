@@ -107,66 +107,85 @@ class DualTrackExitStrategy(IExitStrategy):
         from core.config import get_high_beta_config, TRAILING_STOP_ACTIVATE_ATR
         
         beta_config = get_high_beta_config(symbol)
-        BREAKEVEN_ACTIVATE_ATR = beta_config.get("BREAKEVEN_ACTIVATE_ATR", 0.5)
-        base_trailing_dist = beta_config.get("TRAILING_STOP_DISTANCE_ATR", 2.0)
-        
-        # 動態計算趨勢強度與緩衝區
-        trend_strength = 0.0
-        if len(frame) >= 4:
-            recent_3 = frame.iloc[-4:-1]
-            if side == "LONG":
-                bullish_count = sum(1 for _, row in recent_3.iterrows() if float(row['close']) > float(row['open']))
-                trend_strength = bullish_count / 3.0
-            else:
-                bearish_count = sum(1 for _, row in recent_3.iterrows() if float(row['close']) < float(row['open']))
-                trend_strength = bearish_count / 3.0
-                
-        # 若趨勢強勁，放寬緩衝區
-        if trend_strength >= 0.8:
-            dynamic_trailing_dist = base_trailing_dist + (0.4 if "PEPE" in symbol else 0.5)
-        else:
-            dynamic_trailing_dist = base_trailing_dist
-        
+        BREAKEVEN_ACTIVATE_ATR = beta_config.get("BREAKEVEN_ACTIVATE_ATR", 1.2)  # 1.2 ATR 後啟動保本
+        base_trailing_dist = beta_config.get("TRAILING_STOP_DISTANCE_ATR", 1.8)  # 起步寬容值
+
         profit_atr = 0.0
         peak = position.get("price_peak_value", entry_price)
-        
+
+        # ══════════════════════════════════════════════════════════════
+        # 三階梯動態移動止損 (Three-Tier Ladder Trailing Stop)
+        # Stage A: profit < 1.2 ATR  → 寬容期 1.8 ATR (防假頂洗盤)
+        # Stage B: profit < 3.0 ATR  → 收緊期 1.2 ATR
+        # Stage C: profit >= 3.0 ATR → 衝刺期 0.8 ATR (最大保全)
+        # ══════════════════════════════════════════════════════════════
         if side == "LONG":
             profit_atr = (peak - entry_price) / atr
-            
-            # Phase 1: 浮盈 > 0.1 ATR -> 止損線設為入場價 (加手續費)
-            if profit_atr > BREAKEVEN_ACTIVATE_ATR:
+
+            # 計算三階梯動態緩衝寬度
+            if profit_atr >= 3.0:
+                trail_dist = 0.8
+            elif profit_atr >= 1.2:
+                trail_dist = 1.2
+            else:
+                trail_dist = 1.8
+
+            # Phase 1: 保本鎖 (浮盈 >= 1.2 ATR)
+            if profit_atr >= BREAKEVEN_ACTIVATE_ATR:
                 be_price = entry_price * (1 + TAKER_FEE_RATE)
                 ts_price = position.get("trailing_stop_price")
                 if ts_price is None or ts_price < be_price:
                     position["trailing_stop_price"] = be_price
                     logger.info(f"🔒 [Breakeven Lock] LONG: Stop at Entry {be_price:.6f}")
-                    
-            # Phase 2: 動態止損線跟隨最高價
-            if profit_atr > TRAILING_STOP_ACTIVATE_ATR:
-                target_stop = peak - (dynamic_trailing_dist * atr)
+
+            # Phase 2: 三階梯移動止損
+            if profit_atr > 0:
+                target_stop = peak - (trail_dist * atr)
                 target_stop = max(target_stop, entry_price * (1 + TAKER_FEE_RATE))
                 ts_price = position.get("trailing_stop_price")
                 if ts_price is None or target_stop > ts_price:
                     position["trailing_stop_price"] = target_stop
-                    logger.info(f"📈 [Trailing Stop] LONG: Stop at {target_stop:.6f} (Dist: {dynamic_trailing_dist} ATR)")
+                    logger.info(f"📈 [Trailing Stop] LONG: Stop at {target_stop:.6f} (Stage={'A' if trail_dist==1.8 else 'B' if trail_dist==1.2 else 'C'}, Dist={trail_dist} ATR)")
         else:
             profit_atr = (entry_price - peak) / atr
-            
-            if profit_atr > BREAKEVEN_ACTIVATE_ATR:
+
+            if profit_atr >= 3.0:
+                trail_dist = 0.8
+            elif profit_atr >= 1.2:
+                trail_dist = 1.2
+            else:
+                trail_dist = 1.8
+
+            if profit_atr >= BREAKEVEN_ACTIVATE_ATR:
                 be_price = entry_price * (1 - TAKER_FEE_RATE)
                 ts_price = position.get("trailing_stop_price")
                 if ts_price is None or ts_price > be_price:
                     position["trailing_stop_price"] = be_price
                     logger.info(f"🔒 [Breakeven Lock] SHORT: Stop at Entry {be_price:.6f}")
-                    
-            if profit_atr > TRAILING_STOP_ACTIVATE_ATR:
-                target_stop = peak + (dynamic_trailing_dist * atr)
+
+            if profit_atr > 0:
+                target_stop = peak + (trail_dist * atr)
                 target_stop = min(target_stop, entry_price * (1 - TAKER_FEE_RATE))
                 ts_price = position.get("trailing_stop_price")
                 if ts_price is None or target_stop < ts_price:
                     position["trailing_stop_price"] = target_stop
-                    logger.info(f"📉 [Trailing Stop] SHORT: Stop at {target_stop:.6f} (Dist: {dynamic_trailing_dist} ATR)")
-                    
+                    logger.info(f"📉 [Trailing Stop] SHORT: Stop at {target_stop:.6f} (Stage={'A' if trail_dist==1.8 else 'B' if trail_dist==1.2 else 'C'}, Dist={trail_dist} ATR)")
+
+        # ══════════════════════════════════════════════════════════════
+        # MA7 峰頂/谷底快速離場 (MA7 Pivot Instant Exit)
+        # 浮盈 >= 1.0 ATR 後，收盤實體破 MA7 即認定見頂/見底，立即全平
+        # ══════════════════════════════════════════════════════════════
+        if profit_atr >= 1.0:
+            ma7_val = float(prev_1.get("ma7", prev_1.get("ma5", prev_1.get("ma3", 0.0))))
+            curr_close = float(prev_1["close"])
+            if ma7_val > 0:
+                if side == "LONG" and curr_close < ma7_val:
+                    logger.warning(f"🏁 [MA7 Peak Exit] LONG {symbol} close {curr_close:.6f} < MA7 {ma7_val:.6f} (profit {profit_atr:.2f} ATR). Full exit.")
+                    return "EXIT_MA7_PEAK_BREAKOUT"
+                elif side == "SHORT" and curr_close > ma7_val:
+                    logger.warning(f"🏁 [MA7 Valley Exit] SHORT {symbol} close {curr_close:.6f} > MA7 {ma7_val:.6f} (profit {profit_atr:.2f} ATR). Full exit.")
+                    return "EXIT_MA7_PEAK_BREAKOUT"
+
         # 檢查是否觸發止損線
         ts_price = position.get("trailing_stop_price")
         if ts_price is not None:
@@ -178,42 +197,43 @@ class DualTrackExitStrategy(IExitStrategy):
             elif side == "SHORT" and current_price >= ts_price:
                 is_triggered = True
                 locked_profit = entry_price - ts_price
-                
+
             if is_triggered:
-                # 結構與量能確認 (Structure Confirmation)
-                ema_20 = float(prev_1.get("ema_20", prev_1.get("kc_middle", entry_price)))
-                
+                # MA7 結構確認 (取代原 EMA20 — 反應更靈敏)
+                ma7_val = float(prev_1.get("ma7", prev_1.get("ema_20", prev_1.get("kc_middle", entry_price))))
+
                 # 計算近 3 根 K 線平均量能
                 avg_vol_3 = 0.0
                 if len(frame) >= 4:
                     avg_vol_3 = float(frame['volume'].iloc[-4:-1].mean())
                 curr_vol = float(prev_1.get("volume", 0))
-                
+
                 structure_broken = False
                 vol_exhausted = False
-                
+
                 if side == "LONG":
-                    if current_price < ema_20:
+                    if current_price < ma7_val:
                         structure_broken = True
                 else:
-                    if current_price > ema_20:
+                    if current_price > ma7_val:
                         structure_broken = True
-                        
+
                 if avg_vol_3 > 0 and curr_vol < 0.7 * avg_vol_3:
                     vol_exhausted = True
-                    
+
                 # 決策邏輯
                 if structure_broken or vol_exhausted:
                     position["guaranteed_exit_price"] = ts_price
                     if locked_profit > (entry_price * 0.001):
-                        logger.warning(f"🛑 [Trailing Stop Hit] {side} Structure/Vol Broken. Exit at {ts_price:.6f}")
+                        logger.warning(f"🛑 [Trailing Stop Hit] {side} MA7 Structure/Vol Broken. Exit at {ts_price:.6f}")
                     else:
-                        logger.warning(f"🛑 [Breakeven Stop Hit] {side} Structure/Vol Broken. Exit at Break-even {ts_price:.6f}")
+                        logger.warning(f"🛑 [Breakeven Stop Hit] {side} MA7 Structure/Vol Broken. Exit at Break-even {ts_price:.6f}")
                     return "EXIT_TRAILING_BREAKEVEN_STOP"
                 else:
-                    # 未破壞結構且量能正常，判定為假峰/假谷，繼續持有
-                    logger.info(f"🛡️ [Fake Top Filtered] {side} {symbol} price crossed SL {ts_price:.6f} but structure holds. Holding position.")
+                    # 未破壞 MA7 結構且量能正常，判定為假峰/假谷，繼續持有
+                    logger.info(f"🛡️ [Fake Top Filtered] {side} {symbol} price crossed SL {ts_price:.6f} but MA7 structure holds. Holding position.")
                     return None
+
 
         # ══════════════════════════════════════════════════════════════
         # 【第三防線】峰谷與量能衰竭平倉 (True Peak Triple Confirmation)

@@ -734,6 +734,7 @@ class SuperTrendKeltnerStrategy:
         # MA3 負責快速峰谷轉折，MA5 負責中短線方向。
         df['ma3'] = close.rolling(window=3).mean()
         df['ma5'] = close.rolling(window=5).mean()
+        df['ma7'] = close.rolling(window=7).mean()
         df['ma15'] = close.rolling(window=15).mean()
         df['ma15_slope'] = df['ma15'] - df['ma15'].shift(1)
 
