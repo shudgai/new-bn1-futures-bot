@@ -147,6 +147,20 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         # 條件：前一根「突破」了 KC (Close > KC_Upper)，當前「確認」站在 KC 及 MA3 外側，且兩根顏色皆為陽燭
         prev_broke_kc = prev_close > prev_kc_upper
         if prev_broke_kc and is_healthy_outside and is_color_consistent_long:
+            # 【防追高過濾器】首倉專屬
+            kc_mid = float(current_candle.get('kc_middle', current_candle.get('ema_20', close)))
+            deviation = abs(close - kc_mid) / kc_mid if kc_mid > 0 else 0
+            rsi_val = float(current_candle.get('rsi', 50))
+            
+            import os
+            max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
+            max_rsi = float(os.getenv("FIRST_ENTRY_MAX_RSI", "75"))
+            
+            if deviation > max_dev:
+                return False, f"BLOCKED_OVERHEATED (Dev: {deviation:.2%} > {max_dev:.2%})", {}
+            if rsi_val > max_rsi:
+                return False, f"BLOCKED_OVERHEATED (RSI: {rsi_val:.1f} > {max_rsi})", {}
+                
             return True, "🚀 [First Entry] LONG: 兩根同色破軌確認", {"action": "ENTER", "is_breakout": True}
 
     elif side == "SHORT":
@@ -173,6 +187,20 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         # 條件：前一根「突破」了 KC，當前「確認」站在外側，且兩根皆為陰燭
         prev_broke_kc = prev_close < prev_kc_lower
         if prev_broke_kc and is_healthy_outside and is_color_consistent_short:
+            # 【防追高/追空過濾器】首倉專屬
+            kc_mid = float(current_candle.get('kc_middle', current_candle.get('ema_20', close)))
+            deviation = abs(close - kc_mid) / kc_mid if kc_mid > 0 else 0
+            rsi_val = float(current_candle.get('rsi', 50))
+            
+            import os
+            max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
+            min_rsi = float(os.getenv("FIRST_ENTRY_MIN_RSI", "25")) # 空單看超賣
+            
+            if deviation > max_dev:
+                return False, f"BLOCKED_OVERHEATED (Dev: {deviation:.2%} > {max_dev:.2%})", {}
+            if rsi_val < min_rsi and 'rsi' in current_candle: # 確保有RSI才阻擋
+                return False, f"BLOCKED_OVERSOLD (RSI: {rsi_val:.1f} < {min_rsi})", {}
+                
             return True, "🚀 [First Entry] SHORT: 兩根同色破軌確認", {"action": "ENTER", "is_breakout": True}
 
     return False, "FILTERED_NOT_PURE_BREAKOUT", {}

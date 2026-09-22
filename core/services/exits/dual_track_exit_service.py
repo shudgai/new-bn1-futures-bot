@@ -98,10 +98,30 @@ class DualTrackExitStrategy(IExitStrategy):
                     position["profit_lock_display_sl"] = current_price  # UI 即時同步
 
         # ══════════════════════════════════════════════════════════════
+        # 【強制保本鎖利】 (Forced Break-Even Lock)
+        # ══════════════════════════════════════════════════════════════
+        taker_fee = 0.0004
+        if side == "LONG":
+            be_price = entry_price * (1 + taker_fee)
+            current_profit = current_price - entry_price
+        else:
+            be_price = entry_price * (1 - taker_fee)
+            current_profit = entry_price - current_price
+            
+        break_even_locked = position.get("break_even_locked", False)
+        if not break_even_locked and current_profit > 0:
+            position["break_even_locked"] = True
+            position["be_price"] = be_price
+            break_even_locked = True
+            logger.info(f"🔒 [BE LOCK] {side} Profit > 0, Locking Break-Even at {be_price:.6f}")
+            
+        be_price_stored = position.get("be_price", 0.0)
+
+        # ══════════════════════════════════════════════════════════════
         # 【新增】峰谷與量能衰竭平倉 (Peak/Valley + Volume Weakness Exit)
         # ══════════════════════════════════════════════════════════════
         from core.config import ENABLE_PEAK_VOLUME_EXIT, PEAK_FALLBACK_ATR_MULTIPLIER, VOLUME_WEAKNESS_AVG_PERIOD, VOLUME_WEAKNESS_THRESHOLD
-        if getattr(core.config, 'ENABLE_PEAK_VOLUME_EXIT', True) and current_price > 0:
+        if ENABLE_PEAK_VOLUME_EXIT and current_price > 0:
             peak = position.get("price_peak_value")
             if peak is not None and atr > 0:
                 fallback = peak - current_price if side == "LONG" else current_price - peak
@@ -125,24 +145,31 @@ class DualTrackExitStrategy(IExitStrategy):
                     volume_avg = 0.0
                 
                 # 最終判定：純粹依賴明確的平倉點 (Peak - 0.75*ATR)
-                if is_significant_fallback:
+                dynamic_stop = peak - threshold if side == "LONG" else peak + threshold
+                
+                if side == "LONG":
+                    final_stop_loss = max(dynamic_stop, be_price_stored) if break_even_locked else dynamic_stop
+                    is_triggered = current_price < final_stop_loss
+                else:
+                    final_stop_loss = min(dynamic_stop, be_price_stored) if break_even_locked else dynamic_stop
+                    is_triggered = current_price > final_stop_loss
+                    
+                if is_triggered:
                     position["guaranteed_exit_price"] = peak
                     # 標記平倉後進入量能冷卻期
                     position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
                     
-                    exit_point = peak - threshold if side == "LONG" else peak + threshold
-                    
                     logger.warning(
                         f"[TRUE_PEAK_EXIT] {side} 真峰谷確認 (跌破精確平倉點)！"
-                        f"Current: {current_price:.6f}, Exit Point: {exit_point:.6f} (Peak: {peak:.6f}, ATR: {atr:.6f}), "
+                        f"Current: {current_price:.6f}, Exit Point: {final_stop_loss:.6f} "
+                        f"(Dynamic: {dynamic_stop:.6f}, BE_Lock: {be_price_stored:.6f}), "
                         f"Vol_Weak: {is_volume_weak} (Vol: {current_volume:.2f}, Avg: {volume_avg:.2f})"
                     )
                     return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
                 else:
-                    exit_point = peak - threshold if side == "LONG" else peak + threshold
-                    distance_to_exit = current_price - exit_point if side == "LONG" else exit_point - current_price
+                    distance_to_exit = current_price - final_stop_loss if side == "LONG" else final_stop_loss - current_price
                     # 這邊可以加入 debug 紀錄（可選）
-                    # logger.debug(f"🟢 [HOLD] {side} Price {current_price:.2f} above Exit Point {exit_point:.2f} (Buffer: {distance_to_exit:.2f})")
+                    # logger.debug(f"🟢 [HOLD] {side} Price {current_price:.2f} safe from Exit Point {final_stop_loss:.2f} (Buffer: {distance_to_exit:.2f})")
 
         # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
