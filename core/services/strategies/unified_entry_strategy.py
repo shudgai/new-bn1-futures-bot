@@ -169,7 +169,8 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
             return False, "BLOCKED_PANIC_LONG (Close > Upper Band, First Entry only)", {}
         atr_l = float(current_candle.get('atr', 0))
         bias_atr_l = 1.8 if "PEPE" in symbol else 1.5
-        if atr_l > 0 and (close - ma7) > bias_atr_l * atr_l:
+        ma_7 = float(current_candle.get('ma7', current_candle.get('ema_20', current_candle.get('kc_middle', close))))
+        if atr_l > 0 and (close - ma_7) > bias_atr_l * atr_l:
             return False, f"BLOCKED_PANIC_LONG (Bias > {bias_atr_l} ATR above MA7)", {}
 
         # 3. 末端爆發巨棒禁多 (Climax Candle — 已無後續利潤空間)
