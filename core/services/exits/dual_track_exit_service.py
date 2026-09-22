@@ -39,6 +39,10 @@ class DualTrackExitStrategy(IExitStrategy):
         position["sl"]                    = defense_line   # UI 通用欄位
         position["entry_atr"]             = atr            # 開倉快照 ATR，全程不變
 
+        position["is_trend_confirmed"]    = False
+        position["max_price_since_entry"] = entry_price
+        position["min_price_since_entry"] = entry_price
+
         # 動態錨點初始化：開倉即設為開倉價，隨後逐 Tick 推高/推低
         position["price_peak_value"]      = entry_price
         position["profit_anchor_price"]   = entry_price
@@ -81,123 +85,103 @@ class DualTrackExitStrategy(IExitStrategy):
         kc_mid     = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0.0)))
 
         # ══════════════════════════════════════════════════════════════
-        # 【第一優先】即時動態錨點更新 (Real-time Dynamic Anchor)
-        # 每一個 Tick 追蹤最高/最低點，鎖死動態錨點，同步 UI 顯示
+        # 【第一優先】即時動態極端價與錨點更新 (Real-time Extremes & Anchor)
         # ══════════════════════════════════════════════════════════════
         if current_price > 0:
-            price_peak = position.get("price_peak_value")
             if side == "LONG":
-                if price_peak is None or current_price > price_peak:
+                if current_price > position.get("max_price_since_entry", entry_price):
+                    position["max_price_since_entry"] = current_price
                     position["price_peak_value"]      = current_price
                     position["profit_anchor_price"]   = current_price
-                    position["profit_lock_display_sl"] = current_price  # UI 即時同步
+                    position["profit_lock_display_sl"] = current_price
             else:  # SHORT
-                if price_peak is None or current_price < price_peak:
+                if current_price < position.get("min_price_since_entry", entry_price):
+                    position["min_price_since_entry"] = current_price
                     position["price_peak_value"]      = current_price
                     position["profit_anchor_price"]   = current_price
-                    position["profit_lock_display_sl"] = current_price  # UI 即時同步
+                    position["profit_lock_display_sl"] = current_price
 
         # ══════════════════════════════════════════════════════════════
-        # 【強制保本鎖利】 (Forced Break-Even Lock)
+        # 【動態趨勢風控】 Stage 1: 趨勢確認與失敗 / Stage 2: 峰谷平倉
         # ══════════════════════════════════════════════════════════════
-        taker_fee = 0.0004
-        # 保本價必須加上/減去手續費
-        if side == "LONG":
-            be_price = entry_price * (1 + taker_fee)
-            # 以跨過保本價才算「真·淨利」
-            net_profit = current_price - be_price
-        else:
-            be_price = entry_price * (1 - taker_fee)
-            net_profit = be_price - current_price
-            
-        break_even_locked = position.get("break_even_locked", False)
+        from core.config import ENTRY_CONFIRMATION_ATR_MULTIPLIER, BREAKEVEN_BUFFER_ATR, ENABLE_PEAK_VOLUME_EXIT, PEAK_FALLBACK_ATR_MULTIPLIER, PEAK_VOL_WEAK_THRESHOLD
         
-        # 加倉導致均價變化時，如果新的保本價比舊的還高（更嚴格），則更新鎖定線
-        if break_even_locked:
-            old_be = position.get("be_price", 0.0)
-            if side == "LONG" and be_price > old_be:
-                position["be_price"] = be_price
-                logger.info(f"🔒 [BE LOCK UPDATE] Pyramiding raised BE to {be_price:.6f}")
-            elif side == "SHORT" and be_price < old_be and old_be > 0:
-                position["be_price"] = be_price
-                logger.info(f"🔒 [BE LOCK UPDATE] Pyramiding lowered BE to {be_price:.6f}")
+        confirm_dist = ENTRY_CONFIRMATION_ATR_MULTIPLIER * atr
+        breakeven_buffer = BREAKEVEN_BUFFER_ATR * atr
+        half_confirm = confirm_dist * 0.6
+        
+        is_trend_confirmed = position.get("is_trend_confirmed", False)
+        
+        # 檢查趨勢確認
+        if not is_trend_confirmed:
+            if side == "LONG" and position.get("max_price_since_entry", entry_price) > (entry_price + confirm_dist):
+                position["is_trend_confirmed"] = True
+                is_trend_confirmed = True
+                logger.info(f"✅ [Trend Confirmed] LONG moved > {confirm_dist:.4f}")
+            elif side == "SHORT" and position.get("min_price_since_entry", entry_price) < (entry_price - confirm_dist):
+                position["is_trend_confirmed"] = True
+                is_trend_confirmed = True
+                logger.info(f"✅ [Trend Confirmed] SHORT moved > {confirm_dist:.4f}")
                 
-        if not break_even_locked and net_profit > (entry_price * 0.0005):
-            # 只有當利潤確實跨過保本點且有微小緩衝 (0.05%) 時才鎖定，避免剛跨過就因為點差秒平
-            position["break_even_locked"] = True
-            position["be_price"] = be_price
-            break_even_locked = True
-            logger.info(f"🔒 [BE LOCK] {side} Net Profit > Buffer, Locking Break-Even at {be_price:.6f}")
-            
-        be_price_stored = position.get("be_price", 0.0)
-
-        # ══════════════════════════════════════════════════════════════
-        # 【新增】峰谷與量能衰竭平倉 (Peak/Valley + Volume Weakness Exit)
-        # ══════════════════════════════════════════════════════════════
-        from core.config import ENABLE_PEAK_VOLUME_EXIT, PEAK_FALLBACK_ATR_MULTIPLIER, VOLUME_WEAKNESS_AVG_PERIOD, VOLUME_WEAKNESS_THRESHOLD
-        if ENABLE_PEAK_VOLUME_EXIT and current_price > 0:
-            peak = position.get("price_peak_value")
-            if peak is not None and atr > 0:
-                fallback = peak - current_price if side == "LONG" else current_price - peak
-                threshold = atr * PEAK_FALLBACK_ATR_MULTIPLIER
-                
-                # 條件 A：幅度過濾 (回落超過 0.75 ATR)
-                is_significant_fallback = fallback > threshold
-                
-                # 條件 B：結構破壞 (收盤價跌破前3根最低/最高點)
-                if len(frame) >= 4:
-                    recent_3_k = frame.iloc[-4:-1]
-                    structural_low = float(recent_3_k['low'].min())
-                    structural_high = float(recent_3_k['high'].max())
-                else:
-                    structural_low = current_price - atr
-                    structural_high = current_price + atr
+        if not is_trend_confirmed:
+            # Stage 1: 趨勢未確認，檢查是否「趨勢失敗」 (Trend Failure)
+            # 若曾經上漲過一小段，但又跌回保本線附近，視為動量枯竭，直接撤退
+            if side == "LONG":
+                if position.get("max_price_since_entry", entry_price) > (entry_price + half_confirm) and current_price < (entry_price + breakeven_buffer):
+                    logger.warning("📉 [Trend Failed] LONG returned to breakeven zone. Momentum exhausted.")
+                    position["guaranteed_exit_price"] = entry_price
+                    return "EXIT_TREND_FAILURE_BREAKEVEN_RETURN"
+            else:
+                if position.get("min_price_since_entry", entry_price) < (entry_price - half_confirm) and current_price > (entry_price - breakeven_buffer):
+                    logger.warning("📉 [Trend Failed] SHORT returned to breakeven zone. Momentum exhausted.")
+                    position["guaranteed_exit_price"] = entry_price
+                    return "EXIT_TREND_FAILURE_BREAKEVEN_RETURN"
+        else:
+            # Stage 2: 趨勢已確認，啟用峰谷三重共振平倉
+            if ENABLE_PEAK_VOLUME_EXIT and current_price > 0:
+                peak = position.get("price_peak_value")
+                if peak is not None and atr > 0:
+                    fallback = peak - current_price if side == "LONG" else current_price - peak
+                    threshold = atr * PEAK_FALLBACK_ATR_MULTIPLIER
                     
-                is_structure_broken = current_price < structural_low if side == "LONG" else current_price > structural_high
-                
-                # 條件 C：量能衰竭 (當前已收線量 < 前3根均量 * 0.8)
-                try:
-                    current_volume = float(prev_1.get("volume", 0))
-                    if len(frame) >= 5:
-                        recent_3_vol = frame['volume'].iloc[-5:-2]
-                        volume_avg = float(recent_3_vol.mean())
+                    is_significant_fallback = fallback > threshold
+                    
+                    if len(frame) >= 4:
+                        recent_3_k = frame.iloc[-4:-1]
+                        structural_low = float(recent_3_k['low'].min())
+                        structural_high = float(recent_3_k['high'].max())
                     else:
-                        volume_avg = float(frame['volume'].iloc[:-2].mean())
+                        structural_low = current_price - atr
+                        structural_high = current_price + atr
                         
-                    is_momentum_exhausted = current_volume < (volume_avg * 0.8)
-                except Exception:
-                    is_momentum_exhausted = False
-                    volume_avg = 0.0
-                    current_volume = 0.0
-                
-                # 最終判定：三重共振 or 跌破保本線 (只進不退)
-                is_triple_confirmed = is_significant_fallback and is_structure_broken and is_momentum_exhausted
-                
-                if side == "LONG":
-                    is_be_triggered = break_even_locked and current_price < be_price_stored
-                else:
-                    is_be_triggered = break_even_locked and current_price > be_price_stored
+                    is_structure_broken = current_price < structural_low if side == "LONG" else current_price > structural_high
                     
-                is_triggered = is_triple_confirmed or is_be_triggered
+                    try:
+                        current_volume = float(prev_1.get("volume", 0))
+                        if len(frame) >= 5:
+                            recent_3_vol = frame['volume'].iloc[-5:-2]
+                            volume_avg = float(recent_3_vol.mean())
+                        else:
+                            volume_avg = float(frame['volume'].iloc[:-2].mean())
+                            
+                        is_momentum_exhausted = current_volume < (volume_avg * PEAK_VOL_WEAK_THRESHOLD)
+                    except Exception:
+                        is_momentum_exhausted = False
+                        volume_avg = 0.0
+                        current_volume = 0.0
                     
-                if is_triggered:
-                    position["guaranteed_exit_price"] = peak
-                    # 標記平倉後進入量能冷卻期
-                    position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
+                    is_triple_confirmed = is_significant_fallback and is_structure_broken and is_momentum_exhausted
                     
-                    if is_be_triggered:
-                        logger.warning(
-                            f"🔒 [BE_LOCK_EXIT] {side} 觸發強制保本防線退出！"
-                            f"Current: {current_price:.6f}, BE_Lock: {be_price_stored:.6f}"
-                        )
-                    else:
+                    if is_triple_confirmed:
+                        position["guaranteed_exit_price"] = peak
+                        position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
                         logger.warning(
                             f"📉 [TRUE_PEAK_EXIT] {side} 真峰谷三重共振確認！"
                             f"Current: {current_price:.6f}, Peak: {peak:.6f}, "
                             f"Structure Broken: {is_structure_broken} (Ref: {structural_low:.6f}/{structural_high:.6f}), "
-                            f"Vol Exhausted: {is_momentum_exhausted} (Vol: {current_volume:.2f} < Avg: {volume_avg*0.8:.2f})"
+                            f"Vol Exhausted: {is_momentum_exhausted} (Vol: {current_volume:.2f} < Avg: {volume_avg * PEAK_VOL_WEAK_THRESHOLD:.2f})"
                         )
-                    return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
+                        return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
 
         # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
