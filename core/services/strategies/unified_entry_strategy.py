@@ -127,7 +127,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
     # 絕對硬防線：橫盤死水區一票否決 (Sideways Consolidation Block)
     # =========================================================================
     current_atr_val = float(current_candle.get('atr', 0))
-    if current_atr_val > 0:
+    current_body = abs(close - open_p)
+    
+    # 【強勢破軌與延續豁免】
+    # 1. 如果當前 K 線實體大於 0.5 倍 ATR，視為有動能的真突破。
+    # 2. 如果前一根已經在軌外，屬於延續開倉，不受橫盤限制。
+    is_continuation_long = (prev_close > prev_kc_upper) and (close > kc_upper)
+    is_continuation_short = (prev_close < prev_kc_lower) and (close < kc_lower)
+    is_exempt_from_sideways = (current_body >= 0.5 * current_atr_val) or is_continuation_long or is_continuation_short
+
+    if current_atr_val > 0 and not is_exempt_from_sideways:
         # 1. 均線走平禁開（缺乏方向斜率）
         ma3_change = abs(ma3 - prev_ma3)
         min_slope_threshold = 0.15 * current_atr_val
