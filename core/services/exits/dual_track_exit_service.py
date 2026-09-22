@@ -172,10 +172,38 @@ class DualTrackExitStrategy(IExitStrategy):
                     logger.info(f"📉 [Trailing Stop] SHORT: Stop at {target_stop:.6f} (Stage={'A' if trail_dist==1.8 else 'B' if trail_dist==1.2 else 'C'}, Dist={trail_dist} ATR)")
 
         # ══════════════════════════════════════════════════════════════
-        # MA7 峰頂/谷底快速離場 (MA7 Pivot Instant Exit)
-        # 浮盈 >= 1.0 ATR 後，收盤實體破 MA7 即認定見頂/見底，立即全平
+        # 【保護線前防早退機制】(Pre-Protection Retrace Guard)
+        # profit_atr < 1.2 ATR 時：MA7 震盪穿越一律忽視，強制續抱。
+        # 唯一例外：峰值曾達到 0.8 ATR 後，利潤被吞噬 >= 75%，才緊急全平。
         # ══════════════════════════════════════════════════════════════
-        if profit_atr >= 1.0:
+        if profit_atr < 1.2:
+            if profit_atr >= 0.8:
+                # 峰值有一定規模，計算 75% 吐回警戒線
+                peak_gain = peak - entry_price if side == "LONG" else entry_price - peak
+                retrace_limit_price = (
+                    (peak - 0.75 * peak_gain) if side == "LONG"
+                    else (peak + 0.75 * peak_gain)
+                )
+                curr_close = float(prev_1["close"])
+                if side == "LONG" and curr_close <= retrace_limit_price:
+                    logger.warning(
+                        f"🚨 [Pre-Protection Retrace] LONG {symbol} "
+                        f"close {curr_close:.6f} retrace >= 75% of peak gain. Emergency exit."
+                    )
+                    return "EXIT_PRE_PROTECTION_RETRACE"
+                elif side == "SHORT" and curr_close >= retrace_limit_price:
+                    logger.warning(
+                        f"🚨 [Pre-Protection Retrace] SHORT {symbol} "
+                        f"close {curr_close:.6f} retrace >= 75% of peak gain. Emergency exit."
+                    )
+                    return "EXIT_PRE_PROTECTION_RETRACE"
+            # profit_atr < 0.8 或未達 75% 吐回：任何 MA7 穿越都不觸發，繼續持有
+
+        # ══════════════════════════════════════════════════════════════
+        # MA7 峰頂/谷底快速離場 (MA7 Pivot Instant Exit)
+        # 只在浮盈 >= 1.2 ATR（保護線啟動後）才啟用，防止保護線前被假頂震出
+        # ══════════════════════════════════════════════════════════════
+        if profit_atr >= 1.2:
             ma7_val = float(prev_1.get("ma7", prev_1.get("ma5", prev_1.get("ma3", 0.0))))
             curr_close = float(prev_1["close"])
             if ma7_val > 0:
