@@ -11,7 +11,8 @@ DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_
                           "profit_protection_active", "profit_anchor_price", "guaranteed_exit_price",
                           "entry_atr",
                           "price_peak_value",         # 即時動態錨點（追蹤最高/最低點）
-                          "profit_lock_display_sl"]   # UI 鎖利顯示
+                          "profit_lock_display_sl",   # UI 鎖利顯示
+                          "channel_profit_protection"]
 
 logger = logging.getLogger("DualTrackExit")
 

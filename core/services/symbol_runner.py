@@ -6,9 +6,8 @@ import pandas as pd
 from typing import Dict, Any, List, Tuple
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
-from core.services.exits.dual_track_exit_service import (
-    DUAL_TRACK_STATE_KEYS, DualTrackExitStrategy,
-)
+from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS
+from core.services.exits.profit_protection_service import ProfitProtectionExitStrategy
 from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
 async def process_single_symbol_runner(
@@ -64,7 +63,7 @@ async def process_single_symbol_runner(
             for key in DUAL_TRACK_STATE_KEYS:
                 if existing_pos.get(key) is None and meta.get(key) is not None:
                     existing_pos[key] = copy.deepcopy(meta[key])
-            exit_strategy = DualTrackExitStrategy()
+            exit_strategy = ProfitProtectionExitStrategy()
             
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
             exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_drop_ratio=velocity_drop_ratio)

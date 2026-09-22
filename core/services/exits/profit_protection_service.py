@@ -318,5 +318,5 @@ class ProfitProtectionExitStrategy(IExitStrategy):
     ) -> Optional[str]:
         result = protection(position, price, self.fee, self.slippage, frame)
         if result and result.get('triggered'):
-            return "PROFIT_PROTECTION_DRAWDOWN_EXIT"
+            return result.get('reason', "PROFIT_PROTECTION_DRAWDOWN_EXIT")
         return None
