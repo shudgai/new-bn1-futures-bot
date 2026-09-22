@@ -138,49 +138,63 @@ class DualTrackExitStrategy(IExitStrategy):
                 fallback = peak - current_price if side == "LONG" else current_price - peak
                 threshold = atr * PEAK_FALLBACK_ATR_MULTIPLIER
                 
+                # 條件 A：幅度過濾 (回落超過 0.75 ATR)
                 is_significant_fallback = fallback > threshold
                 
-                # 計算量能衰竭 (僅做日誌參考，不干預明確的平倉點)
+                # 條件 B：結構破壞 (收盤價跌破前3根最低/最高點)
+                if len(frame) >= 4:
+                    recent_3_k = frame.iloc[-4:-1]
+                    structural_low = float(recent_3_k['low'].min())
+                    structural_high = float(recent_3_k['high'].max())
+                else:
+                    structural_low = current_price - atr
+                    structural_high = current_price + atr
+                    
+                is_structure_broken = current_price < structural_low if side == "LONG" else current_price > structural_high
+                
+                # 條件 C：量能衰竭 (當前已收線量 < 前3根均量 * 0.8)
                 try:
                     current_volume = float(prev_1.get("volume", 0))
-                    # 取過去 N 根已收線的量能平均
-                    if len(frame) > VOLUME_WEAKNESS_AVG_PERIOD:
-                        vol_slice = frame['volume'].iloc[-(VOLUME_WEAKNESS_AVG_PERIOD + 1):-1]
-                        volume_avg = float(vol_slice.mean())
+                    if len(frame) >= 5:
+                        recent_3_vol = frame['volume'].iloc[-5:-2]
+                        volume_avg = float(recent_3_vol.mean())
                     else:
-                        volume_avg = float(frame['volume'].iloc[:-1].mean())
+                        volume_avg = float(frame['volume'].iloc[:-2].mean())
                         
-                    is_volume_weak = current_volume < (volume_avg * VOLUME_WEAKNESS_THRESHOLD)
+                    is_momentum_exhausted = current_volume < (volume_avg * 0.8)
                 except Exception:
-                    is_volume_weak = False
+                    is_momentum_exhausted = False
                     volume_avg = 0.0
+                    current_volume = 0.0
                 
-                # 最終判定：純粹依賴明確的平倉點 (Peak - 0.75*ATR)
-                dynamic_stop = peak - threshold if side == "LONG" else peak + threshold
+                # 最終判定：三重共振 or 跌破保本線 (只進不退)
+                is_triple_confirmed = is_significant_fallback and is_structure_broken and is_momentum_exhausted
                 
                 if side == "LONG":
-                    final_stop_loss = max(dynamic_stop, be_price_stored) if break_even_locked else dynamic_stop
-                    is_triggered = current_price < final_stop_loss
+                    is_be_triggered = break_even_locked and current_price < be_price_stored
                 else:
-                    final_stop_loss = min(dynamic_stop, be_price_stored) if break_even_locked else dynamic_stop
-                    is_triggered = current_price > final_stop_loss
+                    is_be_triggered = break_even_locked and current_price > be_price_stored
+                    
+                is_triggered = is_triple_confirmed or is_be_triggered
                     
                 if is_triggered:
                     position["guaranteed_exit_price"] = peak
                     # 標記平倉後進入量能冷卻期
                     position["cooldown_mode"] = "WAIT_FOR_VOLUME_RECOVERY"
                     
-                    logger.warning(
-                        f"[TRUE_PEAK_EXIT] {side} 真峰谷確認 (跌破精確平倉點)！"
-                        f"Current: {current_price:.6f}, Exit Point: {final_stop_loss:.6f} "
-                        f"(Dynamic: {dynamic_stop:.6f}, BE_Lock: {be_price_stored:.6f}), "
-                        f"Vol_Weak: {is_volume_weak} (Vol: {current_volume:.2f}, Avg: {volume_avg:.2f})"
-                    )
+                    if is_be_triggered:
+                        logger.warning(
+                            f"🔒 [BE_LOCK_EXIT] {side} 觸發強制保本防線退出！"
+                            f"Current: {current_price:.6f}, BE_Lock: {be_price_stored:.6f}"
+                        )
+                    else:
+                        logger.warning(
+                            f"📉 [TRUE_PEAK_EXIT] {side} 真峰谷三重共振確認！"
+                            f"Current: {current_price:.6f}, Peak: {peak:.6f}, "
+                            f"Structure Broken: {is_structure_broken} (Ref: {structural_low:.6f}/{structural_high:.6f}), "
+                            f"Vol Exhausted: {is_momentum_exhausted} (Vol: {current_volume:.2f} < Avg: {volume_avg*0.8:.2f})"
+                        )
                     return "EXIT_TRUE_PEAK_STRUCTURE_BREAK"
-                else:
-                    distance_to_exit = current_price - final_stop_loss if side == "LONG" else final_stop_loss - current_price
-                    # 這邊可以加入 debug 紀錄（可選）
-                    # logger.debug(f"🟢 [HOLD] {side} Price {current_price:.2f} safe from Exit Point {final_stop_loss:.2f} (Buffer: {distance_to_exit:.2f})")
 
         # ══════════════════════════════════════════════════════════════
         # 【第二優先】點位即平：觸及預設 TP 點位，不論 K 線，零猶豫秒平
