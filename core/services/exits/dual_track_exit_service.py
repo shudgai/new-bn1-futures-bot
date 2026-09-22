@@ -109,6 +109,17 @@ class DualTrackExitStrategy(IExitStrategy):
             current_profit = entry_price - current_price
             
         break_even_locked = position.get("break_even_locked", False)
+        
+        # 加倉導致均價變化時，如果新的保本價比舊的還高（更嚴格），則更新鎖定線
+        if break_even_locked:
+            old_be = position.get("be_price", 0.0)
+            if side == "LONG" and be_price > old_be:
+                position["be_price"] = be_price
+                logger.info(f"🔒 [BE LOCK UPDATE] Pyramiding raised BE to {be_price:.6f}")
+            elif side == "SHORT" and be_price < old_be and old_be > 0:
+                position["be_price"] = be_price
+                logger.info(f"🔒 [BE LOCK UPDATE] Pyramiding lowered BE to {be_price:.6f}")
+                
         if not break_even_locked and current_profit > 0:
             position["break_even_locked"] = True
             position["be_price"] = be_price

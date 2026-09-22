@@ -219,6 +219,28 @@ async def process_single_symbol_runner(
 
                     engine.account.log(f"✅ [狀態重置] {symbol} 平倉完成，已清空歷史狀態，次根 K 棒恢復掃描", "SUCCESS")
                 return signal_progress, detected_candidates
+                
+            # ── 新增: 加倉 (Pyramiding) 評估 ────────────────────────────────────────────
+            # 當前仍持倉，且未觸發平倉時，評估是否滿足延續加倉條件
+            from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
+            entry_strategy = UnifiedEntryStrategy(engine.account.config)
+            
+            allowed, reason, entry_decision = entry_strategy.evaluate_entry(
+                channel_df, channel_price, existing_pos["side"], velocity_drop_ratio=velocity_drop_ratio, meta=meta, existing_pos=existing_pos
+            )
+            
+            if allowed and entry_decision.get("entry_type") == "PYRAMID":
+                engine.account.log(f"🔺 [滿足加倉條件] {symbol} {existing_pos['side']} ({reason})，準備執行加倉", "INFO")
+                amount_usdt = engine.account.default_trade_amount
+                success = await engine.account.open_position(
+                    symbol,
+                    amount_usdt,
+                    channel_price,
+                    existing_pos["side"],
+                    f"PYRAMID: {reason}"
+                )
+                if success:
+                    engine.account.log(f"✅ [加倉成功] {symbol} 已增加新倉位！", "SUCCESS")
 
         # IDLE 狀態 (空倉掃描)
         else:

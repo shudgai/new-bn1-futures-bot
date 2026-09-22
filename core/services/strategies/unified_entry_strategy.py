@@ -96,11 +96,11 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
         
     return True, "OK"
 
-def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:
+def check_streamlined_entry_signal(df, side: str, live_price: float, position_status: str, **kwargs) -> tuple[bool, str, dict]:
     """
     嚴格拆分狀態的純粹破軌開倉 (Pure Breakout Entry)：
-    - 狀態 1：首倉開倉 (First Entry) = 前一收盤破軌 + 最新收盤站穩 (KC外側且MA3外側)
-    - 狀態 2：延續開倉 (Continuation) = 前一收盤站穩 + 最新收盤站穩
+    - 狀態 1：無倉位 (NO_POSITION) -> 首倉 (FIRST) 或 延續開倉 (CONTINUATION)
+    - 狀態 2：有倉位 (OPEN) -> 加倉 (PYRAMID)
     這裡使用已收線 (df.iloc[-2]) 作為判斷基準，避免未收線跳動假訊號。
     """
     if df is None or len(df) < 5:
@@ -138,30 +138,36 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         was_above_ma3 = prev_close > prev_ma3
         was_healthy_outside = was_outside_kc and was_above_ma3
 
-        # 子情況 1：延續開倉 (Continuation)
-        # 條件：前一根已收線已經在外側，且當前已收線仍在健康外側，並且當前是陽燭
-        if was_healthy_outside and is_healthy_outside and is_curr_bullish:
-            return True, "🚀 [Continuation] LONG: 延續追車直入", {"action": "ENTER", "is_breakout": True}
-            
-        # 子情況 2：首倉開倉 (First Entry)
-        # 條件：前一根「突破」了 KC (Close > KC_Upper)，當前「確認」站在 KC 及 MA3 外側，且兩根顏色皆為陽燭
-        prev_broke_kc = prev_close > prev_kc_upper
-        if prev_broke_kc and is_healthy_outside and is_color_consistent_long:
-            # 【防追高過濾器】首倉專屬
-            kc_mid = float(current_candle.get('kc_middle', current_candle.get('ema_20', close)))
-            deviation = abs(close - kc_mid) / kc_mid if kc_mid > 0 else 0
-            rsi_val = float(current_candle.get('rsi', 50))
-            
-            import os
-            max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
-            max_rsi = float(os.getenv("FIRST_ENTRY_MAX_RSI", "75"))
-            
-            if deviation > max_dev:
-                return False, f"BLOCKED_OVERHEATED (Dev: {deviation:.2%} > {max_dev:.2%})", {}
-            if rsi_val > max_rsi:
-                return False, f"BLOCKED_OVERHEATED (RSI: {rsi_val:.1f} > {max_rsi})", {}
+        # --- 情境 1：無倉位 (NO_POSITION) ---
+        if position_status == 'NO_POSITION':
+            # 子情況 1：延續開倉 (Continuation)
+            if was_healthy_outside and is_healthy_outside and is_curr_bullish:
+                return True, "🚀 [Continuation] LONG: 延續追車直入", {"action": "ENTER", "is_breakout": True, "entry_type": "CONTINUATION"}
                 
-            return True, "🚀 [First Entry] LONG: 兩根同色破軌確認", {"action": "ENTER", "is_breakout": True}
+            # 子情況 2：首倉開倉 (First Entry)
+            prev_broke_kc = prev_close > prev_kc_upper
+            if prev_broke_kc and is_healthy_outside and is_color_consistent_long:
+                # 【防追高過濾器】首倉專屬
+                kc_mid = float(current_candle.get('kc_middle', current_candle.get('ema_20', close)))
+                deviation = abs(close - kc_mid) / kc_mid if kc_mid > 0 else 0
+                rsi_val = float(current_candle.get('rsi', 50))
+                
+                import os
+                max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
+                max_rsi = float(os.getenv("FIRST_ENTRY_MAX_RSI", "75"))
+                
+                if deviation > max_dev:
+                    return False, f"BLOCKED_OVERHEATED (Dev: {deviation:.2%} > {max_dev:.2%})", {}
+                if rsi_val > max_rsi:
+                    return False, f"BLOCKED_OVERHEATED (RSI: {rsi_val:.1f} > {max_rsi})", {}
+                    
+                return True, "🚀 [First Entry] LONG: 破軌確認且未過熱", {"action": "ENTER", "is_breakout": True, "entry_type": "FIRST"}
+                
+        # --- 情境 2：有倉位 (OPEN) -> 加倉 (Pyramiding) ---
+        elif position_status == 'OPEN':
+            # 加倉不防追高
+            if is_healthy_outside and is_curr_bullish:
+                return True, "🚀 [Pyramid] LONG: 趨勢健康，加倉追進", {"action": "ENTER", "is_breakout": True, "entry_type": "PYRAMID"}
 
     elif side == "SHORT":
         # 1. 判斷 K 線顏色 (陰燭)
@@ -178,21 +184,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -
         was_below_ma3 = prev_close < prev_ma3
         was_healthy_outside = was_outside_kc and was_below_ma3
 
-        # 子情況 1：延續開倉 (Continuation)
-        # 條件：前一根已收線已經在外側，且當前已收線仍在健康外側，並且當前是陰燭
-        if was_healthy_outside and is_healthy_outside and is_curr_bearish:
-            return True, "🚀 [Continuation] SHORT: 延續追車直入", {"action": "ENTER", "is_breakout": True}
-            
-        # 子情況 2：首倉開倉 (First Entry)
-        # 條件：前一根「突破」了 KC，當前「確認」站在外側，且兩根皆為陰燭
-        prev_broke_kc = prev_close < prev_kc_lower
-        if prev_broke_kc and is_healthy_outside and is_color_consistent_short:
-            # 【防追高/追空過濾器】首倉專屬
-            kc_mid = float(current_candle.get('kc_middle', current_candle.get('ema_20', close)))
-            deviation = abs(close - kc_mid) / kc_mid if kc_mid > 0 else 0
-            rsi_val = float(current_candle.get('rsi', 50))
-            
-            import os
             max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
             min_rsi = float(os.getenv("FIRST_ENTRY_MIN_RSI", "25")) # 空單看超賣
             
@@ -244,7 +235,9 @@ class UnifiedEntryStrategy(IEntryStrategy):
                 return False, f"WAIT_VOLUME_RECOVERY_ERROR_{e}", {"action": "WAIT"}
 
         try:
-            ok, reason, action_dict = check_streamlined_entry_signal(frame, side, price, **kwargs)
+            existing_pos = kwargs.get("existing_pos")
+            position_status = "OPEN" if existing_pos else "NO_POSITION"
+            ok, reason, action_dict = check_streamlined_entry_signal(frame, side, price, position_status, **kwargs)
         except Exception as e:
             return False, f"WAIT_ERROR_{e}", {"action": "WAIT"}
 
