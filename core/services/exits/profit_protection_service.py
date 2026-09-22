@@ -58,7 +58,7 @@ def trend_style(frame, side, opened_at=None):
 
 
 def protection(position, price, fee, slippage, frame=None):
-    """Dynamic Ladder Lock: step_unit = max(2.0, margin*0.015). Lock steps at 2x step."""
+    """Real-time Peak Exit & Trailing Lock"""
     entry = float(position.get('entry_price') or 0)
     qty = float(position.get('qty') or 0)
     margin = float(position.get('margin') or 0)
@@ -78,67 +78,86 @@ def protection(position, price, fee, slippage, frame=None):
         state.clear()
         state['identity'] = identity
         
-    policy = 'dynamic_ladder_v2'
+    policy = 'realtime_peak_exit_v1'
     if state.get('policy') != policy:
         state.clear()
         state.update(identity=identity, policy=policy, peak_net=net, locked_net=0.0, pending=False)
         
+    # 1. 動態刷新歷史極值 (Peak Tracking)
     state['peak_net'] = max(float(state.get('peak_net', net)), net)
     state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
     
     peak_net = state['peak_net']
-    
-    # 1. 計算動態階梯步長單位 (Step Unit)
-    # 規則：以當前開倉保證金的 1.5% 為一步長，最低保底 2.0 USDT
+    triggered = False
+    exit_reason = ""
+    stop_price = 0.0
+
+    # 2. 絕對保本防線：早鳥微利防守 (Break-Even Guard)
+    fee_buffer = 0.5
+    if peak_net >= 2.5:
+        if net <= fee_buffer:
+            triggered = True
+            exit_reason = 'EXIT_BREAK_EVEN: 微利回吐保本觸發，市價全平'
+
+    # 3. 峰谷轉折即時搶跑：峰值回撤截流 (Peak Drawdown Exit)
+    if not triggered and peak_net >= 3.0:
+        profit_drawdown_ratio = (peak_net - net) / peak_net
+        if profit_drawdown_ratio >= 0.25:
+            triggered = True
+            exit_reason = f'EXIT_PEAK_DRAWDOWN: 峰值回撤達 {profit_drawdown_ratio*100:.1f}%，搶先鎖利全平'
+
+    # 4. 短均線實時破位攔截 (MA3 即時穿透)
+    if not triggered and peak_net >= 2.5 and frame is not None and len(frame) > 0:
+        live_candle = frame.iloc[-1]
+        live_close = float(live_candle['close'])
+        # 綁定敏銳度最高的 MA3
+        ma_3 = float(live_candle.get('ma3', live_candle.get('ema_3', live_close)))
+        if side == 'LONG' and price < ma_3:
+            triggered = True
+            exit_reason = 'EXIT_MA3_BREACH: 多單現價跌破 MA3，短頂確立秒平'
+        elif side == 'SHORT' and price > ma_3:
+            triggered = True
+            exit_reason = 'EXIT_MA3_BREACH: 空單現價站上 MA3，短底確立秒平'
+
+    # 5. 動態資金階梯鎖利 (放大本金時的波段防線)
+    locked_net = float(state.get('locked_net', 0.0))
     step_unit = max(2.0, margin * 0.015)
     
-    triggered = False
-    stop_price = 0.0
-    locked_net = float(state.get('locked_net', 0.0))
-    
-    # 3. 階梯保護邏輯（浮盈達 2 個 step_unit 啟動防守）
     if peak_net >= step_unit * 2:
-        # 達到 2 個單位鎖 1 個單位，達到 3 個單位鎖 2 個單位
         locked_level = int(peak_net / step_unit) - 1
         lock_profit_u = locked_level * step_unit
-        
-        # 確保 locked_net 只會變大，不會變小
         locked_net = max(locked_net, lock_profit_u)
         state['locked_net'] = locked_net
         
-        # 逆推鎖定淨利對應的價格
+        # 逆推鎖定淨利對應的價格 (用於 UI 顯示)
         if side == 'LONG':
             stop = (entry * (1 + fee) + locked_net / qty) / ((1 - slippage) * (1 - fee))
         else:
             stop = (entry * (1 - fee) - locked_net / qty) / ((1 + slippage) * (1 + fee))
         stop_price = stop
         
-        # 當利潤回吐跌破鎖定線時，強制 100% 市價全平，保住階梯利潤
-        if net <= locked_net:
+        if not triggered and net <= locked_net:
             triggered = True
-            
-        # 4. 峰谷轉折即時攔截：已達鎖利門檻但收盤跌破/站上短均線，認定短頂/短底確立，搶跑全平
-        if frame is not None and len(frame) > 0 and not triggered:
-            live_candle = frame.iloc[-1]
-            live_close = float(live_candle['close'])
-            ma_short = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
-            if side == 'LONG' and live_close < ma_short:
-                triggered = True
-            elif side == 'SHORT' and live_close > ma_short:
-                triggered = True
+            exit_reason = f'EXIT_TIER_LOCK: 觸及動態階梯鎖利線 ({locked_net}U)，全平落袋'
 
     state['pending'] = bool(state.get('pending')) or triggered
+    
     if stop_price > 0:
         state['stop_price'] = stop_price
         state['net_floor_price'] = stop_price
         position['profit_lock_display_sl'] = stop_price
 
-    if not state.get('pending') and locked_net <= 0:
+    if not state.get('pending') and locked_net <= 0 and peak_net < 2.5:
         return None
+
+    # 將 exit_reason 寫入 position，方便後續 log
+    if triggered and exit_reason:
+        position['exit_reason_override'] = exit_reason
 
     return {'triggered': state['pending'], 'stop_price': stop_price,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
-            'locked_net': locked_net, 'peak_net': peak_net, 'retracement_fraction': 0.0}
+            'locked_net': locked_net, 'peak_net': peak_net, 'retracement_fraction': 0.0,
+            'reason': exit_reason}
 
 
 def abnormal_long_bar(frame, price):
