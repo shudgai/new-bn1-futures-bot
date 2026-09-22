@@ -134,6 +134,17 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         live_close = float(live_candle['close'])
         live_open = float(live_candle['open'])
         live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
+
+        # -----------------------------------------------------------------
+        # 均線拐頭與斜率硬防線 (MA Slope Block) - 絕不在峰谷轉折處逆勢開單
+        # -----------------------------------------------------------------
+        ma_3_slope = ma3 - prev_ma3
+        # 1. MA3 走平或下彎（轉彎見頂），嚴禁做多
+        if ma_3_slope <= 0:
+            return False, "🛑 BLOCKED_MA3_SLOPE (MA3 is flat or falling)", {}
+        # 2. 當前價格跌破 MA3，禁多
+        if live_close <= ma3:
+            return False, "🛑 BLOCKED_MA3_PRICE (Live Close <= MA3)", {}
         
         # 1.1 收黑禁多 (Bearish Candle Block) - 使用當前未收線(Live)的報價
         if live_close < live_open:
@@ -241,6 +252,17 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         live_close = float(live_candle['close'])
         live_open = float(live_candle['open'])
         live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
+
+        # -----------------------------------------------------------------
+        # 均線拐頭與斜率硬防線 (MA Slope Block) - 絕不在峰谷轉折處逆勢開單
+        # -----------------------------------------------------------------
+        ma_3_slope = ma3 - prev_ma3
+        # 1. MA3 走平或翹頭（轉彎打底），嚴禁做空
+        if ma_3_slope >= 0:
+            return False, "🛑 BLOCKED_MA3_SLOPE (MA3 is flat or rising)", {}
+        # 2. 當前價格距離 MA3 向上反撲，或前一根已出長下影線打底，禁空
+        if live_close >= ma3:
+            return False, "🛑 BLOCKED_MA3_PRICE (Live Close >= MA3)", {}
 
         # 1.1 收紅禁空 (Bullish Candle Block) - 使用當前未收線(Live)的報價
         if live_close > live_open:
