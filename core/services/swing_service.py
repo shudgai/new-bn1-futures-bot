@@ -47,7 +47,7 @@ def significant_ma3_turn(position, frame, price):
             
         if state['favorable']:
             ma3_current = ma
-            ema10 = float(frame.iloc[-1].get('ema_10', price))
+            ema10 = float(frame.iloc[-2].get('ema_10', price))
             symbol = position.get('symbol', 'UNKNOWN')
             
             if side == 'LONG':
