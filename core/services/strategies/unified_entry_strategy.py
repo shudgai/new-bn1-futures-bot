@@ -170,6 +170,39 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
                 return True, "🚀 [Pyramid] LONG: 趨勢健康，加倉追進", {"action": "ENTER", "is_breakout": True, "entry_type": "PYRAMID"}
 
     elif side == "SHORT":
+        symbol = kwargs.get('symbol', '')
+        
+        # 🛡️ 最終開空過濾邏輯 (Short Entry Filters) - 防止追殺恐慌
+        # 1. 核心過濾：極端超賣禁止 (下軌過濾)
+        if close < kc_lower:
+            return False, "BLOCKED_PANIC_SHORT (Close < Lower Band)", {}
+            
+        # 2. RSI 極端值過濾
+        rsi_limit = 25 if "PEPE" in symbol else 30
+        rsi_val = float(current_candle.get('rsi', 50))
+        if 'rsi' in current_candle and rsi_val < rsi_limit:
+            return False, f"BLOCKED_PANIC_SHORT (RSI {rsi_val:.1f} < {rsi_limit})", {}
+            
+        # 3. 乖離率限制 (Bias Limit)
+        ma_20 = float(current_candle.get('ema_20', current_candle.get('kc_middle', close)))
+        atr = float(current_candle.get('atr', 0))
+        bias_atr = 1.8 if "PEPE" in symbol else 1.5
+        if atr > 0 and (ma_20 - close) > bias_atr * atr:
+            return False, f"BLOCKED_PANIC_SHORT (Bias > {bias_atr} ATR)", {}
+            
+        # 4. 動能過濾：恐慌棒識別 (Climax Candle Filter)
+        body_len = abs(close - open_p)
+        body_series = (df['close'] - df['open']).abs()
+        # 計算過去 10 根 K 線的平均實體長度 (不含未收線的 iloc[-1])
+        if len(body_series) >= 11:
+            avg_body = float(body_series.iloc[-11:-1].mean())
+        else:
+            avg_body = float(body_series.iloc[:-1].mean()) if len(body_series) > 1 else atr
+            
+        body_limit = 2.5 if "PEPE" in symbol else 2.0
+        if avg_body > 0 and body_len > body_limit * avg_body:
+            return False, f"BLOCKED_PANIC_SHORT (Body > {body_limit}x AvgBody)", {}
+
         # 1. 判斷 K 線顏色 (陰燭)
         is_curr_bearish = close < open_p
         is_prev_bearish = prev_close < prev_open
@@ -184,15 +217,36 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         was_below_ma3 = prev_close < prev_ma3
         was_healthy_outside = was_outside_kc and was_below_ma3
 
-            max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
-            min_rsi = float(os.getenv("FIRST_ENTRY_MIN_RSI", "25")) # 空單看超賣
-            
-            if deviation > max_dev:
-                return False, f"BLOCKED_OVERHEATED (Dev: {deviation:.2%} > {max_dev:.2%})", {}
-            if rsi_val < min_rsi and 'rsi' in current_candle: # 確保有RSI才阻擋
-                return False, f"BLOCKED_OVERSOLD (RSI: {rsi_val:.1f} < {min_rsi})", {}
+        # --- 情境 1：無倉位 (NO_POSITION) ---
+        if position_status == 'NO_POSITION':
+            # 子情況 1：延續開倉 (Continuation)
+            if was_healthy_outside and is_healthy_outside and is_curr_bearish:
+                return True, "📉 [Continuation] SHORT: 延續追車直入", {"action": "ENTER", "is_breakout": True, "entry_type": "CONTINUATION"}
                 
-            return True, "🚀 [First Entry] SHORT: 兩根同色破軌確認", {"action": "ENTER", "is_breakout": True}
+            # 子情況 2：首倉開倉 (First Entry)
+            prev_broke_kc = prev_close < prev_kc_lower
+            if prev_broke_kc and is_healthy_outside and is_color_consistent_short:
+                # 【防追高/追空過濾器】首倉專屬
+                kc_mid = float(current_candle.get('kc_middle', current_candle.get('ema_20', close)))
+                deviation = abs(close - kc_mid) / kc_mid if kc_mid > 0 else 0
+                rsi_val = float(current_candle.get('rsi', 50))
+                
+                import os
+                max_dev = float(os.getenv("FIRST_ENTRY_MAX_DEVIATION", "0.10"))
+                min_rsi = float(os.getenv("FIRST_ENTRY_MIN_RSI", "25"))
+                
+                if deviation > max_dev:
+                    return False, f"BLOCKED_OVERHEATED (Dev: {deviation:.2%} > {max_dev:.2%})", {}
+                if rsi_val < min_rsi and 'rsi' in current_candle:
+                    return False, f"BLOCKED_OVERSOLD (RSI: {rsi_val:.1f} < {min_rsi})", {}
+                    
+                return True, "📉 [First Entry] SHORT: 破軌確認且未過熱", {"action": "ENTER", "is_breakout": True, "entry_type": "FIRST"}
+                
+        # --- 情境 2：有倉位 (OPEN) -> 加倉 (Pyramiding) ---
+        elif position_status == 'OPEN':
+            # 加倉不防追高
+            if is_healthy_outside and is_curr_bearish:
+                return True, "📉 [Pyramid] SHORT: 趨勢健康，加倉追進", {"action": "ENTER", "is_breakout": True, "entry_type": "PYRAMID"}
 
     return False, "FILTERED_NOT_PURE_BREAKOUT", {}
 

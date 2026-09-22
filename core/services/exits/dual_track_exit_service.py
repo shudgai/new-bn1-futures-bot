@@ -104,7 +104,11 @@ class DualTrackExitStrategy(IExitStrategy):
         # ══════════════════════════════════════════════════════════════
         # 【即刻保本鎖與動態移動止損】 Phase 1 & Phase 2
         # ══════════════════════════════════════════════════════════════
-        from core.config import BREAKEVEN_ACTIVATE_ATR, TRAILING_STOP_ACTIVATE_ATR, TRAILING_STOP_DISTANCE_ATR
+        from core.config import get_high_beta_config, TRAILING_STOP_ACTIVATE_ATR
+        
+        beta_config = get_high_beta_config(symbol)
+        BREAKEVEN_ACTIVATE_ATR = beta_config.get("BREAKEVEN_ACTIVATE_ATR", 0.5)
+        TRAILING_STOP_DISTANCE_ATR = beta_config.get("TRAILING_STOP_DISTANCE_ATR", 2.0)
         
         profit_atr = 0.0
         peak = position.get("price_peak_value", entry_price)

@@ -2076,6 +2076,14 @@ class TradingEngine:
             self.account.log(f"💰 {symbol} 目前已有持倉 ({active_positions_count}個)，使用 100% 可用餘額 ({target_margin:.2f}U) 作為開倉保證金", "INFO")
             
         projected_risk = target_margin # 僅作紀錄，不再用它來阻擋
+        
+        from core.config import get_high_beta_config
+        beta_config = get_high_beta_config(symbol)
+        beta_ratio = beta_config.get("BASE_POSITION_SIZE_RATIO", 1.0)
+        if beta_ratio != 1.0:
+            amount = amount * beta_ratio
+            self.account.log(f"📉 {symbol} 妖幣高波動風控：套用基礎倉位縮減係數 {beta_ratio}x -> 新保證金: {amount:.2f}U", "INFO")
+            
         # Track D (趨勢延續) 套用 size_fraction 縮減倉位
         size_fraction = float(signal.get("size_fraction", 1.0))
         if size_fraction != 1.0:

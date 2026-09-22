@@ -1292,3 +1292,33 @@ BREAKEVEN_ACTIVATE_ATR = 0.1
 TRAILING_STOP_ACTIVATE_ATR = 1.0
 TRAILING_STOP_DISTANCE_ATR = 1.5
 
+
+# ==========================================
+# 🟢 雙軌高波動風控系統參數配置 (Lobster vs PEPE)
+# ==========================================
+HIGH_BETA_CONFIG = {
+    "DEFAULT": { # 預設通用/龍蝦等高波動
+        "ATR_PERIOD": 14,
+        "BREAKEVEN_ACTIVATE_ATR": 0.5,
+        "COOLDOWN_KLINES": 3,
+        "BODY_FILTER_PCT": 0.60,
+        "BREAKOUT_BUFFER_ATR": 0.7,
+        "TRAILING_STOP_DISTANCE_ATR": 2.0,
+        "BASE_POSITION_SIZE_RATIO": 1.0,
+        "VOLATILITY_FILTER_PCT": 0.003
+    },
+    "1000PEPE/USDT": { # PEPE 流動性差，滑點大，更緊的風控
+        "ATR_PERIOD": 14,
+        "BREAKEVEN_ACTIVATE_ATR": 0.5,
+        "COOLDOWN_KLINES": 3,
+        "BODY_FILTER_PCT": 0.70,
+        "BREAKOUT_BUFFER_ATR": 0.6,
+        "TRAILING_STOP_DISTANCE_ATR": 1.8,
+        "BASE_POSITION_SIZE_RATIO": 0.6,
+        "VOLATILITY_FILTER_PCT": 0.002
+    }
+}
+def get_high_beta_config(symbol: str) -> dict:
+    if symbol in HIGH_BETA_CONFIG:
+        return HIGH_BETA_CONFIG[symbol]
+    return HIGH_BETA_CONFIG["DEFAULT"]
