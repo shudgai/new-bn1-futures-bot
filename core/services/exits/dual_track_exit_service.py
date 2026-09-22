@@ -101,12 +101,14 @@ class DualTrackExitStrategy(IExitStrategy):
         # 【強制保本鎖利】 (Forced Break-Even Lock)
         # ══════════════════════════════════════════════════════════════
         taker_fee = 0.0004
+        # 保本價必須加上/減去手續費
         if side == "LONG":
             be_price = entry_price * (1 + taker_fee)
-            current_profit = current_price - entry_price
+            # 以跨過保本價才算「真·淨利」
+            net_profit = current_price - be_price
         else:
             be_price = entry_price * (1 - taker_fee)
-            current_profit = entry_price - current_price
+            net_profit = be_price - current_price
             
         break_even_locked = position.get("break_even_locked", False)
         
@@ -120,11 +122,12 @@ class DualTrackExitStrategy(IExitStrategy):
                 position["be_price"] = be_price
                 logger.info(f"🔒 [BE LOCK UPDATE] Pyramiding lowered BE to {be_price:.6f}")
                 
-        if not break_even_locked and current_profit > 0:
+        if not break_even_locked and net_profit > (entry_price * 0.0005):
+            # 只有當利潤確實跨過保本點且有微小緩衝 (0.05%) 時才鎖定，避免剛跨過就因為點差秒平
             position["break_even_locked"] = True
             position["be_price"] = be_price
             break_even_locked = True
-            logger.info(f"🔒 [BE LOCK] {side} Profit > 0, Locking Break-Even at {be_price:.6f}")
+            logger.info(f"🔒 [BE LOCK] {side} Net Profit > Buffer, Locking Break-Even at {be_price:.6f}")
             
         be_price_stored = position.get("be_price", 0.0)
 
