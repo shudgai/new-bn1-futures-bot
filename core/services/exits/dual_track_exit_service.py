@@ -4,7 +4,7 @@ import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
 from core.config import TAKER_FEE_RATE
 
-DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close",
+DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close", "channel_profit_protection",
                           "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
                           "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer",
                           "structural_breakdown_barrier_price", "structural_breakdown_side",
