@@ -4,12 +4,12 @@ import pandas as pd
 from core.interfaces.exit_interface import IExitStrategy
 from core.config import TAKER_FEE_RATE
 
-DUAL_TRACK_STATE_KEYS = ["trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close", "channel_profit_protection",
+DUAL_TRACK_STATE_KEYS = ["channel_significant_ma3_turn", "channel_peak_abnormal", "ratchet_floor", "trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close", "channel_profit_protection",
                           "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
                           "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer",
                           "structural_breakdown_barrier_price", "structural_breakdown_side",
                           "profit_protection_active", "profit_anchor_price", "guaranteed_exit_price",
-                          "entry_atr",
+                          "entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
                           "price_peak_value",         # 即時動態錨點（追蹤最高/最低點）
                           "profit_lock_display_sl",   # UI 鎖利顯示
                           "channel_profit_protection"]
@@ -220,10 +220,11 @@ class DualTrackExitStrategy(IExitStrategy):
         if ts_price is not None:
             is_triggered = False
             locked_profit = 0
-            if side == "LONG" and current_price <= ts_price:
+            # 嚴格落實 K 棒收盤確認制 (Close-based Confirmation)
+            if side == "LONG" and curr_close <= ts_price:
                 is_triggered = True
                 locked_profit = ts_price - entry_price
-            elif side == "SHORT" and current_price >= ts_price:
+            elif side == "SHORT" and curr_close >= ts_price:
                 is_triggered = True
                 locked_profit = entry_price - ts_price
 
@@ -343,11 +344,12 @@ class DualTrackExitStrategy(IExitStrategy):
                 position["touched_kc_outer"] = True
 
         if not touched_kc:
-            if side == "LONG" and current_price <= active_stop:
-                logger.warning(f"[EXIT_HARD_STOP] LONG (未觸外軌) 2.0 ATR 保命線觸發 @ {current_price:.6f}")
+            # 嚴格落實 K 棒收盤確認制 (Close-based Confirmation)
+            if side == "LONG" and curr_close <= active_stop:
+                logger.warning(f"[EXIT_HARD_STOP] LONG (未觸外軌) 2.0 ATR 保命線觸發 @ {curr_close:.6f}")
                 return "EXIT_HARD_STOP_2.0_ATR"
-            if side == "SHORT" and current_price >= active_stop:
-                logger.warning(f"[EXIT_HARD_STOP] SHORT (未觸外軌) 2.0 ATR 保命線觸發 @ {current_price:.6f}")
+            if side == "SHORT" and curr_close >= active_stop:
+                logger.warning(f"[EXIT_HARD_STOP] SHORT (未觸外軌) 2.0 ATR 保命線觸發 @ {curr_close:.6f}")
                 return "EXIT_HARD_STOP_2.0_ATR"
 
         # ══════════════════════════════════════════════════════════════
