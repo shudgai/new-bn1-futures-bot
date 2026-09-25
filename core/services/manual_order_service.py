@@ -38,9 +38,6 @@ async def process_manual_order(
     async with _manual_order_lock:
         if symbol not in engine.tickers:
             return {"success": False, "status_code": 400, "detail": "Invalid Symbol: 幣種價格尚未載入"}
-            
-        if symbol in engine.account.positions:
-            return {"success": False, "status_code": 400, "detail": f"{symbol} 已有持倉"}
 
         live_price = float(engine.tickers[symbol])
         
@@ -104,6 +101,7 @@ async def process_manual_order(
                 "managed_by_bot": True,
                 "manual_favorable_rail_reached": False,
                 "channel_favorable_rail_reached": False,
+                "entry_atr": atr,
             },
         )
         

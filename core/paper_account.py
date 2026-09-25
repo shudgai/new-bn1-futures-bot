@@ -1,3 +1,4 @@
+from core.services.exits.staged_risk_service import staged_enabled
 from core.services.exits.hard_stop_service import enforce_hard_stop
 import json
 import math
@@ -142,7 +143,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
-    "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
+    "is_contrarian_bottom_buy", "initial_sl", "initial_risk", "entry_atr",
     "signal_candle_low", "signal_candle_high",
     "channel_turn_low", "channel_turn_high",
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
@@ -726,10 +727,13 @@ class PaperAccount:
                 and str(held.get("side") or "").upper() == str(side or "").upper()
                 and held_mode != "CHANNEL_SWING"
             )
-            if not valid_dca_top_up:
+            is_manual = entry_context is not None and entry_context.get("manual_entry") is True
+            if not valid_dca_top_up and not is_manual:
                 return False
         elif symbol in self.pending_limit_orders or symbol in self.closing_lock:
-            return False
+            is_manual = entry_context is not None and entry_context.get("manual_entry") is True
+            if not is_manual:
+                return False
 
         if signal_score is not None and signal_score < MIN_OPEN_SIGNAL_SCORE:
             self.log(
@@ -1196,6 +1200,8 @@ class PaperAccount:
         return True
 
     async def update_positions(self, ticker_prices: Dict[str, float]) -> float:
+        from core.services.exits.staged_risk_service import refresh_staged_runtimes
+        await refresh_staged_runtimes(self)
         self._check_daily_reset()
         total_unrealized = 0.0
         now_ts = time.time()
@@ -1205,6 +1211,16 @@ class PaperAccount:
                 self.latest_prices[str(symbol)] = float(price)
 
         for symbol, pos in list(self.positions.items()):
+            if staged_enabled(pos, self.position_meta.get(symbol, {})):
+                # Keep account valuation; only exit ownership changes.
+                staged_price = (ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT")
+                                or ticker_prices.get(symbol.replace("/USDT", "")))
+                if staged_price is not None:
+                    sign = 1 if pos["side"] == "LONG" else -1
+                    pnl = sign * (float(staged_price) - float(pos["entry_price"])) * float(pos["qty"])
+                    pos["unrealized_pnl"] = pnl
+                    total_unrealized += pnl
+                continue
             curr_p = (
                 ticker_prices.get(symbol)
                 or ticker_prices.get(f"{symbol}:USDT")

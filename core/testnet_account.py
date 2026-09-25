@@ -1,3 +1,4 @@
+from core.services.exits.staged_risk_service import staged_enabled
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS
 import asyncio
@@ -108,7 +109,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
-    "is_contrarian_bottom_buy", "initial_sl", "initial_risk",
+    "is_contrarian_bottom_buy", "initial_sl", "initial_risk", "entry_atr",
     "signal_candle_low", "signal_candle_high",
     "channel_turn_low", "channel_turn_high",
     "profit_profile", "profit_room_pct",
@@ -192,6 +193,9 @@ class BinanceTestnetAccount:
         # 閃崩偵測：記錄各 symbol 上次觸發閃崩平倉的時間戳（冷卻計時）
         self._rapid_drop_cooldown: Dict[str, float] = {}
         self.tickers: Dict[str, float] = {}
+        self.staged_state_directory = f"{STATE_FILE}.staged"
+        self.staged_risk_runtimes = {}
+        self._staged_stores = {}
         self._load_state()
 
     @staticmethod
@@ -245,7 +249,7 @@ class BinanceTestnetAccount:
         except Exception:
             pass
 
-    def save_state(self) -> None:
+    def save_state(self, *, strict: bool = False) -> None:
         os.makedirs(DATA_DIR, exist_ok=True)
         now_ts = time.time()
         last_closed_at = {
@@ -274,9 +278,19 @@ class BinanceTestnetAccount:
         try:
             with open(tmp_file, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
+                if strict:
+                    handle.flush()
+                    os.fsync(handle.fileno())
             os.replace(tmp_file, STATE_FILE)
+            if strict:
+                directory = os.open(os.path.dirname(STATE_FILE), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except Exception:
-            pass
+            if strict:
+                raise
 
     def log(self, message: str, level: str = "INFO") -> None:
         # 視覺層過濾：將 'Mandatory_Fail: KEY(...)' 顯示成括號內的中文說明，或移除前綴並替換下劃線
@@ -336,9 +350,15 @@ class BinanceTestnetAccount:
             raise RuntimeError("8006 Testnet API Key 尚未設定")
         await self.exchange.load_markets()
         self._markets_loaded = True
+        from core.services.exits.staged_testnet_runtime import restore_testnet_staged
+        await restore_testnet_staged(self)
         await self._cancel_orphan_entry_orders()
         await self.refresh(force=True)
         await self._restore_exchange_initial_stops()
+
+    async def enable_staged_risk(self, symbol, risk_params, entry_order_ids):
+        from core.services.exits.staged_testnet_runtime import enable_testnet_staged
+        return await enable_testnet_staged(self, symbol, risk_params, entry_order_ids)
 
     async def _cancel_orphan_entry_orders(self) -> None:
         """開機時清掉「軟體重啟後失去追蹤，但交易所還留著」的孤兒進場限價單。
@@ -354,6 +374,8 @@ class BinanceTestnetAccount:
         所以逐幣種查詢目前牌面（DEFAULT_SYMBOLS）——涵蓋絕大多數會發生的
         情況，牌面之外的舊幣種孤兒單機率很低，先不處理。"""
         for symbol in DEFAULT_SYMBOLS:
+            if symbol in self.staged_risk_runtimes:
+                continue
             try:
                 open_orders = await self.exchange.fetch_open_orders(symbol)
             except Exception as exc:
@@ -399,6 +421,9 @@ class BinanceTestnetAccount:
         now = time.time()
         if not force and now - self.last_sync_at < 5.0:
             return self.unrealized_pnl
+
+        from core.services.exits.staged_risk_service import refresh_staged_runtimes
+        await refresh_staged_runtimes(self)
 
         previous = dict(self.positions)
         close_generation = dict(getattr(self, "_close_generation", {}))
@@ -476,11 +501,23 @@ class BinanceTestnetAccount:
             if (symbol in active or symbol in self.closing_lock
                     or close_generation.get(symbol, 0) != getattr(self, "_close_generation", {}).get(symbol, 0)):
                 continue
+            if symbol in self._staged_stores:
+                from core.services.exits.staged_testnet_runtime import record_staged_close
+                record_staged_close(self, symbol)
+                continue
+            if staged_enabled(old_position, self.position_meta.get(symbol, {})):
+                continue
             await self._record_external_close(symbol, old_position)
+
+        for symbol in tuple(self._staged_stores):
+            if symbol not in active:
+                from core.services.exits.staged_testnet_runtime import record_staged_close
+                record_staged_close(self, symbol)
 
         active_symbols = set(active)
         for symbol in list(self.position_meta):
-            if symbol not in active_symbols and symbol not in self.closing_lock:
+            if (symbol not in active_symbols and symbol not in self.closing_lock
+                    and not staged_enabled({}, self.position_meta[symbol])):
                 self.position_meta.pop(symbol, None)
         self.save_state()
         return self.unrealized_pnl
@@ -651,6 +688,9 @@ class BinanceTestnetAccount:
         await self.refresh()
 
         for symbol, pos in list(self.positions.items()):
+            if staged_enabled(pos, self.position_meta.get(symbol, {})):
+                # The staged dispatcher/transport owns all exits and protection.
+                continue
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
             if curr_p is None:
                 continue
@@ -1413,6 +1453,9 @@ class BinanceTestnetAccount:
             return
         channel_swing_cleared = False
         for symbol, pos in list(self.positions.items()):
+            if staged_enabled(pos, self.position_meta.get(symbol, {})):
+                # The staged dispatcher/transport owns all exits and protection.
+                continue
             meta = self.position_meta.get(symbol, {})
             entry_mode = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
@@ -1591,12 +1634,14 @@ class BinanceTestnetAccount:
     ) -> bool:
         """市價進場（手動下單、或任何需要立即成交的路徑用這個）。
         訊號驅動的回調進場改用 place_limit_entry()，見下方。"""
-        if (
-            symbol in self.positions
-            or symbol in self.pending_limit_orders
-            or symbol in self.closing_lock
-        ):
-            return False
+        is_manual = entry_context is not None and entry_context.get("manual_entry") is True
+        if not is_manual:
+            if (
+                symbol in self.positions
+                or symbol in self.pending_limit_orders
+                or symbol in self.closing_lock
+            ):
+                return False
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
         # None）不受影響，這只針對訊號驅動的自動開倉。
@@ -2172,6 +2217,18 @@ class BinanceTestnetAccount:
             return False
         position = self.positions[symbol]
         meta = self.position_meta.get(symbol, {})
+        if staged_enabled(position, meta):
+            runtime = self.staged_risk_runtimes.get(symbol)
+            if runtime is None or not is_manual or is_limit:
+                return False
+            self.closing_lock.add(symbol)
+            try:
+                closed = await runtime.engine.request_close(close_reason)
+            finally:
+                self.closing_lock.discard(symbol)
+            if closed:
+                await self.refresh(force=True)
+            return closed
         # 若全域關閉自動停損，非手動呼叫一律拒絕自動平倉
         if DISABLE_STOP_LOSS and not is_manual:
             reject_key = (symbol, close_reason)
@@ -2320,6 +2377,18 @@ class BinanceTestnetAccount:
             return False
         if not 0.0 < float(fraction) < 1.0:
             return False
+        if staged_enabled(self.positions[symbol], self.position_meta.get(symbol, {})):
+            runtime = self.staged_risk_runtimes.get(symbol)
+            if runtime is None:
+                return False
+            self.closing_lock.add(symbol)
+            try:
+                reduced = await runtime.engine.request_reduce(float(fraction))
+                if reduced:
+                    await runtime.engine.update_stop_loss()
+                return reduced
+            finally:
+                self.closing_lock.discard(symbol)
         self.closing_lock.add(symbol)
         position = dict(self.positions[symbol])
         meta = self.position_meta.get(symbol, {})
