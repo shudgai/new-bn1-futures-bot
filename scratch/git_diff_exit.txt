@@ -1,0 +1,43 @@
+commit 300558d4e27c275d55a098651e209a7e27c08218
+Author: shudgai999 <shudgai999@gmail.com>
+Date:   Tue Sep 22 15:03:38 2026 +0000
+
+    Remove EXIT_LIVE_REJECTION_SHADOW to prevent panic exits
+
+diff --git a/core/services/exits/dual_track_exit_service.py b/core/services/exits/dual_track_exit_service.py
+index 0269400..7cda1ef 100644
+--- a/core/services/exits/dual_track_exit_service.py
++++ b/core/services/exits/dual_track_exit_service.py
+@@ -389,32 +389,6 @@ def evaluate_exit_with_protected_atr_lock(position, current_price, highest_price
+                 "detail": f"Peak={peak_pnl_atr:.2f}ATR, Retracement={retracement:.2f}ATR >= 0.4"
+             }
+ 
+-    # ==================== 2. 盤中反向影線警報 (Live Rejection Exit) ====================
+-    # 只要處於盈利狀態，不論獲利多少，只要出現長影線立即判定為峰谷
+-    if c_live is not None:
+-        c_live_open = float(c_live["open"])
+-        c_live_high = float(c_live.get("high", c_live_open))
+-        c_live_low = float(c_live.get("low", c_live_open))
+-        
+-        if side == "LONG":
+-            # 盤中上影線 = 最高價 - 當前價 (因為是盤中，當前價就是即時的 close)
+-            upper_shadow = c_live_high - current_price
+-            if upper_shadow >= 0.5 * current_atr:
+-                return {
+-                    "action": "CLOSE",
+-                    "reason": "EXIT_LIVE_REJECTION_SHADOW",
+-                    "detail": f"Upper Shadow = {upper_shadow/current_atr:.2f}ATR >= 0.5"
+-                }
+-        else:
+-            # 盤中下影線 = 當前價 - 最低價
+-            lower_shadow = current_price - c_live_low
+-            if lower_shadow >= 0.5 * current_atr:
+-                return {
+-                    "action": "CLOSE",
+-                    "reason": "EXIT_LIVE_REJECTION_SHADOW",
+-                    "detail": f"Lower Shadow = {lower_shadow/current_atr:.2f}ATR >= 0.5"
+-                }
+-
+     return None
+ 
+ 

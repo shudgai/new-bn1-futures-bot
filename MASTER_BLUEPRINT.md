@@ -104,3 +104,20 @@ core/
 - `pytest tests/test_channel_ma3_cross_entry.py` (MA3 穿軌專項 - 30 個測試點)
 - `pytest tests/test_channel_ma3_continuation.py` (MA3 延續專項 - 16 個測試點)
 - **總計 46 個 MA3 核心測試點 100% 通過。根目錄 26 個相容檔已清理乾淨，全系統引用直接歸向領域層！**
+
+## Staged R/ATR risk ownership (opt-in)
+
+`use_staged_risk_engine=True` routes the symbol runner to `StagedRuntime` and
+excludes legacy position exits from account refresh and profit protection.
+The flag defaults to absent/off; runtime installation is explicit.
+
+`StagedRiskEngine` owns monotonic stages/stops, partial TP intents, cancel/replace
+sequencing, and reconciliation. It depends on an injected `StagedTransport`, a
+valuation callable, and a persistence callback. `FileStagedStore` supplies atomic
+snapshots and a same-host position lease; it is not a multi-host consensus layer.
+
+`install_staged_runtime` persists position identity and policy, and enables native
+stop synchronization. Bootstrap must restore runtimes before trading. The test
+adapter maps these interfaces to MockExchange; it does not implement decisions.
+Real CCXT transport, execution accounting, and bootstrap integration remain
+separate rollout prerequisites. See `tests/RED_EYE.md` for verified boundaries.

@@ -211,7 +211,7 @@ def is_safe_to_enter(curr: pd.Series, prev: pd.Series, side: str, atr: float) ->
 
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
-) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:
     """
     全新「三位一體」結構性進場架構 (動能+結構+空間)
     路徑 A: 特例 K 爆發 (Special K Path)
@@ -226,8 +226,8 @@ def check_entry_signals(
 
     # 特例豁免：突發大動能吞噬開倉
     momentum_signal = check_special_momentum_engulfing(frame)
-if momentum_signal and momentum_signal["side"] == side:
-    return momentum_signal
+    if momentum_signal and momentum_signal["side"] == side:
+        return momentum_signal
 
 
     c1 = frame.iloc[-2]
@@ -247,7 +247,7 @@ if momentum_signal and momentum_signal["side"] == side:
         and c2["close"] > c2["open"]
         and c2_body >= 1.2 * atr
     ):
-        return "MOMENTUM_BREAKOUT_C1_LONG", {
+        return {
             "action": "ENTER",
             "side": "LONG",
             "reason": "MOMENTUM_BREAKOUT_C1_LONG",
@@ -261,7 +261,7 @@ if momentum_signal and momentum_signal["side"] == side:
         and c2["close"] < c2["open"]
         and c2_body >= 1.2 * atr
     ):
-        return "MOMENTUM_BREAKOUT_C1_SHORT", {
+        return {
             "action": "ENTER",
             "side": "SHORT",
             "reason": "MOMENTUM_BREAKOUT_C1_SHORT",
@@ -271,7 +271,7 @@ if momentum_signal and momentum_signal["side"] == side:
     # ==================== 2. 常規突破：等第二根 (c2) 收盤確認 ====================
     # 多單：c1 破上軌，c2 收盤依然留於上軌外
     if side == "LONG" and c1["close"] > c1.get("kc_upper", 0) and c2["close"] > c2.get("kc_upper", 0):
-        return "CONFIRMED_KC_BREAKOUT_LONG", {
+        return {
             "action": "ENTER",
             "side": "LONG",
             "reason": "CONFIRMED_KC_BREAKOUT_LONG",
@@ -280,7 +280,7 @@ if momentum_signal and momentum_signal["side"] == side:
 
     # 空單：c1 破下軌，c2 收盤依然留於下軌外
     if side == "SHORT" and c1["close"] < c1.get("kc_lower", 0) and c2["close"] < c2.get("kc_lower", 0):
-        return "CONFIRMED_KC_BREAKOUT_SHORT", {
+        return {
             "action": "ENTER",
             "side": "SHORT",
             "reason": "CONFIRMED_KC_BREAKOUT_SHORT",

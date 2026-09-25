@@ -1,40 +1,17 @@
-import re
-
 with open("core/engine.py", "r") as f:
     content = f.read()
 
-# Add to TradingEngine.__init__
-init_patch = """        self.adx_1h_declining_cache = {}
-        self.last_1h_cache_time = 0.0
-        self.api_weight_1m = 0  # <--- Added API Weight Tracker"""
+old_block = """            # 過濾掉像「龙虾/USDT」這種含有中文的模擬幣種，避免 CCXT fetch_tickers 整批報錯崩潰
+            import re
+            valid_monitored = [
+                sym for sym in monitored_symbols 
+                if re.match(r'^[A-Za-z0-9/:-]+$', sym)
+            ]"""
 
-content = content.replace("        self.adx_1h_declining_cache = {}\n        self.last_1h_cache_time = 0.0", init_patch)
+new_block = """            # 允許所有幣種（包含中文如「龙虾/USDT」）
+            valid_monitored = monitored_symbols"""
 
-# Add to update_market_prices
-update_patch = """        except Exception as e:
-            self.account.log(f"⚠️ update_market_prices 獲取報價失敗: {e}", "WARNING")
-            raise e
-        finally:
-            # Capture API Weight
-            if hasattr(self.account, 'exchange') and self.account.exchange and hasattr(self.account.exchange, 'last_response_headers'):
-                headers = self.account.exchange.last_response_headers or {}
-                for k, v in headers.items():
-                    if 'x-mbx-used-weight-1m' in k.lower():
-                        try:
-                            self.api_weight_1m = int(v)
-                        except:
-                            pass"""
-
-# Find the end of update_market_prices function
-# It ends with:
-#         except Exception as e:
-#             self.account.log(f"⚠️ update_market_prices 獲取報價失敗: {e}", "WARNING")
-#             raise e
-
-content = content.replace("""        except Exception as e:
-            self.account.log(f"⚠️ update_market_prices 獲取報價失敗: {e}", "WARNING")
-            raise e""", update_patch)
+content = content.replace(old_block, new_block)
 
 with open("core/engine.py", "w") as f:
     f.write(content)
-print("Done engine")

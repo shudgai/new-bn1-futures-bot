@@ -1,0 +1,42 @@
+{
+  "branch": "feature/staged-risk-implementation",
+  "base_commit": "fe8b72bc",
+  "production_contract": {
+    "passed": 20,
+    "failed": 0,
+    "junit": "staged_contract.xml"
+  },
+  "supplemental_core_tests": {
+    "passed": 16
+  },
+  "selected_legacy_account_regressions": {
+    "passed": 2
+  },
+  "unchanged_legacy_adapter_baseline": {
+    "passed": 6,
+    "runner": "tools/run_red_eye_legacy_baseline.py"
+  },
+  "historical_red_baseline": {
+    "failed": 20,
+    "output": "pytest_failures.txt"
+  },
+  "unchanged_test_sha256": {
+    "tests/test_red_eye_staged_contract.py": "99ea4d5eca1a28c175b77c223803765658d1b5d4ea850a7fac9642c50587fd50",
+    "tests/red_eye_support.py": "a42ce97efccbfce3e2f734665fb62b7d29997ea2e66835bc479ed3ae24e5912a",
+    "tests/test_red_eye_production_adapter.py": "48021e925870959e5a3e0a95c81152b7eda54c6746327871ece288fdfee9bfa3"
+  },
+  "existing_failure": {
+    "test": "test_initialize_restores_exchange_stop_for_position_opened_in_local_mode",
+    "expected_trigger": "98.0",
+    "actual_trigger": "99.0",
+    "reproduced_on_base": true
+  },
+  "deployed": false,
+  "production_connector_integration_verified": false,
+  "limitations": [
+    "Explicit opt-in; no live service restarted.",
+    "Real CCXT transport and execution ledger integration remain outstanding.",
+    "File lease is single-host; cancel/replace is not an exchange-atomic operation.",
+    "Native valuation waits for realized PNL after a quantity-changing fill."
+  ]
+}

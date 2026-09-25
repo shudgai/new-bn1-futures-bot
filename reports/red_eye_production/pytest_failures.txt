@@ -1,0 +1,440 @@
+FFFFFFFFFFFFFFFFFFFF                                                     [100%]
+=================================== FAILURES ===================================
+_____________________________ test_flash_gap[LONG] _____________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:57: in test_flash_gap
+    sut.tick(100+3*sign, 1, 30, 1, historical_high=150, historical_low=50)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+____________________________ test_flash_gap[SHORT] _____________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:57: in test_flash_gap
+    sut.tick(100+3*sign, 1, 30, 1, historical_high=150, historical_low=50)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+___________________________ test_fake_breakout[LONG] ___________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:92: in test_fake_breakout
+    sut.tick(100+sign, 1, 7.5, bar)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+__________________________ test_fake_breakout[SHORT] ___________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:92: in test_fake_breakout
+    sut.tick(100+sign, 1, 7.5, bar)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+__________________ test_order_black_hole[timeout_after_fill] ___________________
+tests/test_red_eye_staged_contract.py:116: in test_order_black_hole
+    sut.submit_stop()
+my_package/red_eye_adapter.py:213: in submit_stop
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: MISSING_STAGED_STOP_ROUTE: runner has no staged native STOP intent API; existing TestnetAccount native stops require a separate transport adapter
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+__________________ test_order_black_hole[unknown_after_fill] ___________________
+tests/test_red_eye_staged_contract.py:116: in test_order_black_hole
+    sut.submit_stop()
+my_package/red_eye_adapter.py:213: in submit_stop
+    raise ProductionCapabilityMissing(
+E   my_package.red_eye_adapter.ProductionCapabilityMissing: MISSING_STAGED_STOP_ROUTE: runner has no staged native STOP intent API; existing TestnetAccount native stops require a separate transport adapter
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+____________________________ test_micro_chop[None] _____________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:151: in test_micro_chop
+    sut.tick(101, 1, 7.5001, 5)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+___________________________ test_micro_chop[timeout] ___________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:151: in test_micro_chop
+    sut.tick(101, 1, 7.5001, 5)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+______________________ test_micro_chop[fill_then_timeout] ______________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:151: in test_micro_chop
+    sut.tick(101, 1, 7.5001, 5)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+____________________________ test_extreme_deviation ____________________________
+tests/test_red_eye_staged_contract.py:195: in test_extreme_deviation
+    assert any("Deviation > 2.5 ATR" in line for line in sut.logs)
+E   assert False
+E    +  where False = any(<generator object test_extreme_deviation.<locals>.<genexpr> at 0x73ac2fd63e00>)
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+----------------------------- Captured stdout call -----------------------------
+PRODUCTION_ENTRY: 🛑 BLOCKED_PANIC_LONG (Bias > 2.5 ATR)
+___________________ test_stage_upgrade_and_trailing[LONG-A] ____________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:214: in test_stage_upgrade_and_trailing
+    sut.tick(100+sign*(trigger-0.01), 0.5, 2.5, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+___________________ test_stage_upgrade_and_trailing[LONG-B] ____________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:214: in test_stage_upgrade_and_trailing
+    sut.tick(100+sign*(trigger-0.01), 0.5, 2.5, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+___________________ test_stage_upgrade_and_trailing[SHORT-A] ___________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:214: in test_stage_upgrade_and_trailing
+    sut.tick(100+sign*(trigger-0.01), 0.5, 2.5, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+___________________ test_stage_upgrade_and_trailing[SHORT-B] ___________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:214: in test_stage_upgrade_and_trailing
+    sut.tick(100+sign*(trigger-0.01), 0.5, 2.5, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+_______________________ test_stage_monotonicity[LONG-A] ________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:244: in test_stage_monotonicity
+    sut.tick(100+2*sign, 0.5, 10, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+_______________________ test_stage_monotonicity[LONG-B] ________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:244: in test_stage_monotonicity
+    sut.tick(100+2*sign, 0.5, 10, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+_______________________ test_stage_monotonicity[SHORT-A] _______________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:244: in test_stage_monotonicity
+    sut.tick(100+2*sign, 0.5, 10, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+_______________________ test_stage_monotonicity[SHORT-B] _______________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:244: in test_stage_monotonicity
+    sut.tick(100+2*sign, 0.5, 10, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+__________________________ test_legacy_suppression[A] __________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:266: in test_legacy_suppression
+    sut.tick(price, 1, net, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+__________________________ test_legacy_suppression[B] __________________________
+my_package/red_eye_adapter.py:148: in _trace
+    observer()
+/usr/lib/python3.12/unittest/mock.py:1134: in __call__
+    return self._mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1138: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+/usr/lib/python3.12/unittest/mock.py:1199: in _execute_mock_call
+    result = effect(*args, **kwargs)
+tests/red_eye_support.py:63: in old_logic
+    raise AssertionError("舊版 2.5U／3U 邏輯被呼叫")
+E   AssertionError: 舊版 2.5U／3U 邏輯被呼叫
+
+The above exception was the direct cause of the following exception:
+tests/test_red_eye_staged_contract.py:266: in test_legacy_suppression
+    sut.tick(price, 1, net, 1)
+my_package/red_eye_adapter.py:205: in tick
+    self.tick_native(price, atr, bar, historical_high, historical_low)
+my_package/red_eye_adapter.py:198: in tick_native
+    raise AssertionError("PRODUCTION_LEGACY_NOT_SILENT: " +
+E   AssertionError: PRODUCTION_LEGACY_NOT_SILENT: legacy_breakeven, legacy_drawdown
+---------------------------- Captured stdout setup -----------------------------
+SUT=my_package.red_eye_adapter:create_strategy
+=========================== short test summary info ============================
+FAILED tests/test_red_eye_staged_contract.py::test_flash_gap[LONG] - Assertio...
+FAILED tests/test_red_eye_staged_contract.py::test_flash_gap[SHORT] - Asserti...
+FAILED tests/test_red_eye_staged_contract.py::test_fake_breakout[LONG] - Asse...
+FAILED tests/test_red_eye_staged_contract.py::test_fake_breakout[SHORT] - Ass...
+FAILED tests/test_red_eye_staged_contract.py::test_order_black_hole[timeout_after_fill]
+FAILED tests/test_red_eye_staged_contract.py::test_order_black_hole[unknown_after_fill]
+FAILED tests/test_red_eye_staged_contract.py::test_micro_chop[None] - Asserti...
+FAILED tests/test_red_eye_staged_contract.py::test_micro_chop[timeout] - Asse...
+FAILED tests/test_red_eye_staged_contract.py::test_micro_chop[fill_then_timeout]
+FAILED tests/test_red_eye_staged_contract.py::test_extreme_deviation - assert...
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[LONG-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[LONG-B]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[SHORT-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[SHORT-B]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[LONG-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[LONG-B]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[SHORT-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[SHORT-B]
+FAILED tests/test_red_eye_staged_contract.py::test_legacy_suppression[A] - As...
+FAILED tests/test_red_eye_staged_contract.py::test_legacy_suppression[B] - As...
+20 failed in 2.42s

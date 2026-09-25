@@ -39,6 +39,11 @@ async def process_single_symbol_runner(
             or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)))
             
         existing_pos = engine.account.positions.get(symbol)
+        from core.services.exits.staged_risk_service import staged_enabled, run_staged_position
+        staged_meta = engine.account.position_meta.get(symbol, {})
+        if staged_enabled(existing_pos or {}, staged_meta):
+            await run_staged_position(engine.account, symbol, channel_df, channel_price)
+            return signal_progress, detected_candidates
         if exit_only and not existing_pos:
             return signal_progress, detected_candidates
 
@@ -66,6 +71,8 @@ async def process_single_symbol_runner(
             exit_strategy = ProfitProtectionExitStrategy()
             
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
+            with open("/tmp/before_eval.log", "a") as dbgf:
+                dbgf.write(f"Calling evaluate_exit for {symbol}\n")
             exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_drop_ratio=velocity_drop_ratio)
             # Persist observations before any awaited order or account refresh.
             observed = {

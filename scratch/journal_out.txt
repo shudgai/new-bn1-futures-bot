@@ -1,0 +1,100 @@
+Sep 22 14:50:32 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:32 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:32 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088630375 HTTP/1.1" 200 OK
+Sep 22 14:50:32 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/prices?_=1790088630506 HTTP/1.1" 200 OK
+Sep 22 14:50:33 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088630873 HTTP/1.1" 200 OK
+Sep 22 14:50:33 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088631368 HTTP/1.1" 200 OK
+Sep 22 14:50:33 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/prices?_=1790088631503 HTTP/1.1" 200 OK
+Sep 22 14:50:33 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:33 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:33 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:33 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1715 (Bar ID: 1790088600000.0)
+Sep 22 14:50:33 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:33 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:34 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088631878 HTTP/1.1" 200 OK
+Sep 22 14:50:34 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/status?_=1790088632377 HTTP/1.1" 200 OK
+Sep 22 14:50:34 htlocalserver bash[3021402]: INFO:     100.70.198.75:53719 - "GET /api/prices?_=1790088632377 HTTP/1.1" 200 OK
+Sep 22 14:50:34 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/prices?_=1790088632503 HTTP/1.1" 200 OK
+Sep 22 14:50:34 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/status?_=1790088632503 HTTP/1.1" 200 OK
+Sep 22 14:50:35 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088632876 HTTP/1.1" 200 OK
+Sep 22 14:50:35 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:35 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:35 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:35 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1712 (Bar ID: 1790088600000.0)
+Sep 22 14:50:35 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:35 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:35 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088633369 HTTP/1.1" 200 OK
+Sep 22 14:50:35 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/prices?_=1790088633502 HTTP/1.1" 200 OK
+Sep 22 14:50:35 htlocalserver bash[3021402]: INFO:     100.70.198.75:53719 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088633369 HTTP/1.1" 200 OK
+Sep 22 14:50:36 htlocalserver bash[3021402]: INFO:     100.70.198.75:53719 - "GET /api/prices?_=1790088633873 HTTP/1.1" 200 OK
+Sep 22 14:50:36 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088633370 HTTP/1.1" 200 OK
+Sep 22 14:50:36 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088634369 HTTP/1.1" 200 OK
+Sep 22 14:50:36 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/prices?_=1790088634496 HTTP/1.1" 200 OK
+Sep 22 14:50:36 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:36 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:36 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:37 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1713 (Bar ID: 1790088600000.0)
+Sep 22 14:50:37 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:37 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:37 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088634877 HTTP/1.1" 200 OK
+Sep 22 14:50:37 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/status?_=1790088635379 HTTP/1.1" 200 OK
+Sep 22 14:50:37 htlocalserver bash[3021402]: INFO:     100.70.198.75:53719 - "GET /api/prices?_=1790088635380 HTTP/1.1" 200 OK
+Sep 22 14:50:37 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/prices?_=1790088635495 HTTP/1.1" 200 OK
+Sep 22 14:50:37 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/status?_=1790088635496 HTTP/1.1" 200 OK
+Sep 22 14:50:38 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088635876 HTTP/1.1" 200 OK
+Sep 22 14:50:38 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:38 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:38 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:38 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1711 (Bar ID: 1790088600000.0)
+Sep 22 14:50:38 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:38 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:38 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088636373 HTTP/1.1" 200 OK
+Sep 22 14:50:38 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/prices?_=1790088636509 HTTP/1.1" 200 OK
+Sep 22 14:50:39 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088636872 HTTP/1.1" 200 OK
+Sep 22 14:50:39 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088637371 HTTP/1.1" 200 OK
+Sep 22 14:50:39 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/prices?_=1790088637503 HTTP/1.1" 200 OK
+Sep 22 14:50:39 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:39 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:39 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:40 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1713 (Bar ID: 1790088600000.0)
+Sep 22 14:50:40 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:40 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/prices?_=1790088637871 HTTP/1.1" 200 OK
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:62178 - "GET /api/status?_=1790088638379 HTTP/1.1" 200 OK
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:53719 - "GET /api/prices?_=1790088638379 HTTP/1.1" 200 OK
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088638379 HTTP/1.1" 200 OK
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:57233 - "GET /api/prices?_=1790088638496 HTTP/1.1" 200 OK
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/status?_=1790088638496 HTTP/1.1" 200 OK
+Sep 22 14:50:40 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088638380 HTTP/1.1" 200 OK
+Sep 22 14:50:41 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/prices?_=1790088638872 HTTP/1.1" 200 OK
+Sep 22 14:50:41 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:41 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:41 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:41 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1709 (Bar ID: 1790088600000.0)
+Sep 22 14:50:41 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:41 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:41 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/prices?_=1790088639377 HTTP/1.1" 200 OK
+Sep 22 14:50:41 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/prices?_=1790088639501 HTTP/1.1" 200 OK
+Sep 22 14:50:42 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/prices?_=1790088639879 HTTP/1.1" 200 OK
+Sep 22 14:50:42 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/prices?_=1790088640374 HTTP/1.1" 200 OK
+Sep 22 14:50:42 htlocalserver bash[3021402]: INFO:     100.70.198.75:63719 - "GET /api/prices?_=1790088640500 HTTP/1.1" 200 OK
+Sep 22 14:50:42 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088600000.0)
+Sep 22 14:50:42 htlocalserver bash[3021402]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:42 htlocalserver bash[3021402]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:42 htlocalserver bash[3021402]: [UnifiedEntry] Evaluating 龙虾/USDT at 0.1712 (Bar ID: 1790088600000.0)
+Sep 22 14:50:42 htlocalserver bash[3021402]: [龙虾/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:42 htlocalserver bash[3021402]: [龙虾/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:50:43 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/prices?_=1790088640873 HTTP/1.1" 200 OK
+Sep 22 14:50:43 htlocalserver systemd[1701]: Stopping binance-8006.service - Binance Futures Bot API 8006...
+Sep 22 14:50:43 htlocalserver bash[3021402]: INFO:     100.70.198.75:57985 - "GET /api/status?_=1790088641373 HTTP/1.1" 200 OK
+Sep 22 14:50:43 htlocalserver bash[3021402]: INFO:     100.70.198.75:56547 - "GET /api/prices?_=1790088641373 HTTP/1.1" 200 OK
+Sep 22 14:50:43 htlocalserver bash[3021402]: INFO:     Shutting down
+Sep 22 14:50:43 htlocalserver bash[3021402]: INFO:     Waiting for application shutdown.
+Sep 22 14:50:44 htlocalserver bash[3021402]: INFO:     Application shutdown complete.
+Sep 22 14:50:44 htlocalserver bash[3021402]: INFO:     Finished server process [3021402]
+Sep 22 14:50:45 htlocalserver systemd[1701]: Stopped binance-8006.service - Binance Futures Bot API 8006.
+Sep 22 14:50:45 htlocalserver systemd[1701]: binance-8006.service: Consumed 1min 2.712s CPU time, 1.0M memory peak, 0B memory swap peak.
+Sep 22 14:50:45 htlocalserver systemd[1701]: Started binance-8006.service - Binance Futures Bot API 8006.
+Sep 22 14:50:45 htlocalserver bash[3022213]: 🌐 Starting Port 8006 Binance Futures Bot 2.0 with auto-restart...
+Sep 22 14:50:47 htlocalserver bash[3022226]: INFO:     Started server process [3022226]
+Sep 22 14:50:47 htlocalserver bash[3022226]: INFO:     Waiting for application startup.

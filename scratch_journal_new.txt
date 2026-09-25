@@ -1,0 +1,647 @@
+Sep 22 14:38:32 htlocalserver systemd[1701]: Stopped binance-8006.service - Binance Futures Bot API 8006.
+Sep 22 14:38:32 htlocalserver systemd[1701]: binance-8006.service: Consumed 1min 17.139s CPU time.
+Sep 22 14:38:32 htlocalserver systemd[1701]: Started binance-8006.service - Binance Futures Bot API 8006.
+Sep 22 14:38:32 htlocalserver bash[3017609]: 🌐 Starting Port 8006 Binance Futures Bot 2.0 with auto-restart...
+Sep 22 14:38:33 htlocalserver bash[3017619]: INFO:     Started server process [3017619]
+Sep 22 14:38:33 htlocalserver bash[3017619]: INFO:     Waiting for application startup.
+Sep 22 14:38:34 htlocalserver bash[3017619]: INFO:     Application startup complete.
+Sep 22 14:38:34 htlocalserver bash[3017619]: INFO:     Uvicorn running on socket ('0.0.0.0', 8006) (Press CTRL+C to quit)
+Sep 22 14:38:34 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087909373 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:65399 - "GET /api/prices?_=1790087909873 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:49478 - "GET /api/prices?_=1790087910369 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087912372 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:62948 - "GET /api/prices?_=1790087910875 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:65399 - "GET /api/prices?_=1790087912372 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:49478 - "GET /api/prices?_=1790087912871 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087911372 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:59881 - "GET /api/prices?_=1790087911875 HTTP/1.1" 200 OK
+Sep 22 14:38:35 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0048 (Bar ID: 1790087880000.0)
+Sep 22 14:38:35 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:35 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087913378 HTTP/1.1" 200 OK
+Sep 22 14:38:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087913871 HTTP/1.1" 200 OK
+Sep 22 14:38:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:59881 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087913379 HTTP/1.1" 200 OK
+Sep 22 14:38:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087913379 HTTP/1.1" 200 OK
+Sep 22 14:38:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087914370 HTTP/1.1" 200 OK
+Sep 22 14:38:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087914868 HTTP/1.1" 200 OK
+Sep 22 14:38:37 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:37 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:37 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/status?_=1790087915372 HTTP/1.1" 200 OK
+Sep 22 14:38:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:59881 - "GET /api/prices?_=1790087915372 HTTP/1.1" 200 OK
+Sep 22 14:38:38 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087915868 HTTP/1.1" 200 OK
+Sep 22 14:38:38 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087916372 HTTP/1.1" 200 OK
+Sep 22 14:38:38 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:38 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:38 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:39 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087916871 HTTP/1.1" 200 OK
+Sep 22 14:38:39 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087917373 HTTP/1.1" 200 OK
+Sep 22 14:38:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087917874 HTTP/1.1" 200 OK
+Sep 22 14:38:40 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:40 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:40 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/status?_=1790087918372 HTTP/1.1" 200 OK
+Sep 22 14:38:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:59881 - "GET /api/prices?_=1790087918372 HTTP/1.1" 200 OK
+Sep 22 14:38:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087918372 HTTP/1.1" 200 OK
+Sep 22 14:38:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087918372 HTTP/1.1" 200 OK
+Sep 22 14:38:41 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087918871 HTTP/1.1" 200 OK
+Sep 22 14:38:41 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087919368 HTTP/1.1" 200 OK
+Sep 22 14:38:41 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:41 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:41 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:42 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087919868 HTTP/1.1" 200 OK
+Sep 22 14:38:42 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087920372 HTTP/1.1" 200 OK
+Sep 22 14:38:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087920878 HTTP/1.1" 200 OK
+Sep 22 14:38:43 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:43 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:43 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/status?_=1790087921379 HTTP/1.1" 200 OK
+Sep 22 14:38:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087921379 HTTP/1.1" 200 OK
+Sep 22 14:38:44 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087921868 HTTP/1.1" 200 OK
+Sep 22 14:38:44 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087922373 HTTP/1.1" 200 OK
+Sep 22 14:38:44 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:44 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:44 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087922869 HTTP/1.1" 200 OK
+Sep 22 14:38:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087923375 HTTP/1.1" 200 OK
+Sep 22 14:38:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087923376 HTTP/1.1" 200 OK
+Sep 22 14:38:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087923872 HTTP/1.1" 200 OK
+Sep 22 14:38:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087923376 HTTP/1.1" 200 OK
+Sep 22 14:38:46 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:46 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:46 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/status?_=1790087924369 HTTP/1.1" 200 OK
+Sep 22 14:38:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087924369 HTTP/1.1" 200 OK
+Sep 22 14:38:47 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087924872 HTTP/1.1" 200 OK
+Sep 22 14:38:47 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087925372 HTTP/1.1" 200 OK
+Sep 22 14:38:47 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:47 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:47 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:48 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087925873 HTTP/1.1" 200 OK
+Sep 22 14:38:48 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087926376 HTTP/1.1" 200 OK
+Sep 22 14:38:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087926873 HTTP/1.1" 200 OK
+Sep 22 14:38:49 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:49 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:49 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/status?_=1790087927376 HTTP/1.1" 200 OK
+Sep 22 14:38:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087927377 HTTP/1.1" 200 OK
+Sep 22 14:38:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087927878 HTTP/1.1" 200 OK
+Sep 22 14:38:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087928372 HTTP/1.1" 200 OK
+Sep 22 14:38:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087928373 HTTP/1.1" 200 OK
+Sep 22 14:38:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087928373 HTTP/1.1" 200 OK
+Sep 22 14:38:50 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:50 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:50 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:51 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087928872 HTTP/1.1" 200 OK
+Sep 22 14:38:51 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087929377 HTTP/1.1" 200 OK
+Sep 22 14:38:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087929877 HTTP/1.1" 200 OK
+Sep 22 14:38:52 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:52 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:52 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087930373 HTTP/1.1" 200 OK
+Sep 22 14:38:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087930373 HTTP/1.1" 200 OK
+Sep 22 14:38:53 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087930872 HTTP/1.1" 200 OK
+Sep 22 14:38:53 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087931372 HTTP/1.1" 200 OK
+Sep 22 14:38:54 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:54 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:54 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:54 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087931873 HTTP/1.1" 200 OK
+Sep 22 14:38:54 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087932372 HTTP/1.1" 200 OK
+Sep 22 14:38:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087932877 HTTP/1.1" 200 OK
+Sep 22 14:38:55 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:55 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:55 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087933377 HTTP/1.1" 200 OK
+Sep 22 14:38:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:57471 - "GET /api/prices?_=1790087933378 HTTP/1.1" 200 OK
+Sep 22 14:38:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087933378 HTTP/1.1" 200 OK
+Sep 22 14:38:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087933870 HTTP/1.1" 200 OK
+Sep 22 14:38:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087933378 HTTP/1.1" 200 OK
+Sep 22 14:38:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087934372 HTTP/1.1" 200 OK
+Sep 22 14:38:57 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:57 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:57 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:57 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087934879 HTTP/1.1" 200 OK
+Sep 22 14:38:57 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087935382 HTTP/1.1" 200 OK
+Sep 22 14:38:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087935876 HTTP/1.1" 200 OK
+Sep 22 14:38:58 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:38:58 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:58 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:38:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/status?_=1790087936376 HTTP/1.1" 200 OK
+Sep 22 14:38:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087936376 HTTP/1.1" 200 OK
+Sep 22 14:38:59 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087936875 HTTP/1.1" 200 OK
+Sep 22 14:38:59 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087937377 HTTP/1.1" 200 OK
+Sep 22 14:39:00 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:39:00 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:00 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087937874 HTTP/1.1" 200 OK
+Sep 22 14:39:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:64221 - "GET /api/prices?_=1790087938372 HTTP/1.1" 200 OK
+Sep 22 14:39:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087938372 HTTP/1.1" 200 OK
+Sep 22 14:39:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087938372 HTTP/1.1" 200 OK
+Sep 22 14:39:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087938875 HTTP/1.1" 200 OK
+Sep 22 14:39:01 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:39:01 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:01 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/status?_=1790087939375 HTTP/1.1" 200 OK
+Sep 22 14:39:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087939375 HTTP/1.1" 200 OK
+Sep 22 14:39:02 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087939874 HTTP/1.1" 200 OK
+Sep 22 14:39:02 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087940369 HTTP/1.1" 200 OK
+Sep 22 14:39:03 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087940873 HTTP/1.1" 200 OK
+Sep 22 14:39:03 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:03 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:03 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:03 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087941507 HTTP/1.1" 200 OK
+Sep 22 14:39:04 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087942507 HTTP/1.1" 200 OK
+Sep 22 14:39:04 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087942507 HTTP/1.1" 200 OK
+Sep 22 14:39:04 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087880000.0)
+Sep 22 14:39:04 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:04 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:05 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087943502 HTTP/1.1" 200 OK
+Sep 22 14:39:06 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087943503 HTTP/1.1" 200 OK
+Sep 22 14:39:06 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087943503 HTTP/1.1" 200 OK
+Sep 22 14:39:06 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:06 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:06 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:06 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087944505 HTTP/1.1" 200 OK
+Sep 22 14:39:07 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087945505 HTTP/1.1" 200 OK
+Sep 22 14:39:07 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/status?_=1790087945505 HTTP/1.1" 200 OK
+Sep 22 14:39:08 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:08 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:08 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:08 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087946495 HTTP/1.1" 200 OK
+Sep 22 14:39:09 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:09 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:09 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:09 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087947510 HTTP/1.1" 200 OK
+Sep 22 14:39:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:58055 - "GET /api/prices?_=1790087948495 HTTP/1.1" 200 OK
+Sep 22 14:39:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/status?_=1790087948496 HTTP/1.1" 200 OK
+Sep 22 14:39:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087948496 HTTP/1.1" 200 OK
+Sep 22 14:39:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087948496 HTTP/1.1" 200 OK
+Sep 22 14:39:11 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:11 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:11 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:11 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087949510 HTTP/1.1" 200 OK
+Sep 22 14:39:12 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087950499 HTTP/1.1" 200 OK
+Sep 22 14:39:12 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:12 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:12 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:13 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087951500 HTTP/1.1" 200 OK
+Sep 22 14:39:13 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/status?_=1790087951500 HTTP/1.1" 200 OK
+Sep 22 14:39:14 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:14 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:14 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:14 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087952504 HTTP/1.1" 200 OK
+Sep 22 14:39:15 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087953497 HTTP/1.1" 200 OK
+Sep 22 14:39:15 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:15 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:15 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087953497 HTTP/1.1" 200 OK
+Sep 22 14:39:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087953497 HTTP/1.1" 200 OK
+Sep 22 14:39:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087954509 HTTP/1.1" 200 OK
+Sep 22 14:39:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/status?_=1790087954509 HTTP/1.1" 200 OK
+Sep 22 14:39:17 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:17 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:17 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:17 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087955498 HTTP/1.1" 200 OK
+Sep 22 14:39:18 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087956504 HTTP/1.1" 200 OK
+Sep 22 14:39:18 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:18 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:18 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:19 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087957496 HTTP/1.1" 200 OK
+Sep 22 14:39:19 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087957497 HTTP/1.1" 200 OK
+Sep 22 14:39:20 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:20 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:20 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:20 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087958499 HTTP/1.1" 200 OK
+Sep 22 14:39:20 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087958500 HTTP/1.1" 200 OK
+Sep 22 14:39:20 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087958500 HTTP/1.1" 200 OK
+Sep 22 14:39:21 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:21 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:21 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:21 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087959508 HTTP/1.1" 200 OK
+Sep 22 14:39:22 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087960500 HTTP/1.1" 200 OK
+Sep 22 14:39:22 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/status?_=1790087960500 HTTP/1.1" 200 OK
+Sep 22 14:39:23 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:23 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:23 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:23 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087961495 HTTP/1.1" 200 OK
+Sep 22 14:39:24 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:24 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:24 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:24 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087962496 HTTP/1.1" 200 OK
+Sep 22 14:39:25 htlocalserver bash[3017619]: INFO:     100.70.198.75:57795 - "GET /api/prices?_=1790087963494 HTTP/1.1" 200 OK
+Sep 22 14:39:25 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/status?_=1790087963495 HTTP/1.1" 200 OK
+Sep 22 14:39:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087963495 HTTP/1.1" 200 OK
+Sep 22 14:39:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087963495 HTTP/1.1" 200 OK
+Sep 22 14:39:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087964261 HTTP/1.1" 200 OK
+Sep 22 14:39:26 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:26 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:26 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087964367 HTTP/1.1" 200 OK
+Sep 22 14:39:27 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087964875 HTTP/1.1" 200 OK
+Sep 22 14:39:27 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087965369 HTTP/1.1" 200 OK
+Sep 22 14:39:28 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:28 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:28 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:28 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087965874 HTTP/1.1" 200 OK
+Sep 22 14:39:28 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087966374 HTTP/1.1" 200 OK
+Sep 22 14:39:28 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087966374 HTTP/1.1" 200 OK
+Sep 22 14:39:29 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087966873 HTTP/1.1" 200 OK
+Sep 22 14:39:29 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:29 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:29 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:29 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087967369 HTTP/1.1" 200 OK
+Sep 22 14:39:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087967873 HTTP/1.1" 200 OK
+Sep 22 14:39:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087968367 HTTP/1.1" 200 OK
+Sep 22 14:39:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087968367 HTTP/1.1" 200 OK
+Sep 22 14:39:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087968368 HTTP/1.1" 200 OK
+Sep 22 14:39:31 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:31 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:31 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:31 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087968879 HTTP/1.1" 200 OK
+Sep 22 14:39:31 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/status?_=1790087969374 HTTP/1.1" 200 OK
+Sep 22 14:39:31 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087969375 HTTP/1.1" 200 OK
+Sep 22 14:39:32 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087969872 HTTP/1.1" 200 OK
+Sep 22 14:39:32 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:32 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:32 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:32 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087970376 HTTP/1.1" 200 OK
+Sep 22 14:39:33 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087970876 HTTP/1.1" 200 OK
+Sep 22 14:39:33 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087971369 HTTP/1.1" 200 OK
+Sep 22 14:39:34 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:34 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:34 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:34 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087971872 HTTP/1.1" 200 OK
+Sep 22 14:39:34 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/status?_=1790087972370 HTTP/1.1" 200 OK
+Sep 22 14:39:34 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087972370 HTTP/1.1" 200 OK
+Sep 22 14:39:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087972872 HTTP/1.1" 200 OK
+Sep 22 14:39:35 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:35 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:35 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087973374 HTTP/1.1" 200 OK
+Sep 22 14:39:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087973374 HTTP/1.1" 200 OK
+Sep 22 14:39:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087973871 HTTP/1.1" 200 OK
+Sep 22 14:39:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087973374 HTTP/1.1" 200 OK
+Sep 22 14:39:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087974377 HTTP/1.1" 200 OK
+Sep 22 14:39:36 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:36 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:36 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087974876 HTTP/1.1" 200 OK
+Sep 22 14:39:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087975371 HTTP/1.1" 200 OK
+Sep 22 14:39:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087975371 HTTP/1.1" 200 OK
+Sep 22 14:39:38 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087975874 HTTP/1.1" 200 OK
+Sep 22 14:39:38 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:38 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:38 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:38 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087976376 HTTP/1.1" 200 OK
+Sep 22 14:39:39 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087976871 HTTP/1.1" 200 OK
+Sep 22 14:39:39 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087977370 HTTP/1.1" 200 OK
+Sep 22 14:39:39 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:39 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:39 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/prices?_=1790087977870 HTTP/1.1" 200 OK
+Sep 22 14:39:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:65011 - "GET /api/status?_=1790087978370 HTTP/1.1" 200 OK
+Sep 22 14:39:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:49648 - "GET /api/prices?_=1790087978370 HTTP/1.1" 200 OK
+Sep 22 14:39:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087978370 HTTP/1.1" 200 OK
+Sep 22 14:39:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087978370 HTTP/1.1" 200 OK
+Sep 22 14:39:41 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087978877 HTTP/1.1" 200 OK
+Sep 22 14:39:41 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:41 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:41 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:41 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087979369 HTTP/1.1" 200 OK
+Sep 22 14:39:42 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087979873 HTTP/1.1" 200 OK
+Sep 22 14:39:42 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087980511 HTTP/1.1" 200 OK
+Sep 22 14:39:42 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:42 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:42 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087981502 HTTP/1.1" 200 OK
+Sep 22 14:39:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/status?_=1790087981502 HTTP/1.1" 200 OK
+Sep 22 14:39:44 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:44 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:44 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:44 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087982494 HTTP/1.1" 200 OK
+Sep 22 14:39:45 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:45 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:45 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087983508 HTTP/1.1" 200 OK
+Sep 22 14:39:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087983509 HTTP/1.1" 200 OK
+Sep 22 14:39:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087983509 HTTP/1.1" 200 OK
+Sep 22 14:39:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790087984502 HTTP/1.1" 200 OK
+Sep 22 14:39:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790087984502 HTTP/1.1" 200 OK
+Sep 22 14:39:47 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:47 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:47 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:47 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087985496 HTTP/1.1" 200 OK
+Sep 22 14:39:48 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:48 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:48 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:48 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087986499 HTTP/1.1" 200 OK
+Sep 22 14:39:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087987494 HTTP/1.1" 200 OK
+Sep 22 14:39:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/status?_=1790087987494 HTTP/1.1" 200 OK
+Sep 22 14:39:50 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:50 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:50 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790087988496 HTTP/1.1" 200 OK
+Sep 22 14:39:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087988497 HTTP/1.1" 200 OK
+Sep 22 14:39:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087988497 HTTP/1.1" 200 OK
+Sep 22 14:39:51 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:51 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:51 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:51 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087989505 HTTP/1.1" 200 OK
+Sep 22 14:39:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087990500 HTTP/1.1" 200 OK
+Sep 22 14:39:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/status?_=1790087990500 HTTP/1.1" 200 OK
+Sep 22 14:39:53 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:53 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:53 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:53 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087991507 HTTP/1.1" 200 OK
+Sep 22 14:39:54 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:54 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:54 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:54 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087992511 HTTP/1.1" 200 OK
+Sep 22 14:39:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:63164 - "GET /api/prices?_=1790087993503 HTTP/1.1" 200 OK
+Sep 22 14:39:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790087993503 HTTP/1.1" 200 OK
+Sep 22 14:39:56 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:56 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:56 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087993503 HTTP/1.1" 200 OK
+Sep 22 14:39:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087993503 HTTP/1.1" 200 OK
+Sep 22 14:39:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790087994507 HTTP/1.1" 200 OK
+Sep 22 14:39:57 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790087995505 HTTP/1.1" 200 OK
+Sep 22 14:39:57 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:57 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:57 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790087996500 HTTP/1.1" 200 OK
+Sep 22 14:39:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/status?_=1790087996500 HTTP/1.1" 200 OK
+Sep 22 14:39:59 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:39:59 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:59 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:39:59 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790087997508 HTTP/1.1" 200 OK
+Sep 22 14:40:00 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:40:00 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:00 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790087998500 HTTP/1.1" 200 OK
+Sep 22 14:40:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087998500 HTTP/1.1" 200 OK
+Sep 22 14:40:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790087998500 HTTP/1.1" 200 OK
+Sep 22 14:40:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790087999495 HTTP/1.1" 200 OK
+Sep 22 14:40:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/status?_=1790087999496 HTTP/1.1" 200 OK
+Sep 22 14:40:02 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790087940000.0)
+Sep 22 14:40:02 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:02 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:02 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790088000495 HTTP/1.1" 200 OK
+Sep 22 14:40:03 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:03 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:03 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:03 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790088001497 HTTP/1.1" 200 OK
+Sep 22 14:40:04 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790088002496 HTTP/1.1" 200 OK
+Sep 22 14:40:04 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088002498 HTTP/1.1" 200 OK
+Sep 22 14:40:05 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:05 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:05 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:05 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088003497 HTTP/1.1" 200 OK
+Sep 22 14:40:06 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088003498 HTTP/1.1" 200 OK
+Sep 22 14:40:06 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088003498 HTTP/1.1" 200 OK
+Sep 22 14:40:06 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088004496 HTTP/1.1" 200 OK
+Sep 22 14:40:06 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:06 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:06 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:07 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088005497 HTTP/1.1" 200 OK
+Sep 22 14:40:07 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/status?_=1790088005498 HTTP/1.1" 200 OK
+Sep 22 14:40:08 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:08 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:08 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:08 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790088006505 HTTP/1.1" 200 OK
+Sep 22 14:40:09 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790088007495 HTTP/1.1" 200 OK
+Sep 22 14:40:09 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:09 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:09 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:54914 - "GET /api/prices?_=1790088008499 HTTP/1.1" 200 OK
+Sep 22 14:40:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/status?_=1790088008499 HTTP/1.1" 200 OK
+Sep 22 14:40:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088008499 HTTP/1.1" 200 OK
+Sep 22 14:40:10 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088008499 HTTP/1.1" 200 OK
+Sep 22 14:40:11 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:11 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:11 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:11 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088009508 HTTP/1.1" 200 OK
+Sep 22 14:40:12 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:12 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:12 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:12 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088010509 HTTP/1.1" 200 OK
+Sep 22 14:40:13 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088011498 HTTP/1.1" 200 OK
+Sep 22 14:40:13 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088011499 HTTP/1.1" 200 OK
+Sep 22 14:40:14 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:14 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:14 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:14 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088012510 HTTP/1.1" 200 OK
+Sep 22 14:40:15 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:15 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:15 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:15 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088013500 HTTP/1.1" 200 OK
+Sep 22 14:40:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088013501 HTTP/1.1" 200 OK
+Sep 22 14:40:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088013501 HTTP/1.1" 200 OK
+Sep 22 14:40:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088014513 HTTP/1.1" 200 OK
+Sep 22 14:40:16 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/status?_=1790088014513 HTTP/1.1" 200 OK
+Sep 22 14:40:17 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:17 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:17 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:17 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088015495 HTTP/1.1" 200 OK
+Sep 22 14:40:18 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:18 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:18 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:18 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088016504 HTTP/1.1" 200 OK
+Sep 22 14:40:19 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088017502 HTTP/1.1" 200 OK
+Sep 22 14:40:19 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/status?_=1790088017502 HTTP/1.1" 200 OK
+Sep 22 14:40:20 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:20 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:20 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:20 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088018496 HTTP/1.1" 200 OK
+Sep 22 14:40:20 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088018497 HTTP/1.1" 200 OK
+Sep 22 14:40:20 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088018499 HTTP/1.1" 200 OK
+Sep 22 14:40:21 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:21 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:21 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:21 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088019506 HTTP/1.1" 200 OK
+Sep 22 14:40:22 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088020495 HTTP/1.1" 200 OK
+Sep 22 14:40:22 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/status?_=1790088020495 HTTP/1.1" 200 OK
+Sep 22 14:40:23 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:23 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:23 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:23 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088021502 HTTP/1.1" 200 OK
+Sep 22 14:40:24 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:24 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:24 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:24 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088022500 HTTP/1.1" 200 OK
+Sep 22 14:40:25 htlocalserver bash[3017619]: INFO:     100.70.198.75:55232 - "GET /api/prices?_=1790088023505 HTTP/1.1" 200 OK
+Sep 22 14:40:25 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088023505 HTTP/1.1" 200 OK
+Sep 22 14:40:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088023505 HTTP/1.1" 200 OK
+Sep 22 14:40:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088023506 HTTP/1.1" 200 OK
+Sep 22 14:40:26 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:26 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:26 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:26 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088024498 HTTP/1.1" 200 OK
+Sep 22 14:40:27 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088025500 HTTP/1.1" 200 OK
+Sep 22 14:40:27 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:27 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:27 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:28 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088026510 HTTP/1.1" 200 OK
+Sep 22 14:40:28 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/status?_=1790088026510 HTTP/1.1" 200 OK
+Sep 22 14:40:29 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:29 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:29 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:29 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088027499 HTTP/1.1" 200 OK
+Sep 22 14:40:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088028512 HTTP/1.1" 200 OK
+Sep 22 14:40:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088028512 HTTP/1.1" 200 OK
+Sep 22 14:40:30 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088028513 HTTP/1.1" 200 OK
+Sep 22 14:40:30 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:30 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:30 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:31 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088029511 HTTP/1.1" 200 OK
+Sep 22 14:40:31 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/status?_=1790088029511 HTTP/1.1" 200 OK
+Sep 22 14:40:32 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:32 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:32 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:32 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088030494 HTTP/1.1" 200 OK
+Sep 22 14:40:33 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088031508 HTTP/1.1" 200 OK
+Sep 22 14:40:33 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:33 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:33 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:34 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088032495 HTTP/1.1" 200 OK
+Sep 22 14:40:34 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088032495 HTTP/1.1" 200 OK
+Sep 22 14:40:35 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:35 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:35 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:35 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088033495 HTTP/1.1" 200 OK
+Sep 22 14:40:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088033496 HTTP/1.1" 200 OK
+Sep 22 14:40:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088033496 HTTP/1.1" 200 OK
+Sep 22 14:40:36 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:36 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:36 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:36 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088034505 HTTP/1.1" 200 OK
+Sep 22 14:40:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088035423 HTTP/1.1" 200 OK
+Sep 22 14:40:37 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/status?_=1790088035443 HTTP/1.1" 200 OK
+Sep 22 14:40:38 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088035873 HTTP/1.1" 200 OK
+Sep 22 14:40:38 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:38 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:38 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:38 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088036369 HTTP/1.1" 200 OK
+Sep 22 14:40:39 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088036874 HTTP/1.1" 200 OK
+Sep 22 14:40:39 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088037368 HTTP/1.1" 200 OK
+Sep 22 14:40:39 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:39 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:39 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088037871 HTTP/1.1" 200 OK
+Sep 22 14:40:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/status?_=1790088038373 HTTP/1.1" 200 OK
+Sep 22 14:40:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:52187 - "GET /api/prices?_=1790088038373 HTTP/1.1" 200 OK
+Sep 22 14:40:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088038373 HTTP/1.1" 200 OK
+Sep 22 14:40:40 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088038373 HTTP/1.1" 200 OK
+Sep 22 14:40:41 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:41 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:41 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:41 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088038874 HTTP/1.1" 200 OK
+Sep 22 14:40:41 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088039377 HTTP/1.1" 200 OK
+Sep 22 14:40:42 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088039874 HTTP/1.1" 200 OK
+Sep 22 14:40:42 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:42 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:42 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:42 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088040373 HTTP/1.1" 200 OK
+Sep 22 14:40:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088040869 HTTP/1.1" 200 OK
+Sep 22 14:40:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/status?_=1790088041372 HTTP/1.1" 200 OK
+Sep 22 14:40:43 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088041372 HTTP/1.1" 200 OK
+Sep 22 14:40:44 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:44 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:44 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:44 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088041873 HTTP/1.1" 200 OK
+Sep 22 14:40:44 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088042376 HTTP/1.1" 200 OK
+Sep 22 14:40:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088042879 HTTP/1.1" 200 OK
+Sep 22 14:40:45 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:45 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:45 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088043376 HTTP/1.1" 200 OK
+Sep 22 14:40:45 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088043377 HTTP/1.1" 200 OK
+Sep 22 14:40:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088043873 HTTP/1.1" 200 OK
+Sep 22 14:40:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088043377 HTTP/1.1" 200 OK
+Sep 22 14:40:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/status?_=1790088044372 HTTP/1.1" 200 OK
+Sep 22 14:40:46 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088044372 HTTP/1.1" 200 OK
+Sep 22 14:40:47 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:47 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:47 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:47 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088044874 HTTP/1.1" 200 OK
+Sep 22 14:40:47 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088045378 HTTP/1.1" 200 OK
+Sep 22 14:40:48 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088045868 HTTP/1.1" 200 OK
+Sep 22 14:40:48 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:48 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:48 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:48 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088046371 HTTP/1.1" 200 OK
+Sep 22 14:40:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088046874 HTTP/1.1" 200 OK
+Sep 22 14:40:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/status?_=1790088047377 HTTP/1.1" 200 OK
+Sep 22 14:40:49 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088047377 HTTP/1.1" 200 OK
+Sep 22 14:40:50 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:50 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:50 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088047872 HTTP/1.1" 200 OK
+Sep 22 14:40:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088048374 HTTP/1.1" 200 OK
+Sep 22 14:40:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088048375 HTTP/1.1" 200 OK
+Sep 22 14:40:50 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088048375 HTTP/1.1" 200 OK
+Sep 22 14:40:51 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088048874 HTTP/1.1" 200 OK
+Sep 22 14:40:51 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:51 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:51 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:51 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088049373 HTTP/1.1" 200 OK
+Sep 22 14:40:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088049889 HTTP/1.1" 200 OK
+Sep 22 14:40:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088050374 HTTP/1.1" 200 OK
+Sep 22 14:40:52 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088050374 HTTP/1.1" 200 OK
+Sep 22 14:40:53 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:53 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:53 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:53 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088050875 HTTP/1.1" 200 OK
+Sep 22 14:40:53 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088051383 HTTP/1.1" 200 OK
+Sep 22 14:40:54 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088051873 HTTP/1.1" 200 OK
+Sep 22 14:40:54 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:54 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:54 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:54 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088052373 HTTP/1.1" 200 OK
+Sep 22 14:40:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088052877 HTTP/1.1" 200 OK
+Sep 22 14:40:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088053371 HTTP/1.1" 200 OK
+Sep 22 14:40:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:54100 - "GET /api/prices?_=1790088053371 HTTP/1.1" 200 OK
+Sep 22 14:40:55 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088053372 HTTP/1.1" 200 OK
+Sep 22 14:40:56 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:56 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:56 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088053875 HTTP/1.1" 200 OK
+Sep 22 14:40:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:51648 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088053372 HTTP/1.1" 200 OK
+Sep 22 14:40:56 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088054368 HTTP/1.1" 200 OK
+Sep 22 14:40:57 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088054876 HTTP/1.1" 200 OK
+Sep 22 14:40:57 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088055378 HTTP/1.1" 200 OK
+Sep 22 14:40:57 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:57 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:57 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088055872 HTTP/1.1" 200 OK
+Sep 22 14:40:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/status?_=1790088056369 HTTP/1.1" 200 OK
+Sep 22 14:40:58 htlocalserver bash[3017619]: INFO:     100.70.198.75:51648 - "GET /api/prices?_=1790088056369 HTTP/1.1" 200 OK
+Sep 22 14:40:59 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:40:59 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:59 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:40:59 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088056877 HTTP/1.1" 200 OK
+Sep 22 14:40:59 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088057370 HTTP/1.1" 200 OK
+Sep 22 14:41:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088057877 HTTP/1.1" 200 OK
+Sep 22 14:41:00 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:41:00 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:00 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:56185 - "GET /api/prices?_=1790088058374 HTTP/1.1" 200 OK
+Sep 22 14:41:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:51648 - "GET /api/klines?symbol=1000PEPE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088058374 HTTP/1.1" 200 OK
+Sep 22 14:41:00 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/klines?symbol=%E9%BE%99%E8%99%BE%2FUSDT&timeframe=1m&limit=200&include_live=true&_=1790088058374 HTTP/1.1" 200 OK
+Sep 22 14:41:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088058877 HTTP/1.1" 200 OK
+Sep 22 14:41:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/status?_=1790088059369 HTTP/1.1" 200 OK
+Sep 22 14:41:01 htlocalserver bash[3017619]: INFO:     100.70.198.75:51648 - "GET /api/prices?_=1790088059369 HTTP/1.1" 200 OK
+Sep 22 14:41:02 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088059874 HTTP/1.1" 200 OK
+Sep 22 14:41:02 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:41:02 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:02 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:02 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088060374 HTTP/1.1" 200 OK
+Sep 22 14:41:03 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088060000.0)
+Sep 22 14:41:03 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:03 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:03 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088061494 HTTP/1.1" 200 OK
+Sep 22 14:41:04 htlocalserver bash[3017619]: INFO:     100.70.198.75:65200 - "GET /api/prices?_=1790088062498 HTTP/1.1" 200 OK
+Sep 22 14:41:04 htlocalserver bash[3017619]: INFO:     100.70.198.75:51648 - "GET /api/status?_=1790088062498 HTTP/1.1" 200 OK
+Sep 22 14:41:05 htlocalserver bash[3017619]: [UnifiedEntry] Evaluating 1000PEPE/USDT at 0.0049 (Bar ID: 1790088000000.0)
+Sep 22 14:41:05 htlocalserver bash[3017619]: [1000PEPE/USDT] LONG Rejected: WAIT_NO_SIGNAL
+Sep 22 14:41:05 htlocalserver bash[3017619]: [1000PEPE/USDT] SHORT Rejected: WAIT_NO_SIGNAL
