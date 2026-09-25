@@ -181,6 +181,18 @@ def protection(position, price, fee, slippage, frame=None):
                 triggered = True
                 exit_reason = f'EXIT_TRUE_MA3_VALLEY: 空單真谷底確認！MA3 從最低點 {state["ma3_valley"]:.5f} 彈升 0.10 ATR'
 
+    # --- 5. MA3 穿越 MA15 停損 (防禦性出場) ---
+    if not triggered and frame is not None and len(frame) >= 1:
+        if 'ma3' in frame.columns and 'ma15' in frame.columns:
+            curr_ma3_val = float(frame['ma3'].iloc[-1])
+            curr_ma15_val = float(frame['ma15'].iloc[-1])
+            if side == 'LONG' and curr_ma3_val < curr_ma15_val:
+                triggered = True
+                exit_reason = f'EXIT_MA3_CROSS_MA15: 多單防禦性出場！MA3 ({curr_ma3_val:.5f}) 跌破 MA15 ({curr_ma15_val:.5f})'
+            elif side == 'SHORT' and curr_ma3_val > curr_ma15_val:
+                triggered = True
+                exit_reason = f'EXIT_MA3_CROSS_MA15: 空單防禦性出場！MA3 ({curr_ma3_val:.5f}) 突破 MA15 ({curr_ma15_val:.5f})'
+
     state['pending'] = bool(state.get('pending')) or triggered
     
     if not state.get('pending'):
