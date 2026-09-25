@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 from core.services.strategies.outer_strategy import aligned_entry, ck_direction
 
 def significant_ma3_turn(position, frame, price):
+    """只有 MA3 穿越 MA15 時才觸發平倉（多單：MA3 跌破 MA15；空單：MA3 突破 MA15）。"""
     key = 'channel_significant_ma3_turn'
     try:
         side = position['side']
@@ -11,52 +12,49 @@ def significant_ma3_turn(position, frame, price):
         entry = float(position['entry_price'])
         identity = [side, opened, entry]
         state = position.get(key)
-        if state and (state.get('identity') != identity or state.get('version') not in (2, 3)):
+        if state and state.get('identity') != identity:
             position.pop(key, None)
             state = None
         if (position.get('channel_profit_protection') or {}).get('armed'):
             position.pop(key, None)
             return False
-        if state and state.get('version') == 2:
-            state.update(version=3, pending=False)
         if state and state.get('pending'):
             return True
         price = float(price)
         closes = [float(v) for v in frame['close'].iloc[-4:-1]]
-        atr = float(frame.iloc[-2]['atr'])
         bar = float(frame.iloc[-1]['timestamp']) / 1000.
         if (side not in ('LONG', 'SHORT') or len(closes) != 3
-                or not all(math.isfinite(v) and v > 0 for v in [opened, entry, price, atr, bar, *closes])
+                or not all(math.isfinite(v) and v > 0 for v in [opened, entry, price, bar, *closes])
                 or opened >= bar + 60):
             position.pop(key, None)
             return False
-        closed_ma = sum(closes) / 3.
-        ma = (sum(closes[-2:]) + price) / 3.
+
+        # 計算即時 MA3（用最後兩根已收線 + 最新報價）
+        ma3_live = (sum(closes[-2:]) + price) / 3.
+
+        # 計算 MA15（取最近 15 根已收線 close 的均值）
+        if len(frame) < 16:
+            return False
+        ma15_closes = [float(v) for v in frame['close'].iloc[-16:-1]]
+        if len(ma15_closes) != 15 or not all(math.isfinite(v) and v > 0 for v in ma15_closes):
+            return False
+        ma15_live = sum(ma15_closes) / 15.
+
         if not state:
-            position[key] = dict(identity=identity, version=3, extreme=ma,
-                                 favorable=False, last_bar=bar, pending=False)
+            position[key] = dict(identity=identity, pending=False)
             return False
-        if bar < state['last_bar']:
-            return False
-        state['last_bar'] = bar
-        sign = 1 if side == 'LONG' else -1
-        advance = sign * (ma - state['extreme'])
-        if advance > 0:
-            state['extreme'] = ma
-            state['favorable'] = state['favorable'] or sign * (ma - closed_ma) > 0
-            
-        if state['favorable']:
-            ma3_current = ma
-            symbol = position.get('symbol', 'UNKNOWN')
-            
-            # 計算 MA3 從峰谷的真實反向幅度
-            reversal_dist = -sign * (ma3_current - state['extreme'])
-            
-            # 判斷是否大於 0.30 ATR (真峰谷，不輕易平倉)
-            if reversal_dist >= 0.30 * atr:
-                state['pending'] = True
-                print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (MA3 reversed by {reversal_dist:.6f} >= 0.30 ATR)", flush=True)
-                return True
+
+        symbol = position.get('symbol', 'UNKNOWN')
+        # 多單：MA3 跌破 MA15 → 平倉
+        if side == 'LONG' and ma3_live < ma15_live:
+            state['pending'] = True
+            print(f"[{symbol}] EXIT_REASON: MA3_CROSSED_BELOW_MA15 (MA3={ma3_live:.6f} < MA15={ma15_live:.6f})", flush=True)
+            return True
+        # 空單：MA3 突破 MA15 → 平倉
+        if side == 'SHORT' and ma3_live > ma15_live:
+            state['pending'] = True
+            print(f"[{symbol}] EXIT_REASON: MA3_CROSSED_ABOVE_MA15 (MA3={ma3_live:.6f} > MA15={ma15_live:.6f})", flush=True)
+            return True
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         position.pop(key, None)
     return False

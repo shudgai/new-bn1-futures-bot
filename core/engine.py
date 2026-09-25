@@ -1082,7 +1082,7 @@ class TradingEngine:
                     )
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
-        """Use an observed live turn, retaining the shared structured order gates."""
+        """峰谷轉向開倉：逐報價觀察到谷底（LONG）或峰頂（SHORT）後立即進場，不等兩根收線。"""
         from core.services.strategies.outer_strategy import ck_direction
         side = ck_direction(frame)
         if side not in ('LONG', 'SHORT'):
@@ -1100,12 +1100,16 @@ class TradingEngine:
         if SYMBOL_ROTATION_ENABLED and (getattr(rotation, 'last_rotation_at', 0) <= 0
                 or getattr(self, '_entry_waiting_for_post_close_rotation', False)):
             return False
+        # 反向異常保護：若即時報價方向與 side 相反異常，跳過
+        from core.guards.abnormal_guard import channel_adverse_exit_reason
+        if frame is not None and len(frame) >= 2 and 'atr' in frame.columns:
+            atr_v = float(frame.iloc[-2]['atr'])
+            if channel_adverse_exit_reason(frame, side, price, atr_v):
+                return False
         self._release_resolved_abnormal_exit(symbol, frame, price)
         if symbol in getattr(self.account, 'channel_profit_reentries', {}):
             await self._try_profit_reentry(symbol, frame, price, daily_halt)
             return symbol in self.account.positions
-        if not pivot_ready:
-            return await self._execute_confirmed_channel_break(symbol, frame, price, side, daily_halt)
         signal = dict(side=side, score=100, entry_mode='CHANNEL_SWING',
                       action='ENTER_MARKET', live_pivot=True,
                       reason='Channel Swing KC_LIVE_PIVOT_' + side,
