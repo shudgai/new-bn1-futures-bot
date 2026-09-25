@@ -59,6 +59,9 @@ def trend_style(frame, side, opened_at=None):
 
 def protection(position, price, fee, slippage, frame=None):
     """Real-time Peak Exit & Trailing Lock"""
+    from core.services.exits.staged_risk_service import staged_enabled
+    if staged_enabled(position):
+        return None
     entry = float(position.get('entry_price') or 0)
     qty = float(position.get('qty') or 0)
     margin = float(position.get('margin') or 0)
@@ -108,102 +111,82 @@ def protection(position, price, fee, slippage, frame=None):
             triggered = True
             exit_reason = 'EMERGENCY_TREND_BREAK: 空單即時現價站上基準中軌，趨勢破位即刻止損！'
 
-    # 2. 絕對保本防線：早鳥微利防守 (Break-Even Guard)
-    fee_buffer = 0.5
-    if not triggered and peak_net >= 2.5:
-        if net <= fee_buffer:
-            triggered = True
-            exit_reason = 'EXIT_BREAK_EVEN: 微利回吐保本觸發，市價全平'
-
-    # 3. 峰谷轉折即時搶跑：峰值回撤截流 (Peak Drawdown Exit)
-    if not triggered and peak_net >= 3.0:
-        profit_drawdown_ratio = (peak_net - net) / peak_net
-        if profit_drawdown_ratio >= 0.25:
-            triggered = True
-            exit_reason = f'EXIT_PEAK_DRAWDOWN: 峰值回撤達 {profit_drawdown_ratio*100:.1f}%，搶先鎖利全平'
-
-    # 4. 短均線實時破位與 KC 保護 (MA3 & KC Protection)
-    if not triggered and peak_net >= 2.5 and frame is not None and len(frame) > 1:
-        live_candle = frame.iloc[-1]
-        live_close = float(live_candle['close'])
-        ma_3 = float(live_candle.get('ma3', live_candle.get('ema_3', live_close)))
-        kc_upper = float(live_candle.get('kc_upper', 0))
-        kc_lower = float(live_candle.get('kc_lower', 0))
-        atr = float(live_candle.get('atr', 0))
-        ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', live_close)))
+    # --- 1. 取得基準 ATR (優先取 entry_atr，否則兜底) ---
+    atr = float(position.get('entry_atr') or (frame.iloc[-1].get('atr', 0) if frame is not None and len(frame) > 0 else 0))
+    if atr <= 0:
+        return None  # 防止無效 ATR 導致誤觸發
         
-        # 取得上一根「已收線」的 K 棒狀態，用來判斷「收盤確認」
-        closed_candle = frame.iloc[-2]
-        closed_close = float(closed_candle['close'])
-        closed_kc_upper = float(closed_candle.get('kc_upper', 0))
-        closed_kc_lower = float(closed_candle.get('kc_lower', 0))
-        closed_ma_3 = float(closed_candle.get('ma3', closed_candle.get('ema_3', closed_close)))
-        
-        bias_atr = abs(price - ema_base) / atr if atr > 0 else 0
-        
-        # 1. 【核心保護層】：KC 軌外保護期
-        is_in_kc_breakout_zone = False
-        if side == 'LONG' and price > kc_upper and bias_atr < 2.0:
-            is_in_kc_breakout_zone = True
-        elif side == 'SHORT' and price < kc_lower and bias_atr < 2.0:
-            is_in_kc_breakout_zone = True
-
-        if not is_in_kc_breakout_zone:
-            # 2. 【收割層】：極限乖離時 (Bias >= 2.0 ATR) 才允許 MA3 搶跑
-            if bias_atr >= 2.0:
-                if side == 'LONG' and price < ma_3:
-                    triggered = True
-                    exit_reason = 'EXIT_EXTREME_MA3: 乖離過熱且跌破 MA3，搶先全平'
-                elif side == 'SHORT' and price > ma_3:
-                    triggered = True
-                    exit_reason = 'EXIT_EXTREME_MA3: 負乖離過熱且站上 MA3，搶先全平'
-            else:
-                # 3. 【常規離場】：跌回 KC 軌道內且收盤跌破短均線 (禁止用即時現價秒平)
-                if side == 'LONG' and closed_close < closed_kc_upper and closed_close < closed_ma_3:
-                    triggered = True
-                    exit_reason = 'EXIT_FALL_BACK_KC: 跌回軌道內且收盤失守短均線，全平離場'
-                elif side == 'SHORT' and closed_close > closed_kc_lower and closed_close > closed_ma_3:
-                    triggered = True
-                    exit_reason = 'EXIT_FALL_BACK_KC: 漲回軌道內且收盤站上短均線，全平離場'
-
-    # 5. 動態資金階梯鎖利 (放大本金時的波段防線)
-    locked_net = float(state.get('locked_net', 0.0))
-    step_unit = max(2.0, margin * 0.015)
+    # --- 2. 固定雙軌止盈止損 (完全忽略均線與回吐) ---
+    tp_price = 0.0
+    sl_price = 0.0
     
-    if peak_net >= step_unit * 2:
-        locked_level = int(peak_net / step_unit) - 1
-        lock_profit_u = locked_level * step_unit
-        locked_net = max(locked_net, lock_profit_u)
-        state['locked_net'] = locked_net
-        
-        # 逆推鎖定淨利對應的價格 (用於 UI 顯示)
-        if side == 'LONG':
-            stop = (entry * (1 + fee) + locked_net / qty) / ((1 - slippage) * (1 - fee))
-        else:
-            stop = (entry * (1 - fee) - locked_net / qty) / ((1 + slippage) * (1 + fee))
-        stop_price = stop
-        
-        if not triggered and net <= locked_net:
+    if side == 'SHORT':
+        tp_price = entry - 2.0 * atr
+        sl_price = entry + 1.5 * atr
+        if price <= tp_price:
             triggered = True
-            exit_reason = f'EXIT_TIER_LOCK: 觸及動態階梯鎖利線 ({locked_net}U)，全平落袋'
+            exit_reason = f'EXIT_TAKE_PROFIT: 空單觸及 2.0 ATR 止盈 ({tp_price:.5f})'
+        elif price >= sl_price:
+            triggered = True
+            exit_reason = f'EXIT_STOP_LOSS: 空單觸及 1.5 ATR 止損 ({sl_price:.5f})'
+            
+    elif side == 'LONG':
+        tp_price = entry + 2.0 * atr
+        sl_price = entry - 1.5 * atr
+        if price >= tp_price:
+            triggered = True
+            exit_reason = f'EXIT_TAKE_PROFIT: 多單觸及 2.0 ATR 止盈 ({tp_price:.5f})'
+        elif price <= sl_price:
+            triggered = True
+            exit_reason = f'EXIT_STOP_LOSS: 多單觸及 1.5 ATR 止損 ({sl_price:.5f})'
+
+    # --- 3. 獲利回吐鎖利 (1U 啟動，20% 回吐) ---
+    locked_net_val = 0.0
+    if not triggered and peak_net >= 1.0:
+        locked_net_val = peak_net * 0.8  # 保留 80% 利潤 (回吐 20%)
+        if net <= locked_net_val:
+            triggered = True
+            exit_reason = f'EXIT_PROFIT_LOCK: 淨利從高點 {peak_net:.2f}U 回吐 20%，觸發鎖利出場 ({net:.2f}U)'
+            
+    # --- 4. MA3 峰谷平倉 (未啟動回吐保護時) ---
+    if not triggered and peak_net < 1.0 and frame is not None and len(frame) >= 2:
+        if 'ma3' not in frame.columns:
+            ma3_series = frame['close'].rolling(3).mean()
+        else:
+            ma3_series = frame['ma3']
+            
+        curr_ma3 = float(ma3_series.iloc[-1])
+        prev_ma3 = float(ma3_series.iloc[-2])
+        
+        if side == 'LONG':
+            state['ma3_peak'] = max(state.get('ma3_peak', curr_ma3), curr_ma3)
+            # 真峰谷確認：MA3 回落 0.10 ATR，且現價跌破近3根已收盤K的最低點 (結構破位)
+            structural_low = frame['low'].iloc[-4:-1].min() if len(frame) >= 4 else (entry - atr)
+            if state['ma3_peak'] > 0 and (state['ma3_peak'] - curr_ma3) >= 0.10 * atr and (prev_ma3 - curr_ma3) >= 0.10 * atr:
+                if price < structural_low:
+                    triggered = True
+                    exit_reason = f'EXIT_TRUE_MA3_PEAK: 多單真峰谷確認！MA3 衰退 0.10 ATR 且跌破結構前低 ({structural_low:.5f})'
+                
+        elif side == 'SHORT':
+            state['ma3_valley'] = min(state.get('ma3_valley', curr_ma3), curr_ma3)
+            # 真谷底確認：MA3 回升 0.10 ATR，且現價突破近3根已收盤K的最高點 (結構破位)
+            structural_high = frame['high'].iloc[-4:-1].max() if len(frame) >= 4 else (entry + atr)
+            if state['ma3_valley'] > 0 and (curr_ma3 - state['ma3_valley']) >= 0.10 * atr and (curr_ma3 - prev_ma3) >= 0.10 * atr:
+                if price > structural_high:
+                    triggered = True
+                    exit_reason = f'EXIT_TRUE_MA3_VALLEY: 空單真谷底確認！MA3 衰退 0.10 ATR 且突破結構前高 ({structural_high:.5f})'
 
     state['pending'] = bool(state.get('pending')) or triggered
     
-    if stop_price > 0:
-        state['stop_price'] = stop_price
-        state['net_floor_price'] = stop_price
-        position['profit_lock_display_sl'] = stop_price
-
-    if not state.get('pending') and locked_net <= 0 and peak_net < 2.5:
+    if not state.get('pending'):
         return None
 
-    # 將 exit_reason 寫入 position，方便後續 log
     if triggered and exit_reason:
         position['exit_reason_override'] = exit_reason
 
-    return {'triggered': state['pending'], 'stop_price': stop_price,
+    return {'triggered': state['pending'], 'stop_price': sl_price,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
-            'locked_net': locked_net, 'peak_net': peak_net, 'retracement_fraction': 0.0,
+            'locked_net': locked_net_val, 'peak_net': peak_net, 'retracement_fraction': 0.2 if peak_net >= 1.0 else 0.0,
             'reason': exit_reason}
 
 
@@ -316,6 +299,10 @@ class ProfitProtectionExitStrategy(IExitStrategy):
         price: float,
         **kwargs: Any
     ) -> Optional[str]:
+        from core.services.exits.staged_risk_service import staged_enabled
+        if staged_enabled(position):
+            return None  # The staged dispatcher is the sole strategy owner.
+
         # 1. 優先檢查異常 K 線與大瀑布
         from core.guards.abnormal_guard import channel_adverse_exit_reason
         if frame is not None and not frame.empty and 'atr' in frame.iloc[-2]:
