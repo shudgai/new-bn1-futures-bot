@@ -57,6 +57,20 @@ def trend_style(frame, side, opened_at=None):
         return 'UNKNOWN'
 
 
+def kc_mid_reversed(frame, side):
+    """Compare the last two closed midlines; the final row is the live bar."""
+    if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 3:
+        return False
+    key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
+    try:
+        previous, latest = (float(value) for value in frame[key].iloc[-3:-1])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    if not all(math.isfinite(value) and value > 0 for value in (previous, latest)):
+        return False
+    return latest < previous if side == 'LONG' else latest > previous
+
+
 def protection(position, price, fee, slippage, frame=None):
     """Real-time Peak Exit & Trailing Lock"""
     from core.services.exits.staged_risk_service import staged_enabled
@@ -88,6 +102,16 @@ def protection(position, price, fee, slippage, frame=None):
         state.clear()
         state.update(identity=identity, policy=policy, peak_net=net, locked_net=0.0, pending=False)
         
+    # Retire fixed-ATR exits only, preserving other pending exits and peaks.
+    old_reason = state.get('reason') or position.get('exit_reason_override', '')
+    if (str(old_reason).startswith('EXIT_TAKE_PROFIT:')
+            or (str(old_reason).startswith('EXIT_STOP_LOSS:') and '1.5 ATR' in str(old_reason))):
+        state['pending'] = False
+        state.pop('reason', None)
+        position.pop('exit_reason_override', None)
+    position.pop('atr_tp', None)
+    position.pop('atr_sl', None)
+
     # 1. 動態刷新歷史極值 (Peak Tracking)
     state['peak_net'] = max(float(state.get('peak_net', net)), net)
     state['peak_gross'] = max(float(state.get('peak_gross', gross)), gross)
@@ -103,52 +127,6 @@ def protection(position, price, fee, slippage, frame=None):
         triggered = True
         exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制 ({net:.2f}U <= {max_allowed_loss_u}U)，即刻市價全平止損！'
 
-    # --- 1. 取得基準 ATR (優先取 entry_atr，否則兜底) ---
-    atr = float(position.get('entry_atr') or (frame.iloc[-1].get('atr', 0) if frame is not None and len(frame) > 0 else 0))
-    with open("/tmp/debug_flow.log", "a") as f:
-        f.write(f"protection atr for {position.get('symbol')}: {atr}\\n")
-    if atr <= 0:
-        return None  # 防止無效 ATR 導致誤觸發
-
-    # ★ 提前計算鎖利門檻，避免中軌熔斷覆蓋已鎖住的利潤
-    _early_locked = 0.0
-    if peak_net >= 4.0:
-        _early_locked = math.floor(peak_net / 2.0) * 2.0 - 2.0
-    _profit_locked = _early_locked > 0.0  # True 表示已鎖住利潤
-
-    # 0b. 破中軌緊急熔斷：依使用者要求關閉，只用 2.0 ATR 止盈 / 1.5 ATR 止損
-    # 妖幣開倉後常見回踩中軌再繼續拉升，不能靠中軌熔斷提早平倉
-
-    # --- 2. 固定雙軌止盈止損 (完全忽略均線與回吐) ---
-    tp_price = 0.0
-    sl_price = 0.0
-    
-    if side == 'SHORT':
-        tp_price = entry - 2.0 * atr
-        sl_price = entry + 1.5 * atr
-        if price <= tp_price:
-            triggered = True
-            exit_reason = f'EXIT_TAKE_PROFIT: 空單觸及 2.0 ATR 止盈 ({tp_price:.5f})'
-        elif price >= sl_price:
-            triggered = True
-            exit_reason = f'EXIT_STOP_LOSS: 空單觸及 1.5 ATR 止損 ({sl_price:.5f})'
-            
-    elif side == 'LONG':
-        tp_price = entry + 2.0 * atr
-        sl_price = entry - 1.5 * atr
-        if price >= tp_price:
-            triggered = True
-            exit_reason = f'EXIT_TAKE_PROFIT: 多單觸及 2.0 ATR 止盈 ({tp_price:.5f})'
-        elif price <= sl_price:
-            triggered = True
-            exit_reason = f'EXIT_STOP_LOSS: 多單觸及 1.5 ATR 止損 ({sl_price:.5f})'
-
-    # ★ 關鍵修正 1：把 ATR 止盈止損線寫回 position，讓 API 能傳送到前端顯示
-    if tp_price > 0:
-        position['atr_tp'] = tp_price
-    if sl_price > 0:
-        position['atr_sl'] = sl_price
-
     # --- 3. 真正的階梯鎖利 (4U鎖2U、6U鎖4U、每2U一階) ---
     locked_net_val = 0.0
     if peak_net >= 4.0:
@@ -161,27 +139,27 @@ def protection(position, price, fee, slippage, frame=None):
         with open("data/locked_net_debug.log", "a") as dbgf:
             dbgf.write(f"[{position.get('symbol', 'UNK')}] price={price}, net={net:.4f}, peak_net={peak_net:.4f}, locked_net_val={locked_net_val}\n")
         
-        if not triggered and net <= locked_net_val:
+        if not triggered and locked_net_val > 0 and net <= locked_net_val:
             triggered = True
             exit_reason = f'EXIT_PROFIT_LOCK_STEP: 淨利從高點 {peak_net:.2f}U 回落，觸發真實階梯鎖利出場 (保底 {locked_net_val:.2f}U)'
             
-    # --- 4. MA3 峰谷平倉 (已依使用者要求關閉) ---
-    # 使用者要求：未達 2.0 ATR 不平倉。因此拔除神經質的 MA3 峰谷平倉。
-    pass
+    # Price crossing the midline is not an exit; only the closed midline slope is.
+    if not triggered and kc_mid_reversed(frame, side):
+        triggered = True
+        exit_reason = 'KC_CK_DIRECTION_REVERSED_EXIT'
 
-    # --- 5. 優化版：MA3 穿越 MA15 停損 (已依使用者要求關閉) ---
-    # 使用者要求：未達 2.0 ATR 不平倉。因此拔除 MA15 提早防禦。
-    pass
-
+    if state.get('pending'):
+        exit_reason = state.get('reason') or position.get('exit_reason_override') or exit_reason
     state['pending'] = bool(state.get('pending')) or triggered
     
     if not state.get('pending'):
         return None
 
-    if triggered and exit_reason:
+    if exit_reason:
+        state['reason'] = exit_reason
         position['exit_reason_override'] = exit_reason
 
-    return {'triggered': state['pending'], 'stop_price': sl_price,
+    return {'triggered': state['pending'], 'stop_price': stop_price,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
             'locked_net': locked_net_val, 'peak_net': peak_net, 'retracement_fraction': 0.2 if peak_net >= 1.0 else 0.0,
             'reason': exit_reason}
@@ -308,7 +286,7 @@ class ProfitProtectionExitStrategy(IExitStrategy):
 
         # 1. 優先檢查異常 K 線與大瀑布
         from core.guards.abnormal_guard import channel_adverse_exit_reason
-        if frame is not None and not frame.empty and 'atr' in frame.iloc[-2]:
+        if frame is not None and len(frame) >= 2 and 'atr' in frame.columns:
             atr = float(frame.iloc[-2]['atr'])
             adverse_reason = channel_adverse_exit_reason(frame, position.get('side', ''), price, atr)
             with open("/tmp/debug_flow.log", "a") as f:

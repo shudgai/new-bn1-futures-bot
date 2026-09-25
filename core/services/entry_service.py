@@ -1,17 +1,21 @@
+import math
+from core.services.candle_data import closed_entry_candles, closed_entry_problem
+
 
 def check_special_momentum_engulfing(df):
     """檢查：微幅蓄勢後突發大動能吞噬開倉 (支援 KC 與 MA 雙模式，豁免橫盤，無視冷卻)
 
     df: 包含 open, high, low, close, atr, kc_upper, kc_lower, ma3, ma15 的 DataFrame
     """
-    if len(df) < 3:
+    df = closed_entry_candles(df)
+    if len(df) < 2:
         return None
 
     c1 = df.iloc[-2]  # 前一根蓄勢棒
     c2 = df.iloc[-1]  # 最新收盤的突發動能棒
     atr = float(c2.get("atr", 0))
 
-    if atr <= 0:
+    if not math.isfinite(atr) or atr <= 0:
         return None
 
     # 計算實體長度
@@ -84,7 +88,23 @@ def check_special_momentum_engulfing(df):
 
 import pandas as pd
 from typing import Dict, Any, Optional
-from core.services.strategies.outer_strategy import ma3_outer_cross_ready, ma3_outer_continuation_ready, live_candle_color_ready
+from core.services.strategies.outer_strategy import ma3_outer_cross_ready, ma3_outer_continuation_ready
+
+CLOSED_BREAKOUT_CODES = {
+    f"{prefix}_{side}"
+    for prefix in ("MOMENTUM_ENGULFING", "MOMENTUM_BREAKOUT_C1", "CONFIRMED_KC_BREAKOUT")
+    for side in ("LONG", "SHORT")
+}
+
+
+def supported_entry_reason(reason, side):
+    from core.services.outer_turn_entry import CODES
+    from core.services.closed_breakout_entry import CODES as BREAKOUT_CODES
+    if reason in ('MA_CROSS_GOLDEN_LONG', 'MA_CROSS_DEATH_SHORT'):
+        return side in ('LONG', 'SHORT') and reason.endswith('_' + side)
+    return side in ('LONG', 'SHORT') and reason in (CODES | BREAKOUT_CODES) and reason.endswith('_' + side)
+
+
 
 ENTRY_TREND_CODES = {
     "KC_UPPER_TREND_ENTRY", "KC_LOWER_TREND_ENTRY",
@@ -123,13 +143,9 @@ def channel_outer_directional_entry_allowed(
 def channel_closed_body_break_entry_allowed(
     frame: pd.DataFrame, side: str
 ) -> bool:
-    if frame is None or len(frame) < 2:
-        return False
-    prev = frame.iloc[-2]
-    curr = frame.iloc[-1]
-    if side == "LONG":
-        return float(curr["close"]) > float(curr["kc_upper"]) and float(prev["close"]) <= float(prev["kc_upper"])
-    return float(curr["close"]) < float(curr["kc_lower"]) and float(prev["close"]) >= float(prev["kc_lower"])
+    from core.services.closed_breakout_entry import evaluate_closed_breakout
+    price = frame.iloc[-1]['close'] if frame is not None and not frame.empty else 0
+    return evaluate_closed_breakout(frame, price, side)[0]
 
 def channel_closed_body_break_has_outer_ma3_reversal(
     frame: pd.DataFrame, side: str
@@ -145,10 +161,8 @@ def channel_closed_body_break_has_outer_ma3_reversal(
 def channel_closed_body_break_entry_action(
     frame: pd.DataFrame, price: float, side: str
 ) -> Dict[str, Any]:
-    if channel_closed_body_break_entry_allowed(frame, side):
-        reason = "KC_UPPER_BREAKOUT" if side == "LONG" else "KC_LOWER_BREAKOUT"
-        return {"action": "ENTER", "side": side, "reason": reason}
-    return {"action": "WAIT", "side": None, "reason": "CLOSED_BODY_BREAK_NOT_READY"}
+    from core.services.closed_breakout_entry import evaluate_closed_breakout
+    return evaluate_closed_breakout(frame, price, side)[2]
 
 def channel_outer_continuation_entry_action(
     frame: pd.DataFrame, price: float, side: str
@@ -182,10 +196,7 @@ def channel_outer_trend_entry_action(
 def channel_strong_first_outer_touch_action(
     frame: pd.DataFrame, price: float, side: str
 ) -> Dict[str, Any]:
-    if live_candle_color_ready(frame, price, side):
-        reason = "KC_LIVE_UPPER_BREAK_LONG" if side == "LONG" else "KC_LIVE_LOWER_BREAK_SHORT"
-        return {"action": "ENTER", "side": side, "reason": reason}
-    return {"action": "WAIT", "side": None, "reason": "LIVE_TOUCH_COLOR_NOT_READY"}
+    return channel_closed_body_break_entry_action(frame, price, side)
 
 def channel_immediate_outer_break_action(
     frame: pd.DataFrame, price: float
@@ -212,80 +223,9 @@ def is_safe_to_enter(curr: pd.Series, prev: pd.Series, side: str, atr: float) ->
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
     ) -> Dict[str, Any]:
-    """
-    全新「三位一體」結構性進場架構 (動能+結構+空間)
-    路徑 A: 特例 K 爆發 (Special K Path)
-    路徑 B: 結構性轉折 (Structural Reversal Path)
-    路徑 C: 強勢趨勢延續 (Trend Continuation Path)
-    """
-    if state is None:
-        state = {}
-        
-    if frame is None or len(frame) < 2:
-        return {"action": "WAIT", "reason": "INSUFFICIENT_DATA"}
-
-    # 特例豁免：突發大動能吞噬開倉
-    momentum_signal = check_special_momentum_engulfing(frame)
-    if momentum_signal and momentum_signal["side"] == side:
-        return momentum_signal
-
-
-    c1 = frame.iloc[-2]
-    c2 = frame.iloc[-1]
-    atr = float(c2.get("atr", 0))
-    
-    if atr <= 0:
-        return "WAIT_INVALID_ATR", {"action": "WAIT"}
-
-    c2_body = abs(c2["close"] - c2["open"])
-
-    # ==================== 1. 大動能長實體：第一根收盤即刻開倉 ====================
-    # 多單：當前這根 c2 剛好爆破上軌，且是超大實體 (>= 1.2 ATR)
-    if (
-        side == "LONG"
-        and c2["close"] > c2.get("kc_upper", 0)
-        and c2["close"] > c2["open"]
-        and c2_body >= 1.2 * atr
-    ):
-        return {
-            "action": "ENTER",
-            "side": "LONG",
-            "reason": "MOMENTUM_BREAKOUT_C1_LONG",
-            "entry_atr": atr,
-        }
-
-    # 空單：當前這根 c2 剛好爆破下軌，且是超大實體 (>= 1.2 ATR)
-    if (
-        side == "SHORT"
-        and c2["close"] < c2.get("kc_lower", 0)
-        and c2["close"] < c2["open"]
-        and c2_body >= 1.2 * atr
-    ):
-        return {
-            "action": "ENTER",
-            "side": "SHORT",
-            "reason": "MOMENTUM_BREAKOUT_C1_SHORT",
-            "entry_atr": atr,
-        }
-
-    # ==================== 2. 常規突破：等第二根 (c2) 收盤確認 ====================
-    # 多單：c1 破上軌，c2 收盤依然留於上軌外
-    if side == "LONG" and c1["close"] > c1.get("kc_upper", 0) and c2["close"] > c2.get("kc_upper", 0):
-        return {
-            "action": "ENTER",
-            "side": "LONG",
-            "reason": "CONFIRMED_KC_BREAKOUT_LONG",
-            "entry_atr": atr,
-        }
-
-    # 空單：c1 破下軌，c2 收盤依然留於下軌外
-    if side == "SHORT" and c1["close"] < c1.get("kc_lower", 0) and c2["close"] < c2.get("kc_lower", 0):
-        return {
-            "action": "ENTER",
-            "side": "SHORT",
-            "reason": "CONFIRMED_KC_BREAKOUT_SHORT",
-            "entry_atr": atr,
-        }
-        
-    return {"action": "WAIT"}
-
+    """Compatibility entry shares closed-breakout and observed-turn validation."""
+    from core.services.closed_breakout_entry import evaluate_channel_entry
+    price = float(frame.iloc[-1]['close']) if frame is not None and not frame.empty else 0.0
+    _, _, decision = evaluate_channel_entry(frame, price, side, state,
+                                         str(frame.attrs.get('symbol', '')) if frame is not None else '')
+    return decision

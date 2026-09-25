@@ -258,37 +258,7 @@ def aligned_entry(frame, price, **kwargs):
                 if curr_idx - last_idx < 3:
                     return {**wait, "reason": "WAIT_COOL_DOWN"}
         
-        # --- V5.0 Environment Filters ---
-        from core.config import ENV_MIN_KC_BANDWIDTH, ENV_MIN_KC_SLOPE, ENV_ATR_EXPANSION_RATIO
-        row = frame.iloc[-1]
-        kc_upper = float(row.get('kc_upper', 0))
-        kc_lower = float(row.get('kc_lower', 0))
-        kc_middle = float(row.get('kc_middle', row.get('ema_20', 0)))
-        # --- V5.2 Dynamic Bandwidth Filter (動態寬度過濾) ---
-        is_bandwidth_ok = (kc_middle > 0 and (kc_upper - kc_lower) / kc_middle >= ENV_MIN_KC_BANDWIDTH)
-        atr_expanding = False
-        if 'atr' in frame.columns and len(frame) > 6:
-            recent_atr = frame['atr'].iloc[-3:].mean()
-            prev_atr = frame['atr'].iloc[-6:-3].mean()
-            if prev_atr > 0 and (recent_atr / prev_atr - 1) >= 0.20:
-                atr_expanding = True
-                
-        if not is_bandwidth_ok and not atr_expanding:
-            return {**wait, "reason": "ENV_FILTER_BANDWIDTH_REJECTED"}
-        
-        # Slope Filter (middle slope)
-        prev_row = frame.iloc[-2]
-        prev_middle = float(prev_row.get('kc_middle', prev_row.get('ema_20', 0)))
-        if abs(kc_middle - prev_middle) < ENV_MIN_KC_SLOPE:
-            return {**wait, "reason": "ENV_FILTER_SLOPE_REJECTED"}
-            
-        # Volatility Filter (Short ATR vs Long ATR average if available)
-        if 'atr' in frame.columns and len(frame) > 4:
-            short_atr = frame['atr'].iloc[-3:].mean()
-            long_atr = frame['atr'].mean()
-            if long_atr > 0 and (short_atr / long_atr) < ENV_ATR_EXPANSION_RATIO:
-                return {**wait, "reason": "ENV_FILTER_VOLATILITY_REJECTED"}
-        # --------------------------------
+        # (Environment filters removed: bandwidth, slope, volatility are used for exits/terminal, not entry)
         
         for _, row in frame.iloc[-4:].iterrows():
             opened, high, low, closed = (float(row[k]) for k in ("open", "high", "low", "close"))
@@ -303,75 +273,7 @@ def aligned_entry(frame, price, **kwargs):
         if not check_half_channel_oscillation(frame, side):
             return {**wait, "reason": "REJECTED_BY_OSCILLATION_FILTER"}
             
-        # --- V5.1 Final Final Update (極致防禦與無狀態回顧) ---
-        curr_k = frame.iloc[-1]
-        prev_k = frame.iloc[-2]
-        kc_lower = float(curr_k.get('kc_lower', 0))
-        kc_upper = float(curr_k.get('kc_upper', 0))
-        kc_middle = float(curr_k.get('kc_middle', curr_k.get('ema_20', 0)))
-        atr = float(curr_k.get('atr', 1.0))
-        
-        c_open = float(curr_k.get('open', price))
-        c_close = float(curr_k.get('close', price))
-        c_low = float(curr_k.get('low', price))
-        c_high = float(curr_k.get('high', price))
-        c_body = abs(c_close - c_open)
-        
-        p_open = float(prev_k.get('open', price))
-        p_close = float(prev_k.get('close', price))
-        
-        if side == "SHORT":
-            # 1. 邊界過濾 (防地板空): 若 Price <= LowerBand 或 Prev_Close <= LowerBand -> 檢查緩衝帶
-            if price <= kc_lower or p_close <= kc_lower:
-                velocity_slowdown = kwargs.get("velocity_slowdown", False)
-                if (kc_lower - price) <= 0.3 * atr and velocity_slowdown:
-                    pass
-                else:
-                    return {**wait, "reason": "REJECTED_OUTSIDE_BAND_OVEREXTENDED"}
-                
-            # 2. 乖離限制: (kc_middle - Price) / ATR > 1.5 -> 拒絕
-            if atr > 0 and (kc_middle - price) / atr > 1.5:
-                return {**wait, "reason": "ANTI_CHASE_DISTANCE_LIMIT"}
-                
-            # 3. 反轉過濾 (Bullish Reversal Filter): 陽線或長下影線 -> 拒絕
-            if c_close > c_open:
-                return {**wait, "reason": "ANTI_CHASE_GREEN_CANDLE"}
-            lower_wick = min(c_open, c_close) - c_low
-            if c_body > 0 and (lower_wick / c_body) > 1.0:
-                return {**wait, "reason": "ANTI_CHASE_REJECTION_CANDLE"}
-                
-        elif side == "LONG":
-            # 1. 邊界過濾 (防天花板多): 若 Price >= UpperBand -> 檢查緩衝帶
-            if price >= kc_upper:
-                velocity_slowdown = kwargs.get("velocity_slowdown", False)
-                if (price - kc_upper) <= 0.3 * atr and velocity_slowdown:
-                    pass
-                else:
-                    return {**wait, "reason": "REJECTED_OUTSIDE_BAND_OVEREXTENDED"}
-                
-            # 2. 乖離限制: (Price - kc_middle) / ATR > 1.5 -> 拒絕
-            if atr > 0 and (price - kc_middle) / atr > 1.5:
-                return {**wait, "reason": "ANTI_CHASE_DISTANCE_LIMIT"}
-                
-            # 3. 趨勢對齊: ema_50 斜率若向下則限制
-            if len(frame) > 2:
-                ema50_curr = float(curr_k.get('ema_50', 0))
-                ema50_prev = float(prev_k.get('ema_50', 0))
-                if ema50_curr > 0 and ema50_prev > 0 and (ema50_curr - ema50_prev) <= 0:
-                    return {**wait, "reason": "ANTI_CHASE_TREND_MISALIGNMENT"}
-                    
-            # 4. 過度延伸: 連續 >= 2 根收盤價 > kc_upper 且實體 > 1.2 ATR -> 拒絕
-            if len(frame) >= 2:
-                is_consecutive_overextended = True
-                for i in range(1, 3):
-                    k_row = frame.iloc[-i]
-                    k_close, k_open, k_upper = float(k_row['close']), float(k_row['open']), float(k_row['kc_upper'])
-                    k_body = abs(k_close - k_open)
-                    if not (k_close > k_upper and k_body > 1.2 * atr):
-                        is_consecutive_overextended = False
-                        break
-                if is_consecutive_overextended:
-                    return {**wait, "reason": "ANTI_CHASE_OVEREXTENDED"}
+        # --- V5.1 Final Update filters removed (Anti-chase blocked valid outer rail breakouts) ---
         # ----------------------------------------
         if not live_ma3_direction_ready(frame, price, side):
             return {**wait, "reason": "KC_LIVE_MA3_DIRECTION_WAIT"}

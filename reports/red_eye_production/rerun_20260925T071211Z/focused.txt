@@ -1,0 +1,64 @@
+............................FF........                                   [100%]
+=================================== FAILURES ===================================
+___________ test_legacy_entry_points_are_silent_only_under_new_flag ____________
+
+    def test_legacy_entry_points_are_silent_only_under_new_flag():
+        p = dict(side='LONG', entry_price=100, qty=10, margin=1000, use_staged_risk_engine=True)
+        assert protection(p, 103, 0.0005, 0.0005) is None
+        assert 'channel_profit_protection' not in p
+        assert ProfitProtectionExitStrategy().evaluate_exit(p, None, 103) is None
+        p['use_staged_risk_engine'] = False
+        result = protection(p, 103, 0.0005, 0.0005)
+>       assert result['peak_net'] > 3
+E       TypeError: 'NoneType' object is not subscriptable
+
+tests/test_staged_risk_implementation.py:174: TypeError
+________ test_production_adapter_calls_staged_dispatcher_without_legacy ________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x70c6e692ca70>
+
+    def test_production_adapter_calls_staged_dispatcher_without_legacy(monkeypatch):
+        from my_package import red_eye_adapter as adapter
+        real_runner = adapter.symbol_runner.process_single_symbol_runner
+        runner = AsyncMock(wraps=real_runner)
+        monkeypatch.setattr(adapter.symbol_runner, 'process_single_symbol_runner', runner)
+        p, ex = PositionState(), MockExchange()
+        legacy = Mock(side_effect=AssertionError('legacy must be silent'))
+>       sut = create_strategy(p, ex, legacy, legacy, RISK_PARAMS['B'])
+
+tests/test_staged_risk_implementation.py:184: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='123999574164064'>, old_dd = <Mock id='123999574164064'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+- generated xml file: /home/shudgai999/project/new bn/reports/red_eye_production/rerun_20260925T071211Z/focused.xml -
+=========================== short test summary info ============================
+FAILED tests/test_staged_risk_implementation.py::test_legacy_entry_points_are_silent_only_under_new_flag
+FAILED tests/test_staged_risk_implementation.py::test_production_adapter_calls_staged_dispatcher_without_legacy
+2 failed, 36 passed in 3.01s

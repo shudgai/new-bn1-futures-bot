@@ -119,5 +119,9 @@ snapshots and a same-host position lease; it is not a multi-host consensus layer
 `install_staged_runtime` persists position identity and policy, and enables native
 stop synchronization. Bootstrap must restore runtimes before trading. The test
 adapter maps these interfaces to MockExchange; it does not implement decisions.
-Real CCXT transport, execution accounting, and bootstrap integration remain
-separate rollout prerequisites. See `tests/RED_EYE.md` for verified boundaries.
+The explicit testnet connector uses client-correlated REST orders and an
+order-scoped execution ledger. Startup restores leased combined journals before
+legacy account handling. Installation remains off by default and requires an
+explicit policy and entry order IDs. Offline REST integration is verified;
+authenticated testnet execution remains a rollout prerequisite. See
+`tests/RED_EYE.md` for test evidence and unsupported cases.

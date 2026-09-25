@@ -1,0 +1,979 @@
+SUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+FSUT=my_package.red_eye_adapter:create_strategy
+F
+=================================== FAILURES ===================================
+_____________________________ test_flash_gap[LONG] _____________________________
+
+build = <function build.<locals>.create at 0x77142d70bec0>, side = 'LONG'
+
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_flash_gap(build, side):
+        # Arrange: exact LONG 100/99 -> 103; mirrored SHORT 100/101 -> 97.
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:54: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130928545430032'>, old_dd = <Mock id='130927641940080'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+____________________________ test_flash_gap[SHORT] _____________________________
+
+build = <function build.<locals>.create at 0x7713f4fb7060>, side = 'SHORT'
+
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_flash_gap(build, side):
+        # Arrange: exact LONG 100/99 -> 103; mirrored SHORT 100/101 -> 97.
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:54: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927939638944'>, old_dd = <Mock id='130927773823200'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+___________________________ test_fake_breakout[LONG] ___________________________
+
+build = <function build.<locals>.create at 0x7713f4fb74c0>, side = 'LONG'
+
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_fake_breakout(build, side):
+        # Arrange: STOP execution report is deliberately absent in this scenario.
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stage=2,
+                          stop_price=100+1.5*sign, peak_net_pnl=10,
+                          highest_since_entry=102, lowest_since_entry=98, last_bar=0)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:89: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598096736'>, old_dd = <Mock id='130927598107248'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+__________________________ test_fake_breakout[SHORT] ___________________________
+
+build = <function build.<locals>.create at 0x7713f4fb7a60>, side = 'SHORT'
+
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_fake_breakout(build, side):
+        # Arrange: STOP execution report is deliberately absent in this scenario.
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stage=2,
+                          stop_price=100+1.5*sign, peak_net_pnl=10,
+                          highest_since_entry=102, lowest_since_entry=98, last_bar=0)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:89: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598103696'>, old_dd = <Mock id='130927598103024'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+__________________ test_order_black_hole[timeout_after_fill] ___________________
+
+build = <function build.<locals>.create at 0x7713f2528180>
+fault = 'timeout_after_fill'
+
+    @pytest.mark.parametrize("fault", ["timeout_after_fill", "unknown_after_fill"])
+    def test_order_black_hole(build, fault):
+        # Arrange: exchange fills STOP, client loses its acknowledgement.
+        p, ex = PositionState(), MockExchange()
+        ex.place_fault = fault  # 故障注入：成交後模擬網路斷線／UNKNOWN。
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:114: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598109712'>, old_dd = <Mock id='130927598113792'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+__________________ test_order_black_hole[unknown_after_fill] ___________________
+
+build = <function build.<locals>.create at 0x7713f4fb7920>
+fault = 'unknown_after_fill'
+
+    @pytest.mark.parametrize("fault", ["timeout_after_fill", "unknown_after_fill"])
+    def test_order_black_hole(build, fault):
+        # Arrange: exchange fills STOP, client loses its acknowledgement.
+        p, ex = PositionState(), MockExchange()
+        ex.place_fault = fault  # 故障注入：成交後模擬網路斷線／UNKNOWN。
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:114: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598098656'>, old_dd = <Mock id='130927598107296'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+____________________________ test_micro_chop[None] _____________________________
+
+build = <function build.<locals>.create at 0x7713f4fb6de0>, fault = None
+
+    @pytest.mark.parametrize("fault", [None, "timeout", "fill_then_timeout"])
+    def test_micro_chop(build, fault):
+        # Arrange: TP is in flight before the exact five-bar/25% boundary.
+        p = PositionState(stage=2, stop_price=101.5, peak_net_pnl=10,
+                          highest_since_entry=102, bars_without_new_extreme=4, last_bar=4)
+        ex = MockExchange()
+        ex.place_order("existing-tp", "PARTIAL_TP", 5)
+        p.tp_order_id = "existing-tp"
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:150: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598092992'>, old_dd = <Mock id='130927598099760'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+___________________________ test_micro_chop[timeout] ___________________________
+
+build = <function build.<locals>.create at 0x7713f25287c0>, fault = 'timeout'
+
+    @pytest.mark.parametrize("fault", [None, "timeout", "fill_then_timeout"])
+    def test_micro_chop(build, fault):
+        # Arrange: TP is in flight before the exact five-bar/25% boundary.
+        p = PositionState(stage=2, stop_price=101.5, peak_net_pnl=10,
+                          highest_since_entry=102, bars_without_new_extreme=4, last_bar=4)
+        ex = MockExchange()
+        ex.place_order("existing-tp", "PARTIAL_TP", 5)
+        p.tp_order_id = "existing-tp"
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:150: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130928286796928'>, old_dd = <Mock id='130928286794048'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+______________________ test_micro_chop[fill_then_timeout] ______________________
+
+build = <function build.<locals>.create at 0x7713f2528c20>
+fault = 'fill_then_timeout'
+
+    @pytest.mark.parametrize("fault", [None, "timeout", "fill_then_timeout"])
+    def test_micro_chop(build, fault):
+        # Arrange: TP is in flight before the exact five-bar/25% boundary.
+        p = PositionState(stage=2, stop_price=101.5, peak_net_pnl=10,
+                          highest_since_entry=102, bars_without_new_extreme=4, last_bar=4)
+        ex = MockExchange()
+        ex.place_order("existing-tp", "PARTIAL_TP", 5)
+        p.tp_order_id = "existing-tp"
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:150: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927597951200'>, old_dd = <Mock id='130927597959408'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+____________________________ test_extreme_deviation ____________________________
+
+build = <function build.<locals>.create at 0x7713f4fb7560>
+
+    def test_extreme_deviation(build):
+        # Arrange: Price=103.1 > MA7(100) + 3*ATR(1), no position.
+        p, ex = PositionState(qty=0, status="FLAT"), MockExchange(qty=0)
+>       sut, old_be, old_dd = build(p, ex)
+
+tests/test_red_eye_staged_contract.py:190: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927597960176'>, old_dd = <Mock id='130927597960608'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+___________________ test_stage_upgrade_and_trailing[LONG-A] ____________________
+
+build = <function build.<locals>.create at 0x7713f4fb77e0>, option = 'A'
+side = 'LONG'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_upgrade_and_trailing(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        params = RISK_PARAMS[option]
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:211: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598107008'>, old_dd = <Mock id='130927598101056'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+___________________ test_stage_upgrade_and_trailing[LONG-B] ____________________
+
+build = <function build.<locals>.create at 0x7713f2528860>, option = 'B'
+side = 'LONG'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_upgrade_and_trailing(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        params = RISK_PARAMS[option]
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:211: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598148192'>, old_dd = <Mock id='130927598148720'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+___________________ test_stage_upgrade_and_trailing[SHORT-A] ___________________
+
+build = <function build.<locals>.create at 0x7713f2529440>, option = 'A'
+side = 'SHORT'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_upgrade_and_trailing(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        params = RISK_PARAMS[option]
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:211: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598157600'>, old_dd = <Mock id='130927598149776'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+___________________ test_stage_upgrade_and_trailing[SHORT-B] ___________________
+
+build = <function build.<locals>.create at 0x7713f4fb7560>, option = 'B'
+side = 'SHORT'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_upgrade_and_trailing(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        params = RISK_PARAMS[option]
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:211: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598108400'>, old_dd = <Mock id='130927598107008'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+_______________________ test_stage_monotonicity[LONG-A] ________________________
+
+build = <function build.<locals>.create at 0x7713f2529620>, option = 'A'
+side = 'LONG'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_monotonicity(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:242: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598102640'>, old_dd = <Mock id='130927598093088'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+_______________________ test_stage_monotonicity[LONG-B] ________________________
+
+build = <function build.<locals>.create at 0x7713f2529940>, option = 'B'
+side = 'LONG'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_monotonicity(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:242: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598149344'>, old_dd = <Mock id='130927598152656'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+_______________________ test_stage_monotonicity[SHORT-A] _______________________
+
+build = <function build.<locals>.create at 0x7713f2528e00>, option = 'A'
+side = 'SHORT'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_monotonicity(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:242: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598155968'>, old_dd = <Mock id='130927598157696'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+_______________________ test_stage_monotonicity[SHORT-B] _______________________
+
+build = <function build.<locals>.create at 0x7713f25280e0>, option = 'B'
+side = 'SHORT'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    @pytest.mark.parametrize("side", ["LONG", "SHORT"])
+    def test_stage_monotonicity(build, option, side):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange
+        sign = 1 if side == "LONG" else -1
+        p = PositionState(side=side, initial_stop=100-sign, stop_price=100-sign)
+        ex = MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:242: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927597958880'>, old_dd = <Mock id='130927597953888'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+__________________________ test_legacy_suppression[A] __________________________
+
+build = <function build.<locals>.create at 0x7713f4fb5580>, option = 'A'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    def test_legacy_suppression(build, option):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange: R and injected net PNL are independent inputs.
+        p, ex = PositionState(), MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:263: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130927598151936'>, old_dd = <Mock id='130927598148480'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+__________________________ test_legacy_suppression[B] __________________________
+
+build = <function build.<locals>.create at 0x7713f2528180>, option = 'B'
+
+    @pytest.mark.parametrize("option", ["A", "B"])
+    def test_legacy_suppression(build, option):
+        # ASSUMPTION: Using Option A/B parameters, selected explicitly by pytest.
+        # Arrange: R and injected net PNL are independent inputs.
+        p, ex = PositionState(), MockExchange()
+>       sut, old_be, old_dd = build(p, ex, option)
+
+tests/test_red_eye_staged_contract.py:263: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_red_eye_staged_contract.py:30: in create
+    sut = factory(position, exchange, old_be, old_dd, RISK_PARAMS[option])
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = <Mock id='130928546048448'>, old_dd = <Mock id='130928546049168'>
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -> dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net >= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net >= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+>           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing
+- generated xml file: /home/shudgai999/project/new bn/reports/red_eye_production/rerun_20260925T071211Z/staged_contract.xml -
+=========================== short test summary info ============================
+FAILED tests/test_red_eye_staged_contract.py::test_flash_gap[LONG] - my_packa...
+FAILED tests/test_red_eye_staged_contract.py::test_flash_gap[SHORT] - my_pack...
+FAILED tests/test_red_eye_staged_contract.py::test_fake_breakout[LONG] - my_p...
+FAILED tests/test_red_eye_staged_contract.py::test_fake_breakout[SHORT] - my_...
+FAILED tests/test_red_eye_staged_contract.py::test_order_black_hole[timeout_after_fill]
+FAILED tests/test_red_eye_staged_contract.py::test_order_black_hole[unknown_after_fill]
+FAILED tests/test_red_eye_staged_contract.py::test_micro_chop[None] - my_pack...
+FAILED tests/test_red_eye_staged_contract.py::test_micro_chop[timeout] - my_p...
+FAILED tests/test_red_eye_staged_contract.py::test_micro_chop[fill_then_timeout]
+FAILED tests/test_red_eye_staged_contract.py::test_extreme_deviation - my_pac...
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[LONG-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[LONG-B]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[SHORT-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_upgrade_and_trailing[SHORT-B]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[LONG-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[LONG-B]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[SHORT-A]
+FAILED tests/test_red_eye_staged_contract.py::test_stage_monotonicity[SHORT-B]
+FAILED tests/test_red_eye_staged_contract.py::test_legacy_suppression[A] - my...
+FAILED tests/test_red_eye_staged_contract.py::test_legacy_suppression[B] - my...
+20 failed in 1.18s

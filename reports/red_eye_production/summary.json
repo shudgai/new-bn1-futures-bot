@@ -23,7 +23,8 @@
   "unchanged_test_sha256": {
     "tests/test_red_eye_staged_contract.py": "99ea4d5eca1a28c175b77c223803765658d1b5d4ea850a7fac9642c50587fd50",
     "tests/red_eye_support.py": "a42ce97efccbfce3e2f734665fb62b7d29997ea2e66835bc479ed3ae24e5912a",
-    "tests/test_red_eye_production_adapter.py": "48021e925870959e5a3e0a95c81152b7eda54c6746327871ece288fdfee9bfa3"
+    "tests/test_red_eye_production_adapter.py": "48021e925870959e5a3e0a95c81152b7eda54c6746327871ece288fdfee9bfa3",
+    "tests/test_staged_risk_implementation.py": "96490c06f5658aa5d7be4ba02d73dedf20992eeeaf6d7b792895a60ba1d91e5c"
   },
   "existing_failure": {
     "test": "test_initialize_restores_exchange_stop_for_position_opened_in_local_mode",
@@ -34,9 +35,40 @@
   "deployed": false,
   "production_connector_integration_verified": false,
   "limitations": [
-    "Explicit opt-in; no live service restarted.",
-    "Real CCXT transport and execution ledger integration remain outstanding.",
-    "File lease is single-host; cancel/replace is not an exchange-atomic operation.",
-    "Native valuation waits for realized PNL after a quantity-changing fill."
-  ]
+    "Explicit opt-in; no deployment, push or service restart.",
+    "REST connector/bootstrap/accounting verified with offline REST substitutes; authenticated testnet acceptance remains outstanding.",
+    "File lease is single-host; cancel/replace is not exchange-atomic.",
+    "One-way USDT positions and USDT commissions only; funding allocation is not implemented.",
+    "Unmanaged open orders require explicit migration before activation; unknown external reductions or incomplete history remain RECONCILE.",
+    "AIDAN directory and three AGENTS.md-required Channel Swing test files are absent."
+  ],
+  "testnet_connector": {
+    "offline_rest_integration_passed": 20,
+    "focused_passed": 38,
+    "full_run": {
+      "passed": 58,
+      "failed": 9,
+      "skipped": 2
+    },
+    "base_account_module_comparison": {
+      "commit": "fe8b72bc",
+      "passed": 22,
+      "failed": 9,
+      "skipped": 2,
+      "same_failure_names_and_messages": true,
+      "failures": [
+        "test_disabled_exchange_initial_stop_waits_until_local_max_loss",
+        "test_dynamic_margin_loss_guard_scales_with_actual_margin",
+        "test_initialize_restores_exchange_stop_for_position_opened_in_local_mode",
+        "test_native_trailing_failure_restores_fixed_stop",
+        "test_percentage_trailing_stop_updates_sl_and_removes_tp",
+        "test_testnet_account_places_entry_stop_and_take_profit",
+        "test_testnet_bounce_guard_immediately_places_stop_market",
+        "test_testnet_peak_drawdown_preempts_local_stop_loss",
+        "test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r"
+      ]
+    },
+    "live_testnet_orders_sent": false,
+    "junit": "testnet_integration.xml"
+  }
 }

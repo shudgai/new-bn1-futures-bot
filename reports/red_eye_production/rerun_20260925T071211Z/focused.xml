@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="38" time="3.009" timestamp="2026-09-25T07:12:14.643222" hostname="htlocalserver"><testcase classname="tests.test_staged_testnet_integration" name="test_real_account_partial_ledger_and_restart[LONG]" time="0.137" /><testcase classname="tests.test_staged_testnet_integration" name="test_real_account_partial_ledger_and_restart[SHORT]" time="0.148" /><testcase classname="tests.test_staged_testnet_integration" name="test_cancel_timeout_never_submits_replacement" time="0.048" /><testcase classname="tests.test_staged_testnet_integration" name="test_lost_ack_restores_same_client_id_without_resubmit" time="0.064" /><testcase classname="tests.test_staged_testnet_integration" name="test_lagging_fill_ledger_blocks_until_complete" time="0.076" /><testcase classname="tests.test_staged_testnet_integration" name="test_closed_trade_uses_full_ledger_and_projects_once" time="0.144" /><testcase classname="tests.test_staged_testnet_integration" name="test_missing_journal_stops_startup_before_legacy" time="0.002" /><testcase classname="tests.test_staged_testnet_integration" name="test_live_endpoint_is_rejected_before_any_request" time="0.002" /><testcase classname="tests.test_staged_testnet_integration" name="test_flag_off_does_not_construct_transport" time="0.003" /><testcase classname="tests.test_staged_testnet_integration" name="test_triggered_stop_waits_for_child_then_records_fill" time="0.074" /><testcase classname="tests.test_staged_testnet_integration" name="test_cancel_success_requires_followup_terminal_query" time="0.055" /><testcase classname="tests.test_staged_testnet_integration" name="test_price_rounding_never_loosens_protection[LONG-100.12341-100.1235]" time="0.065" /><testcase classname="tests.test_staged_testnet_integration" name="test_price_rounding_never_loosens_protection[SHORT-99.12349-99.1234]" time="0.066" /><testcase classname="tests.test_staged_testnet_integration" name="test_incorrect_query_identity_cannot_unlock_runtime" time="0.047" /><testcase classname="tests.test_staged_testnet_integration" name="test_account_save_failure_preserves_unfinalized_journal" time="0.160" /><testcase classname="tests.test_staged_testnet_integration" name="test_unknown_external_reduction_does_not_guess_realized_pnl" time="0.043" /><testcase classname="tests.test_staged_testnet_integration" name="test_transport_rejects_other_fee_assets_before_activation" time="0.003" /><testcase classname="tests.test_staged_testnet_integration" name="test_manual_reduce_and_close_share_staged_ledger" time="0.139" /><testcase classname="tests.test_staged_testnet_integration" name="test_concurrent_activation_has_one_position_lease" time="0.035" /><testcase classname="tests.test_staged_testnet_integration" name="test_nonterminal_market_ack_blocks_additional_reduction" time="0.080" /><testcase classname="tests.test_staged_risk_implementation" name="test_stop_replacement_waits_for_definitive_cancel" time="0.002" /><testcase classname="tests.test_staged_risk_implementation" name="test_rejected_stop_cannot_be_mistaken_for_active_protection" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_save_failure_prevents_exchange_submission" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_task_cancellation_leaves_durable_unknown_intent" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_concurrent_ticks_submit_only_one_partial" time="0.003" /><testcase classname="tests.test_staged_risk_implementation" name="test_flat_reconciliation_cancels_remaining_known_orders" time="0.002" /><testcase classname="tests.test_staged_risk_implementation" name="test_exclusive_store_and_restart_snapshot" time="0.005" /><testcase classname="tests.test_staged_risk_implementation" name="test_install_and_runner_share_durable_runtime" time="0.025" /><testcase classname="tests.test_staged_risk_implementation" name="test_legacy_entry_points_are_silent_only_under_new_flag" time="0.001"><failure message="TypeError: 'NoneType' object is not subscriptable">def test_legacy_entry_points_are_silent_only_under_new_flag():
+        p = dict(side='LONG', entry_price=100, qty=10, margin=1000, use_staged_risk_engine=True)
+        assert protection(p, 103, 0.0005, 0.0005) is None
+        assert 'channel_profit_protection' not in p
+        assert ProfitProtectionExitStrategy().evaluate_exit(p, None, 103) is None
+        p['use_staged_risk_engine'] = False
+        result = protection(p, 103, 0.0005, 0.0005)
+&gt;       assert result['peak_net'] &gt; 3
+E       TypeError: 'NoneType' object is not subscriptable
+
+tests/test_staged_risk_implementation.py:174: TypeError</failure></testcase><testcase classname="tests.test_staged_risk_implementation" name="test_production_adapter_calls_staged_dispatcher_without_legacy" time="0.006"><failure message="my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x70c6e692ca70&gt;
+
+    def test_production_adapter_calls_staged_dispatcher_without_legacy(monkeypatch):
+        from my_package import red_eye_adapter as adapter
+        real_runner = adapter.symbol_runner.process_single_symbol_runner
+        runner = AsyncMock(wraps=real_runner)
+        monkeypatch.setattr(adapter.symbol_runner, 'process_single_symbol_runner', runner)
+        p, ex = PositionState(), MockExchange()
+        legacy = Mock(side_effect=AssertionError('legacy must be silent'))
+&gt;       sut = create_strategy(p, ex, legacy, legacy, RISK_PARAMS['B'])
+
+tests/test_staged_risk_implementation.py:184: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+my_package/red_eye_adapter.py:331: in create_strategy
+    return ProductionAdapter(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:268: in __init__
+    super().__init__(position, exchange, old_breakeven, old_drawdown, risk_params)
+my_package/red_eye_adapter.py:117: in __init__
+    self._hooks = self._find_legacy_lines(old_breakeven, old_drawdown)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+old_be = &lt;Mock id='123999574164064'&gt;, old_dd = &lt;Mock id='123999574164064'&gt;
+
+    @staticmethod
+    def _find_legacy_lines(old_be: Callable, old_dd: Callable) -&gt; dict:
+        # Locate actual branch-body lines by AST, never by guessed line numbers.
+        source, first = inspect.getsourcelines(profit_core.protection)
+        tree = ast.parse("".join(source))
+        conditions = {
+            "not triggered and peak_net &gt;= 2.5": ("legacy_breakeven", old_be),
+            "not triggered and peak_net &gt;= 3.0": ("legacy_drawdown", old_dd),
+        }
+        hooks = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.unparse(node.test) in conditions:
+                hooks[first + node.body[0].lineno - 1] = conditions[ast.unparse(node.test)]
+        if len(hooks) != 2:
+&gt;           raise ProductionCapabilityMissing(
+                "Legacy source changed: review tracing anchors before using adapter")
+E           my_package.red_eye_adapter.ProductionCapabilityMissing: Legacy source changed: review tracing anchors before using adapter
+
+my_package/red_eye_adapter.py:133: ProductionCapabilityMissing</failure></testcase><testcase classname="tests.test_staged_risk_implementation" name="test_deviation_uses_ma7_and_is_symmetric[LONG-103.1]" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_deviation_uses_ma7_and_is_symmetric[SHORT-96.9]" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_partial_fill_without_realized_accounting_cannot_fake_drawdown" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_unknown_placement_can_reconcile_to_confirmed_open_stop" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_wrong_order_ack_cannot_authorize_more_orders" time="0.001" /><testcase classname="tests.test_staged_risk_implementation" name="test_normal_partial_fill_is_observed_during_account_refresh" time="0.001" /><testcase classname="tests.test_testnet_account" name="test_testnet_account_manual_close_is_reduce_only" time="0.007" /><testcase classname="tests.test_testnet_account" name="test_partial_close_position" time="0.006" /></testsuite></testsuites>

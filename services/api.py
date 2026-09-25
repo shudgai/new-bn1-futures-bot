@@ -3,14 +3,38 @@ import os
 import csv
 import io
 import time
+import math
+import numpy as np
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Header, Request
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
+
+
+def numpy_safe(obj):
+    """遞迴將 numpy scalar / ndarray 轉成 Python 原生型別，
+    確保 FastAPI JSONResponse 不因 numpy.int64 / float64 拋出 ValueError。"""
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        v = float(obj)
+        # JSON 不支援 NaN/Inf，改為 null
+        return None if (math.isnan(v) or math.isinf(v)) else v
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return [numpy_safe(x) for x in obj.tolist()]
+    if isinstance(obj, dict):
+        return {k: numpy_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [numpy_safe(x) for x in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
 from core.config import (
     CHANNEL_WATERFALL_BODY_ATR,
     PORT, PAPER_TRADING, DEFAULT_SYMBOLS, LEVERAGE, SIGNAL_LEVERAGE_CAPS, TRADE_AMOUNT_USDT,
@@ -296,13 +320,15 @@ def visible_system_logs():
 
 @app.get("/api/status")
 async def get_status(response: Response):
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
     unrealized = await engine.account.update_positions(engine.tickers)
-    return {
+    payload = numpy_safe({
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "全新策略 (破軌確認 + 固定 ATR 防護)：\n[開倉] 破軌後第二根 K 棒收盤確認，若大動能實體(>=1.2 ATR)則豁免橫盤檢查直接進場。\n[手動] 手動開倉無視一切阻擋，強勢接管並自動帶入 2.0 / 1.5 ATR 託管。\n[出場] 純機械式雙軌獨立掛單：1. 1.5 ATR 固定止損。2. 2.0 ATR 固定止盈。",
+        "strategy": "破軌入口：第一根已收線實體穿出 KC 外軌，第二根已收線同色實體確認在同側軌外，兩根實體各至少占全長 20%。確認後未成交或平倉，後續已收線 K 仍在同側軌外時，實際報價出現逆向回踩即可評估延續，不等再轉向或重新破軌；平倉當根不重開，異常平倉另須專用回踩。保留 CK／MA 方向與帳戶風控。另保留 KC 外軌回轉：已收線中軌上升且 MA3 > MA15，下軌外先跌再回升 0.10 ATR 才開多；中軌下降且 MA3 < MA15，上軌外先升再回落 0.10 ATR 才開空。ATR 固定取本輪觀察開始時最新已收線值。送單時仍須在指定軌外，保留報價、異常行情及帳戶風控。一般出口：中軌反向、階梯鎖利與緊急／帳戶硬止損；固定 ATR 止盈止損已移除。明確啟用的 staged 持倉沿用獨立引擎。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),
@@ -363,15 +389,18 @@ async def get_status(response: Response):
         "total_trades": len(engine.account.trades),
         "trade_dates": sorted({trade_date_str(t) for t in engine.account.trades}, reverse=True),
         "logs": visible_system_logs()
-    }
+    })
+    return JSONResponse(content=payload, headers=headers)
 
 @app.get("/api/prices")
 async def get_prices(response: Response):
     """輕量即時價格端點 — 前端每秒輪詢，只更新 tickers 與 positions"""
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
     unrealized = await engine.account.update_positions(engine.tickers)
-    return {
+    payload = numpy_safe({
         "symbols": visible_symbols(),
         "symbol_directions": {
             symbol: engine.symbol_rotation.direction_map.get(symbol, "WAIT")
@@ -387,7 +416,8 @@ async def get_prices(response: Response):
         "unrealized_pnl": round(unrealized, 2),
         "estimated_net_unrealized_pnl": round(estimated_net_unrealized_pnl(), 2),
         "balance": round(engine.account.balance + sum(p.get("margin", 0.0) for p in engine.account.positions.values()), 2),
-    }
+    })
+    return JSONResponse(content=payload, headers=headers)
 
 @app.get("/api/quant-analysis")
 async def get_quant_analysis():

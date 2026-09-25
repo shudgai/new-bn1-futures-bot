@@ -161,6 +161,8 @@ from core.testnet_account import BinanceTestnetAccount
 from core.paper_account import PaperAccount
 from core.symbol_rotation import SymbolRotation
 from core.indicators import drop_unclosed_candle, compute_position_trigger
+from core.services.candle_data import mark_candle_closure, closed_entry_candles, log_entry_gate
+from core.services.entry_service import supported_entry_reason, CLOSED_BREAKOUT_CODES
 
 class TradingEngine:
     def __init__(self):
@@ -994,6 +996,8 @@ class TradingEngine:
 
     async def fetch_klines(self, symbol: str, timeframe: str = "3m", limit: int = 100, keep_live: bool = False) -> pd.DataFrame:
         try:
+            # Finality is fixed before I/O, including requests spanning a bar close.
+            snapshot_ms = time.time() * 1000
             ohlcv = await asyncio.wait_for(
                 self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit),
                 timeout=12.0,
@@ -1002,9 +1006,10 @@ class TradingEngine:
             # 丟棄還沒收盤的最後一根 K 棒，只在這個共用入口做一次，
             # evaluate_signal/confirm_pullback_entry 等下游邏輯用 df.iloc[-1]
             # 時就天然拿到「最後一根已收盤」的資料，不用逐處修改。
+            df = mark_candle_closure(df, timeframe, snapshot_ms)
             if keep_live:
                 return df
-            return drop_unclosed_candle(df, timeframe)
+            return df.loc[df["is_closed"]].reset_index(drop=True)
         except Exception as e:
             print(f"fetch_klines ERROR: {e}")
             return pd.DataFrame()
@@ -1080,6 +1085,8 @@ class TradingEngine:
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
         """Use an observed live turn, retaining the shared structured order gates."""
         side = aligned_entry(frame, price).get('side')
+        if not side:
+            return False
         pivot_ready = self._live_pivot_ready(symbol, frame, price, side)
         outer_ready = True
         if not pivot_ready and not outer_ready:
@@ -1584,7 +1591,19 @@ class TradingEngine:
         return False
 
     def _channel_intrabar_ready(self, symbol, frame, price, side, ck_reverse=False, live_pivot=False):
-        """Validate the current quote without requiring an observed pullback."""
+        """Revalidate closed confirmation or a fresh observed pullback."""
+        from core.services.outer_turn_entry import observation_store
+        from core.services.closed_breakout_entry import evaluate_channel_entry, close_identity, clear_pullback
+        quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol)
+        if (symbol in self.account.positions or
+                (quoted is not None and (not math.isfinite(quoted) or not 0 <= time.time()-quoted <= 5))):
+            observation_store(self).pop((symbol, side), None)
+            clear_pullback(observation_store(self), symbol, side)
+            return False
+        allowed, reason, _ = evaluate_channel_entry(frame, price, side, observation_store(self), symbol, closed_at=close_identity(self, symbol))
+        if not allowed:
+            log_entry_gate(self, symbol, side, 'QUOTE_RECHECK', reason)
+            return False
         if ck_reverse:
             ticket = getattr(self.account, 'channel_profit_reentries', {}).get(symbol, {})
             return (self._ck_reverse_order_authorized(symbol, {'side': side, 'profit_reentry_token': ticket.get('token')})
@@ -1626,6 +1645,8 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
+        if not self._channel_intrabar_ready(symbol, frame, price, side):
+            return None
         if self._channel_terminal_market(frame):
             return None
         if profit_reentry_token and self._ck_reverse_order_authorized(
@@ -1658,8 +1679,7 @@ class TradingEngine:
                 return None
             return dict(price=price, kc_upper=upper, kc_lower=lower, frame=frame,
                         signal_code='KC_LIVE_PIVOT_' + side)
-        # Channel Swing new legs use the live MA3 outer-cross/continuation
-        # entry for every route; the retired two-closed-body rule is not used.
+        # New legs share closed-breakout and observed-pullback validation.
         # Room is evaluated after the snapshot, so a temporary shortage cannot
         # become a candidate-invalidated lock through a None snapshot.
         if profit_reentry_token is not None:
@@ -1671,9 +1691,12 @@ class TradingEngine:
             ready = self._profit_reentry_ready(symbol, ticket, frame, price)
             if not ready:
                 return None
+            from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
+            allowed, reason, decision = UnifiedEntryStrategy().evaluate_entry(frame, price, side, engine=self, symbol=symbol)
+            if not allowed:
+                return None
             return {"price": price, "kc_upper": upper, "kc_lower": lower, "frame": frame,
-                    "signal_code": (outside_reentry(frame, price, side) if ticket.get("mode") == "outer_cycle"
-                                    else {"reason": "V9_MIGRATED_SIGNAL"})["reason"],
+                    "signal_code": decision["reason"],
                     "outer_cycle_reentry": ticket.get("mode") == "outer_cycle"}
         exit_info = getattr(self, "_channel_swing_peak_exit_info", {}).get(symbol)
         if exit_info and exit_info.get("require_new_closed_break") and self._channel_peak_exit_reentry_blocked(
@@ -1694,10 +1717,14 @@ class TradingEngine:
             or False
         ):
             return None
+        from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
+        allowed, reason, decision = UnifiedEntryStrategy().evaluate_entry(frame, price, side, engine=self, symbol=symbol)
+        if not allowed:
+            log_entry_gate(self, symbol, side, "REVALIDATION", reason, fresh_candidate_bar_id)
+            return None
         return {
             "price": price, "kc_upper": upper, "kc_lower": lower,
-            "frame": frame,
-            "signal_code": "V9_MIGRATED_SIGNAL" if not confirmed_reverse else None,
+            "frame": frame, "signal_code": decision["reason"],
         }
 
     def _channel_candle_entry_blocked(self, symbol: str, now: float | None = None) -> bool:
@@ -1772,9 +1799,11 @@ class TradingEngine:
         # surveillance may inspect other contracts for crash protection and
         # diagnostics, but those observations must never become an order.
         if symbol not in DEFAULT_SYMBOLS:
+            log_entry_gate(self, symbol, signal.get("side"), "ACCOUNT", "SYMBOL_NOT_ALLOWED", signal.get("candidate_bar_id"))
             return False
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
+            log_entry_gate(self, symbol, signal.get("side"), "ACCOUNT", "MAX_SLOTS", signal.get("candidate_bar_id"), committed=committed, maximum=MAX_SLOTS)
             return False
         score = int(signal.get("score") or 0)
         side = signal["side"]
@@ -1783,9 +1812,8 @@ class TradingEngine:
             self.account.log(f"🛑 {symbol} 舊策略 {entry_mode} 已停用", "WARNING")
             return False
             
-        # 【強制檢查】最高入場憲法：純粹破軌開倉
-        if not signal.get("is_breakout", False):
-            self.account.log(f"🛑 {symbol} 絕對禁止：若非破軌觸發，則禁止下單！(Logic Drift Prevention)", "ERROR")
+        if not supported_entry_reason(signal.get('signal_code'), side):
+            log_entry_gate(self, symbol, side, 'ACCOUNT', 'RETIRED_ENTRY_SIGNAL')
             return False
         signal_volume_ratio = signal.get("volume_ratio")
         import core.config as runtime_config
@@ -1797,6 +1825,7 @@ class TradingEngine:
         # Channel Swing 不再設置 1 倍量能門檻；依使用者要求，外軌與一般峰谷
         # 訊號都允許進場，僅保留異常行情與預估淨成本安全檢查。
         if not self._same_side_entry_allowed(symbol, side):
+            log_entry_gate(self, symbol, side, "ACCOUNT", "SAME_SIDE_ENTRY_BLOCKED", signal.get("candidate_bar_id"))
             return False
         stop_cooldown_fn = getattr(
             self.symbol_rotation, "get_stop_cooldown_remaining", lambda *_args: 0.0
@@ -1851,7 +1880,7 @@ class TradingEngine:
                 watcher = getattr(self, "_channel_intrabar_entries", None)
                 if watcher is not None:
                     watcher.reset(symbol)
-                if invalid_candidate_key is not None and not live_outer_entry and not signal.get("live_pivot") and not signal.get("live_outer") and signal.get("signal_code") not in ENTRY_TREND_CODES:
+                if invalid_candidate_key is not None and not live_outer_entry and not signal.get("live_pivot") and not signal.get("live_outer") and signal.get("signal_code") not in ENTRY_TREND_CODES and not supported_entry_reason(signal.get("signal_code"), side):
                     if not hasattr(self, "_channel_invalid_entry_candidates"):
                         self._channel_invalid_entry_candidates = set()
                     self._channel_invalid_entry_candidates.add(invalid_candidate_key)
@@ -1877,11 +1906,8 @@ class TradingEngine:
             ck_reverse = self._ck_reverse_order_authorized(symbol, signal)
             live_pivot = bool(signal.get('live_pivot'))
             sig_code = signal.get("signal_code", "")
-            is_valid_entry = sig_code and any(sig_code.startswith(prefix) for prefix in [
-                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
-                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]",
-                "🚀", "📉"
-            ])
+            signal["is_breakout"] = sig_code.startswith(("KC_TWO_BAR_BREAKOUT_", "KC_BREAKOUT_PULLBACK_"))
+            is_valid_entry = supported_entry_reason(sig_code, side)
             if not ck_reverse and not live_pivot and not is_valid_entry:
                 pass
             if not is_valid_entry and not (self._live_pivot_ready(symbol, fresh_frame, planned_price, side) if live_pivot else
@@ -1894,13 +1920,16 @@ class TradingEngine:
                     "WARNING",
                 )
                 return False
-            if not is_valid_entry and not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
+            if (not is_valid_entry or sig_code in CLOSED_BREAKOUT_CODES) and not (self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, live_pivot=True) if live_pivot else
                     self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side, ck_reverse=True)
                     if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, planned_price, side)):
                 self.account.log(f"⏳ {symbol} {side} KC_ENTRY_QUOTE_WAIT：報價過期或進場條件失效", "INFO")
                 return False
             if isinstance(fresh_frame, pd.DataFrame) and not fresh_frame.empty:
-                fresh_live = fresh_frame.iloc[-2]
+                confirmed = closed_entry_candles(fresh_frame)
+                if confirmed.empty:
+                    return False
+                fresh_live = confirmed.iloc[-1]
                 for field in ("open", "high", "low", "close"):
                     signal[f"signal_candle_{field}"] = float(fresh_live[field])
                 signal["atr"] = float(fresh_live.get("atr") or signal.get("atr") or 0.0)
@@ -2161,6 +2190,21 @@ class TradingEngine:
                                or not self._ck_reverse_order_authorized(symbol, signal)):
                 return False
             latest_price = float(getattr(self, "tickers", {}).get(symbol) or planned_price)
+            if signal.get('signal_code', '').startswith('KC_BREAKOUT_PULLBACK_'):
+                from core.services.closed_breakout_entry import evaluate_breakout_pullback, close_identity
+                from core.services.outer_turn_entry import observation_store
+                valid, failure, _ = evaluate_breakout_pullback(
+                    fresh_frame, latest_price, side, observation_store(self), symbol,
+                    closed_at=close_identity(self, symbol))
+                if not valid:
+                    log_entry_gate(self, symbol, side, 'FINAL_PULLBACK_RECHECK', failure)
+                    return False
+            if signal.get('signal_code', '').startswith('KC_TWO_BAR_BREAKOUT_'):
+                from core.services.closed_breakout_entry import evaluate_closed_breakout
+                valid, failure, _ = evaluate_closed_breakout(fresh_frame, latest_price, side)
+                if not valid:
+                    log_entry_gate(self, symbol, side, 'FINAL_BREAKOUT_RECHECK', failure)
+                    return False
             if (latest_price != planned_price
                     or not (self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, live_pivot=True) if live_pivot else
                             self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side, ck_reverse=True)
@@ -2176,6 +2220,11 @@ class TradingEngine:
                 price=planned_price, **kwargs
             )
         if placed:
+            from core.services.outer_turn_entry import observation_store
+            from core.services.closed_breakout_entry import clear_pullback
+            for direction in ('LONG', 'SHORT'):
+                observation_store(self).pop((symbol, direction), None)
+                clear_pullback(observation_store(self), symbol, direction)
             pivot = getattr(self, '_channel_live_pivots', None)
             if pivot is not None:
                 pivot.reset(symbol)
@@ -2302,17 +2351,13 @@ class TradingEngine:
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction: float = 1.0):
         """Submit on this scan, retaining every structured-order account safety check."""
 
-        # Clear CK + aligned live MA3 outside the rail no longer waits for two bodies.
+        # Only supported entries proceed; breakout entries require two closed bodies.
         last_exit_bar = getattr(self, "_last_exit_bar_id", {}).get(symbol)
         
         from core.engine import market_crash_entries_paused # ensure accessible
         is_system_halted = market_crash_entries_paused(getattr(self, "_market_crash_entry_cooldown_until", 0.0), time.time())
         
-        is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
-            "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]",
-            "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]",
-            "🚀", "📉"  # ← UnifiedEntryStrategy 新版進場訊號 (2-Candle Breakout / Continuation / Extreme)
-        ])
+        is_valid_entry = supported_entry_reason(v8_reason, side)
         if is_system_halted:
             return False
         
@@ -2353,16 +2398,19 @@ class TradingEngine:
             held_side = position.get("side") if position else (
                 ("SHORT" if side == "LONG" else "LONG") if retry_reverse else None
             )
-            is_valid_entry = v8_reason and any(v8_reason.startswith(prefix) for prefix in [
-                "TRACK_", "[SPECIAL_ENTRY]", "[STANDARD_ENTRY]", 
-                "[ANTICIPATED_ENTRY]", "[CONFIRMED_ENTRY]", "[STRUCTURAL_BREAKOUT]", "[HUNTER]",
-                "🚀", "📉"  # ← UnifiedEntryStrategy 新版進場訊號
-            ])
+            is_valid_entry = supported_entry_reason(v8_reason, side)
+            if is_valid_entry and v8_reason.startswith('KC_TWO_BAR_BREAKOUT_'):
+                from core.services.closed_breakout_entry import evaluate_closed_breakout
+                valid, failure, _ = evaluate_closed_breakout(frame, price, side)
+                if not valid:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', failure, bar_id)
+                    return False
             if is_valid_entry:
                 decision = {"action": "ENTER", "side": side, "reason": v8_reason}
             else:
                 decision = {"action": "NONE", "side": None}
             if decision.get("side") != side or decision.get("action") not in {"ENTER", "REVERSE"}:
+                log_entry_gate(self, symbol, side, "EXECUTION", "UNSUPPORTED_SIGNAL_CODE", bar_id, signal=v8_reason)
                 pending.pop(symbol, None)
                 reverse_bars.pop(symbol, None)
                 return False
@@ -2387,8 +2435,15 @@ class TradingEngine:
             if daily_halt:
                 self.account.log(f"⏸️ [真突破] {symbol} 帳戶風控暫停新倉，保留重試", "WARNING")
                 return False
-            latest = frame.iloc[-2]
-            confirmation_label = ("live body crossed KC outer rail" if decision["reason"] in LIVE_BODY_BREAKOUT_CODES else
+            confirmed = closed_entry_candles(frame)
+            if len(confirmed) < 2:
+                log_entry_gate(self, symbol, side, "EXECUTION", "WAIT_INSUFFICIENT_CLOSED_DATA", bar_id)
+                return False
+            latest = confirmed.iloc[-1]
+            confirmation_label = ("observed pullback outside confirmed breakout rail" if decision["reason"].startswith("KC_BREAKOUT_PULLBACK_") else
+                                  "two closed same-color breakout bodies" if decision["reason"].startswith("KC_TWO_BAR_BREAKOUT_") else
+                                  "observed turn beyond opposite KC rail" if decision["reason"].startswith("KC_OUTER_TURN_") else
+                                  "live body crossed KC outer rail" if decision["reason"] in LIVE_BODY_BREAKOUT_CODES else
                                   "confirmed price pivot" if decision["reason"] in PIVOT_CODES else
                                   "live MA3 outside CK outer rail" if decision["reason"] in OUTER_CODES | LIVE_OUTER_CODES else
                                   "confirmed CK middle trend" if decision["reason"] in TREND_CODES else
@@ -2443,7 +2498,7 @@ class TradingEngine:
             signal = {
                 "symbol": symbol, "side": side, "score": 100,
                 "entry_mode": "CHANNEL_SWING", "action": "ENTER_MARKET",
-                "is_breakout": True,  # UnifiedEntryStrategy 所有入口均屬破軌類型
+                "is_breakout": decision["reason"].startswith(("KC_TWO_BAR_BREAKOUT_", "KC_BREAKOUT_PULLBACK_")),
                 "signal_code": decision["reason"], "live_outer": decision["reason"] in LIVE_OUTER_CODES,
                 "candidate_bar_id": self._channel_candidate_bar_id(frame),
                 "reason": f"Channel Swing {decision['reason']} {confirmation_label} {side}",
@@ -2776,6 +2831,17 @@ class TradingEngine:
         return False
 
     def _profit_reentry_ready(self, symbol, ticket, frame, price):
+        from core.services.closed_breakout_entry import matched_reentry_close
+        from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
+        filled_at = matched_reentry_close(self.account, symbol, ticket)
+        if not filled_at:
+            return False
+        try:
+            current_bar = float(frame.iloc[-1]['timestamp'])
+            if not math.isfinite(current_bar) or current_bar <= math.floor(filled_at / 60000) * 60000:
+                return False
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+            return False
         if (ticket.get("phase") != "closed" or ticket.get("side") not in ("LONG", "SHORT")
                 or symbol in self.account.positions):
             return False
@@ -2787,7 +2853,8 @@ class TradingEngine:
                     return False
             except (AttributeError, TypeError, ValueError, KeyError, IndexError):
                 return False
-            return False
+            return UnifiedEntryStrategy().evaluate_entry(
+                frame, price, ticket['side'], engine=self, symbol=symbol)[0]
         if ticket.get('mode') == 'direct_reverse':
             return (self._ck_reverse_order_authorized(symbol, {'side': ticket['side'], 'profit_reentry_token': ticket['token']})
                     and reverse_quote_ready(self, symbol, frame, price, ticket['side']))
@@ -2825,12 +2892,10 @@ class TradingEngine:
                 ready = False
         if before != ticket.get("pullback_bar"):
             self.account.save_state()
-        if ready and not ticket.get('requires_pullback', True) and self._live_pivot_ready(symbol, frame, price, ticket['side']):
-            return True
-        decision = outside_reentry(frame, price, ticket["side"])
-        if not self._profit_pivot_is_new(ticket, frame):
+        if not ready:
             return False
-        return ready and decision.get("side") == ticket["side"]
+        return UnifiedEntryStrategy().evaluate_entry(
+            frame, price, ticket['side'], engine=self, symbol=symbol)[0]
 
     async def _try_profit_reentry(self, symbol, frame, price, daily_halt):
         lock = getattr(self, "_channel_profit_reentry_lock", None)
@@ -2874,13 +2939,12 @@ class TradingEngine:
             return
         if daily_halt or not self._profit_reentry_ready(symbol, ticket, frame, price):
             return
-        decision = ({'reason': 'KC_REVERSE_' + ticket['side']} if ticket.get('mode') == 'ck_reverse' else
-                    outside_reentry(frame, price, ticket["side"]) if ticket.get("mode") == "outer_cycle"
-                    else {"reason": "V9_MIGRATED_SIGNAL"})
-        live_pivot = (ticket.get('mode') == 'outer_cycle' and not ticket.get('requires_pullback', True)
-                      and self._live_pivot_ready(symbol, frame, price, ticket['side']))
-        if live_pivot:
-            decision = {'reason': 'KC_LIVE_PIVOT_' + ticket['side']}
+        from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
+        allowed, _, decision = UnifiedEntryStrategy().evaluate_entry(
+            frame, price, ticket['side'], engine=self, symbol=symbol)
+        if not allowed:
+            return
+        live_pivot = False
         signal = {"live_pivot": live_pivot, "live_outer": decision['reason'] in LIVE_OUTER_CODES, "side": ticket["side"], "score": 100, "entry_mode": "CHANNEL_SWING",
                   "action": "ENTER_MARKET", "reason": "Channel Swing PROFIT_REENTRY " + decision["reason"] + " " + ticket["token"],
                   "profit_reentry_token": ticket["token"], "signal_code": decision["reason"],

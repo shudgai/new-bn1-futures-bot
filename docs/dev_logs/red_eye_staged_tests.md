@@ -22,3 +22,12 @@
 - **Trigger Reason & Requirement**: User explicitly authorized production changes on feature/staged-risk-implementation to satisfy the existing 20-case contract.
 - **Verification & Test Status**: Production contract 20 passed; supplemental 16 passed; selected legacy account regressions 2 passed; unchanged legacy adapter baseline 6 passed. Existing startup-stop expectation 98 vs 99 reproduced on fe8b72bc. No live deployment, database reseed, commit or push.
 - **Rollout Boundary**: Real exchange connector/accounting and bootstrap installation still require integration verification; flags remain off unless explicitly installed.
+
+
+### [2026-09-25] - Testnet transport and durable bootstrap integration
+- **Author**: shudgai999 / Codex; shell identity and Git identity verified.
+- **Authorization**: User selected testnet integration, flags off, no deployment.
+- **Changes**: Added Binance REST client-ID transport, child-order resolution, terminal cancellation checks, order-scoped fee ledger, same-symbol leased combined journal, startup recovery, strict close projection and staged manual reductions. Metadata SL now follows the staged stop. Original contract/support/legacy-adapter/supplemental test files remain byte-identical.
+- **Validation**: Contract 20 passed; new REST integration 20 passed; supplemental 16 passed; selected account regressions 2 passed; legacy adapter baseline 6 passed. Combined full account run: 58 passed / 9 failed / 2 skipped. All nine failure names and messages match fe8b72bc's account module loaded in an independent process against current dependencies. JUnit and summary updated.
+- **Missing inputs**: AIDAN specification directory and the three AGENTS-required Channel Swing test files do not exist in this workspace; not claimed as read or passed.
+- **Boundary**: No real exchange requests, credentials inspected, services restarted, commits or pushes. Authenticated testnet acceptance and explicit migration of pre-existing protection remain rollout work. One-way USDT positions/fees only; funding allocation and multi-host coordination are outside this implementation.

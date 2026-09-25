@@ -1,17 +1,21 @@
+import math
+from core.services.candle_data import closed_entry_candles, closed_entry_problem
+
 
 def check_special_momentum_engulfing(df):
     """檢查：微幅蓄勢後突發大動能吞噬開倉 (支援 KC 與 MA 雙模式，豁免橫盤，無視冷卻)
 
     df: 包含 open, high, low, close, atr, kc_upper, kc_lower, ma3, ma15 的 DataFrame
     """
-    if len(df) < 3:
+    df = closed_entry_candles(df)
+    if len(df) < 2:
         return None
 
     c1 = df.iloc[-2]  # 前一根蓄勢棒
     c2 = df.iloc[-1]  # 最新收盤的突發動能棒
     atr = float(c2.get("atr", 0))
 
-    if atr <= 0:
+    if not math.isfinite(atr) or atr <= 0:
         return None
 
     # 計算實體長度
@@ -180,6 +184,67 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
         
     return True, "OK"
 
+def check_ma_cross_entry(df):
+    """MA3 / MA15 交叉開倉邏輯 (含 K 棒位置確認與動能豁免)"""
+    if len(df) < 3:
+        return None
+
+    c1 = df.iloc[-2]  # 前一根已收盤
+    c2 = df.iloc[-1]  # 最新已收盤
+    atr = float(c2.get("atr", 0))
+
+    if atr <= 0:
+        return None
+
+    c1_ma3, c1_ma15 = float(c1["ma3"]), float(c1["ma15"])
+    c2_ma3, c2_ma15 = float(c2["ma3"]), float(c2["ma15"])
+
+    c2_body = abs(c2["close"] - c2["open"])
+    is_strong_momentum = c2_body >= 1.2 * atr
+
+    # 1. 多單金叉判斷
+    golden_cross = (c1_ma3 <= c1_ma15) and (c2_ma3 > c2_ma15)
+    if golden_cross:
+        # 收陽線且站穩雙均線上方
+        candle_confirmed = (
+            c2["close"] > c2["open"]
+            and c2["close"] > c2_ma3
+            and c2["close"] > c2_ma15
+        )
+        # 動能足夠 (或大實體豁免)
+        momentum_ok = is_strong_momentum or (c2_body >= 0.5 * atr)
+
+        if candle_confirmed and momentum_ok:
+            return {
+                "action": "ENTER",
+                "side": "LONG",
+                "reason": "MA_CROSS_GOLDEN_LONG",
+                "entry_atr": atr,
+            }
+
+    # 2. 空單死叉判斷
+    death_cross = (c1_ma3 >= c1_ma15) and (c2_ma3 < c2_ma15)
+    if death_cross:
+        # 收陰線且壓制在雙均線下方
+        candle_confirmed = (
+            c2["close"] < c2["open"]
+            and c2["close"] < c2_ma3
+            and c2["close"] < c2_ma15
+        )
+        # 動能足夠 (或大實體豁免)
+        momentum_ok = is_strong_momentum or (c2_body >= 0.5 * atr)
+
+        if candle_confirmed and momentum_ok:
+            return {
+                "action": "ENTER",
+                "side": "SHORT",
+                "reason": "MA_CROSS_DEATH_SHORT",
+                "entry_atr": atr,
+            }
+
+    return None
+
+
 def check_streamlined_entry_signal(df, side: str, live_price: float, position_status: str, **kwargs) -> tuple[bool, str, dict]:
     """
     嚴格拆分狀態的純粹破軌開倉 (Pure Breakout Entry)：
@@ -189,6 +254,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
     """
     if df is None or len(df) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
+
+    # 檢查 MA3 / MA15 交叉開倉 (具有最高優先權)
+    ma_cross_signal = check_ma_cross_entry(df)
+    if ma_cross_signal and ma_cross_signal.get("side") == side:
+        return True, f"🚀 [MA Cross] {side}: 均線交叉動能確認", ma_cross_signal
 
     # 取已收線的 K 線數據
     # df.iloc[-1] 是未收線(Live)，iloc[-2] 是剛收線(Current Confirmed)，iloc[-3] 是前一根收線(Prev Confirmed)
@@ -540,74 +610,15 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
 class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
-        if frame is None or len(frame) < 3:
-            return False, "WAIT_INSUFFICIENT_DATA", {"action": "WAIT"}
-
-        # 特例豁免：突發大動能吞噬開倉
-        momentum_signal = check_special_momentum_engulfing(frame)
-        if momentum_signal and momentum_signal["side"] == side:
-            return True, momentum_signal["reason"], momentum_signal
-
-
-        # c_prev: 上一根已收線
-        # c_live: 當前未收線
-        c_prev = frame.iloc[-2]
-        c_live = frame.iloc[-1]
-        atr = float(c_live.get("atr", 0))
-        
-        if atr <= 0:
-            return False, "WAIT_INVALID_ATR", {"action": "WAIT"}
-
-        c_prev_body = abs(c_prev["close"] - c_prev["open"])
-
-        # ==================== 1. 大動能長實體：第一根「收盤」即刻開倉 ====================
-        # 也就是看剛收盤的那根 (c_prev) 是否滿足大實體破軌
-        if (
-            side == "LONG"
-            and c_prev["close"] > c_prev.get("kc_upper", 0)
-            and c_prev["close"] > c_prev["open"]
-            and c_prev_body >= 1.2 * atr
-        ):
-            return True, "MOMENTUM_BREAKOUT_C1_LONG", {
-                "action": "ENTER",
-                "side": "LONG",
-                "reason": "MOMENTUM_BREAKOUT_C1_LONG",
-                "entry_atr": atr,
-            }
-
-        if (
-            side == "SHORT"
-            and c_prev["close"] < c_prev.get("kc_lower", 0)
-            and c_prev["close"] < c_prev["open"]
-            and c_prev_body >= 1.2 * atr
-        ):
-            return True, "MOMENTUM_BREAKOUT_C1_SHORT", {
-                "action": "ENTER",
-                "side": "SHORT",
-                "reason": "MOMENTUM_BREAKOUT_C1_SHORT",
-                "entry_atr": atr,
-            }
-
-        # ==================== 2. 常規突破：必須連續兩根 K 線的「收盤價」都在軌外 ====================
-        # 看倒數第二根收線 (c_prev2) 和 倒數第一根收線 (c_prev)
-        if len(frame) >= 4:
-            c_prev2 = frame.iloc[-3]
-            
-            if side == "LONG" and c_prev2["close"] > c_prev2.get("kc_upper", 0) and c_prev["close"] > c_prev.get("kc_upper", 0):
-                return True, "CONFIRMED_KC_BREAKOUT_LONG", {
-                    "action": "ENTER",
-                    "side": "LONG",
-                    "reason": "CONFIRMED_KC_BREAKOUT_LONG",
-                    "entry_atr": atr,
-                }
-
-            if side == "SHORT" and c_prev2["close"] < c_prev2.get("kc_lower", 0) and c_prev["close"] < c_prev.get("kc_lower", 0):
-                return True, "CONFIRMED_KC_BREAKOUT_SHORT", {
-                    "action": "ENTER",
-                    "side": "SHORT",
-                    "reason": "CONFIRMED_KC_BREAKOUT_SHORT",
-                    "entry_atr": atr,
-                }
-            
-        return False, "WAIT_NO_SIGNAL", {"action": "WAIT"}
-
+        from core.services.outer_turn_entry import observation_store
+        from core.services.closed_breakout_entry import evaluate_channel_entry, close_identity, clear_pullback
+        engine = kwargs.get('engine')
+        observations = observation_store(engine) if engine is not None else kwargs.get('observations')
+        if kwargs.get('existing_pos'):
+            if observations is not None:
+                observations.pop((kwargs.get('symbol', ''), side), None)
+                clear_pullback(observations, kwargs.get('symbol', ''), side)
+            return False, 'WAIT_EXISTING_POSITION', {'action': 'WAIT'}
+        return evaluate_channel_entry(frame, price, side, observations,
+                                   kwargs.get('symbol', ''), kwargs.get('now'),
+                                   close_identity(engine, kwargs.get('symbol', '')))

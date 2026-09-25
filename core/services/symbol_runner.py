@@ -3,6 +3,7 @@ import copy
 import math
 import time
 import pandas as pd
+from core.services.candle_data import closed_entry_candles, log_entry_gate
 from typing import Dict, Any, List, Tuple
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.unified_entry_strategy import UnifiedEntryStrategy
@@ -39,6 +40,12 @@ async def process_single_symbol_runner(
             or (channel_df["close"].iloc[-1] if not channel_df.empty else 0.0)))
             
         existing_pos = engine.account.positions.get(symbol)
+        if existing_pos:
+            from core.services.outer_turn_entry import observation_store
+            from core.services.closed_breakout_entry import clear_pullback
+            for direction in ('LONG', 'SHORT'):
+                observation_store(engine).pop((symbol, direction), None)
+                clear_pullback(observation_store(engine), symbol, direction)
         from core.services.exits.staged_risk_service import staged_enabled, run_staged_position
         staged_meta = engine.account.position_meta.get(symbol, {})
         if staged_enabled(existing_pos or {}, staged_meta):
@@ -232,7 +239,7 @@ async def process_single_symbol_runner(
             entry_strategy = UnifiedEntryStrategy()
             
             allowed, reason, entry_decision = entry_strategy.evaluate_entry(
-                channel_df, channel_price, existing_pos["side"], velocity_drop_ratio=velocity_drop_ratio, meta=meta, existing_pos=existing_pos, symbol=symbol
+                channel_df, channel_price, existing_pos["side"], velocity_drop_ratio=velocity_drop_ratio, meta=meta, existing_pos=existing_pos, symbol=symbol, engine=engine
             )
             
             if allowed and entry_decision.get("entry_type") == "PYRAMID":
@@ -261,6 +268,7 @@ async def process_single_symbol_runner(
                 
                 if not has_reverse_ticket:
                     if current_bar_id - last_exit_bar < 3 * 60 * 1000:  # 1m K線, 3根 = 3分鐘
+                        log_entry_gate(engine, symbol, "BOTH", "RUNNER", "COOLDOWN_3_BARS", current_bar_id, last_exit_bar=last_exit_bar)
                         return signal_progress, detected_candidates
                 else:
                     if getattr(engine, "_direct_reverse_ticket_logged", {}).get(symbol) != ticket_bar_id:
@@ -341,6 +349,7 @@ async def process_single_symbol_runner(
             from core.engine import market_crash_entries_paused
             is_system_halted = market_crash_entries_paused(getattr(engine, "_market_crash_entry_cooldown_until", 0.0), time.time())
             if is_system_halted:
+                log_entry_gate(engine, symbol, "BOTH", "RUNNER", "MARKET_CRASH_COOLDOWN", current_bar_id)
                 return signal_progress, detected_candidates
                 
             print(f"[UnifiedEntry] Evaluating {symbol} at {channel_price:.4f} (Bar ID: {current_bar_id})", flush=True)
@@ -368,16 +377,23 @@ async def process_single_symbol_runner(
             for direct_side in sides_to_try:
                 allowed, reason, entry_decision = entry_strategy.evaluate_entry(
                     channel_df, channel_price, direct_side, velocity_drop_ratio=velocity_drop_ratio,
-                    relay_forced=relay_entry_forced, meta=meta, symbol=symbol
+                    relay_forced=relay_entry_forced, meta=meta, symbol=symbol, engine=engine
                 )
                 
-                # 接力確認情況：若一般入場被拒，仍允許接力（繞過 UnifiedEntry 篩選）
-                if relay_entry_forced and not allowed:
-                    engine.account.log(f"🔀 [接力強制] {symbol} {direct_side} UnifiedEntry 拒絕但接力條件已確認，強制進場", "INFO")
-                    allowed = True
-                    reason  = f"TREND_RELAY_{direct_side}"
-                    entry_decision = {"action": "ENTER"}
-                elif not allowed or entry_decision.get("action") != "ENTER":
+                closed = closed_entry_candles(channel_df)
+                details = {}
+                if len(closed) >= 2:
+                    c1, c2 = closed.iloc[-2], closed.iloc[-1]
+                    rail = "kc_upper" if direct_side == "LONG" else "kc_lower"
+                    details = dict(c1=c1.get("timestamp"), c2=c2.get("timestamp"),
+                                   c1_closed=bool(c1["is_closed"]), c2_closed=bool(c2["is_closed"]),
+                                   c1_close=c1.get("close"), c2_close=c2.get("close"),
+                                   c1_rail=c1.get(rail), c2_rail=c2.get(rail), atr=c2.get("atr"))
+                log_entry_gate(engine, symbol, direct_side, "SIGNAL", reason, current_bar_id,
+                               action=entry_decision.get("action"), **details)
+
+                # Relay tickets never override the outer-turn entry contract.
+                if not allowed or entry_decision.get("action") != "ENTER":
                     print(f"[{symbol}] {direct_side} Rejected: {reason}", flush=True)
                     if reason == "WAIT_PROFIT_SPACE_TOO_SMALL":
                         engine.account.log(f"[Skip Order] 預期獲利空間不足 ({symbol} {direct_side})，跳過開倉。", "INFO")
@@ -406,10 +422,13 @@ async def process_single_symbol_runner(
                         "INFO"
                     )
                 
-                await engine._execute_confirmed_channel_break(
+                opened = await engine._execute_confirmed_channel_break(
                     symbol, channel_df, channel_price, direct_side, daily_halt,
                     v8_reason=reason, size_fraction=size_fraction
                 )
+                log_entry_gate(engine, symbol, direct_side, "ORDER_RESULT",
+                               "OPENED" if opened else "NOT_OPENED_SEE_EXECUTION_GATE", current_bar_id,
+                               signal=reason)
                 break
             
         return signal_progress, detected_candidates

@@ -1,0 +1,38 @@
+[
+  {
+    "suite": "staged_contract",
+    "exit_code": 1,
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-s",
+      "tests/test_red_eye_staged_contract.py",
+      "--junitxml=reports/red_eye_production/rerun_20260925T071211Z/staged_contract.xml"
+    ]
+  },
+  {
+    "suite": "focused",
+    "exit_code": 1,
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_staged_testnet_integration.py",
+      "tests/test_staged_risk_implementation.py",
+      "tests/test_testnet_account.py::test_testnet_account_manual_close_is_reduce_only",
+      "tests/test_testnet_account.py::test_partial_close_position",
+      "--junitxml=reports/red_eye_production/rerun_20260925T071211Z/focused.xml"
+    ]
+  },
+  {
+    "suite": "legacy_baseline",
+    "exit_code": 1,
+    "command": [
+      ".venv/bin/python",
+      "tools/run_red_eye_legacy_baseline.py"
+    ]
+  }
+]

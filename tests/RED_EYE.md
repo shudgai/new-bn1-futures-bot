@@ -57,8 +57,9 @@ RED_EYE_REQUIRE_PRODUCTION=1 RED_EYE_FACTORY=my_package.red_eye_adapter:create_s
   原契約的 Mock 場景分開測試意圖計算與 submit_stop，使用不自動撮合／同步止損的模式。
   補充測試另驗證正式安裝後自動提交 STOP，且檢查送出的 stop_price。
 - 目前的 `_InjectedTransport` 是同步 MockExchange 的映射，不是真實 Binance／CCXT 連接器。
-  不可把這個 Mock 映射用於上線。既有 TestnetAccount 原生條件單尚須對接正確的
-  client ID 查詢、取消終態、成交與費用帳本，再跑實際帳戶傳輸整合測試。
+  不可把這個 Mock 映射用於上線。新的 `BinanceStagedTransport` 已接上 CCXT 私有 REST 介面、
+  client ID 查詢、取消終態、成交與費用帳本；目前證據為正式帳戶搭配離線 REST 替身測試，
+  尚未連線 Binance 測試網送單。
 
 撤舊／建新是可恢復的序列，不是交易所提供的原子交易；撤單成功到新保護生效之間仍有時間窗。
 檔案租約只涵蓋同主機／相同鎖路徑，不是多主機分布式鎖。沒有宣稱所有程序斷電或交易所亂序已驗證。
@@ -95,4 +96,57 @@ A／B 皆測試，尚未替正式部署選定參數：
 - B：Stage 1 <1.5R；Stage 2 為 1.5R 至 <3R；Stage 3 >=3R。Stage 2 為 1.5 ATR、Stage 3 為 1 ATR，1.5R 送 50% TP。
 
 場景 2 明確模擬止損成交回報尚未到達，Mock 不自動撮合。通過的是該故障前提下的狀態與委託協調。
-20 passed 證明指定單元契約成立，不是實盤上線核准；真實連接器、重啟掛載順序與交易帳本整合仍須完成。
+20 passed 證明指定單元契約成立，不是實盤上線核准；測試網 REST 接線、重啟掛載與帳本整合已完成離線驗證，尚待實際測試網連線驗收。
+
+
+## 測試網整合續作（2026-09-25）
+
+- `core/services/exits/staged_testnet_transport.py`：沿用帳戶 CCXT 客戶端，僅接受測試網／demo 私有端點。
+  STOP 使用 `clientAlgoId`，市價減倉使用 `newClientOrderId`；送單前保存意圖，逾時後只查詢、不盲目重送。
+  撤單成功回覆之後再查終態；已觸發 STOP 依 `actualOrderId` 查實際子訂單，不能把觸發當成交。
+- `core/services/exits/staged_testnet_runtime.py`：引擎狀態、訂單映射與成交帳本共存於同一 atomic JSON。
+  每幣持有檔案租約，日誌綁定帳戶身分。啟動先掛載／對帳，之後才執行原有孤兒單清理及止損恢復。
+  已完成交易先嚴格保存帳戶，再標記日誌完成；以持倉 ID 防止重複計入已實現損益。
+- 依明確進場／出場訂單 ID 取得並去重成交，核對已成交量與剩餘持倉。
+  已實現淨利包含實際開倉及已成交平倉費用，剩餘部位只預留平倉費與滑點，避免開倉費重扣。
+  帳本缺漏、未知外部減倉、方向或持倉身分不符維持 RECONCILE。
+- 手動市價全平與部分減倉共用新引擎、鎖及帳本；市價單未終態時不允許再減倉。
+  啟用新策略的持倉不接受舊自動平倉或限價平倉路徑。
+- STOP 觸發來源為 `CONTRACT_PRICE`，與最新成交價報價一致；tick size 取向保護較緊方向捨入。
+  新倉預設仍關閉，A／B 沒有自動選定，也沒有更新執行中帳戶或服務。
+
+明確安裝介面為 `await account.enable_staged_risk(symbol, risk_params, entry_order_ids)`。
+呼叫方必須選定參數、提供這筆完整進場的交易所訂單 ID；目前只支援單向 USDT 持倉與 USDT 手續費。
+安裝前須沒有未接管掛單；有既有 STOP／TP 時會拒絕安裝，不會自行撤除其他保護單。
+這是受控安裝介面，尚未接成自動新倉政策或 UI 開關。
+日誌預設位於 `<STATE_FILE>.staged/`，必須隨帳戶保留；缺少日誌但旗標已開時，啟動直接失敗。
+`release_testnet_staged(account)` 僅供所有帳戶／報價工作停止後釋放租約，不能在持倉仍受處理時呼叫。
+
+```bash
+# 新 REST／啟動／帳本整合：20 passed（無網路、無真實交易所委託）
+.venv/bin/python -m pytest -q tests/test_staged_testnet_integration.py
+
+# 新整合 + 原補充 + 兩項帳戶回歸：38 passed
+.venv/bin/python -m pytest -q tests/test_staged_testnet_integration.py \
+  tests/test_staged_risk_implementation.py \
+  tests/test_testnet_account.py::test_testnet_account_manual_close_is_reduce_only \
+  tests/test_testnet_account.py::test_partial_close_position
+
+# 歷史帳戶模組對照；工作區原測試檔不變：22 passed / 9 failed / 2 skipped
+.venv/bin/python tools/run_staged_testnet_base_comparison.py
+```
+
+完整帳戶測試加新整合／補充：**58 passed、9 failed、2 skipped**。
+9 個失敗的測試名稱與錯誤訊息均在 `fe8b72bc` 原始帳戶模組、搭配目前相同依賴下重現；
+這是原始帳戶模組對照，不代表整個歷史提交的隔離環境測試。
+原止損 98／99 差异及舊 TieredExitManager 介面不符均未藉本輪調整規則。
+證據：[完整結果](../reports/red_eye_production/testnet_integration.xml)、
+[歷史模組對照](../reports/red_eye_production/testnet_base_comparison.xml)、
+[38 項指定回歸](../reports/red_eye_production/testnet_focused.xml)。
+
+驗證缺口：工作區缺少 `AIDAN/` 規範目錄，以及 AGENTS.md 指定的
+`test_channel_swing.py`、`test_channel_position_path.py`、`test_channel_swing_execution.py`。
+沒有以其他測試冒稱這三組已通過。真實網路斷線、交易所帳號／端點權限、撮合與限流仍須連線驗收。
+非 USDT 費用、外部減倉或無法查全的歷史帳本會停止推進；尚未分攤 funding fee。
+50% 數量不符合交易所精度時拒絕送單，不會悄悄改變減倉比例。
+API 欄位依據：[Binance USD-M 交易介面](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade)。
