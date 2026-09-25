@@ -232,7 +232,7 @@ def global_hard_gate_check(frame: pd.DataFrame, side: str) -> Optional[dict]:
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
     ) -> Dict[str, Any]:
-    """Closed MA3/MA15 crossover, close confirmation and ATR body momentum."""
+    """Double-Candle Momentum Breakout (Overrides flat markets and cooldown)."""
     wait = lambda reason: dict(action="WAIT", side=None, reason=reason)
     if side not in ("LONG", "SHORT"):
         return wait("UNKNOWN_SIDE")
@@ -241,25 +241,64 @@ def check_entry_signals(
         return wait("WAIT_CLOSED_CONFIRMATION")
     try:
         c1, c2 = closed.iloc[-2], closed.iloc[-1]
-        m31, m151 = float(c1['ma3']), float(c1['ma15'])
-        m3, m15, opening, close, atr = (float(c2[k]) for k in ('ma3', 'ma15', 'open', 'close', 'atr'))
-        if not all(math.isfinite(v) and v > 0 for v in (m31, m151, m3, m15, opening, close, atr)):
-            return wait("WAIT_INVALID_MARKET_DATA")
-        sign = 1 if side == 'LONG' else -1
-        if not (sign*(m31-m151) <= 0 and sign*(m3-m15) > 0):
-            return wait("WAIT_MA_CROSS")
-        if not (sign*(close-opening) > 0 and sign*(close-m3) > 0 and sign*(close-m15) > 0):
-            return wait("WAIT_MA_CLOSE_CONFIRMATION")
-        body = abs(close-opening)
-        if body < 0.5*atr:
-            return wait("WAIT_BODY_MOMENTUM")
-        bypass = body >= 1.2*atr
-        from core.services.swing_service import channel_terminal_market
-        if not bypass and channel_terminal_market(closed):
-            return wait("WAIT_FLAT_MARKET")
-        return dict(action="ENTER", side=side,
-                    reason="MA_CROSS_GOLDEN_LONG" if side == 'LONG' else "MA_CROSS_DEATH_SHORT",
-                    entry_atr=atr, bypass_flat_check=bypass,
-                    entry_type="MA_CROSS", confirmation_bar_id=c2.get('timestamp', closed.index[-1]))
+        
+        c1_open = float(c1['open'])
+        c1_close = float(c1['close'])
+        c1_high = float(c1['high'])
+        c1_low = float(c1['low'])
+        c1_body = abs(c1_close - c1_open)
+        
+        c2_open = float(c2['open'])
+        c2_close = float(c2['close'])
+        c2_body = abs(c2_close - c2_open)
+        
+        atr = float(c2.get('atr', 0))
+        if not math.isfinite(atr) or atr <= 0:
+            return wait("WAIT_INVALID_ATR")
+            
+        if side == "LONG":
+            # 前一根 c1 為小紅K
+            if not (c1_close < c1_open and c1_body <= 0.8 * atr):
+                return wait("WAIT_MOMENTUM_LONG_C1")
+            
+            # 當前根 c2 為強勢長綠K
+            if not (c2_close > c2_open):
+                return wait("WAIT_MOMENTUM_LONG_C2_COLOR")
+            if not (c2_body >= 0.8 * atr):
+                return wait("WAIT_MOMENTUM_LONG_C2_BODY")
+            if not (c2_body >= 1.3 * c1_body):
+                return wait("WAIT_MOMENTUM_LONG_C2_OVERRIDE")
+            if not (c2_close > c1_high):
+                return wait("WAIT_MOMENTUM_LONG_BREAKOUT")
+                
+            return dict(action="ENTER", side="LONG",
+                        reason="DOUBLE_CANDLE_MOMENTUM_LONG",
+                        entry_atr=atr,
+                        bypass_flat_check=True,
+                        bypass_cooldown=True,
+                        entry_type="MOMENTUM_BREAKOUT")
+
+        elif side == "SHORT":
+            # 前一根 c1 為小綠K
+            if not (c1_close > c1_open and c1_body <= 0.8 * atr):
+                return wait("WAIT_MOMENTUM_SHORT_C1")
+            
+            # 當前根 c2 為強勢長紅K
+            if not (c2_close < c2_open):
+                return wait("WAIT_MOMENTUM_SHORT_C2_COLOR")
+            if not (c2_body >= 0.8 * atr):
+                return wait("WAIT_MOMENTUM_SHORT_C2_BODY")
+            if not (c2_body >= 1.3 * c1_body):
+                return wait("WAIT_MOMENTUM_SHORT_C2_OVERRIDE")
+            if not (c2_close < c1_low):
+                return wait("WAIT_MOMENTUM_SHORT_BREAKOUT")
+
+            return dict(action="ENTER", side="SHORT",
+                        reason="DOUBLE_CANDLE_MOMENTUM_SHORT",
+                        entry_atr=atr,
+                        bypass_flat_check=True,
+                        bypass_cooldown=True,
+                        entry_type="MOMENTUM_BREAKOUT")
+                        
     except (KeyError, TypeError, ValueError, IndexError):
         return wait("WAIT_INVALID_MARKET_DATA")
