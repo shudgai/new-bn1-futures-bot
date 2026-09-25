@@ -543,41 +543,62 @@ class UnifiedEntryStrategy(IEntryStrategy):
             return True, momentum_signal["reason"], momentum_signal
 
 
-        c1 = frame.iloc[-2]  # 前一根已收盤（突破棒）
-        c2 = frame.iloc[-1]  # 最新已收盤（確認棒）
-        
+        c1 = frame.iloc[-2]
+        c2 = frame.iloc[-1]
         atr = float(c2.get("atr", 0))
+        
         if atr <= 0:
             return False, "WAIT_INVALID_ATR", {"action": "WAIT"}
 
-        c1_body = abs(float(c1["close"]) - float(c1["open"]))
-        is_strong_momentum = c1_body >= 1.2 * atr
-        
-        c2_kc_mid = float(c2.get("kc_middle", c2.get("ema_20", 0)))
-        c1_kc_mid = float(c1.get("kc_middle", c1.get("ema_20", 0)))
-        
-        if not is_strong_momentum:
-            if side == "LONG" and c2_kc_mid <= c1_kc_mid:
-                return False, "WAIT_ENVIRONMENT_FLAT", {"action": "WAIT"}
-            if side == "SHORT" and c2_kc_mid >= c1_kc_mid:
-                return False, "WAIT_ENVIRONMENT_FLAT", {"action": "WAIT"}
+        c2_body = abs(c2["close"] - c2["open"])
 
-        if side == "SHORT":
-            c1_breakout = float(c1["close"]) < float(c1.get("kc_lower", 0))
-            c2_is_bearish = float(c2["close"]) < float(c2["open"])
-            c2_stays_below = float(c2["close"]) < float(c2.get("kc_lower", 0))
-            c2_makes_lower_low = float(c2["close"]) < float(c1["low"])
+        # ==================== 1. 大動能長實體：第一根收盤即刻開倉 ====================
+        # 多單：當前這根 c2 剛好爆破上軌，且是超大實體 (>= 1.2 ATR)
+        if (
+            side == "LONG"
+            and c2["close"] > c2.get("kc_upper", 0)
+            and c2["close"] > c2["open"]
+            and c2_body >= 1.2 * atr
+        ):
+            return True, "MOMENTUM_BREAKOUT_C1_LONG", {
+                "action": "ENTER",
+                "side": "LONG",
+                "reason": "MOMENTUM_BREAKOUT_C1_LONG",
+                "entry_atr": atr,
+            }
+
+        # 空單：當前這根 c2 剛好爆破下軌，且是超大實體 (>= 1.2 ATR)
+        if (
+            side == "SHORT"
+            and c2["close"] < c2.get("kc_lower", 0)
+            and c2["close"] < c2["open"]
+            and c2_body >= 1.2 * atr
+        ):
+            return True, "MOMENTUM_BREAKOUT_C1_SHORT", {
+                "action": "ENTER",
+                "side": "SHORT",
+                "reason": "MOMENTUM_BREAKOUT_C1_SHORT",
+                "entry_atr": atr,
+            }
+
+        # ==================== 2. 常規突破：等第二根 (c2) 收盤確認 ====================
+        # 多單：c1 破上軌，c2 收盤依然留於上軌外
+        if side == "LONG" and c1["close"] > c1.get("kc_upper", 0) and c2["close"] > c2.get("kc_upper", 0):
+            return True, "CONFIRMED_KC_BREAKOUT_LONG", {
+                "action": "ENTER",
+                "side": "LONG",
+                "reason": "CONFIRMED_KC_BREAKOUT_LONG",
+                "entry_atr": atr,
+            }
+
+        # 空單：c1 破下軌，c2 收盤依然留於下軌外
+        if side == "SHORT" and c1["close"] < c1.get("kc_lower", 0) and c2["close"] < c2.get("kc_lower", 0):
+            return True, "CONFIRMED_KC_BREAKOUT_SHORT", {
+                "action": "ENTER",
+                "side": "SHORT",
+                "reason": "CONFIRMED_KC_BREAKOUT_SHORT",
+                "entry_atr": atr,
+            }
             
-            if c1_breakout and c2_is_bearish and c2_stays_below and c2_makes_lower_low:
-                return True, "CONFIRMED_KC_BREAKOUT_SHORT", {"action": "ENTER", "side": "SHORT", "entry_atr": atr, "reason": "CONFIRMED_KC_BREAKOUT_SHORT"}
-                
-        elif side == "LONG":
-            c1_breakout = float(c1["close"]) > float(c1.get("kc_upper", 0))
-            c2_is_bullish = float(c2["close"]) > float(c2["open"])
-            c2_stays_above = float(c2["close"]) > float(c2.get("kc_upper", 0))
-            c2_makes_higher_high = float(c2["close"]) > float(c1["high"])
-            
-            if c1_breakout and c2_is_bullish and c2_stays_above and c2_makes_higher_high:
-                return True, "CONFIRMED_KC_BREAKOUT_LONG", {"action": "ENTER", "side": "LONG", "entry_atr": atr, "reason": "CONFIRMED_KC_BREAKOUT_LONG"}
-                
         return False, "WAIT_NO_SIGNAL", {"action": "WAIT"}
+

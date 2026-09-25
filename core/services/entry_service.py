@@ -226,72 +226,66 @@ def check_entry_signals(
 
     # 特例豁免：突發大動能吞噬開倉
     momentum_signal = check_special_momentum_engulfing(frame)
-    if momentum_signal and momentum_signal["side"] == side:
-        return momentum_signal
+if momentum_signal and momentum_signal["side"] == side:
+    return momentum_signal
 
-        
-    # c2: 最新收盤棒 (確認棒)
-    # c1: 前一根 (突破棒)
-    c2 = frame.iloc[-1]
+
     c1 = frame.iloc[-2]
-    
+    c2 = frame.iloc[-1]
     atr = float(c2.get("atr", 0))
+    
     if atr <= 0:
-        return {"action": "WAIT", "reason": "INVALID_ATR"}
+        return "WAIT_INVALID_ATR", {"action": "WAIT"}
 
-    # 取價格與軌道值
-    c2_close = float(c2["close"])
-    c1_close = float(c1["close"])
-    c1_open = float(c1["open"])
-    
-    c2_kc_upper = float(c2["kc_upper"])
-    c2_kc_lower = float(c2["kc_lower"])
-    c1_kc_upper = float(c1["kc_upper"])
-    c1_kc_lower = float(c1["kc_lower"])
-    
-    # 2. 環境與橫盤過濾豁免機制
-    c1_body = abs(c1_close - c1_open)
-    is_strong_momentum = c1_body >= 1.2 * atr
-    
-    c2_kc_mid = float(c2["kc_middle"])
-    c1_kc_mid = float(c1["kc_middle"])
-    is_slope_aligned_long = c2_kc_mid >= c1_kc_mid
-    is_slope_aligned_short = c2_kc_mid <= c1_kc_mid
-    
-    if not is_strong_momentum:
-        # 常規環境過濾放寬：僅做基礎趨勢方向檢查 (CK 中軌未反向即可)
-        if side == "LONG" and not is_slope_aligned_long:
-            return {"action": "WAIT", "reason": "WAIT_ENVIRONMENT_FLAT"}
-        if side == "SHORT" and not is_slope_aligned_short:
-            return {"action": "WAIT", "reason": "WAIT_ENVIRONMENT_FLAT"}
+    c2_body = abs(c2["close"] - c2["open"])
 
-    # 1. 核心開倉規則：破軌 + 第二根收盤確認
-    if side == "SHORT":
-        # c1 跌破下軌
-        c1_breakout = c1_close < c1_kc_lower
-        # c2 收盤留軌外確認
-        c2_stays_below = c2_close < c2_kc_lower
+    # ==================== 1. 大動能長實體：第一根收盤即刻開倉 ====================
+    # 多單：當前這根 c2 剛好爆破上軌，且是超大實體 (>= 1.2 ATR)
+    if (
+        side == "LONG"
+        and c2["close"] > c2.get("kc_upper", 0)
+        and c2["close"] > c2["open"]
+        and c2_body >= 1.2 * atr
+    ):
+        return "MOMENTUM_BREAKOUT_C1_LONG", {
+            "action": "ENTER",
+            "side": "LONG",
+            "reason": "MOMENTUM_BREAKOUT_C1_LONG",
+            "entry_atr": atr,
+        }
+
+    # 空單：當前這根 c2 剛好爆破下軌，且是超大實體 (>= 1.2 ATR)
+    if (
+        side == "SHORT"
+        and c2["close"] < c2.get("kc_lower", 0)
+        and c2["close"] < c2["open"]
+        and c2_body >= 1.2 * atr
+    ):
+        return "MOMENTUM_BREAKOUT_C1_SHORT", {
+            "action": "ENTER",
+            "side": "SHORT",
+            "reason": "MOMENTUM_BREAKOUT_C1_SHORT",
+            "entry_atr": atr,
+        }
+
+    # ==================== 2. 常規突破：等第二根 (c2) 收盤確認 ====================
+    # 多單：c1 破上軌，c2 收盤依然留於上軌外
+    if side == "LONG" and c1["close"] > c1.get("kc_upper", 0) and c2["close"] > c2.get("kc_upper", 0):
+        return "CONFIRMED_KC_BREAKOUT_LONG", {
+            "action": "ENTER",
+            "side": "LONG",
+            "reason": "CONFIRMED_KC_BREAKOUT_LONG",
+            "entry_atr": atr,
+        }
+
+    # 空單：c1 破下軌，c2 收盤依然留於下軌外
+    if side == "SHORT" and c1["close"] < c1.get("kc_lower", 0) and c2["close"] < c2.get("kc_lower", 0):
+        return "CONFIRMED_KC_BREAKOUT_SHORT", {
+            "action": "ENTER",
+            "side": "SHORT",
+            "reason": "CONFIRMED_KC_BREAKOUT_SHORT",
+            "entry_atr": atr,
+        }
         
-        if c1_breakout and c2_stays_below:
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": "CONFIRMED_KC_BREAKOUT_SHORT",
-                "entry_atr": atr
-            }
+    return {"action": "WAIT"}
 
-    elif side == "LONG":
-        # c1 突破上軌
-        c1_breakout = c1_close > c1_kc_upper
-        # c2 收盤留軌外確認
-        c2_stays_above = c2_close > c2_kc_upper
-        
-        if c1_breakout and c2_stays_above:
-            return {
-                "action": "ENTER",
-                "side": side,
-                "reason": "CONFIRMED_KC_BREAKOUT_LONG",
-                "entry_atr": atr
-            }
-
-    return {"action": "WAIT", "reason": "NO_ENTRY_CONDITION_MET"}
