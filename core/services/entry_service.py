@@ -257,44 +257,70 @@ def check_entry_signals(
             return wait("WAIT_INVALID_ATR")
             
         if side == "LONG":
-            # 前一根 c1 為小紅K
-            if not (c1_close < c1_open and c1_body <= 0.8 * atr):
-                return wait("WAIT_MOMENTUM_LONG_C1")
+            c1_kc_upper = float(c1.get('kc_upper', 0))
+            c2_kc_upper = float(c2.get('kc_upper', 0))
             
-            # 當前根 c2 為強勢長綠K
-            if not (c2_close > c2_open):
-                return wait("WAIT_MOMENTUM_LONG_C2_COLOR")
-            if not (c2_body >= 0.8 * atr):
-                return wait("WAIT_MOMENTUM_LONG_C2_BODY")
-            if not (c2_body >= 1.3 * c1_body):
-                return wait("WAIT_MOMENTUM_LONG_C2_OVERRIDE")
-            if not (c2_close > c1_high):
-                return wait("WAIT_MOMENTUM_LONG_BREAKOUT")
+            # 第一根破軌判定：c1 仍在軌內，c2 首次突破，且乖離未超過 1.5 ATR
+            is_first_breakout = (c1_close <= c1_kc_upper) and (c2_close > c2_kc_upper) and ((c2_close - c2_kc_upper) <= 1.5 * atr)
+            
+            if not is_first_breakout:
+                return wait("WAIT_NOT_FIRST_BREAKOUT_LONG")
+
+            # 形態 A：蓄勢轉折吞噬 (1 小紅 K + 1 長綠 K)
+            is_pattern_a = (
+                (c1_close < c1_open and c1_body <= 0.8 * atr) and
+                (c2_close > c2_open) and
+                (c2_body >= 0.8 * atr) and
+                (c2_body >= 1.3 * c1_body) and
+                (c2_close > c1_high)
+            )
+
+            # 形態 B：單邊暴力貫穿破軌
+            is_pattern_b = (
+                (c2_close > c2_open) and
+                (c2_body >= 1.0 * atr)
+            )
+
+            if not (is_pattern_a or is_pattern_b):
+                return wait("WAIT_MOMENTUM_LONG_PATTERN")
                 
             return dict(action="ENTER", side="LONG",
-                        reason="DOUBLE_CANDLE_MOMENTUM_LONG",
+                        reason="DOUBLE_CANDLE_MOMENTUM_LONG" if is_pattern_a else "DIRECT_BREAKOUT_LONG",
                         entry_atr=atr,
                         bypass_flat_check=True,
                         bypass_cooldown=True,
                         entry_type="MOMENTUM_BREAKOUT")
 
         elif side == "SHORT":
-            # 前一根 c1 為小綠K
-            if not (c1_close > c1_open and c1_body <= 0.8 * atr):
-                return wait("WAIT_MOMENTUM_SHORT_C1")
+            c1_kc_lower = float(c1.get('kc_lower', 0))
+            c2_kc_lower = float(c2.get('kc_lower', 0))
             
-            # 當前根 c2 為強勢長紅K
-            if not (c2_close < c2_open):
-                return wait("WAIT_MOMENTUM_SHORT_C2_COLOR")
-            if not (c2_body >= 0.8 * atr):
-                return wait("WAIT_MOMENTUM_SHORT_C2_BODY")
-            if not (c2_body >= 1.3 * c1_body):
-                return wait("WAIT_MOMENTUM_SHORT_C2_OVERRIDE")
-            if not (c2_close < c1_low):
-                return wait("WAIT_MOMENTUM_SHORT_BREAKOUT")
+            # 第一根破軌判定：c1 仍在軌內，c2 首次跌破，且乖離未超過 1.5 ATR
+            is_first_breakout = (c1_close >= c1_kc_lower) and (c2_close < c2_kc_lower) and ((c2_kc_lower - c2_close) <= 1.5 * atr)
+            
+            if not is_first_breakout:
+                return wait("WAIT_NOT_FIRST_BREAKOUT_SHORT")
+
+            # 形態 A：蓄勢轉折吞噬 (1 小綠 K + 1 長紅 K)
+            is_pattern_a = (
+                (c1_close > c1_open and c1_body <= 0.8 * atr) and
+                (c2_close < c2_open) and
+                (c2_body >= 0.8 * atr) and
+                (c2_body >= 1.3 * c1_body) and
+                (c2_close < c1_low)
+            )
+
+            # 形態 B：單邊暴力貫穿破軌
+            is_pattern_b = (
+                (c2_close < c2_open) and
+                (c2_body >= 1.0 * atr)
+            )
+
+            if not (is_pattern_a or is_pattern_b):
+                return wait("WAIT_MOMENTUM_SHORT_PATTERN")
 
             return dict(action="ENTER", side="SHORT",
-                        reason="DOUBLE_CANDLE_MOMENTUM_SHORT",
+                        reason="DOUBLE_CANDLE_MOMENTUM_SHORT" if is_pattern_a else "DIRECT_BREAKOUT_SHORT",
                         entry_atr=atr,
                         bypass_flat_check=True,
                         bypass_cooldown=True,
