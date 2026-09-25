@@ -116,17 +116,9 @@ def protection(position, price, fee, slippage, frame=None):
         _early_locked = math.floor(peak_net / 2.0) * 2.0 - 2.0
     _profit_locked = _early_locked > 0.0  # True 表示已鎖住利潤
 
-    # 0b. 破中軌緊急熔斷：★ 若階梯鎖利已生效，不以中軌熔斷干擾（讓後面鎖利正常平倉）
-    if not triggered and not _profit_locked and frame is not None and len(frame) > 0:
-        live_candle = frame.iloc[-1]
-        ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', price)))
-        if side == 'LONG' and price < ema_base:
-            triggered = True
-            exit_reason = 'EMERGENCY_TREND_BREAK: 多單即時現價跌破基準中軌，趨勢破位即刻止損！'
-        elif side == 'SHORT' and price > ema_base:
-            triggered = True
-            exit_reason = 'EMERGENCY_TREND_BREAK: 空單即時現價站上基準中軌，趨勢破位即刻止損！'
-        
+    # 0b. 破中軌緊急熔斷：依使用者要求關閉，只用 2.0 ATR 止盈 / 1.5 ATR 止損
+    # 妖幣開倉後常見回踩中軌再繼續拉升，不能靠中軌熔斷提早平倉
+
     # --- 2. 固定雙軌止盈止損 (完全忽略均線與回吐) ---
     tp_price = 0.0
     sl_price = 0.0
