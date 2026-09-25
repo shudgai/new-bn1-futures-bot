@@ -265,13 +265,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
         # =========================================================================
         # 動態波段動能竭盡硬防線 (ATR-Based Wave Extension Block)
+        # ★ 修正：門檻 4.5→6.0 ATR，且已在 KC 上軌外時豁免（外軌突破入口不能被誤殺）
         # =========================================================================
         if len(df) >= 30 and live_atr > 0:
             lookback_bars = 30
             wave_low = float(df['low'].iloc[-lookback_bars:].min())
-            max_extension_atr = 4.5 * live_atr
+            max_extension_atr = 6.0 * live_atr
             accumulated_rise = live_close - wave_low
-            if accumulated_rise >= max_extension_atr:
+            kc_upper_val = float(live_candle.get('kc_upper', 0))
+            already_outside_upper = kc_upper_val > 0 and live_close >= kc_upper_val
+            if accumulated_rise >= max_extension_atr and not already_outside_upper:
                 return False, f"🛑 BLOCKED_WAVE_EXHAUSTED (Rise {accumulated_rise:.4f} >= {max_extension_atr:.4f})", {}
 
         # -----------------------------------------------------------------
@@ -399,13 +402,16 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
         # =========================================================================
         # 動態波段動能竭盡硬防線 (ATR-Based Wave Extension Block)
+        # ★ 同步修正：門檻 4.5→6.0 ATR，已在 KC 下軌外時豁免殺短
         # =========================================================================
         if len(df) >= 30 and live_atr > 0:
             lookback_bars = 30
             wave_high = float(df['high'].iloc[-lookback_bars:].max())
-            max_extension_atr = 4.5 * live_atr
+            max_extension_atr = 6.0 * live_atr
             accumulated_drop = wave_high - live_close
-            if accumulated_drop >= max_extension_atr:
+            kc_lower_val = float(live_candle.get('kc_lower', float('inf')))
+            already_outside_lower = kc_lower_val < float('inf') and live_close <= kc_lower_val
+            if accumulated_drop >= max_extension_atr and not already_outside_lower:
                 return False, f"🛑 BLOCKED_WAVE_EXHAUSTED (Drop {accumulated_drop:.4f} >= {max_extension_atr:.4f})", {}
 
         # -----------------------------------------------------------------
