@@ -137,19 +137,7 @@ def protection(position, price, fee, slippage, frame=None):
             exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制且單根逆向達 {adverse_atr:.2f} ATR (>=2.0)，即刻市價全平止損！'
 
     # --- 3. 初始防守止損 (1.5 ATR SL 保命符) ---
-    atr = float(position.get('entry_atr', 0))
-    if atr > 0 and not triggered:
-        if side == "SHORT":
-            sl_price = entry + 1.5 * atr
-            if price >= sl_price:
-                triggered = True
-                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 初始止損 ({sl_price:.6f})"
-                
-        elif side == "LONG":
-            sl_price = entry - 1.5 * atr
-            if price <= sl_price:
-                triggered = True
-                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 初始止損 ({sl_price:.6f})"
+    # 已根據用戶要求移除 1.5 ATR 初始止損，僅保留 2.0 ATR 或峰谷平倉
 
     if state.get('pending'):
         exit_reason = state.get('reason') or position.get('exit_reason_override') or exit_reason
@@ -296,6 +284,25 @@ class ProfitProtectionExitStrategy(IExitStrategy):
                 f.write(f"adverse_reason returned: {adverse_reason}\\n")
             if adverse_reason:
                 return f"PROFIT_PROTECTION_ABNORMAL_EXIT {adverse_reason}"
+
+        # 1.5 峰谷平倉與過中軌平倉 (Peak/Valley turn and Mid-Band cross)
+        from core.services.swing_service import significant_ma3_turn
+        is_peak_valley_turn = significant_ma3_turn(position, frame, price)
+        if is_peak_valley_turn:
+            return "EXIT_TRUE_TOP_STRUCTURE_BREAK_MA3"
+
+        # 如果過了峰谷但沒平倉（因為沒跌破 0.3 ATR），則退而求其次：若跌破中軌就要平倉
+        ma3_state = position.get('channel_significant_ma3_turn')
+        if ma3_state and ma3_state.get('favorable'):
+            side = position.get('side', 'LONG')
+            if frame is not None and len(frame) >= 2:
+                prev_1 = frame.iloc[-2]
+                kc_mid = float(prev_1.get("kc_middle", prev_1.get("ema_20", 0.0)))
+                if kc_mid > 0:
+                    if side == "LONG" and price < kc_mid:
+                        return "EXIT_KC_MID_CROSSED_AFTER_FAVORABLE"
+                    elif side == "SHORT" and price > kc_mid:
+                        return "EXIT_KC_MID_CROSSED_AFTER_FAVORABLE"
 
         # 2. 執行常規保護與階梯鎖利
         result = protection(position, price, self.fee, self.slippage, frame)
