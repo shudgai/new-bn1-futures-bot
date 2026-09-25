@@ -127,28 +127,20 @@ def protection(position, price, fee, slippage, frame=None):
         triggered = True
         exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制 ({net:.2f}U <= {max_allowed_loss_u}U)，即刻市價全平止損！'
 
-    # --- 3. 固定波段止盈與防守止損 (焊死 2.0 ATR TP / 1.5 ATR SL) ---
+    # --- 3. 初始防守止損 (1.5 ATR SL 保命符) ---
     atr = float(position.get('entry_atr', 0))
     if atr > 0 and not triggered:
         if side == "SHORT":
-            tp_price = entry - 2.0 * atr
             sl_price = entry + 1.5 * atr
-            if price <= tp_price:
+            if price >= sl_price:
                 triggered = True
-                exit_reason = f"EXIT_TP: 觸及 2.0 ATR 止盈 ({tp_price:.6f})"
-            elif price >= sl_price:
-                triggered = True
-                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 止損 ({sl_price:.6f})"
+                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 初始止損 ({sl_price:.6f})"
                 
         elif side == "LONG":
-            tp_price = entry + 2.0 * atr
             sl_price = entry - 1.5 * atr
-            if price >= tp_price:
+            if price <= sl_price:
                 triggered = True
-                exit_reason = f"EXIT_TP: 觸及 2.0 ATR 止盈 ({tp_price:.6f})"
-            elif price <= sl_price:
-                triggered = True
-                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 止損 ({sl_price:.6f})"
+                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 初始止損 ({sl_price:.6f})"
 
     if state.get('pending'):
         exit_reason = state.get('reason') or position.get('exit_reason_override') or exit_reason
