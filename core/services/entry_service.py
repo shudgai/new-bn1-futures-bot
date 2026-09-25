@@ -19,7 +19,7 @@ CLOSED_BREAKOUT_CODES = {
 def supported_entry_reason(reason, side):
     from core.services.outer_turn_entry import CODES
     from core.services.closed_breakout_entry import CODES as BREAKOUT_CODES
-    if reason in ('MA_CROSS_GOLDEN_LONG', 'MA_CROSS_DEATH_SHORT'):
+    if reason in ('MA_CROSS_GOLDEN_LONG', 'MA_CROSS_DEATH_SHORT', 'KC_OUTER_CONTINUATION_LONG', 'KC_OUTER_CONTINUATION_SHORT'):
         return side in ('LONG', 'SHORT') and reason.endswith('_' + side)
     return side in ('LONG', 'SHORT') and reason in (CODES | BREAKOUT_CODES) and reason.endswith('_' + side)
 
@@ -159,13 +159,26 @@ def check_entry_signals(
         if (price - kc_upper) > 2.0 * atr:
             return {"action": "WAIT", "side": None, "reason": "OVEREXTENDED_BEYOND_2_ATR_LONG"}
             
+        return {
+            "action": "ENTER",
+            "side": "LONG",
+            "reason": "KC_OUTER_CONTINUATION_LONG",
+            "entry_atr": atr,
+            "bypass_flat_check": True
+        }
+            
     if side == "SHORT":
         if price >= kc_lower:
             return {"action": "WAIT", "side": None, "reason": "STRICT_BLOCK_INSIDE_KC"}
         if (kc_lower - price) > 2.0 * atr:
             return {"action": "WAIT", "side": None, "reason": "OVEREXTENDED_BEYOND_2_ATR_SHORT"}
-        
-    from core.services.closed_breakout_entry import evaluate_channel_entry
-    _, _, decision = evaluate_channel_entry(frame, price, side, state,
-                                         str(frame.attrs.get('symbol', '')))
-    return decision
+            
+        return {
+            "action": "ENTER",
+            "side": "SHORT",
+            "reason": "KC_OUTER_CONTINUATION_SHORT",
+            "entry_atr": atr,
+            "bypass_flat_check": True
+        }
+    
+    return {"action": "WAIT", "side": None, "reason": "UNKNOWN_SIDE"}
