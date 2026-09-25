@@ -34,16 +34,17 @@ def ck_momentum_fading(frame, side):
 
 
 def ck_entry_momentum_ready(frame, side):
-    """Only strengthening confirmed directional CK momentum permits entries."""
+    """Relaxed for high volatility: Only requires the latest closed CK (middle band) slope to be in the correct direction, ignoring momentum acceleration and fading requirements."""
     try:
-        if ck_momentum_fading(frame, side) is not False:
-            return False
+        # 取消 ck_momentum_fading 的攔截
         key = 'kc_middle' if 'kc_middle' in frame.columns else 'ema_20'
         a, b, c = [float(v) for v in frame.iloc[-4:-1][key]]
         sign = 1 if side == 'LONG' else -1
-        previous, latest = sign * (b - a), sign * (c - b)
-        tolerance = max(a, b, c) * 1e-12
-        return previous >= 0 and latest > 0 and latest - previous > tolerance
+        latest = sign * (c - b)
+        
+        # 放寬：只要最新的中軌是在順向推進（斜率正確），就不阻擋開倉。
+        # 移除了原本要求 latest - previous > tolerance (嚴格加速) 的限制。
+        return latest > 0
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return False
 
