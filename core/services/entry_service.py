@@ -152,6 +152,15 @@ def check_entry_signals(
     price = float(curr["close"])
     atr = float(curr["atr"])
     
+    # 允許「峰谷開倉 (Outer Turn)」特權：不受限於破軌，可直接開倉
+    from core.services.outer_turn_entry import evaluate_outer_turn
+    obs = state.get('observations') if state else None
+    symbol = state.get('symbol', '') if state else ''
+    turn_ok, turn_reason, turn_action = evaluate_outer_turn(frame, price, side, obs, symbol)
+    if turn_ok and turn_action.get('action') == 'ENTER':
+        return turn_action
+
+    
     # 嚴格鐵律：K棒收盤價(price)必須突破軌道，否則一律 WAIT！
     if side == "LONG":
         if price <= kc_upper:
