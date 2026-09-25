@@ -146,6 +146,7 @@ def protection(position, price, fee, slippage, frame=None):
         import math
         # 4->2, 6->4, 8->6, 10->8 ...
         locked_net_val = math.floor(peak_net / 2.0) * 2.0 - 2.0
+        state['locked_net'] = locked_net_val  # 確保前端能即時讀取到最新的鎖利金額
         
         if not triggered and net <= locked_net_val:
             triggered = True
