@@ -68,6 +68,8 @@ def protection(position, price, fee, slippage, frame=None):
     side = position.get('side')
     
     if side not in ('LONG', 'SHORT') or not all(math.isfinite(x) and x > 0 for x in (entry, qty, price)):
+        with open("/tmp/debug_flow.log", "a") as f:
+            f.write(f"protection EARLY RETURN: side={side}, entry={entry}, qty={qty}, price={price}\\n")
         return None
         
     sign = 1 if side == 'LONG' else -1
@@ -95,13 +97,27 @@ def protection(position, price, fee, slippage, frame=None):
     exit_reason = ""
     stop_price = 0.0
 
-    # 0. 絕對安全網：實時最大虧損硬止損與破中軌熔斷 (不等收盤，Ticker 秒平)
+    # 0. 絕對安全網：實時最大虧損硬止損 (不等收盤，Ticker 秒平)
     max_allowed_loss_u = -3.0
     if net <= max_allowed_loss_u:
         triggered = True
         exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制 ({net:.2f}U <= {max_allowed_loss_u}U)，即刻市價全平止損！'
 
-    if not triggered and frame is not None and len(frame) > 0:
+    # --- 1. 取得基準 ATR (優先取 entry_atr，否則兜底) ---
+    atr = float(position.get('entry_atr') or (frame.iloc[-1].get('atr', 0) if frame is not None and len(frame) > 0 else 0))
+    with open("/tmp/debug_flow.log", "a") as f:
+        f.write(f"protection atr for {position.get('symbol')}: {atr}\\n")
+    if atr <= 0:
+        return None  # 防止無效 ATR 導致誤觸發
+
+    # ★ 提前計算鎖利門檻，避免中軌熔斷覆蓋已鎖住的利潤
+    _early_locked = 0.0
+    if peak_net >= 4.0:
+        _early_locked = math.floor(peak_net / 2.0) * 2.0 - 2.0
+    _profit_locked = _early_locked > 0.0  # True 表示已鎖住利潤
+
+    # 0b. 破中軌緊急熔斷：★ 若階梯鎖利已生效，不以中軌熔斷干擾（讓後面鎖利正常平倉）
+    if not triggered and not _profit_locked and frame is not None and len(frame) > 0:
         live_candle = frame.iloc[-1]
         ema_base = float(live_candle.get('ema_20', live_candle.get('kc_middle', price)))
         if side == 'LONG' and price < ema_base:
@@ -110,11 +126,6 @@ def protection(position, price, fee, slippage, frame=None):
         elif side == 'SHORT' and price > ema_base:
             triggered = True
             exit_reason = 'EMERGENCY_TREND_BREAK: 空單即時現價站上基準中軌，趨勢破位即刻止損！'
-
-    # --- 1. 取得基準 ATR (優先取 entry_atr，否則兜底) ---
-    atr = float(position.get('entry_atr') or (frame.iloc[-1].get('atr', 0) if frame is not None and len(frame) > 0 else 0))
-    if atr <= 0:
-        return None  # 防止無效 ATR 導致誤觸發
         
     # --- 2. 固定雙軌止盈止損 (完全忽略均線與回吐) ---
     tp_price = 0.0
@@ -140,19 +151,32 @@ def protection(position, price, fee, slippage, frame=None):
             triggered = True
             exit_reason = f'EXIT_STOP_LOSS: 多單觸及 1.5 ATR 止損 ({sl_price:.5f})'
 
+    # ★ 關鍵修正 1：把 ATR 止盈止損線寫回 position，讓 API 能傳送到前端顯示
+    if tp_price > 0:
+        position['atr_tp'] = tp_price
+    if sl_price > 0:
+        position['atr_sl'] = sl_price
+
     # --- 3. 真正的階梯鎖利 (4U鎖2U、6U鎖4U、每2U一階) ---
     locked_net_val = 0.0
     if peak_net >= 4.0:
-        import math
         # 4->2, 6->4, 8->6, 10->8 ...
         locked_net_val = math.floor(peak_net / 2.0) * 2.0 - 2.0
         state['locked_net'] = locked_net_val  # 確保前端能即時讀取到最新的鎖利金額
+    
+    # 寫入即時日誌
+    if peak_net > 1.0:
+        with open("data/locked_net_debug.log", "a") as dbgf:
+            dbgf.write(f"[{position.get('symbol', 'UNK')}] price={price}, net={net:.4f}, peak_net={peak_net:.4f}, locked_net_val={locked_net_val}\n")
         
         if not triggered and net <= locked_net_val:
             triggered = True
             exit_reason = f'EXIT_PROFIT_LOCK_STEP: 淨利從高點 {peak_net:.2f}U 回落，觸發真實階梯鎖利出場 (保底 {locked_net_val:.2f}U)'
             
     # --- 4. MA3 峰谷平倉 (未啟動回吐保護時) ---
+    # ★ 關鍵修正 2：不再限制「MA3 必須在 KC 外軌外才追蹤峰谷」
+    #   原規則導致龍蝦等通道內運行的幣永遠不設峰值，出口徹底失效
+    #   改為：進場後無論 MA3 在哪，都持續追蹤順向極值，0.10 ATR 回落才出場
     if not triggered and peak_net < 4.0 and frame is not None and len(frame) >= 2:
         if 'ma3' not in frame.columns:
             ma3_series = frame['close'].rolling(3).mean()
@@ -163,28 +187,28 @@ def protection(position, price, fee, slippage, frame=None):
         prev_ma3 = float(ma3_series.iloc[-2])
         
         if side == 'LONG':
-            kc_upper = float(frame['kc_upper'].iloc[-1]) if 'kc_upper' in frame.columns else 0.0
-            # 只有當 MA3 嚴格在 CK 上軌外時，才允許刷新峰值 (符合「限 CK 外峰谷」規則)
-            if curr_ma3 > kc_upper:
-                state['ma3_peak'] = max(state.get('ma3_peak', curr_ma3), curr_ma3)
-            # 真峰谷確認：從峰頂回落至少 0.10 ATR，且當前 MA3 確定向下反轉 (curr_ma3 < prev_ma3)
-            if state['ma3_peak'] > 0 and (state['ma3_peak'] - curr_ma3) >= 0.10 * atr and curr_ma3 < prev_ma3:
+            # 只要 MA3 在上升，就持續刷新峰值（不限制必須在上軌外）
+            if curr_ma3 >= prev_ma3:
+                state['ma3_peak'] = max(float(state.get('ma3_peak') or curr_ma3), curr_ma3)
+            # 真峰谷確認：從峰頂回落至少 0.10 ATR，且當前 MA3 確定向下反轉
+            ma3_peak_val = float(state.get('ma3_peak') or 0.0)
+            if ma3_peak_val > 0 and (ma3_peak_val - curr_ma3) >= 0.10 * atr and curr_ma3 < prev_ma3:
                 triggered = True
-                exit_reason = f'EXIT_TRUE_MA3_PEAK: 多單真峰谷確認！MA3 從最高點 {state["ma3_peak"]:.5f} 回落 0.10 ATR'
+                exit_reason = f'EXIT_TRUE_MA3_PEAK: 多單真峰谷確認！MA3 從最高點 {ma3_peak_val:.5f} 回落 0.10 ATR'
                 
         elif side == 'SHORT':
-            kc_lower = float(frame['kc_lower'].iloc[-1]) if 'kc_lower' in frame.columns else float('inf')
-            # 只有當 MA3 嚴格在 CK 下軌外時，才允許刷新谷底
-            if curr_ma3 < kc_lower:
-                state['ma3_valley'] = min(state.get('ma3_valley', curr_ma3), curr_ma3)
-            # 真谷底確認：從谷底回升至少 0.10 ATR，且當前 MA3 確定向上反轉 (curr_ma3 > prev_ma3)
-            if state['ma3_valley'] > 0 and (curr_ma3 - state['ma3_valley']) >= 0.10 * atr and curr_ma3 > prev_ma3:
+            # 只要 MA3 在下降，就持續刷新谷底（不限制必須在下軌外）
+            if curr_ma3 <= prev_ma3:
+                state['ma3_valley'] = min(float(state.get('ma3_valley') or curr_ma3), curr_ma3)
+            # 真谷底確認：從谷底回升至少 0.10 ATR，且當前 MA3 確定向上反轉
+            ma3_valley_val = float(state.get('ma3_valley') or float('inf'))
+            if ma3_valley_val < float('inf') and (curr_ma3 - ma3_valley_val) >= 0.10 * atr and curr_ma3 > prev_ma3:
                 triggered = True
-                exit_reason = f'EXIT_TRUE_MA3_VALLEY: 空單真谷底確認！MA3 從最低點 {state["ma3_valley"]:.5f} 彈升 0.10 ATR'
+                exit_reason = f'EXIT_TRUE_MA3_VALLEY: 空單真谷底確認！MA3 從最低點 {ma3_valley_val:.5f} 彈升 0.10 ATR'
 
     # --- 5. 優化版：MA3 穿越 MA15 停損 (防禦性出場) ---
-    # 增加「假回踩過濾器」：必須跌破 MA15 且 價格也跌破 MA15，並加上微小緩衝區
-    if not triggered and frame is not None and len(frame) >= 1:
+    # ★ 鎖利豁免：已鎖住階梯利潤時，不讓 MA3 死叉搶先平倉（讓鎖利正常執行）
+    if not triggered and not _profit_locked and frame is not None and len(frame) >= 1:
         if 'ma3' in frame.columns and 'ma15' in frame.columns:
             curr_ma3_val = float(frame['ma3'].iloc[-1])
             curr_ma15_val = float(frame['ma15'].iloc[-1])
@@ -325,20 +349,30 @@ class ProfitProtectionExitStrategy(IExitStrategy):
         price: float,
         **kwargs: Any
     ) -> Optional[str]:
+        with open("/tmp/debug_flow.log", "a") as f:
+            f.write(f"evaluate_exit entry for {position.get('symbol')}\\n")
+        
         from core.services.exits.staged_risk_service import staged_enabled
         if staged_enabled(position):
+            with open("/tmp/debug_flow.log", "a") as f:
+                f.write(f"staged_enabled returned TRUE for {position.get('symbol')}\\n")
             return None  # The staged dispatcher is the sole strategy owner.
+
 
         # 1. 優先檢查異常 K 線與大瀑布
         from core.guards.abnormal_guard import channel_adverse_exit_reason
         if frame is not None and not frame.empty and 'atr' in frame.iloc[-2]:
             atr = float(frame.iloc[-2]['atr'])
             adverse_reason = channel_adverse_exit_reason(frame, position.get('side', ''), price, atr)
+            with open("/tmp/debug_flow.log", "a") as f:
+                f.write(f"adverse_reason returned: {adverse_reason}\\n")
             if adverse_reason:
                 return f"PROFIT_PROTECTION_ABNORMAL_EXIT {adverse_reason}"
 
         # 2. 執行常規保護與階梯鎖利
         result = protection(position, price, self.fee, self.slippage, frame)
+        with open("/tmp/protection_debug.log", "a") as dbgf:
+            dbgf.write(f"protection() called for {position.get('symbol')}! result={result}\n")
         if result and result.get('triggered'):
             return result.get('reason', "PROFIT_PROTECTION_DRAWDOWN_EXIT")
         return None

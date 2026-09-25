@@ -113,6 +113,10 @@ def positions_with_triggers():
         merged["sl"] = float(merged.get("sl") or meta.get("sl") or meta.get("active_stop_price") or meta.get("defense_line") or 0.0)
         merged["tp"] = float(merged.get("tp") or meta.get("tp") or 0.0)
 
+        # --- ★ ATR 固定雙軌線（由 profit_protection_service 寫回 position）---
+        merged["atr_tp"] = float(merged.get("atr_tp") or meta.get("atr_tp") or 0.0)
+        merged["atr_sl"] = float(merged.get("atr_sl") or meta.get("atr_sl") or 0.0)
+
 
         # --- 動態利潤分層護航 (三段式) 對接 UI ---
         active_stop_price = merged.get("active_stop_price") or meta.get("active_stop_price")

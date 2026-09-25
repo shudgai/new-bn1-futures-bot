@@ -1075,6 +1075,46 @@
                             ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
                             ctx.stopPriceLine = null;
                         }
+
+                        // ★ 新增：ATR 固定止盈線 (綠色) / 止損線 (紅色)
+                        const atrTp = parseFloat(pos.atr_tp || 0);
+                        const atrSl = parseFloat(pos.atr_sl || 0);
+
+                        if (atrTp > 0) {
+                            if (!ctx.atrTpLine) {
+                                ctx.atrTpLine = ctx.candlestickSeries.createPriceLine({
+                                    price: atrTp,
+                                    color: '#10b981',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: '🎯 ATR止盈(×2)',
+                                });
+                            } else {
+                                ctx.atrTpLine.applyOptions({ price: atrTp });
+                            }
+                        } else if (ctx.atrTpLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.atrTpLine);
+                            ctx.atrTpLine = null;
+                        }
+
+                        if (atrSl > 0) {
+                            if (!ctx.atrSlLine) {
+                                ctx.atrSlLine = ctx.candlestickSeries.createPriceLine({
+                                    price: atrSl,
+                                    color: '#ef4444',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: '🛑 ATR止損(×1.5)',
+                                });
+                            } else {
+                                ctx.atrSlLine.applyOptions({ price: atrSl });
+                            }
+                        } else if (ctx.atrSlLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.atrSlLine);
+                            ctx.atrSlLine = null;
+                        }
                         
                         const swingExt = parseFloat(pos.swing_extreme || 0);
                         if (swingExt > 0) {
@@ -1109,6 +1149,14 @@
                         if (ctx.stopPriceLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.stopPriceLine);
                             ctx.stopPriceLine = null;
+                        }
+                        if (ctx.atrTpLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.atrTpLine);
+                            ctx.atrTpLine = null;
+                        }
+                        if (ctx.atrSlLine) {
+                            ctx.candlestickSeries.removePriceLine(ctx.atrSlLine);
+                            ctx.atrSlLine = null;
                         }
                         if (ctx.swingExtremeLine) {
                             ctx.candlestickSeries.removePriceLine(ctx.swingExtremeLine);
