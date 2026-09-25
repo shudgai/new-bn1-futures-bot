@@ -48,7 +48,6 @@ from core.services.surveillance_service import (
 from core.guards.risk_guard import same_side_entry_allowed, RiskGuardManager
 from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, AbnormalMarketGuard
 from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
-from core.services.exits.fading_exit_service import fading_ma3_turn, next_breakout_ready, STATE_KEY as FADING_STATE_KEY, EXIT_REASON as FADING_EXIT_REASON, IMMEDIATE_EXIT_REASON
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.live_pivot_strategy import LivePivot
 from core.services.strategies.direct_reverse_strategy import authorized as reverse_authorized, quote_ready as reverse_quote_ready
@@ -1084,12 +1083,12 @@ class TradingEngine:
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
         """Use an observed live turn, retaining the shared structured order gates."""
-        side = aligned_entry(frame, price).get('side')
-        if not side:
+        from core.services.strategies.outer_strategy import ck_direction
+        side = ck_direction(frame)
+        if side not in ('LONG', 'SHORT'):
             return False
         pivot_ready = self._live_pivot_ready(symbol, frame, price, side)
-        outer_ready = True
-        if not pivot_ready and not outer_ready:
+        if not pivot_ready:
             return False
         quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol, float('nan'))
         if (not math.isfinite(quoted) or not 0 <= time.time() - quoted <= 5
@@ -1587,8 +1586,13 @@ class TradingEngine:
         watcher.observe(symbol, price, quoted)
 
     def _live_pivot_ready(self, symbol, frame, price, side):
-        """Only confirmed outer breaks may enter; old live-pivot signals are inert."""
-        return False
+        pivot = getattr(self, '_channel_live_pivots', None)
+        if not pivot:
+            return False
+        state = pivot.states.get(symbol)
+        if not state or state.get('identity', (None, None))[1] != side:
+            return False
+        return state.get('ready', False)
 
     def _channel_intrabar_ready(self, symbol, frame, price, side, ck_reverse=False, live_pivot=False):
         """Revalidate closed confirmation or a fresh observed pullback."""
@@ -2753,10 +2757,7 @@ class TradingEngine:
 
 
     def _release_resolved_abnormal_exit(self, symbol, frame, price):
-        if next_breakout_ready(self.account, symbol, frame, price):
-            self.account.channel_profit_reentries.pop(symbol)
-            self.account.save_state()
-            return True
+        pass
         if opposite_entry_releases(self.account, symbol, frame, price):
             ticket = self.account.channel_profit_reentries.pop(symbol)
             self.account.save_state()
