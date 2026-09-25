@@ -16,9 +16,13 @@ CLOSED_BREAKOUT_CODES = {
 }
 
 
+PIVOT_REVERSAL_CODES = {'PIVOT_LOW_REVERSAL_LONG', 'PIVOT_HIGH_REVERSAL_SHORT'}
+
 def supported_entry_reason(reason, side):
     from core.services.outer_turn_entry import CODES
     from core.services.closed_breakout_entry import CODES as BREAKOUT_CODES
+    if reason in PIVOT_REVERSAL_CODES:
+        return side in ('LONG', 'SHORT') and reason.endswith('_' + side)
     if reason in ('MA_CROSS_GOLDEN_LONG', 'MA_CROSS_DEATH_SHORT', 'KC_OUTER_CONTINUATION_LONG', 'KC_OUTER_CONTINUATION_SHORT'):
         return side in ('LONG', 'SHORT') and reason.endswith('_' + side)
     return side in ('LONG', 'SHORT') and reason in (CODES | BREAKOUT_CODES) and reason.endswith('_' + side)

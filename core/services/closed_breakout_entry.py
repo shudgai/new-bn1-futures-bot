@@ -142,28 +142,89 @@ def evaluate_breakout_pullback(frame, price, side, observations=None, symbol='',
         return wait('WAIT_INVALID_MARKET_DATA')
 
 
+def check_pivot_reversal_entry(df):
+    """峰谷反轉開倉判斷 (Keltner 通道外側收回 + 假突破反轉)"""
+    if len(df) < 4:
+        return None
+
+    c_pivot = df.iloc[-2]  # 形成峰谷的極值棒（倒數第二根已收線）
+    c_curr = df.iloc[-1]   # 當前確認棒（倒數第一根已收線 or 未收盤）
+    atr = float(c_pivot.get("atr", 0))
+
+    if atr <= 0:
+        return None
+
+    try:
+        # ==================== 1. 谷底開多判斷 (Pivot Low) ====================
+        # 條件：c_pivot 最低點曾殺破下軌，但 c_curr 收陽線且收盤價成功站回 KC 下軌之上
+        pivot_low_formed = (
+            float(c_pivot["low"]) <= float(c_pivot["kc_lower"])
+            and float(c_curr["close"]) > float(c_curr["open"])   # 收陽確認
+            and float(c_curr["close"]) > float(c_curr["kc_lower"])  # 站回下軌內
+            and float(c_curr["low"]) >= float(c_pivot["low"])  # 未再破底
+        )
+
+        if pivot_low_formed:
+            return {
+                "action": "ENTER",
+                "side": "LONG",
+                "reason": "PIVOT_LOW_REVERSAL_LONG",
+                "entry_atr": atr,
+            }
+
+        # ==================== 2. 頂峰開空判斷 (Pivot High) ====================
+        # 條件：c_pivot 最高點曾衝破上軌，但 c_curr 收陰線且收盤價跌回 KC 上軌之下
+        pivot_high_formed = (
+            float(c_pivot["high"]) >= float(c_pivot["kc_upper"])
+            and float(c_curr["close"]) < float(c_curr["open"])   # 收陰確認
+            and float(c_curr["close"]) < float(c_curr["kc_upper"])  # 跌回上軌內
+            and float(c_curr["high"]) <= float(c_pivot["high"])  # 未再破高
+        )
+
+        if pivot_high_formed:
+            return {
+                "action": "ENTER",
+                "side": "SHORT",
+                "reason": "PIVOT_HIGH_REVERSAL_SHORT",
+                "entry_atr": atr,
+            }
+    except (KeyError, TypeError, ValueError):
+        pass
+
+    return None
+
+
 def evaluate_channel_entry(frame, price, side, observations=None, symbol='', now=None, closed_at=None):
     if frame is None or len(frame) == 0:
         return False, "EMPTY_FRAME", {}
 
-    # 嚴格鐵律：即時報價(或收盤價)必須在 KC 外軌之外！在通道內部無論任何形態絕對不准開倉！
+    # ── 優先入口 1：峰谷反轉（不要求在 KC 外側，收線即觸發）──
+    closed = closed_entry_candles(frame)
+    if len(closed) >= 2:
+        pivot_signal = check_pivot_reversal_entry(closed)
+        if pivot_signal and pivot_signal.get("side") == side:
+            reason = pivot_signal["reason"]
+            return True, reason, dict(action='ENTER', side=side, reason=reason,
+                                     entry_atr=pivot_signal["entry_atr"],
+                                     entry_type='PIVOT_REVERSAL', is_breakout=False)
+
+    # ── 入口 2：嚴格雙破軌（KC 外側才能進場）──
     curr = frame.iloc[-1]
     kc_upper = float(curr["kc_upper"])
     kc_lower = float(curr["kc_lower"])
-    
+
     if side == "LONG" and float(price) <= kc_upper:
         return False, "WAIT_MUST_BREAK_UPPER_KC", {"action": "WAIT"}
-        
+
     if side == "SHORT" and float(price) >= kc_lower:
         return False, "WAIT_MUST_BREAK_LOWER_KC", {"action": "WAIT"}
 
-    # 唯一入口：嚴格雙破軌開倉
     breakout = evaluate_closed_breakout(frame, price, side)
     if breakout[0]:
         return breakout
-        
-    # 用戶指示：停用單純軌外追入 (outer turn) 與回調延續 (pullback)
+
     return False, breakout[1], {}
+
 
 
 def matched_reentry_close(account, symbol, ticket):
