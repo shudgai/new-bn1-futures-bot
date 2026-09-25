@@ -124,8 +124,17 @@ def protection(position, price, fee, slippage, frame=None):
     # 0. 絕對安全網：實時最大虧損硬止損 (不等收盤，Ticker 秒平)
     max_allowed_loss_u = -3.0
     if net <= max_allowed_loss_u:
-        triggered = True
-        exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制 ({net:.2f}U <= {max_allowed_loss_u}U)，即刻市價全平止損！'
+        adverse_atr = 0.0
+        if frame is not None and len(frame) >= 2 and 'atr' in frame.columns:
+            atr_val = float(frame.iloc[-2]['atr'])
+            if atr_val > 0:
+                direction = 1.0 if side == "SHORT" else -1.0
+                adverse_live = direction * (float(price) - float(frame.iloc[-1]["open"]))
+                adverse_atr = adverse_live / atr_val
+                
+        if adverse_atr >= 2.0:
+            triggered = True
+            exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制且單根逆向達 {adverse_atr:.2f} ATR (>=2.0)，即刻市價全平止損！'
 
     # --- 3. 初始防守止損 (1.5 ATR SL 保命符) ---
     atr = float(position.get('entry_atr', 0))
