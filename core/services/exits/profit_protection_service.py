@@ -152,7 +152,7 @@ def protection(position, price, fee, slippage, frame=None):
             exit_reason = f'EXIT_PROFIT_LOCK_STEP: 淨利從高點 {peak_net:.2f}U 回落，觸發真實階梯鎖利出場 (保底 {locked_net_val:.2f}U)'
             
     # --- 4. MA3 峰谷平倉 (未啟動回吐保護時) ---
-    if not triggered and peak_net < 1.0 and frame is not None and len(frame) >= 2:
+    if not triggered and peak_net < 4.0 and frame is not None and len(frame) >= 2:
         if 'ma3' not in frame.columns:
             ma3_series = frame['close'].rolling(3).mean()
         else:
