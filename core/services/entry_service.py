@@ -231,8 +231,8 @@ def global_hard_gate_check(frame: pd.DataFrame, side: str) -> Optional[dict]:
 
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
-    ) -> Dict[str, Any]:
-    """Double-Candle Momentum Breakout (Overrides flat markets and cooldown)."""
+) -> Dict[str, Any]:
+    """Double-Candle Momentum Breakout and Continuation (Overrides flat markets and cooldown)."""
     wait = lambda reason: dict(action="WAIT", side=None, reason=reason)
     if side not in ("LONG", "SHORT"):
         return wait("UNKNOWN_SIDE")
@@ -242,15 +242,10 @@ def check_entry_signals(
     try:
         c1, c2 = closed.iloc[-2], closed.iloc[-1]
         
-        c1_open = float(c1['open'])
-        c1_close = float(c1['close'])
-        c1_high = float(c1['high'])
-        c1_low = float(c1['low'])
-        c1_body = abs(c1_close - c1_open)
+        c1_open, c1_close = float(c1['open']), float(c1['close'])
+        c1_high, c1_low = float(c1['high']), float(c1['low'])
         
-        c2_open = float(c2['open'])
-        c2_close = float(c2['close'])
-        c2_body = abs(c2_close - c2_open)
+        c2_open, c2_close = float(c2['open']), float(c2['close'])
         
         atr = float(c2.get('atr', 0))
         if not math.isfinite(atr) or atr <= 0:
@@ -260,71 +255,73 @@ def check_entry_signals(
             c1_kc_upper = float(c1.get('kc_upper', 0))
             c2_kc_upper = float(c2.get('kc_upper', 0))
             
-            # 第一根破軌判定：c1 仍在軌內，c2 首次突破，且乖離未超過 1.5 ATR
-            is_first_breakout = (c1_close <= c1_kc_upper) and (c2_close > c2_kc_upper) and ((c2_close - c2_kc_upper) <= 1.5 * atr)
-            
-            if not is_first_breakout:
-                return wait("WAIT_NOT_FIRST_BREAKOUT_LONG")
-
-            # 形態 A：蓄勢轉折吞噬 (1 小紅 K + 1 長綠 K)
-            is_pattern_a = (
-                (c1_close < c1_open and c1_body <= 0.8 * atr) and
-                (c2_close > c2_open) and
-                (c2_body >= 0.8 * atr) and
-                (c2_body >= 1.3 * c1_body) and
-                (c2_close > c1_high)
-            )
-
-            # 形態 B：單邊暴力貫穿破軌
-            is_pattern_b = (
-                (c2_close > c2_open) and
-                (c2_body >= 1.0 * atr)
-            )
-
-            if not (is_pattern_a or is_pattern_b):
-                return wait("WAIT_MOMENTUM_LONG_PATTERN")
+            # === 多單決策流程 ===
+            # 1. 基礎物理硬閘門：價格必須在 KC 上軌外
+            if c2_close > c2_kc_upper:
+                deviation = c2_close - c2_kc_upper
                 
-            return dict(action="ENTER", side="LONG",
-                        reason="DOUBLE_CANDLE_MOMENTUM_LONG" if is_pattern_a else "DIRECT_BREAKOUT_LONG",
-                        entry_atr=atr,
-                        bypass_flat_check=True,
-                        bypass_cooldown=True,
-                        entry_type="MOMENTUM_BREAKOUT")
+                # 防過度乖離力竭 (超過 1.5 ATR 不追)
+                if deviation <= 1.5 * atr:
+                    # 通道 1：首次破軌 (前一根在軌內，本根收陽突破)
+                    is_first_breakout = (c1_close <= c1_kc_upper) and (c2_close > c2_open)
+                    
+                    # 通道 2：順勢延續 (前一根已在軌外，本根收陽破前高)
+                    is_continuation = (
+                        (c1_close > c1_kc_upper)
+                        and (c2_close > c2_open)
+                        and (c2_close > c1_high)
+                    )
+                    
+                    if is_first_breakout or is_continuation:
+                        reason = (
+                            "ENTER_FIRST_BREAKOUT_LONG"
+                            if is_first_breakout
+                            else "ENTER_CONTINUATION_LONG"
+                        )
+                        return dict(
+                            action="ENTER", side="LONG", reason=reason,
+                            entry_atr=atr, bypass_flat_check=True,
+                            bypass_cooldown=True, entry_type="MOMENTUM_BREAKOUT"
+                        )
+                else:
+                    return wait("WAIT_OVEREXTENDED_LONG")
+            return wait("WAIT_NOT_OUTSIDE_KC_LONG")
 
         elif side == "SHORT":
             c1_kc_lower = float(c1.get('kc_lower', 0))
             c2_kc_lower = float(c2.get('kc_lower', 0))
             
-            # 第一根破軌判定：c1 仍在軌內，c2 首次跌破，且乖離未超過 1.5 ATR
-            is_first_breakout = (c1_close >= c1_kc_lower) and (c2_close < c2_kc_lower) and ((c2_kc_lower - c2_close) <= 1.5 * atr)
-            
-            if not is_first_breakout:
-                return wait("WAIT_NOT_FIRST_BREAKOUT_SHORT")
-
-            # 形態 A：蓄勢轉折吞噬 (1 小綠 K + 1 長紅 K)
-            is_pattern_a = (
-                (c1_close > c1_open and c1_body <= 0.8 * atr) and
-                (c2_close < c2_open) and
-                (c2_body >= 0.8 * atr) and
-                (c2_body >= 1.3 * c1_body) and
-                (c2_close < c1_low)
-            )
-
-            # 形態 B：單邊暴力貫穿破軌
-            is_pattern_b = (
-                (c2_close < c2_open) and
-                (c2_body >= 1.0 * atr)
-            )
-
-            if not (is_pattern_a or is_pattern_b):
-                return wait("WAIT_MOMENTUM_SHORT_PATTERN")
-
-            return dict(action="ENTER", side="SHORT",
-                        reason="DOUBLE_CANDLE_MOMENTUM_SHORT" if is_pattern_a else "DIRECT_BREAKOUT_SHORT",
-                        entry_atr=atr,
-                        bypass_flat_check=True,
-                        bypass_cooldown=True,
-                        entry_type="MOMENTUM_BREAKOUT")
+            # === 空單決策流程 ===
+            # 1. 基礎物理硬閘門：價格必須在 KC 下軌外
+            if c2_close < c2_kc_lower:
+                deviation = c2_kc_lower - c2_close
+                
+                # 防過度乖離力竭 (超過 1.5 ATR 不追)
+                if deviation <= 1.5 * atr:
+                    # 通道 1：首次破軌 (前一根在軌內，本根收陰跌破)
+                    is_first_breakout = (c1_close >= c1_kc_lower) and (c2_close < c2_open)
+                    
+                    # 通道 2：順勢延續 (前一根已在軌外，本根收陰破前低)
+                    is_continuation = (
+                        (c1_close < c1_kc_lower)
+                        and (c2_close < c2_open)
+                        and (c2_close < c1_low)
+                    )
+                    
+                    if is_first_breakout or is_continuation:
+                        reason = (
+                            "ENTER_FIRST_BREAKOUT_SHORT"
+                            if is_first_breakout
+                            else "ENTER_CONTINUATION_SHORT"
+                        )
+                        return dict(
+                            action="ENTER", side="SHORT", reason=reason,
+                            entry_atr=atr, bypass_flat_check=True,
+                            bypass_cooldown=True, entry_type="MOMENTUM_BREAKOUT"
+                        )
+                else:
+                    return wait("WAIT_OVEREXTENDED_SHORT")
+            return wait("WAIT_NOT_OUTSIDE_KC_SHORT")
                         
     except (KeyError, TypeError, ValueError, IndexError):
         return wait("WAIT_INVALID_MARKET_DATA")
