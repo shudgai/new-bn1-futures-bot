@@ -47,25 +47,16 @@ def significant_ma3_turn(position, frame, price):
             
         if state['favorable']:
             ma3_current = ma
-            ema10 = float(frame.iloc[-2].get('ema_10', price))
             symbol = position.get('symbol', 'UNKNOWN')
             
-            if side == 'LONG':
-                if price < ma3_current:
-                    if ma3_current < ema10:
-                        state['pending'] = True
-                        print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (Close={price:.6f} < MA3={ma3_current:.6f} < EMA10={ema10:.6f})", flush=True)
-                        return True
-                    else:
-                        print(f"[{symbol}] Price retraced MA3, but structure intact (MA3>EMA10). Holding position.", flush=True)
-            elif side == 'SHORT':
-                if price > ma3_current:
-                    if ma3_current > ema10:
-                        state['pending'] = True
-                        print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (Close={price:.6f} > MA3={ma3_current:.6f} > EMA10={ema10:.6f})", flush=True)
-                        return True
-                    else:
-                        print(f"[{symbol}] Price retraced MA3, but structure intact (MA3<EMA10). Holding position.", flush=True)
+            # 計算 MA3 從峰谷的真實反向幅度
+            reversal_dist = -sign * (ma3_current - state['extreme'])
+            
+            # 判斷是否大於 0.10 ATR (避開小抖動)
+            if reversal_dist >= 0.10 * atr:
+                state['pending'] = True
+                print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (MA3 reversed by {reversal_dist:.6f} >= 0.10 ATR)", flush=True)
+                return True
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         position.pop(key, None)
     return False

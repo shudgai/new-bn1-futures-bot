@@ -2,88 +2,7 @@ import math
 from core.services.candle_data import closed_entry_candles, closed_entry_problem
 
 
-def check_special_momentum_engulfing(df):
-    """檢查：微幅蓄勢後突發大動能吞噬開倉 (支援 KC 與 MA 雙模式，豁免橫盤，無視冷卻)
-
-    df: 包含 open, high, low, close, atr, kc_upper, kc_lower, ma3, ma15 的 DataFrame
-    """
-    df = closed_entry_candles(df)
-    if len(df) < 2:
-        return None
-
-    c1 = df.iloc[-2]  # 前一根蓄勢棒
-    c2 = df.iloc[-1]  # 最新收盤的突發動能棒
-    atr = float(c2.get("atr", 0))
-
-    if not math.isfinite(atr) or atr <= 0:
-        return None
-
-    # 計算實體長度
-    c1_body = abs(c1["close"] - c1["open"])
-    c2_body = abs(c2["close"] - c2["open"])
-
-    # 1. 基礎條件：c1 為蓄勢小K棒，c2 為突發大長實體 (>= 1.5 ATR 且 至少是 c1 的 2 倍)
-    is_c1_small = c1_body <= 0.6 * atr
-    is_c2_huge = c2_body >= 1.5 * atr and c2_body >= 2.0 * c1_body
-
-    if not (is_c1_small and is_c2_huge):
-        return None
-
-    # ==================== 空單判斷 (SHORT) ====================
-    # c2 必須是實體陰線 (跌)
-    if c2["close"] < c2["open"]:
-        # 條件 1：跌破前一根最低點 (吞噬)
-        engulf_short = c2["close"] < c1["low"]
-
-        # 條件 2：KC 模式跌破 (或貫穿下軌) OR MA 模式 (收盤灌破 MA3 且低於 MA15)
-        kc_pattern_short = c2["close"] <= float(c2.get("kc_lower", 0)) or (
-            c1["close"] > float(c1.get("kc_lower", 0))
-            and c2["close"] < float(c2.get("kc_middle", 0))
-        )
-
-        ma_pattern_short = c2["close"] < float(c2.get("ma3", 0)) and c2[
-            "close"
-        ] < float(c2.get("ma15", 0))
-
-        if engulf_short and (kc_pattern_short or ma_pattern_short):
-            return {
-                "action": "ENTER",
-                "side": "SHORT",
-                "reason": "MOMENTUM_ENGULFING_SHORT",
-                "entry_atr": atr,
-                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
-                "bypass_cooldown": True,  # 標記：無冷卻期
-                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
-            }
-
-    # ==================== 多單判斷 (LONG) ====================
-    # c2 必須是實體陽線 (漲)
-    if c2["close"] > c2["open"]:
-        # 條件 1：突破前一根最高點 (吞噬)
-        engulf_long = c2["close"] > c1["high"]
-
-        # 條件 2：KC 模式突破 (或貫穿上軌) OR MA 模式 (收盤強拉突破 MA3 且高於 MA15)
-        kc_pattern_long = c2["close"] >= float(c2.get("kc_upper", 0)) or (
-            c1["close"] < float(c1.get("kc_upper", 0))
-            and c2["close"] > float(c2.get("kc_middle", 0))
-        )
-
-        ma_pattern_long = c2["close"] > float(c2.get("ma3", 0)) and c2[
-            "close"
-        ] > float(c2.get("ma15", 0))
-
-        if engulf_long and (kc_pattern_long or ma_pattern_long):
-            return {
-                "action": "ENTER",
-                "side": "LONG",
-                "reason": "MOMENTUM_ENGULFING_LONG",
-                "entry_atr": atr,
-                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
-                "bypass_cooldown": True,  # 標記：無冷卻期
-                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
-            }
-
-    return None
+# Deleted: check_special_momentum_engulfing (violated strict breakout rules)
 
 
 import pandas as pd
@@ -223,9 +142,30 @@ def is_safe_to_enter(curr: pd.Series, prev: pd.Series, side: str, atr: float) ->
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
     ) -> Dict[str, Any]:
-    """Compatibility entry shares closed-breakout and observed-turn validation."""
+    """Strictly enforced entry check: K-bar MUST break out of KC, but not overextend."""
+    if frame is None or frame.empty:
+        return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
+        
+    curr = frame.iloc[-1]
+    kc_upper = float(curr["kc_upper"])
+    kc_lower = float(curr["kc_lower"])
+    price = float(curr["close"])
+    atr = float(curr["atr"])
+    
+    # 嚴格鐵律：K棒收盤價(price)必須突破軌道，否則一律 WAIT！
+    if side == "LONG":
+        if price <= kc_upper:
+            return {"action": "WAIT", "side": None, "reason": "STRICT_BLOCK_INSIDE_KC"}
+        if (price - kc_upper) > 2.0 * atr:
+            return {"action": "WAIT", "side": None, "reason": "OVEREXTENDED_BEYOND_2_ATR_LONG"}
+            
+    if side == "SHORT":
+        if price >= kc_lower:
+            return {"action": "WAIT", "side": None, "reason": "STRICT_BLOCK_INSIDE_KC"}
+        if (kc_lower - price) > 2.0 * atr:
+            return {"action": "WAIT", "side": None, "reason": "OVEREXTENDED_BEYOND_2_ATR_SHORT"}
+        
     from core.services.closed_breakout_entry import evaluate_channel_entry
-    price = float(frame.iloc[-1]['close']) if frame is not None and not frame.empty else 0.0
     _, _, decision = evaluate_channel_entry(frame, price, side, state,
-                                         str(frame.attrs.get('symbol', '')) if frame is not None else '')
+                                         str(frame.attrs.get('symbol', '')))
     return decision

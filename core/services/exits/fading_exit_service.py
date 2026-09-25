@@ -96,15 +96,6 @@ def next_breakout_ready(account, symbol, frame, price):
 
 
 class FadingExitStrategy(IExitStrategy):
-    """OOP Strategy class implementing IExitStrategy for fading MA3 turn exit evaluation."""
-
-    def evaluate_exit(
-        self,
-        position: Dict[str, Any],
-        frame: pd.DataFrame,
-        price: float,
-        **kwargs: Any
-    ) -> Optional[str]:
-        if fading_ma3_turn(position, frame, price):
-            return EXIT_REASON
+    """Disabled by user to enforce fixed 2.0 ATR TP / 1.5 ATR SL."""
+    def evaluate_exit(self, position: Dict[str, Any], frame: pd.DataFrame, price: float, **kwargs: Any) -> Optional[str]:
         return None

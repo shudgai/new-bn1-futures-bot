@@ -143,19 +143,27 @@ def evaluate_breakout_pullback(frame, price, side, observations=None, symbol='',
 
 
 def evaluate_channel_entry(frame, price, side, observations=None, symbol='', now=None, closed_at=None):
-    from core.services.outer_turn_entry import evaluate_outer_turn
-    turn = evaluate_outer_turn(frame, price, side, observations, symbol, now)
-    continuation = evaluate_breakout_pullback(frame, price, side, observations, symbol, now, closed_at)
-    if turn[0]:
-        return turn
+    if frame is None or len(frame) == 0:
+        return False, "EMPTY_FRAME", {}
+
+    # 嚴格鐵律：即時報價(或收盤價)必須在 KC 外軌之外！在通道內部無論任何形態絕對不准開倉！
+    curr = frame.iloc[-1]
+    kc_upper = float(curr["kc_upper"])
+    kc_lower = float(curr["kc_lower"])
+    
+    if side == "LONG" and float(price) <= kc_upper:
+        return False, "WAIT_MUST_BREAK_UPPER_KC", {"action": "WAIT"}
+        
+    if side == "SHORT" and float(price) >= kc_lower:
+        return False, "WAIT_MUST_BREAK_LOWER_KC", {"action": "WAIT"}
+
+    # 唯一入口：嚴格雙破軌開倉
     breakout = evaluate_closed_breakout(frame, price, side)
     if breakout[0]:
         return breakout
-    if continuation[0]:
-        return continuation
-    if turn[1] in ('WAIT_OUTSIDE_LOWER', 'WAIT_OUTSIDE_UPPER'):
-        return continuation if continuation[1] != 'WAIT_CONFIRMED_BREAKOUT_HISTORY' else breakout
-    return turn
+        
+    # 用戶指示：停用單純軌外追入 (outer turn) 與回調延續 (pullback)
+    return False, breakout[1], {}
 
 
 def matched_reentry_close(account, symbol, ticket):

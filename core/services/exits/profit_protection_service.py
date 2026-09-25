@@ -127,26 +127,28 @@ def protection(position, price, fee, slippage, frame=None):
         triggered = True
         exit_reason = f'EMERGENCY_STOP_LOSS: 觸及單筆最大虧損限制 ({net:.2f}U <= {max_allowed_loss_u}U)，即刻市價全平止損！'
 
-    # --- 3. 真正的階梯鎖利 (4U鎖2U、6U鎖4U、每2U一階) ---
-    locked_net_val = 0.0
-    if peak_net >= 4.0:
-        # 4->2, 6->4, 8->6, 10->8 ...
-        locked_net_val = math.floor(peak_net / 2.0) * 2.0 - 2.0
-        state['locked_net'] = locked_net_val  # 確保前端能即時讀取到最新的鎖利金額
-    
-    # 寫入即時日誌
-    if peak_net > 1.0:
-        with open("data/locked_net_debug.log", "a") as dbgf:
-            dbgf.write(f"[{position.get('symbol', 'UNK')}] price={price}, net={net:.4f}, peak_net={peak_net:.4f}, locked_net_val={locked_net_val}\n")
-        
-        if not triggered and locked_net_val > 0 and net <= locked_net_val:
-            triggered = True
-            exit_reason = f'EXIT_PROFIT_LOCK_STEP: 淨利從高點 {peak_net:.2f}U 回落，觸發真實階梯鎖利出場 (保底 {locked_net_val:.2f}U)'
-            
-    # Price crossing the midline is not an exit; only the closed midline slope is.
-    if not triggered and kc_mid_reversed(frame, side):
-        triggered = True
-        exit_reason = 'KC_CK_DIRECTION_REVERSED_EXIT'
+    # --- 3. 固定波段止盈與防守止損 (焊死 2.0 ATR TP / 1.5 ATR SL) ---
+    atr = float(position.get('entry_atr', 0))
+    if atr > 0 and not triggered:
+        if side == "SHORT":
+            tp_price = entry - 2.0 * atr
+            sl_price = entry + 1.5 * atr
+            if price <= tp_price:
+                triggered = True
+                exit_reason = f"EXIT_TP: 觸及 2.0 ATR 止盈 ({tp_price:.6f})"
+            elif price >= sl_price:
+                triggered = True
+                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 止損 ({sl_price:.6f})"
+                
+        elif side == "LONG":
+            tp_price = entry + 2.0 * atr
+            sl_price = entry - 1.5 * atr
+            if price >= tp_price:
+                triggered = True
+                exit_reason = f"EXIT_TP: 觸及 2.0 ATR 止盈 ({tp_price:.6f})"
+            elif price <= sl_price:
+                triggered = True
+                exit_reason = f"EXIT_SL: 觸及 1.5 ATR 止損 ({sl_price:.6f})"
 
     if state.get('pending'):
         exit_reason = state.get('reason') or position.get('exit_reason_override') or exit_reason
@@ -161,7 +163,7 @@ def protection(position, price, fee, slippage, frame=None):
 
     return {'triggered': state['pending'], 'stop_price': stop_price,
             'peak_gross': state['peak_gross'], 'net_pnl': net,
-            'locked_net': locked_net_val, 'peak_net': peak_net, 'retracement_fraction': 0.2 if peak_net >= 1.0 else 0.0,
+            'locked_net': 0.0, 'peak_net': peak_net, 'retracement_fraction': 0.2 if peak_net >= 1.0 else 0.0,
             'reason': exit_reason}
 
 
