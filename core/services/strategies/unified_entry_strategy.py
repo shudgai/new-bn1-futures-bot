@@ -610,6 +610,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
 class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
+        from core.services.entry_service import global_hard_gate_check
+        gate_res = global_hard_gate_check(frame, side)
+        if gate_res is not None:
+            return False, gate_res["reason"], gate_res
+
         from core.services.outer_turn_entry import observation_store
         from core.services.closed_breakout_entry import evaluate_channel_entry, close_identity, clear_pullback
         engine = kwargs.get('engine')

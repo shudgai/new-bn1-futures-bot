@@ -385,8 +385,9 @@
                                         <span v-if="pos.trigger && pos.trigger.volume_divergence_alert" style="font-size: 11px;" title="有利潤且量縮背離：主力收手動能耗盡，留意反轉">❤️</span>
                                         <span style="font-size: 10px; opacity: 0.7;"> ✕平倉</span>
                                     </div>
-                                    <div style="margin-top: 6px; font-size: 12px; font-weight: 800; text-align: center; border-radius: 4px; padding: 4px;" :style="getLockedProfitAmount(pos) > 0 ? 'color: #22c55e; background: rgba(34,197,94,0.1);' : 'color: #ef4444; background: rgba(239,68,68,0.1);'">
-                                        🔒 真正的鎖利: {{ getLockedProfitAmount(pos) !== null ? '+' + getLockedProfitAmount(pos).toFixed(4) + ' USDT' : '未啟動' }}
+                                    <div style="margin-top: 6px; font-size: 11px; font-weight: 700; text-align: center; border-radius: 4px; padding: 4px; background: rgba(0,0,0,0.03); color: var(--text-color);">
+                                        <span style="color: #ef4444; margin-right: 8px;">1.5 ATR SL: {{ pos.atr_sl ? formatPrice(pos.atr_sl) : '計算中...' }}</span>
+                                        <span style="color: #22c55e;">2.0 ATR TP: {{ pos.atr_tp ? formatPrice(pos.atr_tp) : '計算中...' }}</span>
                                     </div>
                                 </td>
                                 <td><span style="font-size:12px; color:var(--text-color); max-width:150px; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" :title="pos.reason">{{ pos.reason || '-' }}</span></td>
@@ -563,7 +564,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; KC &middot; MA3 Pivot Signals</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; MA3 / MA15 交叉確認 &middot; ATR / KC 中軌出場</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -602,26 +603,21 @@
 
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label">止損價:</span>
-                                <span class="chart-pos-info-value" :style="(getPos(symbol) || {}).ratchet_floor ? 'color:#f59e0b;font-weight:600;font-family:monospace;' : 'color:inherit'">
-                                    {{ (getPos(symbol) || {}).ratchet_floor
-                                        ? formatPrice(bot.positions.find(p => p.symbol === symbol).ratchet_floor)
-                                        : '未啟動' }}
+                                <span class="chart-pos-info-label">1.5 ATR 止損:</span>
+                                <span class="chart-pos-info-value" :style="(getPos(symbol) || {}).atr_sl ? 'color:#ef4444;font-weight:600;font-family:monospace;' : 'color:inherit'">
+                                    {{ (getPos(symbol) || {}).atr_sl ? formatPrice(getPos(symbol).atr_sl) : '計算中...' }}
                                 </span>
                             </span>
 
+                            <span class="chart-pos-info-item" v-if="(getPos(symbol) || {}).atr_tp">
+                                <span class="chart-pos-info-label">2.0 ATR 止盈:</span>
+                                <span class="chart-pos-info-value" :style="(getPos(symbol) || {}).atr_tp ? 'color:#22c55e;font-weight:600;font-family:monospace;' : 'color:inherit'">{{ formatPrice(getPos(symbol).atr_tp) }}</span>
+                            </span>
                             <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">未實現盈虧:</span>
                                 <span class="chart-pos-info-value" :style="((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) >= 0 ? 'color:var(--up); font-family:monospace;' : 'color:var(--down); font-family:monospace;'">
                                     {{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0) > 0 ? '+' : '' }}{{ Number((getPos(symbol) || {}).estimated_net_unrealized_pnl || 0).toFixed(4) }} USDT
-                                </span>
-                            </span>
-                            <span class="chart-pos-info-sep">｜</span>
-                            <span class="chart-pos-info-item">
-                                <span class="chart-pos-info-label" :style="getLockedProfitAmount(getPos(symbol)) !== null ? 'color: #22c55e; font-weight: bold;' : 'color: #94a3b8; font-weight: bold;'">��真正的鎖利:</span>
-                                <span class="chart-pos-info-value" :style="getLockedProfitAmount(getPos(symbol)) !== null ? 'color:#22c55e; font-family:monospace; font-weight:bold;' : 'color:#94a3b8; font-family:monospace; font-weight:bold;'">
-                                    {{ getLockedProfitAmount(getPos(symbol)) !== null ? '+' + getLockedProfitAmount(getPos(symbol)).toFixed(4) + ' USDT' : '未啟動' }}
                                 </span>
                             </span>
                         </div>
@@ -1313,7 +1309,8 @@
                     if (pos && pos.channel_profit_protection && pos.channel_profit_protection.locked_net > 0) {
                         return pos.channel_profit_protection.locked_net;
                     }
-                    return null; // 若未啟動鎖利，回傳 null
+                    if (pos && pos.atr_protection_version === 1) return 0;
+                    return null; // 舊倉未提供鎖利狀態
                 },
                 async fetchStatus() {
                     try {

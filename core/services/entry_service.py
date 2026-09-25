@@ -2,6 +2,57 @@ import math
 from core.services.candle_data import closed_entry_candles, closed_entry_problem
 
 
+def ma3_outer_return_problem(frame, price: float, side: str) -> str | None:
+    """Reject an outer MA3 turning back toward its rail, using the latest quote."""
+    try:
+        closed = closed_entry_candles(frame)
+        closes = [float(v) for v in closed['close'].iloc[-3:]]
+        if len(closes) != 3 or not all(math.isfinite(v) and v > 0 for v in closes):
+            return "WAIT_INVALID_MA3_DATA"
+        previous = sum(closes) / 3.
+        live_ma3 = (sum(closes[-2:]) + float(price)) / 3.
+        rail_key = 'kc_upper' if side == 'LONG' else 'kc_lower'
+        previous_rail = float(closed.iloc[-1][rail_key])
+        live_rail = float(frame.iloc[-1][rail_key])
+        sign = 1 if side == 'LONG' else -1
+        outside = sign * (previous - previous_rail) > 0 or sign * (live_ma3 - live_rail) > 0
+        if outside and sign * (live_ma3 - previous) < 0:
+            return "WAIT_MA3_RETURNING_TO_OUTER_RAIL"
+    except (KeyError, TypeError, ValueError, IndexError):
+        return "WAIT_INVALID_MA3_DATA"
+    return None
+
+
+def strict_kc_entry_gate(frame, price, side):
+    """No entry reason may bypass closed confirmation or the live outer rail."""
+    if side not in ("LONG", "SHORT"):
+        return "UNKNOWN_SIDE"
+    try:
+        closed = closed_entry_candles(frame)
+        if closed.empty:
+            return "WAIT_CLOSED_CONFIRMATION"
+        c2, live = closed.iloc[-1], frame.iloc[-1]
+        close, upper, lower, atr = (float(c2[k]) for k in ("close", "kc_upper", "kc_lower", "atr"))
+        live_upper, live_lower = (float(live[k]) for k in ("kc_upper", "kc_lower"))
+        price = float(price)
+        if (not all(math.isfinite(v) and v > 0 for v in
+                    (close, upper, lower, atr, live_upper, live_lower, price))
+                or lower >= upper or live_lower >= live_upper):
+            return "WAIT_INVALID_MARKET_DATA"
+        sign = 1 if side == "LONG" else -1
+        rail = upper if side == "LONG" else lower
+        live_rail = live_upper if side == "LONG" else live_lower
+        if sign * (close - rail) <= 0:
+            return "STRICT_BLOCK_CLOSED_INSIDE_KC"
+        if sign * (price - live_rail) <= 0:
+            return "STRICT_BLOCK_INSIDE_KC"
+        if sign * (price - live_rail) > 2.0 * atr:
+            return "OVEREXTENDED_BEYOND_2_ATR_" + side
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return "WAIT_INVALID_MARKET_DATA"
+    return ma3_outer_return_problem(frame, price, side)
+
+
 # Deleted: check_special_momentum_engulfing (violated strict breakout rules)
 
 
@@ -19,13 +70,18 @@ CLOSED_BREAKOUT_CODES = {
 PIVOT_REVERSAL_CODES = {'PIVOT_LOW_REVERSAL_LONG', 'PIVOT_HIGH_REVERSAL_SHORT'}
 
 def supported_entry_reason(reason, side):
-    from core.services.outer_turn_entry import CODES
-    from core.services.closed_breakout_entry import CODES as BREAKOUT_CODES
-    if reason in PIVOT_REVERSAL_CODES:
-        return side in ('LONG', 'SHORT') and reason.endswith('_' + side)
-    if reason in ('MA_CROSS_GOLDEN_LONG', 'MA_CROSS_DEATH_SHORT', 'KC_OUTER_CONTINUATION_LONG', 'KC_OUTER_CONTINUATION_SHORT'):
-        return side in ('LONG', 'SHORT') and reason.endswith('_' + side)
-    return side in ('LONG', 'SHORT') and reason in (CODES | BREAKOUT_CODES) and reason.endswith('_' + side)
+    return (side == "LONG" and reason == "MA_CROSS_GOLDEN_LONG") or (
+        side == "SHORT" and reason == "MA_CROSS_DEATH_SHORT")
+
+
+def ma_cross_entry_gate(frame, price, side):
+    try:
+        if not math.isfinite(float(price)) or float(price) <= 0:
+            return "WAIT_INVALID_QUOTE"
+    except (TypeError, ValueError):
+        return "WAIT_INVALID_QUOTE"
+    result = check_entry_signals(frame, side, 0)
+    return None if result['action'] == 'ENTER' else result['reason']
 
 
 
@@ -136,62 +192,74 @@ def channel_immediate_outer_break_action(
         return channel_strong_first_outer_touch_action(frame, price, "SHORT")
     return {"action": "WAIT", "side": None, "reason": "INSIDE_KC"}
 
-def is_safe_to_enter(curr: pd.Series, prev: pd.Series, side: str, atr: float) -> Optional[str]:
+def global_hard_gate_check(frame: pd.DataFrame, side: str) -> Optional[dict]:
     """
-    環境安全檢查 (Context Check)：
-    依據您的強制指令，此函數已完全放行，不再阻擋破軌開倉。
+    物理位置硬性閘門：徹底封死通道內開倉。
+    只要收盤價不在軌道外，必須直接 return WAIT。
     """
+    try:
+        from core.services.candle_data import closed_entry_candles
+        closed = closed_entry_candles(frame)
+        if len(closed) < 2:
+            return {"action": "WAIT", "reason": "HARD_GATE: 歷史K線不足"}
+        
+        c2 = closed.iloc[-1]
+        atr = float(c2.get("atr", 0))
+        
+        # 空單唯一物理準則：收盤價必須 < KC 下軌，且本根 K 棒必須是陰線 (close < open)
+        if side == "SHORT":
+            if c2["close"] >= c2["kc_lower"]:
+                return {"action": "WAIT", "reason": "HARD_GATE: 未收在KC下軌外"}
+            if c2["close"] >= c2["open"]:
+                return {"action": "WAIT", "reason": "HARD_GATE: 陽線嚴禁開空"}
+            if atr > 0 and (c2["kc_lower"] - c2["close"]) > 2.0 * atr:
+                return {"action": "WAIT", "reason": "HARD_GATE: 超過2.0 ATR力竭防追空"}
+
+        # 多單唯一物理準則：收盤價必須 > KC 上軌，且本根 K 棒必須是陽線 (close > open)
+        if side == "LONG":
+            if c2["close"] <= c2["kc_upper"]:
+                return {"action": "WAIT", "reason": "HARD_GATE: 未收在KC上軌外"}
+            if c2["close"] <= c2["open"]:
+                return {"action": "WAIT", "reason": "HARD_GATE: 陰線嚴禁開多"}
+            if atr > 0 and (c2["close"] - c2["kc_upper"]) > 2.0 * atr:
+                return {"action": "WAIT", "reason": "HARD_GATE: 超過2.0 ATR力竭防追多"}
+                
+    except (KeyError, ValueError, TypeError):
+        return {"action": "WAIT", "reason": "HARD_GATE: 數據無效"}
+        
     return None
 
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
     ) -> Dict[str, Any]:
-    """Strictly enforced entry check: K-bar MUST break out of KC, but not overextend."""
-    if frame is None or frame.empty:
-        return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
-        
-    curr = frame.iloc[-1]
-    kc_upper = float(curr["kc_upper"])
-    kc_lower = float(curr["kc_lower"])
-    price = float(curr["close"])
-    atr = float(curr["atr"])
-    
-    # 允許「峰谷開倉 (Outer Turn)」特權：不受限於破軌，可直接開倉
-    from core.services.outer_turn_entry import evaluate_outer_turn
-    obs = state.get('observations') if state else None
-    symbol = state.get('symbol', '') if state else ''
-    turn_ok, turn_reason, turn_action = evaluate_outer_turn(frame, price, side, obs, symbol)
-    if turn_ok and turn_action.get('action') == 'ENTER':
-        return turn_action
-
-    
-    # 嚴格鐵律：K棒收盤價(price)必須突破軌道，否則一律 WAIT！
-    if side == "LONG":
-        if price <= kc_upper:
-            return {"action": "WAIT", "side": None, "reason": "STRICT_BLOCK_INSIDE_KC"}
-        if (price - kc_upper) > 2.0 * atr:
-            return {"action": "WAIT", "side": None, "reason": "OVEREXTENDED_BEYOND_2_ATR_LONG"}
-            
-        return {
-            "action": "ENTER",
-            "side": "LONG",
-            "reason": "KC_OUTER_CONTINUATION_LONG",
-            "entry_atr": atr,
-            "bypass_flat_check": True
-        }
-            
-    if side == "SHORT":
-        if price >= kc_lower:
-            return {"action": "WAIT", "side": None, "reason": "STRICT_BLOCK_INSIDE_KC"}
-        if (kc_lower - price) > 2.0 * atr:
-            return {"action": "WAIT", "side": None, "reason": "OVEREXTENDED_BEYOND_2_ATR_SHORT"}
-            
-        return {
-            "action": "ENTER",
-            "side": "SHORT",
-            "reason": "KC_OUTER_CONTINUATION_SHORT",
-            "entry_atr": atr,
-            "bypass_flat_check": True
-        }
-    
-    return {"action": "WAIT", "side": None, "reason": "UNKNOWN_SIDE"}
+    """Closed MA3/MA15 crossover, close confirmation and ATR body momentum."""
+    wait = lambda reason: dict(action="WAIT", side=None, reason=reason)
+    if side not in ("LONG", "SHORT"):
+        return wait("UNKNOWN_SIDE")
+    closed = closed_entry_candles(frame)
+    if len(closed) < 2:
+        return wait("WAIT_CLOSED_CONFIRMATION")
+    try:
+        c1, c2 = closed.iloc[-2], closed.iloc[-1]
+        m31, m151 = float(c1['ma3']), float(c1['ma15'])
+        m3, m15, opening, close, atr = (float(c2[k]) for k in ('ma3', 'ma15', 'open', 'close', 'atr'))
+        if not all(math.isfinite(v) and v > 0 for v in (m31, m151, m3, m15, opening, close, atr)):
+            return wait("WAIT_INVALID_MARKET_DATA")
+        sign = 1 if side == 'LONG' else -1
+        if not (sign*(m31-m151) <= 0 and sign*(m3-m15) > 0):
+            return wait("WAIT_MA_CROSS")
+        if not (sign*(close-opening) > 0 and sign*(close-m3) > 0 and sign*(close-m15) > 0):
+            return wait("WAIT_MA_CLOSE_CONFIRMATION")
+        body = abs(close-opening)
+        if body < 0.5*atr:
+            return wait("WAIT_BODY_MOMENTUM")
+        bypass = body >= 1.2*atr
+        from core.services.swing_service import channel_terminal_market
+        if not bypass and channel_terminal_market(closed):
+            return wait("WAIT_FLAT_MARKET")
+        return dict(action="ENTER", side=side,
+                    reason="MA_CROSS_GOLDEN_LONG" if side == 'LONG' else "MA_CROSS_DEATH_SHORT",
+                    entry_atr=atr, bypass_flat_check=bypass,
+                    entry_type="MA_CROSS", confirmation_bar_id=c2.get('timestamp', closed.index[-1]))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return wait("WAIT_INVALID_MARKET_DATA")
