@@ -173,58 +173,13 @@ def protection(position, price, fee, slippage, frame=None):
             triggered = True
             exit_reason = f'EXIT_PROFIT_LOCK_STEP: 淨利從高點 {peak_net:.2f}U 回落，觸發真實階梯鎖利出場 (保底 {locked_net_val:.2f}U)'
             
-    # --- 4. MA3 峰谷平倉 (未啟動回吐保護時) ---
-    # ★ 關鍵修正 2：不再限制「MA3 必須在 KC 外軌外才追蹤峰谷」
-    #   原規則導致龍蝦等通道內運行的幣永遠不設峰值，出口徹底失效
-    #   改為：進場後無論 MA3 在哪，都持續追蹤順向極值，0.10 ATR 回落才出場
-    if not triggered and peak_net < 4.0 and frame is not None and len(frame) >= 2:
-        if 'ma3' not in frame.columns:
-            ma3_series = frame['close'].rolling(3).mean()
-        else:
-            ma3_series = frame['ma3']
-            
-        curr_ma3 = float(ma3_series.iloc[-1])
-        prev_ma3 = float(ma3_series.iloc[-2])
-        
-        if side == 'LONG':
-            # 只要 MA3 在上升，就持續刷新峰值（不限制必須在上軌外）
-            if curr_ma3 >= prev_ma3:
-                state['ma3_peak'] = max(float(state.get('ma3_peak') or curr_ma3), curr_ma3)
-            # 真峰谷確認：從峰頂回落至少 0.10 ATR，且當前 MA3 確定向下反轉
-            ma3_peak_val = float(state.get('ma3_peak') or 0.0)
-            if ma3_peak_val > 0 and (ma3_peak_val - curr_ma3) >= 0.10 * atr and curr_ma3 < prev_ma3:
-                triggered = True
-                exit_reason = f'EXIT_TRUE_MA3_PEAK: 多單真峰谷確認！MA3 從最高點 {ma3_peak_val:.5f} 回落 0.10 ATR'
-                
-        elif side == 'SHORT':
-            # 只要 MA3 在下降，就持續刷新谷底（不限制必須在下軌外）
-            if curr_ma3 <= prev_ma3:
-                state['ma3_valley'] = min(float(state.get('ma3_valley') or curr_ma3), curr_ma3)
-            # 真谷底確認：從谷底回升至少 0.10 ATR，且當前 MA3 確定向上反轉
-            ma3_valley_val = float(state.get('ma3_valley') or float('inf'))
-            if ma3_valley_val < float('inf') and (curr_ma3 - ma3_valley_val) >= 0.10 * atr and curr_ma3 > prev_ma3:
-                triggered = True
-                exit_reason = f'EXIT_TRUE_MA3_VALLEY: 空單真谷底確認！MA3 從最低點 {ma3_valley_val:.5f} 彈升 0.10 ATR'
+    # --- 4. MA3 峰谷平倉 (已依使用者要求關閉) ---
+    # 使用者要求：未達 2.0 ATR 不平倉。因此拔除神經質的 MA3 峰谷平倉。
+    pass
 
-    # --- 5. 優化版：MA3 穿越 MA15 停損 (防禦性出場) ---
-    # ★ 鎖利豁免：已鎖住階梯利潤時，不讓 MA3 死叉搶先平倉（讓鎖利正常執行）
-    if not triggered and not _profit_locked and frame is not None and len(frame) >= 1:
-        if 'ma3' in frame.columns and 'ma15' in frame.columns:
-            curr_ma3_val = float(frame['ma3'].iloc[-1])
-            curr_ma15_val = float(frame['ma15'].iloc[-1])
-            
-            # 容錯緩衝 (0.02 ATR)，避免兩條線黏在一起時的微小抖動
-            buffer = 0.02 * atr if atr > 0 else 0.0
-            
-            if side == 'LONG':
-                # 條件：MA3 實質跌破 MA15，且最新價格也無力守住 MA15
-                if curr_ma3_val < (curr_ma15_val - buffer) and price < curr_ma15_val:
-                    triggered = True
-                    exit_reason = f'EXIT_MA3_CROSS_MA15: 多單實質死叉！MA3 跌破 MA15 且價格失守'
-            elif side == 'SHORT':
-                if curr_ma3_val > (curr_ma15_val + buffer) and price > curr_ma15_val:
-                    triggered = True
-                    exit_reason = f'EXIT_MA3_CROSS_MA15: 空單實質金叉！MA3 突破 MA15 且價格失守'
+    # --- 5. 優化版：MA3 穿越 MA15 停損 (已依使用者要求關閉) ---
+    # 使用者要求：未達 2.0 ATR 不平倉。因此拔除 MA15 提早防禦。
+    pass
 
     state['pending'] = bool(state.get('pending')) or triggered
     
