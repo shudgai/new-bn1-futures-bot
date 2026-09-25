@@ -292,7 +292,7 @@ async def get_status(response: Response):
     return {
         "is_running": engine.is_running,
         "api_weight_1m": getattr(engine, 'api_weight_1m', 0),
-        "strategy": "Dynamic Trend Strategy (空間與動能過濾進場 + 極致鈍感持倉)：\n[動態進場] 通道明確擴張 + 預期空間 >= 1.5 ATR (若趨勢急劇傾斜降至 1.0 ATR，連續突破降至 0.8 ATR) + 即時價未回補假突破。\n[特權進場] 單根 K 棒實體 >= 2.0 ATR 時，無視空間與擴張限制，啟動極端動能特權直接進場。\n[出場] 純機械式雙軌獨立掛單：1. 0.5 ATR 固定防禦線。2. 1.0 ATR 階梯限價鎖利單。\n[結構性反轉防禦] 最高優先級防禦：遭遇大陰/陽線實體吞沒且突破前高/前低、或單根反向波動 > 1.5 ATR 且穿出對側軌道時，判定趨勢反轉並立即市價離場。",
+        "strategy": "全新策略 (破軌確認 + 固定 ATR 防護)：\n[開倉] 破軌後第二根 K 棒收盤確認，若大動能實體(>=1.2 ATR)則豁免橫盤檢查直接進場。\n[手動] 手動開倉無視一切阻擋，強勢接管並自動帶入 2.0 / 1.5 ATR 託管。\n[出場] 純機械式雙軌獨立掛單：1. 1.5 ATR 固定止損。2. 2.0 ATR 固定止盈。",
         "environment": "binance_testnet",
         "paper_trading": PAPER_TRADING,
         "available_balance": round(engine.account.available_balance, 2),

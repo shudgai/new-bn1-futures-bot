@@ -450,62 +450,44 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
 class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
-        if frame is None or len(frame) < 10 or ("kc_middle" not in frame.columns and "ema_20" not in frame.columns):
-            return False, "WAIT_INSUFFICIENT_DATA_OR_INDICATORS", {"action": "WAIT"}
+        if frame is None or len(frame) < 3:
+            return False, "WAIT_INSUFFICIENT_DATA", {"action": "WAIT"}
 
-        # --- 處理 COOLDOWN 狀態 (量能衰竭平倉後的冷卻期) ---
-        meta = kwargs.get("meta", {})
-        if meta.get("cooldown_mode") == "WAIT_FOR_VOLUME_RECOVERY":
-            try:
-                import core.config as config
-                current_volume = float(frame['volume'].iloc[-2]) # 使用剛收線的 K 線判斷
-                
-                avg_period = getattr(config, 'VOLUME_WEAKNESS_AVG_PERIOD', 20)
-                recovery_thresh = getattr(config, 'VOLUME_RECOVERY_THRESHOLD', 1.2)
-                
-                if len(frame) > avg_period + 1:
-                    vol_slice = frame['volume'].iloc[-(avg_period + 2):-2]
-                    volume_avg = float(vol_slice.mean())
-                else:
-                    volume_avg = float(frame['volume'].iloc[:-2].mean())
-                    
-                is_volume_strong = current_volume > (volume_avg * recovery_thresh)
-                
-                close = float(frame['close'].iloc[-2])
-                kc_upper = float(frame.get('kc_upper', frame).iloc[-2])
-                kc_lower = float(frame.get('kc_lower', frame).iloc[-2])
-                is_outside = (close > kc_upper) if side == "LONG" else (close < kc_lower)
-                
-                if is_outside and is_volume_strong:
-                    meta["cooldown_mode"] = "NONE"  # 解除冷卻
-                    # 允許後續繼續評估開倉
-                else:
-                    return False, f"WAIT_VOLUME_RECOVERY (Vol={current_volume:.2f}, Avg={volume_avg:.2f})", {"action": "WAIT"}
-            except Exception as e:
-                return False, f"WAIT_VOLUME_RECOVERY_ERROR_{e}", {"action": "WAIT"}
+        c1 = frame.iloc[-2]  # 前一根已收盤（突破棒）
+        c2 = frame.iloc[-1]  # 最新已收盤（確認棒）
+        
+        atr = float(c2.get("atr", 0))
+        if atr <= 0:
+            return False, "WAIT_INVALID_ATR", {"action": "WAIT"}
 
-        try:
-            existing_pos = kwargs.get("existing_pos")
-            position_status = "OPEN" if existing_pos else "NO_POSITION"
-            ok, reason, action_dict = check_streamlined_entry_signal(frame, side, price, position_status, **kwargs)
-        except Exception as e:
-            return False, f"WAIT_ERROR_{e}", {"action": "WAIT"}
+        c1_body = abs(float(c1["close"]) - float(c1["open"]))
+        is_strong_momentum = c1_body >= 1.2 * atr
+        
+        c2_kc_mid = float(c2.get("kc_middle", c2.get("ema_20", 0)))
+        c1_kc_mid = float(c1.get("kc_middle", c1.get("ema_20", 0)))
+        
+        if not is_strong_momentum:
+            if side == "LONG" and c2_kc_mid <= c1_kc_mid:
+                return False, "WAIT_ENVIRONMENT_FLAT", {"action": "WAIT"}
+            if side == "SHORT" and c2_kc_mid >= c1_kc_mid:
+                return False, "WAIT_ENVIRONMENT_FLAT", {"action": "WAIT"}
 
-        if ok:
-            base_dict = {"action": "ENTER", "side": side, "reason": reason}
-            base_dict.update(action_dict)
+        if side == "SHORT":
+            c1_breakout = float(c1["close"]) < float(c1.get("kc_lower", 0))
+            c2_is_bearish = float(c2["close"]) < float(c2["open"])
+            c2_stays_below = float(c2["close"]) < float(c2.get("kc_lower", 0))
+            c2_makes_lower_low = float(c2["close"]) < float(c1["low"])
             
-            # 計算 ATR 通膨係數 (ATR Inflation Ratio)
-            try:
-                current_atr = float(frame.iloc[-2].get('atr', 0))
-                past_120 = frame['atr'].tail(120)
-                avg_atr = float(past_120.mean()) if not past_120.empty else current_atr
-                atr_inflation = (current_atr / avg_atr) if avg_atr > 0 else 1.0
-                base_dict["atr_inflation"] = atr_inflation
-            except Exception:
-                base_dict["atr_inflation"] = 1.0
+            if c1_breakout and c2_is_bearish and c2_stays_below and c2_makes_lower_low:
+                return True, "CONFIRMED_KC_BREAKOUT_SHORT", {"action": "ENTER", "side": "SHORT", "entry_atr": atr, "reason": "CONFIRMED_KC_BREAKOUT_SHORT"}
                 
-            return True, reason, base_dict
+        elif side == "LONG":
+            c1_breakout = float(c1["close"]) > float(c1.get("kc_upper", 0))
+            c2_is_bullish = float(c2["close"]) > float(c2["open"])
+            c2_stays_above = float(c2["close"]) > float(c2.get("kc_upper", 0))
+            c2_makes_higher_high = float(c2["close"]) > float(c1["high"])
             
-        # 若為非破軌，強制回傳 WAIT，確保不會被其它可能殘留的阻擋邏輯（如 BLOCK_LONG_MACRO_WAVE_EXHAUSTED）污染。
-        return False, reason, {"action": "WAIT"}
+            if c1_breakout and c2_is_bullish and c2_stays_above and c2_makes_higher_high:
+                return True, "CONFIRMED_KC_BREAKOUT_LONG", {"action": "ENTER", "side": "LONG", "entry_atr": atr, "reason": "CONFIRMED_KC_BREAKOUT_LONG"}
+                
+        return False, "WAIT_NO_SIGNAL", {"action": "WAIT"}

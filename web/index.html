@@ -518,7 +518,7 @@
 
                 <!-- MANUAL ORDER PANEL -->
                 <div v-if="bot.symbols && bot.symbols.length > 0" class="card">
-                    <div class="card-title">⚡ 手動開倉（交由機器人依 KC 收盤反手管理）</div>
+                    <div class="card-title">⚡ 手動開倉（自動掛載 2.0 ATR 止盈 / 1.5 ATR 止損）</div>
                     <div v-for="symbol in bot.symbols" :key="'manual-' + symbol" style="margin-top:10px;">
                         <div style="font-size:12px; font-weight:800; margin-bottom:5px;">{{ symbol }}</div>
                         <div style="display:flex; gap:8px;">
