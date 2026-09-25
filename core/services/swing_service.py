@@ -52,10 +52,10 @@ def significant_ma3_turn(position, frame, price):
             # 計算 MA3 從峰谷的真實反向幅度
             reversal_dist = -sign * (ma3_current - state['extreme'])
             
-            # 判斷是否大於 0.10 ATR (避開小抖動)
-            if reversal_dist >= 0.10 * atr:
+            # 判斷是否大於 0.30 ATR (真峰谷，不輕易平倉)
+            if reversal_dist >= 0.30 * atr:
                 state['pending'] = True
-                print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (MA3 reversed by {reversal_dist:.6f} >= 0.10 ATR)", flush=True)
+                print(f"[{symbol}] EXIT_REASON: TRUE_TOP_STRUCTURE_BREAK (MA3 reversed by {reversal_dist:.6f} >= 0.30 ATR)", flush=True)
                 return True
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         position.pop(key, None)
