@@ -1,3 +1,87 @@
+
+def check_special_momentum_engulfing(df):
+    """檢查：微幅蓄勢後突發大動能吞噬開倉 (支援 KC 與 MA 雙模式，豁免橫盤，無視冷卻)
+
+    df: 包含 open, high, low, close, atr, kc_upper, kc_lower, ma3, ma15 的 DataFrame
+    """
+    if len(df) < 3:
+        return None
+
+    c1 = df.iloc[-2]  # 前一根蓄勢棒
+    c2 = df.iloc[-1]  # 最新收盤的突發動能棒
+    atr = float(c2.get("atr", 0))
+
+    if atr <= 0:
+        return None
+
+    # 計算實體長度
+    c1_body = abs(c1["close"] - c1["open"])
+    c2_body = abs(c2["close"] - c2["open"])
+
+    # 1. 基礎條件：c1 為蓄勢小K棒，c2 為突發大長實體 (>= 1.5 ATR 且 至少是 c1 的 2 倍)
+    is_c1_small = c1_body <= 0.6 * atr
+    is_c2_huge = c2_body >= 1.5 * atr and c2_body >= 2.0 * c1_body
+
+    if not (is_c1_small and is_c2_huge):
+        return None
+
+    # ==================== 空單判斷 (SHORT) ====================
+    # c2 必須是實體陰線 (跌)
+    if c2["close"] < c2["open"]:
+        # 條件 1：跌破前一根最低點 (吞噬)
+        engulf_short = c2["close"] < c1["low"]
+
+        # 條件 2：KC 模式跌破 (或貫穿下軌) OR MA 模式 (收盤灌破 MA3 且低於 MA15)
+        kc_pattern_short = c2["close"] <= float(c2.get("kc_lower", 0)) or (
+            c1["close"] > float(c1.get("kc_lower", 0))
+            and c2["close"] < float(c2.get("kc_middle", 0))
+        )
+
+        ma_pattern_short = c2["close"] < float(c2.get("ma3", 0)) and c2[
+            "close"
+        ] < float(c2.get("ma15", 0))
+
+        if engulf_short and (kc_pattern_short or ma_pattern_short):
+            return {
+                "action": "ENTER",
+                "side": "SHORT",
+                "reason": "MOMENTUM_ENGULFING_SHORT",
+                "entry_atr": atr,
+                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
+                "bypass_cooldown": True,  # 標記：無冷卻期
+                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
+            }
+
+    # ==================== 多單判斷 (LONG) ====================
+    # c2 必須是實體陽線 (漲)
+    if c2["close"] > c2["open"]:
+        # 條件 1：突破前一根最高點 (吞噬)
+        engulf_long = c2["close"] > c1["high"]
+
+        # 條件 2：KC 模式突破 (或貫穿上軌) OR MA 模式 (收盤強拉突破 MA3 且高於 MA15)
+        kc_pattern_long = c2["close"] >= float(c2.get("kc_upper", 0)) or (
+            c1["close"] < float(c1.get("kc_upper", 0))
+            and c2["close"] > float(c2.get("kc_middle", 0))
+        )
+
+        ma_pattern_long = c2["close"] > float(c2.get("ma3", 0)) and c2[
+            "close"
+        ] > float(c2.get("ma15", 0))
+
+        if engulf_long and (kc_pattern_long or ma_pattern_long):
+            return {
+                "action": "ENTER",
+                "side": "LONG",
+                "reason": "MOMENTUM_ENGULFING_LONG",
+                "entry_atr": atr,
+                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
+                "bypass_cooldown": True,  # 標記：無冷卻期
+                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
+            }
+
+    return None
+
+
 from typing import Dict, Any, Tuple
 import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
@@ -452,6 +536,12 @@ class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
         if frame is None or len(frame) < 3:
             return False, "WAIT_INSUFFICIENT_DATA", {"action": "WAIT"}
+
+        # 特例豁免：突發大動能吞噬開倉
+        momentum_signal = check_special_momentum_engulfing(frame)
+        if momentum_signal and momentum_signal["side"] == side:
+            return True, momentum_signal["reason"], momentum_signal
+
 
         c1 = frame.iloc[-2]  # 前一根已收盤（突破棒）
         c2 = frame.iloc[-1]  # 最新已收盤（確認棒）

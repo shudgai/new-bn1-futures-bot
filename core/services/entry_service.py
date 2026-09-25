@@ -1,3 +1,87 @@
+
+def check_special_momentum_engulfing(df):
+    """檢查：微幅蓄勢後突發大動能吞噬開倉 (支援 KC 與 MA 雙模式，豁免橫盤，無視冷卻)
+
+    df: 包含 open, high, low, close, atr, kc_upper, kc_lower, ma3, ma15 的 DataFrame
+    """
+    if len(df) < 3:
+        return None
+
+    c1 = df.iloc[-2]  # 前一根蓄勢棒
+    c2 = df.iloc[-1]  # 最新收盤的突發動能棒
+    atr = float(c2.get("atr", 0))
+
+    if atr <= 0:
+        return None
+
+    # 計算實體長度
+    c1_body = abs(c1["close"] - c1["open"])
+    c2_body = abs(c2["close"] - c2["open"])
+
+    # 1. 基礎條件：c1 為蓄勢小K棒，c2 為突發大長實體 (>= 1.5 ATR 且 至少是 c1 的 2 倍)
+    is_c1_small = c1_body <= 0.6 * atr
+    is_c2_huge = c2_body >= 1.5 * atr and c2_body >= 2.0 * c1_body
+
+    if not (is_c1_small and is_c2_huge):
+        return None
+
+    # ==================== 空單判斷 (SHORT) ====================
+    # c2 必須是實體陰線 (跌)
+    if c2["close"] < c2["open"]:
+        # 條件 1：跌破前一根最低點 (吞噬)
+        engulf_short = c2["close"] < c1["low"]
+
+        # 條件 2：KC 模式跌破 (或貫穿下軌) OR MA 模式 (收盤灌破 MA3 且低於 MA15)
+        kc_pattern_short = c2["close"] <= float(c2.get("kc_lower", 0)) or (
+            c1["close"] > float(c1.get("kc_lower", 0))
+            and c2["close"] < float(c2.get("kc_middle", 0))
+        )
+
+        ma_pattern_short = c2["close"] < float(c2.get("ma3", 0)) and c2[
+            "close"
+        ] < float(c2.get("ma15", 0))
+
+        if engulf_short and (kc_pattern_short or ma_pattern_short):
+            return {
+                "action": "ENTER",
+                "side": "SHORT",
+                "reason": "MOMENTUM_ENGULFING_SHORT",
+                "entry_atr": atr,
+                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
+                "bypass_cooldown": True,  # 標記：無冷卻期
+                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
+            }
+
+    # ==================== 多單判斷 (LONG) ====================
+    # c2 必須是實體陽線 (漲)
+    if c2["close"] > c2["open"]:
+        # 條件 1：突破前一根最高點 (吞噬)
+        engulf_long = c2["close"] > c1["high"]
+
+        # 條件 2：KC 模式突破 (或貫穿上軌) OR MA 模式 (收盤強拉突破 MA3 且高於 MA15)
+        kc_pattern_long = c2["close"] >= float(c2.get("kc_upper", 0)) or (
+            c1["close"] < float(c1.get("kc_upper", 0))
+            and c2["close"] > float(c2.get("kc_middle", 0))
+        )
+
+        ma_pattern_long = c2["close"] > float(c2.get("ma3", 0)) and c2[
+            "close"
+        ] > float(c2.get("ma15", 0))
+
+        if engulf_long and (kc_pattern_long or ma_pattern_long):
+            return {
+                "action": "ENTER",
+                "side": "LONG",
+                "reason": "MOMENTUM_ENGULFING_LONG",
+                "entry_atr": atr,
+                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
+                "bypass_cooldown": True,  # 標記：無冷卻期
+                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
+            }
+
+    return None
+
+
 import pandas as pd
 from typing import Dict, Any, Optional
 from core.services.strategies.outer_strategy import ma3_outer_cross_ready, ma3_outer_continuation_ready, live_candle_color_ready
@@ -137,116 +221,77 @@ def check_entry_signals(
     if state is None:
         state = {}
         
-    if frame is None or len(frame) < 4:
+    if frame is None or len(frame) < 2:
         return {"action": "WAIT", "reason": "INSUFFICIENT_DATA"}
+
+    # 特例豁免：突發大動能吞噬開倉
+    momentum_signal = check_special_momentum_engulfing(frame)
+    if momentum_signal and momentum_signal["side"] == side:
+        return momentum_signal
+
         
-    curr = frame.iloc[-1]
-    prev = frame.iloc[-2]
-    prev2 = frame.iloc[-3]
-    prev3 = frame.iloc[-4]
+    # c2: 最新收盤棒 (確認棒)
+    # c1: 前一根 (突破棒)
+    c2 = frame.iloc[-1]
+    c1 = frame.iloc[-2]
     
-    atr = float(curr.get("atr", 0))
+    atr = float(c2.get("atr", 0))
     if atr <= 0:
         return {"action": "WAIT", "reason": "INVALID_ATR"}
 
-    # === 環境安全檢查 (Context Check) ===
-    unsafe_reason = is_safe_to_enter(curr, prev, side, atr)
-    if unsafe_reason:
-        return {"action": "WAIT", "reason": unsafe_reason}
+    # 取價格與軌道值
+    c2_close = float(c2["close"])
+    c1_close = float(c1["close"])
+    c1_open = float(c1["open"])
+    
+    c2_kc_upper = float(c2["kc_upper"])
+    c2_kc_lower = float(c2["kc_lower"])
+    c1_kc_upper = float(c1["kc_upper"])
+    c1_kc_lower = float(c1["kc_lower"])
+    
+    # 2. 環境與橫盤過濾豁免機制
+    c1_body = abs(c1_close - c1_open)
+    is_strong_momentum = c1_body >= 1.2 * atr
+    
+    c2_kc_mid = float(c2["kc_middle"])
+    c1_kc_mid = float(c1["kc_middle"])
+    is_slope_aligned_long = c2_kc_mid >= c1_kc_mid
+    is_slope_aligned_short = c2_kc_mid <= c1_kc_mid
+    
+    if not is_strong_momentum:
+        # 常規環境過濾放寬：僅做基礎趨勢方向檢查 (CK 中軌未反向即可)
+        if side == "LONG" and not is_slope_aligned_long:
+            return {"action": "WAIT", "reason": "WAIT_ENVIRONMENT_FLAT"}
+        if side == "SHORT" and not is_slope_aligned_short:
+            return {"action": "WAIT", "reason": "WAIT_ENVIRONMENT_FLAT"}
+
+    # 1. 核心開倉規則：破軌 + 第二根收盤確認
+    if side == "SHORT":
+        # c1 跌破下軌
+        c1_breakout = c1_close < c1_kc_lower
+        # c2 收盤留軌外確認
+        c2_stays_below = c2_close < c2_kc_lower
         
-    # K 棒特徵
-    prev_open = float(prev["open"])
-    prev_close = float(prev["close"])
-    prev_body = abs(prev_close - prev_open)
-    prev_is_long = prev_close > prev_open
-    prev_is_short = prev_close < prev_open
-    
-    # 趨勢斜率判斷 (以中軌或 MA3 為基準)
-    curr_kc_mid = float(curr["kc_middle"])
-    prev_kc_mid = float(prev["kc_middle"])
-    is_slope_aligned_long = curr_kc_mid >= prev_kc_mid
-    is_slope_aligned_short = curr_kc_mid <= prev_kc_mid
-    
-    # === 1. 路徑 A：特例 K 爆發 (Special K Path) ===
-    # 條件：單根 >= 2.0 ATR 且斜率對齊，豁免空間緩衝
-    if prev_body >= 2.0 * atr:
-        if side == "LONG" and prev_is_long and is_slope_aligned_long:
+        if c1_breakout and c2_stays_below:
             return {
                 "action": "ENTER",
                 "side": side,
-                "reason": "SPECIAL_K_BREAKOUT_LONG",
-                "tag": "[SPECIAL_ENTRY]"
+                "reason": "CONFIRMED_KC_BREAKOUT_SHORT",
+                "entry_atr": atr
             }
-        elif side == "SHORT" and prev_is_short and is_slope_aligned_short:
+
+    elif side == "LONG":
+        # c1 突破上軌
+        c1_breakout = c1_close > c1_kc_upper
+        # c2 收盤留軌外確認
+        c2_stays_above = c2_close > c2_kc_upper
+        
+        if c1_breakout and c2_stays_above:
             return {
                 "action": "ENTER",
                 "side": side,
-                "reason": "SPECIAL_K_BREAKOUT_SHORT",
-                "tag": "[SPECIAL_ENTRY]"
+                "reason": "CONFIRMED_KC_BREAKOUT_LONG",
+                "entry_atr": atr
             }
-
-    # === 空間緩衝檢查 (適用於路徑 B 與 C) ===
-    # 在這裡我們直接用參數傳進來的 min_space_buffer_atr，若沒有則預設 0.8 ATR
-    if min_space_buffer_atr < 0.8 * atr:
-        min_space_buffer_atr = 0.8 * atr
-
-    # 這裡簡化為：外部已經計算好空間，如果傳進來的空間不足，則直接擋下
-    # 假設外部呼叫時會將 expected_profit_space 傳入 min_space_buffer_atr 參數中。
-    # 為了語意正確，我們將其視為可獲得的利潤空間。
-    expected_profit_space = min_space_buffer_atr
-    if expected_profit_space < 0.8 * atr:
-        pass # Bypass SPACE_TOO_SMALL block as requested
-
-    # === 2. 路徑 B：結構性轉折 (Structural Reversal Path) ===
-    # 條件：MA3 金叉/死叉 + 斜率對齊 + 實體飽滿 (>= 0.6) + 空間緩衝
-    prev_ma3 = float(prev.get("ma3", 0))
-    prev_ma15 = float(prev.get("ma15", 0))
-    prev2_ma3 = float(prev2.get("ma3", 0))
-    prev2_ma15 = float(prev2.get("ma15", 0))
-    
-    is_ma_cross_long = prev_ma3 > prev_ma15 and prev2_ma3 <= prev2_ma15
-    is_ma_cross_short = prev_ma3 < prev_ma15 and prev2_ma3 >= prev2_ma15
-    
-    # 實體飽滿度 (假設實體長度佔高低點全長的比例 >= 0.6)
-    prev_high = float(prev["high"])
-    prev_low = float(prev["low"])
-    prev_range = prev_high - prev_low
-    is_solid_body = (prev_body / prev_range >= 0.6) if prev_range > 0 else False
-    
-    if side == "LONG" and is_ma_cross_long and is_slope_aligned_long and is_solid_body:
-        return {
-            "action": "ENTER",
-            "side": side,
-            "reason": "STRUCTURAL_REVERSAL_LONG",
-            "tag": "[STRUCTURAL_REVERSAL]"
-        }
-    elif side == "SHORT" and is_ma_cross_short and is_slope_aligned_short and is_solid_body:
-        return {
-            "action": "ENTER",
-            "side": side,
-            "reason": "STRUCTURAL_REVERSAL_SHORT",
-            "tag": "[STRUCTURAL_REVERSAL]"
-        }
-
-    # === 3. 路徑 C：強勢趨勢延續 (Trend Continuation Path) ===
-    # 條件：區段動能確認（3 根 K 棒總動能 >= 1.0 ATR）+ 斜率對齊 + 空間緩衝
-    # 總動能：最新收盤價與 3 根前的開盤價之位移
-    prev3_open = float(prev3["open"])
-    segment_displacement = prev_close - prev3_open
-    
-    if side == "LONG" and is_slope_aligned_long and segment_displacement >= 1.0 * atr:
-        return {
-            "action": "ENTER",
-            "side": side,
-            "reason": "TREND_CONTINUATION_LONG",
-            "tag": "[TREND_CONTINUATION]"
-        }
-    elif side == "SHORT" and is_slope_aligned_short and -segment_displacement >= 1.0 * atr:
-        return {
-            "action": "ENTER",
-            "side": side,
-            "reason": "TREND_CONTINUATION_SHORT",
-            "tag": "[TREND_CONTINUATION]"
-        }
 
     return {"action": "WAIT", "reason": "NO_ENTRY_CONDITION_MET"}
