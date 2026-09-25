@@ -1090,6 +1090,25 @@ class TradingEngine:
         pivot_ready = self._live_pivot_ready(symbol, frame, price, side)
         if not pivot_ready:
             return False
+        # 【硬性防火牆】LivePivot 也必須在通道外側才能進場
+        try:
+            live_curr = frame.iloc[-1]
+            kc_upper_v = float(live_curr['kc_upper'])
+            kc_lower_v = float(live_curr['kc_lower'])
+            atr_v2 = float(frame.iloc[-2]['atr'])
+            if side == 'LONG':
+                if price <= kc_upper_v:
+                    return False
+                if atr_v2 > 0 and (price - kc_upper_v) > 2.0 * atr_v2:
+                    return False  # OVEREXTENDED_LONG
+            elif side == 'SHORT':
+                if price >= kc_lower_v:
+                    return False
+                if atr_v2 > 0 and (kc_lower_v - price) > 2.0 * atr_v2:
+                    return False  # OVEREXTENDED_SHORT
+        except (KeyError, TypeError, ValueError, IndexError):
+            return False
+
         quoted = getattr(self, '_channel_entry_quote_times', {}).get(symbol, float('nan'))
         if (not math.isfinite(quoted) or not 0 <= time.time() - quoted <= 5
                 or float(frame.iloc[-1]['timestamp']) != math.floor(time.time() / 60) * 60000):
