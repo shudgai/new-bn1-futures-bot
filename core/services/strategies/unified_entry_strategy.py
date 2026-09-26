@@ -2,88 +2,6 @@ import math
 from core.services.candle_data import closed_entry_candles, closed_entry_problem
 
 
-def check_special_momentum_engulfing(df):
-    """檢查：微幅蓄勢後突發大動能吞噬開倉 (支援 KC 與 MA 雙模式，豁免橫盤，無視冷卻)
-
-    df: 包含 open, high, low, close, atr, kc_upper, kc_lower, ma3, ma15 的 DataFrame
-    """
-    df = closed_entry_candles(df)
-    if len(df) < 2:
-        return None
-
-    c1 = df.iloc[-2]  # 前一根蓄勢棒
-    c2 = df.iloc[-1]  # 最新收盤的突發動能棒
-    atr = float(c2.get("atr", 0))
-
-    if not math.isfinite(atr) or atr <= 0:
-        return None
-
-    # 計算實體長度
-    c1_body = abs(c1["close"] - c1["open"])
-    c2_body = abs(c2["close"] - c2["open"])
-
-    # 1. 基礎條件：c1 為蓄勢小K棒，c2 為突發大長實體 (>= 1.5 ATR 且 至少是 c1 的 2 倍)
-    is_c1_small = c1_body <= 0.6 * atr
-    is_c2_huge = c2_body >= 1.5 * atr and c2_body >= 2.0 * c1_body
-
-    if not (is_c1_small and is_c2_huge):
-        return None
-
-    # ==================== 空單判斷 (SHORT) ====================
-    # c2 必須是實體陰線 (跌)
-    if c2["close"] < c2["open"]:
-        # 條件 1：跌破前一根最低點 (吞噬)
-        engulf_short = c2["close"] < c1["low"]
-
-        # 條件 2：KC 模式跌破 (或貫穿下軌) OR MA 模式 (收盤灌破 MA3 且低於 MA15)
-        kc_pattern_short = c2["close"] <= float(c2.get("kc_lower", 0)) or (
-            c1["close"] > float(c1.get("kc_lower", 0))
-            and c2["close"] < float(c2.get("kc_middle", 0))
-        )
-
-        ma_pattern_short = c2["close"] < float(c2.get("ma3", 0)) and c2[
-            "close"
-        ] < float(c2.get("ma15", 0))
-
-        if engulf_short and (kc_pattern_short or ma_pattern_short):
-            return {
-                "action": "ENTER",
-                "side": "SHORT",
-                "reason": "MOMENTUM_ENGULFING_SHORT",
-                "entry_atr": atr,
-                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
-                "bypass_cooldown": True,  # 標記：無冷卻期
-                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
-            }
-
-    # ==================== 多單判斷 (LONG) ====================
-    # c2 必須是實體陽線 (漲)
-    if c2["close"] > c2["open"]:
-        # 條件 1：突破前一根最高點 (吞噬)
-        engulf_long = c2["close"] > c1["high"]
-
-        # 條件 2：KC 模式突破 (或貫穿上軌) OR MA 模式 (收盤強拉突破 MA3 且高於 MA15)
-        kc_pattern_long = c2["close"] >= float(c2.get("kc_upper", 0)) or (
-            c1["close"] < float(c1.get("kc_upper", 0))
-            and c2["close"] > float(c2.get("kc_middle", 0))
-        )
-
-        ma_pattern_long = c2["close"] > float(c2.get("ma3", 0)) and c2[
-            "close"
-        ] > float(c2.get("ma15", 0))
-
-        if engulf_long and (kc_pattern_long or ma_pattern_long):
-            return {
-                "action": "ENTER",
-                "side": "LONG",
-                "reason": "MOMENTUM_ENGULFING_LONG",
-                "entry_atr": atr,
-                "allow_pyramiding": True,  # 標記：允許加倉/重複開倉
-                "bypass_cooldown": True,  # 標記：無冷卻期
-                "bypass_flat_check": True,  # 標記：指標不明/平盤強制豁免
-            }
-
-    return None
 
 
 from typing import Dict, Any, Tuple
@@ -91,98 +9,9 @@ import pandas as pd
 from core.interfaces.entry_interface import IEntryStrategy
 
 
-def check_structural_alignment(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
-    """嚴格版（Track B/R/C 使用）：MA15 與 MA3 必須同向，無特例。"""
-    ma15_prev1 = float(prev_1.get('ma15', 0))
-    ma15_prev2 = float(prev_2.get('ma15', 0))
-    ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
-    ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
-    
-    slope_ma15 = ma15_prev1 - ma15_prev2
-    slope_ma3 = ma3_prev1 - ma3_prev2
-    
-    if side == "LONG":
-        ma15_ok = slope_ma15 >= 0
-        ma3_ok = slope_ma3 > 1e-9
-        if not ma15_ok: return False, "FILTERED_DUAL_RESONANCE: MA15 is falling"
-        if not ma3_ok: return False, "FILTERED_DUAL_RESONANCE: MA3 not rising"
-        return True, "OK"
-        
-    elif side == "SHORT":
-        ma15_ok = slope_ma15 <= 0
-        ma3_ok = slope_ma3 < -1e-9
-        if not ma15_ok: return False, "FILTERED_DUAL_RESONANCE: MA15 is rising"
-        if not ma3_ok: return False, "FILTERED_DUAL_RESONANCE: MA3 not falling"
-        return True, "OK"
-        
-    return False, "INVALID_SIDE"
 
 
-def check_structural_alignment_relaxed(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
-    """寬鬆版（Track A / Track P 使用）：只要 MA15 沒有強烈反向即可通過。
-    
-    暴力破軌初期 MA15 因計算橫盤區間而滯後，此版本允許 MA15 持平或輕微逆向，
-    只要 MA15 逆向斜率未超過 0.05 ATR 即視為「不強烈反向」，不攔截進場。
-    MA3 仍須至少不強力反向（允許微弱逆向）。
-    """
-    ma15_prev1 = float(prev_1.get('ma15', 0))
-    ma15_prev2 = float(prev_2.get('ma15', 0))
-    ma3_prev1 = float(prev_1.get('ma3', prev_1.get('ema_3', 0)))
-    ma3_prev2 = float(prev_2.get('ma3', prev_2.get('ema_3', 0)))
 
-    slope_ma15 = ma15_prev1 - ma15_prev2
-    slope_ma3 = ma3_prev1 - ma3_prev2
-    # 強烈反向門檻：斜率超過 0.05 ATR 才視為崩盤式反向，否則放行
-    strong_reversal_threshold = 0.05 * current_atr
-
-    if side == "LONG":
-        ma15_strongly_falling = slope_ma15 < -strong_reversal_threshold
-        ma3_strongly_falling  = slope_ma3  < -strong_reversal_threshold
-        if ma15_strongly_falling:
-            return False, f"FILTERED_TRACK_AP: MA15 strongly falling ({slope_ma15:.6f} < -{strong_reversal_threshold:.6f})"
-        if ma3_strongly_falling:
-            return False, f"FILTERED_TRACK_AP: MA3 strongly falling ({slope_ma3:.6f} < -{strong_reversal_threshold:.6f})"
-        return True, "OK"
-
-    elif side == "SHORT":
-        ma15_strongly_rising = slope_ma15 > strong_reversal_threshold
-        ma3_strongly_rising  = slope_ma3  > strong_reversal_threshold
-        if ma15_strongly_rising:
-            return False, f"FILTERED_TRACK_AP: MA15 strongly rising ({slope_ma15:.6f} > {strong_reversal_threshold:.6f})"
-        if ma3_strongly_rising:
-            return False, f"FILTERED_TRACK_AP: MA3 strongly rising ({slope_ma3:.6f} > {strong_reversal_threshold:.6f})"
-        return True, "OK"
-
-    return False, "INVALID_SIDE"
-
-def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, current_atr: float) -> tuple[bool, str]:
-    prev1_range = float(prev_1['high']) - float(prev_1['low'])
-    prev1_body = abs(float(prev_1['close']) - float(prev_1['open']))
-    
-    prev2_range = float(prev_2['high']) - float(prev_2['low'])
-    prev2_body = abs(float(prev_2['close']) - float(prev_2['open']))
-    
-    is_prev1_extreme = (prev1_range >= 1.5 * current_atr or prev1_body >= 1.5 * current_atr)
-    is_prev2_extreme = (prev2_range >= 1.5 * current_atr or prev2_body >= 1.5 * current_atr)
-    
-    if is_prev2_extreme:
-        if side == "LONG":
-            threshold = float(prev_2['open']) + 0.5 * prev2_body
-            if float(prev_1['close']) <= threshold:
-                return False, "FILTERED_EXTREME_PIN: Next bar failed to hold 50% of extreme candle's body"
-            else:
-                return True, "OK"
-        elif side == "SHORT":
-            threshold = float(prev_2['open']) - 0.5 * prev2_body
-            if float(prev_1['close']) >= threshold:
-                return False, "FILTERED_EXTREME_PIN: Next bar failed to hold 50% of extreme candle's body"
-            else:
-                return True, "OK"
-                
-    if is_prev1_extreme:
-        return False, "FILTERED_EXTREME_PIN: Prev1 is extreme (>=1.5 ATR), waiting for next bar confirmation"
-        
-    return True, "OK"
 
 def check_ma_cross_entry(df):
     """【條件 A：均線金叉/死叉型】"""
@@ -196,7 +25,7 @@ def check_ma_cross_entry(df):
     c2 = df_closed.iloc[-1]  # 最新已收盤
     atr = float(c2.get("atr", 0))
 
-    if atr <= 0:
+    if not math.isfinite(atr) or atr <= 0:
         return None
 
     c1_ma3, c1_ma15 = float(c1["ma3"]), float(c1["ma15"])
@@ -212,7 +41,7 @@ def check_ma_cross_entry(df):
     
     # 1. 多單判斷
     golden_cross = (c1_ma3 <= c1_ma15) and (c2_ma3 > c2_ma15)
-    golden_condition = golden_cross and (c2_close > c2_kc_middle)
+    golden_condition = golden_cross and (c2_close > float(c2["open"])) and (c2_close > c2_kc_middle)
     
     c1_is_red_or_small_green = (c1_close < c1_open) or (abs(c1_close - c1_open) <= 0.5 * atr)
     bullish_engulfing = (
@@ -234,7 +63,7 @@ def check_ma_cross_entry(df):
 
     # 2. 空單判斷
     death_cross = (c1_ma3 >= c1_ma15) and (c2_ma3 < c2_ma15)
-    death_condition = death_cross and (c2_close < c2_kc_middle)
+    death_condition = death_cross and (c2_close < float(c2["open"])) and (c2_close < c2_kc_middle)
     
     c1_is_green_or_small_red = (c1_close > c1_open) or (abs(c1_close - c1_open) <= 0.5 * atr)
     bearish_engulfing = (
@@ -268,6 +97,19 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
     df_closed = closed_entry_candles(df) if df is not None else None
     if df_closed is None or len(df_closed) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
+
+    # Reject incomplete or nonfinite snapshots before any entry can bypass guards.
+    if side not in ("LONG", "SHORT"):
+        return False, "INVALID_SIDE", {}
+    problem = closed_entry_problem(df_closed)
+    if problem:
+        return False, problem, {}
+    try:
+        indicators = df_closed.iloc[-2:][["ma3", "ma15", "kc_middle"]].astype(float)
+        if not all(math.isfinite(v) and v > 0 for v in indicators.to_numpy().flat):
+            return False, "WAIT_INVALID_MARKET_DATA", {}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False, "WAIT_INVALID_MARKET_DATA", {}
 
     # 檢查 MA3 / MA15 交叉開倉 (具有最高優先權)
     ma_cross_signal = check_ma_cross_entry(df_closed)
@@ -332,7 +174,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         if ma_3_slope <= 0:
             return False, "🛑 BLOCKED_MA3_SLOPE (MA3 is flat or falling)", {}
         # 2. 當前價格跌破 MA3，禁多
-        if live_close <= ma3 and not is_exempt_from_sideways:
+        if live_close <= ma3:
             return False, "🛑 BLOCKED_MA3_PRICE (Live Close <= MA3)", {}
         
         # 1.1 收綠禁多 (Bearish Candle Block) - 使用當前未收線(Live)的報價，並嚴格要求上一根已收盤K棒必須為陽線
@@ -355,7 +197,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
                 bullish_count += 1
             else:
                 break
-        if bullish_count >= 6 and not is_exempt_from_sideways:
+        if bullish_count >= 6:
             return False, f"🛑 BLOCKED_PANIC_LONG (Consecutive Bullish: {bullish_count} >= 6)", {}
 
         # 1.4 全局極限正乖離一票否決：Bias > 2.5 ATR
@@ -469,7 +311,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         if ma_3_slope >= 0:
             return False, "🛑 BLOCKED_MA3_SLOPE (MA3 is flat or rising)", {}
         # 2. 當前價格距離 MA3 向上反撲，或前一根已出長下影線打底，禁空
-        if live_close >= ma3 and not is_exempt_from_sideways:
+        if live_close >= ma3:
             return False, "🛑 BLOCKED_MA3_PRICE (Live Close >= MA3)", {}
 
         # 1.1 收紅禁空 (Bullish Candle Block) - 使用當前未收線(Live)的報價，並嚴格要求上一根已收盤K棒必須為陰線
@@ -492,7 +334,7 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
                 bearish_count += 1
             else:
                 break
-        if bearish_count >= 6 and not is_exempt_from_sideways:
+        if bearish_count >= 6:
             return False, f"🛑 BLOCKED_PANIC_SHORT (Consecutive Bearish: {bearish_count} >= 6)", {}
 
         # 2.4 全局極限負乖離一票否決：Bias < -2.5 ATR

@@ -97,7 +97,9 @@ MOMENTUM_ENTRY_CODES = frozenset({
     "ENTER_FIRST_BREAKOUT_LONG", "ENTER_CONTINUATION_LONG",
     "ENTER_KINEMATIC_BREAKOUT_SHORT", "ENTER_KINEMATIC_BREAKOUT_LONG",
 })
-ALLOWED_SIGNAL_CODES = MOMENTUM_ENTRY_CODES
+ALLOWED_SIGNAL_CODES = MOMENTUM_ENTRY_CODES | frozenset({
+    "MA_CROSS_OR_ENGULFING_LONG", "MA_CROSS_OR_ENGULFING_SHORT",
+})
 
 
 def supported_entry_reason(reason, side):
@@ -279,6 +281,15 @@ def check_entry_signals(
     ok, reason, signal_dict = check_streamlined_entry_signal(frame, side, live_price, "NO_POSITION")
     
     if ok and signal_dict:
+        signal_dict = dict(signal_dict)
+        signal_dict.setdefault("side", side)
+        if "reason" not in signal_dict:
+            code = {"FIRST": "FIRST_BREAKOUT", "CONTINUATION": "CONTINUATION"}.get(
+                signal_dict.get("entry_type")
+            )
+            if code is None:
+                return {"action": "WAIT", "side": side, "reason": "UNSUPPORTED_ENTRY_TYPE"}
+            signal_dict["reason"] = "ENTER_" + code + "_" + side
         return signal_dict
         
     return {"action": "WAIT", "side": side, "reason": reason}

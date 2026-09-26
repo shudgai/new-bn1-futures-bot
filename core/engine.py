@@ -2231,7 +2231,7 @@ class TradingEngine:
                 return False
 
         # --- 審計日誌 (Audit Log) ---
-        self.account.log(f"✅ [ENTRY_TRIGGERED] Reason: {signal.get('signal_code') or signal.get('reason')}, Time: {c2_time}, Close: {c2_close}, MA3: {c2_ma3}, MA15: {c2_ma15}, KC_Lower: {c2_kc_lower}, KC_Upper: {c2_kc_upper}", "SUCCESS")
+        self.account.log(f"✅ [ENTRY_TRIGGERED] Reason: {signal.get('signal_code') or signal.get('reason')}, Time: {c2_time}, Close: {curr_close}, MA3: {curr_ma3}, MA15: {curr_ma15}, KC_Lower: {curr_kc_lower}, KC_Upper: {curr_kc_upper}", "SUCCESS")
 
         if is_limit:
             placed = await self.account.place_limit_entry(
