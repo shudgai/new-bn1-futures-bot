@@ -1725,35 +1725,62 @@ class TradingEngine:
 
         # --- 終極物理防呆閘門 (Ultimate Hard Gatekeeper) ---
         c2 = snapshot['frame'].iloc[-1]
-        curr_close = float(c2['close'])
-        curr_open = float(c2['open'])
-        curr_kc_lower = float(c2['kc_lower'])
-        curr_kc_upper = float(c2['kc_upper'])
-        curr_atr = float(c2.get('atr', 0))
-        is_rule_c = "CLOSED_C_" in signal.get("signal_code", "")
+        curr_close     = float(c2['close'])
+        curr_open      = float(c2['open'])
+        curr_kc_lower  = float(c2['kc_lower'])
+        curr_kc_upper  = float(c2['kc_upper'])
+        curr_kc_middle = float(c2.get('kc_middle', 0))
+        curr_atr       = float(c2.get('atr', 0))
+        curr_body      = abs(curr_close - curr_open)
+        # 前一根已收線 KC 中軌（判斷 KC 是否向下傾斜）
+        try:
+            prev_kc_middle = float(snapshot['frame'].iloc[-2].get('kc_middle', curr_kc_middle))
+        except (IndexError, AttributeError, TypeError, ValueError):
+            prev_kc_middle = curr_kc_middle
 
         if side == 'SHORT':
+            # 色彩硬鎖：陽線禁止開空
             if curr_close > curr_open:
                 self.account.log(f"🛑 [FATAL_REJECT] 陽線禁止開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
                 return False
-            is_big_reversal_red = (curr_close < curr_open) and (abs(curr_close - curr_open) > 0.8 * curr_atr)
+            is_big_reversal_red = (curr_close < curr_open) and (curr_body > 0.8 * curr_atr)
             if not is_big_reversal_red and curr_close >= curr_kc_lower:
                 self.account.log(f"🛑 [FATAL_REJECT] 未破下軌禁止開空！Close:{curr_close} >= Lower:{curr_kc_lower}", "ERROR")
                 return False
-        elif side == "LONG":
+
+        elif side == 'LONG':
+            # 色彩硬鎖：陰線禁止開多
             if curr_close < curr_open:
                 self.account.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
                 return False
-            is_big_reversal_green = (curr_close > curr_open) and (abs(curr_close - curr_open) > 0.8 * curr_atr)
+            is_big_reversal_green = (curr_close > curr_open) and (curr_body > 0.8 * curr_atr)
             if not is_big_reversal_green and curr_close <= curr_kc_upper:
                 self.account.log(f"🛑 [FATAL_REJECT] 未破上軌禁止開多！Close:{curr_close} <= Upper:{curr_kc_upper}", "ERROR")
                 return False
 
-        # ── Rule E 高位乖離保護（防頂部接刀）──────────────────────────
-        # 若此筆為 Rule E 追擊單，且收盤距 KC 中軌超過 2.0 ATR，當場拒絕
+            # ══ 空頭環境物理禁多令 ═══════════════════════════════════════
+            # 硬鎖1：收盤價在 KC 中軌下方，嚴禁任何多單
+            if curr_close <= curr_kc_middle:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] 開多被拒：價格 {curr_close:.8g} 在 KC 中軌 {curr_kc_middle:.8g} 下方！",
+                    "ERROR"
+                )
+                return False
+            # 硬鎖2：KC 中軌向下且非極限大陽吞噬（>1.2 ATR），嚴禁開多
+            kc_declining     = curr_kc_middle < prev_kc_middle
+            is_engulfing_bull = curr_body > 1.2 * curr_atr and curr_close > curr_open
+            if kc_declining and not is_engulfing_bull:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] 開多被拒：KC 中軌向下且非極限大陽吞噬！"
+                    f" kc_mid {curr_kc_middle:.8g} < prev {prev_kc_middle:.8g}，"
+                    f" body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
+                    "ERROR"
+                )
+                return False
+
+        # ── Rule E 高位乖離保護（防頂部接刀）─────────────────────────
         is_rule_e = "CLOSED_E_" in signal.get("signal_code", "")
         if is_rule_e and curr_atr > 0:
-            curr_kc_middle = float(c2.get('kc_middle', 0))
             sign_e = 1 if side == 'LONG' else -1
             dist_from_middle = sign_e * (curr_close - curr_kc_middle)
             if dist_from_middle > 2.0 * curr_atr:
