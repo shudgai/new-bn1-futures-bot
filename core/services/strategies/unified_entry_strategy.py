@@ -18,6 +18,7 @@ RULE_CODES = frozenset(f"CLOSED_{rule}_{side}" for rule in "ABCDE" for side in (
 SMALL_BODY_ATR = 0.5      # Rule B: prior bar body must be ≤ this × ATR
 RELAY_LOOKBACK = 20       # Rule E: look-back window for new extreme
 MAX_DIRECTIONAL_WICK_BODY = 0.5  # Rule E: wick/body cap
+MAX_RELAY_MIDDLE_ATR = 2.0  # Rule E: 距 KC 中軌乖離上限，超過禁止追入（防頂部接刀）
 
 
 def confirmed(frame):
@@ -112,6 +113,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
 
     # ── Rule E：脫軌區中繼長線追擊（after_close only，需有平倉紀錄）──
     # 持續在軌道外連續運行，當根再度拉出長實體且創新極值
+    # ⚠️ 乖離保護：若收盤距 KC 中軌超過 MAX_RELAY_MIDDLE_ATR 倍 ATR，禁止高位接刀追多！
     if rule is None and after_close and len(closed) >= RELAY_LOOKBACK + 1 and body > 0.8 * atr:
         previous = closed.iloc[-RELAY_LOOKBACK - 1:-1]
         extreme  = previous.high.max() if side == 'LONG' else previous.low.min()
@@ -119,7 +121,10 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         all_outside = all(sign * (float(row.close) - float(row[rail])) > 0 for row in (c0, c1, c))
         new_extreme  = sign * (float(c.close) - float(extreme)) > 0
         wick_ok      = wick <= MAX_DIRECTIONAL_WICK_BODY * body
-        if all_outside and new_extreme and wick_ok:
+        # 乖離限制：收盤距 KC 中軌的距離不超過 MAX_RELAY_MIDDLE_ATR × ATR
+        dist_from_middle = sign * (float(c.close) - float(c.kc_middle))
+        overextended = dist_from_middle > MAX_RELAY_MIDDLE_ATR * atr
+        if all_outside and new_extreme and wick_ok and not overextended:
             rule = 'E'
 
     if rule is None:

@@ -1749,6 +1749,20 @@ class TradingEngine:
                 self.account.log(f"🛑 [FATAL_REJECT] 未破上軌禁止開多！Close:{curr_close} <= Upper:{curr_kc_upper}", "ERROR")
                 return False
 
+        # ── Rule E 高位乖離保護（防頂部接刀）──────────────────────────
+        # 若此筆為 Rule E 追擊單，且收盤距 KC 中軌超過 2.0 ATR，當場拒絕
+        is_rule_e = "CLOSED_E_" in signal.get("signal_code", "")
+        if is_rule_e and curr_atr > 0:
+            curr_kc_middle = float(c2.get('kc_middle', 0))
+            sign_e = 1 if side == 'LONG' else -1
+            dist_from_middle = sign_e * (curr_close - curr_kc_middle)
+            if dist_from_middle > 2.0 * curr_atr:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] Rule E 乖離過大！距中軌 {dist_from_middle:.6g} > 2.0 ATR {2.0*curr_atr:.6g}，禁止高位追入！",
+                    "ERROR"
+                )
+                return False
+
         atr = final['entry_atr']
         sign = 1 if side == 'LONG' else -1
         context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=final['reason'],
