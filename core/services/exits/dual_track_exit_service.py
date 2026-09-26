@@ -148,15 +148,23 @@ class DualTrackExitStrategy(IExitStrategy):
             state['pending'] = 'TP1_PARTIAL_CLOSE_50PCT'
             return state['pending']
 
-        is_outside = sign * (curr_close - float(c[rail])) > 0
-        profit_gate_open = roi_pct >= MIN_PROFIT_ROI or abs_pnl_est >= MIN_PROFIT_USDT
-
-        ma3_reversed = sign * (float(c.ma3) - float(c1.ma3)) < 0
-        close_cross = sign * (curr_close - float(c.ma3)) < 0
+        profit_gate_open = roi_pct >= MIN_PROFIT_ROI
+        
+        c_ma3 = float(c.ma3)
+        c1_ma3 = float(c1.ma3)
+        
+        # 只要 MA3 結束順向開始走平/反向，或者價格穿破 MA3
+        ma3_reversed = sign * (c_ma3 - c1_ma3) <= 0
+        close_cross = sign * (curr_close - c_ma3) <= 0
+        
         eligible = (math.isfinite(qty) and qty > 0 and profitable
-                    and is_outside and profit_gate_open
-                    and ma3_reversed and close_cross and not protected)
-        reason = 'EXIT_OUTER_MA3_CURVE_CLOSED' if eligible else None
+                    and state.get('outer', False) and profit_gate_open
+                    and (ma3_reversed or close_cross) and not protected)
+        
+        if eligible:
+            reason = "[EXIT_OUTER_MA3] 多單外軌 MA3 衝高低頭，極速鎖利！" if side == 'LONG' else "[EXIT_OUTER_MA3] 空單外軌 MA3 止跌翹頭，極速鎖利！"
+        else:
+            reason = None
 
         state['pending'] = reason
         return reason

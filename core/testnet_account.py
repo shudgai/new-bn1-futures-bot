@@ -141,6 +141,106 @@ class BinanceTestnetAccount:
 
     def __init__(self, exchange):
         self.exchange = exchange
+        
+        # ==================================================
+        # [MASTER_BREAKER] 物理總電閘：強制攔截違規送單
+        # ==================================================
+        self._raw_create_order = self.exchange.create_order
+        
+        async def _master_breaker_create_order(symbol, order_type, side, amount, price=None, params=None):
+            params = params or {}
+            is_reduce = params.get('reduceOnly') in [True, 'true', 'TRUE'] or params.get('closePosition') in [True, 'true', 'TRUE']
+            if is_reduce:
+                self.log(f"[GUARD_PASS] {symbol} 平倉請求放行，正在送往交易所...", "INFO")
+                # 記錄平倉時間，用於同向冷卻
+                self.last_closed_at = getattr(self, 'last_closed_at', {})
+                import time
+                self.last_closed_at[symbol] = time.time()
+                return await self._raw_create_order(symbol, order_type, side, amount, price, params)
+
+            # ------------------ 以下為新開倉硬核審查 ------------------
+            provider = getattr(self, 'entry_frame_provider', None)
+            if provider:
+                from core.services.strategies.unified_entry_strategy import confirmed
+                try:
+                    frame = await provider(symbol)
+                    closed = confirmed(frame)
+                    if closed is not None and len(closed) >= 2:
+                        last_bar = closed.iloc[-1]
+                        prev_bar = closed.iloc[-2]
+                        
+                        close_p = float(last_bar.close)
+                        open_p = float(last_bar.open)
+                        body = abs(close_p - open_p)
+                        atr = float(last_bar.atr)
+                        
+                        kc_upper_curr = float(last_bar.kc_upper)
+                        kc_lower_curr = float(last_bar.kc_lower)
+                        kc_upper_prev = float(prev_bar.kc_upper)
+                        kc_lower_prev = float(prev_bar.kc_lower)
+                        
+                        if 'MA3' in last_bar:
+                            ma3_curr = float(last_bar.MA3)
+                            ma3_prev = float(prev_bar.MA3)
+                        else:
+                            close_col = closed['close']
+                            ma3_curr = float(close_col.iloc[-3:].mean())
+                            ma3_prev = float(close_col.iloc[-4:-1].mean())
+                            
+                        # 計算冷卻 (以秒數換算 K 棒數)
+                        import time
+                        last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
+                        cooldown_bars = (time.time() - last_close_time) / 60.0
+                        if last_close_time > 0 and cooldown_bars < 2:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 違反平倉同向冷卻 (當前: {cooldown_bars:.1f} < 2 根)！阻斷下單！")
+                        
+                        # 1. 開多單總電閘 (LONG)
+                        if side.upper() == 'BUY':
+                            if close_p <= open_p:
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
+                            if ma3_curr <= ma3_prev:
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
+                            if close_p < kc_upper_curr and body < (1.2 * atr):
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開多！")
+                            
+                            is_channel_expanding = kc_upper_curr > kc_upper_prev
+                            is_ma3_breakout = (
+                                ma3_curr > kc_upper_curr
+                                and close_p > kc_upper_curr
+                                and body >= 0.8 * atr
+                                and ma3_curr > ma3_prev
+                            )
+                            if not (is_channel_expanding or is_ma3_breakout):
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 通道未張嘴且無 MA3 強勢脫軌起爆，嚴禁開多！")
+                                
+                        # 2. 開空單總電閘 (SHORT)
+                        elif side.upper() == 'SELL':
+                            if close_p >= open_p:
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
+                            if ma3_curr >= ma3_prev:
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
+                            if close_p > kc_lower_curr and body < (1.2 * atr):
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
+                            
+                            is_channel_expanding = kc_lower_curr < kc_lower_prev
+                            is_ma3_breakout = (
+                                ma3_curr < kc_lower_curr
+                                and close_p < kc_lower_curr
+                                and body >= 0.8 * atr
+                                and ma3_curr < ma3_prev
+                            )
+                            if not (is_channel_expanding or is_ma3_breakout):
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 通道未張嘴且無 MA3 強勢脫軌起爆，嚴禁開空！")
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    pass
+            
+            self.log(f"[GUARD_PASS] {symbol} {side} 通過所有總電閘審核，正式送單！", "INFO")
+            return await self._raw_create_order(symbol, order_type, side, amount, price, params)
+            
+        self.exchange.create_order = _master_breaker_create_order
+        # ==================================================
         self.balance = 0.0
         self.available_balance = 0.0
         self.realized_pnl = 0.0
@@ -1626,10 +1726,58 @@ class BinanceTestnetAccount:
         )
         return {"result": result, "callbackRate": callback_rate}
 
+    async def _send_order(self, symbol, order_type, side, qty, price=None, params=None,
+                          *, entry_context=None):
+        """Single create-order boundary; only reduce-only exits bypass entry checks."""
+        from core.services.entry_firewall import validate_account_entry
+        from core.services.strategies.unified_entry_strategy import confirmed
+        params = dict(params or {})
+        if params.get('reduceOnly') is not True:
+            if side not in ('buy', 'sell'):
+                raise ValueError('[FORBIDDEN_ENTRY] 無效下單方向')
+            
+            # --- [HARD CIRCUIT BREAKER] ---
+            provider = getattr(self, 'entry_frame_provider', None)
+            if provider:
+                try:
+                    frame = await provider(symbol)
+                    closed = confirmed(frame)
+                    if closed is not None and len(closed) >= 2:
+                        last_bar = closed.iloc[-1]
+                        prev_bar = closed.iloc[-2]
+                        atr = float(last_bar.atr)
+                        opening = float(last_bar.open)
+                        close_price = float(last_bar.close)
+                        
+                        if 'MA3' in last_bar:
+                            ma3 = float(last_bar.MA3)
+                            prev_ma3 = float(prev_bar.MA3)
+                        else:
+                            close_col = closed['close']
+                            ma3 = float(close_col.iloc[-3:].mean())
+                            prev_ma3 = float(close_col.iloc[-4:-1].mean())
+                            
+                        if side == 'buy':
+                            if not (ma3 > prev_ma3 and (close_price - opening) >= 1.2 * atr):
+                                print(f"[BYPASS_LEAK_BLOCKED] 熔斷攔截: 買多不符合 MA3 > prev_MA3 ({ma3:.5f} > {prev_ma3:.5f}) 或實體 >= 1.2 ATR ({(close_price - opening):.5f} >= {1.2*atr:.5f})")
+                                raise Exception("[BYPASS_LEAK_BLOCKED] 熔斷攔截: 買多不符合 MA3 > prev_MA3 且實體 >= 1.2 ATR")
+                        elif side == 'sell':
+                            if not (ma3 < prev_ma3 and (opening - close_price) >= 1.2 * atr):
+                                print(f"[BYPASS_LEAK_BLOCKED] 熔斷攔截: 賣空不符合 MA3 < prev_MA3 ({ma3:.5f} < {prev_ma3:.5f}) 或實體 >= 1.2 ATR ({(opening - close_price):.5f} >= {1.2*atr:.5f})")
+                                raise Exception("[BYPASS_LEAK_BLOCKED] 熔斷攔截: 賣空不符合 MA3 < prev_MA3 且實體 >= 1.2 ATR")
+                except Exception as e:
+                    if "[BYPASS_LEAK_BLOCKED]" in str(e):
+                        raise
+            # -----------------------------
+            
+            await validate_account_entry(
+                self, symbol, 'LONG' if side == 'buy' else 'SHORT', entry_context)
+        return await self.exchange.create_order(symbol, order_type, side, qty, price, params)
+
     async def _emergency_flatten(self, symbol: str, side: str, qty: float) -> None:
         close_side = "sell" if side == "LONG" else "buy"
         try:
-            await self.exchange.create_order(
+            await self._send_order(
                 symbol,
                 "market",
                 close_side,
@@ -1670,22 +1818,9 @@ class BinanceTestnetAccount:
             ):
                 return False
 
-        # 最底層物理禁令：任何地方調用開空，若當根為陽線一律直接拋出異常拒絕！
-        try:
-            from core.services.candle_data import entry_candles
-            current_df = entry_candles(symbol, "1m")
-            if current_df is not None and len(current_df) > 0:
-                c = current_df.iloc[-1]
-                curr_close = float(c['close'])
-                curr_open = float(c['open'])
-                if side == 'SHORT' and curr_close > curr_open:
-                    self.log(f"🛑 [FATAL_REJECT] 陽線禁止開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
-                    return False
-                if side == 'LONG' and curr_close < curr_open:
-                    self.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
-                    return False
-        except Exception:
-            pass
+        from core.services.entry_firewall import validate_account_entry
+        await validate_account_entry(self, symbol, side, entry_context)
+
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
         # None）不受影響，這只針對訊號驅動的自動開倉。
@@ -1729,23 +1864,29 @@ class BinanceTestnetAccount:
         )
         order_side = "buy" if side == "LONG" else "sell"
         close_side = "sell" if side == "LONG" else "buy"
-        qty = float(self.exchange.amount_to_precision(
-            symbol,
-            (amount_usdt * leverage) / max(price, 1e-12),
-        ))
+        from core.services.order_sizing import calculate_order_qty, raw_order_qty
+        raw_qty = float(raw_order_qty(amount_usdt, leverage, price))
+        qty = calculate_order_qty(self.exchange, symbol, amount_usdt, leverage, price)
+        notional = amount_usdt * leverage
+        self.log(
+            f"🧮 [資金換算] {symbol} | 本金保證金={amount_usdt:.4f}U, 槓桿={leverage}x, "
+            f"名義價值={notional:.4f}U, 價格={price:.6g}, 計算數量={raw_qty:.4f}, 交易所精度數量={qty}",
+            "INFO"
+        )
         if qty <= 0:
             self.log(f"🛑 {symbol} 下單數量低於交易所最小精度", "WARNING")
             return False
 
         try:
             await self._prepare_leverage(symbol, leverage)
-            entry_order = await self.exchange.create_order(
+            entry_order = await self._send_order(
                 symbol,
                 "market",
                 order_side,
                 qty,
                 None,
                 {"newOrderRespType": "RESULT"},
+                entry_context=entry_context,
             )
             execution_price = float(entry_order.get("average") or price)
         except Exception as exc:
@@ -2084,10 +2225,9 @@ class BinanceTestnetAccount:
             else get_leverage(symbol)
         )
         order_side = "buy" if side == "LONG" else "sell"
-        qty = float(self.exchange.amount_to_precision(
-            symbol,
-            (amount_usdt * leverage) / max(target_price, 1e-12),
-        ))
+        from core.services.order_sizing import calculate_order_qty
+        qty = calculate_order_qty(self.exchange, symbol, amount_usdt, leverage,
+                                  target_price, market_order=False)
         if qty <= 0:
             self.log(f"🛑 {symbol} 掛單數量低於交易所最小精度", "WARNING")
             return False
@@ -2101,9 +2241,9 @@ class BinanceTestnetAccount:
         try:
             await self._prepare_leverage(symbol, leverage)
             order_params = {"timeInForce": "GTX" if post_only else "GTC"}
-            order = await self.exchange.create_order(
+            order = await self._send_order(
                 symbol, "limit", order_side, qty, float(price_str),
-                order_params,
+                order_params, entry_context=entry_context,
             )
         except (ccxt.NetworkError, ccxt.RequestTimeout) as exc:
             # 逾時（例如幣安 -1007："執行狀態未知"）不能直接當失敗結束——
@@ -2346,7 +2486,7 @@ class BinanceTestnetAccount:
             is_hard_stop_now = "HARD_STOP" in str(close_reason)
             if not is_hard_stop_now:
                 await self._cancel_all_orders(symbol)
-            order = await self.exchange.create_order(
+            order = await self._send_order(
                 symbol,
                 "market",
                 close_side,
@@ -2470,7 +2610,7 @@ class BinanceTestnetAccount:
 
             # 2. 市價單平倉一半
             close_side = "sell" if position["side"] == "LONG" else "buy"
-            order = await self.exchange.create_order(
+            order = await self._send_order(
                 symbol,
                 "market",
                 close_side,
@@ -2517,6 +2657,13 @@ class BinanceTestnetAccount:
                 position["margin"] = position.get("margin", 0.0) * (1 - fraction)
                 self.positions[symbol] = position
                 meta["is_half_closed"] = True
+                if 'TP1_PARTIAL_CLOSE_50PCT' in str(close_reason):
+                    cost = float(position['entry_price'])
+                    position.update(sl=cost, atr_sl=cost, is_half_closed=True)
+                    meta.update(sl=cost, atr_sl=cost)
+                    state = position.get('closed_exit_state', {})
+                    state.update(tp1_executed=True, is_half=True, stop=cost, pending=None)
+                    meta['closed_exit_state'] = dict(state)
                 self.position_meta[symbol] = meta
 
                 # 6. 重建剩餘部位的保護單
