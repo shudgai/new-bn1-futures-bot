@@ -768,6 +768,13 @@ class PaperAccount:
                 "is_half_closed": False,
                 **entry_context,
             }
+            # 自動掛出 50% Limit TP1
+            tp1_distance = pos["atr"] * 1.0 if pos["atr"] > 0 else execution_price * 0.025
+            limit_tp1_price = execution_price + tp1_distance if side == "LONG" else execution_price - tp1_distance
+            meta = self.position_meta[symbol]
+            meta["limit_tp1_price"] = limit_tp1_price
+            meta["limit_tp1_filled"] = False
+            self.log(f"📝 [Limit TP1 已掛單] {symbol} {side} 預設掛出 50% 限價止盈於 {limit_tp1_price:.8g} (距離 {tp1_distance:.8g})", "INFO")
 
         self.trades.insert(0, {
             "id": int(now * 1000),
@@ -1401,6 +1408,44 @@ class PaperAccount:
             is_pivot_turn = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper() == "PIVOT_TURN"
+
+            # ----------------------------------------------------------------
+            # 📌 50% Limit TP1 + 移保本 觸發檢測
+            # ----------------------------------------------------------------
+            tp1_target = float(meta.get("limit_tp1_price", 0.0))
+            if tp1_target > 0 and not meta.get("limit_tp1_filled", False):
+                if (side == "LONG" and curr_p >= tp1_target) or (side == "SHORT" and curr_p <= tp1_target):
+                    meta["limit_tp1_filled"] = True
+                    half_qty = float(pos["qty"]) / 2.0
+                    pos["qty"] -= half_qty
+                    
+                    # 計算 50% 的利潤 (扣除手續費) Limit = 零滑點
+                    exec_close_price = tp1_target
+                    raw_pnl = ((exec_close_price - entry_p) * half_qty if side == "LONG" else (entry_p - exec_close_price) * half_qty)
+                    close_fee = half_qty * exec_close_price * TAKER_FEE_RATE
+                    half_margin = float(pos.get("margin", 0.0)) / 2.0
+                    pos["margin"] -= half_margin
+                    
+                    self.balance += half_margin + raw_pnl - close_fee
+                    self.available_balance = self.balance
+                    self.realized_pnl += (raw_pnl - close_fee)
+                    
+                    self.log(f"🎯 [Limit TP1 達標] {symbol} {side} 觸及 {tp1_target:.8g}！平倉 50% 數量 {half_qty:.6g}，獲利 {(raw_pnl - close_fee):.4f} USDT", "SUCCESS")
+                    
+                    # 自動移保本
+                    pos["sl"] = float(pos["entry_price"])
+                    meta["sl"] = float(pos["entry_price"])
+                    pos["is_breakeven_moved"] = True
+                    meta["is_breakeven_moved"] = True
+                    
+                    self.log(f"🛡️ [移保本] {symbol} {side} 剩餘 50% 倉位止損已上調至開倉價 {pos['entry_price']:.8g}", "INFO")
+                    self.save_state()
+                    
+                    # 更新未實現損益後進入下一輪
+                    unrealized = (curr_p - entry_p) * float(pos["qty"]) * (1 if side == "LONG" else -1)
+                    pos.update(mark_price=curr_p, unrealized_pnl=unrealized)
+                    total_unrealized += unrealized
+                    continue
 
             # ================================================================
             # 🛡️ 緊急斷路器（最高優先級，適用所有進場模式）
