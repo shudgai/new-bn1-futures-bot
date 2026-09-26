@@ -22,7 +22,13 @@ def validate_entry_frame(frame, side, code):
     middle = float(last_bar.kc_middle)
     upper = float(last_bar.kc_upper)
     lower = float(last_bar.kc_lower)
+    prev_bar = closed.iloc[-2]
+    prev_upper = float(prev_bar.kc_upper)
+    prev_lower = float(prev_bar.kc_lower)
+
     if side == 'SHORT':
+        if lower >= prev_lower:
+            raise ValueError(f'[FATAL_REJECT] KC 下軌走平或收窄 ({lower:.6f} >= {prev_lower:.6f})，無向下擴張動能嚴禁開空！')
         if close >= opening:
             raise ValueError(f'[FATAL_REJECT] 陽線嚴禁開空！Close:{close} >= Open:{opening}')
         if close > lower and (opening - close) < 1.2 * atr:
@@ -31,6 +37,8 @@ def validate_entry_frame(frame, side, code):
         if distance_from_middle > 2.2 * atr:
             raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限超賣嚴禁地板追空！')
     else:
+        if upper <= prev_upper:
+            raise ValueError(f'[FATAL_REJECT] KC 上軌走平或收窄 ({upper:.6f} <= {prev_upper:.6f})，無向上擴張動能嚴禁開多！')
         if close <= opening:
             raise ValueError(f'[FATAL_REJECT] 陰線嚴禁開多！Close:{close} <= Open:{opening}')
         if close < upper and (close - opening) < 1.2 * atr:
