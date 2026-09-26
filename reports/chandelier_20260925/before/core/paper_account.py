@@ -144,7 +144,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
-    "is_contrarian_bottom_buy", "initial_sl", "initial_risk", "entry_atr", "entry_snapshot", "atr_sl", "atr_tp", "atr_protection_version", "chandelier_state", "ratchet_floor", "channel_peak_abnormal",
+    "is_contrarian_bottom_buy", "initial_sl", "initial_risk", "entry_atr", "entry_snapshot", "atr_sl", "atr_tp", "atr_protection_version", "ratchet_floor", "channel_peak_abnormal",
     "signal_candle_low", "signal_candle_high",
     "channel_turn_low", "channel_turn_high",
     "touch_price", "reclaim_confirmed", "reclaim_wait_sec",
@@ -645,11 +645,11 @@ class PaperAccount:
                 initialize_atr_protection(pos, execution_price, side, atr)
                 entry_context.update({key: pos[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
-                                       "initial_sl", "initial_risk", "chandelier_state")})
+                                       "initial_sl", "initial_risk")})
                 sl, tp = pos["sl"], pos["tp"]
             self.positions[symbol] = pos
             self.position_meta[symbol] = {
-                "sl": sl, "tp": 0.0, "atr_tp": 0.0, "atr": pos["atr"],
+                "sl": sl, "tp": pos["tp"], "atr": pos["atr"],
                 "open_timestamp": now, "open_time": pos["open_time"],
                 "reason": reason, "signal_score": signal_score,
                 "is_breakeven_moved": False,
@@ -1396,7 +1396,7 @@ class PaperAccount:
 
             if await enforce_hard_stop(self, symbol, curr_p):
                 continue
-            if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
+            if is_channel_swing or pos.get("atr_protection_version") == 1:
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue
                 pos["peak_pnl_pct"] = highest_pnl

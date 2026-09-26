@@ -93,15 +93,15 @@ TEST_BUDGET_CAP_USDT = float(os.getenv("TEST_BUDGET_CAP_USDT", "0"))
 # 讓策略有足夠空間抓正常波段，但不至於把每筆單都收得過早。
 # R:R = TAKE_PROFIT_MULTIPLIER(3.5) / STOP_LOSS_MULTIPLIER(2.0) = 1.75：1
 STOP_LOSS_MULTIPLIER = float(os.getenv("STOP_LOSS_MULTIPLIER", "1.5"))
-TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "4.5"))
+TAKE_PROFIT_MULTIPLIER = 0.0
 # 所有「有固定 TP」的初始訂單都必須通過這個毛風報比硬下限；淨風報比
 # 仍由下方 MIN_NET_REWARD_RISK（含手續費）採用更嚴格的門檻。
 MIN_REWARD_RISK_RATIO = float(os.getenv("MIN_REWARD_RISK_RATIO", "1.5"))
 DISABLE_TAKE_PROFIT = True
 # 正數時，所有新倉使用固定的無槓桿 TP 百分比（0.002 = 0.2%）；0 維持 ATR 動態 TP。
-FIXED_TAKE_PROFIT_PCT = max(0.0, float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0.002")))
+FIXED_TAKE_PROFIT_PCT = 0.0
 # 唯一獲利出場：峰值每跨一個階梯，鎖利線維持落後一階。
-ENABLE_FIXED_PROFIT_LOCK_LADDER = os.getenv("ENABLE_FIXED_PROFIT_LOCK_LADDER", "false").lower() == "true"
+ENABLE_FIXED_PROFIT_LOCK_LADDER = False
 FIXED_PROFIT_LOCK_LADDER_STEP_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_STEP_PCT", "0.002")))
 FIXED_PROFIT_LOCK_LADDER_FIRST_PCT = max(0.0, float(os.getenv("FIXED_PROFIT_LOCK_LADDER_FIRST_PCT", "0.003")))
 ENABLE_BOUNCE_TARGET_EXIT = os.getenv("ENABLE_BOUNCE_TARGET_EXIT", "true").lower() == "true"

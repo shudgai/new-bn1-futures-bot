@@ -110,7 +110,7 @@ ENTRY_CONTEXT_KEYS = (
     "btc_allocation_factor", "btc_pre_penalty_score",
     "raw_signal_score", "btc_adjusted_score", "history_adjusted_score",
     "history_score_multiplier", "pullback_confirmation_score", "entry_mode",
-    "is_contrarian_bottom_buy", "initial_sl", "initial_risk", "entry_atr", "entry_snapshot", "atr_sl", "atr_tp", "atr_protection_version", "chandelier_state", "ratchet_floor", "channel_peak_abnormal",
+    "is_contrarian_bottom_buy", "initial_sl", "initial_risk", "entry_atr", "entry_snapshot", "atr_sl", "atr_tp", "atr_protection_version", "ratchet_floor", "channel_peak_abnormal",
     "signal_candle_low", "signal_candle_high",
     "channel_turn_low", "channel_turn_high",
     "profit_profile", "profit_room_pct",
@@ -785,7 +785,7 @@ class BinanceTestnetAccount:
             is_channel_swing = str(entry_mode or "").upper() == "CHANNEL_SWING"
             if await enforce_hard_stop(self, symbol, curr_p):
                 continue
-            if is_channel_swing or pos.get("atr_protection_version") in (1, 2):
+            if is_channel_swing or pos.get("atr_protection_version") == 1:
                 if await enforce_atr_protection(self, symbol, curr_p):
                     continue
                 continue
@@ -1430,8 +1430,7 @@ class BinanceTestnetAccount:
             if not DISABLE_TAKE_PROFIT:
                 await self._create_protection_order(symbol, close_side, "TAKE_PROFIT_MARKET", pos["qty"], tp_price)
             meta["sl"] = sl_price
-            meta["tp"] = 0.0
-            meta["atr_tp"] = 0.0
+            meta["tp"] = tp_price
             meta["atr"] = atr
             self.position_meta[symbol] = meta
             self.save_state()
@@ -1867,7 +1866,7 @@ class BinanceTestnetAccount:
                 sl_price, tp_price = meta["sl"], meta["tp"]
                 entry_context.update({key: meta[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
-                                       "initial_sl", "initial_risk", "chandelier_state")})
+                                       "initial_sl", "initial_risk")})
             self.position_meta[symbol] = meta
             # 「金額」用實際成交的 qty×成交價÷槓桿算，不要直接沿用呼叫端
             # 傳入的 amount_usdt（原本打算下的預算）——限價單部分成交時
@@ -1943,8 +1942,6 @@ class BinanceTestnetAccount:
         改以市價單（open_position）立即成交進場，避免價格快速拉升時錯過行情。
         """
         # ✅ 修正：配合突破確認後限價回踩優化，90 分以上也完全恢復使用限價單，移除先前強制轉市價的設定。
-        
-        is_manual = entry_context is not None and entry_context.get("manual_entry") is True
 
         # DCA 分批掛單處理
         if str((entry_context or {}).get("entry_mode", "")).upper() == "CHANNEL_SWING" and not valid_entry_atr(atr):

@@ -15,9 +15,6 @@ def significant_ma3_turn(position, frame, price):
         if state and state.get('identity') != identity:
             position.pop(key, None)
             state = None
-        if (position.get('channel_profit_protection') or {}).get('armed'):
-            position.pop(key, None)
-            return False
         if state and state.get('pending'):
             return True
         price = float(price)

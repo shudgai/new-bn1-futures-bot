@@ -1,0 +1,14 @@
+{
+  "commit": "673d0c7fe266b9c1fc5c7b1abe22dc4f171b256f",
+  "isolated_directory": "/tmp/red-eye-673d0c7-0jwunhws",
+  "command": [
+    "/home/shudgai999/project/new bn/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "--continue-on-collection-errors",
+    "--tb=short",
+    "tests",
+    "--junitxml=/home/shudgai999/project/new bn/reports/red_eye_673d0c7/results.xml"
+  ]
+}

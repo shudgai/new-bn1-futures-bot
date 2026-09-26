@@ -1,0 +1,74 @@
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -161,7 +161,7 @@
+ from core.symbol_rotation import SymbolRotation
+ from core.indicators import drop_unclosed_candle, compute_position_trigger
+ from core.services.candle_data import mark_candle_closure, closed_entry_candles, log_entry_gate
+-from core.services.entry_service import supported_entry_reason, CLOSED_BREAKOUT_CODES
++from core.services.entry_service import supported_entry_reason, CLOSED_BREAKOUT_CODES, MOMENTUM_ENTRY_CODES
+ 
+ class TradingEngine:
+     def __init__(self):
+@@ -2324,7 +2324,7 @@
+     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction: float = 1.0):
+         """Submit on this scan, retaining every structured-order account safety check."""
+ 
+-        # Only supported entries proceed; breakout entries require two closed bodies.
++        # Use the shared, side-matched allowlist for legacy and momentum signals.
+         last_exit_bar = getattr(self, "_last_exit_bar_id", {}).get(symbol)
+         
+         from core.engine import market_crash_entries_paused # ensure accessible
+@@ -2387,6 +2387,8 @@
+                 pending.pop(symbol, None)
+                 reverse_bars.pop(symbol, None)
+                 return False
++            log_entry_gate(self, symbol, side, "EXECUTION", "SIGNAL_ACCEPTED", bar_id,
++                           signal=v8_reason, action="ENTER_MARKET")
+             if position:
+                 if not (position.get("channel_profit_protection") or {}).get("armed"):
+                     return False
+@@ -2413,7 +2415,8 @@
+                 log_entry_gate(self, symbol, side, "EXECUTION", "WAIT_INSUFFICIENT_CLOSED_DATA", bar_id)
+                 return False
+             latest = confirmed.iloc[-1]
+-            confirmation_label = ("closed MA3/MA15 cross with confirmed body momentum" if supported_entry_reason(decision["reason"], side) else
++            confirmation_label = ("closed KC breakout or continuation" if decision["reason"] in MOMENTUM_ENTRY_CODES else
++                                  "closed MA3/MA15 cross with confirmed body momentum" if supported_entry_reason(decision["reason"], side) else
+                                   "observed pullback outside confirmed breakout rail" if decision["reason"].startswith("KC_BREAKOUT_PULLBACK_") else
+                                   "two closed same-color breakout bodies" if decision["reason"].startswith("KC_TWO_BAR_BREAKOUT_") else
+                                   "observed turn beyond opposite KC rail" if decision["reason"].startswith("KC_OUTER_TURN_") else
+--- a/core/services/entry_service.py
++++ b/core/services/entry_service.py
+@@ -92,9 +92,19 @@
+ 
+ PIVOT_REVERSAL_CODES = {'PIVOT_LOW_REVERSAL_LONG', 'PIVOT_HIGH_REVERSAL_SHORT'}
+ 
++MOMENTUM_ENTRY_CODES = frozenset({
++    "ENTER_FIRST_BREAKOUT_SHORT", "ENTER_CONTINUATION_SHORT",
++    "ENTER_FIRST_BREAKOUT_LONG", "ENTER_CONTINUATION_LONG",
++})
++ALLOWED_SIGNAL_CODES = MOMENTUM_ENTRY_CODES | {
++    "MA_CROSS_GOLDEN_LONG", "MA_CROSS_DEATH_SHORT",
++}
++
++
+ def supported_entry_reason(reason, side):
+-    return (side == "LONG" and reason == "MA_CROSS_GOLDEN_LONG") or (
+-        side == "SHORT" and reason == "MA_CROSS_DEATH_SHORT")
++    """Shared execution allowlist; a valid code must match the order side."""
++    return (side in ("LONG", "SHORT") and isinstance(reason, str)
++            and reason in ALLOWED_SIGNAL_CODES and reason.endswith("_" + side))
+ 
+ 
+ def ma_cross_entry_gate(frame, price, side):
+@@ -127,7 +137,9 @@
+     if frame is None or frame.empty:
+         return None
+     last_row = frame.iloc[-1]
+-    return last_row.get("timestamp", frame.index[-1])
++    value = last_row.get("timestamp", frame.index[-1])
++    # Pandas may return a NumPy scalar; order metadata must remain JSON-safe.
++    return value.item() if hasattr(value, "item") else value
+ 
+ def channel_outer_directional_entry_allowed(
+     frame: pd.DataFrame, side: str

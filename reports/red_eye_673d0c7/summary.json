@@ -1,0 +1,102 @@
+{
+  "suites": {
+    "tests.test_bot": {
+      "passed": 196,
+      "failed": 91,
+      "skipped": 29
+    },
+    "tests.test_close_deduplication": {
+      "passed": 14
+    },
+    "tests.test_dual_track_persistence": {
+      "failed": 4
+    },
+    "tests.test_kc_stoploss": {
+      "passed": 2
+    },
+    "tests.test_lock_profit": {
+      "failed": 4
+    },
+    "tests.test_ma3_pivot_analysis": {
+      "passed": 1
+    },
+    "tests.test_profit_lock_usdt": {
+      "failed": 4,
+      "passed": 3
+    },
+    "tests.test_spec_trend_direction": {
+      "failed": 3,
+      "passed": 2
+    },
+    "tests.test_specialized_order_routes": {
+      "failed": 12
+    },
+    "tests.test_startup_guard": {
+      "passed": 6
+    },
+    "tests.test_status_api": {
+      "passed": 2
+    },
+    "tests.test_strict_pivot_entry": {
+      "failed": 17,
+      "passed": 3
+    },
+    "tests.test_structured_order_routes": {
+      "failed": 22,
+      "passed": 2
+    },
+    "tests.test_symbol_runner_lifecycle": {
+      "failed": 4
+    },
+    "tests.test_testnet_account": {
+      "failed": 9,
+      "passed": 22,
+      "skipped": 2
+    },
+    "tests.test_trade_mode_lifecycle": {
+      "failed": 1,
+      "passed": 107
+    },
+    "tests.test_trend_pullback": {
+      "passed": 12
+    },
+    "tests.test_v9_core_logic": {
+      "failed": 8,
+      "passed": 2
+    }
+  },
+  "failure_types": {
+    "assert 0 == 1": 2,
+    "assert True is False": 2,
+    "KeyError": 12,
+    "AssertionError": 56,
+    "AttributeError": 20,
+    "assert False is True": 32,
+    "RuntimeError": 7,
+    "assert 57.0 == 60.0 ± 6.0e-05\n  \n  comparison failed\n  Obtained": 1,
+    "ValueError": 7,
+    "TypeError": 35,
+    "assert 12.0 == 25.0 ± 2.5e-05\n  \n  comparison failed\n  Obtained": 1,
+    "assert 0.8 == 1.0 ± 1.0e-06\n  \n  comparison failed\n  Obtained": 1,
+    "assert 0.5 == 2.0": 1,
+    "assert 0.5 == 0.1": 1,
+    "assert not True\n +  where True = any(<generator object test_flat_direction_does_not_send_wait_tuple.<locals>.<genexpr> at 0x7dc403af5f20>)": 1
+  },
+  "examples": {
+    "assert 0 == 1": "assert 0 == 1",
+    "assert True is False": "assert True is False",
+    "KeyError": "KeyError: 'DOGE/USDT'",
+    "AssertionError": "AssertionError: assert 'BTC/USDT' in {}\n +  where {} = <core.paper_account.PaperAccount object at 0x7dc402f48ad0>.positions",
+    "AttributeError": "AttributeError: 'TradingEngine' object has no attribute '_place_current_maker_candidate'",
+    "assert False is True": "assert False is True",
+    "RuntimeError": "RuntimeError: 8006 Testnet API Key 尚未設定",
+    "assert 57.0 == 60.0 ± 6.0e-05\n  \n  comparison failed\n  Obtained": "assert 57.0 == 60.0 ± 6.0e-05\n  \n  comparison failed\n  Obtained: 57.0\n  Expected: 60.0 ± 6.0e-05",
+    "ValueError": "ValueError: not enough values to unpack (expected 3, got 2)",
+    "TypeError": "TypeError: confirmed_outer_reversal() takes 2 positional arguments but 3 were given",
+    "assert 12.0 == 25.0 ± 2.5e-05\n  \n  comparison failed\n  Obtained": "assert 12.0 == 25.0 ± 2.5e-05\n  \n  comparison failed\n  Obtained: 12.0\n  Expected: 25.0 ± 2.5e-05",
+    "assert 0.8 == 1.0 ± 1.0e-06\n  \n  comparison failed\n  Obtained": "assert 0.8 == 1.0 ± 1.0e-06\n  \n  comparison failed\n  Obtained: 0.8\n  Expected: 1.0 ± 1.0e-06",
+    "assert 0.5 == 2.0": "assert 0.5 == 2.0",
+    "assert 0.5 == 0.1": "assert 0.5 == 0.1",
+    "assert not True\n +  where True = any(<generator object test_flat_direction_does_not_send_wait_tuple.<locals>.<genexpr> at 0x7dc403af5f20>)": "assert not True\n +  where True = any(<generator object test_flat_direction_does_not_send_wait_tuple.<locals>.<genexpr> at 0x7dc403af5f20>)"
+  }
+}

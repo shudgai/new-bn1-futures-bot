@@ -1,0 +1,1130 @@
+.....F...F.......s....F.ssFF....F....F......FFF.FFFFFFF..F.FFFFsFFFF.F.. [ 12%]
+ss...............F....ss....Fs..s....................................... [ 24%]
+...................FFFF.....F....FFFF.........FFFFFFFF.FF..FFFFFFFFFFFFF [ 36%]
+FFFF........F.FFF.F..FFFFF...FF.F.F.........F........ssssssssssssss.ssss [ 49%]
+s....FFFFFFF.....FF.FF....................FFFF..FFFF.F.F..FFFFF..FFFFFFF [ 61%]
+FFFFF........FFFFF.FF..FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF..FFFFFFFFFF....... [ 73%]
+...F.sFsFF......F.....F................................................. [ 86%]
+......................................................................FF [ 98%]
+FF.FF.FF                                                                 [100%]
+=================================== FAILURES ===================================
+___ test_entry_filter_stats_record_components_adjustments_and_last_snapshot ____
+tests/test_bot.py:224: in test_entry_filter_stats_record_components_adjustments_and_last_snapshot
+    assert stats["evaluations"] == 1
+E   assert 0 == 1
+___________ test_entry_direction_guard_blocks_wrong_1h_st_and_ema50 ____________
+tests/test_bot.py:304: in test_entry_direction_guard_blocks_wrong_1h_st_and_ema50
+    assert allowed is False
+E   assert True is False
+________ test_bounce_closes_at_configured_room_capture_target[asyncio] _________
+tests/test_bot.py:621: in test_bounce_closes_at_configured_room_capture_target
+    entry = account.positions["DOGE/USDT"]["entry_price"]
+E   KeyError: 'DOGE/USDT'
+___ test_paper_account_lets_rebound_run_and_closes_at_its_own_peak[asyncio] ____
+tests/test_bot.py:720: in test_paper_account_lets_rebound_run_and_closes_at_its_own_peak
+    assert "BTC/USDT" in account.positions
+E   AssertionError: assert 'BTC/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc402f48ad0>.positions
+______ test_paper_account_peak_drawdown_preempts_local_stop_loss[asyncio] ______
+tests/test_bot.py:750: in test_paper_account_peak_drawdown_preempts_local_stop_loss
+    assert "BTC/USDT" in account.positions
+E   AssertionError: assert 'BTC/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc402f39100>.positions
+____ test_outer_run_ignores_profit_lock_stop_until_returned_inside[asyncio] ____
+tests/test_bot.py:893: in test_outer_run_ignores_profit_lock_stop_until_returned_inside
+    assert "BTC/USDT" in account.positions
+E   AssertionError: assert 'BTC/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc403aa67b0>.positions
+_ test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r[asyncio] _
+tests/test_bot.py:1013: in test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r
+    assert account.positions["BTC/USDT"]["sl"] >= entry + risk
+E   KeyError: 'BTC/USDT'
+_______ test_bottom_entry_grace_ignores_early_strong_soft_exit[asyncio] ________
+tests/test_bot.py:2507: in test_bottom_entry_grace_ignores_early_strong_soft_exit
+    assert engine.position_triggers["DOGE/USDT"]["bottom_entry_grace"] is True
+E   KeyError: 'bottom_entry_grace'
+____ test_zero_sl_peak_threshold_executes_initial_stop_immediately[asyncio] ____
+tests/test_bot.py:2617: in test_zero_sl_peak_threshold_executes_initial_stop_immediately
+    assert "Stop-Loss" in account.trades[0]["reason"]
+E   AssertionError: assert 'Stop-Loss' in '緊急斷路:急速反向 3.3ATR(>1.5ATR)'
+_____________ test_sl_only_after_peak_prevents_early_stop[asyncio] _____________
+tests/test_bot.py:2644: in test_sl_only_after_peak_prevents_early_stop
+    assert "TEST/USDT" in account.positions
+E   AssertionError: assert 'TEST/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc402f3ac30>.positions
+___ test_pullback_timeout_locks_old_breakout_instead_of_recreating[asyncio] ____
+tests/test_bot.py:2796: in test_pullback_timeout_locks_old_breakout_instead_of_recreating
+    assert engine._expired_pullback_sides["XPL/USDT"] == "SHORT"
+E   KeyError: 'XPL/USDT'
+__ test_90_plus_current_maker_places_post_only_without_pullback_wait[asyncio] __
+tests/test_bot.py:2920: in test_90_plus_current_maker_places_post_only_without_pullback_wait
+    result = await engine._place_current_maker_candidate(
+E   AttributeError: 'TradingEngine' object has no attribute '_place_current_maker_candidate'
+_____ test_pending_limit_is_validated_for_drift_before_fill_check[asyncio] _____
+tests/test_bot.py:3019: in test_pending_limit_is_validated_for_drift_before_fill_check
+    assert "漂移" in events[0][1]
+E   AssertionError: assert '漂移' in '舊掛單策略停用，等待新外軌訊號'
+_ test_structured_pending_revalidates_direction_mode_and_target[asyncio-fresh_signal0-\u65b9\u5411\u5df2\u7ffb\u8f49] _
+tests/test_bot.py:3102: in test_structured_pending_revalidates_direction_mode_and_target
+    assert reason_fragment in events[0][1]
+E   AssertionError: assert '方向已翻轉' in '舊掛單策略停用，等待新外軌訊號'
+_ test_structured_pending_revalidates_direction_mode_and_target[asyncio-fresh_signal1-\u7d50\u69cb\u639b\u55ae\u76ee\u6a19\u5df2\u6f02\u79fb] _
+tests/test_bot.py:3102: in test_structured_pending_revalidates_direction_mode_and_target
+    assert reason_fragment in events[0][1]
+E   AssertionError: assert '結構掛單目標已漂移' in '舊掛單策略停用，等待新外軌訊號'
+_ test_structured_pending_revalidates_direction_mode_and_target[asyncio-fresh_signal2-\u5165\u53e3\u6a21\u5f0f\u5df2\u6539\u8b8a] _
+tests/test_bot.py:3102: in test_structured_pending_revalidates_direction_mode_and_target
+    assert reason_fragment in events[0][1]
+E   AssertionError: assert '入口模式已改變' in '舊掛單策略停用，等待新外軌訊號'
+_ test_structured_rr_experiment_keeps_point_five_hard_floor[asyncio-0.0095-False-True] _
+tests/test_bot.py:3401: in test_structured_rr_experiment_keeps_point_five_hard_floor
+    assert result is should_place, log_messages
+E   AssertionError: [(<test_bot.test_structured_rr_experiment_keeps_point_five_hard_floor.<locals>.DummyAccount object at 0x7dc402f4bc50>, '🛑 XMR/USDT 舊策略 SUPPORT_PULLBACK 已停用', 'WARNING')]
+E   assert False is True
+__ test_exhaustion_sniper_structured_entry_is_market_with_exact_stop[asyncio] __
+tests/test_bot.py:3455: in test_exhaustion_sniper_structured_entry_is_market_with_exact_stop
+    assert await engine._place_structured_entry("TEST/USDT", signal, 100.0) is True
+E   assert False is True
+______________ test_legacy_outer_peak_wait_is_discarded[asyncio] _______________
+tests/test_bot.py:4116: in test_legacy_outer_peak_wait_is_discarded
+    monkeypatch.setattr(engine, "_place_continuous_market_entry", place_entry)
+E   AttributeError: <core.engine.TradingEngine object at 0x7dc402edcf20> has no attribute '_place_continuous_market_entry'
+________ test_outer_run_holds_through_unconfirmed_red_candles[asyncio] _________
+tests/test_bot.py:4202: in test_outer_run_holds_through_unconfirmed_red_candles
+    monkeypatch.setattr(engine, "_place_continuous_market_entry", place_entry)
+E   AttributeError: <core.engine.TradingEngine object at 0x7dc402ede150> has no attribute '_place_continuous_market_entry'
+___ test_range_position_ignores_fixed_stop_in_outer_rail_only_mode[asyncio] ____
+tests/test_bot.py:4350: in test_range_position_ignores_fixed_stop_in_outer_rail_only_mode
+    assert "BTC/USDT" in account.positions
+E   AssertionError: assert 'BTC/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc402f2bf50>.positions
+___________ test_trend_position_ignores_middle_take_profit[asyncio] ____________
+tests/test_bot.py:4370: in test_trend_position_ignores_middle_take_profit
+    assert "ETH/USDT" in account.positions
+E   AssertionError: assert 'ETH/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc402f48ec0>.positions
+__ test_strong_trigger_alone_does_not_auto_close_without_exit_signal[asyncio] __
+tests/test_bot.py:5472: in test_strong_trigger_alone_does_not_auto_close_without_exit_signal
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+______ test_ma5_only_trigger_does_not_close_during_minimum_hold[asyncio] _______
+tests/test_bot.py:5574: in test_ma5_only_trigger_does_not_close_during_minimum_hold
+    assert engine.position_triggers["DOGE/USDT"]["ma5_exit_ready"] is False
+E   KeyError: 'ma5_exit_ready'
+_________________ test_trailing_sl_moves_up_for_long[asyncio] __________________
+tests/test_bot.py:5587: in test_trailing_sl_moves_up_for_long
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+_________________ test_trailing_sl_does_not_move_back[asyncio] _________________
+tests/test_bot.py:5629: in test_trailing_sl_does_not_move_back
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+________ test_structured_exit_scales_half_at_one_point_five_r[asyncio] _________
+tests/test_bot.py:6193: in test_structured_exit_scales_half_at_one_point_five_r
+    assert account.positions["BTC/USDT"]["qty"] == pytest.approx(original_qty * 0.5), account.logs
+E   AssertionError: [{'level': 'SUCCESS', 'text': '🚀 [紙上交易] 開倉成功 [LONG] BTC/USDT @ 100.01 (2x，含滑點，SL=99.01, TP=0)', 'time': '20:23:12', 'timestamp': 1790338992.8912196}]
+E   assert 0.9999000099990001 == 0.49995000499950004 ± 5.0e-07
+E     
+E     comparison failed
+E     Obtained: 0.9999000099990001
+E     Expected: 0.49995000499950004 ± 5.0e-07
+______ test_two_slots_reopen_independently_and_compound_realized_balance _______
+tests/test_bot.py:1066: in test_two_slots_reopen_independently_and_compound_realized_balance
+    assert engine._continuous_entry_amount() == pytest.approx(60.0)
+E   assert 57.0 == 60.0 ± 6.0e-05
+E     
+E     comparison failed
+E     Obtained: 57.0
+E     Expected: 60.0 ± 6.0e-05
+______ test_engine_records_four_shadow_profiles_without_changing_baseline ______
+tests/test_bot.py:1402: in test_engine_records_four_shadow_profiles_without_changing_baseline
+    assert stats["evaluations"] == 1
+E   assert 0 == 1
+__________ test_expired_pullback_blocks_same_breakout_until_kc_resets __________
+tests/test_bot.py:2760: in test_expired_pullback_blocks_same_breakout_until_kc_resets
+    ) is True
+E   AttributeError: 'TradingEngine' object has no attribute '_expired_pullback_still_active'
+_________ test_pullback_candidate_pool_keeps_highest_score_and_quality _________
+tests/test_bot.py:2836: in test_pullback_candidate_pool_keeps_highest_score_and_quality
+    engine._admit_pullback_candidates(signals, available_balance=100.0, now=1000.0)
+E   AttributeError: 'TradingEngine' object has no attribute '_admit_pullback_candidates'. Did you mean: '_drop_pullback_candidate'?
+_____________ test_90_plus_candidate_uses_current_price_maker_mode _____________
+tests/test_bot.py:2871: in test_90_plus_candidate_uses_current_price_maker_mode
+    engine._admit_pullback_candidates(
+E   AttributeError: 'TradingEngine' object has no attribute '_admit_pullback_candidates'. Did you mean: '_drop_pullback_candidate'?
+________________ test_btc_contrary_candidate_uses_half_position ________________
+tests/test_bot.py:2965: in test_btc_contrary_candidate_uses_half_position
+    engine._admit_pullback_candidates(
+E   AttributeError: 'TradingEngine' object has no attribute '_admit_pullback_candidates'. Did you mean: '_drop_pullback_candidate'?
+______________ test_flat_left_side_is_not_mislabeled_as_fast_peak ______________
+tests/test_bot.py:3508: in test_flat_left_side_is_not_mislabeled_as_fast_peak
+    assert result["entry_type"] == "WAIT_MA_NOISE"
+E   AssertionError: assert 'WAIT_FULL_KC_WAVE' == 'WAIT_MA_NOISE'
+E     
+E     - WAIT_MA_NOISE
+E     + WAIT_FULL_KC_WAVE
+___ test_complete_peak_wave_reverses_only_after_red_close_crosses_next_rail ____
+tests/test_bot.py:3579: in test_complete_peak_wave_reverses_only_after_red_close_crosses_next_rail
+    assert result["signal"] == "SHORT"
+E   AssertionError: assert None == 'SHORT'
+_______ test_latest_closed_candle_can_confirm_peak_without_one_bar_delay _______
+tests/test_bot.py:3591: in test_latest_closed_candle_can_confirm_peak_without_one_bar_delay
+    assert result["signal"] == "SHORT"
+E   AssertionError: assert None == 'SHORT'
+______ test_latest_closed_candle_can_confirm_trough_without_one_bar_delay ______
+tests/test_bot.py:3616: in test_latest_closed_candle_can_confirm_trough_without_one_bar_delay
+    assert result["signal"] == "LONG"
+E   AssertionError: assert None == 'LONG'
+______ test_two_closed_bars_can_confirm_peak_after_nearly_flat_first_turn ______
+tests/test_bot.py:3629: in test_two_closed_bars_can_confirm_peak_after_nearly_flat_first_turn
+    assert result["signal"] == "SHORT"
+E   AssertionError: assert None == 'SHORT'
+______ test_outer_run_same_closed_bar_keeps_waiting_for_second_red_candle ______
+tests/test_bot.py:3767: in test_outer_run_same_closed_bar_keeps_waiting_for_second_red_candle
+    status, _reason, bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+_______ test_outer_run_second_red_close_confirms_short_for_third_candle ________
+tests/test_bot.py:3780: in test_outer_run_second_red_close_confirms_short_for_third_candle
+    status, reason, bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+_______ test_outer_run_second_green_close_confirms_long_for_third_candle _______
+tests/test_bot.py:3794: in test_outer_run_second_green_close_confirms_long_for_third_candle
+    status, reason, bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+________ test_outer_run_second_green_must_continue_higher_to_open_long _________
+tests/test_bot.py:3808: in test_outer_run_second_green_must_continue_higher_to_open_long
+    status, reason, _bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+_________ test_outer_run_invalid_second_candle_cancels_short[candle0] __________
+tests/test_bot.py:3826: in test_outer_run_invalid_second_candle_cancels_short
+    status, reason, _bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+_________ test_outer_run_invalid_second_candle_cancels_short[candle1] __________
+tests/test_bot.py:3826: in test_outer_run_invalid_second_candle_cancels_short
+    status, reason, _bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+_________ test_outer_run_invalid_second_candle_cancels_short[candle2] __________
+tests/test_bot.py:3826: in test_outer_run_invalid_second_candle_cancels_short
+    status, reason, _bar_id = TradingEngine._outer_run_second_candle_status(
+E   ValueError: not enough values to unpack (expected 3, got 2)
+_______________ test_two_bar_structure_failure_exit_is_symmetric _______________
+tests/test_bot.py:3843: in test_two_bar_structure_failure_exit_is_symmetric
+    assert TradingEngine._two_bar_structure_failure_exit(rising, "SHORT") is True
+E   AssertionError: assert False is True
+E    +  where False = <function two_bar_structure_failure_exit at 0x7dc47924ea20>(   close    ma3   ma15  ema_20  kc_upper  kc_lower\n0  100.0   99.0  100.0   100.0     102.0      98.0\n1  102.0  100.0  100.2   100.3     102.3      98.3\n2  103.0  101.0  100.4   100.6     102.6      98.6, 'SHORT')
+E    +    where <function two_bar_structure_failure_exit at 0x7dc47924ea20> = TradingEngine._two_bar_structure_failure_exit
+___ test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction ____
+tests/test_bot.py:3888: in test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction
+    assert TradingEngine._confirmed_outer_reversal("LONG", peak, frame) is False
+E   TypeError: confirmed_outer_reversal() takes 2 positional arguments but 3 were given
+________ test_confirmed_outer_reversal_requires_closed_confirmed_pivot _________
+tests/test_bot.py:3907: in test_confirmed_outer_reversal_requires_closed_confirmed_pivot
+    assert TradingEngine._confirmed_outer_reversal("LONG", waiting, frame) is False
+E   TypeError: confirmed_outer_reversal() takes 2 positional arguments but 3 were given
+_________ test_strong_burst_live_entry_rejects_price_back_near_middle __________
+tests/test_bot.py:3976: in test_strong_burst_live_entry_rejects_price_back_near_middle
+    assert TradingEngine._strong_burst_live_entry_is_valid(burst, frame, 100.2) is False
+core/services/pivot_service.py:28: in strong_burst_live_entry_is_valid
+    if frame is None or frame.empty:
+E   AttributeError: 'dict' object has no attribute 'empty'
+___ test_trailing_atr_prefers_live_trigger_and_rejects_near_zero_saved_value ___
+tests/test_bot.py:3983: in test_trailing_atr_prefers_live_trigger_and_rejects_near_zero_saved_value
+    assert engine._resolve_trailing_atr(
+E   TypeError: resolve_trailing_atr() takes 3 positional arguments but 4 were given
+_ test_general_position_waits_for_confirmed_pivot_before_exit[LONG-101.0-100.0-False] _
+tests/test_bot.py:4009: in test_general_position_waits_for_confirmed_pivot_before_exit
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_general_position_waits_for_confirmed_pivot_before_exit[LONG-100.0-101.0-False] _
+tests/test_bot.py:4009: in test_general_position_waits_for_confirmed_pivot_before_exit
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_general_position_waits_for_confirmed_pivot_before_exit[SHORT-100.0-101.0-False] _
+tests/test_bot.py:4009: in test_general_position_waits_for_confirmed_pivot_before_exit
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_general_position_waits_for_confirmed_pivot_before_exit[SHORT-101.0-100.0-False] _
+tests/test_bot.py:4009: in test_general_position_waits_for_confirmed_pivot_before_exit
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens0-closes0-ma30-False] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens1-closes1-ma31-False] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens2-closes2-ma32-False] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens3-closes3-ma33-False] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens4-closes4-ma34-True] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens5-closes5-ma35-True] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens6-closes6-ma36-True] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens7-closes7-ma37-True] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens8-closes8-ma38-True] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+_ test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens9-closes9-ma39-True] _
+tests/test_bot.py:4040: in test_opposite_candle_never_exits_before_confirmed_pivot
+    assert TradingEngine._opposite_closed_candle_exit(
+E   TypeError: opposite_closed_candle_exit() takes 2 positional arguments but 4 were given
+____ test_range_swing_reverses_at_confirmed_high_and_low_but_not_outer_run _____
+tests/test_bot.py:4046: in test_range_swing_reverses_at_confirmed_high_and_low_but_not_outer_run
+    assert TradingEngine._range_swing_reverse_side(
+E   TypeError: range_swing_reverse_side() takes 1 positional argument but 4 were given
+______________ test_confirmed_pivot_can_reverse_before_ma15_cross ______________
+tests/test_bot.py:4381: in test_confirmed_pivot_can_reverse_before_ma15_cross
+    assert engine._ma3_ma15_entry_allowed(
+E   AssertionError: assert True is False
+E    +  where True = <bound method TradingEngine._ma3_ma15_entry_allowed of <core.engine.TradingEngine object at 0x7dc402f52b10>>('TEST/USDT', 'LONG',     open   high   low  close   ma3   ma15  atr\n0   99.0  100.0  98.0   99.0  99.0  100.0  1.0\n1   99.0  100.0  98.0   ...   99.0  99.4  100.0  1.0\n18  99.0  100.0  98.0   99.0  99.0  100.0  1.0\n19  99.0  100.0  98.0   99.0  99.2  100.0  1.0, log_on_fail=False, entry_type='TREND_LONG')
+E    +    where <bound method TradingEngine._ma3_ma15_entry_allowed of <core.engine.TradingEngine object at 0x7dc402f52b10>> = <core.engine.TradingEngine object at 0x7dc402f52b10>._ma3_ma15_entry_allowed
+_____________ test_continuous_entry_opens_long_and_short_at_market _____________
+tests/test_bot.py:4449: in test_continuous_entry_opens_long_and_short_at_market
+    ))
+E   AttributeError: 'TradingEngine' object has no attribute '_place_continuous_market_entry'
+_______ test_continuous_entry_checks_current_symbol_trend_only_in_range ________
+tests/test_bot.py:4509: in test_continuous_entry_checks_current_symbol_trend_only_in_range
+    ))
+E   AttributeError: 'TradingEngine' object has no attribute '_place_continuous_market_entry'
+___________ test_continuous_market_mode_uses_1000pepe_trend_not_btc ____________
+tests/test_bot.py:4526: in test_continuous_market_mode_uses_1000pepe_trend_not_btc
+    assert engine._continuous_market_mode_for(
+E   AssertionError: assert 'TREND' == 'BULL'
+E     
+E     - BULL
+E     + TREND
+__________ test_ma3_below_ma15_does_not_open_short_while_still_rising __________
+tests/test_bot.py:4564: in test_ma3_below_ma15_does_not_open_short_while_still_rising
+    assert result["ma_alignment"] == "BELOW"
+E   AssertionError: assert 'WAIT' == 'BELOW'
+E     
+E     - BELOW
+E     + WAIT
+___________ test_ma3_trough_far_from_kc_middle_and_ma15_can_reverse ____________
+tests/test_bot.py:4591: in test_ma3_trough_far_from_kc_middle_and_ma15_can_reverse
+    assert result["signal"] == "LONG"
+E   AssertionError: assert None == 'LONG'
+______________ test_strong_trough_near_kc_middle_does_not_reverse ______________
+tests/test_bot.py:4603: in test_strong_trough_near_kc_middle_does_not_reverse
+    assert result["entry_type"] == "WAIT_MA_NOISE"
+E   AssertionError: assert 'WAIT_FULL_KC_WAVE' == 'WAIT_MA_NOISE'
+E     
+E     - WAIT_MA_NOISE
+E     + WAIT_FULL_KC_WAVE
+____ test_trough_body_crossing_lower_rail_still_waits_for_full_body_inside _____
+tests/test_bot.py:4614: in test_trough_body_crossing_lower_rail_still_waits_for_full_body_inside
+    assert result["entry_type"] == "WAIT_NEXT_KC_BAND"
+E   AssertionError: assert 'WAIT_FULL_KC_WAVE' == 'WAIT_NEXT_KC_BAND'
+E     
+E     - WAIT_NEXT_KC_BAND
+E     + WAIT_FULL_KC_WAVE
+__________ test_trough_full_green_body_inside_lower_rail_can_reverse ___________
+tests/test_bot.py:4624: in test_trough_full_green_body_inside_lower_rail_can_reverse
+    assert result["signal"] == "LONG"
+E   AssertionError: assert None == 'LONG'
+_______________ test_strong_peak_near_kc_middle_does_not_reverse _______________
+tests/test_bot.py:4634: in test_strong_peak_near_kc_middle_does_not_reverse
+    assert result["entry_type"] == "WAIT_MA_NOISE"
+E   AssertionError: assert 'WAIT_FULL_KC_WAVE' == 'WAIT_MA_NOISE'
+E     
+E     - WAIT_MA_NOISE
+E     + WAIT_FULL_KC_WAVE
+_____ test_shallow_cross_near_ma15_still_waits_instead_of_forcing_reversal _____
+tests/test_bot.py:4683: in test_shallow_cross_near_ma15_still_waits_instead_of_forcing_reversal
+    assert result["entry_type"] == "WAIT_MA_NOISE"
+E   AssertionError: assert 'WAIT_FULL_KC_WAVE' == 'WAIT_MA_NOISE'
+E     
+E     - WAIT_MA_NOISE
+E     + WAIT_FULL_KC_WAVE
+_________________ test_true_trough_near_ma15_does_not_reverse __________________
+tests/test_bot.py:4694: in test_true_trough_near_ma15_does_not_reverse
+    assert result["entry_type"] == "WAIT_MA_NOISE"
+E   AssertionError: assert 'WAIT_FULL_KC_WAVE' == 'WAIT_MA_NOISE'
+E     
+E     - WAIT_MA_NOISE
+E     + WAIT_FULL_KC_WAVE
+__________ test_ma3_above_ma15_does_not_open_long_while_still_falling __________
+tests/test_bot.py:4724: in test_ma3_above_ma15_does_not_open_long_while_still_falling
+    assert result["ma_alignment"] == "ABOVE"
+E   AssertionError: assert 'WAIT' == 'ABOVE'
+E     
+E     - ABOVE
+E     + WAIT
+_________ test_ma3_above_ma15_peak_turns_down_instead_of_opening_long __________
+tests/test_bot.py:4742: in test_ma3_above_ma15_peak_turns_down_instead_of_opening_long
+    assert result["signal"] == "SHORT"
+E   AssertionError: assert None == 'SHORT'
+____________________ test_dynamic_adx_floor[1-closes2-25.0] ____________________
+tests/test_bot.py:4827: in test_dynamic_adx_floor
+    assert floor == pytest.approx(expected_floor)
+E   assert 12.0 == 25.0 ± 2.5e-05
+E     
+E     comparison failed
+E     Obtained: 12.0
+E     Expected: 25.0 ± 2.5e-05
+________ test_structured_entry_uses_maker_for_quality_support_reversal _________
+tests/test_bot.py:5701: in test_structured_entry_uses_maker_for_quality_support_reversal
+    assert signal["action"] == "ENTER_LIMIT", signal
+E   AssertionError: {'action': 'HOLD', 'atr': 0.3, 'btc_allocation_factor': 1.0, 'btc_regime_mode': 'ALIGNED', ...}
+E   assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+____ test_structured_entry_allows_small_ema50_cross_but_rejects_larger_one _____
+tests/test_bot.py:5734: in test_structured_entry_allows_small_ema50_cross_but_rejects_larger_one
+    assert within_tolerance["action"] == "ENTER_LIMIT"
+E   AssertionError: assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+_____________ test_structured_entry_accepts_rsi_51_and_volume_1_20 _____________
+tests/test_bot.py:5755: in test_structured_entry_accepts_rsi_51_and_volume_1_20
+    assert signal["action"] == "ENTER_LIMIT", signal
+E   AssertionError: {'action': 'HOLD', 'atr': 0.3, 'btc_allocation_factor': 1.0, 'btc_regime_mode': 'ALIGNED', ...}
+E   assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+__________ test_structured_entry_accepts_relaxed_location_and_volume ___________
+tests/test_bot.py:5774: in test_structured_entry_accepts_relaxed_location_and_volume
+    assert signal["action"] == "ENTER_LIMIT", signal
+E   AssertionError: {'action': 'HOLD', 'atr': 0.3, 'btc_allocation_factor': 1.0, 'btc_regime_mode': 'ALIGNED', ...}
+E   assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+____ test_structured_entry_accepts_macd_improvement_without_reversal_candle ____
+tests/test_bot.py:5792: in test_structured_entry_accepts_macd_improvement_without_reversal_candle
+    assert signal["action"] == "ENTER_LIMIT", signal
+E   AssertionError: {'action': 'HOLD', 'atr': 0.3, 'btc_allocation_factor': 1.0, 'btc_regime_mode': 'ALIGNED', ...}
+E   assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+_____ test_structured_entry_penalizes_contrary_btc_when_explicitly_allowed _____
+tests/test_bot.py:5816: in test_structured_entry_penalizes_contrary_btc_when_explicitly_allowed
+    assert aligned["action"] == contrary["action"] == "ENTER_LIMIT"
+E   AssertionError: assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+____ test_structured_entry_keeps_half_size_contrary_btc_for_structured_mode ____
+tests/test_bot.py:5838: in test_structured_entry_keeps_half_size_contrary_btc_for_structured_mode
+    assert signal["action"] == "ENTER_LIMIT", signal
+E   AssertionError: {'action': 'HOLD', 'atr': 0.3, 'btc_allocation_factor': 0.5, 'btc_regime_mode': 'CONTRARY', ...}
+E   assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+_______ test_structured_entry_remembers_recent_location_and_confirmation _______
+tests/test_bot.py:5967: in test_structured_entry_remembers_recent_location_and_confirmation
+    assert signal["action"] == "ENTER_LIMIT", signal["reason"]
+E   AssertionError: 多頭交易 RSI 門檻提高：54.0 < 55.0，等待更強勢信號
+E   assert 'HOLD' == 'ENTER_LIMIT'
+E     
+E     - ENTER_LIMIT
+E     + HOLD
+_________ test_structured_entry_expires_old_location_and_confirmation __________
+tests/test_bot.py:5996: in test_structured_entry_expires_old_location_and_confirmation
+    assert "需≤0.40" in signal["reason"]
+E   AssertionError: assert '需≤0.40' in '多頭交易 RSI 門檻提高：54.0 < 55.0，等待更強勢信號'
+_____ test_structured_entry_full_readiness_cannot_bypass_profit_room_floor _____
+tests/test_bot.py:6034: in test_structured_entry_full_readiness_cannot_bypass_profit_room_floor
+    assert signal["profit_room_pct"] < 0.01
+E   KeyError: 'profit_room_pct'
+_______ test_structured_entry_rejects_room_that_cannot_cover_cost_buffer _______
+tests/test_bot.py:6057: in test_structured_entry_rejects_room_that_cannot_cover_cost_buffer
+    assert "獲利空間不足" in signal["reason"]
+E   AssertionError: assert '獲利空間不足' in '多頭交易 RSI 門檻提高：54.0 < 55.0，等待更強勢信號'
+______ test_runner_preserves_exit_observations_across_reload[paper-LONG] _______
+tests/test_dual_track_persistence.py:49: in test_runner_preserves_exit_observations_across_reload
+    expected_peak = account.positions[symbol]["ratchet_lock_state"]["max_net_atr"]
+E   KeyError: 'ratchet_lock_state'
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 69, in process_single_symbol_runner
+    velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'get_velocity_drop_ratio'
+______ test_runner_preserves_exit_observations_across_reload[paper-SHORT] ______
+tests/test_dual_track_persistence.py:49: in test_runner_preserves_exit_observations_across_reload
+    expected_peak = account.positions[symbol]["ratchet_lock_state"]["max_net_atr"]
+E   KeyError: 'ratchet_lock_state'
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 69, in process_single_symbol_runner
+    velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'get_velocity_drop_ratio'
+_____ test_runner_preserves_exit_observations_across_reload[testnet-LONG] ______
+tests/test_dual_track_persistence.py:49: in test_runner_preserves_exit_observations_across_reload
+    expected_peak = account.positions[symbol]["ratchet_lock_state"]["max_net_atr"]
+E   KeyError: 'ratchet_lock_state'
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 69, in process_single_symbol_runner
+    velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'get_velocity_drop_ratio'
+_____ test_runner_preserves_exit_observations_across_reload[testnet-SHORT] _____
+tests/test_dual_track_persistence.py:49: in test_runner_preserves_exit_observations_across_reload
+    expected_peak = account.positions[symbol]["ratchet_lock_state"]["max_net_atr"]
+E   KeyError: 'ratchet_lock_state'
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 69, in process_single_symbol_runner
+    velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'get_velocity_drop_ratio'
+________________ test_ma_cross_does_not_arm_removed_profit_lock ________________
+tests/test_lock_profit.py:15: in test_ma_cross_does_not_arm_removed_profit_lock
+    res1 = engine._channel_swing_action(df_lock, 9.5, "LONG", None, None, "UP", None, False, 12, 8, False, False)
+E   AttributeError: 'TradingEngine' object has no attribute '_channel_swing_action'
+_____________ test_ma_recovery_holds_without_removed_unlock_signal _____________
+tests/test_lock_profit.py:25: in test_ma_recovery_holds_without_removed_unlock_signal
+    res2 = engine._channel_swing_action(df_unlock, 11, "LONG", None, None, "UP", None, False, 12, 8, False, False, 1.0)
+E   AttributeError: 'TradingEngine' object has no attribute '_channel_swing_action'
+___________ test_legacy_lock_argument_does_not_restore_unlock_signal ___________
+tests/test_lock_profit.py:35: in test_legacy_lock_argument_does_not_restore_unlock_signal
+    result = engine._channel_swing_action(
+E   AttributeError: 'TradingEngine' object has no attribute '_channel_swing_action'
+__________________ test_bearish_ma_cross_alone_does_not_exit ___________________
+tests/test_lock_profit.py:48: in test_bearish_ma_cross_alone_does_not_exit
+    result = engine._channel_swing_action(frame, 9.5, "LONG", cross_timer_start=1.0)
+E   AttributeError: 'TradingEngine' object has no attribute '_channel_swing_action'
+_______________ test_profit_lock_giveback_scales_with_peak_ratio _______________
+tests/test_profit_lock_usdt.py:13: in test_profit_lock_giveback_scales_with_peak_ratio
+    assert get_profit_lock_giveback_usdt(0.0) == pytest.approx(1.0)
+E   assert 0.8 == 1.0 ± 1.0e-06
+E     
+E     comparison failed
+E     Obtained: 0.8
+E     Expected: 1.0 ± 1.0e-06
+________________ test_fee_floor_then_half_usdt_ladder[asyncio] _________________
+tests/test_profit_lock_usdt.py:69: in test_fee_floor_then_half_usdt_ladder
+    assert account.positions["BTC/USDT"]["profit_lock_mode"] == "0.5U_LADDER_0.8U_GAP"
+E   AssertionError: assert '0.5U_LADDER_0.825U_GAP' == '0.5U_LADDER_0.8U_GAP'
+E     
+E     - 0.5U_LADDER_0.8U_GAP
+E     + 0.5U_LADDER_0.825U_GAP
+E     ?                ++
+_______ test_wide_trail_mode_does_not_exit_at_fixed_take_profit[asyncio] _______
+tests/test_profit_lock_usdt.py:159: in test_wide_trail_mode_does_not_exit_at_fixed_take_profit
+    assert "BTC/USDT" in account.positions
+E   AssertionError: assert 'BTC/USDT' in {}
+E    +  where {} = <core.paper_account.PaperAccount object at 0x7dc402c3db80>.positions
+_____________ test_one_usdt_floor_advances_every_two_usdt[asyncio] _____________
+tests/test_profit_lock_usdt.py:186: in test_one_usdt_floor_advances_every_two_usdt
+    assert account.positions["BTC/USDT"]["sl"] == pytest.approx(102.0)
+E   KeyError: 'BTC/USDT'
+______________ test_ma3_pivot_long_uses_current_confirmation_path ______________
+tests/test_spec_trend_direction.py:75: in test_ma3_pivot_long_uses_current_confirmation_path
+    assert signal["action"] == "ENTER_MARKET"
+E   AssertionError: assert 'HOLD' == 'ENTER_MARKET'
+E     
+E     - ENTER_MARKET
+E     + HOLD
+_____________ test_ma3_pivot_short_uses_current_confirmation_path ______________
+tests/test_spec_trend_direction.py:88: in test_ma3_pivot_short_uses_current_confirmation_path
+    assert signal["action"] == "ENTER_MARKET"
+E   AssertionError: assert 'HOLD' == 'ENTER_MARKET'
+E     
+E     - ENTER_MARKET
+E     + HOLD
+____________ test_high_atr_candidate_is_blocked_before_pivot_entry _____________
+tests/test_spec_trend_direction.py:103: in test_high_atr_candidate_is_blocked_before_pivot_entry
+    assert "ATR_Too_High" in signal["reason"]
+E   AssertionError: assert 'ATR_Too_High' in 'User Rule: 價格未突破上下軌，不允許開倉'
+_ test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_REVERSAL-False-MA5_REVERSAL-False-LONG] _
+tests/test_specialized_order_routes.py:90: in test_every_ma5_trade_form_routes_to_the_expected_limit_order
+    assert placed is True
+E   assert False is True
+_ test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_REVERSAL-False-MA5_REVERSAL-False-SHORT] _
+tests/test_specialized_order_routes.py:90: in test_every_ma5_trade_form_routes_to_the_expected_limit_order
+    assert placed is True
+E   assert False is True
+_ test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_BOTTOM_LIMIT-True-MA5_BOTTOM_LIMIT-True-LONG] _
+tests/test_specialized_order_routes.py:90: in test_every_ma5_trade_form_routes_to_the_expected_limit_order
+    assert placed is True
+E   assert False is True
+_ test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_BOTTOM_LIMIT-True-MA5_BOTTOM_LIMIT-True-SHORT] _
+tests/test_specialized_order_routes.py:90: in test_every_ma5_trade_form_routes_to_the_expected_limit_order
+    assert placed is True
+E   assert False is True
+_ test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_CROSS_PIVOT-False-MA5_CROSS_PIVOT-False-LONG] _
+tests/test_specialized_order_routes.py:90: in test_every_ma5_trade_form_routes_to_the_expected_limit_order
+    assert placed is True
+E   assert False is True
+_ test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_CROSS_PIVOT-False-MA5_CROSS_PIVOT-False-SHORT] _
+tests/test_specialized_order_routes.py:90: in test_every_ma5_trade_form_routes_to_the_expected_limit_order
+    assert placed is True
+E   assert False is True
+___ test_ma3_ma15_continuation_routes_to_market_for_both_sides[asyncio-LONG] ___
+tests/test_specialized_order_routes.py:117: in test_ma3_ma15_continuation_routes_to_market_for_both_sides
+    placed = await engine._place_continuous_market_entry(
+E   AttributeError: 'TradingEngine' object has no attribute '_place_continuous_market_entry'
+__ test_ma3_ma15_continuation_routes_to_market_for_both_sides[asyncio-SHORT] ___
+tests/test_specialized_order_routes.py:117: in test_ma3_ma15_continuation_routes_to_market_for_both_sides
+    placed = await engine._place_continuous_market_entry(
+E   AttributeError: 'TradingEngine' object has no attribute '_place_continuous_market_entry'
+_____ test_current_maker_routes_to_post_only_for_both_sides[asyncio-LONG] ______
+tests/test_specialized_order_routes.py:156: in test_current_maker_routes_to_post_only_for_both_sides
+    placed = await engine._place_current_maker_candidate(
+E   AttributeError: 'TradingEngine' object has no attribute '_place_current_maker_candidate'
+_____ test_current_maker_routes_to_post_only_for_both_sides[asyncio-SHORT] _____
+tests/test_specialized_order_routes.py:156: in test_current_maker_routes_to_post_only_for_both_sides
+    placed = await engine._place_current_maker_candidate(
+E   AttributeError: 'TradingEngine' object has no attribute '_place_current_maker_candidate'
+________ test_pullback_candidate_stage_is_created_for_both_sides[LONG] _________
+tests/test_specialized_order_routes.py:179: in test_pullback_candidate_stage_is_created_for_both_sides
+    engine._admit_pullback_candidates(
+E   AttributeError: 'TradingEngine' object has no attribute '_admit_pullback_candidates'. Did you mean: '_drop_pullback_candidate'?
+________ test_pullback_candidate_stage_is_created_for_both_sides[SHORT] ________
+tests/test_specialized_order_routes.py:179: in test_pullback_candidate_stage_is_created_for_both_sides
+    engine._admit_pullback_candidates(
+E   AttributeError: 'TradingEngine' object has no attribute '_admit_pullback_candidates'. Did you mean: '_drop_pullback_candidate'?
+___________ test_long_requires_green_second_k_in_lower_half_channel ____________
+tests/test_strict_pivot_entry.py:36: in test_long_requires_green_second_k_in_lower_half_channel
+    ok, reason, offset = TradingEngine._validate_strict_pivot_entry(
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+____________ test_short_requires_red_second_k_in_upper_half_channel ____________
+tests/test_strict_pivot_entry.py:45: in test_short_requires_red_second_k_in_upper_half_channel
+    ok, reason, offset = TradingEngine._validate_strict_pivot_entry(
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+_________ test_second_k_crossing_far_beyond_required_rail_is_accepted __________
+tests/test_strict_pivot_entry.py:56: in test_second_k_crossing_far_beyond_required_rail_is_accepted
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+_______ test_peak_red_k_crossing_below_lower_rail_confirms_strong_short ________
+tests/test_strict_pivot_entry.py:64: in test_peak_red_k_crossing_below_lower_rail_confirms_strong_short
+    ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+______ test_trough_green_k_crossing_above_upper_rail_confirms_strong_long ______
+tests/test_strict_pivot_entry.py:72: in test_trough_green_k_crossing_above_upper_rail_confirms_strong_long
+    ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "LONG")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+__________ test_entry_atr_falls_back_to_kc_width_before_price_epsilon __________
+tests/test_strict_pivot_entry.py:86: in test_entry_atr_falls_back_to_kc_width_before_price_epsilon
+    assert atr == 2.0
+E   assert 0.5 == 2.0
+__________ test_entry_atr_has_sane_price_fallback_without_indicators ___________
+tests/test_strict_pivot_entry.py:92: in test_entry_atr_has_sane_price_fallback_without_indicators
+    assert atr == 0.1
+E   assert 0.5 == 0.1
+________ test_prealert_appears_after_confirmed_ma3_turn_in_correct_half ________
+tests/test_strict_pivot_entry.py:131: in test_prealert_appears_after_confirmed_ma3_turn_in_correct_half
+    assert TradingEngine._detect_strict_pivot_prealert(frame) == "SHORT"
+E   AssertionError: assert None == 'SHORT'
+E    +  where None = <function detect_strict_pivot_prealert at 0x7dc47924ed40>(    open  close    ma3  ema_20  kc_upper  kc_lower  atr\n0  101.0  101.2  102.3   100.0     102.0      98.0  1.0\n1  101.4  101.6  102.2   100.0     102.0      98.0  1.0\n2  101.5  101.2  102.1   100.0     102.0      98.0  1.0)
+E    +    where <function detect_strict_pivot_prealert at 0x7dc47924ed40> = TradingEngine._detect_strict_pivot_prealert
+____________ test_low_volume_third_red_candle_still_confirms_short _____________
+tests/test_strict_pivot_entry.py:148: in test_low_volume_third_red_candle_still_confirms_short
+    ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+_____________ test_doji_is_skipped_and_next_red_can_confirm_short ______________
+tests/test_strict_pivot_entry.py:166: in test_doji_is_skipped_and_next_red_can_confirm_short
+    ok, _, offset = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+____________________ test_doji_alone_does_not_confirm_short ____________________
+tests/test_strict_pivot_entry.py:174: in test_doji_alone_does_not_confirm_short
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+_______ test_long_confirmation_candle_requires_pullback_only_at_one_atr ________
+tests/test_strict_pivot_entry.py:183: in test_long_confirmation_candle_requires_pullback_only_at_one_atr
+    assert TradingEngine._pivot_pullback_ready("LONG", 99.0, 99.1, 1.0, 99.3) is True
+E   TypeError: pivot_pullback_ready() takes 2 positional arguments but 5 were given
+______________ test_short_long_candle_waits_for_rebound_near_ma3 _______________
+tests/test_strict_pivot_entry.py:188: in test_short_long_candle_waits_for_rebound_near_ma3
+    assert TradingEngine._pivot_pullback_ready("SHORT", 99.2, 99.3, 1.0, 99.0) is True
+E   TypeError: pivot_pullback_ready() takes 2 positional arguments but 5 were given
+___________ test_price_wick_outside_without_ma3_outside_is_rejected ____________
+tests/test_strict_pivot_entry.py:196: in test_price_wick_outside_without_ma3_outside_is_rejected
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+_______________________ test_pivot_near_ma15_is_rejected _______________________
+tests/test_strict_pivot_entry.py:205: in test_pivot_near_ma15_is_rejected
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "LONG")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+___________________ test_pivot_near_any_kc_line_is_rejected ____________________
+tests/test_strict_pivot_entry.py:214: in test_pivot_near_any_kc_line_is_rejected
+    ok, reason, _ = TradingEngine._validate_strict_pivot_entry(frame, "SHORT")
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+________ test_original_5887ffa_first_confirmation_then_strict_second_k _________
+tests/test_strict_pivot_entry.py:242: in test_original_5887ffa_first_confirmation_then_strict_second_k
+    ok, reason, offset = TradingEngine._validate_strict_pivot_entry(
+E   TypeError: validate_strict_pivot_entry() missing 1 required positional argument: 'live_price'
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_LIMIT-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_LIMIT-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-CHANNEL_SWING-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-CHANNEL_SWING-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-EXHAUSTION_SNIPER-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-EXHAUSTION_SNIPER-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MA3_PIVOT-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MA3_PIVOT-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MOMENTUM_CROSS-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MOMENTUM_CROSS-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-PIVOT_TURN-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-PIVOT_TURN-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SHORT_FAST_ENTRY-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SHORT_FAST_ENTRY-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-STRONG_LONG_BURST-ENTER_MARKET-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-STRONG_LONG_BURST-ENTER_MARKET-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SUPPORT_PULLBACK-ENTER_LIMIT-LONG] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SUPPORT_PULLBACK-ENTER_LIMIT-SHORT] _
+tests/test_structured_order_routes.py:113: in test_every_structured_trade_mode_uses_the_expected_order_route
+    assert placed is True
+E   assert False is True
+_ test_hype_three_second_retry_locks_only_the_failed_closed_candidate[asyncio-LONG] _
+tests/test_structured_order_routes.py:194: in test_hype_three_second_retry_locks_only_the_failed_closed_candidate
+    assert opened is True
+E   assert False is True
+_ test_hype_three_second_retry_locks_only_the_failed_closed_candidate[asyncio-SHORT] _
+tests/test_structured_order_routes.py:194: in test_hype_three_second_retry_locks_only_the_failed_closed_candidate
+    assert opened is True
+E   assert False is True
+________________ test_symbol_runner_lifecycle_exit_and_reentry _________________
+tests/test_symbol_runner_lifecycle.py:65: in test_symbol_runner_lifecycle_exit_and_reentry
+    assert symbol not in mock_engine.account.positions
+E   AssertionError: assert 'BTCUSDT' not in {'BTCUSDT': {'bot_last_managed_at': 1790339007.0271962, 'entry_price': 100, 'open_timestamp': 1000, 'qty': 1, ...}}
+E    +  where {'BTCUSDT': {'bot_last_managed_at': 1790339007.0271962, 'entry_price': 100, 'open_timestamp': 1000, 'qty': 1, ...}} = <MagicMock name='mock.account' id='138280812992928'>.positions
+E    +    where <MagicMock name='mock.account' id='138280812992928'> = <MagicMock id='138280808494864'>.account
+_______________ test_flat_scan_routes_real_unified_signal[LONG] ________________
+tests/test_symbol_runner_lifecycle.py:115: in test_flat_scan_routes_real_unified_signal
+    mock_engine._execute_confirmed_channel_break.assert_awaited_once()
+/usr/lib/python3.12/unittest/mock.py:2305: in assert_awaited_once
+    raise AssertionError(msg)
+E   AssertionError: Expected _execute_confirmed_channel_break to have been awaited once. Awaited 0 times.
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 251, in process_single_symbol_runner
+    if current_bar_id - exit_bar_id > 10 * 60 * 1000:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: '>' not supported between instances of 'MagicMock' and 'int'
+_______________ test_flat_scan_routes_real_unified_signal[SHORT] _______________
+tests/test_symbol_runner_lifecycle.py:115: in test_flat_scan_routes_real_unified_signal
+    mock_engine._execute_confirmed_channel_break.assert_awaited_once()
+/usr/lib/python3.12/unittest/mock.py:2305: in assert_awaited_once
+    raise AssertionError(msg)
+E   AssertionError: Expected _execute_confirmed_channel_break to have been awaited once. Awaited 0 times.
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 251, in process_single_symbol_runner
+    if current_bar_id - exit_bar_id > 10 * 60 * 1000:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: '>' not supported between instances of 'MagicMock' and 'int'
+_________________ test_flat_direction_does_not_send_wait_tuple _________________
+tests/test_symbol_runner_lifecycle.py:128: in test_flat_direction_does_not_send_wait_tuple
+    assert not any("處理失敗" in call.args[0] for call in mock_engine.account.log.call_args_list)
+E   assert not True
+E    +  where True = any(<generator object test_flat_direction_does_not_send_wait_tuple.<locals>.<genexpr> at 0x7dc403af5f20>)
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/tmp/red-eye-673d0c7-0jwunhws/core/services/symbol_runner.py", line 251, in process_single_symbol_runner
+    if current_bar_id - exit_bar_id > 10 * 60 * 1000:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: '>' not supported between instances of 'MagicMock' and 'int'
+____________ test_testnet_account_places_entry_stop_and_take_profit ____________
+tests/test_testnet_account.py:137: in test_testnet_account_places_entry_stop_and_take_profit
+    assert exchange.orders[1]["params"]["triggerPrice"] == "98.0"
+E   AssertionError: assert '99.0' == '98.0'
+E     
+E     - 98.0
+E     ?  ^
+E     + 99.0
+E     ?  ^
+________ test_disabled_exchange_initial_stop_waits_until_local_max_loss ________
+tests/test_testnet_account.py:183: in test_disabled_exchange_initial_stop_waits_until_local_max_loss
+    await account.update_positions({"DOGE/USDT": 99.0})
+core/testnet_account.py:878: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+___________ test_dynamic_margin_loss_guard_scales_with_actual_margin ___________
+tests/test_testnet_account.py:230: in test_dynamic_margin_loss_guard_scales_with_actual_margin
+    await account.update_positions({"DOGE/USDT": 98.5})
+core/testnet_account.py:878: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+___ test_initialize_restores_exchange_stop_for_position_opened_in_local_mode ___
+tests/test_testnet_account.py:278: in test_initialize_restores_exchange_stop_for_position_opened_in_local_mode
+    assert restored[0]["params"]["triggerPrice"] == "98.0"
+E   AssertionError: assert '99.0' == '98.0'
+E     
+E     - 98.0
+E     ?  ^
+E     + 99.0
+E     ?  ^
+_____________ test_testnet_peak_drawdown_preempts_local_stop_loss ______________
+tests/test_testnet_account.py:633: in test_testnet_peak_drawdown_preempts_local_stop_loss
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+___________ test_testnet_bounce_guard_immediately_places_stop_market ___________
+tests/test_testnet_account.py:726: in test_testnet_bounce_guard_immediately_places_stop_market
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+__ test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r ___
+tests/test_testnet_account.py:797: in test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+___________ test_percentage_trailing_stop_updates_sl_and_removes_tp ____________
+tests/test_testnet_account.py:832: in test_percentage_trailing_stop_updates_sl_and_removes_tp
+    await account.initialize()
+core/testnet_account.py:336: in initialize
+    raise RuntimeError("8006 Testnet API Key 尚未設定")
+E   RuntimeError: 8006 Testnet API Key 尚未設定
+_______________ test_native_trailing_failure_restores_fixed_stop _______________
+tests/test_testnet_account.py:1068: in test_native_trailing_failure_restores_fixed_stop
+    await account.update_positions({"DOGE/USDT": 106.0})
+core/testnet_account.py:878: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+______ test_every_production_entry_mode_is_registered_in_the_test_matrix _______
+tests/test_trade_mode_lifecycle.py:58: in test_every_production_entry_mode_is_registered_in_the_test_matrix
+    assert discovered == ACTIVE_TRADE_MODES
+E   AssertionError: assert {'BREAKOUT', ...M_LIMIT', ...} == {'BREAKOUT', ...3_PIVOT', ...}
+E     
+E     Extra items in the right set:
+E     'STRONG_LONG_BURST'
+E     'MA3_MA15_MARKET'
+E     'PIVOT_TURN'
+E     'PULLBACK'
+E     Use -v to get more diff
+_________________________ test_entry_track_c_breakout __________________________
+tests/test_v9_core_logic.py:39: in test_entry_track_c_breakout
+    assert reason == "[SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)"
+E   AssertionError: assert '🚀 [1-Candle ... LONG: 極端爆發直入' == '[SPECIAL_ENT...LONG (MARKET)'
+E     
+E     - [SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)
+E     + 🚀 [1-Candle Extreme] LONG: 極端爆發直入
+____________________ test_entry_track_c_structural_collapse ____________________
+tests/test_v9_core_logic.py:57: in test_entry_track_c_structural_collapse
+    assert reason == "[SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)"
+E   AssertionError: assert '🚀 [1-Candle ... LONG: 極端爆發直入' == '[SPECIAL_ENT...LONG (MARKET)'
+E     
+E     - [SPECIAL_ENTRY] Extreme Impulse LONG (MARKET)
+E     + 🚀 [1-Candle Extreme] LONG: 極端爆發直入
+_______________________ test_entry_track_b_mid_pullback ________________________
+tests/test_v9_core_logic.py:76: in test_entry_track_b_mid_pullback
+    assert ok is True
+E   assert False is True
+_________________________ test_dynamic_atr_phase_jump __________________________
+tests/test_v9_core_logic.py:95: in test_dynamic_atr_phase_jump
+    assert position["v10_phase_trailing"]["last_locked_level"] == 0
+E   KeyError: 'last_locked_level'
+________________________ test_entry_trend_relay_bypass _________________________
+tests/test_v9_core_logic.py:141: in test_entry_trend_relay_bypass
+    assert ok is True
+E   assert False is True
+_________________ test_entry_track_d_trend_continuation_short __________________
+tests/test_v9_core_logic.py:164: in test_entry_track_d_trend_continuation_short
+    assert ok is True
+E   assert False is True
+_____________________ test_entry_filtered_extreme_distance _____________________
+tests/test_v9_core_logic.py:204: in test_entry_filtered_extreme_distance
+    assert ok is False
+E   assert True is False
+_______________________ test_entry_track_a_trend_defense _______________________
+tests/test_v9_core_logic.py:225: in test_entry_track_a_trend_defense
+    assert "FILTERED_EXTREME_COUNTER_TREND" in reason
+E   AssertionError: assert 'FILTERED_EXTREME_COUNTER_TREND' in 'FILTERED_NOT_2_CANDLE_BREAKOUT_OR_CONTINUATION'
+=============================== warnings summary ===============================
+tests/test_bot.py::test_bot_supervisor_restarts_unexpectedly_stopped_engine[asyncio]
+  /tmp/red-eye-673d0c7-0jwunhws/services/api.py:243: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+tests/test_bot.py::test_bot_supervisor_restarts_unexpectedly_stopped_engine[asyncio]
+tests/test_bot.py::test_bot_supervisor_restarts_unexpectedly_stopped_engine[asyncio]
+  /home/shudgai999/project/new bn/.venv/lib/python3.12/site-packages/fastapi/applications.py:4495: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)
+
+tests/test_bot.py::test_bot_supervisor_restarts_unexpectedly_stopped_engine[asyncio]
+  /tmp/red-eye-673d0c7-0jwunhws/services/api.py:253: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("shutdown")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/shudgai999/project/new bn/reports/red_eye_673d0c7/results.xml -
+=========================== short test summary info ============================
+FAILED tests/test_bot.py::test_entry_filter_stats_record_components_adjustments_and_last_snapshot
+FAILED tests/test_bot.py::test_entry_direction_guard_blocks_wrong_1h_st_and_ema50
+FAILED tests/test_bot.py::test_bounce_closes_at_configured_room_capture_target[asyncio]
+FAILED tests/test_bot.py::test_paper_account_lets_rebound_run_and_closes_at_its_own_peak[asyncio]
+FAILED tests/test_bot.py::test_paper_account_peak_drawdown_preempts_local_stop_loss[asyncio]
+FAILED tests/test_bot.py::test_outer_run_ignores_profit_lock_stop_until_returned_inside[asyncio]
+FAILED tests/test_bot.py::test_paper_structured_trailing_waits_for_one_point_five_r_and_locks_one_r[asyncio]
+FAILED tests/test_bot.py::test_bottom_entry_grace_ignores_early_strong_soft_exit[asyncio]
+FAILED tests/test_bot.py::test_zero_sl_peak_threshold_executes_initial_stop_immediately[asyncio]
+FAILED tests/test_bot.py::test_sl_only_after_peak_prevents_early_stop[asyncio]
+FAILED tests/test_bot.py::test_pullback_timeout_locks_old_breakout_instead_of_recreating[asyncio]
+FAILED tests/test_bot.py::test_90_plus_current_maker_places_post_only_without_pullback_wait[asyncio]
+FAILED tests/test_bot.py::test_pending_limit_is_validated_for_drift_before_fill_check[asyncio]
+FAILED tests/test_bot.py::test_structured_pending_revalidates_direction_mode_and_target[asyncio-fresh_signal0-\u65b9\u5411\u5df2\u7ffb\u8f49]
+FAILED tests/test_bot.py::test_structured_pending_revalidates_direction_mode_and_target[asyncio-fresh_signal1-\u7d50\u69cb\u639b\u55ae\u76ee\u6a19\u5df2\u6f02\u79fb]
+FAILED tests/test_bot.py::test_structured_pending_revalidates_direction_mode_and_target[asyncio-fresh_signal2-\u5165\u53e3\u6a21\u5f0f\u5df2\u6539\u8b8a]
+FAILED tests/test_bot.py::test_structured_rr_experiment_keeps_point_five_hard_floor[asyncio-0.0095-False-True]
+FAILED tests/test_bot.py::test_exhaustion_sniper_structured_entry_is_market_with_exact_stop[asyncio]
+FAILED tests/test_bot.py::test_legacy_outer_peak_wait_is_discarded[asyncio]
+FAILED tests/test_bot.py::test_outer_run_holds_through_unconfirmed_red_candles[asyncio]
+FAILED tests/test_bot.py::test_range_position_ignores_fixed_stop_in_outer_rail_only_mode[asyncio]
+FAILED tests/test_bot.py::test_trend_position_ignores_middle_take_profit[asyncio]
+FAILED tests/test_bot.py::test_strong_trigger_alone_does_not_auto_close_without_exit_signal[asyncio]
+FAILED tests/test_bot.py::test_ma5_only_trigger_does_not_close_during_minimum_hold[asyncio]
+FAILED tests/test_bot.py::test_trailing_sl_moves_up_for_long[asyncio] - Runti...
+FAILED tests/test_bot.py::test_trailing_sl_does_not_move_back[asyncio] - Runt...
+FAILED tests/test_bot.py::test_structured_exit_scales_half_at_one_point_five_r[asyncio]
+FAILED tests/test_bot.py::test_two_slots_reopen_independently_and_compound_realized_balance
+FAILED tests/test_bot.py::test_engine_records_four_shadow_profiles_without_changing_baseline
+FAILED tests/test_bot.py::test_expired_pullback_blocks_same_breakout_until_kc_resets
+FAILED tests/test_bot.py::test_pullback_candidate_pool_keeps_highest_score_and_quality
+FAILED tests/test_bot.py::test_90_plus_candidate_uses_current_price_maker_mode
+FAILED tests/test_bot.py::test_btc_contrary_candidate_uses_half_position - At...
+FAILED tests/test_bot.py::test_flat_left_side_is_not_mislabeled_as_fast_peak
+FAILED tests/test_bot.py::test_complete_peak_wave_reverses_only_after_red_close_crosses_next_rail
+FAILED tests/test_bot.py::test_latest_closed_candle_can_confirm_peak_without_one_bar_delay
+FAILED tests/test_bot.py::test_latest_closed_candle_can_confirm_trough_without_one_bar_delay
+FAILED tests/test_bot.py::test_two_closed_bars_can_confirm_peak_after_nearly_flat_first_turn
+FAILED tests/test_bot.py::test_outer_run_same_closed_bar_keeps_waiting_for_second_red_candle
+FAILED tests/test_bot.py::test_outer_run_second_red_close_confirms_short_for_third_candle
+FAILED tests/test_bot.py::test_outer_run_second_green_close_confirms_long_for_third_candle
+FAILED tests/test_bot.py::test_outer_run_second_green_must_continue_higher_to_open_long
+FAILED tests/test_bot.py::test_outer_run_invalid_second_candle_cancels_short[candle0]
+FAILED tests/test_bot.py::test_outer_run_invalid_second_candle_cancels_short[candle1]
+FAILED tests/test_bot.py::test_outer_run_invalid_second_candle_cancels_short[candle2]
+FAILED tests/test_bot.py::test_two_bar_structure_failure_exit_is_symmetric - ...
+FAILED tests/test_bot.py::test_confirmed_outer_reversal_rejects_kc_inner_peak_and_wrong_direction
+FAILED tests/test_bot.py::test_confirmed_outer_reversal_requires_closed_confirmed_pivot
+FAILED tests/test_bot.py::test_strong_burst_live_entry_rejects_price_back_near_middle
+FAILED tests/test_bot.py::test_trailing_atr_prefers_live_trigger_and_rejects_near_zero_saved_value
+FAILED tests/test_bot.py::test_general_position_waits_for_confirmed_pivot_before_exit[LONG-101.0-100.0-False]
+FAILED tests/test_bot.py::test_general_position_waits_for_confirmed_pivot_before_exit[LONG-100.0-101.0-False]
+FAILED tests/test_bot.py::test_general_position_waits_for_confirmed_pivot_before_exit[SHORT-100.0-101.0-False]
+FAILED tests/test_bot.py::test_general_position_waits_for_confirmed_pivot_before_exit[SHORT-101.0-100.0-False]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens0-closes0-ma30-False]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens1-closes1-ma31-False]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens2-closes2-ma32-False]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens3-closes3-ma33-False]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens4-closes4-ma34-True]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens5-closes5-ma35-True]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[LONG-opens6-closes6-ma36-True]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens7-closes7-ma37-True]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens8-closes8-ma38-True]
+FAILED tests/test_bot.py::test_opposite_candle_never_exits_before_confirmed_pivot[SHORT-opens9-closes9-ma39-True]
+FAILED tests/test_bot.py::test_range_swing_reverses_at_confirmed_high_and_low_but_not_outer_run
+FAILED tests/test_bot.py::test_confirmed_pivot_can_reverse_before_ma15_cross
+FAILED tests/test_bot.py::test_continuous_entry_opens_long_and_short_at_market
+FAILED tests/test_bot.py::test_continuous_entry_checks_current_symbol_trend_only_in_range
+FAILED tests/test_bot.py::test_continuous_market_mode_uses_1000pepe_trend_not_btc
+FAILED tests/test_bot.py::test_ma3_below_ma15_does_not_open_short_while_still_rising
+FAILED tests/test_bot.py::test_ma3_trough_far_from_kc_middle_and_ma15_can_reverse
+FAILED tests/test_bot.py::test_strong_trough_near_kc_middle_does_not_reverse
+FAILED tests/test_bot.py::test_trough_body_crossing_lower_rail_still_waits_for_full_body_inside
+FAILED tests/test_bot.py::test_trough_full_green_body_inside_lower_rail_can_reverse
+FAILED tests/test_bot.py::test_strong_peak_near_kc_middle_does_not_reverse - ...
+FAILED tests/test_bot.py::test_shallow_cross_near_ma15_still_waits_instead_of_forcing_reversal
+FAILED tests/test_bot.py::test_true_trough_near_ma15_does_not_reverse - Asser...
+FAILED tests/test_bot.py::test_ma3_above_ma15_does_not_open_long_while_still_falling
+FAILED tests/test_bot.py::test_ma3_above_ma15_peak_turns_down_instead_of_opening_long
+FAILED tests/test_bot.py::test_dynamic_adx_floor[1-closes2-25.0] - assert 12....
+FAILED tests/test_bot.py::test_structured_entry_uses_maker_for_quality_support_reversal
+FAILED tests/test_bot.py::test_structured_entry_allows_small_ema50_cross_but_rejects_larger_one
+FAILED tests/test_bot.py::test_structured_entry_accepts_rsi_51_and_volume_1_20
+FAILED tests/test_bot.py::test_structured_entry_accepts_relaxed_location_and_volume
+FAILED tests/test_bot.py::test_structured_entry_accepts_macd_improvement_without_reversal_candle
+FAILED tests/test_bot.py::test_structured_entry_penalizes_contrary_btc_when_explicitly_allowed
+FAILED tests/test_bot.py::test_structured_entry_keeps_half_size_contrary_btc_for_structured_mode
+FAILED tests/test_bot.py::test_structured_entry_remembers_recent_location_and_confirmation
+FAILED tests/test_bot.py::test_structured_entry_expires_old_location_and_confirmation
+FAILED tests/test_bot.py::test_structured_entry_full_readiness_cannot_bypass_profit_room_floor
+FAILED tests/test_bot.py::test_structured_entry_rejects_room_that_cannot_cover_cost_buffer
+FAILED tests/test_dual_track_persistence.py::test_runner_preserves_exit_observations_across_reload[paper-LONG]
+FAILED tests/test_dual_track_persistence.py::test_runner_preserves_exit_observations_across_reload[paper-SHORT]
+FAILED tests/test_dual_track_persistence.py::test_runner_preserves_exit_observations_across_reload[testnet-LONG]
+FAILED tests/test_dual_track_persistence.py::test_runner_preserves_exit_observations_across_reload[testnet-SHORT]
+FAILED tests/test_lock_profit.py::test_ma_cross_does_not_arm_removed_profit_lock
+FAILED tests/test_lock_profit.py::test_ma_recovery_holds_without_removed_unlock_signal
+FAILED tests/test_lock_profit.py::test_legacy_lock_argument_does_not_restore_unlock_signal
+FAILED tests/test_lock_profit.py::test_bearish_ma_cross_alone_does_not_exit
+FAILED tests/test_profit_lock_usdt.py::test_profit_lock_giveback_scales_with_peak_ratio
+FAILED tests/test_profit_lock_usdt.py::test_fee_floor_then_half_usdt_ladder[asyncio]
+FAILED tests/test_profit_lock_usdt.py::test_wide_trail_mode_does_not_exit_at_fixed_take_profit[asyncio]
+FAILED tests/test_profit_lock_usdt.py::test_one_usdt_floor_advances_every_two_usdt[asyncio]
+FAILED tests/test_spec_trend_direction.py::test_ma3_pivot_long_uses_current_confirmation_path
+FAILED tests/test_spec_trend_direction.py::test_ma3_pivot_short_uses_current_confirmation_path
+FAILED tests/test_spec_trend_direction.py::test_high_atr_candidate_is_blocked_before_pivot_entry
+FAILED tests/test_specialized_order_routes.py::test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_REVERSAL-False-MA5_REVERSAL-False-LONG]
+FAILED tests/test_specialized_order_routes.py::test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_REVERSAL-False-MA5_REVERSAL-False-SHORT]
+FAILED tests/test_specialized_order_routes.py::test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_BOTTOM_LIMIT-True-MA5_BOTTOM_LIMIT-True-LONG]
+FAILED tests/test_specialized_order_routes.py::test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_BOTTOM_LIMIT-True-MA5_BOTTOM_LIMIT-True-SHORT]
+FAILED tests/test_specialized_order_routes.py::test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_CROSS_PIVOT-False-MA5_CROSS_PIVOT-False-LONG]
+FAILED tests/test_specialized_order_routes.py::test_every_ma5_trade_form_routes_to_the_expected_limit_order[asyncio-MA5_CROSS_PIVOT-False-MA5_CROSS_PIVOT-False-SHORT]
+FAILED tests/test_specialized_order_routes.py::test_ma3_ma15_continuation_routes_to_market_for_both_sides[asyncio-LONG]
+FAILED tests/test_specialized_order_routes.py::test_ma3_ma15_continuation_routes_to_market_for_both_sides[asyncio-SHORT]
+FAILED tests/test_specialized_order_routes.py::test_current_maker_routes_to_post_only_for_both_sides[asyncio-LONG]
+FAILED tests/test_specialized_order_routes.py::test_current_maker_routes_to_post_only_for_both_sides[asyncio-SHORT]
+FAILED tests/test_specialized_order_routes.py::test_pullback_candidate_stage_is_created_for_both_sides[LONG]
+FAILED tests/test_specialized_order_routes.py::test_pullback_candidate_stage_is_created_for_both_sides[SHORT]
+FAILED tests/test_strict_pivot_entry.py::test_long_requires_green_second_k_in_lower_half_channel
+FAILED tests/test_strict_pivot_entry.py::test_short_requires_red_second_k_in_upper_half_channel
+FAILED tests/test_strict_pivot_entry.py::test_second_k_crossing_far_beyond_required_rail_is_accepted
+FAILED tests/test_strict_pivot_entry.py::test_peak_red_k_crossing_below_lower_rail_confirms_strong_short
+FAILED tests/test_strict_pivot_entry.py::test_trough_green_k_crossing_above_upper_rail_confirms_strong_long
+FAILED tests/test_strict_pivot_entry.py::test_entry_atr_falls_back_to_kc_width_before_price_epsilon
+FAILED tests/test_strict_pivot_entry.py::test_entry_atr_has_sane_price_fallback_without_indicators
+FAILED tests/test_strict_pivot_entry.py::test_prealert_appears_after_confirmed_ma3_turn_in_correct_half
+FAILED tests/test_strict_pivot_entry.py::test_low_volume_third_red_candle_still_confirms_short
+FAILED tests/test_strict_pivot_entry.py::test_doji_is_skipped_and_next_red_can_confirm_short
+FAILED tests/test_strict_pivot_entry.py::test_doji_alone_does_not_confirm_short
+FAILED tests/test_strict_pivot_entry.py::test_long_confirmation_candle_requires_pullback_only_at_one_atr
+FAILED tests/test_strict_pivot_entry.py::test_short_long_candle_waits_for_rebound_near_ma3
+FAILED tests/test_strict_pivot_entry.py::test_price_wick_outside_without_ma3_outside_is_rejected
+FAILED tests/test_strict_pivot_entry.py::test_pivot_near_ma15_is_rejected - T...
+FAILED tests/test_strict_pivot_entry.py::test_pivot_near_any_kc_line_is_rejected
+FAILED tests/test_strict_pivot_entry.py::test_original_5887ffa_first_confirmation_then_strict_second_k
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_LIMIT-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_LIMIT-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-BREAKOUT-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-CHANNEL_SWING-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-CHANNEL_SWING-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-EXHAUSTION_SNIPER-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-EXHAUSTION_SNIPER-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MA3_PIVOT-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MA3_PIVOT-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MOMENTUM_CROSS-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-MOMENTUM_CROSS-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-PIVOT_TURN-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-PIVOT_TURN-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SHORT_FAST_ENTRY-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SHORT_FAST_ENTRY-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-STRONG_LONG_BURST-ENTER_MARKET-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-STRONG_LONG_BURST-ENTER_MARKET-SHORT]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SUPPORT_PULLBACK-ENTER_LIMIT-LONG]
+FAILED tests/test_structured_order_routes.py::test_every_structured_trade_mode_uses_the_expected_order_route[asyncio-SUPPORT_PULLBACK-ENTER_LIMIT-SHORT]
+FAILED tests/test_structured_order_routes.py::test_hype_three_second_retry_locks_only_the_failed_closed_candidate[asyncio-LONG]
+FAILED tests/test_structured_order_routes.py::test_hype_three_second_retry_locks_only_the_failed_closed_candidate[asyncio-SHORT]
+FAILED tests/test_symbol_runner_lifecycle.py::test_symbol_runner_lifecycle_exit_and_reentry
+FAILED tests/test_symbol_runner_lifecycle.py::test_flat_scan_routes_real_unified_signal[LONG]
+FAILED tests/test_symbol_runner_lifecycle.py::test_flat_scan_routes_real_unified_signal[SHORT]
+FAILED tests/test_symbol_runner_lifecycle.py::test_flat_direction_does_not_send_wait_tuple
+FAILED tests/test_testnet_account.py::test_testnet_account_places_entry_stop_and_take_profit
+FAILED tests/test_testnet_account.py::test_disabled_exchange_initial_stop_waits_until_local_max_loss
+FAILED tests/test_testnet_account.py::test_dynamic_margin_loss_guard_scales_with_actual_margin
+FAILED tests/test_testnet_account.py::test_initialize_restores_exchange_stop_for_position_opened_in_local_mode
+FAILED tests/test_testnet_account.py::test_testnet_peak_drawdown_preempts_local_stop_loss
+FAILED tests/test_testnet_account.py::test_testnet_bounce_guard_immediately_places_stop_market
+FAILED tests/test_testnet_account.py::test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r
+FAILED tests/test_testnet_account.py::test_percentage_trailing_stop_updates_sl_and_removes_tp
+FAILED tests/test_testnet_account.py::test_native_trailing_failure_restores_fixed_stop
+FAILED tests/test_trade_mode_lifecycle.py::test_every_production_entry_mode_is_registered_in_the_test_matrix
+FAILED tests/test_v9_core_logic.py::test_entry_track_c_breakout - AssertionEr...
+FAILED tests/test_v9_core_logic.py::test_entry_track_c_structural_collapse - ...
+FAILED tests/test_v9_core_logic.py::test_entry_track_b_mid_pullback - assert ...
+FAILED tests/test_v9_core_logic.py::test_dynamic_atr_phase_jump - KeyError: '...
+FAILED tests/test_v9_core_logic.py::test_entry_trend_relay_bypass - assert Fa...
+FAILED tests/test_v9_core_logic.py::test_entry_track_d_trend_continuation_short
+FAILED tests/test_v9_core_logic.py::test_entry_filtered_extreme_distance - as...
+FAILED tests/test_v9_core_logic.py::test_entry_track_a_trend_defense - Assert...
+179 failed, 374 passed, 31 skipped, 4 warnings in 24.11s

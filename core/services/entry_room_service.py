@@ -1,5 +1,6 @@
 """Every entry needs sufficient net room to a confirmed structural target."""
 import math
+from core.services.candle_data import closed_entry_candles
 from typing import Dict, Any
 
 def entry_room(
@@ -16,7 +17,9 @@ def entry_room(
             return invalid
         if price <= 0 or not 0 <= fee < 1 or not 0 <= slippage < 1 or minimum_net < 0:
             return invalid
-        closed = frame.iloc[:-1].tail(60)
+        closed = closed_entry_candles(frame).tail(60)
+        if len(closed) < 7:
+            return invalid
         rows = []
         for _, row in closed.iterrows():
             values = tuple(float(row[k]) for k in ("open", "high", "low", "close"))
@@ -36,11 +39,6 @@ def entry_room(
         last = pushes[-3:]
         weakening = last[0] > last[1] > last[2] and last[0] > 0 and last[2] <= .5 * last[0]
         mature = sum(v > 0 for v in pushes) >= 4 and extension >= 3.
-        if not (mature and weakening):
-            return dict(allowed=True, checked=False, stage="developing",
-                        reason="KC_TREND_ROOM_SKIPPED",
-                        detail="尚未符合末端衰退條件，不計算淨利空間。",
-                        extension_atr=extension)
         extremes = [row[1] if side == "LONG" else row[2] for row in rows]
         targets = [
             value for i, value in enumerate(extremes[1:-1], start=1)

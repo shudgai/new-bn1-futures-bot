@@ -185,12 +185,15 @@ def check_extreme_pin_defense(side: str, prev_1: pd.Series, prev_2: pd.Series, c
     return True, "OK"
 
 def check_ma_cross_entry(df):
-    """MA3 / MA15 交叉開倉邏輯 (含 K 棒位置確認與動能豁免)"""
-    if len(df) < 3:
+    """【條件 A：均線金叉/死叉型】"""
+    from core.services.candle_data import closed_entry_candles
+    df_closed = closed_entry_candles(df)
+    
+    if len(df_closed) < 2:
         return None
 
-    c1 = df.iloc[-2]  # 前一根已收盤
-    c2 = df.iloc[-1]  # 最新已收盤
+    c1 = df_closed.iloc[-2]  # 前一根已收盤
+    c2 = df_closed.iloc[-1]  # 最新已收盤
     atr = float(c2.get("atr", 0))
 
     if atr <= 0:
@@ -198,49 +201,58 @@ def check_ma_cross_entry(df):
 
     c1_ma3, c1_ma15 = float(c1["ma3"]), float(c1["ma15"])
     c2_ma3, c2_ma15 = float(c2["ma3"]), float(c2["ma15"])
+    c2_kc_middle = float(c2["kc_middle"])
+    c2_close = float(c2["close"])
 
-    c2_body = abs(c2["close"] - c2["open"])
-    is_strong_momentum = c2_body >= 1.2 * atr
-
-    # 1. 多單金叉判斷
+    # 【條件 C：大陽/大陰反轉進場規則 (Engulfing Reversal)】
+    c1_open, c1_close = float(c1["open"]), float(c1["close"])
+    c2_open = float(c2["open"])
+    c2_body = abs(c2_close - c2_open)
+    is_big_candle = c2_body > 1.2 * atr
+    
+    # 1. 多單判斷
     golden_cross = (c1_ma3 <= c1_ma15) and (c2_ma3 > c2_ma15)
-    if golden_cross:
-        # 收陽線且站穩雙均線上方
-        candle_confirmed = (
-            c2["close"] > c2["open"]
-            and c2["close"] > c2_ma3
-            and c2["close"] > c2_ma15
-        )
-        # 動能足夠 (或大實體豁免)
-        momentum_ok = is_strong_momentum or (c2_body >= 0.5 * atr)
+    golden_condition = golden_cross and (c2_close > c2_kc_middle)
+    
+    c1_is_red_or_small_green = (c1_close < c1_open) or (abs(c1_close - c1_open) <= 0.5 * atr)
+    bullish_engulfing = (
+        is_big_candle 
+        and (c2_close > c2_open) 
+        and c1_is_red_or_small_green
+        and (c2_close > max(c1_open, c1_close))
+    )
 
-        if candle_confirmed and momentum_ok:
-            return {
-                "action": "ENTER",
-                "side": "LONG",
-                "reason": "MA_CROSS_GOLDEN_LONG",
-                "entry_atr": atr,
-            }
+    if golden_condition or bullish_engulfing:
+        return {
+            "action": "ENTER",
+            "side": "LONG",
+            "reason": "MA_CROSS_OR_ENGULFING_LONG",
+            "entry_atr": atr,
+            "bypass_flat_check": True,
+            "bypass_cooldown": True
+        }
 
-    # 2. 空單死叉判斷
+    # 2. 空單判斷
     death_cross = (c1_ma3 >= c1_ma15) and (c2_ma3 < c2_ma15)
-    if death_cross:
-        # 收陰線且壓制在雙均線下方
-        candle_confirmed = (
-            c2["close"] < c2["open"]
-            and c2["close"] < c2_ma3
-            and c2["close"] < c2_ma15
-        )
-        # 動能足夠 (或大實體豁免)
-        momentum_ok = is_strong_momentum or (c2_body >= 0.5 * atr)
+    death_condition = death_cross and (c2_close < c2_kc_middle)
+    
+    c1_is_green_or_small_red = (c1_close > c1_open) or (abs(c1_close - c1_open) <= 0.5 * atr)
+    bearish_engulfing = (
+        is_big_candle 
+        and (c2_close < c2_open) 
+        and c1_is_green_or_small_red
+        and (c2_close < min(c1_open, c1_close))
+    )
 
-        if candle_confirmed and momentum_ok:
-            return {
-                "action": "ENTER",
-                "side": "SHORT",
-                "reason": "MA_CROSS_DEATH_SHORT",
-                "entry_atr": atr,
-            }
+    if death_condition or bearish_engulfing:
+        return {
+            "action": "ENTER",
+            "side": "SHORT",
+            "reason": "MA_CROSS_OR_ENGULFING_SHORT",
+            "entry_atr": atr,
+            "bypass_flat_check": True,
+            "bypass_cooldown": True
+        }
 
     return None
 
@@ -252,18 +264,19 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
     - 狀態 2：有倉位 (OPEN) -> 加倉 (PYRAMID)
     這裡使用已收線 (df.iloc[-2]) 作為判斷基準，避免未收線跳動假訊號。
     """
-    if df is None or len(df) < 5:
+    from core.services.candle_data import closed_entry_candles
+    df_closed = closed_entry_candles(df) if df is not None else None
+    if df_closed is None or len(df_closed) < 5:
         return False, "WAIT_INSUFFICIENT_DATA", {}
 
     # 檢查 MA3 / MA15 交叉開倉 (具有最高優先權)
-    ma_cross_signal = check_ma_cross_entry(df)
+    ma_cross_signal = check_ma_cross_entry(df_closed)
     if ma_cross_signal and ma_cross_signal.get("side") == side:
         return True, f"🚀 [MA Cross] {side}: 均線交叉動能確認", ma_cross_signal
 
-    # 取已收線的 K 線數據
-    # df.iloc[-1] 是未收線(Live)，iloc[-2] 是剛收線(Current Confirmed)，iloc[-3] 是前一根收線(Prev Confirmed)
-    current_candle = df.iloc[-2]
-    prev_candle = df.iloc[-3]
+    # 取已收線的 K 線數據 (徹底屏蔽未收線的 Tick)
+    current_candle = df_closed.iloc[-1]
+    prev_candle = df_closed.iloc[-2]
 
     close = float(current_candle['close'])
     open_p = float(current_candle['open'])
@@ -279,46 +292,10 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
     # =========================================================================
     # 絕對硬防線：橫盤死水區一票否決 (Sideways Consolidation Block)
+    # 依使用者最新要求，已全面解除 KC 走平與橫盤阻擋！
     # =========================================================================
     current_atr_val = float(current_candle.get('atr', 0))
-    current_body = abs(close - open_p)
-    
-    # 【強勢破軌與延續豁免】
-    # 1. 如果當前 K 線實體大於 0.5 倍 ATR，視為有動能的真突破。
-    # 2. 如果前一根已經在軌外，屬於延續開倉，不受橫盤限制。
-    is_continuation_long = (prev_close > prev_kc_upper) and (close > kc_upper)
-    is_continuation_short = (prev_close < prev_kc_lower) and (close < kc_lower)
-    is_exempt_from_sideways = (current_body >= 0.5 * current_atr_val) or is_continuation_long or is_continuation_short
 
-    if current_atr_val > 0 and not is_exempt_from_sideways:
-        # 1. 均線走平禁開（缺乏方向斜率）
-        ma3_change = abs(ma3 - prev_ma3)
-        min_slope_threshold = 0.15 * current_atr_val
-        if ma3_change < min_slope_threshold:
-            return False, f"🛑 BLOCKED_SIDEWAYS (MA3 flat: {ma3_change:.5f} < {min_slope_threshold:.5f})", {}
-
-        # 2. 窄幅橫盤箱體禁開（K棒實體壓縮）
-        # 最近 4 根已收線 K 棒 (-5 到 -2)
-        if len(df) >= 6:
-            recent_4_bars = df.iloc[-5:-1]
-            recent_high = float(recent_4_bars['high'].max())
-            recent_low = float(recent_4_bars['low'].min())
-            if (recent_high - recent_low) < (0.8 * current_atr_val):
-                return False, "🛑 BLOCKED_SIDEWAYS (Narrow range box)", {}
-
-        # 3. 均線纏繞禁開
-        # 最近 3 根已收線 K 棒 (-4 到 -2)
-        if len(df) >= 5:
-            cross_count = 0
-            for i in range(-4, -1):
-                b = df.iloc[i]
-                b_low = float(b['low'])
-                b_high = float(b['high'])
-                b_ma3 = float(b.get('ma3', b.get('ema_3', 0)))
-                if b_low <= b_ma3 and b_high >= b_ma3:
-                    cross_count += 1
-            if cross_count >= 2:
-                return False, "🛑 BLOCKED_SIDEWAYS (MA3 entanglement)", {}
 
     if side == "LONG":
         symbol = kwargs.get('symbol', '')
@@ -327,11 +304,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         # 🚨 第一層：絕對硬防線 (Absolute Hard Blocks - Live Candle)
         # 只要觸發任何一條，立即 return False，後續邏輯完全不執行
         # ══════════════════════════════════════════════════════════════════
-        live_candle = df.iloc[-1]
-        live_close = float(live_candle['close'])
-        live_open = float(live_candle['open'])
+        live_candle = current_candle
+        live_close = close
+        live_open = open_p
         live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
-        live_atr = float(live_candle.get('atr', 0))
+        live_atr = current_atr_val
 
         # =========================================================================
         # 動態波段動能竭盡硬防線 (ATR-Based Wave Extension Block)
@@ -464,11 +441,11 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
         # 🚨 第一層：絕對硬防線 (Absolute Hard Blocks - Live Candle)
         # 防止在地板大陽線追空，必須放在所有條件最前面
         # ══════════════════════════════════════════════════════════════════
-        live_candle = df.iloc[-1]
-        live_close = float(live_candle['close'])
-        live_open = float(live_candle['open'])
+        live_candle = current_candle
+        live_close = close
+        live_open = open_p
         live_ma7 = float(live_candle.get('ma7', live_candle.get('ma5', live_candle.get('ma3', live_close))))
-        live_atr = float(live_candle.get('atr', 0))
+        live_atr = current_atr_val
 
         # =========================================================================
         # 動態波段動能竭盡硬防線 (ATR-Based Wave Extension Block)
@@ -541,23 +518,27 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
             return False, f"BLOCKED_PANIC_SHORT (RSI {rsi_val:.1f} < {rsi_limit})", {}
 
         # 5. 乖離率限制 (Bias Limit) — 以 MA7 為錨點（延續開倉亦適用）
-        ma_7 = float(current_candle.get('ma7', current_candle.get('ema_20', current_candle.get('kc_middle', close))))
-        atr = float(current_candle.get('atr', 0))
-        bias_atr = 1.8 if "PEPE" in symbol else 1.5
-        if atr > 0 and (ma_7 - close) > bias_atr * atr:
-            return False, f"BLOCKED_PANIC_SHORT (Bias > {bias_atr} ATR)", {}
+        # 依使用者要求：如果已經強勢破底 (close < kc_lower)，百分之百放行，不阻擋
+        is_strong_breakout_short = (close < kc_lower)
+        
+        if not is_strong_breakout_short:
+            ma_7 = float(current_candle.get('ma7', current_candle.get('ema_20', current_candle.get('kc_middle', close))))
+            atr = float(current_candle.get('atr', 0))
+            bias_atr = 1.8 if "PEPE" in symbol else 1.5
+            if atr > 0 and (ma_7 - close) > bias_atr * atr:
+                return False, f"BLOCKED_PANIC_SHORT (Bias > {bias_atr} ATR)", {}
 
-        # 4. 動能過濾：恐慌棒識別 (Climax Candle Filter)（延續開倉亦適用）
-        body_len = abs(close - open_p)
-        body_series = (df['close'] - df['open']).abs()
-        if len(body_series) >= 11:
-            avg_body = float(body_series.iloc[-11:-1].mean())
-        else:
-            avg_body = float(body_series.iloc[:-1].mean()) if len(body_series) > 1 else atr
+            # 4. 動能過濾：恐慌棒識別 (Climax Candle Filter)（延續開倉亦適用）
+            body_len = abs(close - open_p)
+            body_series = (df['close'] - df['open']).abs()
+            if len(body_series) >= 11:
+                avg_body = float(body_series.iloc[-11:-1].mean())
+            else:
+                avg_body = float(body_series.iloc[:-1].mean()) if len(body_series) > 1 else atr
 
-        body_limit = 2.5 if "PEPE" in symbol else 2.0
-        if avg_body > 0 and body_len > body_limit * avg_body:
-            return False, f"BLOCKED_PANIC_SHORT (Body > {body_limit}x AvgBody)", {}
+            body_limit = 2.5 if "PEPE" in symbol else 2.0
+            if avg_body > 0 and body_len > body_limit * avg_body:
+                return False, f"BLOCKED_PANIC_SHORT (Body > {body_limit}x AvgBody)", {}
 
         # 1. 判斷 K 線顏色 (陰燭)
         is_curr_bearish = close < open_p
@@ -610,11 +591,6 @@ def check_streamlined_entry_signal(df, side: str, live_price: float, position_st
 
 class UnifiedEntryStrategy(IEntryStrategy):
     def evaluate_entry(self, frame, price, side, **kwargs):
-        from core.services.entry_service import global_hard_gate_check
-        gate_res = global_hard_gate_check(frame, side)
-        if gate_res is not None:
-            return False, gate_res["reason"], gate_res
-
         from core.services.outer_turn_entry import observation_store
         from core.services.closed_breakout_entry import evaluate_channel_entry, close_identity, clear_pullback
         engine = kwargs.get('engine')

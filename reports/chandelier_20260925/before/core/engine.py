@@ -1672,7 +1672,11 @@ class TradingEngine:
             return None
         if not all(math.isfinite(v) and v > 0 for v in (price, upper, lower)) or lower >= upper:
             return None
-        # (MA_CROSS check removed)
+        from core.services.entry_service import ma_cross_entry_gate
+        failure = ma_cross_entry_gate(frame, price, side)
+        if failure:
+            log_entry_gate(self, symbol, side, "SNAPSHOT_KC", failure)
+            return None
         if not self._channel_intrabar_ready(symbol, frame, price, side):
             return None
         if candidate_bar_id is not None and self._channel_candidate_bar_id(frame) != candidate_bar_id:
@@ -1741,11 +1745,7 @@ class TradingEngine:
         if locks is None:
             locks = self._channel_entry_locks = {}
         async with locks.setdefault(symbol, asyncio.Lock()):
-            if (
-                self._channel_candle_entry_blocked(symbol)
-                and not self._ck_reverse_order_authorized(symbol, signal)
-                and not signal.get("bypass_cooldown")
-            ):
+            if self._channel_candle_entry_blocked(symbol) and not self._ck_reverse_order_authorized(symbol, signal):
                 self.account.log(f"⏳ {symbol} KC_ONE_ENTRY_PER_CANDLE：本根1分鐘K已開倉或平倉，等待下一根再評估", "INFO")
                 return False
             return await self._place_structured_entry_locked(symbol, signal, live_price, channel_snapshot)
@@ -1760,7 +1760,6 @@ class TradingEngine:
         if symbol not in DEFAULT_SYMBOLS:
             log_entry_gate(self, symbol, signal.get("side"), "ACCOUNT", "SYMBOL_NOT_ALLOWED", signal.get("candidate_bar_id"))
             return False
-            
         committed = len(self.account.positions) + len(self.account.pending_limit_orders)
         if MAX_SLOTS > 0 and committed >= MAX_SLOTS:
             log_entry_gate(self, symbol, signal.get("side"), "ACCOUNT", "MAX_SLOTS", signal.get("candidate_bar_id"), committed=committed, maximum=MAX_SLOTS)
@@ -2147,7 +2146,11 @@ class TradingEngine:
                                or not self._ck_reverse_order_authorized(symbol, signal)):
                 return False
             latest_price = float(getattr(self, "tickers", {}).get(symbol) or planned_price)
-            # (MA_CROSS check removed)
+            from core.services.entry_service import ma_cross_entry_gate
+            failure = ma_cross_entry_gate(fresh_frame, latest_price, side)
+            if failure:
+                log_entry_gate(self, symbol, side, "FINAL_KC", failure)
+                return False
             entry_atr = float(closed_entry_candles(fresh_frame).iloc[-1]["atr"])
             kwargs["atr"] = entry_atr
             kwargs["entry_context"]["entry_atr"] = entry_atr
@@ -2181,58 +2184,6 @@ class TradingEngine:
                             if ck_reverse else self._channel_intrabar_ready(symbol, fresh_frame, latest_price, side))):
                 self.account.log(f"⏳ {symbol} {side} KC_INTRABAR_RECHECK：價格或進場條件已變，等待重新評估", "INFO")
                 return False
-
-        # --- 終極物理防呆閘門 (Ultimate Hard Gatekeeper) ---
-        # 取得最新與前一根已收盤K棒
-        closed_df = closed_entry_candles(fresh_frame)
-        if len(closed_df) < 2:
-            return False
-            
-        c1 = closed_df.iloc[-2]
-        c2 = closed_df.iloc[-1]
-        
-        curr_close = float(c2['close'])
-        curr_open = float(c2['open'])
-        curr_kc_middle = float(c2.get('kc_middle', 0))
-        curr_kc_lower = float(c2.get('kc_lower', 0))
-        curr_kc_upper = float(c2.get('kc_upper', 0))
-        
-        c1_ma3 = float(c1.get('ma3', 0))
-        c1_ma15 = float(c1.get('ma15', 0))
-        curr_ma3 = float(c2.get('ma3', 0))
-        curr_ma15 = float(c2.get('ma15', 0))
-        
-        is_dead_cross = (c1_ma3 >= c1_ma15) and (curr_ma3 < curr_ma15)
-        is_golden_cross = (c1_ma3 <= c1_ma15) and (curr_ma3 > curr_ma15)
-        is_engulfing = "ENGULFING" in str(signal.get("reason", "")).upper()
-        
-        c2_time = c2.get('timestamp', 0)
-
-        # 開空物理安全鎖：
-        if side == 'SHORT':
-            # 鐵律 1：大陽棒（收盤 > 開盤）絕對不准開空
-            if curr_close > curr_open:
-                self.account.log(f"🛑 [REJECT_ORDER] 陽線禁止開空! Close:{curr_close} Open:{curr_open}", "ERROR")
-                return False
-            # 鐵律 2：非死叉當根、非大陰反轉，又未破 KC 下軌（收盤 >= KC下軌），絕對不准開空
-            if not is_dead_cross and not is_engulfing and curr_close >= curr_kc_lower:
-                self.account.log(f"🛑 [REJECT_ORDER] 未死叉/未反轉且未破下軌，禁止開空! Close:{curr_close} KC_Lower:{curr_kc_lower}", "ERROR")
-                return False
-
-        # 開多物理安全鎖：
-        elif side == "LONG":
-            # 鐵律 1：大陰棒（收盤 < 開盤）絕對不准開多
-            if curr_close < curr_open:
-                self.account.log(f"🛑 [REJECT_ORDER] 陰線禁止開多! Close:{curr_close} Open:{curr_open}", "ERROR")
-                return False
-            # 鐵律 2：非金叉當根、非大陽反轉，又未破 KC 上軌（收盤 <= KC上軌），絕對不准開多
-            if not is_golden_cross and not is_engulfing and curr_close <= curr_kc_upper:
-                self.account.log(f"🛑 [REJECT_ORDER] 未金叉/未反轉且未破上軌，禁止開多! Close:{curr_close} KC_Upper:{curr_kc_upper}", "ERROR")
-                return False
-
-        # --- 審計日誌 (Audit Log) ---
-        self.account.log(f"✅ [ENTRY_TRIGGERED] Reason: {signal.get('signal_code') or signal.get('reason')}, Time: {c2_time}, Close: {c2_close}, MA3: {c2_ma3}, MA15: {c2_ma15}, KC_Lower: {c2_kc_lower}, KC_Upper: {c2_kc_upper}", "SUCCESS")
-
         if is_limit:
             placed = await self.account.place_limit_entry(
                 target_price=planned_price, post_only=True, **kwargs
@@ -2279,6 +2230,11 @@ class TradingEngine:
             )
         return bool(placed)
 
+    async def _place_ma5_reversal_entry(
+        self, symbol: str, side: str, ma5_sig: dict, live_price: float, now: float
+    ) -> bool:
+        from core.routes.legacy_routes import place_ma5_reversal_entry_legacy
+        return await place_ma5_reversal_entry_legacy(self, symbol, side, ma5_sig, live_price, now)
 
     async def _monitor_pullback_candidates(self, now: float) -> None:
         self.pending_pullback_candidates.clear()
@@ -2532,8 +2488,6 @@ class TradingEngine:
                 "swing_high": swing_high_10,
                 "swing_low": swing_low_10,
                 "profit_profile": "TREND_EXTENSION", "wave_regime": "TREND",
-                "kc_upper": float(latest.get("kc_upper", 0.0)),
-                "kc_lower": float(latest.get("kc_lower", 0.0)),
                 **{f"signal_candle_{k}": float(latest[k]) for k in ("open", "high", "low", "close")},
             }
             if v8_reason:

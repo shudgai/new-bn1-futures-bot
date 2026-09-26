@@ -18,6 +18,13 @@ async def process_single_symbol_runner(
     signal_progress = []
     detected_candidates = []
     try:
+        from core.services.entry_service import logger as entry_logger
+        entry_logger.info(
+            "[ENTRY_STATE] symbol=%s has_position=%s positions=%r exit_only=%s "
+            "daily_halt=%s crash_cooldown_until=%r",
+            symbol, symbol in engine.account.positions, list(engine.account.positions),
+            exit_only, daily_halt, getattr(engine, "_market_crash_entry_cooldown_until", None),
+        )
         if exit_only and symbol not in engine.account.positions:
             return signal_progress, detected_candidates
             
@@ -78,8 +85,6 @@ async def process_single_symbol_runner(
             exit_strategy = ProfitProtectionExitStrategy()
             
             velocity_drop_ratio = engine.get_velocity_drop_ratio(symbol)
-            with open("/tmp/before_eval.log", "a") as dbgf:
-                dbgf.write(f"Calling evaluate_exit for {symbol}\n")
             exit_reason = exit_strategy.evaluate_exit(existing_pos, channel_df, channel_price, velocity_drop_ratio=velocity_drop_ratio)
             # Persist observations before any awaited order or account refresh.
             observed = {
@@ -130,11 +135,8 @@ async def process_single_symbol_runner(
                         engine.account.log(f"🔄 [鎖利對齊] {symbol} 50% 減倉成功，已強制清除 v10_phase_trailing 狀態，下一根 K 棒將依據剩餘倉位重新計算並對齊保底鎖利點", "INFO")
                         engine.account.save_state()
                 else:
-                    # 錨點保全結算 (The Final Harvest)
+                    # Execute at the observed market quote, never a historical peak.
                     exit_price = channel_price
-                    if meta.get("guaranteed_exit_price"):
-                        exit_price = meta.get("guaranteed_exit_price")
-                        engine.account.log(f"🛡️ [錨點保全] {symbol} 使用保全錨點價格平倉: {exit_price:.6f} (當時市價: {channel_price:.6f})", "INFO")
 
                     engine.account.log(f"⚠️ [平倉觸發] {symbol} 滿足平倉條件: {exit_reason}，執行平倉 ({order_type_str})...", "INFO")
                     closed = await engine.account.close_position(
@@ -261,88 +263,12 @@ async def process_single_symbol_runner(
 
         # IDLE 狀態 (空倉掃描)
         else:
-            # 防重複開倉冷卻 (平倉後必須至少等待 3 根 K 線的呼吸空間)
-            if last_exit_bar is not None:
-                ticket_bar_id = getattr(engine, "_direct_reverse_ticket", {}).get(symbol, 0)
-                has_reverse_ticket = (current_bar_id - ticket_bar_id <= 60 * 1000) if ticket_bar_id > 0 else False
-                
-                if not has_reverse_ticket:
-                    if current_bar_id - last_exit_bar < 3 * 60 * 1000:  # 1m K線, 3根 = 3分鐘
-                        log_entry_gate(engine, symbol, "BOTH", "RUNNER", "COOLDOWN_3_BARS", current_bar_id, last_exit_bar=last_exit_bar)
-                        return signal_progress, detected_candidates
-                else:
-                    if getattr(engine, "_direct_reverse_ticket_logged", {}).get(symbol) != ticket_bar_id:
-                        engine.account.log(f"🔄 [換手接力] {symbol} 啟動動能接力，跳過冷卻期，立即評估對向進場", "INFO")
-                        if not hasattr(engine, "_direct_reverse_ticket_logged"):
-                            engine._direct_reverse_ticket_logged = {}
-                        engine._direct_reverse_ticket_logged[symbol] = ticket_bar_id
-                
-            # ── 趨勢接力守門員 ────────────────────────────────────────────
-            relay_watch = getattr(engine, "_trend_relay_watch", {}).get(symbol)
+            # No fixed three-bar cooldown. Fill matching, per-bar limits and
+            # current entry/risk validation still govern every reentry.
+            # Legacy relay tickets cannot replace a fresh confirmed MA crossover.
+            relay_watch = None
             relay_entry_forced = False
-            relay_direction    = None
-
-            if relay_watch:
-                relay_dir   = relay_watch["direction"]
-                exit_bar_id = relay_watch["exit_bar_id"]
-                relay_phase = relay_watch["relay_phase"]
-
-                # 超過 10 根 K (10 分鐘) → 清除，回到一般掃描
-                if current_bar_id - exit_bar_id > 10 * 60 * 1000:
-                    engine.account.log(f"⏰ [接力逾時] {symbol} 10根K內未完成接力，清除觀察狀態", "INFO")
-                    engine._trend_relay_watch.pop(symbol, None)
-                    relay_watch = None
-                else:
-                    last_k = channel_df.iloc[-1]
-                    kc_mid = float(last_k.get("kc_middle") or last_k.get("ema_20") or channel_price)
-                    ma15   = float(last_k.get("ma15") or kc_mid)
-                    atr_v  = float(last_k.get("atr") or channel_price * 0.001)
-
-                    # Phase WAITING → TOUCHED：等待現價觸碰 KC中軌 或 MA15
-                    if relay_phase == "WAITING":
-                        if relay_dir == "LONG":
-                            touched = channel_price <= kc_mid + atr_v or channel_price <= ma15 + atr_v
-                        else:
-                            touched = channel_price >= kc_mid - atr_v or channel_price >= ma15 - atr_v
-                        if touched:
-                            relay_watch["touched_structure"] = True
-                            relay_watch["relay_phase"] = "TOUCHED"
-                            relay_phase = "TOUCHED"
-                            engine.account.log(f"📍 [接力觸碰] {symbol} 已觸碰KC中軌/MA15，等待 {relay_dir} 確認K", "INFO")
-
-                    # Phase TOUCHED → CONFIRMED：確認K（實體比 >= 0.4 + 成交量 >= 1.2x）
-                    if relay_phase == "TOUCHED" and len(channel_df) >= 3:
-                        ck        = channel_df.iloc[-2]
-                        ck_open   = float(ck["open"])
-                        ck_close  = float(ck["close"])
-                        ck_high   = float(ck["high"])
-                        ck_low    = float(ck["low"])
-                        ck_vol    = float(ck.get("volume", 0) or 0)
-                        ck_range  = ck_high - ck_low
-                        ck_body   = abs(ck_close - ck_open)
-                        body_ratio = ck_body / ck_range if ck_range > 0 else 0
-
-                        try:
-                            vols    = [float(channel_df.iloc[i].get("volume", 0) or 0) for i in range(-7, -2)]
-                            vol_avg = sum(vols[-5:]) / 5 if len(vols) >= 5 else 0
-                        except Exception:
-                            vol_avg = 0
-
-                        is_confirm = (
-                            (relay_dir == "LONG"  and ck_close > ck_open and body_ratio >= 0.4) or
-                            (relay_dir == "SHORT" and ck_close < ck_open and body_ratio >= 0.4)
-                        )
-                        vol_ok = vol_avg <= 0 or ck_vol >= 1.2 * vol_avg
-
-                        if is_confirm and vol_ok:
-                            relay_entry_forced = True
-                            relay_direction    = relay_dir
-                            engine.account.log(
-                                f"🚀 [接力確認] {symbol} {relay_dir} 確認K出現（實體={body_ratio:.2f}，量OK={vol_ok}），立即接力進場",
-                                "SUCCESS"
-                            )
-                            engine._trend_relay_watch.pop(symbol, None)
-
+            relay_direction = None
             # ── 統一進場策略評估 ──────────────────────────────────────────
             entry_strategy = UnifiedEntryStrategy()
             

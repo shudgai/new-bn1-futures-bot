@@ -1,0 +1,48 @@
+{
+  "source": "data/paper_account.json",
+  "mode": "paper",
+  "fills": [
+    {
+      "id": 1790373901455,
+      "symbol": "龙虾/USDT",
+      "action": "OPEN_SHORT",
+      "price": 0.12924707,
+      "exchange_order_id": null,
+      "entry_atr": 0.0005199999999999955,
+      "atr_sl": 0.13002707400000002,
+      "atr_tp": 0.12820707400000003,
+      "entry_snapshot": {
+        "signal_code": "ENTER_FIRST_BREAKOUT_SHORT",
+        "quote_price": 0.12926,
+        "closed_bar": 1790373840000.0,
+        "closed_price": 0.1292,
+        "closed_upper": 0.13037616786181064,
+        "closed_lower": 0.12933616786181065,
+        "live_upper": 0.13037616786181064,
+        "live_lower": 0.12933616786181065,
+        "entry_atr": 0.0005199999999999955
+      }
+    },
+    {
+      "id": 1790373901102,
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "price": 0.00444564,
+      "exchange_order_id": null,
+      "entry_atr": 6.890000000000021e-06,
+      "atr_sl": 0.00443530952,
+      "atr_tp": 0.00445942452,
+      "entry_snapshot": {
+        "signal_code": "ENTER_FIRST_BREAKOUT_LONG",
+        "quote_price": 0.0044452,
+        "closed_bar": 1790373840000.0,
+        "closed_price": 0.0044448,
+        "closed_upper": 0.00444114757076898,
+        "closed_lower": 0.0044273675707689805,
+        "live_upper": 0.00444114757076898,
+        "live_lower": 0.0044273675707689805,
+        "entry_atr": 6.890000000000021e-06
+      }
+    }
+  ]
+}

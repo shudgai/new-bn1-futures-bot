@@ -1,0 +1,162 @@
+....................................................FFFFFF..FFFFFFF..... [ 73%]
+.....F.sFsFF......F.....F.                                               [100%]
+=================================== FAILURES ===================================
+__ test_actual_runner_and_quote_gate_share_pullback_and_close_identity[LONG] ___
+tests/test_breakout_pullback_entry.py:75: in test_actual_runner_and_quote_gate_share_pullback_and_close_identity
+    engine._execute_confirmed_channel_break.assert_awaited_once()
+/usr/lib/python3.12/unittest/mock.py:2305: in assert_awaited_once
+    raise AssertionError(msg)
+E   AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+----------------------------- Captured stdout call -----------------------------
+[UnifiedEntry] Evaluating X at 115.0000 (Bar ID: 300000.0)
+ENTRY_GATE stage=SIGNAL symbol=X side=LONG bar=300000.0 reason=WAIT_OVEREXTENDED_LONG action=WAIT c1=180000 c2=240000 c1_closed=True c2_closed=True c1_close=114.0 c2_close=113.0 c1_rail=110.0 c2_rail=110.0 atr=2.0
+[X] LONG Rejected: WAIT_OVEREXTENDED_LONG
+ENTRY_GATE stage=SIGNAL symbol=X side=SHORT bar=300000.0 reason=WAIT_MUST_BREAK_LOWER_KC action=WAIT c1=180000 c2=240000 c1_closed=True c2_closed=True c1_close=114.0 c2_close=113.0 c1_rail=90.0 c2_rail=90.0 atr=2.0
+[X] SHORT Rejected: WAIT_MUST_BREAK_LOWER_KC
+[UnifiedEntry] Evaluating X at 114.0000 (Bar ID: 300000.0)
+ENTRY_GATE stage=SIGNAL symbol=X side=LONG bar=300000.0 reason=WAIT_SAME_COLOR_BREAKOUT_BODIES action=None c1=180000 c2=240000 c1_closed=True c2_closed=True c1_close=114.0 c2_close=113.0 c1_rail=110.0 c2_rail=110.0 atr=2.0
+[X] LONG Rejected: WAIT_SAME_COLOR_BREAKOUT_BODIES
+[X] SHORT Rejected: WAIT_MUST_BREAK_LOWER_KC
+__ test_actual_runner_and_quote_gate_share_pullback_and_close_identity[SHORT] __
+tests/test_breakout_pullback_entry.py:75: in test_actual_runner_and_quote_gate_share_pullback_and_close_identity
+    engine._execute_confirmed_channel_break.assert_awaited_once()
+/usr/lib/python3.12/unittest/mock.py:2305: in assert_awaited_once
+    raise AssertionError(msg)
+E   AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+----------------------------- Captured stdout call -----------------------------
+[UnifiedEntry] Evaluating X at 85.0000 (Bar ID: 300000.0)
+ENTRY_GATE stage=SIGNAL symbol=X side=LONG bar=300000.0 reason=WAIT_MUST_BREAK_UPPER_KC action=WAIT c1=180000 c2=240000 c1_closed=True c2_closed=True c1_close=86.0 c2_close=87.0 c1_rail=110.0 c2_rail=110.0 atr=2.0
+[X] LONG Rejected: WAIT_MUST_BREAK_UPPER_KC
+ENTRY_GATE stage=SIGNAL symbol=X side=SHORT bar=300000.0 reason=WAIT_OVEREXTENDED_SHORT action=WAIT c1=180000 c2=240000 c1_closed=True c2_closed=True c1_close=86.0 c2_close=87.0 c1_rail=90.0 c2_rail=90.0 atr=2.0
+[X] SHORT Rejected: WAIT_OVEREXTENDED_SHORT
+[UnifiedEntry] Evaluating X at 86.0000 (Bar ID: 300000.0)
+[X] LONG Rejected: WAIT_MUST_BREAK_UPPER_KC
+ENTRY_GATE stage=SIGNAL symbol=X side=SHORT bar=300000.0 reason=WAIT_SAME_COLOR_BREAKOUT_BODIES action=None c1=180000 c2=240000 c1_closed=True c2_closed=True c1_close=86.0 c2_close=87.0 c1_rail=90.0 c2_rail=90.0 atr=2.0
+[X] SHORT Rejected: WAIT_SAME_COLOR_BREAKOUT_BODIES
+_ test_normal_reentry_requires_matched_fill_and_new_pullback[outer_cycle-LONG] _
+tests/test_breakout_pullback_entry.py:97: in test_normal_reentry_requires_matched_fill_and_new_pullback
+    assert TradingEngine._profit_reentry_ready(engine,'X',ticket,frame,p2)
+E   AssertionError: assert False
+E    +  where False = <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800>(namespace(account=namespace(positions={}, log=<Mock id='139833473182768'>, save_state=<Mock id='139833473186944'>, tra...NG', 'reason': 'Channel Swing PROFIT_PROTECTION t', 'id': 240002}], last_closed_at={}), _kc_outer_turn_observations={}), 'X', {'close_reason': 'Channel Swing PROFIT_PROTECTION t', 'close_requested_at_ms': 240001, 'exit_bar_id': 240000, 'mode': 'outer_cycle', ...},   timestamp   open  close   high    low  ... kc_middle    ma3   ma15  atr is_closed\n0     60000   99.0  100.0  101.0  ....0      True\n4    300000  114.0  113.0  115.0  112.0  ...     103.0  105.0  100.0  2.0     False\n\n[5 rows x 12 columns], 114.0)
+E    +    where <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800> = TradingEngine._profit_reentry_ready
+_ test_normal_reentry_requires_matched_fill_and_new_pullback[outer_cycle-SHORT] _
+tests/test_breakout_pullback_entry.py:97: in test_normal_reentry_requires_matched_fill_and_new_pullback
+    assert TradingEngine._profit_reentry_ready(engine,'X',ticket,frame,p2)
+E   AssertionError: assert False
+E    +  where False = <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800>(namespace(account=namespace(positions={}, log=<Mock id='139833473178448'>, save_state=<Mock id='139833473185552'>, tra...RT', 'reason': 'Channel Swing PROFIT_PROTECTION t', 'id': 240002}], last_closed_at={}), _kc_outer_turn_observations={}), 'X', {'close_reason': 'Channel Swing PROFIT_PROTECTION t', 'close_requested_at_ms': 240001, 'exit_bar_id': 240000, 'mode': 'outer_cycle', ...},   timestamp   open  close   high   low  ... kc_middle   ma3   ma15  atr is_closed\n0     60000  101.0  100.0  102.0  99... 2.0      True\n4    300000   86.0   87.0   88.0  85.0  ...      97.0  95.0  100.0  2.0     False\n\n[5 rows x 12 columns], 86.0)
+E    +    where <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800> = TradingEngine._profit_reentry_ready
+_ test_normal_reentry_requires_matched_fill_and_new_pullback[next_breakout-LONG] _
+tests/test_breakout_pullback_entry.py:97: in test_normal_reentry_requires_matched_fill_and_new_pullback
+    assert TradingEngine._profit_reentry_ready(engine,'X',ticket,frame,p2)
+E   AssertionError: assert False
+E    +  where False = <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800>(namespace(account=namespace(positions={}, log=<Mock id='139833473184688'>, save_state=<Mock id='139833473185840'>, tra... 'reason': 'Channel Swing CK_FADING_MA3_TURN_EXIT', 'id': 240002}], last_closed_at={}), _kc_outer_turn_observations={}), 'X', {'close_reason': 'Channel Swing CK_FADING_MA3_TURN_EXIT', 'close_requested_at_ms': 240001, 'exit_bar_id': 240000, 'mode': 'next_breakout', ...},   timestamp   open  close   high    low  ... kc_middle    ma3   ma15  atr is_closed\n0     60000   99.0  100.0  101.0  ....0      True\n4    300000  114.0  113.0  115.0  112.0  ...     103.0  105.0  100.0  2.0     False\n\n[5 rows x 12 columns], 114.0)
+E    +    where <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800> = TradingEngine._profit_reentry_ready
+_ test_normal_reentry_requires_matched_fill_and_new_pullback[next_breakout-SHORT] _
+tests/test_breakout_pullback_entry.py:97: in test_normal_reentry_requires_matched_fill_and_new_pullback
+    assert TradingEngine._profit_reentry_ready(engine,'X',ticket,frame,p2)
+E   AssertionError: assert False
+E    +  where False = <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800>(namespace(account=namespace(positions={}, log=<Mock id='139833473187664'>, save_state=<Mock id='139833473184640'>, tra... 'reason': 'Channel Swing CK_FADING_MA3_TURN_EXIT', 'id': 240002}], last_closed_at={}), _kc_outer_turn_observations={}), 'X', {'close_reason': 'Channel Swing CK_FADING_MA3_TURN_EXIT', 'close_requested_at_ms': 240001, 'exit_bar_id': 240000, 'mode': 'next_breakout', ...},   timestamp   open  close   high   low  ... kc_middle   ma3   ma15  atr is_closed\n0     60000  101.0  100.0  102.0  99... 2.0      True\n4    300000   86.0   87.0   88.0  85.0  ...      97.0  95.0  100.0  2.0     False\n\n[5 rows x 12 columns], 86.0)
+E    +    where <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800> = TradingEngine._profit_reentry_ready
+_____ test_reentry_dispatch_and_fresh_snapshot_use_continuation_code[LONG] _____
+tests/test_breakout_pullback_entry.py:140: in test_reentry_dispatch_and_fresh_snapshot_use_continuation_code
+    engine._place_structured_entry.assert_awaited_once()
+/usr/lib/python3.12/unittest/mock.py:2305: in assert_awaited_once
+    raise AssertionError(msg)
+E   AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+____ test_reentry_dispatch_and_fresh_snapshot_use_continuation_code[SHORT] _____
+tests/test_breakout_pullback_entry.py:140: in test_reentry_dispatch_and_fresh_snapshot_use_continuation_code
+    engine._place_structured_entry.assert_awaited_once()
+/usr/lib/python3.12/unittest/mock.py:2305: in assert_awaited_once
+    raise AssertionError(msg)
+E   AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+___________ test_delayed_close_fill_cannot_reopen_in_actual_fill_bar ___________
+tests/test_breakout_pullback_entry.py:165: in test_delayed_close_fill_cannot_reopen_in_actual_fill_bar
+    assert TradingEngine._profit_reentry_ready(engine,'X',ticket,frame,114)
+E   AssertionError: assert False
+E    +  where False = <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800>(namespace(account=namespace(positions={}, log=<Mock id='139833473107200'>, save_state=<Mock id='139833473120880'>, tra...NG', 'reason': 'Channel Swing PROFIT_PROTECTION t', 'id': 300002}], last_closed_at={}), _kc_outer_turn_observations={}), 'X', {'close_reason': 'Channel Swing PROFIT_PROTECTION t', 'close_requested_at_ms': 180001, 'exit_bar_id': 180000, 'mode': 'outer_cycle', ...},   timestamp   open  close   high    low  ... kc_middle    ma3   ma15  atr is_closed\n0     60000   99.0  100.0  101.0  ....0      True\n4    360000  114.0  113.0  115.0  112.0  ...     103.0  105.0  100.0  2.0     False\n\n[5 rows x 12 columns], 114)
+E    +    where <function TradingEngine._profit_reentry_ready at 0x7f2d5dc95800> = TradingEngine._profit_reentry_ready
+____________ test_testnet_account_places_entry_stop_and_take_profit ____________
+tests/test_testnet_account.py:137: in test_testnet_account_places_entry_stop_and_take_profit
+    assert exchange.orders[1]["params"]["triggerPrice"] == "98.0"
+E   AssertionError: assert '99.0' == '98.0'
+E     
+E     - 98.0
+E     ?  ^
+E     + 99.0
+E     ?  ^
+________ test_disabled_exchange_initial_stop_waits_until_local_max_loss ________
+tests/test_testnet_account.py:183: in test_disabled_exchange_initial_stop_waits_until_local_max_loss
+    await account.update_positions({"DOGE/USDT": 99.0})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+___________ test_dynamic_margin_loss_guard_scales_with_actual_margin ___________
+tests/test_testnet_account.py:230: in test_dynamic_margin_loss_guard_scales_with_actual_margin
+    await account.update_positions({"DOGE/USDT": 98.5})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+___ test_initialize_restores_exchange_stop_for_position_opened_in_local_mode ___
+tests/test_testnet_account.py:278: in test_initialize_restores_exchange_stop_for_position_opened_in_local_mode
+    assert restored[0]["params"]["triggerPrice"] == "98.0"
+E   AssertionError: assert '99.0' == '98.0'
+E     
+E     - 98.0
+E     ?  ^
+E     + 99.0
+E     ?  ^
+_____________ test_testnet_peak_drawdown_preempts_local_stop_loss ______________
+tests/test_testnet_account.py:651: in test_testnet_peak_drawdown_preempts_local_stop_loss
+    await account.update_positions({"BTC/USDT": 102.0})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+___________ test_testnet_bounce_guard_immediately_places_stop_market ___________
+tests/test_testnet_account.py:737: in test_testnet_bounce_guard_immediately_places_stop_market
+    await account.update_positions({"HEI/USDT": 99.66})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+__ test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r ___
+tests/test_testnet_account.py:808: in test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r
+    await account.update_positions({"DOGE/USDT": 100.35})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+___________ test_percentage_trailing_stop_updates_sl_and_removes_tp ____________
+tests/test_testnet_account.py:853: in test_percentage_trailing_stop_updates_sl_and_removes_tp
+    await account.update_positions({"DOGE/USDT": 100.32})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+_______________ test_native_trailing_failure_restores_fixed_stop _______________
+tests/test_testnet_account.py:1068: in test_native_trailing_failure_restores_fixed_stop
+    await account.update_positions({"DOGE/USDT": 106.0})
+core/testnet_account.py:918: in update_positions
+    exit_manager = TieredExitManager(
+E   TypeError: TieredExitManager.__init__() got an unexpected keyword argument 'stage2_trigger_atr'
+________________ test_status_response_preserves_shadow_contract ________________
+tests/test_status_api.py:30: in test_status_response_preserves_shadow_contract
+    assert result["btc_lead_shadow"] == {
+E   TypeError: 'JSONResponse' object is not subscriptable
+=========================== short test summary info ============================
+FAILED tests/test_breakout_pullback_entry.py::test_actual_runner_and_quote_gate_share_pullback_and_close_identity[LONG]
+FAILED tests/test_breakout_pullback_entry.py::test_actual_runner_and_quote_gate_share_pullback_and_close_identity[SHORT]
+FAILED tests/test_breakout_pullback_entry.py::test_normal_reentry_requires_matched_fill_and_new_pullback[outer_cycle-LONG]
+FAILED tests/test_breakout_pullback_entry.py::test_normal_reentry_requires_matched_fill_and_new_pullback[outer_cycle-SHORT]
+FAILED tests/test_breakout_pullback_entry.py::test_normal_reentry_requires_matched_fill_and_new_pullback[next_breakout-LONG]
+FAILED tests/test_breakout_pullback_entry.py::test_normal_reentry_requires_matched_fill_and_new_pullback[next_breakout-SHORT]
+FAILED tests/test_breakout_pullback_entry.py::test_reentry_dispatch_and_fresh_snapshot_use_continuation_code[LONG]
+FAILED tests/test_breakout_pullback_entry.py::test_reentry_dispatch_and_fresh_snapshot_use_continuation_code[SHORT]
+FAILED tests/test_breakout_pullback_entry.py::test_delayed_close_fill_cannot_reopen_in_actual_fill_bar
+FAILED tests/test_testnet_account.py::test_testnet_account_places_entry_stop_and_take_profit
+FAILED tests/test_testnet_account.py::test_disabled_exchange_initial_stop_waits_until_local_max_loss
+FAILED tests/test_testnet_account.py::test_dynamic_margin_loss_guard_scales_with_actual_margin
+FAILED tests/test_testnet_account.py::test_initialize_restores_exchange_stop_for_position_opened_in_local_mode
+FAILED tests/test_testnet_account.py::test_testnet_peak_drawdown_preempts_local_stop_loss
+FAILED tests/test_testnet_account.py::test_testnet_bounce_guard_immediately_places_stop_market
+FAILED tests/test_testnet_account.py::test_testnet_profit_bank_installs_profitable_stop_before_one_point_five_r
+FAILED tests/test_testnet_account.py::test_percentage_trailing_stop_updates_sl_and_removes_tp
+FAILED tests/test_testnet_account.py::test_native_trailing_failure_restores_fixed_stop
+FAILED tests/test_status_api.py::test_status_response_preserves_shadow_contract
+19 failed, 77 passed, 2 skipped, 4 warnings in 4.07s

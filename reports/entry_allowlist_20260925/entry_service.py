@@ -92,18 +92,9 @@ CLOSED_BREAKOUT_CODES = {
 
 PIVOT_REVERSAL_CODES = {'PIVOT_LOW_REVERSAL_LONG', 'PIVOT_HIGH_REVERSAL_SHORT'}
 
-MOMENTUM_ENTRY_CODES = frozenset({
-    "ENTER_FIRST_BREAKOUT_SHORT", "ENTER_CONTINUATION_SHORT",
-    "ENTER_FIRST_BREAKOUT_LONG", "ENTER_CONTINUATION_LONG",
-    "ENTER_KINEMATIC_BREAKOUT_SHORT", "ENTER_KINEMATIC_BREAKOUT_LONG",
-})
-ALLOWED_SIGNAL_CODES = MOMENTUM_ENTRY_CODES
-
-
 def supported_entry_reason(reason, side):
-    """Shared execution allowlist; a valid code must match the order side."""
-    return (side in ("LONG", "SHORT") and isinstance(reason, str)
-            and reason in ALLOWED_SIGNAL_CODES and reason.endswith("_" + side))
+    return (side == "LONG" and reason == "MA_CROSS_GOLDEN_LONG") or (
+        side == "SHORT" and reason == "MA_CROSS_DEATH_SHORT")
 
 
 def ma_cross_entry_gate(frame, price, side):
@@ -136,9 +127,7 @@ def channel_candidate_bar_id(frame: pd.DataFrame) -> Optional[Any]:
     if frame is None or frame.empty:
         return None
     last_row = frame.iloc[-1]
-    value = last_row.get("timestamp", frame.index[-1])
-    # Pandas may return a NumPy scalar; order metadata must remain JSON-safe.
-    return value.item() if hasattr(value, "item") else value
+    return last_row.get("timestamp", frame.index[-1])
 
 def channel_outer_directional_entry_allowed(
     frame: pd.DataFrame, side: str
@@ -266,20 +255,97 @@ def global_hard_gate_check(frame: pd.DataFrame, side: str) -> Optional[dict]:
 def check_entry_signals(
     frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
 ) -> Dict[str, Any]:
-    from core.services.strategies.unified_entry_strategy import check_streamlined_entry_signal
-    
-    if frame is None or len(frame) == 0:
-        return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
-        
+    """Double-Candle Momentum Breakout and Continuation (Overrides flat markets and cooldown)."""
+    log_entry_inputs(frame, side, "check_entry_signals")
+    wait = lambda reason: dict(action="WAIT", side=None, reason=reason)
+    if side not in ("LONG", "SHORT"):
+        return wait("UNKNOWN_SIDE")
+    closed = closed_entry_candles(frame)
+    if len(closed) < 2:
+        return wait("WAIT_CLOSED_CONFIRMATION")
     try:
-        live_price = float(frame.iloc[-1]['close'])
-    except Exception:
-        live_price = 0.0
+        c1, c2 = closed.iloc[-2], closed.iloc[-1]
         
-    ok, reason, signal_dict = check_streamlined_entry_signal(frame, side, live_price, "NO_POSITION")
-    
-    if ok and signal_dict:
-        return signal_dict
+        c1_open, c1_close = float(c1['open']), float(c1['close'])
+        c1_high, c1_low = float(c1['high']), float(c1['low'])
         
-    return {"action": "WAIT", "side": side, "reason": reason}
+        c2_open, c2_close = float(c2['open']), float(c2['close'])
+        
+        atr = float(c2.get('atr', 0))
+        if not math.isfinite(atr) or atr <= 0:
+            return wait("WAIT_INVALID_ATR")
+            
+        if side == "LONG":
+            c1_kc_upper = float(c1.get('kc_upper', 0))
+            c2_kc_upper = float(c2.get('kc_upper', 0))
+            
+            # === 多單決策流程 ===
+            # 1. 基礎物理硬閘門：價格必須在 KC 上軌外
+            if c2_close > c2_kc_upper:
+                deviation = c2_close - c2_kc_upper
+                
+                # 防過度乖離力竭 (超過 1.5 ATR 不追)
+                if deviation <= 1.5 * atr:
+                    # 通道 1：首次破軌 (前一根在軌內，本根收陽突破)
+                    is_first_breakout = (c1_close <= c1_kc_upper) and (c2_close > c2_open)
+                    
+                    # 通道 2：順勢延續 (前一根已在軌外，本根收陽破前高)
+                    is_continuation = (
+                        (c1_close > c1_kc_upper)
+                        and (c2_close > c2_open)
+                        and (c2_close > c1_high)
+                    )
+                    
+                    if is_first_breakout or is_continuation:
+                        reason = (
+                            "ENTER_FIRST_BREAKOUT_LONG"
+                            if is_first_breakout
+                            else "ENTER_CONTINUATION_LONG"
+                        )
+                        return dict(
+                            action="ENTER", side="LONG", reason=reason,
+                            entry_atr=atr, bypass_flat_check=True,
+                            bypass_cooldown=True, entry_type="MOMENTUM_BREAKOUT"
+                        )
+                else:
+                    return wait("WAIT_OVEREXTENDED_LONG")
+            return wait("WAIT_NOT_OUTSIDE_KC_LONG")
 
+        elif side == "SHORT":
+            c1_kc_lower = float(c1.get('kc_lower', 0))
+            c2_kc_lower = float(c2.get('kc_lower', 0))
+            
+            # === 空單決策流程 ===
+            # 1. 基礎物理硬閘門：價格必須在 KC 下軌外
+            if c2_close < c2_kc_lower:
+                deviation = c2_kc_lower - c2_close
+                
+                # 防過度乖離力竭 (超過 1.5 ATR 不追)
+                if deviation <= 1.5 * atr:
+                    # 通道 1：首次破軌 (前一根在軌內，本根收陰跌破)
+                    is_first_breakout = (c1_close >= c1_kc_lower) and (c2_close < c2_open)
+                    
+                    # 通道 2：順勢延續 (前一根已在軌外，本根收陰破前低)
+                    is_continuation = (
+                        (c1_close < c1_kc_lower)
+                        and (c2_close < c2_open)
+                        and (c2_close < c1_low)
+                    )
+                    
+                    if is_first_breakout or is_continuation:
+                        reason = (
+                            "ENTER_FIRST_BREAKOUT_SHORT"
+                            if is_first_breakout
+                            else "ENTER_CONTINUATION_SHORT"
+                        )
+                        return dict(
+                            action="ENTER", side="SHORT", reason=reason,
+                            entry_atr=atr, bypass_flat_check=True,
+                            bypass_cooldown=True, entry_type="MOMENTUM_BREAKOUT"
+                        )
+                else:
+                    return wait("WAIT_OVEREXTENDED_SHORT")
+            return wait("WAIT_NOT_OUTSIDE_KC_SHORT")
+                        
+    except (KeyError, TypeError, ValueError, IndexError):
+        return wait("WAIT_INVALID_MARKET_DATA")
