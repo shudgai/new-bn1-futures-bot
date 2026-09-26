@@ -78,20 +78,26 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
 
     # ── Rule A：紅轉綠長陽 / 綠轉紅長陰（反手型，最高優先）────────
     # 前一或前兩根為逆方向K棒，當根收出方向正確的長實體 > 0.8 ATR
+    # ❗❗ 新增 MA3 旜率強制：MA3 必須順方向，防止在下降 MA3 中途亂開多單！
     if rule is None and body > 0.8 * atr and (prior_body < 0 or older_body < 0):
-        rule = 'A'
+        ma3_slope_ok = sign * (float(c.ma3) - float(c1.ma3)) > 0  # MA3 必須已轉向顧方向
+        if ma3_slope_ok:
+            rule = 'A'
 
     # ── Rule B：小陰洗盤轉大陽吞噬 / 小陽轉大陰吞噬 ─────────────
     # 前根為小反向線（<=SMALL_BODY_ATR），當根大陽線(>1.2 ATR)完全吞噬前根
+    # ❗❗ 同樣需要 MA3 旜率順方向，防止在下降均線中途进場逆勢
     if rule is None:
         if body > 1.2 * atr and abs(prior_body) <= SMALL_BODY_ATR * atr:
-            engulfed = (min(c.open, c.close) <= min(c1.open, c1.close) and
-                        max(c.open, c.close) >= max(c1.open, c1.close))
-            if prior_body < 0 and engulfed:
-                rule = 'B'
-            elif prior_body > 0 and sign * (c.close - c1.close) > 0:
-                # 延伸型吞噬（前根同向但當根大幅超越）
-                rule = 'B'
+            ma3_slope_ok_b = sign * (float(c.ma3) - float(c1.ma3)) > 0
+            if ma3_slope_ok_b:
+                engulfed = (min(c.open, c.close) <= min(c1.open, c1.close) and
+                            max(c.open, c.close) >= max(c1.open, c1.close))
+                if prior_body < 0 and engulfed:
+                    rule = 'B'
+                elif prior_body > 0 and sign * (c.close - c1.close) > 0:
+                    # 延伸型吞噬（前根同向但當根大幅超越）
+                    rule = 'B'
 
     # ── Rule C：MA3 金/死叉 MA15（穿越瞬間，斜率＋位置過濾）───────
     # 前根 ma3 在 ma15 同側或相等，當根剛剛穿越；斜率順向；收盤在中軌正確一側
