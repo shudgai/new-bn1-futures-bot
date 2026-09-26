@@ -187,6 +187,12 @@ class BinanceTestnetAccount:
                             ma3_curr = float(close_col.iloc[-3:].mean())
                             ma3_prev = float(close_col.iloc[-4:-1].mean())
                             
+                        if 'MA15' in last_bar:
+                            ma15_curr = float(last_bar.MA15)
+                        else:
+                            close_col = closed['close']
+                            ma15_curr = float(close_col.iloc[-15:].mean())
+                            
                         # 計算冷卻 (以秒數換算 K 棒數)
                         import time
                         last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
@@ -198,6 +204,8 @@ class BinanceTestnetAccount:
                         if side.upper() == 'BUY':
                             if close_p <= open_p:
                                 raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
+                            if ma3_curr <= ma15_curr:
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，處於空頭死叉排列中，100% 嚴禁開多！")
                             if ma3_curr <= ma3_prev:
                                 raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
                             if close_p < kc_upper_curr and body < (1.2 * atr):
@@ -222,6 +230,8 @@ class BinanceTestnetAccount:
                         elif side.upper() == 'SELL':
                             if close_p >= open_p:
                                 raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
+                            if ma3_curr >= ma15_curr:
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
                             if ma3_curr >= ma3_prev:
                                 raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
                             if close_p > kc_lower_curr and body < (1.2 * atr):
