@@ -69,8 +69,7 @@ def strict_kc_entry_gate(frame, price, side):
             return "STRICT_BLOCK_CLOSED_INSIDE_KC"
         if sign * (price - live_rail) <= 0:
             return "STRICT_BLOCK_INSIDE_KC"
-        if sign * (price - live_rail) > 2.0 * atr:
-            return "OVEREXTENDED_BEYOND_2_ATR_" + side
+
     except (KeyError, TypeError, ValueError, IndexError, OverflowError):
         return "WAIT_INVALID_MARKET_DATA"
     return ma3_outer_return_problem(frame, price, side)
@@ -97,9 +96,8 @@ MOMENTUM_ENTRY_CODES = frozenset({
     "ENTER_FIRST_BREAKOUT_LONG", "ENTER_CONTINUATION_LONG",
     "ENTER_KINEMATIC_BREAKOUT_SHORT", "ENTER_KINEMATIC_BREAKOUT_LONG",
 })
-ALLOWED_SIGNAL_CODES = MOMENTUM_ENTRY_CODES | frozenset({
-    "MA_CROSS_OR_ENGULFING_LONG", "MA_CROSS_OR_ENGULFING_SHORT",
-})
+from core.services.strategies.unified_entry_strategy import RULE_CODES
+ALLOWED_SIGNAL_CODES = RULE_CODES
 
 
 def supported_entry_reason(reason, side):
@@ -114,7 +112,7 @@ def ma_cross_entry_gate(frame, price, side):
             return "WAIT_INVALID_QUOTE"
     except (TypeError, ValueError):
         return "WAIT_INVALID_QUOTE"
-    result = check_entry_signals(frame, side, 0)
+    result = check_entry_signals(frame, side, 0, live_price=price)
     return None if result['action'] == 'ENTER' else result['reason']
 
 
@@ -248,8 +246,6 @@ def global_hard_gate_check(frame: pd.DataFrame, side: str) -> Optional[dict]:
                 return {"action": "WAIT", "reason": "HARD_GATE: 未收在KC下軌外"}
             if c2["close"] >= c2["open"]:
                 return {"action": "WAIT", "reason": "HARD_GATE: 陽線嚴禁開空"}
-            if atr > 0 and (c2["kc_lower"] - c2["close"]) > 2.0 * atr:
-                return {"action": "WAIT", "reason": "HARD_GATE: 超過2.0 ATR力竭防追空"}
 
         # 多單唯一物理準則：收盤價必須 > KC 上軌，且本根 K 棒必須是陽線 (close > open)
         if side == "LONG":
@@ -257,40 +253,12 @@ def global_hard_gate_check(frame: pd.DataFrame, side: str) -> Optional[dict]:
                 return {"action": "WAIT", "reason": "HARD_GATE: 未收在KC上軌外"}
             if c2["close"] <= c2["open"]:
                 return {"action": "WAIT", "reason": "HARD_GATE: 陰線嚴禁開多"}
-            if atr > 0 and (c2["close"] - c2["kc_upper"]) > 2.0 * atr:
-                return {"action": "WAIT", "reason": "HARD_GATE: 超過2.0 ATR力竭防追多"}
                 
     except (KeyError, ValueError, TypeError):
         return {"action": "WAIT", "reason": "HARD_GATE: 數據無效"}
         
     return None
 
-def check_entry_signals(
-    frame: pd.DataFrame, side: str, min_space_buffer_atr: float, state: dict = None
-) -> Dict[str, Any]:
-    from core.services.strategies.unified_entry_strategy import check_streamlined_entry_signal
-    
-    if frame is None or len(frame) == 0:
-        return {"action": "WAIT", "side": None, "reason": "EMPTY_FRAME"}
-        
-    try:
-        live_price = float(frame.iloc[-1]['close'])
-    except Exception:
-        live_price = 0.0
-        
-    ok, reason, signal_dict = check_streamlined_entry_signal(frame, side, live_price, "NO_POSITION")
-    
-    if ok and signal_dict:
-        signal_dict = dict(signal_dict)
-        signal_dict.setdefault("side", side)
-        if "reason" not in signal_dict:
-            code = {"FIRST": "FIRST_BREAKOUT", "CONTINUATION": "CONTINUATION"}.get(
-                signal_dict.get("entry_type")
-            )
-            if code is None:
-                return {"action": "WAIT", "side": side, "reason": "UNSUPPORTED_ENTRY_TYPE"}
-            signal_dict["reason"] = "ENTER_" + code + "_" + side
-        return signal_dict
-        
-    return {"action": "WAIT", "side": side, "reason": reason}
-
+def check_entry_signals(frame, side, min_space_buffer_atr=0, state=None, live_price=None):
+    from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
+    return evaluate_closed_entry(frame,side,after_close=bool((state or {}).get('after_close')))[2]

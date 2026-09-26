@@ -272,19 +272,9 @@ def check_pivot_reversal_entry(df):
     return None
 
 
-def evaluate_channel_entry(frame, price, side, observations=None, symbol='', now=None, closed_at=None):
-    from core.services.entry_service import check_entry_signals, ma_cross_entry_gate
-    failure = ma_cross_entry_gate(frame, price, side)
-    if failure:
-        return False, failure, {'action': 'WAIT', 'reason': failure}
-    decision = check_entry_signals(frame, side, 0)
-    stamp = reentry_close_ms(closed_at)
-    if stamp is not None:
-        closed = closed_entry_candles(frame)
-        interval = frame.attrs.get('timeframe_ms', 60000)
-        if float(closed.iloc[-1].get('timestamp', 0)) + interval <= stamp:
-            return False, 'WAIT_NEW_CROSS_AFTER_CLOSE', {'action': 'WAIT'}
-    return True, decision['reason'], decision
+def evaluate_channel_entry(frame, price, side, observations=None, symbol='', now=None, closed_at=None, reverse_authorized=False):
+    from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
+    return evaluate_closed_entry(frame,side,after_close=reentry_close_ms(closed_at) is not None)
 
 
 def matched_reentry_close(account, symbol, ticket):

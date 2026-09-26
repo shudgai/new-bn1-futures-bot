@@ -430,7 +430,9 @@
                                     <th>動作</th>
                                     <th>狀態</th>
                                     <th>價格</th>
-                                    <th>金額 (USDT)</th>
+                                    <th>數量（合約基礎單位）</th>
+                                    <th>名義價值 (USDT)</th>
+                                    <th>保證金 (USDT)</th>
                                     <th>手續費 (USDT)</th>
                                     <th>淨損益 (扣手續費)</th>
                                 </tr>
@@ -451,6 +453,8 @@
                                         fontSize: '11px'
                                     }">{{ t.status }}</td>
                                     <td>{{ t.price }}</td>
+                                    <td>{{ t.qty !== undefined ? Number(t.qty).toLocaleString('en-US', {maximumFractionDigits: 8}) : '-' }}</td>
+                                    <td>{{ t.qty !== undefined ? (Number(t.qty) * Number(t.price)).toFixed(4) : '-' }}</td>
                                     <td>{{ t.amount }}</td>
                                     <td style="color:var(--muted)">{{ t.fee !== undefined ? t.fee.toFixed(4) : '-' }}</td>
                                     <td :class="t.pnl > 0 ? 'up' : t.pnl < 0 ? 'down' : ''">

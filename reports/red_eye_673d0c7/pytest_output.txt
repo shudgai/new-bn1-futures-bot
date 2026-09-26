@@ -10,7 +10,7 @@ FF.FF.FF                                                                 [100%]
 =================================== FAILURES ===================================
 ___ test_entry_filter_stats_record_components_adjustments_and_last_snapshot ____
 tests/test_bot.py:224: in test_entry_filter_stats_record_components_adjustments_and_last_snapshot
-    assert stats["evaluations"] == 1
+    assert stats["evaluations"] == 1a
 E   assert 0 == 1
 ___________ test_entry_direction_guard_blocks_wrong_1h_st_and_ema50 ____________
 tests/test_bot.py:304: in test_entry_direction_guard_blocks_wrong_1h_st_and_ema50

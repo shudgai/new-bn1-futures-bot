@@ -35,7 +35,10 @@ def test_active_signal_contract(side,mode):
     f=frame(side,mode)
     result=check_entry_signals(f,side,0)
     allowed,reason,decision=UnifiedEntryStrategy().evaluate_entry(f,100.,side)
-    if mode=='price_guard':
+    if side == 'SHORT' and mode == 'continuation':
+        assert not allowed
+        assert result['reason'] == 'BLOCKED_LATE_SHORT_NEAR_MIDDLE'
+    elif mode=='price_guard':
         assert not allowed
         assert 'BLOCKED_MA3_PRICE' in result['reason']
     else:

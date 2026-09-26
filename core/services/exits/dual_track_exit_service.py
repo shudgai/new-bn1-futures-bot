@@ -13,20 +13,13 @@ DUAL_TRACK_STATE_KEYS = [
     'entry_atr', 'atr_sl', 'atr_tp', 'atr_protection_version'
 ]
 
-# ─── 方案A 參數 ────────────────────────────────────────────────────
-TP1_ROI_PCT       = 0.15    # Net margin ROE >=15% triggers TP1
-TP1_USDT_FLOOR    = 5.0    # 第一階段：小本金絕對浮盈兜底（USDT）
-TP1_FRACTION      = 0.50    # 平倉比例
-BREAKEVEN_BUFFER  = 0.0002  # 保本緩衝（約雙邊手續費）
-
-# ─── 次級獲利門檻（允許 MA3 峰谷止盈的最低條件）────────────────────
-MIN_PROFIT_ROI    = 0.05    # ROI >= 5% 才允許 MA3 峰谷止盈
-MIN_PROFIT_USDT   = 2.0    # Net unrealized PnL >=2U permits MA3 exits
+# ─── 高波動猛幣：動態保本與極速收割參數 ─────────────────────────────
+FAST_EXIT_ATR_MULT = 1.5    # 浮盈達 1.5 ATR 啟動保本並允許收割
+FAST_EXIT_FRACTION = 0.60   # 極速拐頭收割比例
+BREAKEVEN_BUFFER   = 0.0002 # 保本緩衝（約雙邊手續費）
 
 # ─── ATR 防線乘數 ──────────────────────────────────────────────────
-ATR_TRAIL_OUTER   = 0.8     # 脫軌時收窄
-ATR_TRAIL_NORMAL  = 1.5     # 軌道內
-SL_INIT_MULT      = 1.5     # 初始止損乘數
+SL_INIT_MULT       = 1.5    # 初始止損乘數
 
 
 class DualTrackExitStrategy(IExitStrategy):
@@ -83,6 +76,7 @@ class DualTrackExitStrategy(IExitStrategy):
                 stop=entry - sign * SL_INIT_MULT * atr,
                 outer=False, pending=None,
                 tp1_executed=bool(position.get('is_half_closed') or old_state.get('tp1_executed')),
+                breakeven_activated=bool(old_state.get('breakeven_activated')),
                 is_half=bool(position.get('is_half_closed')),
             )
             position['closed_exit_state'] = state
@@ -115,59 +109,53 @@ class DualTrackExitStrategy(IExitStrategy):
         previous_outside = sign * (float(c1.close)      - float(c1[rail])) >= 0
         state['outer'] = state['outer'] or outside or previous_outside
 
-        # Independent hard exits use the original entry ATR, not the old
-        # 0.8 ATR profit trail. TP1 protects the remainder at entry cost.
-        stop = entry if state.get('tp1_executed') else entry - sign * SL_INIT_MULT * atr
+        # ── 浮盈 1.5 ATR 觸發保本 ──────────────────────────────
+        raw_pnl_per = sign * (curr_close - entry)
+        if raw_pnl_per >= FAST_EXIT_ATR_MULT * atr:
+            state['breakeven_activated'] = True
+
+        # Independent hard exits use the original entry ATR.
+        # Break-Even protects the position at entry cost.
+        stop = entry if (state.get('tp1_executed') or state.get('breakeven_activated')) else entry - sign * SL_INIT_MULT * atr
         state['stop'] = stop
         position.update(sl=stop, atr_sl=stop, tp=0., atr_tp=0.)
+        
         hard_reasons = {'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_KC_MIDDLE_HARD_STOP',
                         'EXIT_TP1_BREAKEVEN'}
         if state.get('pending') in hard_reasons:
             return state['pending']
         if sign * (curr_close - stop) <= 0:
-            state['pending'] = ('EXIT_TP1_BREAKEVEN' if state.get('tp1_executed')
+            state['pending'] = ('EXIT_TP1_BREAKEVEN' if (state.get('tp1_executed') or state.get('breakeven_activated'))
                                 else 'EXIT_INITIAL_ATR_HARD_STOP')
             return state['pending']
         if sign * (curr_close - float(c.kc_middle)) < 0:
             state['pending'] = 'EXIT_KC_MIDDLE_HARD_STOP'
             return state['pending']
 
-        # Revalidate every retry against the latest completed candle. Old
-        # engulfing/middle/ATR/TP1 pending reasons cannot bypass the MA3 lock.
+        # Revalidate every retry against the latest completed candle.
         qty = float(position.get('qty') or 0)
         fee_cost = (entry + curr_close) * TAKER_FEE_RATE + curr_close * SLIPPAGE_PCT
-        raw_pnl_per = sign * (curr_close - entry)
         abs_pnl_est = (raw_pnl_per - fee_cost) * qty
         profitable = raw_pnl_per - fee_cost > 0
         margin = float(position.get('margin') or 0)
-        # Actual remaining margin is authoritative, including after a half-close.
         roi_pct = abs_pnl_est / margin if math.isfinite(margin) and margin > 0 else 0.
         state.update(net_unrealized_pnl=abs_pnl_est, margin_roe=roi_pct)
-        if (math.isfinite(qty) and qty > 0 and not state.get('tp1_executed')
-                and (roi_pct >= TP1_ROI_PCT or abs_pnl_est >= TP1_USDT_FLOOR)):
-            state['pending'] = 'TP1_PARTIAL_CLOSE_50PCT'
-            return state['pending']
 
-        profit_gate_open = roi_pct >= MIN_PROFIT_ROI
-        
+        # 極速收割條件 (動能衰竭)
         c_ma3 = float(c.ma3)
         c1_ma3 = float(c1.ma3)
-        
-        # 只要 MA3 結束順向開始走平/反向，或者價格穿破 MA3
         ma3_reversed = sign * (c_ma3 - c1_ma3) <= 0
         close_cross = sign * (curr_close - c_ma3) <= 0
         
-        eligible = (math.isfinite(qty) and qty > 0 and profitable
-                    and state.get('outer', False) and profit_gate_open
-                    and (ma3_reversed or close_cross) and not protected)
+        fast_exit_eligible = (math.isfinite(qty) and qty > 0 and not state.get('tp1_executed')
+                              and state.get('breakeven_activated', False) and state.get('outer', False)
+                              and (ma3_reversed or close_cross) and not protected)
         
-        if eligible:
-            reason = "[EXIT_OUTER_MA3] 多單外軌 MA3 衝高低頭，極速鎖利！" if side == 'LONG' else "[EXIT_OUTER_MA3] 空單外軌 MA3 止跌翹頭，極速鎖利！"
-        else:
-            reason = None
+        if fast_exit_eligible:
+            state['pending'] = 'FAST_EXIT_PARTIAL_CLOSE_60PCT'
+            return state['pending']
 
-        state['pending'] = reason
-        return reason
+        return None
 
     # ─────────────────────────────────────────────────────────────
     def handle_post_exit_cleanup(self, position, exit_reason):

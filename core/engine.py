@@ -50,7 +50,6 @@ from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live
 from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
 from core.services.exits.hard_stop_service import enforce_hard_stop
 from core.services.strategies.live_pivot_strategy import LivePivot
-from core.services.strategies.direct_reverse_strategy import authorized as reverse_authorized, quote_ready as reverse_quote_ready
 import asyncio
 import collections
 from collections import deque
@@ -213,6 +212,7 @@ class TradingEngine:
         weakref.finalize(self, _close_exchanges, self.exchange, self.execution_exchange, self.ws_exchange)
         self.strategy = SuperTrendKeltnerStrategy()
         self.account = PaperAccount() if PAPER_TRADING else BinanceTestnetAccount(self.execution_exchange)
+        self.account.entry_frame_provider = self._entry_boundary_frame
         self.symbol_rotation = SymbolRotation(self.account)
         self.surveillance_service = MarketSurveillanceService()
         self.risk_guard = RiskGuardManager()
@@ -1664,6 +1664,18 @@ class TradingEngine:
             return (speed_prev - speed_recent) / speed_prev
         return 0.0
         
+    @staticmethod
+    def _half_wallet_entry_margin(wallet, available, leverage):
+        if not all(math.isfinite(v) and v > 0 for v in (wallet, available, leverage)):
+            return 0.
+        return min(wallet * 0.5, available / (1.0 + leverage * TAKER_FEE_RATE))
+
+    async def _entry_boundary_frame(self, symbol):
+        frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
+        if frame is None or frame.empty:
+            return None
+        return self.strategy.compute_indicators(frame.copy())
+
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
         locks = getattr(self,'_channel_entry_locks',None)
         if locks is None:
@@ -1706,10 +1718,8 @@ class TradingEngine:
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
         available = float(self.account.get_available_balance())
-        amount = min(available,(wallet*.5 if not self.account.positions else available)*.98)
-        from core.config import get_high_beta_config
-        amount *= get_high_beta_config(symbol).get('BASE_POSITION_SIZE_RATIO',1.)
-        amount *= float(signal.get('size_fraction',1.))
+        amount = self._half_wallet_entry_margin(wallet, available, leverage)
+
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             return False
         # Final physical gate: same completed bar, same side and exact A-E reason.
@@ -1723,106 +1733,9 @@ class TradingEngine:
         if not math.isfinite(price) or price <= 0:
             return False
 
-        # --- 終極物理防呆閘門 (Ultimate Hard Gatekeeper) ---
-        c2 = snapshot['frame'].iloc[-1]
-        curr_close     = float(c2['close'])
-        curr_open      = float(c2['open'])
-        curr_kc_lower  = float(c2['kc_lower'])
-        curr_kc_upper  = float(c2['kc_upper'])
-        curr_kc_middle = float(c2.get('kc_middle', 0))
-        curr_atr       = float(c2.get('atr', 0))
-        curr_body      = abs(curr_close - curr_open)
-        # 前一根已收線 KC 中軌（判斷 KC 是否向下傾斜）
-        try:
-            prev_kc_middle = float(snapshot['frame'].iloc[-2].get('kc_middle', curr_kc_middle))
-        except (IndexError, AttributeError, TypeError, ValueError):
-            prev_kc_middle = curr_kc_middle
-
-        if side == 'SHORT':
-            # 色彩硬鎖：陽線（綠K）100% 嚴禁開空
-            if curr_close > curr_open:
-                self.account.log(f"🛑 [FATAL_REJECT] 陽線嚴禁開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
-                return False
-
-            is_big_reversal_red = (curr_close < curr_open) and (curr_body > 1.2 * curr_atr)
-
-            # 軌道硬鎖：未跌破 KC 下軌，且非極限大陰吞噬（>1.2 ATR），禁止開空
-            if not is_big_reversal_red and curr_close > curr_kc_lower:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] 軌道內部嚴禁開空！Close:{curr_close} > Lower:{curr_kc_lower}，"
-                    f"body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
-                    "ERROR"
-                )
-                return False
-
-            # ══ 多頭環境物理禁空令 ══════════════════════════════════════
-            # 硬鎖1：收盤價在 KC 中軌上方，嚴禁任何空單（多頭區域）
-            if curr_close >= curr_kc_middle:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] 開空被拒：價格 {curr_close:.8g} 在 KC 中軌 {curr_kc_middle:.8g} 上方！",
-                    "ERROR"
-                )
-                return False
-            # 硬鎖2：KC 中軌向上且非極限大陰吞噬（>1.2 ATR），嚴禁開空
-            kc_rising          = curr_kc_middle > prev_kc_middle
-            is_engulfing_bear  = curr_body > 1.2 * curr_atr and curr_close < curr_open
-            if kc_rising and not is_engulfing_bear:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] 開空被拒：KC 中軌向上且非極限大陰吞噬！"
-                    f" kc_mid {curr_kc_middle:.8g} > prev {prev_kc_middle:.8g}，"
-                    f" body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
-                    "ERROR"
-                )
-                return False
-
-        elif side == 'LONG':
-            # 色彩硬鎖：陰線禁止開多
-            if curr_close < curr_open:
-                self.account.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
-                return False
-
-            is_big_reversal_green = (curr_close > curr_open) and (curr_body > 1.2 * curr_atr)
-
-            # 軌道硬鎖：未突破 KC 上軌，且非極限大陽吞噬（>1.2 ATR），禁止開多
-            if not is_big_reversal_green and curr_close < curr_kc_upper:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] 軌道內部嚴禁開多！Close:{curr_close} < Upper:{curr_kc_upper}，"
-                    f"body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
-                    "ERROR"
-                )
-                return False
-
-            # ══ 空頭環境物理禁多令 ══════════════════════════════════════
-            # 硬鎖1：收盤價在 KC 中軌下方，嚴禁任何多單
-            if curr_close <= curr_kc_middle:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] 開多被拒：價格 {curr_close:.8g} 在 KC 中軌 {curr_kc_middle:.8g} 下方！",
-                    "ERROR"
-                )
-                return False
-            # 硬鎖2：KC 中軌向下且非極限大陽吞噬（>1.2 ATR），嚴禁開多
-            kc_declining      = curr_kc_middle < prev_kc_middle
-            is_engulfing_bull = curr_body > 1.2 * curr_atr and curr_close > curr_open
-            if kc_declining and not is_engulfing_bull:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] 開多被拒：KC 中軌向下且非極限大陽吞噬！"
-                    f" kc_mid {curr_kc_middle:.8g} < prev {prev_kc_middle:.8g}，"
-                    f" body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
-                    "ERROR"
-                )
-                return False
-
-        # ── Rule E 高位乖離保護（防頂部接刀）─────────────────────────
-        is_rule_e = "CLOSED_E_" in signal.get("signal_code", "")
-        if is_rule_e and curr_atr > 0:
-            sign_e = 1 if side == 'LONG' else -1
-            dist_from_middle = sign_e * (curr_close - curr_kc_middle)
-            if dist_from_middle > 2.0 * curr_atr:
-                self.account.log(
-                    f"🛑 [FATAL_REJECT] Rule E 乖離過大！距中軌 {dist_from_middle:.6g} > 2.0 ATR {2.0*curr_atr:.6g}，禁止高位追入！",
-                    "ERROR"
-                )
-                return False
+        from core.services.entry_firewall import validate_entry_frame
+        validate_entry_frame(snapshot['frame'], side, final['reason'])
+        self.account.entry_frame_provider = self._entry_boundary_frame
 
         atr = final['entry_atr']
         sign = 1 if side == 'LONG' else -1
@@ -2216,8 +2129,8 @@ class TradingEngine:
         return bool((daily_check and daily_check()[0]) or self._market_crash_entries_paused(time.time()))
 
     def _ck_reverse_order_authorized(self, symbol, signal):
-        """Only a fresh matched eligible close grants the direct reverse exception."""
-        return reverse_authorized(self.account, symbol, signal, time.time())
+        """No close record authorizes a reverse entry."""
+        return False
 
     async def _try_ck_reverse(self, symbol, frame, price, daily_halt):
         """CK changes no longer close positions or authorize direct reversals."""
@@ -2266,8 +2179,7 @@ class TradingEngine:
             return UnifiedEntryStrategy().evaluate_entry(
                 frame, price, ticket['side'], engine=self, symbol=symbol)[0]
         if ticket.get('mode') == 'direct_reverse':
-            return (self._ck_reverse_order_authorized(symbol, {'side': ticket['side'], 'profit_reentry_token': ticket['token']})
-                    and reverse_quote_ready(self, symbol, frame, price, ticket['side']))
+            return False
         if ticket.get('mode') == 'ck_reverse':
             return False
         if ticket.get("mode") != "outer_cycle":

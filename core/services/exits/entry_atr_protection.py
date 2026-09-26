@@ -17,8 +17,8 @@ def initialize_atr_protection(position, entry_price, side, atr):
 
 
 def atr_exit_reason(position, price, frame=None):
-    from core.services.exit_service import chandelier_exit_reason
-    return chandelier_exit_reason(position, price, frame)
+    from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
+    return DualTrackExitStrategy().evaluate_exit(position, frame)
 
 
 async def enforce_atr_protection(account, symbol, price):

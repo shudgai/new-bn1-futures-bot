@@ -41,10 +41,10 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             return [], []
         old_side = position['side']
 
-        # ── 方案A TP1：部分平倉 50%，剩餘倉位繼續持有 ──────
-        if reason == 'TP1_PARTIAL_CLOSE_50PCT':
+        # ── 方案A TP1：部分平倉 60%，剩餘倉位繼續持有 ──────
+        if reason == 'FAST_EXIT_PARTIAL_CLOSE_60PCT':
             partial_ok = await engine.account.partial_close_position(
-                symbol, quote, 'Closed1M TP1_PARTIAL_CLOSE_50PCT', fraction=0.50
+                symbol, quote, 'Closed1M FAST_EXIT_PARTIAL_CLOSE_60PCT', fraction=0.60
             )
             if partial_ok:
                 # 標記 state 已執行 TP1（position 仍在，closed_exit_state 會在下一根更新）
@@ -52,6 +52,12 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 exit_state = pos_now.get('closed_exit_state', {})
                 exit_state['tp1_executed'] = True
                 exit_state['pending'] = None
+                cost = float(pos_now['entry_price'])
+                exit_state['stop'] = cost
+                pos_now.update(sl=cost, atr_sl=cost, is_half_closed=True)
+                engine.account.position_meta.setdefault(symbol, {}).update(
+                    sl=cost, atr_sl=cost, is_half_closed=True)
+
                 if 'closed_exit_state' in pos_now:
                     pos_now['closed_exit_state'] = exit_state
                 engine.account.position_meta.setdefault(symbol, {}).update(
@@ -59,7 +65,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
                 )
                 engine.account.save_state()
                 engine.account.log(
-                    f"💰 [TP1-50%] {symbol} {old_side} 已鎖利 50%，剩餘半倉移至保本線繼續運行",
+                    f"💰 [極速收割-60%] {symbol} {old_side} MA3拐頭已鎖利 60%，剩餘40%移至保本線繼續運行",
                     "SUCCESS"
                 )
             return [], []
@@ -73,13 +79,13 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             getattr(engine, name, {}).pop(symbol, None)
         getattr(engine.account, 'channel_profit_reentries', {}).pop(symbol, None)
         engine.account.save_state()
-        preferred = 'SHORT' if old_side == 'LONG' else 'LONG'
+        return [], []  # Closing never initiates an entry in the same lifecycle pass.
     elif exit_only:
         return [], []
     if daily_halt:
         return [], []
-    # Highest rule priority wins across both directions. Opposite-side tie first after a close.
-    sides = (preferred,'LONG' if preferred == 'SHORT' else 'SHORT') if preferred else ('LONG','SHORT')
+    # New entries are independently evaluated against the whitelist.
+    sides = ('LONG', 'SHORT')
     candidates = []
     for side in sides:
         ok, reason, decision = evaluate_closed_entry(frame,side,after_close=had_close(engine.account,symbol))

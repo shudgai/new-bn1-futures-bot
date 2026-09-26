@@ -2677,7 +2677,7 @@ class BinanceTestnetAccount:
                 position["margin"] = position.get("margin", 0.0) * (1 - fraction)
                 self.positions[symbol] = position
                 meta["is_half_closed"] = True
-                if 'TP1_PARTIAL_CLOSE_50PCT' in str(close_reason):
+                if 'FAST_EXIT_PARTIAL_CLOSE_60PCT' in str(close_reason):
                     cost = float(position['entry_price'])
                     position.update(sl=cost, atr_sl=cost, is_half_closed=True)
                     meta.update(sl=cost, atr_sl=cost)
