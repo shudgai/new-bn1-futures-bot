@@ -493,22 +493,108 @@ class PaperAccount:
             self.log(f"🛑 {symbol} 已有待成交掛單，拒絕重複市價開倉", "WARNING")
             return False
 
-        # 最底層物理禁令：任何地方調用開空，若當根為陽線一律直接拋出異常拒絕！
-        try:
-            from core.services.candle_data import entry_candles
-            current_df = entry_candles(symbol, "1m")
-            if current_df is not None and len(current_df) > 0:
-                c = current_df.iloc[-1]
-                curr_close = float(c['close'])
-                curr_open = float(c['open'])
-                if side == 'SHORT' and curr_close > curr_open:
-                    self.log(f"🛑 [FATAL_REJECT] 陽線禁止開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
+        from core.services.entry_firewall import validate_account_entry
+        await validate_account_entry(self, symbol, side, entry_context)
+
+        # ------------------ 以下為新開倉硬核審查 (MASTER BREAKER) ------------------
+        provider = getattr(self, 'entry_frame_provider', None)
+        if provider:
+            from core.services.strategies.unified_entry_strategy import confirmed
+            try:
+                frame = await provider(symbol)
+                closed = confirmed(frame)
+                if closed is not None and len(closed) >= 2:
+                    last_bar = closed.iloc[-1]
+                    prev_bar = closed.iloc[-2]
+                    
+                    close_p = float(last_bar.close)
+                    open_p = float(last_bar.open)
+                    body = abs(close_p - open_p)
+                    _atr = float(last_bar.atr)
+                    
+                    kc_upper_curr = float(last_bar.kc_upper)
+                    kc_lower_curr = float(last_bar.kc_lower)
+                    kc_upper_prev = float(prev_bar.kc_upper)
+                    kc_lower_prev = float(prev_bar.kc_lower)
+                    
+                    if 'MA3' in last_bar:
+                        ma3_curr = float(last_bar.MA3)
+                        ma3_prev = float(prev_bar.MA3)
+                    else:
+                        close_col = closed['close']
+                        ma3_curr = float(close_col.iloc[-3:].mean())
+                        ma3_prev = float(close_col.iloc[-4:-1].mean())
+                        
+                    if 'MA15' in last_bar:
+                        ma15_curr = float(last_bar.MA15)
+                    else:
+                        close_col = closed['close']
+                        ma15_curr = float(close_col.iloc[-15:].mean())
+                        
+                    # 計算冷卻 (以秒數換算 K 棒數)
+                    import time
+                    last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
+                    cooldown_bars = (time.time() - last_close_time) / 60.0
+                    if last_close_time > 0 and cooldown_bars < 2:
+                        raise RuntimeError(f"[MASTER_BREAKER] {symbol} 違反平倉同向冷卻 (當前: {cooldown_bars:.1f} < 2 根)！阻斷下單！")
+                    
+                    # 1. 開多單總電閘 (LONG)
+                    if side.upper() == 'LONG':
+                        if close_p <= open_p:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
+                        if ma3_curr <= ma15_curr:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，處於空頭死叉排列中，100% 嚴禁開多！")
+                        if ma3_curr <= ma3_prev:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
+                        if close_p < kc_upper_curr and body < (1.2 * _atr):
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開多！")
+                        
+                        is_channel_expanding = kc_upper_curr > kc_upper_prev
+                        
+                        prev_close = float(prev_bar.close)
+                        prev_open = float(prev_bar.open)
+                        is_two_bar_breakout = (
+                            prev_close > prev_open and
+                            close_p > open_p and
+                            prev_close > kc_upper_prev and
+                            close_p > kc_upper_curr and
+                            close_p > prev_close and
+                            body >= (0.8 * _atr)
+                        )
+                        if not (is_channel_expanding or is_two_bar_breakout):
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
+                            
+                    # 2. 開空單總電閘 (SHORT)
+                    elif side.upper() == 'SHORT':
+                        if close_p >= open_p:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
+                        if ma3_curr >= ma15_curr:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
+                        if ma3_curr >= ma3_prev:
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
+                        if close_p > kc_lower_curr and body < (1.2 * _atr):
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
+                        
+                        is_channel_expanding = kc_lower_curr < kc_lower_prev
+                        
+                        prev_close = float(prev_bar.close)
+                        prev_open = float(prev_bar.open)
+                        is_two_bar_breakout = (
+                            prev_close < prev_open and
+                            close_p < open_p and
+                            prev_close < kc_lower_prev and
+                            close_p < kc_lower_curr and
+                            close_p < prev_close and
+                            body >= (0.8 * _atr)
+                        )
+                        if not (is_channel_expanding or is_two_bar_breakout):
+                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
+            except Exception as e:
+                if "[MASTER_BREAKER]" in str(e):
+                    self.log(str(e), "ERROR")
                     return False
-                if side == 'LONG' and curr_close < curr_open:
-                    self.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
-                    return False
-        except Exception:
-            pass
+                pass
+        # ------------------ 審查結束 ------------------
 
         entry_payload = dict(entry_context or {})
         entry_mode = str(entry_payload.get("entry_mode") or "").upper()
@@ -600,7 +686,14 @@ class PaperAccount:
             except Exception:
                 pass
             sl = cap_stop_loss_to_margin_risk(execution_price, side, sl, leverage)
-        qty = (amount_usdt * leverage) / max(execution_price, 1e-12)
+        from core.services.order_sizing import raw_order_qty
+        qty = float(raw_order_qty(amount_usdt, leverage, execution_price))
+        notional = amount_usdt * leverage
+        self.log(
+            f"🧮 [資金換算] {symbol} | 本金保證金={amount_usdt:.4f}U, 槓桿={leverage}x, "
+            f"名義價值={notional:.4f}U, 價格={execution_price:.6g}, 下單數量(qty)={qty:.4f}",
+            "INFO"
+        )
         fee = qty * execution_price * TAKER_FEE_RATE
         required_balance = amount_usdt + fee
         if self.get_available_balance() + 1e-12 < required_balance:
@@ -726,6 +819,8 @@ class PaperAccount:
         timeframe: str = "3m",
     ) -> bool:
         """非Post-Only對手價單立即成交；Post-Only保留至市價穿越掛單價。"""
+        from core.services.entry_firewall import validate_account_entry
+        await validate_account_entry(self, symbol, side, entry_context)
         if str((entry_context or {}).get("entry_mode", "")).upper() == "CHANNEL_SWING" and not valid_entry_atr(atr):
             self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
             return False
@@ -1167,6 +1262,13 @@ class PaperAccount:
             pos["margin"] = pos.get("margin", 0.0) - released_margin
             meta["is_half_closed"] = True
             pos["is_half_closed"] = True
+            if 'TP1_PARTIAL_CLOSE_50PCT' in str(close_reason):
+                cost = float(pos['entry_price'])
+                pos.update(sl=cost, atr_sl=cost)
+                meta.update(sl=cost, atr_sl=cost)
+                state = pos.get('closed_exit_state', {})
+                state.update(tp1_executed=True, is_half=True, stop=cost, pending=None)
+                meta['closed_exit_state'] = dict(state)
             self.log(
                 f"💰 [紙上交易/分批止盈] {symbol} 平倉 {fraction:.0%} @ {exec_close_price:.6g} | "
                 f"淨損益: {net_pnl:+.2f} USDT | 剩餘 {remaining_qty:.6g} 繼續持有",
