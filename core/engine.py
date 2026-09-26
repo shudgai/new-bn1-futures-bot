@@ -1739,13 +1739,40 @@ class TradingEngine:
             prev_kc_middle = curr_kc_middle
 
         if side == 'SHORT':
-            # 色彩硬鎖：陽線禁止開空
+            # 色彩硬鎖：陽線（綠K）100% 嚴禁開空
             if curr_close > curr_open:
-                self.account.log(f"🛑 [FATAL_REJECT] 陽線禁止開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
+                self.account.log(f"🛑 [FATAL_REJECT] 陽線嚴禁開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
                 return False
-            is_big_reversal_red = (curr_close < curr_open) and (curr_body > 0.8 * curr_atr)
-            if not is_big_reversal_red and curr_close >= curr_kc_lower:
-                self.account.log(f"🛑 [FATAL_REJECT] 未破下軌禁止開空！Close:{curr_close} >= Lower:{curr_kc_lower}", "ERROR")
+
+            is_big_reversal_red = (curr_close < curr_open) and (curr_body > 1.2 * curr_atr)
+
+            # 軌道硬鎖：未跌破 KC 下軌，且非極限大陰吞噬（>1.2 ATR），禁止開空
+            if not is_big_reversal_red and curr_close > curr_kc_lower:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] 軌道內部嚴禁開空！Close:{curr_close} > Lower:{curr_kc_lower}，"
+                    f"body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
+                    "ERROR"
+                )
+                return False
+
+            # ══ 多頭環境物理禁空令 ══════════════════════════════════════
+            # 硬鎖1：收盤價在 KC 中軌上方，嚴禁任何空單（多頭區域）
+            if curr_close >= curr_kc_middle:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] 開空被拒：價格 {curr_close:.8g} 在 KC 中軌 {curr_kc_middle:.8g} 上方！",
+                    "ERROR"
+                )
+                return False
+            # 硬鎖2：KC 中軌向上且非極限大陰吞噬（>1.2 ATR），嚴禁開空
+            kc_rising          = curr_kc_middle > prev_kc_middle
+            is_engulfing_bear  = curr_body > 1.2 * curr_atr and curr_close < curr_open
+            if kc_rising and not is_engulfing_bear:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] 開空被拒：KC 中軌向上且非極限大陰吞噬！"
+                    f" kc_mid {curr_kc_middle:.8g} > prev {prev_kc_middle:.8g}，"
+                    f" body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
+                    "ERROR"
+                )
                 return False
 
         elif side == 'LONG':
@@ -1753,12 +1780,19 @@ class TradingEngine:
             if curr_close < curr_open:
                 self.account.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
                 return False
-            is_big_reversal_green = (curr_close > curr_open) and (curr_body > 0.8 * curr_atr)
-            if not is_big_reversal_green and curr_close <= curr_kc_upper:
-                self.account.log(f"🛑 [FATAL_REJECT] 未破上軌禁止開多！Close:{curr_close} <= Upper:{curr_kc_upper}", "ERROR")
+
+            is_big_reversal_green = (curr_close > curr_open) and (curr_body > 1.2 * curr_atr)
+
+            # 軌道硬鎖：未突破 KC 上軌，且非極限大陽吞噬（>1.2 ATR），禁止開多
+            if not is_big_reversal_green and curr_close < curr_kc_upper:
+                self.account.log(
+                    f"🛑 [FATAL_REJECT] 軌道內部嚴禁開多！Close:{curr_close} < Upper:{curr_kc_upper}，"
+                    f"body={curr_body:.8g} < 1.2ATR={1.2*curr_atr:.8g}",
+                    "ERROR"
+                )
                 return False
 
-            # ══ 空頭環境物理禁多令 ═══════════════════════════════════════
+            # ══ 空頭環境物理禁多令 ══════════════════════════════════════
             # 硬鎖1：收盤價在 KC 中軌下方，嚴禁任何多單
             if curr_close <= curr_kc_middle:
                 self.account.log(
@@ -1767,7 +1801,7 @@ class TradingEngine:
                 )
                 return False
             # 硬鎖2：KC 中軌向下且非極限大陽吞噬（>1.2 ATR），嚴禁開多
-            kc_declining     = curr_kc_middle < prev_kc_middle
+            kc_declining      = curr_kc_middle < prev_kc_middle
             is_engulfing_bull = curr_body > 1.2 * curr_atr and curr_close > curr_open
             if kc_declining and not is_engulfing_bull:
                 self.account.log(
