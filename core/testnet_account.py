@@ -204,14 +204,19 @@ class BinanceTestnetAccount:
                                 raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開多！")
                             
                             is_channel_expanding = kc_upper_curr > kc_upper_prev
-                            is_ma3_breakout = (
-                                ma3_curr > kc_upper_curr
-                                and close_p > kc_upper_curr
-                                and body >= 0.8 * atr
-                                and ma3_curr > ma3_prev
+                            
+                            prev_close = float(prev_bar.close)
+                            prev_open = float(prev_bar.open)
+                            is_two_bar_breakout = (
+                                prev_close > prev_open and
+                                close_p > open_p and
+                                prev_close > kc_upper_prev and
+                                close_p > kc_upper_curr and
+                                close_p > prev_close and
+                                body >= (0.8 * atr)
                             )
-                            if not (is_channel_expanding or is_ma3_breakout):
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 通道未張嘴且無 MA3 強勢脫軌起爆，嚴禁開多！")
+                            if not (is_channel_expanding or is_two_bar_breakout):
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
                                 
                         # 2. 開空單總電閘 (SHORT)
                         elif side.upper() == 'SELL':
@@ -223,14 +228,19 @@ class BinanceTestnetAccount:
                                 raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
                             
                             is_channel_expanding = kc_lower_curr < kc_lower_prev
-                            is_ma3_breakout = (
-                                ma3_curr < kc_lower_curr
-                                and close_p < kc_lower_curr
-                                and body >= 0.8 * atr
-                                and ma3_curr < ma3_prev
+                            
+                            prev_close = float(prev_bar.close)
+                            prev_open = float(prev_bar.open)
+                            is_two_bar_breakout = (
+                                prev_close < prev_open and
+                                close_p < open_p and
+                                prev_close < kc_lower_prev and
+                                close_p < kc_lower_curr and
+                                close_p < prev_close and
+                                body >= (0.8 * atr)
                             )
-                            if not (is_channel_expanding or is_ma3_breakout):
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 通道未張嘴且無 MA3 強勢脫軌起爆，嚴禁開空！")
+                            if not (is_channel_expanding or is_two_bar_breakout):
+                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體跌破確認且通道未擴張，拒絕送單！")
                 except RuntimeError:
                     raise
                 except Exception as e:
