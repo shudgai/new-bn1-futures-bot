@@ -1,135 +1,190 @@
-import logging
-from typing import Dict, Any, Optional
-import pandas as pd
+"""Closed one-minute exits — 方案A階梯鎖利 + MA3峰谷V點反轉 + 動態ATR防線.
+
+出場三階段（多空對稱）：
+  第一階段  TP1  : ROI >= 15% 或浮盈 >= 15 USDT → 市價平 50%，標記 TP1_EXECUTED
+  第二階段  保本  : TP1 後剩餘 50% 止損移至開倉成本（保本線）
+  第三階段  剩餘  : MA3峰谷V點即刻平（脫軌優先）→ 動態ATR防線兜底
+
+大實體長K保護（防賣飛）：
+  順向實體 > 0.8 ATR → 任何平倉指令均不執行（pending 重試）
+"""
+import math
 from core.interfaces.exit_interface import IExitStrategy
-from core.config import TAKER_FEE_RATE
+from core.services.strategies.unified_entry_strategy import confirmed
+from core.config import TAKER_FEE_RATE, SLIPPAGE_PCT
 
-DUAL_TRACK_STATE_KEYS = ["channel_significant_ma3_turn", "channel_peak_abnormal", "ratchet_floor", "trade_phase", "v8_reason", "v10_phase_trailing", "has_warning_partial_close", "channel_profit_protection",
-                          "last_evaluated_closed_bar_id", "super_trend_mode", "super_trend_trailing_stop",
-                          "active_stop_price", "max_profit_atr", "sl", "defense_line", "touched_kc_outer",
-                          "structural_breakdown_barrier_price", "structural_breakdown_side",
-                          "profit_protection_active", "profit_anchor_price", "guaranteed_exit_price",
-                          "entry_atr", "atr_sl", "atr_tp", "atr_protection_version", "chandelier_state", "tp",
-                          "price_peak_value",         # 即時動態錨點（追蹤最高/最低點）
-                          "profit_lock_display_sl",   # UI 鎖利顯示
-                          "channel_profit_protection"]
+POLICY = 'closed_1m_v2_ladder'
+DUAL_TRACK_STATE_KEYS = [
+    'closed_exit_state', 'sl', 'tp',
+    'entry_atr', 'atr_sl', 'atr_tp', 'atr_protection_version'
+]
 
-logger = logging.getLogger("DualTrackExit")
+# 方案A參數
+TP1_ROI_PCT      = 0.15    # ROI 達 15% 觸發 TP1
+TP1_USDT_FLOOR   = 15.0    # 小本金絕對金額兜底
+TP1_FRACTION     = 0.50    # 平倉 50%
+BREAKEVEN_BUFFER = 0.0002  # 保本緩衝（手續費方向）
 
-HARD_STOP_ATR = 2.0  # 未曾站上外軌的緊急保命線
+# ATR 防線乘數
+ATR_TRAIL_OUTER  = 0.8     # 脫軌時收窄
+ATR_TRAIL_NORMAL = 1.5     # 軌道內
+SL_INIT_MULT     = 1.5     # 初始止損
 
 
 class DualTrackExitStrategy(IExitStrategy):
-    """
-    峰谷瞬間鎖利戰略 v10 (Pivot Instant Lock)
 
-    核心原則（最高憲法）：
-    1. 動態錨點 (Dynamic Anchor)：每一 Tick 追蹤最優價格，鎖死最高利潤至 UI。
-    2. 點位即平 (Pivot Instant Exit)：觸及 TP 點位，不論 K 線長相，零猶豫秒平，以錨點結算。
-    3. 大瀑布保險 (Meltdown Shield)：2.0 ATR 反向 K 結構崩潰，以錨點保底，確保帶走最高點。
-    4. KC 中軌結構防線：已收盤 K 線穿越 KC 中軌則結構崩壞，帶走錨點結算。
-    5. 絕對耐壓：路程中的任何回調都不平倉，只有以上條件才下車。
-    """
-
-    def initialize_position(self, position: Dict[str, Any], entry_price: float, atr: float) -> None:
-        side = position.get("side", "LONG")
-        defense_line = (entry_price - HARD_STOP_ATR * atr) if side == "LONG" else (entry_price + HARD_STOP_ATR * atr)
-
-        position["defense_line"]          = defense_line
-        position["active_stop_price"]     = defense_line
-        position["sl"]                    = defense_line   # UI 通用欄位
-        position["entry_atr"]             = atr            # 開倉快照 ATR，全程不變
-
-        position["trailing_stop_price"]   = None
-        position["max_price_since_entry"] = entry_price
-        position["min_price_since_entry"] = entry_price
-
-        # 動態錨點初始化：開倉即設為開倉價，隨後逐 Tick 推高/推低
-        position["price_peak_value"]      = entry_price
-        position["profit_anchor_price"]   = entry_price
-        position["profit_lock_display_sl"] = entry_price   # UI 顯示
-
-        position["touched_kc_outer"]      = False
-        position["last_evaluated_closed_bar_id"] = None
-
-        logger.info(
-            f"[ANCHOR_INITIALIZED] Entry={entry_price:.6f} | ATR={atr:.6f} | "
-            f"HardStop={defense_line:.6f} | InitAnchor={entry_price:.6f}"
+    def initialize_position(self, position, entry_price, atr):
+        sign = 1 if position['side'] == 'LONG' else -1
+        position.update(
+            entry_atr=float(atr),
+            sl=entry_price - sign * SL_INIT_MULT * atr,
+            tp=0.
         )
 
-    def evaluate_exit(self, position: Dict[str, Any], frame: pd.DataFrame,
-                      current_price: float, **kwargs) -> Optional[str]:
-        if frame is None or len(frame) < 3:
+    # ─────────────────────────────────────────────────────────────
+    def evaluate_exit(self, position, frame, current_price=None, **kwargs):
+        closed = confirmed(frame)
+        if closed is None or position.get('side') not in ('LONG', 'SHORT'):
+            return None
+        try:
+            return self._evaluate(position, frame, closed)
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
 
-        side = position.get("side", "LONG")
-        entry_price = float(position.get("entry_price", 0.0))
-        if entry_price <= 0:
+    # ─────────────────────────────────────────────────────────────
+    def _evaluate(self, position, frame, closed):
+        entry  = float(position['entry_price'])
+        opened = float(position.get('open_timestamp') or 0) * 1000
+        if not math.isfinite(entry) or entry <= 0 or not math.isfinite(opened):
             return None
 
-        from core.services.candle_data import closed_entry_candles
-        closed = closed_entry_candles(frame)
-        if len(closed) < 2:
+        c0, c1, c = closed.iloc[-3], closed.iloc[-2], closed.iloc[-1]
+        bar  = float(c.timestamp)
+
+        # 不用開倉當根或早於開倉時間的 K 棒來管理倉位
+        if bar + 60000 <= opened or bar <= float(position.get('channel_confirmation_bar_id') or -1):
             return None
 
-        c1 = closed.iloc[-2]
-        c2 = closed.iloc[-1]
-        c2_time = c2.name if hasattr(c2, 'name') else c2.get("timestamp", 0)
-        c2_close = float(c2["close"])
-        c2_open = float(c2["open"])
-        c1_low = float(c1["low"])
-        c1_high = float(c1["high"])
-        kc_mid = float(c2.get("kc_middle", c2.get("ema_20", 0.0)))
-        atr = float(c2.get("atr", entry_price * 0.01))
+        side  = position['side']
+        sign  = 1 if side == 'LONG' else -1
+        atr   = float(c1.atr)   # 前根已收線 ATR
 
-        # Update dynamic extremes
-        if side == "LONG":
-            position["highest"] = max(position.get("highest", entry_price), current_price)
-            stop_price = max(entry_price - 1.5 * atr, position["highest"] - 1.5 * atr)
-        else:
-            position["lowest"] = min(position.get("lowest", entry_price), current_price)
-            stop_price = min(entry_price + 1.5 * atr, position["lowest"] + 1.5 * atr)
+        # ── 初始化狀態 ─────────────────────────────────────────
+        identity = [side, entry, opened]
+        state = position.get('closed_exit_state')
+        if not isinstance(state, dict) or state.get('identity') != identity or state.get('policy') != POLICY:
+            state = dict(
+                policy=POLICY, identity=identity,
+                peak=entry, last_bar=-1,
+                stop=entry - sign * SL_INIT_MULT * atr,
+                outer=False, pending=None,
+                tp1_executed=False,
+                is_half=bool(position.get('is_half_closed')),
+            )
+            position['closed_exit_state'] = state
 
-        position["trailing_stop_price"] = stop_price
+        # 同步 is_half（partial_close 後 position 會被標記）
+        if position.get('is_half_closed') and not state.get('tp1_executed'):
+            state['tp1_executed'] = True
+            state['is_half'] = True
 
-        # 必須是已收盤的 K 棒才能判定出場 (Closed Bar Only)
-        bar_is_closed = (position.get("last_evaluated_closed_bar_id") != c2_time)
-        if not bar_is_closed:
-            return None  # 盤中未收盤，嚴禁任何動能或反轉出場判定！
-            
-        position["last_evaluated_closed_bar_id"] = c2_time
+        body_signed = sign * (float(c.close) - float(c.open))   # >0 = 方向一致的長K
 
-        # 1. 跌破動態 Trailing ATR 防守線
-        if side == "LONG" and c2_close < stop_price:
-            logger.warning(f"🛑 [EXIT_TRAILING_ATR_STOP] LONG {position.get('symbol')} c2_close={c2_close} < stop_price={stop_price}")
-            return "EXIT_TRAILING_ATR_STOP"
-        if side == "SHORT" and c2_close > stop_price:
-            logger.warning(f"🛑 [EXIT_TRAILING_ATR_STOP] SHORT {position.get('symbol')} c2_close={c2_close} > stop_price={stop_price}")
-            return "EXIT_TRAILING_ATR_STOP"
+        # ── 大實體長K保護（防賣飛）──────────────────────────────
+        protected = body_signed > 0.8 * atr
 
-        # 3. 跌破 KC 中軌
-        if kc_mid > 0:
-            if side == "LONG" and c2_close < kc_mid:
-                logger.warning(f"🛡️ [EXIT_KC_MID_BODY_CROSS] LONG {position.get('symbol')} c2_close={c2_close} < kc_mid={kc_mid}")
-                return "EXIT_KC_MID_BODY_CROSS"
-            if side == "SHORT" and c2_close > kc_mid:
-                logger.warning(f"🛡️ [EXIT_KC_MID_BODY_CROSS] SHORT {position.get('symbol')} c2_close={c2_close} > kc_mid={kc_mid}")
-                return "EXIT_KC_MID_BODY_CROSS"
+        # ── 去重：同根只處理一次 ──────────────────────────────
+        if bar < state['last_bar']:
+            return None
+        if bar == state['last_bar']:
+            return None if protected else state.get('pending')
+        state['last_bar'] = bar
 
-        return None
+        # ── 更新峰值 ─────────────────────────────────────────
+        peak = max(sign * state['peak'], sign * float(c.close)) * sign
+        state['peak'] = peak
 
-    def handle_post_exit_cleanup(self, position: Dict[str, Any], exit_reason: str):
-        symbol = position.get("symbol", "UNKNOWN")
-        logger.info(f"[Post-Exit] {exit_reason} ({symbol})")
+        # ── 軌道外標記 ───────────────────────────────────────
+        rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
+        outside          = sign * (float(c.close)  - float(c[rail]))  >= 0
+        previous_outside = sign * (float(c1.close) - float(c1[rail])) >= 0
+        state['outer'] = state['outer'] or outside or previous_outside
 
-        # 保留原有的硬止損冷卻
-        if exit_reason and exit_reason.startswith("EXIT_HARD_STOP"):
-            position["cooldown_mode"]     = "WAIT_FOR_STABLE_KC"
-            position["cooldown_kc_count"] = 2
-        # 若是 Peak Volume Exit，保留在 evaluate_exit 中設置的 WAIT_FOR_VOLUME_RECOVERY
-        elif position.get("cooldown_mode") != "WAIT_FOR_VOLUME_RECOVERY":
-            position["cooldown_mode"] = "NONE"
+        # ── 動態 ATR 防線（trailing stop）─────────────────────
+        mult     = ATR_TRAIL_OUTER if (outside or previous_outside) else ATR_TRAIL_NORMAL
+        candidate = peak - sign * mult * atr
+        if state.get('tp1_executed'):
+            # TP1 後把防線拉回保本
+            breakeven = entry + sign * entry * BREAKEVEN_BUFFER
+            candidate = max(sign * candidate, sign * breakeven) * sign
+        stop = max(sign * state['stop'], sign * candidate) * sign
+        state['stop'] = stop
+        position.update(sl=stop, atr_sl=stop, tp=0., atr_tp=0.)
 
-        position["force_space_reevaluation"] = True
+        # 大實體保護期不發出平倉訊號
+        if protected:
+            state['pending'] = None
+            return None
 
+        # ── pending 重試 ──────────────────────────────────────
+        if state.get('pending'):
+            return state['pending']
 
+        # ── 盈虧計算 ──────────────────────────────────────────
+        cost   = (entry + float(c.close)) * TAKER_FEE_RATE + float(c.close) * SLIPPAGE_PCT
+        unrealized_pnl_raw = sign * (float(c.close) - entry)
+        # 以「整倉」ROI 衡量（即使已半平，保本條件以原始 entry 為基準）
+        roi_pct    = unrealized_pnl_raw / entry if entry > 0 else 0.0
+        profitable = unrealized_pnl_raw - cost > 0
+
+        reason = None
+
+        # ════════════════════════════════════════════════════
+        # 【第一階段】方案A TP1：ROI >= 15% 或浮盈 >= 15 USDT
+        # ════════════════════════════════════════════════════
+        if not state.get('tp1_executed'):
+            # 以 position 的 qty 估算絕對浮盈
+            qty         = float(position.get('qty') or 0)
+            abs_pnl_est = unrealized_pnl_raw * qty - cost * qty
+            if roi_pct >= TP1_ROI_PCT or abs_pnl_est >= TP1_USDT_FLOOR:
+                state['pending'] = 'TP1_PARTIAL_CLOSE_50PCT'
+                return 'TP1_PARTIAL_CLOSE_50PCT'
+
+        # ════════════════════════════════════════════════════
+        # 【第三階段】MA3 峰谷 V 點即刻平倉（脫軌加速段優先）
+        # ════════════════════════════════════════════════════
+        if profitable and state['outer']:
+            ma3_reversed  = sign * (float(c.ma3) - float(c1.ma3)) < 0  # MA3 開始反轉
+            close_cross   = sign * (float(c.close) - float(c.ma3)) < 0  # 收盤已穿破MA3
+            if ma3_reversed and close_cross:
+                reason = 'EXIT_OUTER_MA3_CURVE_CLOSED'
+
+        # ── 吞噬型大反轉 ─────────────────────────────────────
+        if reason is None and profitable and state['outer']:
+            body_neg     = body_signed < 0
+            prev_pos     = sign * (float(c1.close) - float(c1.open)) > 0
+            engulfing    = sign * (float(c.close) - float(c1.open)) < 0
+            if body_neg and prev_pos and engulfing:
+                reason = 'EXIT_OUTER_ENGULFING_CLOSED'
+
+        # ── 脫軌 MA3 穿越（基礎兜底）─────────────────────────
+        if reason is None:
+            close_cross_ma3 = sign * (float(c.close) - float(c.ma3)) < 0
+            if body_signed < 0 and (outside or previous_outside) and close_cross_ma3:
+                reason = 'EXIT_OUTER_MA3_CLOSED'
+
+        # ── 跌回中軌（趨勢反轉基礎防線）─────────────────────
+        if reason is None and body_signed < 0 and sign * (float(c.close) - float(c.kc_middle)) < 0:
+            reason = 'EXIT_KC_MIDDLE_CLOSED'
+
+        # ── 動態 ATR 追蹤防線 ────────────────────────────────
+        if reason is None and sign * (float(c.close) - stop) <= 0:
+            reason = 'EXIT_ATR_TRAIL_CLOSED'
+
+        state['pending'] = reason
+        return reason
+
+    # ─────────────────────────────────────────────────────────────
+    def handle_post_exit_cleanup(self, position, exit_reason):
+        position.pop('closed_exit_state', None)
+        position['cooldown_mode'] = 'NONE'

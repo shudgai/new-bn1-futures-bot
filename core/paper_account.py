@@ -493,6 +493,23 @@ class PaperAccount:
             self.log(f"🛑 {symbol} 已有待成交掛單，拒絕重複市價開倉", "WARNING")
             return False
 
+        # 最底層物理禁令：任何地方調用開空，若當根為陽線一律直接拋出異常拒絕！
+        try:
+            from core.services.candle_data import entry_candles
+            current_df = entry_candles(symbol, "1m")
+            if current_df is not None and len(current_df) > 0:
+                c = current_df.iloc[-1]
+                curr_close = float(c['close'])
+                curr_open = float(c['open'])
+                if side == 'SHORT' and curr_close > curr_open:
+                    self.log(f"🛑 [FATAL_REJECT] 陽線禁止開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
+                    return False
+                if side == 'LONG' and curr_close < curr_open:
+                    self.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
+                    return False
+        except Exception:
+            pass
+
         entry_payload = dict(entry_context or {})
         entry_mode = str(entry_payload.get("entry_mode") or "").upper()
         dca_stage = entry_payload.get("dca_stage")
@@ -1247,6 +1264,12 @@ class PaperAccount:
                 continue
             curr_p = float(curr_p)
             side = pos["side"]
+            meta = self.position_meta.get(symbol,{})
+            if str(pos.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+                unrealized = (curr_p-float(pos['entry_price']))*float(pos['qty'])*(1 if side == 'LONG' else -1)
+                pos.update(mark_price=curr_p,unrealized_pnl=unrealized)
+                total_unrealized += unrealized
+                continue
             self._rapid_drop_last_price[symbol] = curr_p
             entry_p = float(pos["entry_price"])
             meta = self.position_meta.setdefault(symbol, {})
@@ -1302,20 +1325,8 @@ class PaperAccount:
                 adverse_move = abs(entry_p - pivot_worst)
                 counter_body_triggered = adverse_move > position_atr * PIVOT_TURN_COUNTER_BODY_ATR
 
-                # 防線三：持倉期間極端波動（高低差 > N ATR）
-                pivot_intra_high = max(float(meta.get("pivot_intra_high") or curr_p), curr_p)
-                pivot_intra_low  = min(float(meta.get("pivot_intra_low")  or curr_p), curr_p)
-                meta["pivot_intra_high"] = pivot_intra_high
-                meta["pivot_intra_low"]  = pivot_intra_low
-                volatility_breaker = (
-                    PIVOT_TURN_VOLATILITY_ATR_LIMIT > 0
-                    and (pivot_intra_high - pivot_intra_low) > position_atr * PIVOT_TURN_VOLATILITY_ATR_LIMIT
-                )
-
                 pivot_emergency_reason = (
-                    f"KC中軌跌破({entry_kc_mid:.6g})-結構性破壞" if kc_middle_broken
-                    else f"急速反向 {adverse_move/position_atr:.1f}ATR(>{PIVOT_TURN_COUNTER_BODY_ATR}ATR)" if counter_body_triggered
-                    else f"極端波動斷路器 {(pivot_intra_high-pivot_intra_low)/position_atr:.1f}ATR(>{PIVOT_TURN_VOLATILITY_ATR_LIMIT}ATR)" if volatility_breaker
+                    f"急速反向 {adverse_move/position_atr:.1f}ATR(>{PIVOT_TURN_COUNTER_BODY_ATR}ATR)" if counter_body_triggered
                     else None
                 )
 

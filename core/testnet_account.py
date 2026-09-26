@@ -355,6 +355,11 @@ class BinanceTestnetAccount:
         await restore_testnet_staged(self)
         await self._cancel_orphan_entry_orders()
         await self.refresh(force=True)
+        # Old native stops trigger intrabar and cannot implement the new contract.
+        for symbol, position in list(self.positions.items()):
+            meta = self.position_meta.get(symbol,{})
+            if str(position.get('entry_mode') or meta.get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+                await self._remove_channel_native_exits(symbol)
         await self._restore_exchange_initial_stops()
 
     async def enable_staged_risk(self, symbol, risk_params, entry_order_ids):
@@ -692,6 +697,8 @@ class BinanceTestnetAccount:
             if staged_enabled(pos, self.position_meta.get(symbol, {})):
                 # The staged dispatcher/transport owns all exits and protection.
                 continue
+            if str(pos.get('entry_mode') or self.position_meta.get(symbol,{}).get('entry_mode') or '').upper() == 'CHANNEL_SWING':
+                continue  # refresh() already values positions; no ticker exits
             curr_p = ticker_prices.get(symbol) or ticker_prices.get(f"{symbol}:USDT") or ticker_prices.get(symbol.replace('/USDT', ''))
             if curr_p is None:
                 continue
@@ -1466,6 +1473,8 @@ class BinanceTestnetAccount:
             entry_mode = str(
                 pos.get("entry_mode") or meta.get("entry_mode") or ""
             ).upper()
+            if entry_mode == 'CHANNEL_SWING':
+                continue
             sl_price = float(meta.get("sl") or pos.get("sl") or 0.0)
             if sl_price <= 0 or int(meta.get("native_trailing_tier") or 0) > 0:
                 continue
@@ -1503,6 +1512,18 @@ class BinanceTestnetAccount:
         if not self._markets_loaded:
             await self.exchange.load_markets()
             self._markets_loaded = True
+
+    async def _remove_channel_native_exits(self, symbol):
+        """Remove managed native conditions; do not silently claim migration on failure."""
+        await self.exchange.request('algoOpenOrders','fapiPrivate','DELETE',
+                                    {'symbol':self._raw_symbol(symbol)})
+        fetch = getattr(self.exchange,'fetch_open_orders',None)
+        if fetch is not None:
+            for order in await fetch(symbol):
+                kind = str(order.get('type','')).upper()
+                if kind in ('STOP','STOP_MARKET','TAKE_PROFIT','TAKE_PROFIT_MARKET','TRAILING_STOP_MARKET'):
+                    await self.exchange.cancel_order(order['id'],symbol)
+        self.log(f'[CLOSE_ONLY_MIGRATION] {symbol} 已移除舊逐價條件單，改由已收線策略管理','INFO')
 
     async def _cancel_all_orders(self, symbol: str) -> None:
         try:
@@ -1648,6 +1669,23 @@ class BinanceTestnetAccount:
                 or symbol in self.closing_lock
             ):
                 return False
+
+        # 最底層物理禁令：任何地方調用開空，若當根為陽線一律直接拋出異常拒絕！
+        try:
+            from core.services.candle_data import entry_candles
+            current_df = entry_candles(symbol, "1m")
+            if current_df is not None and len(current_df) > 0:
+                c = current_df.iloc[-1]
+                curr_close = float(c['close'])
+                curr_open = float(c['open'])
+                if side == 'SHORT' and curr_close > curr_open:
+                    self.log(f"🛑 [FATAL_REJECT] 陽線禁止開空！Close:{curr_close} > Open:{curr_open}", "ERROR")
+                    return False
+                if side == 'LONG' and curr_close < curr_open:
+                    self.log(f"🛑 [FATAL_REJECT] 陰線禁止開多！Close:{curr_close} < Open:{curr_open}", "ERROR")
+                    return False
+        except Exception:
+            pass
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
         # None）不受影響，這只針對訊號驅動的自動開倉。
@@ -1829,11 +1867,11 @@ class BinanceTestnetAccount:
                 # 兩邊可能疊出重複的止損止盈單。先清一次掛單，確保接下來建的
                 # 是唯一一組，不管是不是搶輸了孤兒保護機制一步。
                 await self._cancel_all_orders(symbol)
-                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS and sl_price > 0:
+                if ENABLE_EXCHANGE_INITIAL_STOP_LOSS and sl_price > 0 and not is_channel_swing:
                     await self._create_protection_order(
                         symbol, close_side, "STOP_MARKET", qty, sl_price,
                     )
-                if not DISABLE_TAKE_PROFIT and not structure_exit_only:
+                if not is_channel_swing and not DISABLE_TAKE_PROFIT and not structure_exit_only:
                     await self._create_protection_order(
                         symbol, close_side, "TAKE_PROFIT_MARKET", qty, tp_price
                     )
