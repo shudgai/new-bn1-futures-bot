@@ -49,7 +49,6 @@ from core.guards.risk_guard import same_side_entry_allowed, RiskGuardManager
 from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, AbnormalMarketGuard
 from core.routes.legacy_routes import place_ma5_reversal_entry_legacy, validate_pending_limit_orders_legacy
 from core.services.exits.hard_stop_service import enforce_hard_stop
-from core.services.strategies.live_pivot_strategy import LivePivot
 import asyncio
 import collections
 from collections import deque
@@ -59,7 +58,6 @@ from core.services.strategies.outer_strategy import (
     outside_entry, continuation_entry, outside_reentry, abnormal_pullback_ready,
     aligned_entry, live_adverse_entry_safe, ck_direction, live_ma3_direction_ready, LIVE_OUTER_CODES
 )
-from core.services.strategies.pivot_strategy import PIVOT_CODES, pivot_entry
 from core.services.exits.profit_protection_service import protection, reentry_gate, long_entry_ready, directional_entry_ready
 from core.guards.risk_guard import same_side_entry_allowed, candidate_bar_invalid_locked
 from core.guards.abnormal_guard import channel_adverse_exit_reason, channel_live_ma3_turn_exit, opposite_entry_releases
@@ -1084,6 +1082,7 @@ class TradingEngine:
                     )
 
     async def _try_live_pivot_entry(self, symbol, frame, price, daily_halt=False):
+        return
         """峰谷轉向開倉：逐報價觀察到谷底（LONG）或峰頂（SHORT）後立即進場，不等兩根收線。"""
         from core.services.strategies.outer_strategy import ck_direction
         side = ck_direction(frame)
@@ -1581,7 +1580,7 @@ class TradingEngine:
         quote_times[symbol] = quoted
         pivot = getattr(self, '_channel_live_pivots', None)
         if pivot is None:
-            pivot = self._channel_live_pivots = LivePivot()
+            pivot = None
         if pivot is not None:
             frame = getattr(self, '_channel_exit_frames', {}).get(symbol)
             if symbol in self.account.positions or not math.isfinite(quoted) or not 0 <= now - quoted <= 5:
@@ -1616,19 +1615,30 @@ class TradingEngine:
 
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
         from core.services.strategies.unified_entry_strategy import evaluate_closed_entry, had_close
-        frame = await self.fetch_klines(symbol,timeframe='1m',limit=200,keep_live=True)
+        # 若指定了 candidate_bar_id，需先 keep_live=True 獲取最新 K 棒，避免因幣安 API 延遲導致確認 K 棒被誤當作 live 而剔除
+        frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
         if frame is None or frame.empty:
             return None
         frame = self.strategy.compute_indicators(frame.copy())
-        ok, _, decision = evaluate_closed_entry(frame,side,after_close=had_close(self.account,symbol))
-        if not ok or (candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id):
+        
+        # 若有指定 candidate_bar_id，裁切對齊至該確認 K 棒
+        if candidate_bar_id is not None and 'timestamp' in frame.columns:
+            matching_rows = frame[frame['timestamp'] <= candidate_bar_id]
+            if not matching_rows.empty:
+                frame = matching_rows
+
+        ok, _, decision = evaluate_closed_entry(frame, side, after_close=had_close(self.account, symbol))
+        if not ok:
             return None
-        price = float(getattr(self,'tickers',{}).get(symbol) or frame.iloc[-1]['close'])
+        if candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id:
+            return None
+
+        price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
         if not math.isfinite(price) or price <= 0:
             return None
         row = closed_entry_candles(frame).iloc[-1]
-        return dict(frame=frame,price=price,signal_code=decision['reason'],decision=decision,
-                    kc_upper=float(row.kc_upper),kc_lower=float(row.kc_lower))
+        return dict(frame=frame, price=price, signal_code=decision['reason'], decision=decision,
+                    kc_upper=float(row.kc_upper), kc_lower=float(row.kc_lower))
 
 
     def _channel_candle_entry_blocked(self, symbol, now=None):
@@ -1687,25 +1697,33 @@ class TradingEngine:
         from core.services.strategies.unified_entry_strategy import RULE_CODES, evaluate_closed_entry, had_close
         if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'
                 or signal.get('signal_code') not in RULE_CODES):
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', 'WARNING')
             return False
         side = signal.get('side')
         if side not in ('LONG','SHORT') or symbol in self.account.positions:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', 'WARNING')
             return False
         if symbol in self.account.pending_limit_orders:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 3 failed: in_pending=True', 'WARNING')
             return False
         if MAX_SLOTS > 0 and len(self.account.positions)+len(self.account.pending_limit_orders) >= MAX_SLOTS:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 4 failed: MAX_SLOTS reached', 'WARNING')
             return False
         daily = getattr(self.account,'daily_loss_limit_hit',None)
         if daily and daily()[0]:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 5 failed: daily loss limit hit', 'WARNING')
             return False
         # Execution-quality checks do not decide candle direction or generate signals.
         if not await self._execution_price_is_safe(symbol,side):
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', 'WARNING')
             return False
         snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'))
         if snapshot is None:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', 'WARNING')
             return False
         decision = snapshot['decision']
         if decision['reason'] != signal['signal_code']:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', 'WARNING')
             return False
         bar = decision['confirmation_bar_id']
         used = getattr(self,'_closed_entry_fills',None)
@@ -1714,6 +1732,7 @@ class TradingEngine:
         identity = (symbol,side,bar)
         if identity in used or any(t.get('symbol') == symbol and t.get('action') == 'OPEN_'+side
                 and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', 'WARNING')
             return False
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
@@ -1841,9 +1860,11 @@ class TradingEngine:
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1.):
         from core.services.strategies.unified_entry_strategy import evaluate_closed_entry, had_close
         if daily_halt or symbol in self.account.positions:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
             return False
         ok, reason, decision = evaluate_closed_entry(frame,side,after_close=had_close(self.account,symbol))
         if not ok or (v8_reason is not None and v8_reason != reason):
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 2 failed: ok={ok} reason={reason} v8_reason={v8_reason}', 'WARNING')
             return False
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
                       signal_code=reason,candidate_bar_id=decision['confirmation_bar_id'],

@@ -318,6 +318,68 @@ def visible_system_logs():
         or index == latest_progress_index
     ][-50:]
 
+def map_block_reason(reason):
+    if not reason or reason == "NONE": return "NONE"
+    if reason.startswith("CLOSED_"):
+        return "信號已觸發 (等待市價執行或遭風控攔截)"
+    if "CHANNEL_NOT_EXPANDING" in reason or "LOW_VOLATILITY" in reason or "RAIL_NOT" in reason:
+        return "通道未連續張嘴或寬度不足"
+    if "WAIT_NEW" in reason or "SMALL" in reason:
+        return "等待實體放大 / 未達起爆形態"
+    if "MA3" in reason or "DIVERGING" in reason:
+        return "MA3/MA15 未順向排列或斜率不對"
+    if "CK" in reason:
+        return "CK 狀態尚未連續同向"
+    if "BTC" in reason or "DUMPING" in reason or "PUMPING" in reason:
+        return "BTC 熔斷保護中"
+    return reason
+
+def get_chart_metrics():
+    metrics = {}
+    cache = getattr(engine, '_channel_exit_frames', {})
+    for symbol in visible_symbols():
+        frame = cache.get(symbol)
+        if frame is not None and not frame.empty:
+            last = frame.iloc[-1]
+            close = float(last.get('close', 0))
+            kc_upper = float(last.get('kc_upper', 0))
+            kc_lower = float(last.get('kc_lower', 0))
+            atr = float(last.get('atr', 0))
+            
+            if close > 0 and atr > 0:
+                dist_to_upper = kc_upper - close
+                dist_to_upper_pct = (dist_to_upper / close) * 100
+                
+                dist_to_lower = close - kc_lower
+                dist_to_lower_pct = (dist_to_lower / close) * 100
+                
+                breakout_status = "INSIDE_CHANNEL"
+                block_reason = "NONE"
+                
+                gate_cache = getattr(engine, "_entry_gate_diagnostics", {})
+                if close > kc_upper:
+                    breakout_status = "LONG_BROKEN"
+                    reason_data = gate_cache.get((symbol, "LONG", "CLOSED_SIGNAL"))
+                    if reason_data:
+                        block_reason = map_block_reason(reason_data[1])
+                elif close < kc_lower:
+                    breakout_status = "SHORT_BROKEN"
+                    reason_data = gate_cache.get((symbol, "SHORT", "CLOSED_SIGNAL"))
+                    if reason_data:
+                        block_reason = map_block_reason(reason_data[1])
+                
+                metrics[symbol] = {
+                    "dist_to_upper": dist_to_upper,
+                    "dist_to_upper_pct": dist_to_upper_pct,
+                    "dist_to_lower": dist_to_lower,
+                    "dist_to_lower_pct": dist_to_lower_pct,
+                    "min_body_atr": 0.8 * atr,
+                    "breakout_status": breakout_status,
+                    "block_reason": block_reason,
+                    "kc_width_atr": (kc_upper - kc_lower) / atr
+                }
+    return metrics
+
 @app.get("/api/status")
 async def get_status(response: Response):
     headers = {
@@ -388,7 +450,8 @@ async def get_status(response: Response):
         "trades": engine.account.trades[:50],
         "total_trades": len(engine.account.trades),
         "trade_dates": sorted({trade_date_str(t) for t in engine.account.trades}, reverse=True),
-        "logs": visible_system_logs()
+        "logs": visible_system_logs(),
+        "chart_metrics": get_chart_metrics()
     })
     return JSONResponse(content=payload, headers=headers)
 
