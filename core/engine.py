@@ -1753,7 +1753,11 @@ class TradingEngine:
             return False
 
         from core.services.entry_firewall import validate_entry_frame
-        validate_entry_frame(snapshot['frame'], side, final['reason'])
+        try:
+            validate_entry_frame(snapshot['frame'], side, final['reason'])
+        except ValueError as e:
+            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', 'WARNING')
+            return False
         self.account.entry_frame_provider = self._entry_boundary_frame
 
         atr = final['entry_atr']
