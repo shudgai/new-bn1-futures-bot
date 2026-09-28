@@ -18,7 +18,8 @@ from core.services.strategies.outer_strategy import ck_direction
 RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
     [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")]
+    [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")] +
+    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
 )
 
 def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
@@ -213,6 +214,10 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             
             if (resonance and ma15_rising and crawling_outside) or fast_crawling:
                 rule = 'TREND_CRAWLING'
+            elif ma_aligned and is_outside:
+                recent_high = float(closed['high'].iloc[-6:-1].max())
+                if float(c.close) > recent_high:
+                    rule = 'TREND_BREAKOUT'
                 
     else:
         ma_aligned = float(c.ma3) < float(c.ma15)
@@ -241,12 +246,16 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             
             if (resonance and ma15_falling and crawling_outside) or fast_crawling:
                 rule = 'TREND_CRAWLING'
+            elif ma_aligned and is_outside:
+                recent_low = float(closed['low'].iloc[-6:-1].min())
+                if float(c.close) < recent_low:
+                    rule = 'TREND_BREAKOUT'
             
     if rule is None:
         return wait('WAIT_NEW_A_TO_E_TRIGGER')
 
-    # IGNITION 信號由大實體突破與外軌擴張保證動能，豁免滯後 MA3 斜率
-    if rule != 'IGNITION':
+    # IGNITION / TREND_BREAKOUT 信號保證動能，豁免滯後 MA3 斜率
+    if rule not in ('IGNITION', 'TREND_BREAKOUT'):
         problem = ma3_entry_problem(closed, side)
         if problem:
             return wait(problem)
