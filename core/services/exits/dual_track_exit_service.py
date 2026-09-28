@@ -58,11 +58,11 @@ def trailing_structure_exit(position, closed):
 
 
 def evaluate_trend_exit_and_take_profit(position, candles, indicators):
-    """MA3 slope or a close through MA3 alone never authorizes an exit."""
+    """Exit only on a structural break through KC Middle; ignore MA3/MA15."""
     sign = 1 if position['side'] == 'LONG' else -1
     close = float(candles[-1]['close'])
-    if sign * (close-float(indicators['ma15'][-1])) < 0:
-        reason = 'EXIT_MA15_DEFENSE_CLOSED'
+    if sign * (close-float(indicators['kc_middle'][-1])) < 0:
+        reason = 'EXIT_KC_MIDDLE_DEFENSE_CLOSED'
     else:
         return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')
     return dict(should_exit=True, action='FULL_CLOSE', reason=reason)
@@ -128,7 +128,7 @@ class DualTrackExitStrategy(IExitStrategy):
                 elif reason is None:
                     result = evaluate_trend_exit_and_take_profit(position,
                         [{'close':float(c1.close)}, {'close':float(c.close)}],
-                        {'ma3':[float(c1.ma3),float(c.ma3)], 'ma15':[float(c1.ma15),float(c.ma15)]})
+                        {'ma3':[float(c1.ma3),float(c.ma3)], 'kc_middle':[float(c1.kc_middle),float(c.kc_middle)]})
                     reason = result['reason'] if result['should_exit'] else None
             if reason:
                 position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
