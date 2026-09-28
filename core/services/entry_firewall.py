@@ -29,26 +29,31 @@ def validate_entry_frame(frame, side, code):
     prev_upper = float(prev_bar.kc_upper)
     prev_lower = float(prev_bar.kc_lower)
 
+    from core.services.exits.profit_protection_service import assess_market_regime
+    regime = assess_market_regime(closed, side, None)
+    if regime == 'CHOPPY':
+        raise ValueError(f'[FATAL_REJECT] 當前為 CHOPPY 猴市震盪區間，拒絕任何破底/破軌追單！')
+
     if side == 'SHORT':
-        if lower >= prev_lower:
+        if not is_ignition and lower >= prev_lower:
             raise ValueError(f'[FATAL_REJECT] KC 下軌走平或收窄 ({lower:.6f} >= {prev_lower:.6f})，無向下擴張動能嚴禁開空！')
         if close >= opening:
             raise ValueError(f'[FATAL_REJECT] 陽線嚴禁開空！Close:{close} >= Open:{opening}')
         if close > lower and (opening - close) < 0.6 * atr:
-            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 1.2 ATR: {1.2*atr:.8f}')
+            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 0.6 ATR: {0.6*atr:.8f}')
         distance_from_middle = abs(close - middle)
-        if not is_ignition and distance_from_middle > 2.2 * atr:
-            raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限超賣嚴禁地板追空！')
+        if distance_from_middle > 2.2 * atr:
+            raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追空！')
     else:
-        if upper <= prev_upper:
+        if not is_ignition and upper <= prev_upper:
             raise ValueError(f'[FATAL_REJECT] KC 上軌走平或收窄 ({upper:.6f} <= {prev_upper:.6f})，無向上擴張動能嚴禁開多！')
         if close <= opening:
             raise ValueError(f'[FATAL_REJECT] 陰線嚴禁開多！Close:{close} <= Open:{opening}')
         if close < upper and (close - opening) < 0.6 * atr:
-            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 1.2 ATR: {1.2*atr:.8f}')
+            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 0.6 ATR: {0.6*atr:.8f}')
         distance_from_middle = abs(close - middle)
-        if not is_ignition and distance_from_middle > 2.2 * atr:
-            raise ValueError(f'[FATAL_REJECT] 拒絕追多：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限超買嚴禁天花板追多！')
+        if distance_from_middle > 2.2 * atr:
+            raise ValueError(f'[FATAL_REJECT] 拒絕追多：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追多！')
 
     if 'CLOSED_C' in code:
         prev_middle = float(closed.iloc[-2].kc_middle)
@@ -59,7 +64,7 @@ def validate_entry_frame(frame, side, code):
 
     ok, actual, decision = evaluate_closed_entry(frame, side)
     if not ok or actual != code:
-        raise ValueError('[FORBIDDEN_ENTRY] 最新行情不符合指定 A–E 規則')
+        raise ValueError(f'[FORBIDDEN_ENTRY] 最新行情不符合指定訊號 expected={code} actual={actual}')
     return decision
 
 
@@ -81,14 +86,6 @@ async def validate_account_entry(account, symbol, side, context):
     except Exception as exc:
         raise ValueError("[FORBIDDEN_ENTRY] 無法取得最新行情") from exc
         
-    expected_bar_id = context.get('channel_confirmation_bar_id')
-    if expected_bar_id and 'timestamp' in frame.columns:
-        # 若指定了確認 K 棒，截取對齊至該時間戳（含該確認棒及可能的下一根未收線 live bar）
-        ts = frame['timestamp'].astype(float)
-        matched_mask = ts <= float(expected_bar_id) + 60000.0
-        if matched_mask.any():
-            frame = frame.loc[matched_mask].copy()
-
     decision = validate_entry_frame(frame, side, code)
     stamp = float(decision['confirmation_bar_id'])
     age = time.time() * 1000 - (stamp + 60000)
