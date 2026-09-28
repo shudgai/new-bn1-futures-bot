@@ -36,7 +36,7 @@ def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_lo
     if "明確反向趨勢" in ck_status:
         return False, "BLOCKED_CK_REVERSE_TREND"
 
-    if bypass_low_vol:
+    if bypass_low_vol or rule in ('IGNITION', 'TREND_BREAKOUT'):
         return True, "BYPASS_CHANNEL_EXPANDING"
 
     # 【單邊張口放行】：強趨勢下豁免 (Upper - Lower) 全通道連續擴張限制
@@ -155,7 +155,15 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     sign = 1 if side == 'LONG' else -1
 
     # ── 基礎數值 ─────────────────────────────────────────────────
-    ck = ck_direction(frame)
+    # The caller may provide either closed-only rows or a live tail. Always
+    # derive entry CK from the same last two completed rows.
+    previous = closed.iloc[-2]
+    current = closed.iloc[-1]
+    ck = None
+    if current.kc_middle > previous.kc_middle and current.kc_upper >= previous.kc_upper:
+        ck = 'LONG'
+    elif current.kc_middle < previous.kc_middle and current.kc_lower <= previous.kc_lower:
+        ck = 'SHORT'
     ck_opposing = 'SHORT' if side == 'LONG' else 'LONG'
     if ck == side:
         ck_status = '連續同向'
@@ -191,11 +199,14 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         ma_aligned = float(c.ma3) > float(c.ma15)
         body = float(c.close) - float(c.open)
         upper_wick = float(c.high) - float(c.close)
-        is_full_body = body >= 0.55 * atr and upper_wick < body * 0.8
+        is_full_body = at_least(body, 0.55 * atr) and upper_wick < body * 0.8
         is_outside = float(c.close) > float(c.kc_upper)
         
         if ma_aligned and is_full_body and is_outside:
             rule = 'IGNITION'
+        elif (ma_aligned and is_outside and len(closed) >= 6
+              and c_close > float(closed['high'].iloc[-6:-1].max())):
+            rule = 'TREND_BREAKOUT'
         else:
             # 模式 B：慢牛沿軌推進 (TREND_CRAWLING)
             # 1. 連續 3 根 ma3 > ma15 且 ma15 > kc_middle
@@ -210,11 +221,11 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             crawling_outside = float(c.close) > float(c.kc_upper) and float(c1.close) > float(c1.kc_upper)
             
             # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
-            fast_crawling = is_outside and body >= 0.55 * atr and float(c.ma3) > float(c.ma15)
+            fast_crawling = is_outside and at_least(body, 0.55 * atr) and float(c.ma3) > float(c.ma15)
             
             if (resonance and ma15_rising and crawling_outside) or fast_crawling:
                 rule = 'TREND_CRAWLING'
-            elif ma_aligned and is_outside:
+            elif ma_aligned and is_outside and len(closed) >= 6:
                 recent_high = float(closed['high'].iloc[-6:-1].max())
                 if float(c.close) > recent_high:
                     rule = 'TREND_BREAKOUT'
@@ -223,11 +234,14 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         ma_aligned = float(c.ma3) < float(c.ma15)
         body = float(c.open) - float(c.close)
         lower_wick = float(c.close) - float(c.low)
-        is_full_body = body >= 0.55 * atr and lower_wick < body * 0.8
+        is_full_body = at_least(body, 0.55 * atr) and lower_wick < body * 0.8
         is_outside = float(c.close) < float(c.kc_lower)
         
         if ma_aligned and is_full_body and is_outside:
             rule = 'IGNITION'
+        elif (ma_aligned and is_outside and len(closed) >= 6
+              and c_close < float(closed['low'].iloc[-6:-1].min())):
+            rule = 'TREND_BREAKOUT'
         else:
             # 模式 B：慢熊沿軌推進 (TREND_CRAWLING)
             # 1. 連續 3 根 ma3 < ma15 且 ma15 < kc_middle
@@ -242,15 +256,18 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             crawling_outside = float(c.close) < float(c.kc_lower) and float(c1.close) < float(c1.kc_lower)
             
             # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
-            fast_crawling = is_outside and body >= 0.55 * atr and float(c.ma3) < float(c.ma15)
+            fast_crawling = is_outside and at_least(body, 0.55 * atr) and float(c.ma3) < float(c.ma15)
             
             if (resonance and ma15_falling and crawling_outside) or fast_crawling:
                 rule = 'TREND_CRAWLING'
-            elif ma_aligned and is_outside:
+            elif ma_aligned and is_outside and len(closed) >= 6:
                 recent_low = float(closed['low'].iloc[-6:-1].min())
                 if float(c.close) < recent_low:
                     rule = 'TREND_BREAKOUT'
             
+    if sign * (c_close - c_open) <= 0:
+        return wait('BLOCKED_OPPOSITE_CLOSED_BODY')
+
     if rule is None:
         return wait('WAIT_NEW_A_TO_E_TRIGGER')
 
@@ -267,11 +284,31 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if not passed:
         return wait(reason)
 
-    # 【妖幣防插針優化：增加起爆 K 棒「實體佔比（Body Ratio）」過濾】
-    MIN_BODY_RATIO = 0.4
-    if rule != 'IGNITION' and body_ratio < MIN_BODY_RATIO:
-        block_reason = f"PIN_BAR_DETECTED (長影線插針防護, ratio={body_ratio:.2f})"
-        return wait(block_reason)
+    # 【長影線插針防護 (Pin Bar Rejection Filter)】
+    if rule in ('TREND_CRAWLING', 'TREND_BREAKOUT'):
+        # 1. 當根 K 棒防護：明顯下影線/上影線 (> 1.5倍實體)
+        if side == 'SHORT':
+            lower_wick = float(c.close) - float(c.low)
+            if lower_wick > 1.5 * candle_body:
+                return wait(f"PIN_BAR_DETECTED (當根長下影線誘空, wick={lower_wick:.5f} > 1.5*body={1.5*candle_body:.5f})")
+        else:
+            upper_wick = float(c.high) - float(c.close)
+            if upper_wick > 1.5 * candle_body:
+                return wait(f"PIN_BAR_DETECTED (當根長上影線誘多, wick={upper_wick:.5f} > 1.5*body={1.5*candle_body:.5f})")
+                
+        # 2. 前根 K 棒防護：已在外側插出長影線
+        prev_body = abs(float(c1.close) - float(c1.open))
+        if side == 'SHORT':
+            prev_lower_wick = min(float(c1.close), float(c1.open)) - float(c1.low)
+            if float(c1.low) < float(c1.kc_lower) and prev_lower_wick > 1.5 * prev_body:
+                return wait("PREV_PIN_BAR_REJECTION (前根K棒已在下軌外插出長下影線，嚴禁追空)")
+        else:
+            prev_upper_wick = float(c1.high) - max(float(c1.close), float(c1.open))
+            if float(c1.high) > float(c1.kc_upper) and prev_upper_wick > 1.5 * prev_body:
+                return wait("PREV_PIN_BAR_REJECTION (前根K棒已在上軌外插出長上影線，嚴禁追多)")
+                
+        if body_ratio < 0.4:
+            return wait(f"PIN_BAR_DETECTED (實體佔比過小, ratio={body_ratio:.2f})")
 
     code = f'CLOSED_{rule}_{side}'
     return True, code, dict(
