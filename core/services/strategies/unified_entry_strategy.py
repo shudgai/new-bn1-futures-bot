@@ -13,8 +13,69 @@ import math
 
 from core.interfaces.entry_interface import IEntryStrategy
 from core.services.candle_data import closed_entry_candles
+from core.services.strategies.outer_strategy import ck_direction
 
-RULE_CODES = frozenset(f"CLOSED_{rule}_{side}" for rule in "ABCDE" for side in ("LONG", "SHORT"))
+RULE_CODES = frozenset(
+    [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
+    [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
+    [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")]
+)
+
+def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
+    kc_upper = indicators['kc_upper']
+    kc_lower = indicators['kc_lower']
+    kc_middle = indicators['kc_middle']
+    atr = indicators['atr'][-1]
+    
+    kc_upper_slope = kc_upper[-1] - kc_upper[-2]
+    kc_lower_slope = kc_lower[-1] - kc_lower[-2]
+    
+    # 1. CK 狀態過濾：嚴禁在明確反向趨勢下開倉
+    ck_status = indicators.get('ck_status', '')
+    if "明確反向趨勢" in ck_status:
+        return False, "BLOCKED_CK_REVERSE_TREND"
+
+    if bypass_low_vol:
+        return True, "BYPASS_CHANNEL_EXPANDING"
+
+    # 【單邊張口放行】：強趨勢下豁免 (Upper - Lower) 全通道連續擴張限制
+    if rule == 'TREND_CRAWLING':
+        if side == "LONG":
+            # 多頭單邊：上軌未急速收縮下墜即放行
+            if kc_upper_slope > -0.0003:
+                return True, "PASSED"
+            else:
+                return False, "MODE_B_WEAKENING (上軌塌陷中)"
+        elif side == "SHORT":
+            # 空頭單邊：下軌未急速收縮上翹即放行
+            if kc_lower_slope < 0.0003:
+                return True, "PASSED"
+            else:
+                return False, "MODE_B_WEAKENING (下軌塌陷中)"
+
+    # 模式 A (IGNITION) 等，維持原全通道連續擴張與寬度門檻
+    curr_width = kc_upper[-1] - kc_lower[-1]
+    prev_width = kc_upper[-2] - kc_lower[-2]
+    width_pct = curr_width / kc_middle[-1]
+    
+    MIN_VOLATILITY_RATIO = 1.5
+    current_ratio = curr_width / atr if atr > 0 else 0
+    if current_ratio < MIN_VOLATILITY_RATIO or width_pct < 0.010:
+        return False, f"[BLOCKED] LOW_VOLATILITY: current_ratio={current_ratio:.2f}, threshold={MIN_VOLATILITY_RATIO}"
+        
+    is_channel_expanding = curr_width > prev_width
+    if not is_channel_expanding:
+        return False, "BLOCKED_CHANNEL_NOT_EXPANDING"
+
+    # 單邊軌道發散審查
+    if side == "LONG":
+        if kc_upper[-1] <= kc_upper[-2] or kc_middle[-1] <= kc_middle[-2]:
+            return False, "BLOCKED_UPPER_RAIL_NOT_RISING"
+    elif side == "SHORT":
+        if kc_lower[-1] >= kc_lower[-2] or kc_middle[-1] >= kc_middle[-2]:
+            return False, "BLOCKED_LOWER_RAIL_NOT_FALLING"
+
+    return True, "PASSED"
 
 
 def at_least(value, threshold):
@@ -89,76 +150,124 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if closed is None:
         return wait('WAIT_VALID_CLOSED_1M_DATA')
 
-    problem = ma3_entry_problem(closed, side)
-    if problem:
-        return wait(problem)
-
     c0, c1, c = (closed.iloc[i] for i in (-3, -2, -1))
     sign = 1 if side == 'LONG' else -1
 
     # ── 基礎數值 ─────────────────────────────────────────────────
-    body = sign * (float(c.close) - float(c.open))   # >0 表示方向正確的實體
-    atr = float(c1.atr)                              # 前根已收線 ATR 作為尺度基準
-
-    # 當根必須是正確顏色（多=陽線，空=陰線）
-    if body <= 0:
-        return wait('BLOCKED_OPPOSITE_CLOSED_BODY')
-
-    prior_body  = sign * (float(c1.close) - float(c1.open))
-    older_body  = sign * (float(c0.close) - float(c0.open))
-    rail        = 'kc_upper' if side == 'LONG' else 'kc_lower'
-
+    ck = ck_direction(frame)
+    ck_opposing = 'SHORT' if side == 'LONG' else 'LONG'
+    if ck == side:
+        ck_status = '連續同向'
+    elif ck == ck_opposing:
+        ck_status = '明確反向趨勢'
+    else:
+        ck_status = '尚未連續同向 (非反向)'
+    
+    indicators = {
+        'kc_upper': [float(c0.kc_upper), float(c1.kc_upper), float(c.kc_upper)],
+        'kc_lower': [float(c0.kc_lower), float(c1.kc_lower), float(c.kc_lower)],
+        'kc_middle': [float(c0.kc_middle), float(c1.kc_middle), float(c.kc_middle)],
+        'atr': [float(c0.atr), float(c1.atr), float(c.atr)],
+        'ck_status': ck_status
+    }
+        
+    # 開倉觸發條件
+    atr = float(c.atr)
     rule = None
+    
+    c_open = float(c.open)
+    c_high = float(c.high)
+    c_low = float(c.low)
+    c_close = float(c.close)
+    candle_range = c_high - c_low
+    candle_body = abs(c_close - c_open)
+    body_ratio = 1.0 if candle_range <= 1e-9 else candle_body / candle_range
 
-    # B: exact body engulfing, current ATR for the impulse and previous ATR
-    # for the small opposing candle. Evaluate the more specific rule first.
-    current_atr = float(c.atr)
-    slope_ok = sign * (float(c.ma3) - float(c1.ma3)) > 0
-    engulfed = (sign * (float(c.close) - float(c1.open)) > 0 and
-                sign * (float(c.open) - float(c1.close)) <= 0)
-    if (prior_body < 0 and at_least(0.6 * float(c1.atr), abs(prior_body))
-            and at_least(body, current_atr) and engulfed and slope_ok):
-        rule = 'B'
-
-    # A: an immediately preceding opposing candle, followed by a long body.
-    if rule is None and body > 0.8 * atr and prior_body < 0 and slope_ok:
-        rule = 'A'
-
-    # ── Rule C：MA3 金/死叉 MA15（穿越瞬間，斜率＋位置過濾）───────
-    # 前根 ma3 在 ma15 同側或相等，當根剛剛穿越；斜率順向；收盤在中軌正確一側
-    if rule is None:
-        crossed = sign * (c1.ma3 - c1.ma15) <= 0 < sign * (c.ma3 - c.ma15)
-        slope_ok = sign * (c.ma3 - c1.ma3) > 0
-        side_of_middle = sign * (c.close - c.kc_middle) > 0
-        kc_slope_ok = sign * (float(c.kc_middle) - float(c1.kc_middle)) > 0
-        if crossed and slope_ok and side_of_middle and kc_slope_ok:
-            rule = 'C'
-
-    # ── Rule D：兩根破軌確認突破（前根突破，當根確認在軌外）─────────
-    # 前根已收線在軌道外，當根再度收在軌道外，且 ma3 方向正確
-    if rule is None:
-        prev_outside = sign * (float(c1.close) - float(c1[rail])) > 0
-        curr_outside = sign * (float(c.close) - float(c[rail])) > 0
-        ma_aligned   = sign * (float(c.ma3) - float(c.ma15)) > 0
-        if prev_outside and curr_outside and ma_aligned and body >= 0.8 * current_atr:
-            rule = 'D'
-
-    # E: exact three-close outside-rail relay; no historic extreme or wick filter.
-    if rule is None:
-        all_outside = all(sign * (float(row.close) - float(row[rail])) > 0
-                          for row in (c0, c1, c))
-        distance = sign * (float(c.close) - float(c.kc_middle))
-        if (all_outside and body > 0 and slope_ok
-                and at_least(2.2 * current_atr, distance)):
-            rule = 'E'
-
+    is_outside = False
+    fast_crawling = False
+    
+    if side == "LONG":
+        ma_aligned = float(c.ma3) > float(c.ma15)
+        body = float(c.close) - float(c.open)
+        upper_wick = float(c.high) - float(c.close)
+        is_full_body = body >= 0.6 * atr and upper_wick < body * 0.8
+        is_outside = float(c.close) > float(c.kc_upper)
+        
+        if ma_aligned and is_full_body and is_outside:
+            rule = 'IGNITION'
+        else:
+            # 模式 B：慢牛沿軌推進 (TREND_CRAWLING)
+            # 1. 連續 3 根 ma3 > ma15 且 ma15 > kc_middle
+            resonance = (
+                float(c0.ma3) > float(c0.ma15) and float(c0.ma15) > float(c0.kc_middle) and
+                float(c1.ma3) > float(c1.ma15) and float(c1.ma15) > float(c1.kc_middle) and
+                float(c.ma3) > float(c.ma15) and float(c.ma15) > float(c.kc_middle)
+            )
+            # 2. ma15 斜率連續向上
+            ma15_rising = float(c.ma15) > float(c1.ma15) and float(c1.ma15) > float(c0.ma15)
+            # 3. 連續 2 根收盤價高於 KC 上軌
+            crawling_outside = float(c.close) > float(c.kc_upper) and float(c1.close) > float(c1.kc_upper)
+            
+            # 加速啟動：當根在外軌，實體 >= 0.6 ATR 且均線發散
+            fast_crawling = is_outside and body >= 0.6 * atr and float(c.ma3) > float(c.ma15)
+            
+            if (resonance and ma15_rising and crawling_outside) or fast_crawling:
+                rule = 'TREND_CRAWLING'
+                
+    else:
+        ma_aligned = float(c.ma3) < float(c.ma15)
+        body = float(c.open) - float(c.close)
+        lower_wick = float(c.close) - float(c.low)
+        is_full_body = body >= 0.6 * atr and lower_wick < body * 0.8
+        is_outside = float(c.close) < float(c.kc_lower)
+        
+        if ma_aligned and is_full_body and is_outside:
+            rule = 'IGNITION'
+        else:
+            # 模式 B：慢熊沿軌推進 (TREND_CRAWLING)
+            # 1. 連續 3 根 ma3 < ma15 且 ma15 < kc_middle
+            resonance = (
+                float(c0.ma3) < float(c0.ma15) and float(c0.ma15) < float(c0.kc_middle) and
+                float(c1.ma3) < float(c1.ma15) and float(c1.ma15) < float(c1.kc_middle) and
+                float(c.ma3) < float(c.ma15) and float(c.ma15) < float(c.kc_middle)
+            )
+            # 2. ma15 斜率連續向下
+            ma15_falling = float(c.ma15) < float(c1.ma15) and float(c1.ma15) < float(c0.ma15)
+            # 3. 連續 2 根收盤價低於 KC 下軌
+            crawling_outside = float(c.close) < float(c.kc_lower) and float(c1.close) < float(c1.kc_lower)
+            
+            # 加速啟動：當根在外軌，實體 >= 0.6 ATR 且均線發散
+            fast_crawling = is_outside and body >= 0.6 * atr and float(c.ma3) < float(c.ma15)
+            
+            if (resonance and ma15_falling and crawling_outside) or fast_crawling:
+                rule = 'TREND_CRAWLING'
+            
     if rule is None:
         return wait('WAIT_NEW_A_TO_E_TRIGGER')
+
+    # IGNITION 信號由大實體突破與外軌擴張保證動能，豁免滯後 MA3 斜率
+    if rule != 'IGNITION':
+        problem = ma3_entry_problem(closed, side)
+        if problem:
+            return wait(problem)
+
+    bypass_low_vol = is_outside and (body_ratio >= 0.4 or fast_crawling)
+
+    # 【優化】：判斷出 rule 後再進行通道審查，以豁免模式 B 的硬性限制
+    passed, reason = validate_channel_expansion(indicators, side, rule, bypass_low_vol=bypass_low_vol)
+    if not passed:
+        return wait(reason)
+
+    # 【妖幣防插針優化：增加起爆 K 棒「實體佔比（Body Ratio）」過濾】
+    MIN_BODY_RATIO = 0.4
+    if rule != 'IGNITION' and body_ratio < MIN_BODY_RATIO:
+        block_reason = f"PIN_BAR_DETECTED (長影線插針防護, ratio={body_ratio:.2f})"
+        return wait(block_reason)
 
     code = f'CLOSED_{rule}_{side}'
     return True, code, dict(
         action='ENTER', side=side, reason=code, rule=rule,
-        entry_type=rule, entry_atr=atr, is_breakout=rule in ('D', 'E'),
+        entry_type=rule, entry_atr=atr, is_breakout=True,
         confirmation_bar_id=float(c.timestamp), close_price=float(c.close)
     )
 
