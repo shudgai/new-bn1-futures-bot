@@ -555,7 +555,7 @@ PIVOT_FAILURE_MIN_PCT = max(0.0, float(os.getenv("PIVOT_FAILURE_MIN_PCT", "0.004
 # 防線一：反向動能過載 — 從入場點起逆向偏移超過此 ATR 倍數即強制離場
 PIVOT_TURN_COUNTER_BODY_ATR = max(0.0, float(os.getenv("PIVOT_TURN_COUNTER_BODY_ATR", "1.5")))
 # 防線二：KC 中軌結構性破壞開關 — 價格離開入場側 KC 中軌即強制離場
-PIVOT_TURN_KC_MIDDLE_EXIT = os.getenv("PIVOT_TURN_KC_MIDDLE_EXIT", "true").lower() == "true"
+PIVOT_TURN_KC_MIDDLE_EXIT = os.getenv("PIVOT_TURN_KC_MIDDLE_EXIT", "false").lower() == "true"
 # 防線三：極端波動斷路器 — 持倉期間高低差超過此 ATR 倍數即強制離場並進入冷卻
 PIVOT_TURN_VOLATILITY_ATR_LIMIT = max(0.0, float(os.getenv("PIVOT_TURN_VOLATILITY_ATR_LIMIT", "3.0")))
 

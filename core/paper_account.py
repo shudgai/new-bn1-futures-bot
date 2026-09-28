@@ -494,175 +494,15 @@ class PaperAccount:
             return False
 
         from core.services.entry_firewall import validate_account_entry
-        await validate_account_entry(self, symbol, side, entry_context)
+        entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+        structural_stop = entry_decision.get('initial_sl')
         if entry_context is None:
             entry_context = {}
 
         is_manual = entry_context.get('is_manual') in [True, 'true', 'TRUE'] or entry_context.get('manual_entry') in [True, 'true', 'TRUE'] or entry_context.get('source') == 'MANUAL' or reason == 'MANUAL'
         
-        # ------------------ 以下為新開倉硬核審查 (MASTER BREAKER) ------------------
-        provider = getattr(self, 'entry_frame_provider', None)
-        is_exempt = 'TREND_BREAKOUT' in str(reason).upper() or 'IGNITION' in str(reason).upper()
-        if provider and not is_manual and not is_exempt:
-            from core.services.strategies.unified_entry_strategy import confirmed
-            try:
-                frame = await provider(symbol)
-                closed = confirmed(frame)
-                if closed is not None and not closed.empty and len(closed) >= 2:
-                    last_bar = closed.iloc[-1]
-                    prev_bar = closed.iloc[-2]
-                    
-                    close_p = float(last_bar['close'])
-                    open_p = float(last_bar['open'])
-                    body = abs(close_p - open_p)
-                    _atr = float(last_bar['atr'])
-                    
-                    kc_upper_curr = float(last_bar['kc_upper'])
-                    kc_lower_curr = float(last_bar['kc_lower'])
-                    kc_upper_prev = float(prev_bar['kc_upper'])
-                    kc_lower_prev = float(prev_bar['kc_lower'])
-                    
-                    if 'MA3' in last_bar:
-                        ma3_curr = float(last_bar['MA3'])
-                        ma3_prev = float(prev_bar['MA3'])
-                    elif 'ma3' in last_bar:
-                        ma3_curr = float(last_bar['ma3'])
-                        ma3_prev = float(prev_bar['ma3'])
-                    else:
-                        close_col = closed['close']
-                        ma3_curr = float(close_col.iloc[-3:].mean())
-                        ma3_prev = float(close_col.iloc[-4:-1].mean())
-                        
-                    if 'MA15' in last_bar:
-                        ma15_curr = float(last_bar['MA15'])
-                    elif 'ma15' in last_bar:
-                        ma15_curr = float(last_bar['ma15'])
-                    else:
-                        close_col = closed['close']
-                        ma15_curr = float(close_col.iloc[-15:].mean())
-
-                    # 計算冷卻 (以秒數換算 K 棒數)
-                    last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
-                    cooldown_bars = (__import__('time').time() - last_close_time) / 60.0
-                    if last_close_time > 0 and cooldown_bars < 2:
-                        raise RuntimeError(f"[MASTER_BREAKER] {symbol} 違反平倉同向冷卻 (當前: {cooldown_bars:.1f} < 2 根)！阻斷下單！")
-                    
-                    # -------------------------------------------------------------
-                    # 0. 回踩二次起爆審查 (Trend Pullback Re-entry)
-                    # -------------------------------------------------------------
-                    is_reentry_long = False
-                    is_reentry_short = False
-                    
-                    kc_middle_curr = (kc_upper_curr + kc_lower_curr) / 2.0
-                    prev_close = float(prev_bar['close'])
-                    prev_open = float(prev_bar['open'])
-                    prev_high = float(prev_bar['high'])
-                    prev_low = float(prev_bar['low'])
-                    
-                    # 多單二次起爆
-                    if ma3_curr > ma15_curr and close_p > kc_middle_curr:
-                        pullback_supported = prev_close >= ma15_curr and close_p >= ma15_curr
-                        strong_green_body = (close_p > open_p) and (body >= 0.8 * _atr)
-                        break_prev_high = close_p > prev_high
-                        ma3_rebound = ma3_curr > ma3_prev
-                        if pullback_supported and strong_green_body and break_prev_high and ma3_rebound:
-                            is_reentry_long = True
-                            
-                    # 空單二次起爆
-                    if ma3_curr < ma15_curr and close_p < kc_middle_curr:
-                        pullback_rejected = prev_close <= ma15_curr and close_p <= ma15_curr
-                        strong_red_body = (close_p < open_p) and (body >= 0.8 * _atr)
-                        break_prev_low = close_p < prev_low
-                        ma3_downturn = ma3_curr < ma3_prev
-                        if pullback_rejected and strong_red_body and break_prev_low and ma3_downturn:
-                            is_reentry_short = True
-
-                    # 1. 開多單總電閘 (LONG)
-                    if side.upper() == 'LONG':
-                        if is_reentry_long:
-                            self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER LONG)，白名單放行！", "INFO")
-                        else:
-                            if close_p <= open_p:
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
-                            if ma3_curr <= ma15_curr:
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，處於空頭死叉排列中，100% 嚴禁開多！")
-                            if ma3_curr <= ma3_prev:
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
-                            if close_p < kc_upper_curr and body < (1.2 * _atr):
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開多！")
-                            
-                            is_channel_expanding = kc_upper_curr > kc_upper_prev
-                            
-                            is_two_bar_breakout = (
-                                prev_close > prev_open and
-                                close_p > open_p and
-                                prev_close > kc_upper_prev and
-                                close_p > kc_upper_curr and
-                                close_p > prev_close and
-                                body >= (0.8 * _atr)
-                            )
-                            if not (is_channel_expanding or is_two_bar_breakout):
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
-                            
-                    # 2. 開空單總電閘 (SHORT)
-                    elif side.upper() == 'SHORT':
-                        if is_reentry_short:
-                            self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER SHORT)，白名單放行！", "INFO")
-                        else:
-                            if close_p >= open_p:
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
-                            if ma3_curr >= ma15_curr:
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
-                            if ma3_curr >= ma3_prev:
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
-                            if close_p > kc_lower_curr and body < (1.2 * _atr):
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
-                            
-                            is_channel_expanding = kc_lower_curr < kc_lower_prev
-                            
-                            is_two_bar_breakout = (
-                                prev_close < prev_open and
-                                close_p < open_p and
-                                prev_close < kc_lower_prev and
-                                close_p < kc_lower_curr and
-                                close_p < prev_close and
-                                body >= (0.8 * _atr)
-                            )
-                            if not (is_channel_expanding or is_two_bar_breakout):
-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體跌破確認且通道未擴張，拒絕送單！")
-                            
-                    # 2. 開空單總電閘 (SHORT)
-                    elif side.upper() == 'SHORT':
-                        if close_p >= open_p:
-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
-                        if ma3_curr >= ma15_curr:
-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
-                        if ma3_curr >= ma3_prev:
-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
-                        if close_p > kc_lower_curr and body < (1.2 * _atr):
-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
-                        
-                        is_channel_expanding = kc_lower_curr < kc_lower_prev
-                        
-                        prev_close = float(prev_bar['close'])
-                        prev_open = float(prev_bar['open'])
-                        is_two_bar_breakout = (
-                            prev_close < prev_open and
-                            close_p < open_p and
-                            prev_close < kc_lower_prev and
-                            close_p < kc_lower_curr and
-                            close_p < prev_close and
-                            body >= (0.8 * _atr)
-                        )
-                        if not (is_channel_expanding or is_two_bar_breakout):
-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
-            except RuntimeError as re:
-                self.log(str(re), "ERROR")
-                return False
-            except Exception as e:
-                self.log(f"[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: {str(e)}", "ERROR")
-                return False  # 安全起見，報錯時一律拒絕開倉！
-        # ------------------ 審查結束 ------------------
+        # The shared account firewall above owns strategy validation. Repeating
+        # a different strategy here caused runtime crashes and conflicting gates.
 
         entry_payload = dict(entry_context or {})
         entry_mode = str(entry_payload.get("entry_mode") or "").upper()
@@ -699,7 +539,7 @@ class PaperAccount:
                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
                 return False
             try:
-                initialize_atr_protection({}, price, side, atr)
+                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
             except (ValueError, TypeError):
                 return False
             tp = 0.0
@@ -820,7 +660,7 @@ class PaperAccount:
                 **entry_context,
             }
             if entry_mode == "CHANNEL_SWING":
-                initialize_atr_protection(pos, execution_price, side, atr)
+                initialize_atr_protection(pos, execution_price, side, atr, initial_stop=structural_stop)
                 entry_context.update({key: pos[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
                                        "initial_sl", "initial_risk", "chandelier_state")})

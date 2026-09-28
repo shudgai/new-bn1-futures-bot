@@ -1621,12 +1621,6 @@ class TradingEngine:
             return None
         frame = self.strategy.compute_indicators(frame.copy())
         
-        # 若有指定 candidate_bar_id，裁切對齊至該確認 K 棒
-        if candidate_bar_id is not None and 'timestamp' in frame.columns:
-            matching_rows = frame[frame['timestamp'] <= candidate_bar_id]
-            if not matching_rows.empty:
-                frame = matching_rows
-
         ok, _, decision = evaluate_closed_entry(frame, side, after_close=had_close(self.account, symbol))
         if not ok:
             return None
@@ -1691,39 +1685,51 @@ class TradingEngine:
         if locks is None:
             locks = self._channel_entry_locks = {}
         async with locks.setdefault(symbol,asyncio.Lock()):
-            return await self._place_structured_entry_locked(symbol,signal,live_price)
+            side, bar = signal.get('side'), signal.get('candidate_bar_id')
+            log_entry_gate(self, symbol, side, 'EXECUTION', 'VALIDATING', bar)
+            try:
+                opened = await self._place_structured_entry_locked(symbol,signal,live_price)
+            except Exception as exc:
+                log_entry_gate(self, symbol, side, 'EXECUTION',
+                               f'{type(exc).__name__}: {exc}', bar)
+                return False
+            if opened:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'FILLED', bar)
+            elif getattr(self, '_entry_gate_diagnostics', {}).get((symbol, side, 'EXECUTION')) == (bar, 'VALIDATING'):
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_REJECTED', bar)
+            return opened
 
     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
         from core.services.strategies.unified_entry_strategy import RULE_CODES, evaluate_closed_entry, had_close
         if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'
                 or signal.get('signal_code') not in RULE_CODES):
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
         side = signal.get('side')
         if side not in ('LONG','SHORT') or symbol in self.account.positions:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', signal.get('candidate_bar_id'))
             return False
         if symbol in self.account.pending_limit_orders:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 3 failed: in_pending=True', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 3 failed: in_pending=True', signal.get('candidate_bar_id'))
             return False
         if MAX_SLOTS > 0 and len(self.account.positions)+len(self.account.pending_limit_orders) >= MAX_SLOTS:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 4 failed: MAX_SLOTS reached', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 4 failed: MAX_SLOTS reached', signal.get('candidate_bar_id'))
             return False
         daily = getattr(self.account,'daily_loss_limit_hit',None)
         if daily and daily()[0]:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 5 failed: daily loss limit hit', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 5 failed: daily loss limit hit', signal.get('candidate_bar_id'))
             return False
         # Execution-quality checks do not decide candle direction or generate signals.
         if not await self._execution_price_is_safe(symbol,side):
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', signal.get('candidate_bar_id'))
             return False
         snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'))
         if snapshot is None:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', signal.get('candidate_bar_id'))
             return False
         decision = snapshot['decision']
         if decision['reason'] != signal['signal_code']:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', signal.get('candidate_bar_id'))
             return False
         bar = decision['confirmation_bar_id']
         used = getattr(self,'_closed_entry_fills',None)
@@ -1732,7 +1738,7 @@ class TradingEngine:
         identity = (symbol,side,bar)
         if identity in used or any(t.get('symbol') == symbol and t.get('action') == 'OPEN_'+side
                 and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
         wallet = float(self.account.get_wallet_balance())
@@ -1740,35 +1746,69 @@ class TradingEngine:
         amount = self._half_wallet_entry_margin(wallet, available, leverage)
 
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
+            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
             return False
         # Final physical gate: same completed bar, same side and exact A-E reason.
         valid, failure, final = evaluate_closed_entry(snapshot['frame'],side,after_close=had_close(self.account,symbol))
         if not valid or final['reason'] != signal['signal_code'] or symbol in self.account.positions:
-            log_entry_gate(self,symbol,side,'FINAL_CLOSED_GATE',failure,bar)
+            log_entry_gate(self,symbol,side,'EXECUTION',failure,bar)
             return False
         if daily and daily()[0]:
+            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS', bar)
             return False
         price = float(getattr(self,'tickers',{}).get(symbol) or snapshot['price'])
         if not math.isfinite(price) or price <= 0:
+            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
 
         from core.services.entry_firewall import validate_entry_frame
         try:
             validate_entry_frame(snapshot['frame'], side, final['reason'])
         except ValueError as e:
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', 'WARNING')
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', signal.get('candidate_bar_id'))
             return False
         self.account.entry_frame_provider = self._entry_boundary_frame
 
         atr = final['entry_atr']
         sign = 1 if side == 'LONG' else -1
+        from core.services.candle_data import entry_frame_evidence
         context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=final['reason'],
                        channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
                        wave_regime='TREND',entry_snapshot=dict(signal_code=final['reason'],
-                       closed_bar=bar,closed_price=final['close_price'],quote_price=price))
-        opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-            amount_usdt=amount,sl=price-sign*1.5*atr,tp=0.,reason='Closed1M '+final['reason'],
-            atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
+                       closed_bar=bar,closed_price=final['close_price'],quote_price=price,
+                       evidence=entry_frame_evidence(snapshot['frame'])))
+        submit_lock = getattr(self, '_account_entry_submit_lock', None)
+        if submit_lock is None:
+            submit_lock = self._account_entry_submit_lock = asyncio.Lock()
+        async with submit_lock:
+            if MAX_SLOTS > 0 and len(self.account.positions) + len(self.account.pending_limit_orders) >= MAX_SLOTS:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_MAX_SLOTS_AT_SUBMIT', bar)
+                return False
+            if symbol in self.account.positions or symbol in self.account.pending_limit_orders:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_EXISTING_ORDER_AT_SUBMIT', bar)
+                return False
+            if daily and daily()[0]:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS_AT_SUBMIT', bar)
+                return False
+            amount = self._half_wallet_entry_margin(float(self.account.get_wallet_balance()),
+                float(self.account.get_available_balance()), leverage)
+            if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN_AT_SUBMIT', bar)
+                return False
+            price = float(getattr(self, 'tickers', {}).get(symbol) or snapshot['price'])
+            if not math.isfinite(price) or price <= 0:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
+                return False
+            context['entry_snapshot']['quote_price'] = price
+            log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
+            log_count = len(getattr(self.account, 'logs', []))
+            opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+                amount_usdt=amount,sl=final.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Closed1M '+final['reason'],
+                atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
+        if not opened:
+            recent = getattr(self.account, 'logs', [])[log_count:]
+            detail = next((item.get('text', '') for item in reversed(recent) if item.get('level') in ('ERROR', 'WARNING', 'DANGER')), 'ACCOUNT_REJECTED')
+            log_entry_gate(self, symbol, side, 'EXECUTION', detail, bar)
         if opened:
             used.add(identity)
             # Keep bounded in-memory dedupe; persisted fills remain authoritative.

@@ -19,7 +19,8 @@ RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
     [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
     [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
+    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")] +
+    [f"CLOSED_PEAK_TROUGH_CROSS_{side}" for side in ("LONG", "SHORT")]
 )
 
 def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
@@ -136,6 +137,81 @@ def ma3_entry_problem(closed, side):
     return None
 
 
+def long_entry_trend_problem(closed):
+    """Require a closed upper-rail break and sustained reversal evidence.
+
+    MA15: two positive changes; price: two closes strictly above their
+    midlines; CK: two positive changes of all three rails. Any one confirms.
+    This gate applies to every LONG rule, including ignition exemptions.
+    """
+    try:
+        rows = closed.iloc[-3:]
+        keys = ['close', 'ma15', 'kc_upper', 'kc_middle', 'kc_lower']
+        if len(rows) != 3:
+            return 'BLOCKED_LONG_INVALID_TREND_DATA'
+        values = rows[keys].astype(float)
+        if not all(math.isfinite(v) and v > 0 for v in values.to_numpy().flat):
+            return 'BLOCKED_LONG_INVALID_TREND_DATA'
+        if not (values.kc_lower.lt(values.kc_middle) & values.kc_middle.lt(values.kc_upper)).all():
+            return 'BLOCKED_LONG_INVALID_TREND_DATA'
+        if values.close.iloc[-1] <= values.kc_upper.iloc[-1]:
+            return 'BLOCKED_LONG_CLOSE_NOT_ABOVE_UPPER'
+        ma15_up = bool(values.ma15.diff().iloc[1:].gt(0).all())
+        two_above_middle = bool(values.close.iloc[-2:].gt(values.kc_middle.iloc[-2:]).all())
+        ck_up = bool(values[['kc_upper', 'kc_middle', 'kc_lower']].diff().iloc[1:].gt(0).to_numpy().all())
+        if not (ma15_up or two_above_middle or ck_up):
+            return 'BLOCKED_LONG_REVERSAL_UNCONFIRMED'
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return 'BLOCKED_LONG_INVALID_TREND_DATA'
+    return None
+
+
+def peak_trough_cross(closed, side):
+    """Eight preceding closed bars establish the touch and structural stop."""
+    if len(closed) < 9:
+        return None
+    try:
+        rows = closed.iloc[-9:]
+        keys = ['timestamp', 'open', 'high', 'low', 'close', 'kc_upper', 'kc_middle', 'kc_lower']
+        v = rows[keys].astype(float)
+        if not all(math.isfinite(x) and x > 0 for x in v.to_numpy().flat):
+            return None
+        if not v.timestamp.diff().iloc[1:].eq(60000).all():
+            return None
+        if not ((v.low <= v[['open', 'close']].min(axis=1)) &
+                (v.high >= v[['open', 'close']].max(axis=1)) &
+                (v.kc_lower < v.kc_middle) & (v.kc_middle < v.kc_upper)).all():
+            return None
+        history = rows.iloc[:-1]
+        previous, current = rows.iloc[-2], rows.iloc[-1]
+        sign = 1 if side == 'LONG' else -1
+        previous_gap = sign * (float(previous.ma3)-float(previous.ma15))
+        current_gap = sign * (float(current.ma3)-float(current.ma15))
+        span = float(current.high)-float(current.low)
+        body = sign * (float(current.close)-float(current.open))
+        if not (previous_gap <= 0 < current_gap and body > 0 and span > 0
+                and at_least(body/span, .4)):
+            return None
+        if side == 'LONG':
+            touched = (history.low <= history.kc_lower).any()
+            room = current.close <= current.kc_upper
+            stop = float(history.low.min())
+        else:
+            touched = (history.high >= history.kc_upper).any()
+            room = current.close >= current.kc_lower
+            stop = float(history.high.max())
+        if not touched or not room or sign*(float(current.close)-stop) <= 0:
+            return None
+        code = f'CLOSED_PEAK_TROUGH_CROSS_{side}'
+        return dict(action='ENTER', side=side, reason=code, rule='PEAK_TROUGH_CROSS',
+                    entry_type='PEAK_TROUGH_CROSS', entry_atr=float(current.atr),
+                    is_breakout=False, confirmation_bar_id=float(current.timestamp),
+                    close_price=float(current.close), initial_sl=stop,
+                    peak_trough_lookback=8)
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def had_close(account, symbol):
     return any(t.get('symbol') == symbol and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
                for t in getattr(account, 'trades', []))
@@ -150,6 +226,15 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     closed = confirmed(frame)
     if closed is None:
         return wait('WAIT_VALID_CLOSED_1M_DATA')
+
+    early = peak_trough_cross(closed, side)
+    if early is not None:
+        return True, early['reason'], early
+
+    if side == 'LONG':
+        problem = long_entry_trend_problem(closed)
+        if problem:
+            return wait(problem)
 
     c0, c1, c = (closed.iloc[i] for i in (-3, -2, -1))
     sign = 1 if side == 'LONG' else -1

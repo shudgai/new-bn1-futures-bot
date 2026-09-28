@@ -148,160 +148,26 @@ class BinanceTestnetAccount:
         self._raw_create_order = self.exchange.create_order
         
         async def _master_breaker_create_order(symbol, order_type, side, amount, price=None, params=None):
-            params = params or {}
-            is_reduce = params.get('reduceOnly') in [True, 'true', 'TRUE'] or params.get('closePosition') in [True, 'true', 'TRUE']
-            is_manual = params.get('is_manual') in [True, 'true', 'TRUE'] or params.get('source') == 'MANUAL'
-            
-            if is_manual:
-                self.log(f"[MANUAL_PASS] {symbol} {side} 手動開倉指令，直接放行送往交易所！", "INFO")
-                return await self._raw_create_order(symbol, order_type, side, amount, price, params)
+            from core.services.entry_firewall import validate_account_entry
+            params = dict(params or {})
+            context = params.pop('_entry_context', None)
+            is_reduce = (params.get('reduceOnly') in (True, 'true', 'TRUE')
+                         or params.get('closePosition') in (True, 'true', 'TRUE'))
+            if not is_reduce:
+                if side not in ('buy', 'sell'):
+                    raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
+                await validate_account_entry(
+                    self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
+            # Internal strategy metadata must never reach Binance parameters.
+            self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
+            try:
+                result = await self._raw_create_order(symbol, order_type, side, amount, price, params)
+            except Exception as exc:
+                self.log(f'[ORDER_REJECT] symbol={symbol} {type(exc).__name__}: {exc}', 'ERROR')
+                raise
+            self.log(f'[ORDER_ACK] symbol={symbol} id={result.get("id")} status={result.get("status")}', 'INFO')
+            return result
 
-            if is_reduce:
-                self.log(f"[GUARD_PASS] {symbol} 平倉請求放行，正在送往交易所...", "INFO")
-                # 記錄平倉時間，用於同向冷卻
-                self.last_closed_at = getattr(self, 'last_closed_at', {})
-                self.last_closed_at[symbol] = __import__('time').time()
-                return await self._raw_create_order(symbol, order_type, side, amount, price, params)
-
-            # ------------------ 以下為新開倉硬核審查 ------------------
-            provider = getattr(self, 'entry_frame_provider', None)
-            is_exempt = 'TREND_BREAKOUT' in str(reason).upper() or 'IGNITION' in str(reason).upper()
-            if provider and not is_exempt:
-                from core.services.strategies.unified_entry_strategy import confirmed
-                try:
-                    frame = await provider(symbol)
-                    closed = confirmed(frame)
-                    if closed is not None and len(closed) >= 2:
-                        last_bar = closed.iloc[-1]
-                        prev_bar = closed.iloc[-2]
-                        
-                        close_p = float(last_bar['close'])
-                        open_p = float(last_bar['open'])
-                        body = abs(close_p - open_p)
-                        atr = float(last_bar['atr'])
-                        
-                        kc_upper_curr = float(last_bar['kc_upper'])
-                        kc_lower_curr = float(last_bar['kc_lower'])
-                        kc_upper_prev = float(prev_bar['kc_upper'])
-                        kc_lower_prev = float(prev_bar['kc_lower'])
-                        
-                        if 'MA3' in last_bar:
-                            ma3_curr = float(last_bar['MA3'])
-                            ma3_prev = float(prev_bar['MA3'])
-                        elif 'ma3' in last_bar:
-                            ma3_curr = float(last_bar['ma3'])
-                            ma3_prev = float(prev_bar['ma3'])
-                        else:
-                            close_col = closed['close']
-                            ma3_curr = float(close_col.iloc[-3:].mean())
-                            ma3_prev = float(close_col.iloc[-4:-1].mean())
-                            
-                        if 'MA15' in last_bar:
-                            ma15_curr = float(last_bar['MA15'])
-                        elif 'ma15' in last_bar:
-                            ma15_curr = float(last_bar['ma15'])
-                        else:
-                            close_col = closed['close']
-                            ma15_curr = float(close_col.iloc[-15:].mean())
-                            
-                        # 計算冷卻 (以秒數換算 K 棒數)
-                        last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
-                        cooldown_bars = (__import__('time').time() - last_close_time) / 60.0
-                        if last_close_time > 0 and cooldown_bars < 2:
-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 違反平倉同向冷卻 (當前: {cooldown_bars:.1f} < 2 根)！阻斷下單！")
-                        
-                        # -------------------------------------------------------------
-                        # 0. 回踩二次起爆審查 (Trend Pullback Re-entry)
-                        # -------------------------------------------------------------
-                        is_reentry_long = False
-                        is_reentry_short = False
-                        
-                        kc_middle_curr = (kc_upper_curr + kc_lower_curr) / 2.0
-                        prev_close = float(prev_bar['close'])
-                        prev_open = float(prev_bar['open'])
-                        prev_high = float(prev_bar['high'])
-                        prev_low = float(prev_bar['low'])
-                        
-                        # 多單二次起爆
-                        if ma3_curr > ma15_curr and close_p > kc_middle_curr:
-                            pullback_supported = prev_close >= ma15_curr and close_p >= ma15_curr
-                            strong_green_body = (close_p > open_p) and (body >= 0.8 * atr)
-                            break_prev_high = close_p > prev_high
-                            ma3_rebound = ma3_curr > ma3_prev
-                            if pullback_supported and strong_green_body and break_prev_high and ma3_rebound:
-                                is_reentry_long = True
-                                
-                        # 空單二次起爆
-                        if ma3_curr < ma15_curr and close_p < kc_middle_curr:
-                            pullback_rejected = prev_close <= ma15_curr and close_p <= ma15_curr
-                            strong_red_body = (close_p < open_p) and (body >= 0.8 * atr)
-                            break_prev_low = close_p < prev_low
-                            ma3_downturn = ma3_curr < ma3_prev
-                            if pullback_rejected and strong_red_body and break_prev_low and ma3_downturn:
-                                is_reentry_short = True
-
-                        # 1. 開多單總電閘 (LONG)
-                        if side.upper() == 'BUY':
-                            if is_reentry_long:
-                                self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER LONG)，白名單放行！", "INFO")
-                            else:
-                                if close_p <= open_p:
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
-                                if ma3_curr <= ma15_curr:
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，處於空頭死叉排列中，100% 嚴禁開多！")
-                                if ma3_curr <= ma3_prev:
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
-                                if close_p < kc_upper_curr and body < (0.6 * atr):
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 0.6 ATR，小碎步禁止開多！")
-                                
-                                is_channel_expanding = kc_upper_curr > kc_upper_prev
-                                
-                                is_two_bar_breakout = (
-                                    prev_close > prev_open and
-                                    close_p > open_p and
-                                    prev_close > kc_upper_prev and
-                                    close_p > kc_upper_curr and
-                                    close_p > prev_close and
-                                    body >= (0.8 * atr)
-                                )
-                                if not (is_channel_expanding or is_two_bar_breakout):
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
-                                    
-                        # 2. 開空單總電閘 (SHORT)
-                        elif side.upper() == 'SELL':
-                            if is_reentry_short:
-                                self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER SHORT)，白名單放行！", "INFO")
-                            else:
-                                if close_p >= open_p:
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
-                                if ma3_curr >= ma15_curr:
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
-                                if ma3_curr >= ma3_prev:
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
-                                if close_p > kc_lower_curr and body < (0.6 * atr):
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 0.6 ATR，小碎步禁止開空！")
-                                
-                                is_channel_expanding = kc_lower_curr < kc_lower_prev
-                                
-                                is_two_bar_breakout = (
-                                    prev_close < prev_open and
-                                    close_p < open_p and
-                                    prev_close < kc_lower_prev and
-                                    close_p < kc_lower_curr and
-                                    close_p < prev_close and
-                                    body >= (0.8 * atr)
-                                )
-                                if not (is_channel_expanding or is_two_bar_breakout):
-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體跌破確認且通道未擴張，拒絕送單！")
-                except RuntimeError:
-                    raise
-                except Exception as e:
-                    self.log(f"[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: {str(e)}", "ERROR")
-                    raise RuntimeError(f"[MASTER_BREAKER_CRASH] 總電閘代碼崩潰: {str(e)}")
-            
-            self.log(f"[GUARD_PASS] {symbol} {side} 通過所有總電閘審核，正式送單！", "INFO")
-            return await self._raw_create_order(symbol, order_type, side, amount, price, params)
-            
         self.exchange.create_order = _master_breaker_create_order
         # ==================================================
         self.balance = 0.0
@@ -1793,48 +1659,15 @@ class BinanceTestnetAccount:
                           *, entry_context=None):
         """Single create-order boundary; only reduce-only exits bypass entry checks."""
         from core.services.entry_firewall import validate_account_entry
-        from core.services.strategies.unified_entry_strategy import confirmed
         params = dict(params or {})
-        if params.get('reduceOnly') is not True:
+        is_reduce = (params.get('reduceOnly') in (True, 'true', 'TRUE')
+                     or params.get('closePosition') in (True, 'true', 'TRUE'))
+        if not is_reduce:
             if side not in ('buy', 'sell'):
-                raise ValueError('[FORBIDDEN_ENTRY] 無效下單方向')
-            
-            # --- [HARD CIRCUIT BREAKER] ---
-            provider = getattr(self, 'entry_frame_provider', None)
-            if provider:
-                try:
-                    frame = await provider(symbol)
-                    closed = confirmed(frame)
-                    if closed is not None and len(closed) >= 2:
-                        last_bar = closed.iloc[-1]
-                        prev_bar = closed.iloc[-2]
-                        atr = float(last_bar.atr)
-                        opening = float(last_bar.open)
-                        close_price = float(last_bar.close)
-                        
-                        if 'MA3' in last_bar:
-                            ma3 = float(last_bar.MA3)
-                            prev_ma3 = float(prev_bar.MA3)
-                        else:
-                            close_col = closed['close']
-                            ma3 = float(close_col.iloc[-3:].mean())
-                            prev_ma3 = float(close_col.iloc[-4:-1].mean())
-                            
-                        if side == 'buy':
-                            if not ((close_price - opening) >= 0.6 * atr):
-                                print(f"[BYPASS_LEAK_BLOCKED] 熔斷攔截: 買多不符合 MA3 > prev_MA3 ({ma3:.5f} > {prev_ma3:.5f}) 或實體 >= 0.6 ATR ({(close_price - opening):.5f} >= {1.2*atr:.5f})")
-                                raise Exception("[BYPASS_LEAK_BLOCKED] 熔斷攔截: 買多不符合 MA3 > prev_MA3 且實體 >= 0.6 ATR")
-                        elif side == 'sell':
-                            if not ((opening - close_price) >= 0.6 * atr):
-                                print(f"[BYPASS_LEAK_BLOCKED] 熔斷攔截: 賣空不符合 MA3 < prev_MA3 ({ma3:.5f} < {prev_ma3:.5f}) 或實體 >= 0.6 ATR ({(opening - close_price):.5f} >= {1.2*atr:.5f})")
-                                raise Exception("[BYPASS_LEAK_BLOCKED] 熔斷攔截: 賣空不符合 MA3 < prev_MA3 且實體 >= 0.6 ATR")
-                except Exception as e:
-                    if "[BYPASS_LEAK_BLOCKED]" in str(e):
-                        raise
-            # -----------------------------
-            
+                raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
             await validate_account_entry(
                 self, symbol, 'LONG' if side == 'buy' else 'SHORT', entry_context)
+            params['_entry_context'] = dict(entry_context or {})
         return await self.exchange.create_order(symbol, order_type, side, qty, price, params)
 
     async def _emergency_flatten(self, symbol: str, side: str, qty: float) -> None:
@@ -1882,7 +1715,8 @@ class BinanceTestnetAccount:
                 return False
 
         from core.services.entry_firewall import validate_account_entry
-        await validate_account_entry(self, symbol, side, entry_context)
+        entry_decision = await validate_account_entry(self, symbol, side, entry_context)
+        structural_stop = entry_decision.get('initial_sl')
 
         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
@@ -1909,7 +1743,7 @@ class BinanceTestnetAccount:
                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
                 return False
             try:
-                initialize_atr_protection({}, price, side, atr)
+                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
             except (ValueError, TypeError):
                 return False
             tp = 0.0
@@ -1928,8 +1762,12 @@ class BinanceTestnetAccount:
         order_side = "buy" if side == "LONG" else "sell"
         close_side = "sell" if side == "LONG" else "buy"
         from core.services.order_sizing import calculate_order_qty, raw_order_qty
-        raw_qty = float(raw_order_qty(amount_usdt, leverage, price))
-        qty = calculate_order_qty(self.exchange, symbol, amount_usdt, leverage, price)
+        try:
+            raw_qty = float(raw_order_qty(amount_usdt, leverage, price))
+            qty = calculate_order_qty(self.exchange, symbol, amount_usdt, leverage, price)
+        except Exception as exc:
+            self.log(f'[ORDER_SIZE_REJECT] symbol={symbol} margin={amount_usdt} leverage={leverage} price={price} {type(exc).__name__}: {exc}', 'ERROR')
+            raise
         notional = amount_usdt * leverage
         self.log(
             f"🧮 [資金換算] {symbol} | 本金保證金={amount_usdt:.4f}U, 槓桿={leverage}x, "
@@ -1964,7 +1802,7 @@ class BinanceTestnetAccount:
         return await self._finalize_new_position(
             symbol, side, execution_price, qty, price, sl, tp, reason, atr,
             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
-            entry_context=entry_context,
+            entry_context=entry_context, structural_stop=structural_stop,
         )
 
     async def _prepare_leverage(self, symbol: str, leverage: int) -> None:
@@ -1996,6 +1834,7 @@ class BinanceTestnetAccount:
         entry_order_id,
         amount_usdt: float,
         entry_context: dict = None,
+        structural_stop: float = None,
     ) -> bool:
         """開倉單成交後的收尾：建立SL/TP保護單、寫入meta、記錄交易。
         market（open_position）與 limit（place_limit_entry 成交後）兩條
@@ -2004,6 +1843,12 @@ class BinanceTestnetAccount:
         再套用到實際成交價上，讓成交價比預期更好時，止損止盈距離維持
         原本規劃的寬度，不會因為成交價落差而跟著偏移。"""
         try:
+            if structural_stop is not None:
+                sign = 1 if side == 'LONG' else -1
+                if sign * (execution_price-structural_stop) <= 0:
+                    await self._emergency_flatten(symbol, side, qty)
+                    self.log('PEAK_TROUGH_STOP_CROSSED_AT_FILL', 'WARNING')
+                    return False
             entry_context = {
                 key: value for key, value in dict(entry_context or {}).items()
                 if key in ENTRY_CONTEXT_KEYS
@@ -2062,7 +1907,7 @@ class BinanceTestnetAccount:
                 entry_context["initial_risk"] = abs(execution_price - sl_price)
             if is_channel_swing:
                 anchored = {}
-                initialize_atr_protection(anchored, execution_price, side, atr)
+                initialize_atr_protection(anchored, execution_price, side, atr, initial_stop=structural_stop)
                 sl_price, tp_price = anchored['sl'], anchored['tp']
             atr_value = atr if atr > 0 else execution_price * 0.015
             try:
@@ -2105,7 +1950,7 @@ class BinanceTestnetAccount:
                 **entry_context,
             }
             if is_channel_swing:
-                initialize_atr_protection(meta, execution_price, side, atr)
+                initialize_atr_protection(meta, execution_price, side, atr, initial_stop=structural_stop)
                 sl_price, tp_price = meta["sl"], meta["tp"]
                 entry_context.update({key: meta[key] for key in
                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",

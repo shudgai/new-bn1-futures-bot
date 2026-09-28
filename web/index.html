@@ -568,7 +568,7 @@
                     📈 {{ chartModal.symbols.length > 1 ? '雙 K 線圖' : chartModal.symbol + ' K線圖' }}
                 </div>
                 <div class="chart-header-actions">
-                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; MA3 / MA15 交叉確認 &middot; ATR / KC 中軌出場</span>
+                    <span class="badge" style="background:var(--primary-bg); color:var(--primary)">1m &middot; MA3 / MA15 交叉確認 &middot; MA15 波段防守／MA3 死叉確認／1.2 ATR 保本</span>
                     <span class="badge" :style="{ background: bot.api_weight_1m > 1200 ? '#fef2f2' : 'var(--primary-bg)', color: bot.api_weight_1m > 1200 ? '#ef4444' : 'var(--primary)' }" title="Binance API 1分鐘使用權重 (限制2400)">API Weight: {{ bot.api_weight_1m || 0 }}</span>
                     <button class="chart-modal-close" @click="closeChartModal" aria-label="關閉 K 線圖">×</button>
                 </div>
@@ -578,12 +578,32 @@
                     <div class="chart-pane-header">
                         <span class="chart-symbol-trend">
                             <span>{{ symbol }}</span>
+                            <span v-if="bot.chart_metrics && bot.chart_metrics[symbol]"
+                                  :style="{ color: bot.chart_metrics[symbol].kc_width_atr < 3 ? '#5c4033' : ((chartModal.states[symbol] || {}).ckTrend === 'bull' ? '#006400' : ((chartModal.states[symbol] || {}).ckTrend === 'bear' ? '#8b0000' : '#5c4033')) }">
+                                通道寬度 {{ bot.chart_metrics[symbol].kc_width_atr.toFixed(2) }} ATR
+                            </span>
                             <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
                                 {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
+                            </span>
+                            <span v-if="bot.chart_metrics && bot.chart_metrics[symbol]" class="chart-symbol-metrics" style="margin-left: 10px; display: inline-flex; gap: 6px; flex-wrap: wrap;">
+                                <span class="badge" style="background:#dcfce7; color:#166534; font-size: 14px; padding: 4px 8px; font-weight: 600;">🟢 破上軌還差: {{ bot.chart_metrics[symbol].dist_to_upper > 0 ? '+' : '' }}{{ bot.chart_metrics[symbol].dist_to_upper_pct.toFixed(2) }}%</span>
+                                <span class="badge" style="background:#fee2e2; color:#991b1b; font-size: 14px; padding: 4px 8px; font-weight: 600;">🔴 破下軌還差: {{ bot.chart_metrics[symbol].dist_to_lower > 0 ? '-' : '' }}{{ (-bot.chart_metrics[symbol].dist_to_lower_pct).toFixed(2) }}%</span>
+                                <span class="badge" style="background:#fef3c7; color:#92400e; font-size: 14px; padding: 4px 8px; font-weight: 600;">⚡ 起爆實體要求: &ge; {{ formatPrice(bot.chart_metrics[symbol].min_body_atr) }}</span>
+                                <span v-if="bot.chart_metrics[symbol].breakout_status !== 'INSIDE_CHANNEL' && bot.chart_metrics[symbol].block_reason !== 'NONE' && (!bot.positions || !bot.positions.find(p => p.symbol === symbol))" 
+                                      class="badge" style="background:#ffedd5; color:#c2410c; border: 1px solid #fdba74; font-size: 14px; padding: 4px 8px; font-weight: 700;">
+                                    ⚠️ [已破軌未開單] 原因：{{ bot.chart_metrics[symbol].block_reason }}
+                                </span>
                             </span>
                         </span>
                         <!-- 持倉開倉資訊欄 (獨立行，幣種下方) -->
                         <div v-if="bot.positions && bot.positions.find(p => p.symbol === symbol)" class="chart-pos-info-bar">
+                            <span class="chart-pos-info-item">
+                                <span class="chart-pos-info-label">開倉方式:</span>
+                                <span class="chart-pos-info-value" style="font-weight: 600; color: #8b5cf6;">
+                                    {{ (getPos(symbol) || {}).entry_reason || (getPos(symbol) || {}).reason || '未紀錄' }}
+                                </span>
+                            </span>
+                            <span class="chart-pos-info-sep">｜</span>
                             <span class="chart-pos-info-item">
                                 <span class="chart-pos-info-label">開倉價:</span>
                                 <span class="chart-pos-info-value" style="font-family:monospace; color:#3b82f6; font-weight: 600;">

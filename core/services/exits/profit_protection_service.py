@@ -57,6 +57,20 @@ def trend_style(frame, side, opened_at=None):
         return 'UNKNOWN'
 
 
+def assess_market_regime(frame, side, opened_at=None):
+    """Closed-candle adapter for the legacy live-tail trend classifier."""
+    from core.services.candle_data import closed_entry_candles
+    if side not in ('LONG', 'SHORT'):
+        return 'UNKNOWN'
+    closed = closed_entry_candles(frame)
+    if closed.empty:
+        return 'UNKNOWN'
+    # trend_style excludes a live tail. Supply a sentinel so it evaluates
+    # exactly the completed rows, including the most recent completed bar.
+    with_tail = pd.concat([closed, closed.iloc[-1:]], ignore_index=True)
+    return trend_style(with_tail, side, opened_at)
+
+
 def kc_mid_reversed(frame, side):
     """Compare the last two closed midlines; the final row is the live bar."""
     if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 3:

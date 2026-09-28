@@ -320,19 +320,31 @@ def visible_system_logs():
 
 def map_block_reason(reason):
     if not reason or reason == "NONE": return "NONE"
+    if reason == "BLOCKED_OPPOSITE_CLOSED_BODY":
+        return "上一根已收線 K 棒方向不符；即時破軌尚未收線確認"
+    if reason == "FILLED":
+        return "已成功開倉"
     if reason.startswith("CLOSED_"):
-        return "信號已觸發 (等待市價執行或遭風控攔截)"
+        return "已收線訊號成立，尚無下單結果"
     if "CHANNEL_NOT_EXPANDING" in reason or "LOW_VOLATILITY" in reason or "RAIL_NOT" in reason:
         return "通道未連續張嘴或寬度不足"
     if "WAIT_NEW" in reason or "SMALL" in reason:
         return "等待實體放大 / 未達起爆形態"
     if "MA3" in reason or "DIVERGING" in reason:
         return "MA3/MA15 未順向排列或斜率不對"
-    if "CK" in reason:
+    if reason.startswith(("BLOCKED_CK_", "WAIT_CK_", "CK_")):
         return "CK 狀態尚未連續同向"
     if "BTC" in reason or "DUMPING" in reason or "PUMPING" in reason:
         return "BTC 熔斷保護中"
     return reason
+
+def latest_entry_diagnostic(cache, symbol, side):
+    signal = cache.get((symbol, side, 'CLOSED_SIGNAL'))
+    execution = cache.get((symbol, side, 'EXECUTION'))
+    if execution and signal and execution[0] == signal[0] and str(signal[1]).startswith('CLOSED_'):
+        return execution
+    return signal
+
 
 def get_chart_metrics():
     metrics = {}
@@ -359,12 +371,12 @@ def get_chart_metrics():
                 gate_cache = getattr(engine, "_entry_gate_diagnostics", {})
                 if close > kc_upper:
                     breakout_status = "LONG_BROKEN"
-                    reason_data = gate_cache.get((symbol, "LONG", "CLOSED_SIGNAL"))
+                    reason_data = latest_entry_diagnostic(gate_cache, symbol, "LONG")
                     if reason_data:
                         block_reason = map_block_reason(reason_data[1])
                 elif close < kc_lower:
                     breakout_status = "SHORT_BROKEN"
-                    reason_data = gate_cache.get((symbol, "SHORT", "CLOSED_SIGNAL"))
+                    reason_data = latest_entry_diagnostic(gate_cache, symbol, "SHORT")
                     if reason_data:
                         block_reason = map_block_reason(reason_data[1])
                 

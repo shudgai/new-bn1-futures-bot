@@ -1,6 +1,7 @@
 """Explicit candle finality at the market-data snapshot boundary."""
 
 import re
+import sys
 
 import numpy as np
 import pandas as pd
@@ -56,7 +57,9 @@ def log_entry_gate(engine, symbol, side, stage, reason, bar_id=None, **details):
     if cache.get(key) == fingerprint:
         return
     cache[key] = fingerprint
-    text = f"ENTRY_GATE stage={stage} symbol={symbol} side={side} bar={bar_id} reason={reason}"
+    caller = sys._getframe(1)
+    source = f"{caller.f_code.co_filename}:{caller.f_lineno}"
+    text = f"ENTRY_GATE source={source} stage={stage} symbol={symbol} side={side} bar={bar_id} reason={reason}"
     if details:
         text += " " + " ".join(f"{key}={value}" for key, value in details.items())
     engine.account.log(text, "INFO")
@@ -76,3 +79,17 @@ def closed_entry_problem(frame):
     except (TypeError, ValueError):
         return "WAIT_INVALID_MARKET_DATA"
     return None
+
+
+def entry_frame_evidence(frame):
+    """Serializable, closed-only evidence; never advances strategy state."""
+    closed = closed_entry_candles(frame)
+    if closed.empty:
+        return {'closed_count': 0}
+    keys = ('timestamp', 'open', 'high', 'low', 'close', 'ma3', 'ma15',
+            'atr', 'kc_upper', 'kc_middle', 'kc_lower')
+    rows = [{key: float(row[key]) for key in keys if key in row}
+            for _, row in closed.tail(6).iterrows()]
+    return {'closed_count': len(closed), 'is_closed': True, 'candles': rows,
+            'previous5_low': float(closed['low'].iloc[-6:-1].min()) if len(closed) >= 6 else None,
+            'previous5_high': float(closed['high'].iloc[-6:-1].max()) if len(closed) >= 6 else None}

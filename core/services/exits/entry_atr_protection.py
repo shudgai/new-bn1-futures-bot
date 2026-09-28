@@ -1,7 +1,7 @@
 """Compatibility adapters for closed-candle chandelier protection."""
 import math
 
-from core.services.exit_service import STATE_KEYS
+from core.services.exits.dual_track_exit_service import DUAL_TRACK_STATE_KEYS as STATE_KEYS
 
 
 def valid_entry_atr(value):
@@ -11,14 +11,14 @@ def valid_entry_atr(value):
         return False
 
 
-def initialize_atr_protection(position, entry_price, side, atr):
+def initialize_atr_protection(position, entry_price, side, atr, initial_stop=None):
     from core.services.exit_service import initialize_chandelier
-    initialize_chandelier(position, entry_price, side, atr)
+    initialize_chandelier(position, entry_price, side, atr, initial_stop=initial_stop)
 
 
 def atr_exit_reason(position, price, frame=None):
     from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
-    return DualTrackExitStrategy().evaluate_exit(position, frame)
+    return DualTrackExitStrategy().evaluate_exit(position, frame, current_price=price)
 
 
 async def enforce_atr_protection(account, symbol, price):
@@ -27,8 +27,11 @@ async def enforce_atr_protection(account, symbol, price):
     position = account.positions.get(symbol)
     if not position:
         return False
-    reason = atr_exit_reason(position, price)
     meta = account.position_meta.setdefault(symbol, {})
+    for key in STATE_KEYS:
+        if key not in position and key in meta:
+            position[key] = copy.deepcopy(meta[key])
+    reason = atr_exit_reason(position, price)
     observed = {key: copy.deepcopy(position[key]) for key in STATE_KEYS if key in position}
     if any(meta.get(key) != value for key, value in observed.items()):
         meta.update(observed)

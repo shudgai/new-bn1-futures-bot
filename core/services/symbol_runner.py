@@ -3,7 +3,7 @@ import copy
 import math
 from core.services.strategies.unified_entry_strategy import confirmed, evaluate_closed_entry, had_close
 from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, DUAL_TRACK_STATE_KEYS
-from core.services.candle_data import log_entry_gate
+from core.services.candle_data import log_entry_gate, entry_frame_evidence
 
 
 async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, daily_halt,
@@ -32,7 +32,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         for key in DUAL_TRACK_STATE_KEYS:
             if key not in position and key in meta:
                 position[key] = copy.deepcopy(meta[key])
-        reason = DualTrackExitStrategy().evaluate_exit(position,frame)
+        reason = DualTrackExitStrategy().evaluate_exit(position,frame,current_price=quote)
         observed = {k:copy.deepcopy(position[k]) for k in DUAL_TRACK_STATE_KEYS if k in position}
         if any(meta.get(k) != v for k,v in observed.items()):
             meta.update(observed)
@@ -41,36 +41,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             return [], []
         old_side = position['side']
 
-        # ── 方案A TP1：部分平倉 60%，剩餘倉位繼續持有 ──────
-        if reason == 'FAST_EXIT_PARTIAL_CLOSE_60PCT':
-            partial_ok = await engine.account.partial_close_position(
-                symbol, quote, 'Closed1M FAST_EXIT_PARTIAL_CLOSE_60PCT', fraction=0.60
-            )
-            if partial_ok:
-                # 標記 state 已執行 TP1（position 仍在，closed_exit_state 會在下一根更新）
-                pos_now = engine.account.positions.get(symbol, {})
-                exit_state = pos_now.get('closed_exit_state', {})
-                exit_state['tp1_executed'] = True
-                exit_state['pending'] = None
-                cost = float(pos_now['entry_price'])
-                exit_state['stop'] = cost
-                pos_now.update(sl=cost, atr_sl=cost, is_half_closed=True)
-                engine.account.position_meta.setdefault(symbol, {}).update(
-                    sl=cost, atr_sl=cost, is_half_closed=True)
-
-                if 'closed_exit_state' in pos_now:
-                    pos_now['closed_exit_state'] = exit_state
-                engine.account.position_meta.setdefault(symbol, {}).update(
-                    {'closed_exit_state': exit_state}
-                )
-                engine.account.save_state()
-                engine.account.log(
-                    f"💰 [極速收割-60%] {symbol} {old_side} MA3拐頭已鎖利 60%，剩餘40%移至保本線繼續運行",
-                    "SUCCESS"
-                )
-            return [], []
-
-        # ── 全倉平倉（第三階段各種出場訊號）─────────────────
+        # ── 全倉平倉 ─────────────────        # ── 全倉平倉（第三階段各種出場訊號）─────────────────
         filled = await engine.account.close_position(symbol, quote, 'Closed1M ' + reason, is_manual=True)
         if not filled or symbol in engine.account.positions:
             return [], []  # pending state is persisted and retried
@@ -88,8 +59,18 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     sides = ('LONG', 'SHORT')
     candidates = []
     for side in sides:
+        # ── BTC 聯動熔斷審查 (BTC Market Circuit Breaker) ──
+        if btc_1m_turn == "SHORT" and side == "LONG":
+            reason = "BLOCKED_BTC_DUMPING_FORBID_LONG"
+            log_entry_gate(engine, symbol, side, 'CLOSED_SIGNAL', reason, float(closed.iloc[-1].timestamp))
+            continue
+        if btc_1m_turn == "LONG" and side == "SHORT":
+            reason = "BLOCKED_BTC_PUMPING_FORBID_SHORT"
+            log_entry_gate(engine, symbol, side, 'CLOSED_SIGNAL', reason, float(closed.iloc[-1].timestamp))
+            continue
+            
         ok, reason, decision = evaluate_closed_entry(frame,side,after_close=had_close(engine.account,symbol))
-        log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',reason,float(closed.iloc[-1].timestamp))
+        log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',reason,float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
         if ok:
             candidates.append(decision)
     if candidates:

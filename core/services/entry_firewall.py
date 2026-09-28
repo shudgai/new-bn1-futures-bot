@@ -3,7 +3,7 @@ import math
 import time
 
 from core.services.strategies.unified_entry_strategy import (
-    RULE_CODES, confirmed, evaluate_closed_entry, ma3_entry_problem,
+    RULE_CODES, confirmed, evaluate_closed_entry, ma3_entry_problem, long_entry_trend_problem,
 )
 
 
@@ -13,6 +13,15 @@ def validate_entry_frame(frame, side, code):
     closed = confirmed(frame)
     if closed is None:
         raise ValueError('[FORBIDDEN_ENTRY] 缺少有效已收線行情')
+    if code == f'CLOSED_PEAK_TROUGH_CROSS_{side}':
+        ok, actual, decision = evaluate_closed_entry(frame, side)
+        if not ok or actual != code:
+            raise ValueError(f'[FORBIDDEN_ENTRY] 峰谷交叉已失效 actual={actual}')
+        return decision
+    if side == 'LONG':
+        problem = long_entry_trend_problem(closed)
+        if problem:
+            raise ValueError('[FORBIDDEN_ENTRY] ' + problem)
     # 點火起爆信號由 KC 外軌擴張與大實體動能保證方向，豁免滯後的 MA3 斜率檢驗
     is_ignition = 'IGNITION' in str(code).upper() or 'TREND_BREAKOUT' in str(code).upper()
     if not is_ignition:
@@ -31,7 +40,7 @@ def validate_entry_frame(frame, side, code):
 
     from core.services.exits.profit_protection_service import assess_market_regime
     regime = assess_market_regime(closed, side, None)
-    if regime == 'CHOPPY':
+    if not is_ignition and regime == 'CHOPPY':
         raise ValueError(f'[FATAL_REJECT] 當前為 CHOPPY 猴市震盪區間，拒絕任何破底/破軌追單！')
 
     if side == 'SHORT':
@@ -42,7 +51,7 @@ def validate_entry_frame(frame, side, code):
         if close > lower and (opening - close) < 0.6 * atr:
             raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 0.6 ATR: {0.6*atr:.8f}')
         distance_from_middle = abs(close - middle)
-        if distance_from_middle > 2.2 * atr:
+        if not is_ignition and distance_from_middle > 2.2 * atr:
             raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追空！')
     else:
         if not is_ignition and upper <= prev_upper:
@@ -52,7 +61,7 @@ def validate_entry_frame(frame, side, code):
         if close < upper and (close - opening) < 0.6 * atr:
             raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 0.6 ATR: {0.6*atr:.8f}')
         distance_from_middle = abs(close - middle)
-        if distance_from_middle > 2.2 * atr:
+        if not is_ignition and distance_from_middle > 2.2 * atr:
             raise ValueError(f'[FATAL_REJECT] 拒絕追多：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追多！')
 
     if 'CLOSED_C' in code:
