@@ -191,7 +191,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         ma_aligned = float(c.ma3) > float(c.ma15)
         body = float(c.close) - float(c.open)
         upper_wick = float(c.high) - float(c.close)
-        is_full_body = body >= 0.6 * atr and upper_wick < body * 0.8
+        is_full_body = body >= 0.55 * atr and upper_wick < body * 0.8
         is_outside = float(c.close) > float(c.kc_upper)
         
         if ma_aligned and is_full_body and is_outside:
@@ -209,8 +209,8 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             # 3. 連續 2 根收盤價高於 KC 上軌
             crawling_outside = float(c.close) > float(c.kc_upper) and float(c1.close) > float(c1.kc_upper)
             
-            # 加速啟動：當根在外軌，實體 >= 0.6 ATR 且均線發散
-            fast_crawling = is_outside and body >= 0.6 * atr and float(c.ma3) > float(c.ma15)
+            # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
+            fast_crawling = is_outside and body >= 0.55 * atr and float(c.ma3) > float(c.ma15)
             
             if (resonance and ma15_rising and crawling_outside) or fast_crawling:
                 rule = 'TREND_CRAWLING'
@@ -223,7 +223,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         ma_aligned = float(c.ma3) < float(c.ma15)
         body = float(c.open) - float(c.close)
         lower_wick = float(c.close) - float(c.low)
-        is_full_body = body >= 0.6 * atr and lower_wick < body * 0.8
+        is_full_body = body >= 0.55 * atr and lower_wick < body * 0.8
         is_outside = float(c.close) < float(c.kc_lower)
         
         if ma_aligned and is_full_body and is_outside:
@@ -241,8 +241,8 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             # 3. 連續 2 根收盤價低於 KC 下軌
             crawling_outside = float(c.close) < float(c.kc_lower) and float(c1.close) < float(c1.kc_lower)
             
-            # 加速啟動：當根在外軌，實體 >= 0.6 ATR 且均線發散
-            fast_crawling = is_outside and body >= 0.6 * atr and float(c.ma3) < float(c.ma15)
+            # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
+            fast_crawling = is_outside and body >= 0.55 * atr and float(c.ma3) < float(c.ma15)
             
             if (resonance and ma15_falling and crawling_outside) or fast_crawling:
                 rule = 'TREND_CRAWLING'

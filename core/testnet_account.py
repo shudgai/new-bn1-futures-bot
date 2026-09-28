@@ -165,8 +165,8 @@ class BinanceTestnetAccount:
 
             # ------------------ 以下為新開倉硬核審查 ------------------
             provider = getattr(self, 'entry_frame_provider', None)
-            is_breakout = 'TREND_BREAKOUT' in str(reason).upper()
-            if provider and not is_breakout:
+            is_exempt = 'TREND_BREAKOUT' in str(reason).upper() or 'IGNITION' in str(reason).upper()
+            if provider and not is_exempt:
                 from core.services.strategies.unified_entry_strategy import confirmed
                 try:
                     frame = await provider(symbol)

@@ -373,7 +373,7 @@ def get_chart_metrics():
                     "dist_to_upper_pct": dist_to_upper_pct,
                     "dist_to_lower": dist_to_lower,
                     "dist_to_lower_pct": dist_to_lower_pct,
-                    "min_body_atr": 0.8 * atr,
+                    "min_body_atr": 0.55 * atr,
                     "breakout_status": breakout_status,
                     "block_reason": block_reason,
                     "kc_width_atr": (kc_upper - kc_lower) / atr
