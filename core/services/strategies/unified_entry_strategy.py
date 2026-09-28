@@ -193,10 +193,16 @@ def peak_trough_cross(closed, side):
                 and at_least(body/span, .4)):
             return None
         if side == 'LONG':
+            upper_wick = float(current.high) - max(float(current.open), float(current.close))
+            if span > 0 and (upper_wick / span > 0.35 or float(current.close) < float(current.low) + span * 0.5):
+                return None
             touched = (history.low <= history.kc_lower).any()
             room = current.close <= current.kc_upper
             stop = float(history.low.min())
         else:
+            lower_wick = min(float(current.open), float(current.close)) - float(current.low)
+            if span > 0 and (lower_wick / span > 0.35 or float(current.close) > float(current.low) + span * 0.5):
+                return None
             touched = (history.high >= history.kc_upper).any()
             room = current.close >= current.kc_lower
             stop = float(history.high.max())
