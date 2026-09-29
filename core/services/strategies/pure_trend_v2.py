@@ -7,7 +7,7 @@ logger = logging.getLogger("PureTrendV2_Meme")
 class PureTrendStrategyV2:
     """
     妖幣純淨趨勢追蹤引擎：
-    1. 開倉：前兩根已收線同色站外，第三根不分顏色站外；反向實體不超過第二根50%。
+    1. 開倉：前根已收線同向實體站外，下一根盤中站外且 MA3／MA15 同向；反向實體不超過前根50%。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
     3. 盤中熔斷：一股都不賣，但遭遇大瀑布、反向巨型異常K、BTC熔斷時，盤中0.1秒秒平！
     4. 常規平倉：只在1M收線嚴格突破最近已確認峰谷時全平；無峰谷續抱。
@@ -15,37 +15,59 @@ class PureTrendStrategyV2:
     """
     def __init__(self):
         self.cooldown_tracker = {}
+        self.pnl_rejection = None
 
     def record_exit(self, symbol: str, side: str, current_bar_index: int):
         self.cooldown_tracker[symbol] = dict(exit_bar_index=int(current_bar_index), side=side)
 
-    def evaluate_continuation_entry(self, symbol, current_bar_index, bar_curr, bar_prev):
-        ticket = self.cooldown_tracker.get(symbol)
-        if not ticket or current_bar_index - ticket['exit_bar_index'] < 2:
+    def evaluate_second_bar_outside_entry(
+        self, symbol: str, bar_curr: Dict[str, Any], bar_prev: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """One closed directional outside body followed by its live next bar.
+
+        Evaluation is read-only. The engine locks successful fills, not signals.
+        """
+        import numpy as np
+
+        previous_closed = bar_prev.get('is_closed')
+        current_closed = bar_curr.get('is_closed')
+        if (not isinstance(previous_closed, (bool, np.bool_)) or not previous_closed
+                or not isinstance(current_closed, (bool, np.bool_)) or current_closed):
             return None
         try:
-            price, mid, upper, lower, ma3, ma15 = (float(bar_curr[k]) for k in
-                ('close','kc_middle','kc_upper','kc_lower','ma3','ma15'))
-            previous = float(bar_prev['close'])
-            if not all(math.isfinite(v) and v > 0 for v in (price,mid,upper,lower,ma3,ma15,previous)):
+            p_open, p_close, p_upper, p_lower = (
+                float(bar_prev[k]) for k in ('open', 'close', 'kc_upper', 'kc_lower'))
+            c_open, price, upper, lower, mid, ma3, ma15 = (
+                float(bar_curr[k]) for k in
+                ('open', 'close', 'kc_upper', 'kc_lower', 'kc_middle', 'ma3', 'ma15'))
+            stamps = [float(bar['timestamp']) for bar in (bar_prev, bar_curr)]
+            values = (p_open, p_close, p_upper, p_lower, c_open, price,
+                      upper, lower, mid, ma3, ma15, *stamps)
+            if not all(math.isfinite(v) and v > 0 for v in values):
                 return None
-            if not lower < mid < upper or not bar_prev.get('is_closed', False):
+            if not p_lower < p_upper or not lower < mid < upper:
                 return None
-            side = None
-            if price > upper and price > mid and ma3 > ma15 and price >= previous:
-                side = 'LONG'
-            elif price < lower and price < mid and ma3 < ma15 and price <= previous:
-                side = 'SHORT'
-            atr = bar_curr.get('atr') if bar_curr.get('is_closed', False) else bar_prev.get('atr')
-            if side and self.verify_profitable_expectation(side,price,bar_curr,atr):
-                return dict(side=side,type='CONTINUATION_RE_ENTRY_'+side,price=price,
-                            reason='平倉冷卻2根後，軌外強勢延續開倉')
-        except (KeyError,TypeError,ValueError,OverflowError):
+            if stamps[1] - stamps[0] != 60000:
+                return None
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
-        return None
+        side = None
+        if p_close > p_open and p_close > p_upper and price > upper and ma3 > ma15:
+            side, adverse = 'LONG', c_open - price
+        elif p_close < p_open and p_close < p_lower and price < lower and ma3 < ma15:
+            side, adverse = 'SHORT', price - c_open
+        if side is None:
+            return None
+        limit = 0.5 * abs(p_close - p_open)
+        if adverse > limit and not math.isclose(adverse, limit, rel_tol=1e-12, abs_tol=0.):
+            logger.info('%s 第2根反向實體超過第1根50%%，放棄%s', symbol, side)
+            return None
+        return dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=price,
+                    reason='第1根已收線同向實體站外，第2根盤中站外且均線同向即開倉')
 
     def verify_profitable_expectation(self, side: str, entry_price: float, bar_curr: Dict[str, Any], atr: float) -> bool:
         """Estimate net reward/risk; this does not change the actual exit policy."""
+        self.pnl_rejection = None
         try:
             entry_price, atr = float(entry_price), float(atr)
             kc_upper = float(bar_curr['kc_upper'])
@@ -74,54 +96,21 @@ class PureTrendStrategyV2:
             return False
         ratio = reward / risk
         if reward <= 0 or ratio < 1.2:
+            self.pnl_rejection = dict(reason='BLOCKED_EXPECTED_NET_REWARD' if reward <= 0 else 'BLOCKED_REWARD_RISK',
+                                      side=side, reward=reward, risk=risk, reward_risk=ratio,
+                                      cost=fee_and_slippage_cost, atr=atr, price=entry_price)
             logger.info('🚫 [預估虧損攔截] %s 預期空間不足 (Reward=%.12g, Risk=%.12g, R:R=%.6f)，放棄開倉！',
                         side, reward, risk, ratio)
             return False
         return True
 
-    def evaluate_entry(self, symbol: str, bar_curr: Dict[str, Any], bar_prev1: Dict[str, Any], bar_prev2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Two closed same-color outside bars, then the third bar only."""
-        import numpy as np
-        for bar in (bar_prev2, bar_prev1):
-            flag = bar.get('is_closed', bar.get('x', False))
-            if not isinstance(flag, (bool, np.bool_)) or not flag:
-                return None
-        try:
-            p2_open, p2_close = float(bar_prev2['open']), float(bar_prev2['close'])
-            p1_open, p1_close = float(bar_prev1['open']), float(bar_prev1['close'])
-            c_open, price = float(bar_curr['open']), float(bar_curr['close'])
-            upper, lower, mid = (float(bar_curr[k]) for k in ('kc_upper','kc_lower','kc_middle'))
-            values = (p2_open,p2_close,p1_open,p1_close,c_open,price,upper,lower,mid,
-                      float(bar_prev2['kc_upper']),float(bar_prev2['kc_lower']),
-                      float(bar_prev1['kc_upper']),float(bar_prev1['kc_lower']))
-            if not all(math.isfinite(v) and v > 0 for v in values) or not lower < mid < upper:
-                return None
-            stamps = [float(bar['timestamp']) for bar in (bar_prev2,bar_prev1,bar_curr)]
-            if not all(math.isfinite(v) for v in stamps) or stamps[1]-stamps[0] != 60000 or stamps[2]-stamps[1] != 60000:
-                return None
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return None
-        side = None
-        if (price > upper and price > mid and
-                p2_close > p2_open and p2_close > float(bar_prev2['kc_upper']) and
-                p1_close > p1_open and p1_close > float(bar_prev1['kc_upper'])):
-            side = 'LONG'
-            adverse_body = c_open - price
-        elif (price < lower and price < mid and
-                p2_close < p2_open and p2_close < float(bar_prev2['kc_lower']) and
-                p1_close < p1_open and p1_close < float(bar_prev1['kc_lower'])):
-            side = 'SHORT'
-            adverse_body = price - c_open
-        if side is None:
-            return None
-        if adverse_body > 0.5 * abs(p1_close-p1_open):
-            logger.info('%s 第3根反向實體超過第2根實體50%%，放棄%s', symbol, side)
-            return None
-        atr = bar_curr.get('atr') if bar_curr.get('is_closed', bar_curr.get('x',False)) else bar_prev1.get('atr')
-        if not self.verify_profitable_expectation(side, price, bar_curr, atr):
-            return None
-        return dict(side=side, type='THIRD_BAR_CONFIRMED_'+side, price=price,
-                    reason='第1根破軌+第2根同色站外+第3根不分顏色站外開倉')
+    def evaluate_entry(self, symbol, bar_curr, bar_prev1, bar_prev2=None):
+        """Compatibility entry point; all callers use the second-bar rule."""
+        decision = self.evaluate_second_bar_outside_entry(symbol, bar_curr, bar_prev1)
+        if decision and self.verify_profitable_expectation(
+                decision['side'], decision['price'], bar_curr, bar_prev1.get('atr')):
+            return decision
+        return None
 
     # =================================================================
     # 二、 盤中即時極端熔斷（每一秒檢查，不看收盤，立刻秒平逃命）
@@ -191,7 +180,7 @@ class PureTrendStrategyV2:
 
 V2_ENTRY_CODES = frozenset(
     f"{rule}_{side}"
-    for rule in ("THIRD_BAR_CONFIRMED", "CONTINUATION_RE_ENTRY")
+    for rule in ("SECOND_BAR_OUTSIDE",)
     for side in ("LONG", "SHORT")
 )
 
@@ -218,23 +207,29 @@ def successful_exit_ticket(account, symbol):
     return dict(exit_bar_index=int(stamp // 60000), side=latest['action'][6:])
 
 
-def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
+def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', diagnostics=None):
     """Recompute V2 at every boundary; return a complete execution contract."""
     from core.services.strategies.unified_entry_strategy import confirmed
     closed = confirmed(frame)
     if closed is None:
         return None
-    live = not bool(frame.iloc[-1].get('is_closed', False))
+    import numpy as np
     row = frame.iloc[-1].to_dict()
-    quote = float(price if price is not None else row['close'])
-    if not math.isfinite(quote) or quote <= 0:
-        return None
-    for key in ('open', 'close', 'kc_upper', 'kc_middle', 'kc_lower'):
-        if not math.isfinite(float(row[key])) or float(row[key]) <= 0:
+    flag = row.get('is_closed')
+    if not isinstance(flag, (bool, np.bool_)) or flag:
+        return None  # Never turn a closed-only snapshot into a live second bar.
+    try:
+        quote = float(price if price is not None else row['close'])
+        original_price = float(row['close'])
+        stamp = float(row['timestamp'])
+        if not all(math.isfinite(v) and v > 0 for v in (quote, original_price, stamp)):
             return None
-    if not float(row['kc_lower']) < float(row['kc_middle']) < float(row['kc_upper']):
-        return None
-    if live and float(row['timestamp']) != float(closed.iloc[-1]['timestamp']) + 60000:
+        if stamp != float(closed.iloc[-1]['timestamp']) + 60000:
+            return None
+        # Keep live simple moving averages consistent with the latest quote.
+        for key, period in (('ma3', 3), ('ma15', 15)):
+            row[key] = float(row[key]) + (quote - original_price) / period
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
     strategy = PureTrendStrategyV2()
     ticket = successful_exit_ticket(account, symbol)
@@ -245,27 +240,18 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
             return None
     if code is not None and code not in V2_ENTRY_CODES:
         return None
-    # Never fall back to a previous closed signal when a live third bar fails.
     row['close'] = quote
-    if live:
-        prev1, prev2 = closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict()
-    else:
-        prev1, prev2 = closed.iloc[-2].to_dict(), closed.iloc[-3].to_dict()
-    decision = strategy.evaluate_entry(symbol, row, prev1, prev2)
-    if decision is None:
-        decision = strategy.evaluate_continuation_entry(symbol, bar_index, row, prev1)
-    intrabar = live
+    previous = closed.iloc[-1].to_dict()
+    decision = strategy.evaluate_second_bar_outside_entry(symbol, row, previous)
     if not decision or (code is not None and decision['type'] != code):
-        return None
-    if decision['side'] == 'LONG' and quote <= float(row['kc_upper']):
-        return None
-    if decision['side'] == 'SHORT' and quote >= float(row['kc_lower']):
         return None
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
         return None
     if not strategy.verify_profitable_expectation(decision['side'], quote, row, atr):
+        if diagnostics is not None and strategy.pnl_rejection:
+            diagnostics.update(strategy.pnl_rejection)
         return None
-    return dict(decision, type=code or decision['type'], entry_atr=atr,
-                confirmation_bar_id=float(row['timestamp'] if intrabar else closed.iloc[-1]['timestamp']),
-                close_price=float(closed.iloc[-1]['close']), intrabar=intrabar)
+    return dict(decision, type=code or decision['type'], price=quote, entry_atr=atr,
+                confirmation_bar_id=stamp, breakout_bar_id=float(previous['timestamp']),
+                close_price=float(previous['close']), intrabar=True)

@@ -1134,8 +1134,49 @@ class TradingEngine:
                       profit_profile='TREND_EXTENSION', atr=float(frame.iloc[-2]['atr']))
         return await self._place_structured_entry(symbol, signal, price)
 
-    async def _channel_quote_pivot_entry(self, symbol, price):
-        return  # Entries are scanned from completed candles only.
+    async def _channel_quote_pivot_entry(self, symbol, price, quote_ms=None):
+        """Evaluate the shared second-bar rule on fresh WebSocket quotes."""
+        if (not getattr(self, 'is_running', False) or symbol not in DEFAULT_SYMBOLS
+                or symbol in self.account.positions):
+            return
+        try:
+            now = time.time()
+            quoted_at = float(quote_ms) / 1000 if quote_ms is not None else now
+            if not math.isfinite(quoted_at) or not 0 <= now - quoted_at <= 5:
+                return
+            if SYMBOL_ROTATION_ENABLED and (
+                    getattr(self.symbol_rotation, 'last_rotation_at', 0.) <= 0
+                    or getattr(self, '_entry_waiting_for_post_close_rotation', False)):
+                return
+            if self.account.daily_loss_limit_hit()[0]:
+                return
+            locks = getattr(self, '_channel_symbol_locks', None)
+            if locks is None:
+                locks = self._channel_symbol_locks = {}
+            lock = locks.setdefault(symbol, asyncio.Lock())
+            if lock.locked():
+                return  # The next quote retries; never queue stale entry ticks.
+            async with lock:
+                if symbol in self.account.positions:
+                    return
+                frame = await self._entry_boundary_frame(symbol)
+                if (frame is None or frame.empty
+                        or float(frame.iloc[-1]['timestamp']) != math.floor(time.time() / 60) * 60000):
+                    return
+                btc_turn = None
+                if BTC_1M_PULSE_FILTER_ENABLED:
+                    btc_frame = await self._entry_boundary_frame('BTC/USDT')
+                    if btc_frame is None or btc_frame.empty:
+                        return
+                    btc_turn = self._detect_btc_1m_pulse(
+                        btc_frame, float(self.tickers.get('BTC/USDT') or btc_frame.iloc[-1]['close']))
+                if time.time() - quoted_at > 5:
+                    return
+                await self._process_single_symbol_locked(
+                    symbol, time.time(), btc_turn, self.account.daily_loss_limit_hit()[0],
+                    exit_frame=frame, exit_quote=float(self.tickers.get(symbol) or price))
+        except (TypeError, ValueError, KeyError, IndexError) as exc:
+            self.account.log(f'⚠️ [{symbol}] 即時入口行情無效: {exc}', 'WARNING')
 
 
     async def _channel_quote_exit(self, symbol, price, quote_ms=None):
@@ -1276,19 +1317,20 @@ class TradingEngine:
                                             is_manual=True,
                                         ))
 
-                await asyncio.gather(*(
-                    self._channel_quote_pivot_entry(
-                        sym.replace(":USDT", ""), float(ticker["last"]))
-                    for sym, ticker in tickers.items() if ticker.get("last") is not None
-                    and sym.replace(":USDT", "") not in self.account.positions
-                ))
-
+                # Service held exits before entry fetches and order validation.
                 await asyncio.gather(*(
                     self._channel_quote_exit(
                         sym.replace(":USDT", "") if sym.endswith(":USDT") else sym,
                         float(ticker["last"]), ticker.get("timestamp"))
                     for sym, ticker in tickers.items() if ticker.get("last") is not None
                     and (sym.replace(":USDT", "") if sym.endswith(":USDT") else sym) in self.account.positions
+                ))
+
+                await asyncio.gather(*(
+                    self._channel_quote_pivot_entry(
+                        sym.replace(":USDT", ""), float(ticker["last"]), ticker.get("timestamp"))
+                    for sym, ticker in tickers.items() if ticker.get("last") is not None
+                    and sym.replace(":USDT", "") not in self.account.positions
                 ))
 
             except asyncio.CancelledError:
@@ -1675,10 +1717,15 @@ class TradingEngine:
         frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
         if frame is None or frame.empty:
             return None
-        frame = self.strategy.compute_indicators(frame.copy())
+        frame = frame.copy()
         if not bool(frame.iloc[-1].get('is_closed', False)):
-            frame.loc[frame.index[-1], 'close'] = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
-        return frame
+            quote = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+            frame.loc[frame.index[-1], 'close'] = quote
+            frame.loc[frame.index[-1], 'high'] = max(float(frame.iloc[-1]['high']), quote)
+            frame.loc[frame.index[-1], 'low'] = min(float(frame.iloc[-1]['low']), quote)
+            if 'close_price_spike_filtered' in frame.columns:
+                frame.loc[frame.index[-1], 'close_price_spike_filtered'] = quote
+        return self.strategy.compute_indicators(frame)
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
         locks = getattr(self,'_channel_entry_locks',None)
@@ -1741,7 +1788,7 @@ class TradingEngine:
         if used is None:
             used = self._closed_entry_fills = set()
         identity = (symbol,side,bar)
-        if identity in used or any(t.get('symbol') == symbol and t.get('action') == 'OPEN_'+side
+        if any(key[0] == symbol and key[2] == bar for key in used) or any(t.get('symbol') == symbol and t.get('action') in ('OPEN_LONG', 'OPEN_SHORT')
                 and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
             return False
@@ -1807,7 +1854,7 @@ class TradingEngine:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=decision['type'], margin=amount, leverage=leverage)
             log_count = len(getattr(self.account, 'logs', []))
             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Closed1M '+decision['type'],
+                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Live1M '+decision['type'],
                 atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
         if not opened:
             recent = getattr(self.account, 'logs', [])[log_count:]
@@ -1915,8 +1962,12 @@ class TradingEngine:
         if closed is None or closed.empty:
             return False
             
-        candidate_bar_id = candidate_bar_id or closed.iloc[-1]['timestamp']
-        reason = v8_reason or "PURE_TREND_V2"
+        from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+        decision = evaluate_v2_frame(frame, price, v8_reason, account=self.account, symbol=symbol)
+        if not decision or decision['side'] != side:
+            return False
+        candidate_bar_id = candidate_bar_id if candidate_bar_id is not None else decision['confirmation_bar_id']
+        reason = decision['type']
         
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
                       signal_code=reason,candidate_bar_id=candidate_bar_id,

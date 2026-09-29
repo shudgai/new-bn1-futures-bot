@@ -55,6 +55,10 @@ def test_runner_to_paper_fill_and_dedup(monkeypatch, side, live):
     engine.strategy = SimpleNamespace(compute_indicators=lambda frame: frame)
     engine.symbol_rotation = SimpleNamespace(get_dynamic_leverage=lambda *args: 2)
     engine._execution_price_is_safe = AsyncMock(return_value=True)
+    if not live:
+        asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
+        assert not account.trades
+        return
     asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
     assert account.positions[symbol]['side'] == side
     assert account.positions[symbol]['entry_atr'] == 1.

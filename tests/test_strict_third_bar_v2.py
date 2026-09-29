@@ -1,4 +1,4 @@
-"""No second-bar or cached legacy entry; symmetric third-bar boundaries."""
+"""Former third-bar regression cases migrated to the authorized second-bar rule."""
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,11 +12,11 @@ from core.services.entry_firewall import validate_account_entry
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 @pytest.mark.parametrize('closed_second', [False,True])
-def test_second_bar_cannot_enter(side, closed_second):
+def test_second_bar_enters_only_while_live(side, closed_second):
     f=candles(side).iloc[:-1].copy()
     f.loc[f.index[-1],'is_closed']=closed_second
-    # First outside bar exists, but two completed outside bars do not precede it.
-    assert evaluate_v2_frame(f) is None
+    # Only one completed outside bar is required; no closed-only fallback.
+    assert bool(evaluate_v2_frame(f)) is (not closed_second)
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
@@ -45,13 +45,13 @@ def test_confirmation_requirements(side,fault):
 def test_small_first_body_allowed_by_latest_spec(side):
     f=candles(side)
     f.loc[f.index[-3],'open']=101.45 if side=='LONG' else 98.55
-    assert evaluate_v2_frame(f)['type']=='THIRD_BAR_CONFIRMED_'+side
+    assert evaluate_v2_frame(f)['type']=='SECOND_BAR_OUTSIDE_'+side
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
 def test_bad_live_bar_does_not_reuse_previous_closed_signal(side):
     f=candles(side,False)
-    assert evaluate_v2_frame(f)
+    assert evaluate_v2_frame(f) is None
     live=f.iloc[-1].copy()
     live['timestamp']+=60000;live['is_closed']=False
     # Previous third bar was opposite-colored; cannot serve as confirmation #2.

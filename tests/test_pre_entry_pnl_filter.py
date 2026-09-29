@@ -48,6 +48,9 @@ def test_invalid_input_fails_closed(fault):
 @pytest.mark.parametrize('live', [True, False])
 def test_direct_entries_and_shared_boundary_block_costs(side, live):
     f=candles(side,live)
+    if not live:
+        assert evaluate_v2_frame(f) is None
+        return
     assert evaluate_v2_frame(f)
     f['atr']=.01
     strategy=PureTrendStrategyV2()
@@ -71,8 +74,8 @@ def test_account_recomputes_deteriorated_risk_before_submit(side):
 def test_closed_candidate_rechecks_latest_quote(side):
     f=candles(side,False)
     decision=evaluate_v2_frame(f)
-    assert decision
-    assert evaluate_v2_frame(f,103. if side=='LONG' else 97.,decision['type']) is None
+    assert decision is None
+    assert evaluate_v2_frame(f,103. if side=='LONG' else 97.) is None
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])

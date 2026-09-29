@@ -1,4 +1,4 @@
-"""One close-only strategy lifecycle, serialized by the engine's symbol lock."""
+"""Live second-bar entry and confirmed exits, serialized by the symbol lock."""
 import copy
 import math
 from core.services.strategies.unified_entry_strategy import confirmed
@@ -89,14 +89,16 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             continue
             
         from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
-        decision = evaluate_v2_frame(frame, quote, account=engine.account, symbol=symbol)
+        diagnostics = {}
+        decision = evaluate_v2_frame(frame, quote, account=engine.account, symbol=symbol, diagnostics=diagnostics)
 
         if decision and decision['side'] == side:
             decision['rule'] = decision['type']
             log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',decision['reason'],decision['confirmation_bar_id'], snapshot=entry_frame_evidence(frame))
             candidates.append(decision)
         else:
-            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',"WAIT_PURE_TREND_V2",float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+            detail = diagnostics if diagnostics.get('side') == side else {}
+            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',detail.get('reason', 'WAIT_PURE_TREND_V2'),float(frame.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame), pnl_filter=detail)
 
     if candidates:
         decision = min(candidates,key=lambda d:d['rule'])

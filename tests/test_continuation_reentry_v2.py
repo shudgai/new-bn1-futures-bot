@@ -31,9 +31,10 @@ def setup(side='LONG', bars=2, standard=False):
 def test_exact_two_bar_cooldown_for_all_entries(side,bars,allowed,standard):
     f,a=setup(side,bars,standard)
     d=evaluate_v2_frame(f,account=a,symbol=SYMBOL)
+    allowed = allowed and standard  # Re-entry must also have a directional closed first bar.
     assert bool(d)==allowed
     if allowed:
-        assert d['type']==('THIRD_BAR_CONFIRMED_' if standard else 'CONTINUATION_RE_ENTRY_')+side
+        assert d['type']=='SECOND_BAR_OUTSIDE_'+side
         ctx=dict(entry_signal_code=d['type'],channel_confirmation_bar_id=d['confirmation_bar_id'])
         assert asyncio.run(validate_account_entry(a,SYMBOL,side,ctx))['type']==d['type']
 
@@ -53,11 +54,11 @@ def test_continuation_denials(fault):
 
 
 def test_restart_and_out_of_order_trade_history():
-    f,a=setup()
+    f,a=setup(standard=True)
     a.trades.insert(0,dict(symbol=SYMBOL,action='OPEN_LONG',id=a.trades[0]['id']-1))
     restored=SimpleNamespace(trades=list(reversed(a.trades)))
     assert successful_exit_ticket(a,SYMBOL)==successful_exit_ticket(restored,SYMBOL)
-    assert evaluate_v2_frame(f,account=restored,symbol=SYMBOL)['type']=='CONTINUATION_RE_ENTRY_LONG'
+    assert evaluate_v2_frame(f,account=restored,symbol=SYMBOL)['type']=='SECOND_BAR_OUTSIDE_LONG'
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -67,7 +68,7 @@ def test_runner_to_real_paper_account_reentry(monkeypatch,side):
     from core.services.symbol_runner import process_single_symbol_runner
     monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
     monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
-    f,a=setup(side)
+    f,a=setup(side,standard=True)
     account=PaperAccount();account.balance=100.;account.trades=a.trades;account.last_closed_at=a.last_closed_at
     engine=object.__new__(TradingEngine);engine.account=account
     engine.tickers={SYMBOL:float(f.iloc[-1].close)}
