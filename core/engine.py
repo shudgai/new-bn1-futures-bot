@@ -1706,6 +1706,24 @@ class TradingEngine:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
         side = signal.get('side')
+        
+        # [終極總閘門] 在任何條件之前，直接抓取實時最新一根【已收盤】的 K 棒，進行嚴格的紅綠 K 物理阻斷！
+        latest_klines = await self.fetch_klines(symbol, timeframe='1m', limit=2, keep_live=False)
+        if latest_klines is not None and not latest_klines.empty:
+            latest_kline = latest_klines.iloc[-1]
+            c_open = float(latest_kline['open'])
+            c_close = float(latest_kline['close'])
+            
+            # 開多總閘門：若最新收盤 K 棒不是實體陽線，嚴格拒絕下單！
+            if side == 'LONG' and c_close <= c_open:
+                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [總閘門拒絕] LONG 開多被拒：最新K棒收陰 (close={c_close} <= open={c_open})', signal.get('candidate_bar_id'))
+                return False
+                
+            # 開空總閘門：若最新收盤 K 棒不是實體陰線，嚴格拒絕下單！
+            if side == 'SHORT' and c_close >= c_open:
+                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [總閘門拒絕] SHORT 開空被拒：最新K棒收陽 (close={c_close} >= open={c_open})', signal.get('candidate_bar_id'))
+                return False
+
         if side not in ('LONG','SHORT') or symbol in self.account.positions:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', signal.get('candidate_bar_id'))
             return False
