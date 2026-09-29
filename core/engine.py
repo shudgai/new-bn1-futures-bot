@@ -1997,16 +1997,20 @@ class TradingEngine:
     _detect_strict_pivot_prealert = staticmethod(detect_strict_pivot_prealert)
 
     async def _execute_confirmed_channel_break(self, symbol, frame, price, side, daily_halt=False, v8_reason=None, size_fraction=1.):
-        from core.services.strategies.unified_entry_strategy import evaluate_closed_entry, had_close
+        from core.services.strategies.unified_entry_strategy import confirmed
         if daily_halt or symbol in self.account.positions:
             self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 1 failed: daily_halt={daily_halt} in_pos={symbol in self.account.positions}', 'WARNING')
             return False
-        ok, reason, decision = evaluate_closed_entry(frame,side,after_close=had_close(self.account,symbol))
-        if not ok or (v8_reason is not None and v8_reason != reason):
-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} _execute_confirmed_channel_break early check 2 failed: ok={ok} reason={reason} v8_reason={v8_reason}', 'WARNING')
+            
+        closed = confirmed(frame)
+        if closed is None or closed.empty:
             return False
+            
+        candidate_bar_id = closed.iloc[-1]['timestamp']
+        reason = v8_reason or "PURE_TREND_V2"
+        
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
-                      signal_code=reason,candidate_bar_id=decision['confirmation_bar_id'],
+                      signal_code=reason,candidate_bar_id=candidate_bar_id,
                       size_fraction=size_fraction)
         return await self._place_structured_entry(symbol,signal,price)
 
