@@ -233,6 +233,29 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if closed is None:
         return wait('WAIT_VALID_CLOSED_1M_DATA')
 
+    # 兩根同色實體要求 (Two consecutive same-colored candles with at least 20% body)
+    c1, c = closed.iloc[-2], closed.iloc[-1]
+    
+    def get_body_info(row):
+        r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
+        r_range = r_high - r_low
+        r_body = r_close - r_open
+        r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
+        return r_body, r_ratio
+        
+    c1_body, c1_ratio = get_body_info(c1)
+    c_body, c_ratio = get_body_info(c)
+    
+    if side == "LONG":
+        if c1_body <= 0 or c_body <= 0:
+            return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
+    else:
+        if c1_body >= 0 or c_body >= 0:
+            return wait("BLOCKED_NOT_TWO_RED_CANDLES")
+            
+    if c1_ratio < 0.20 or c_ratio < 0.20:
+        return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
+
     early = peak_trough_cross(closed, side)
     if early is not None:
         return True, early['reason'], early
@@ -271,27 +294,6 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         'ck_status': ck_status
     }
         
-    # 兩根同色實體要求 (Two consecutive same-colored candles with at least 20% body)
-    def get_body_info(row):
-        r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
-        r_range = r_high - r_low
-        r_body = r_close - r_open
-        r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
-        return r_body, r_ratio
-        
-    c1_body, c1_ratio = get_body_info(c1)
-    c_body, c_ratio = get_body_info(c)
-    
-    if side == "LONG":
-        if c1_body <= 0 or c_body <= 0:
-            return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
-    else:
-        if c1_body >= 0 or c_body >= 0:
-            return wait("BLOCKED_NOT_TWO_RED_CANDLES")
-            
-    if c1_ratio < 0.20 or c_ratio < 0.20:
-        return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
-
     # 開倉觸發條件
     atr = float(c.atr)
     rule = None
