@@ -56,10 +56,16 @@ def trailing_structure_exit(position, closed):
 
 
 def evaluate_trend_exit_and_take_profit(position, candles, indicators):
-    """Exit only on a structural break through KC Middle; ignore MA3/MA15."""
+    """Exit only on a structural break through KC Middle or middle slope turning opposite; ignore MA3/MA15."""
     sign = 1 if position['side'] == 'LONG' else -1
     close = float(candles[-1]['close'])
-    if sign * (close-float(indicators['kc_middle'][-1])) < 0:
+    kc_mid = float(indicators['kc_middle'][-1])
+    prev_kc_mid = float(indicators['kc_middle'][-2])
+    
+    price_broken = sign * (close - kc_mid) < 0
+    trend_reversed = sign * (kc_mid - prev_kc_mid) < 0
+
+    if price_broken or trend_reversed:
         reason = 'EXIT_KC_MIDDLE_DEFENSE_CLOSED'
     else:
         return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')
