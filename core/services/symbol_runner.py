@@ -80,7 +80,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             intra_curr['close'] = quote  # 使用最新 Tick 價格
             intra_prev1 = closed.iloc[-1].to_dict()
             intra_prev2 = closed.iloc[-2].to_dict()
-            decision = PureTrendStrategyV2().evaluate_third_bar_intra_entry(symbol, intra_curr, intra_prev1, intra_prev2)
+            decision = PureTrendStrategyV2().evaluate_third_bar_open_entry(symbol, intra_curr, intra_prev1, intra_prev2)
 
         # 2. 如果盤中沒有觸發，則檢查最新收盤的 K 棒 (針對剛收盤的 K 棒)
         if not decision and len(closed) >= 3:
