@@ -35,6 +35,11 @@ class EntryFirewall:
         
         is_ignition = 'IGNITION' in str(code).upper() or 'BREAKOUT' in str(code).upper()
         
+        # 0. 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
+        channel_width_pct = (upper - lower) / middle
+        if channel_width_pct < 0.005:
+            raise ValueError(f'[FATAL_REJECT] BLOCKED_CHANNEL_BANDWIDTH_TOO_NARROW: 通道寬度 {channel_width_pct*100:.2f}% < 0.5%，死水盤禁止開倉！')
+
         # 1. 焊死硬性前置開倉條件 (徹底移除 Bypass)
         if side == 'LONG':
             if is_ignition:
@@ -57,6 +62,13 @@ class EntryFirewall:
                 middle_falling = middle < prev_middle
                 if not (touched_upper and close < middle and middle_falling):
                     raise ValueError(f'[FATAL_REJECT] REJECTED_INSIDE_CHANNEL_WITHOUT_TOUCH: 交叉空單必須前8根觸碰上軌，且當前價格低中軌且中軌向下')
+
+            # 貼近支撐位禁止做空 (檢查前10根的最低點)
+            recent_10_low = float(closed['low'].iloc[-10:].min()) if len(closed) >= 10 else float(closed['low'].min())
+            distance_to_support = (close - recent_10_low) / recent_10_low
+            if distance_to_support < 0.003:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_NEAR_SUPPORT: 距離近期支撐 {recent_10_low} 僅 {distance_to_support*100:.2f}% < 0.3%，禁止空在強支撐上！')
+
 
         # 2. 基本形態驗證 (維持原邏輯)
         if side == 'LONG':

@@ -233,8 +233,24 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if closed is None:
         return wait('WAIT_VALID_CLOSED_1M_DATA')
 
+    # 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
+    c = closed.iloc[-1]
+    c_upper = float(c.kc_upper)
+    c_lower = float(c.kc_lower)
+    c_middle = float(c.kc_middle)
+    channel_width_pct = (c_upper - c_lower) / c_middle
+    if channel_width_pct < 0.005:
+        return wait('BLOCKED_CHANNEL_BANDWIDTH_TOO_NARROW')
+
+    # 貼近支撐位禁止做空
+    if side == 'SHORT':
+        recent_10_low = float(closed['low'].iloc[-10:].min()) if len(closed) >= 10 else float(closed['low'].min())
+        distance_to_support = (float(c.close) - recent_10_low) / recent_10_low
+        if distance_to_support < 0.003:
+            return wait('BLOCKED_SHORT_NEAR_SUPPORT')
+
     # 兩根同色實體要求 (Two consecutive same-colored candles with at least 20% body)
-    c1, c = closed.iloc[-2], closed.iloc[-1]
+    c1 = closed.iloc[-2]
     
     def get_body_info(row):
         r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
