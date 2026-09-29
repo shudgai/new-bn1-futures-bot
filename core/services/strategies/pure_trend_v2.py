@@ -43,6 +43,8 @@ class PureTrendStrategyV2:
         p2_close = float(bar_prev2['close'])
         p2_kc_upper = float(bar_prev2['kc_upper'])
         p2_kc_lower = float(bar_prev2['kc_lower'])
+        p2_atr = float(bar_prev2.get('atr', 0.0001))
+        p2_body = abs(p2_close - p2_open)
 
         curr_body = abs(c_close - c_open)
         upper_wick = c_high - max(c_open, c_close)
@@ -52,17 +54,13 @@ class PureTrendStrategyV2:
         # 多單開倉判定 (LONG ENTRY)
         # -------------------------------------------------------------
         if c_close > kc_mid:  # 物理禁區：中軌上方才考慮開多
-            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_kc_upper)
+            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_kc_upper) and (p2_body >= 0.5 * p2_atr)
             p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_kc_upper)
 
             # 【A. 破軌雙同色開多：前兩根陽線破軌，第三根收盤確認開多】
             if p2_is_green_break and p1_is_green_break:
                 three_bar_valid = True
-                # 第三根收紅陰線：徹底作廢，嚴禁開倉！
-                if c_close <= c_open:
-                    logger.info(f"{symbol} 破軌第三根收紅K陰線，起爆作廢！")
-                    three_bar_valid = False
-                elif c_close <= kc_upper:
+                if c_close <= kc_upper:
                     logger.info(f"{symbol} 破軌第三根跌回上軌內，作廢開多！")
                     three_bar_valid = False
                 elif upper_wick > 1.5 * curr_body:
@@ -88,17 +86,13 @@ class PureTrendStrategyV2:
         # 空單開倉判定 (SHORT ENTRY)
         # -------------------------------------------------------------
         if c_close < kc_mid:  # 物理禁區：中軌下方才考慮開空
-            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_kc_lower)
+            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_kc_lower) and (p2_body >= 0.5 * p2_atr)
             p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_kc_lower)
 
             # 【A. 破軌雙同色開空：前兩根陰線破軌，第三根收盤確認開空】
             if p2_is_red_break and p1_is_red_break:
                 three_bar_valid = True
-                # 第三根收綠陽線：徹底作廢，嚴禁開倉！
-                if c_close >= c_open:
-                    logger.info(f"{symbol} 破軌第三根收綠K陽線，起爆作廢！")
-                    three_bar_valid = False
-                elif c_close >= kc_lower:
+                if c_close >= kc_lower:
                     logger.info(f"{symbol} 破軌第三根彈回下軌內，作廢開空！")
                     three_bar_valid = False
                 elif lower_wick > 1.5 * curr_body:
@@ -257,6 +251,8 @@ class PureTrendStrategyV2:
         p2_close = float(bar_prev2['close'])
         p2_upper = float(bar_prev2['kc_upper'])
         p2_lower = float(bar_prev2['kc_lower'])
+        p2_atr = float(bar_prev2.get('atr', 0.0001))
+        p2_body = abs(p2_close - p2_open)
 
         # 當前第三根數值
         c_open = float(current_bar['open'])
@@ -269,17 +265,12 @@ class PureTrendStrategyV2:
         # 多單：前雙陽破上軌，第三根只要「穩在 KC 上軌外側」直接開多！
         # -------------------------------------------------------------
         if c_price > kc_mid:
-            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_upper)
+            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_upper) and (p2_body >= 0.5 * p2_atr)
             p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_upper)
 
             if p2_is_green_break and p1_is_green_break:
                 # 條件 1：現價依然穩穩站在 KC 上軌外側
                 if c_price > kc_upper:
-                    # 條件 2：若當根是微紅陰線，回踩深度不能吃掉前一根實體的 50%
-                    if c_price < c_open and (c_open - c_price) > 0.5 * p1_body:
-                        logger.info(f"{symbol} 第三根回踩陰線過深(>50%實體)，放棄開多！")
-                        return None
-
                     # 通過：不問顏色，立刻市價開多！
                     return {
                         'side': 'LONG',
@@ -292,17 +283,12 @@ class PureTrendStrategyV2:
         # 空單：前雙陰破下軌，第三根只要「穩在 KC 下軌外側」直接開空！
         # -------------------------------------------------------------
         if c_price < kc_mid:
-            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_lower)
+            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_lower) and (p2_body >= 0.5 * p2_atr)
             p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_lower)
 
             if p2_is_red_break and p1_is_red_break:
                 # 條件 1：現價依然穩穩站在 KC 下軌外側
                 if c_price < kc_lower:
-                    # 條件 2：若當根是微綠陽線，反彈深度不能吃掉前一根實體的 50%
-                    if c_price > c_open and (c_price - c_open) > 0.5 * p1_body:
-                        logger.info(f"{symbol} 第三根反彈陽線過深(>50%實體)，放棄開空！")
-                        return None
-
                     # 通過：不問顏色，立刻市價開空！
                     return {
                         'side': 'SHORT',
