@@ -233,8 +233,26 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if closed is None:
         return wait('WAIT_VALID_CLOSED_1M_DATA')
 
+    # 位置物理鐵律 (Price vs KC Mid) & 趨勢方向鐵律
+    c1, c = closed.iloc[-2], closed.iloc[-1]
+    c_close = float(c.close)
+    c_middle = float(c.kc_middle)
+    c1_middle = float(c1.kc_middle)
+    c_ma15 = float(c.ma15)
+    c1_ma15 = float(c1.ma15)
+    
+    if side == 'LONG':
+        if c_close <= c_middle:
+            return wait('BLOCKED_LONG_PRICE_BELOW_KC_MID')
+        if c_middle < c1_middle or c_ma15 < c1_ma15:
+            return wait('BLOCKED_LONG_AGAINST_TREND')
+    elif side == 'SHORT':
+        if c_close >= c_middle:
+            return wait('BLOCKED_SHORT_PRICE_ABOVE_KC_MID')
+        if c_middle > c1_middle or c_ma15 > c1_ma15:
+            return wait('BLOCKED_SHORT_AGAINST_TREND')
+
     # 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
-    c = closed.iloc[-1]
     c_upper = float(c.kc_upper)
     c_lower = float(c.kc_lower)
     c_middle = float(c.kc_middle)

@@ -35,7 +35,22 @@ class EntryFirewall:
         
         is_ignition = 'IGNITION' in str(code).upper() or 'BREAKOUT' in str(code).upper()
         
-        # 0. 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
+        # 0. 位置物理鐵律 (Price vs KC Mid) & 趨勢方向鐵律
+        ma15 = float(c.ma15)
+        prev_ma15 = float(c1.ma15)
+        
+        if side == 'LONG':
+            if close <= middle:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_PRICE_BELOW_KC_MID: 多單收盤價 {close} 未高於中軌 {middle}')
+            if middle < prev_middle or ma15 < prev_ma15:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_AGAINST_TREND: 嚴禁在空頭趨勢(中軌或MA15向下)時摸底做多')
+        elif side == 'SHORT':
+            if close >= middle:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_PRICE_ABOVE_KC_MID: 空單收盤價 {close} 未低於中軌 {middle}')
+            if middle > prev_middle or ma15 > prev_ma15:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_AGAINST_TREND: 嚴禁在多頭趨勢(中軌或MA15向上)時摸頂做空')
+        
+        # 0.1 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
         channel_width_pct = (upper - lower) / middle
         if channel_width_pct < 0.005:
             raise ValueError(f'[FATAL_REJECT] BLOCKED_CHANNEL_BANDWIDTH_TOO_NARROW: 通道寬度 {channel_width_pct*100:.2f}% < 0.5%，死水盤禁止開倉！')
