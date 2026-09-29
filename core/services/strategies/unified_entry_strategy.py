@@ -215,30 +215,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
 
     # (已依照妖幣鐵律刪除：通道寬度門檻與支撐位門檻)
 
-    # 兩根同色實體要求 (Two consecutive same-colored candles with at least 20% body)
-    c1 = closed.iloc[-2]
-    
-    def get_body_info(row):
-        r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
-        r_range = r_high - r_low
-        r_body = r_close - r_open
-        r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
-        return r_body, r_ratio
-        
-    c1_body, c1_ratio = get_body_info(c1)
-    c_body, c_ratio = get_body_info(c)
-    
-    if side == "LONG":
-        if c1_body <= 0 or c_body <= 0:
-            return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
-    else:
-        if c1_body >= 0 or c_body >= 0:
-            return wait("BLOCKED_NOT_TWO_RED_CANDLES")
-            
-    if c1_ratio < 0.20 or c_ratio < 0.20:
-        return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
-
-
+    # 兩根同色實體要求移至 rule 判定後，以豁免 IGNITION
 
     if side == 'LONG':
         problem = long_entry_trend_problem(closed)
@@ -342,6 +319,29 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     # ══════════════════════════════════════════════════════════
     if rule not in ('IGNITION', 'TREND_BREAKOUT'):
         return wait(f'BLOCKED_ILLEGAL_RULE_{rule}_ONLY_IGNITION_BREAKOUT_ALLOWED')
+
+    # IGNITION 起爆豁免「必須連續兩根同色」
+    if rule != 'IGNITION':
+        c1 = closed.iloc[-2]
+        def get_body_info(row):
+            r_open, r_close, r_high, r_low = float(row.open), float(row.close), float(row.high), float(row.low)
+            r_range = r_high - r_low
+            r_body = r_close - r_open
+            r_ratio = abs(r_body) / r_range if r_range > 1e-9 else 0
+            return r_body, r_ratio
+            
+        c1_body, c1_ratio = get_body_info(c1)
+        c_body_val, c_ratio = get_body_info(c)
+        
+        if side == "LONG":
+            if c1_body <= 0 or c_body_val <= 0:
+                return wait("BLOCKED_NOT_TWO_GREEN_CANDLES")
+        else:
+            if c1_body >= 0 or c_body_val >= 0:
+                return wait("BLOCKED_NOT_TWO_RED_CANDLES")
+                
+        if c1_ratio < 0.20 or c_ratio < 0.20:
+            return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
 
     # IGNITION / TREND_BREAKOUT 信號保證動能，豁免滯後 MA3 斜率
     if rule not in ('IGNITION', 'TREND_BREAKOUT'):

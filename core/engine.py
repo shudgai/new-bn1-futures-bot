@@ -1842,16 +1842,16 @@ class TradingEngine:
                     c1_body = float(c1.close) - float(c1.open)
                     
                     if side == 'LONG':
-                        if c_body <= 0 or c1_body <= 0:
-                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開多！最近兩根K棒非雙綠實體 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
+                        if (c_body <= 0 or c1_body <= 0) and 'IGNITION' not in final['reason']:
+                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開多！最近兩根K棒非雙綠實體且非起爆 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
                             return False
                             
                             
                         # (依妖幣鐵律刪除：前高阻力攔截)
                             
                     elif side == 'SHORT':
-                        if c_body >= 0 or c1_body >= 0:
-                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！最近兩根K棒非雙紅實體 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
+                        if (c_body >= 0 or c1_body >= 0) and 'IGNITION' not in final['reason']:
+                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！最近兩根K棒非雙紅實體且非起爆 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
                             return False
                         
                         ck_up = float(c.kc_middle) > float(c1.kc_middle) and float(c.kc_upper) >= float(c1.kc_upper)
