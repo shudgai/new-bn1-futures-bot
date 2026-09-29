@@ -292,14 +292,23 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
 
 
 
-    early = peak_trough_cross(closed, side)
-    if early is not None:
-        return True, early['reason'], early
-
     if side == 'LONG':
         problem = long_entry_trend_problem(closed)
         if problem:
             return wait(problem)
+    else:
+        # 嚴格的「趨勢全線向下共振」防護門檻 (所有空單必須通過)
+        kc_mid_falling = float(c.kc_middle) < float(c1.kc_middle)
+        ma15_falling = float(c.ma15) < float(c1.ma15)
+        close_below_mid = float(c.close) < float(c.kc_middle)
+        bearish_aligned = float(c.ma3) < float(c.ma15) and float(c.ma15) <= float(c.kc_middle)
+        
+        if not (kc_mid_falling and ma15_falling and close_below_mid and bearish_aligned):
+            return wait('BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE')
+
+    early = peak_trough_cross(closed, side)
+    if early is not None:
+        return True, early['reason'], early
 
     c0, c1, c = (closed.iloc[i] for i in (-3, -2, -1))
     sign = 1 if side == 'LONG' else -1
@@ -381,15 +390,6 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
                     rule = 'TREND_BREAKOUT'
                 
     else:
-        # 嚴格的「趨勢全線向下共振」防護門檻 (所有空單必須通過)
-        kc_mid_falling = float(c.kc_middle) < float(c1.kc_middle)
-        ma15_falling = float(c.ma15) < float(c1.ma15)
-        close_below_mid = float(c.close) < float(c.kc_middle)
-        bearish_aligned = float(c.ma3) < float(c.ma15) and float(c.ma15) <= float(c.kc_middle)
-        
-        if not (kc_mid_falling and ma15_falling and close_below_mid and bearish_aligned):
-            return wait('BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE')
-
         ma_aligned = float(c.ma3) < float(c.ma15)
         body = float(c.open) - float(c.close)
         lower_wick = float(c.close) - float(c.low)
