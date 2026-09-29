@@ -35,6 +35,64 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     if price_broken or trend_reversed:
         reason = 'EXIT_KC_MIDDLE_DEFENSE_CLOSED'
     
+    # 極端異常 K 線緊急出場 (Abnormal Engulfing / V-Reversal)
+    if not reason and len(closed) >= 3:
+        if sign == -1:  # 空單持倉，偵測底部異常暴拉大陽線
+            c_body = close - c_open
+            # 條件 1: 實體大陽線 >= 1.5 ATR
+            if c_body >= 1.5 * atr:
+                reason = 'EXIT_SHORT_ABNORMAL_BULL_CLOSED'
+            else:
+                # 條件 2: 實體完全吞沒前 2 根陰線的最高價與開盤價
+                prev_2 = closed.iloc[-3:-1]
+                if all((float(row.close) < float(row.open)) for _, row in prev_2.iterrows()):
+                    max_prev_high_open = max(float(prev_2['high'].max()), float(prev_2['open'].max()))
+                    if close > max_prev_high_open and c_open <= float(prev_2['close'].min()):
+                        reason = 'EXIT_SHORT_ABNORMAL_BULL_CLOSED'
+                        
+        elif sign == 1:  # 多單持倉，偵測頂部異常暴跌大陰線
+            c_body = c_open - close
+            # 條件 1: 實體大陰線 >= 1.5 ATR
+            if c_body >= 1.5 * atr:
+                reason = 'EXIT_LONG_ABNORMAL_BEAR_CLOSED'
+            else:
+                # 條件 2: 實體完全吞沒前 2 根陽線的最低價與開盤價
+                prev_2 = closed.iloc[-3:-1]
+                if all((float(row.close) > float(row.open)) for _, row in prev_2.iterrows()):
+                    min_prev_low_open = min(float(prev_2['low'].min()), float(prev_2['open'].min()))
+                    if close < min_prev_low_open and c_open >= float(prev_2['close'].max()):
+                        reason = 'EXIT_LONG_ABNORMAL_BEAR_CLOSED'
+
+    # 狀態追蹤：記錄是否曾衝出外軌 (破軌加速段)
+    if not position.get('has_broken_outer_band'):
+        if sign == 1 and c_high > float(c.kc_upper):
+            position['has_broken_outer_band'] = True
+        elif sign == -1 and c_low < float(c.kc_lower):
+            position['has_broken_outer_band'] = True
+            
+    has_broken_outer = position.get('has_broken_outer_band', False)
+
+    # 外軌加速 MA3 動能平倉 (僅限曾破外軌且已大幅獲利)
+    if not reason and has_broken_outer and len(closed) >= 2:
+        entry_price = float(position['entry_price'])
+        unrealized_profit = sign * (close - entry_price)
+        
+        # 條件 2：當前未實現利潤 >= 1.0 * ATR
+        if unrealized_profit >= 1.0 * atr:
+            ma3_curr = float(c.ma3)
+            ma3_prev = float(c1.ma3)
+            
+            if sign == -1:  # 空單
+                # 條件 3：收盤價站回下軌之內 (close > kc_lower)
+                # 條件 4：MA3 拐頭向上 (ma3_curr > ma3_prev)
+                if close > float(c.kc_lower) and ma3_curr > ma3_prev:
+                    reason = 'EXIT_SHORT_OUTER_BAND_MA3_TURN'
+            elif sign == 1:  # 多單
+                # 條件 3：收盤價跌回上軌之內 (close < kc_upper)
+                # 條件 4：MA3 拐頭向下 (ma3_curr < ma3_prev)
+                if close < float(c.kc_upper) and ma3_curr < ma3_prev:
+                    reason = 'EXIT_LONG_OUTER_BAND_MA3_TURN'
+
     if not reason:
         return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')
     return dict(should_exit=True, action='FULL_CLOSE', reason=reason)
