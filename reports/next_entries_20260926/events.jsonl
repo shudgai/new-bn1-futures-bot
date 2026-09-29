@@ -1,0 +1,42 @@
+{"event": "started", "timestamp": 1790399731.9407816, "baseline_id": 1790399731940.7815, "paper_trading": true, "symbols": ["1000PEPE/USDT", "龙虾/USDT"]}
+{"event": "signal_or_gate_log", "timestamp": 1790399731.9410028, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399733.6085408, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399735.25381, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399736.930583, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399738.564891, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399740.2562292, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399741.894145, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399743.5645113, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399745.2010047, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399746.858999, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399748.5049355, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399750.2576528, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399751.9004476, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399753.6123087, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399755.2655058, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399756.898696, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399758.5541832, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399760.3307981, "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 軌道內部嚴禁開空！價格 0.0044747 仍在上/下軌之內！", "level": "WARNING"}
+{"event": "signal_or_gate_log", "timestamp": 1790399761.6452913, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790399700000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399761.672255, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790399700000.0 reason=WAIT_NEW_A_TO_E_TRIGGER", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399761.881738, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790399700000.0 reason=BLOCKED_MA3_MA15_ALIGNMENT", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399761.9095283, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790399700000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399820.8245018, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790399760000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399820.8514435, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790399760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399821.0701525, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790399760000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399821.0977654, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790399760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER", "level": "INFO"}
+{"event": "next_open", "observed_at": 1790399878.6941893, "paper_trading": true, "trade": {"id": 1790399874506, "time": "09/26 13:17:54", "symbol": "龙虾/USDT", "action": "OPEN_SHORT", "price": 0.11315868, "qty": 3017.79841934, "amount": 68.29801893842304, "leverage": 5, "reason": "Closed1M CLOSED_E_SHORT", "channel_confirmation_bar_id": 1790399760000.0}, "fill_notional": 341.4900856386008, "margin_times_leverage": 341.49009469211524, "notional_difference": -9.053514418155828e-06, "balance_after": 136.43, "available_after": 68.13}
+{"event": "signal_or_gate_log", "timestamp": 1790399873.6778884, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790399760000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399873.7003973, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790399760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399873.9245691, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790399760000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399873.947266, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790399760000.0 reason=CLOSED_E_SHORT", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399874.4711306, "text": "🧮 [資金換算] 龙虾/USDT | 本金保證金=68.2980U, 槓桿=5x, 名義價值=341.4901U, 價格=0.113159, 下單數量(qty)=3017.7984", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399874.5065372, "text": "🚀 [紙上交易] 開倉成功 [SHORT] 龙虾/USDT @ 0.113159 (5x，含滑點，SL=0.114434, TP=0)", "level": "SUCCESS"}
+{"event": "signal_or_gate_log", "timestamp": 1790399881.798209, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790399820000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399881.8273735, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790399820000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY", "level": "INFO"}
+{"event": "next_open", "observed_at": 1790399944.351021, "paper_trading": true, "trade": {"id": 1790399943445, "time": "09/26 13:19:03", "symbol": "1000PEPE/USDT", "action": "OPEN_SHORT", "price": 0.00446505, "qty": 76099.17910387, "amount": 67.95738043997704, "leverage": 5, "reason": "Closed1M CLOSED_B_SHORT", "channel_confirmation_bar_id": 1790399880000.0}, "fill_notional": 339.7866396577347, "margin_times_leverage": 339.7869021998852, "notional_difference": -0.0002625421504944825, "balance_after": 136.26, "available_after": 0.0}
+{"event": "signal_or_gate_log", "timestamp": 1790399941.4960418, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790399880000.0 reason=BLOCKED_MA3_SLOPE", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399941.5246441, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790399880000.0 reason=WAIT_NEW_A_TO_E_TRIGGER", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399943.0053484, "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790399880000.0 reason=CLOSED_B_SHORT", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399943.4254827, "text": "🧮 [資金換算] 1000PEPE/USDT | 本金保證金=67.9574U, 槓桿=5x, 名義價值=339.7869U, 價格=0.00446505, 下單數量(qty)=76099.1791", "level": "INFO"}
+{"event": "signal_or_gate_log", "timestamp": 1790399943.4456155, "text": "🚀 [紙上交易] 開倉成功 [SHORT] 1000PEPE/USDT @ 0.00446505 (5x，含滑點，SL=0.00447339, TP=0)", "level": "SUCCESS"}

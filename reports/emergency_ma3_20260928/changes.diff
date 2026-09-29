@@ -1,0 +1,240 @@
+--- a/core/services/entry_firewall.py
++++ b/core/services/entry_firewall.py
+@@ -31,7 +31,7 @@
+ 
+     from core.services.exits.profit_protection_service import assess_market_regime
+     regime = assess_market_regime(closed, side, None)
+-    if regime == 'CHOPPY':
++    if not is_ignition and regime == 'CHOPPY':
+         raise ValueError(f'[FATAL_REJECT] 當前為 CHOPPY 猴市震盪區間，拒絕任何破底/破軌追單！')
+ 
+     if side == 'SHORT':
+@@ -42,7 +42,7 @@
+         if close > lower and (opening - close) < 0.6 * atr:
+             raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 0.6 ATR: {0.6*atr:.8f}')
+         distance_from_middle = abs(close - middle)
+-        if distance_from_middle > 2.2 * atr:
++        if not is_ignition and distance_from_middle > 2.2 * atr:
+             raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追空！')
+     else:
+         if not is_ignition and upper <= prev_upper:
+@@ -52,7 +52,7 @@
+         if close < upper and (close - opening) < 0.6 * atr:
+             raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 0.6 ATR: {0.6*atr:.8f}')
+         distance_from_middle = abs(close - middle)
+-        if distance_from_middle > 2.2 * atr:
++        if not is_ignition and distance_from_middle > 2.2 * atr:
+             raise ValueError(f'[FATAL_REJECT] 拒絕追多：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追多！')
+ 
+     if 'CLOSED_C' in code:
+--- a/core/services/exits/dual_track_exit_service.py
++++ b/core/services/exits/dual_track_exit_service.py
+@@ -9,7 +9,7 @@
+ 
+ POLICY = 'closed_1m_v4_ma3_margin_roe'
+ DUAL_TRACK_STATE_KEYS = [
+-    'closed_exit_state', 'sl', 'tp',
++    'closed_exit_state', 'sl', 'tp', 'ma3_trend_hold',
+     'entry_atr', 'atr_sl', 'atr_tp', 'atr_protection_version'
+ ]
+ 
+@@ -19,6 +19,33 @@
+ 
+ # ─── ATR 防線乘數 ──────────────────────────────────────────────────
+ SL_INIT_MULT       = 1.5    # 初始止損乘數
++
++
++def strong_trend_observed(closed, side):
++    """Find an aligned pair in the six completed bars before the pullback.
++
++    Six bars and half an ATR inside the outer rail are implementation
++    defaults. Looking back also protects existing positions after restart
++    when one or two small pullback bars have already occurred.
++    """
++    if side not in ('LONG', 'SHORT') or len(closed) < 3:
++        return False
++    sign = 1 if side == 'LONG' else -1
++    rows = closed.iloc[-7:-1]
++    keys = ('ma15', 'kc_upper', 'kc_middle', 'kc_lower')
++    rail = 'kc_upper' if side == 'LONG' else 'kc_lower'
++    for index in range(1, len(rows)):
++        a, b = rows.iloc[index-1], rows.iloc[index]
++        values = [float(row[k]) for row in (a, b)
++                  for k in (*keys, 'close', 'atr')]
++        if not all(math.isfinite(v) and v > 0 for v in values):
++            continue
++        if (all(sign * (float(b[k]) - float(a[k])) > 0 for k in keys)
++                and all(sign * (float(row.close) - float(row[rail])) >= -.5 * float(row.atr)
++                        and sign * (float(row.close) - float(row.ma15)) > 0
++                        for row in (a, b))):
++            return True
++    return False
+ 
+ 
+ def evaluate_trend_exit_and_take_profit(position: dict, candles: list, indicators: dict) -> dict:
+@@ -35,12 +62,21 @@
+     ma3_prev = float(indicators['ma3'][-2])
+     
+     buffer = 0.2 * atr
++    sign = 1 if side == 'LONG' else -1
++    trend_break = False
++    for key in ('ma15', 'kc_middle'):
++        values = indicators.get(key, [])
++        if values:
++            level = float(values[-1])
++            if math.isfinite(level) and level > 0 and sign * (curr_close - level) < 0:
++                trend_break = True
++    allow_ma3_exit = not position.get('ma3_trend_hold', False) or trend_break
+     # -------------------------------------------------------------------------
+     # 1. 多單鎖利與出場 (LONG)
+     # -------------------------------------------------------------------------
+     if side == "LONG":
+         # A. 頂部動能轉向全平：MA3 拐頭走平/向下 且 收盤跌破 MA3 (包含 0.2 ATR 防洗盤緩衝)
+-        if ma3_curr <= ma3_prev and curr_close < (ma3_curr - buffer):
++        if allow_ma3_exit and ma3_curr <= ma3_prev and curr_close < (ma3_curr - buffer):
+             print(f"[MA3_EXIT_LONG] curr_close={curr_close:.6f}, ma3_curr={ma3_curr:.6f}, buffer={buffer:.6f}, trigger_reason=MA3_PEAK_REVERSAL_FULL_CLOSE")
+             return {
+                 "should_exit": True,
+@@ -58,7 +94,7 @@
+     # -------------------------------------------------------------------------
+     elif side == "SHORT":
+         # A. 底部動能轉向全平：MA3 拐頭走平/向上 且 收盤突破 MA3 (包含 0.2 ATR 防抽容忍空間)
+-        if ma3_curr >= ma3_prev and curr_close > (ma3_curr + buffer):
++        if allow_ma3_exit and ma3_curr >= ma3_prev and curr_close > (ma3_curr + buffer):
+             print(f"[MA3_EXIT_SHORT] curr_close={curr_close:.6f}, ma3_curr={ma3_curr:.6f}, buffer={buffer:.6f}, trigger_reason=MA3_BOTTOM_REVERSAL_FULL_CLOSE")
+             return {
+                 "should_exit": True,
+@@ -119,7 +155,9 @@
+         
+         indicators = {
+             'atr': [float(c1.atr), float(c.atr)],
+-            'ma3': [float(c1.ma3), float(c.ma3)]
++            'ma3': [float(c1.ma3), float(c.ma3)],
++            'ma15': [float(c1.ma15), float(c.ma15)],
++            'kc_middle': [float(c1.kc_middle), float(c.kc_middle)]
+         }
+         
+         # 確保 stop_loss 在 position 裡， fallback 給 sl
+@@ -130,6 +168,10 @@
+                 atr = float(position.get('entry_atr') or c1.atr)
+                 position['stop_loss'] = entry - sign * SL_INIT_MULT * atr
+ 
++        # Once observed during this position, do not lose protection just
++        # because the next pullback weakens the current rail slope.
++        if strong_trend_observed(closed, position['side']):
++            position['ma3_trend_hold'] = True
+         result = evaluate_trend_exit_and_take_profit(position, candles, indicators)
+         
+         # update sl mappings
+--- a/core/services/exits/profit_protection_service.py
++++ b/core/services/exits/profit_protection_service.py
+@@ -57,6 +57,20 @@
+         return 'UNKNOWN'
+ 
+ 
++def assess_market_regime(frame, side, opened_at=None):
++    """Closed-candle adapter for the legacy live-tail trend classifier."""
++    from core.services.candle_data import closed_entry_candles
++    if side not in ('LONG', 'SHORT'):
++        return 'UNKNOWN'
++    closed = closed_entry_candles(frame)
++    if closed.empty:
++        return 'UNKNOWN'
++    # trend_style excludes a live tail. Supply a sentinel so it evaluates
++    # exactly the completed rows, including the most recent completed bar.
++    with_tail = pd.concat([closed, closed.iloc[-1:]], ignore_index=True)
++    return trend_style(with_tail, side, opened_at)
++
++
+ def kc_mid_reversed(frame, side):
+     """Compare the last two closed midlines; the final row is the live bar."""
+     if side not in ('LONG', 'SHORT') or frame is None or len(frame) < 3:
+--- /dev/null
++++ b/tests/test_emergency_ma3_trend_hold.py
+@@ -0,0 +1,86 @@
++import asyncio
++import copy
++import subprocess
++import sys
++import pandas as pd
++import pytest
++from core.services.exits.dual_track_exit_service import DualTrackExitStrategy
++from core.services.exits.profit_protection_service import assess_market_regime
++from test_entry_e2e_20260928 import candles as entry_candles
++from core.services.entry_firewall import validate_entry_frame
++from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
++
++
++def case(side='LONG'):
++    f=entry_candles()
++    f['high']=110.;f['low']=90.;f['atr']=2.
++    f.loc[3,['close','ma3','ma15','kc_upper','kc_middle','kc_lower']]=[106.,106.,102.,105.,101.,97.]
++    f.loc[4,['close','ma3','ma15','kc_upper','kc_middle','kc_lower']]=[107.,107.,103.,106.,102.,98.]
++    f.loc[5,['close','ma3','ma15','kc_upper','kc_middle','kc_lower']]=[104.,106.,103.5,102.9,102.5,99.]
++    # Pullback may narrow the latest upper rail; prior trend still protects it.
++    if side=='SHORT':
++        original=f.copy()
++        for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),('kc_lower','kc_upper'),('kc_middle','kc_middle')]:f[a]=200-original[b]
++    p=dict(side=side,entry_price=100.,open_timestamp=1.,sl=90. if side=='LONG' else 110.)
++    return f,p
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_small_pullback_holds_and_survives_restart(side):
++    f,p=case(side);strategy=DualTrackExitStrategy()
++    assert strategy.evaluate_exit(p,f) is None
++    assert p['ma3_trend_hold'] is True
++    f.loc[4,'ma15']=f.loc[3,'ma15']  # recent trend no longer passes detector
++    assert strategy.evaluate_exit(copy.deepcopy(p),f) is None
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++@pytest.mark.parametrize('level',['ma15','kc_middle'])
++def test_confirmed_break_allows_exit(side,level):
++    f,p=case(side);p['ma3_trend_hold']=True
++    sign=1 if side=='LONG' else -1
++    f.loc[5,'close']=f.loc[5,level]-sign*.1
++    assert DualTrackExitStrategy().evaluate_exit(p,f)==('MA3_PEAK_REVERSAL_FULL_CLOSE' if side=='LONG' else 'MA3_BOTTOM_REVERSAL_FULL_CLOSE')
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_touch_is_not_break_and_live_candle_cannot_exit(side):
++    f,p=case(side);p['ma3_trend_hold']=True
++    f.loc[5,'close']=f.loc[5,'ma15']
++    assert DualTrackExitStrategy().evaluate_exit(p,f) is None
++    live=f.iloc[-1].copy();live['timestamp']+=60000;live['is_closed']=False
++    live['close']=91. if side=='LONG' else 109.
++    f=pd.concat([f,pd.DataFrame([live])],ignore_index=True)
++    assert DualTrackExitStrategy().evaluate_exit(p,f) is None
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_hard_stop_still_exits(side):
++    f,p=case(side);p['ma3_trend_hold']=True
++    p['stop_loss']=105. if side=='LONG' else 95.
++    assert DualTrackExitStrategy().evaluate_exit(p,f)=='EXIT_BREAKEVEN'
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_firewall_has_no_missing_import_and_strong_signal_override(side):
++    f=entry_candles(side)
++    assert assess_market_regime(f,side) in ('UNKNOWN','CHOPPY','STACKED','SMOOTH')
++    code=evaluate_closed_entry(f,side)[1]
++    assert validate_entry_frame(f,side,code)['action']=='ENTER'
++
++
++def test_fresh_process_imports():
++    result=subprocess.run([sys.executable,'-c',
++        'from core.services.exits.profit_protection_service import assess_market_regime; import core.services.entry_firewall; import core.services.strategies.unified_entry_strategy; import core.engine'],capture_output=True,text=True)
++    assert result.returncode==0,result.stderr
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_existing_position_after_two_pullbacks_recovers_trend_context(side):
++    f,p=case(side)
++    keys=['close','ma3','ma15','kc_upper','kc_middle','kc_lower']
++    a,b=f.loc[3,keys].copy(),f.loc[4,keys].copy()
++    f.loc[2,keys]=a;f.loc[3,keys]=b
++    f.loc[4,keys]=f.loc[5,keys]
++    assert DualTrackExitStrategy().evaluate_exit(p,f) is None
++    assert p['ma3_trend_hold'] is True

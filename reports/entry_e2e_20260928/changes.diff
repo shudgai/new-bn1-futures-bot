@@ -1,0 +1,966 @@
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -1621,12 +1621,6 @@
+             return None
+         frame = self.strategy.compute_indicators(frame.copy())
+         
+-        # 若有指定 candidate_bar_id，裁切對齊至該確認 K 棒
+-        if candidate_bar_id is not None and 'timestamp' in frame.columns:
+-            matching_rows = frame[frame['timestamp'] <= candidate_bar_id]
+-            if not matching_rows.empty:
+-                frame = matching_rows
+-
+         ok, _, decision = evaluate_closed_entry(frame, side, after_close=had_close(self.account, symbol))
+         if not ok:
+             return None
+@@ -1691,39 +1685,51 @@
+         if locks is None:
+             locks = self._channel_entry_locks = {}
+         async with locks.setdefault(symbol,asyncio.Lock()):
+-            return await self._place_structured_entry_locked(symbol,signal,live_price)
++            side, bar = signal.get('side'), signal.get('candidate_bar_id')
++            log_entry_gate(self, symbol, side, 'EXECUTION', 'VALIDATING', bar)
++            try:
++                opened = await self._place_structured_entry_locked(symbol,signal,live_price)
++            except Exception as exc:
++                log_entry_gate(self, symbol, side, 'EXECUTION',
++                               f'{type(exc).__name__}: {exc}', bar)
++                return False
++            if opened:
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'FILLED', bar)
++            elif getattr(self, '_entry_gate_diagnostics', {}).get((symbol, side, 'EXECUTION')) == (bar, 'VALIDATING'):
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_REJECTED', bar)
++            return opened
+ 
+     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
+         from core.services.strategies.unified_entry_strategy import RULE_CODES, evaluate_closed_entry, had_close
+         if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'
+                 or signal.get('signal_code') not in RULE_CODES):
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
+             return False
+         side = signal.get('side')
+         if side not in ('LONG','SHORT') or symbol in self.account.positions:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', signal.get('candidate_bar_id'))
+             return False
+         if symbol in self.account.pending_limit_orders:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 3 failed: in_pending=True', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 3 failed: in_pending=True', signal.get('candidate_bar_id'))
+             return False
+         if MAX_SLOTS > 0 and len(self.account.positions)+len(self.account.pending_limit_orders) >= MAX_SLOTS:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 4 failed: MAX_SLOTS reached', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 4 failed: MAX_SLOTS reached', signal.get('candidate_bar_id'))
+             return False
+         daily = getattr(self.account,'daily_loss_limit_hit',None)
+         if daily and daily()[0]:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 5 failed: daily loss limit hit', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 5 failed: daily loss limit hit', signal.get('candidate_bar_id'))
+             return False
+         # Execution-quality checks do not decide candle direction or generate signals.
+         if not await self._execution_price_is_safe(symbol,side):
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', signal.get('candidate_bar_id'))
+             return False
+         snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'))
+         if snapshot is None:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', signal.get('candidate_bar_id'))
+             return False
+         decision = snapshot['decision']
+         if decision['reason'] != signal['signal_code']:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', signal.get('candidate_bar_id'))
+             return False
+         bar = decision['confirmation_bar_id']
+         used = getattr(self,'_closed_entry_fills',None)
+@@ -1732,7 +1738,7 @@
+         identity = (symbol,side,bar)
+         if identity in used or any(t.get('symbol') == symbol and t.get('action') == 'OPEN_'+side
+                 and t.get('channel_confirmation_bar_id') == bar for t in self.account.trades):
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} bar {bar} already filled (重複開倉攔截)', signal.get('candidate_bar_id'))
+             return False
+         leverage = self.symbol_rotation.get_dynamic_leverage(symbol,int(signal.get('score') or 100))
+         wallet = float(self.account.get_wallet_balance())
+@@ -1740,23 +1746,26 @@
+         amount = self._half_wallet_entry_margin(wallet, available, leverage)
+ 
+         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
++            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
+             return False
+         # Final physical gate: same completed bar, same side and exact A-E reason.
+         valid, failure, final = evaluate_closed_entry(snapshot['frame'],side,after_close=had_close(self.account,symbol))
+         if not valid or final['reason'] != signal['signal_code'] or symbol in self.account.positions:
+-            log_entry_gate(self,symbol,side,'FINAL_CLOSED_GATE',failure,bar)
++            log_entry_gate(self,symbol,side,'EXECUTION',failure,bar)
+             return False
+         if daily and daily()[0]:
++            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS', bar)
+             return False
+         price = float(getattr(self,'tickers',{}).get(symbol) or snapshot['price'])
+         if not math.isfinite(price) or price <= 0:
++            log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
+             return False
+ 
+         from core.services.entry_firewall import validate_entry_frame
+         try:
+             validate_entry_frame(snapshot['frame'], side, final['reason'])
+         except ValueError as e:
+-            self.account.log(f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', 'WARNING')
++            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', signal.get('candidate_bar_id'))
+             return False
+         self.account.entry_frame_provider = self._entry_boundary_frame
+ 
+@@ -1766,9 +1775,15 @@
+                        channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
+                        wave_regime='TREND',entry_snapshot=dict(signal_code=final['reason'],
+                        closed_bar=bar,closed_price=final['close_price'],quote_price=price))
++        log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
++        log_count = len(getattr(self.account, 'logs', []))
+         opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+             amount_usdt=amount,sl=price-sign*1.5*atr,tp=0.,reason='Closed1M '+final['reason'],
+             atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
++        if not opened:
++            recent = getattr(self.account, 'logs', [])[log_count:]
++            detail = next((item.get('text', '') for item in reversed(recent) if item.get('level') in ('ERROR', 'WARNING', 'DANGER')), 'ACCOUNT_REJECTED')
++            log_entry_gate(self, symbol, side, 'EXECUTION', detail, bar)
+         if opened:
+             used.add(identity)
+             # Keep bounded in-memory dedupe; persisted fills remain authoritative.
+--- a/core/paper_account.py
++++ b/core/paper_account.py
+@@ -500,169 +500,8 @@
+ 
+         is_manual = entry_context.get('is_manual') in [True, 'true', 'TRUE'] or entry_context.get('manual_entry') in [True, 'true', 'TRUE'] or entry_context.get('source') == 'MANUAL' or reason == 'MANUAL'
+         
+-        # ------------------ 以下為新開倉硬核審查 (MASTER BREAKER) ------------------
+-        provider = getattr(self, 'entry_frame_provider', None)
+-        is_exempt = 'TREND_BREAKOUT' in str(reason).upper() or 'IGNITION' in str(reason).upper()
+-        if provider and not is_manual and not is_exempt:
+-            from core.services.strategies.unified_entry_strategy import confirmed
+-            try:
+-                frame = await provider(symbol)
+-                closed = confirmed(frame)
+-                if closed is not None and not closed.empty and len(closed) >= 2:
+-                    last_bar = closed.iloc[-1]
+-                    prev_bar = closed.iloc[-2]
+-                    
+-                    close_p = float(last_bar['close'])
+-                    open_p = float(last_bar['open'])
+-                    body = abs(close_p - open_p)
+-                    _atr = float(last_bar['atr'])
+-                    
+-                    kc_upper_curr = float(last_bar['kc_upper'])
+-                    kc_lower_curr = float(last_bar['kc_lower'])
+-                    kc_upper_prev = float(prev_bar['kc_upper'])
+-                    kc_lower_prev = float(prev_bar['kc_lower'])
+-                    
+-                    if 'MA3' in last_bar:
+-                        ma3_curr = float(last_bar['MA3'])
+-                        ma3_prev = float(prev_bar['MA3'])
+-                    elif 'ma3' in last_bar:
+-                        ma3_curr = float(last_bar['ma3'])
+-                        ma3_prev = float(prev_bar['ma3'])
+-                    else:
+-                        close_col = closed['close']
+-                        ma3_curr = float(close_col.iloc[-3:].mean())
+-                        ma3_prev = float(close_col.iloc[-4:-1].mean())
+-                        
+-                    if 'MA15' in last_bar:
+-                        ma15_curr = float(last_bar['MA15'])
+-                    elif 'ma15' in last_bar:
+-                        ma15_curr = float(last_bar['ma15'])
+-                    else:
+-                        close_col = closed['close']
+-                        ma15_curr = float(close_col.iloc[-15:].mean())
+-
+-                    # 計算冷卻 (以秒數換算 K 棒數)
+-                    last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
+-                    cooldown_bars = (__import__('time').time() - last_close_time) / 60.0
+-                    if last_close_time > 0 and cooldown_bars < 2:
+-                        raise RuntimeError(f"[MASTER_BREAKER] {symbol} 違反平倉同向冷卻 (當前: {cooldown_bars:.1f} < 2 根)！阻斷下單！")
+-                    
+-                    # -------------------------------------------------------------
+-                    # 0. 回踩二次起爆審查 (Trend Pullback Re-entry)
+-                    # -------------------------------------------------------------
+-                    is_reentry_long = False
+-                    is_reentry_short = False
+-                    
+-                    kc_middle_curr = (kc_upper_curr + kc_lower_curr) / 2.0
+-                    prev_close = float(prev_bar['close'])
+-                    prev_open = float(prev_bar['open'])
+-                    prev_high = float(prev_bar['high'])
+-                    prev_low = float(prev_bar['low'])
+-                    
+-                    # 多單二次起爆
+-                    if ma3_curr > ma15_curr and close_p > kc_middle_curr:
+-                        pullback_supported = prev_close >= ma15_curr and close_p >= ma15_curr
+-                        strong_green_body = (close_p > open_p) and (body >= 0.8 * _atr)
+-                        break_prev_high = close_p > prev_high
+-                        ma3_rebound = ma3_curr > ma3_prev
+-                        if pullback_supported and strong_green_body and break_prev_high and ma3_rebound:
+-                            is_reentry_long = True
+-                            
+-                    # 空單二次起爆
+-                    if ma3_curr < ma15_curr and close_p < kc_middle_curr:
+-                        pullback_rejected = prev_close <= ma15_curr and close_p <= ma15_curr
+-                        strong_red_body = (close_p < open_p) and (body >= 0.8 * _atr)
+-                        break_prev_low = close_p < prev_low
+-                        ma3_downturn = ma3_curr < ma3_prev
+-                        if pullback_rejected and strong_red_body and break_prev_low and ma3_downturn:
+-                            is_reentry_short = True
+-
+-                    # 1. 開多單總電閘 (LONG)
+-                    if side.upper() == 'LONG':
+-                        if is_reentry_long:
+-                            self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER LONG)，白名單放行！", "INFO")
+-                        else:
+-                            if close_p <= open_p:
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
+-                            if ma3_curr <= ma15_curr:
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，處於空頭死叉排列中，100% 嚴禁開多！")
+-                            if ma3_curr <= ma3_prev:
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
+-                            if close_p < kc_upper_curr and body < (1.2 * _atr):
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開多！")
+-                            
+-                            is_channel_expanding = kc_upper_curr > kc_upper_prev
+-                            
+-                            is_two_bar_breakout = (
+-                                prev_close > prev_open and
+-                                close_p > open_p and
+-                                prev_close > kc_upper_prev and
+-                                close_p > kc_upper_curr and
+-                                close_p > prev_close and
+-                                body >= (0.8 * _atr)
+-                            )
+-                            if not (is_channel_expanding or is_two_bar_breakout):
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
+-                            
+-                    # 2. 開空單總電閘 (SHORT)
+-                    elif side.upper() == 'SHORT':
+-                        if is_reentry_short:
+-                            self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER SHORT)，白名單放行！", "INFO")
+-                        else:
+-                            if close_p >= open_p:
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
+-                            if ma3_curr >= ma15_curr:
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
+-                            if ma3_curr >= ma3_prev:
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
+-                            if close_p > kc_lower_curr and body < (1.2 * _atr):
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
+-                            
+-                            is_channel_expanding = kc_lower_curr < kc_lower_prev
+-                            
+-                            is_two_bar_breakout = (
+-                                prev_close < prev_open and
+-                                close_p < open_p and
+-                                prev_close < kc_lower_prev and
+-                                close_p < kc_lower_curr and
+-                                close_p < prev_close and
+-                                body >= (0.8 * _atr)
+-                            )
+-                            if not (is_channel_expanding or is_two_bar_breakout):
+-                                raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體跌破確認且通道未擴張，拒絕送單！")
+-                            
+-                    # 2. 開空單總電閘 (SHORT)
+-                    elif side.upper() == 'SHORT':
+-                        if close_p >= open_p:
+-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
+-                        if ma3_curr >= ma15_curr:
+-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
+-                        if ma3_curr >= ma3_prev:
+-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
+-                        if close_p > kc_lower_curr and body < (1.2 * _atr):
+-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 1.2 ATR，小碎步禁止開空！")
+-                        
+-                        is_channel_expanding = kc_lower_curr < kc_lower_prev
+-                        
+-                        prev_close = float(prev_bar['close'])
+-                        prev_open = float(prev_bar['open'])
+-                        is_two_bar_breakout = (
+-                            prev_close < prev_open and
+-                            close_p < open_p and
+-                            prev_close < kc_lower_prev and
+-                            close_p < kc_lower_curr and
+-                            close_p < prev_close and
+-                            body >= (0.8 * _atr)
+-                        )
+-                        if not (is_channel_expanding or is_two_bar_breakout):
+-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
+-            except RuntimeError as re:
+-                self.log(str(re), "ERROR")
+-                return False
+-            except Exception as e:
+-                self.log(f"[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: {str(e)}", "ERROR")
+-                return False  # 安全起見，報錯時一律拒絕開倉！
+-        # ------------------ 審查結束 ------------------
++        # The shared account firewall above owns strategy validation. Repeating
++        # a different strategy here caused runtime crashes and conflicting gates.
+ 
+         entry_payload = dict(entry_context or {})
+         entry_mode = str(entry_payload.get("entry_mode") or "").upper()
+--- a/core/testnet_account.py
++++ b/core/testnet_account.py
+@@ -148,160 +148,26 @@
+         self._raw_create_order = self.exchange.create_order
+         
+         async def _master_breaker_create_order(symbol, order_type, side, amount, price=None, params=None):
+-            params = params or {}
+-            is_reduce = params.get('reduceOnly') in [True, 'true', 'TRUE'] or params.get('closePosition') in [True, 'true', 'TRUE']
+-            is_manual = params.get('is_manual') in [True, 'true', 'TRUE'] or params.get('source') == 'MANUAL'
+-            
+-            if is_manual:
+-                self.log(f"[MANUAL_PASS] {symbol} {side} 手動開倉指令，直接放行送往交易所！", "INFO")
+-                return await self._raw_create_order(symbol, order_type, side, amount, price, params)
+-
+-            if is_reduce:
+-                self.log(f"[GUARD_PASS] {symbol} 平倉請求放行，正在送往交易所...", "INFO")
+-                # 記錄平倉時間，用於同向冷卻
+-                self.last_closed_at = getattr(self, 'last_closed_at', {})
+-                self.last_closed_at[symbol] = __import__('time').time()
+-                return await self._raw_create_order(symbol, order_type, side, amount, price, params)
+-
+-            # ------------------ 以下為新開倉硬核審查 ------------------
+-            provider = getattr(self, 'entry_frame_provider', None)
+-            is_exempt = 'TREND_BREAKOUT' in str(reason).upper() or 'IGNITION' in str(reason).upper()
+-            if provider and not is_exempt:
+-                from core.services.strategies.unified_entry_strategy import confirmed
+-                try:
+-                    frame = await provider(symbol)
+-                    closed = confirmed(frame)
+-                    if closed is not None and len(closed) >= 2:
+-                        last_bar = closed.iloc[-1]
+-                        prev_bar = closed.iloc[-2]
+-                        
+-                        close_p = float(last_bar['close'])
+-                        open_p = float(last_bar['open'])
+-                        body = abs(close_p - open_p)
+-                        atr = float(last_bar['atr'])
+-                        
+-                        kc_upper_curr = float(last_bar['kc_upper'])
+-                        kc_lower_curr = float(last_bar['kc_lower'])
+-                        kc_upper_prev = float(prev_bar['kc_upper'])
+-                        kc_lower_prev = float(prev_bar['kc_lower'])
+-                        
+-                        if 'MA3' in last_bar:
+-                            ma3_curr = float(last_bar['MA3'])
+-                            ma3_prev = float(prev_bar['MA3'])
+-                        elif 'ma3' in last_bar:
+-                            ma3_curr = float(last_bar['ma3'])
+-                            ma3_prev = float(prev_bar['ma3'])
+-                        else:
+-                            close_col = closed['close']
+-                            ma3_curr = float(close_col.iloc[-3:].mean())
+-                            ma3_prev = float(close_col.iloc[-4:-1].mean())
+-                            
+-                        if 'MA15' in last_bar:
+-                            ma15_curr = float(last_bar['MA15'])
+-                        elif 'ma15' in last_bar:
+-                            ma15_curr = float(last_bar['ma15'])
+-                        else:
+-                            close_col = closed['close']
+-                            ma15_curr = float(close_col.iloc[-15:].mean())
+-                            
+-                        # 計算冷卻 (以秒數換算 K 棒數)
+-                        last_close_time = getattr(self, 'last_closed_at', {}).get(symbol, 0)
+-                        cooldown_bars = (__import__('time').time() - last_close_time) / 60.0
+-                        if last_close_time > 0 and cooldown_bars < 2:
+-                            raise RuntimeError(f"[MASTER_BREAKER] {symbol} 違反平倉同向冷卻 (當前: {cooldown_bars:.1f} < 2 根)！阻斷下單！")
+-                        
+-                        # -------------------------------------------------------------
+-                        # 0. 回踩二次起爆審查 (Trend Pullback Re-entry)
+-                        # -------------------------------------------------------------
+-                        is_reentry_long = False
+-                        is_reentry_short = False
+-                        
+-                        kc_middle_curr = (kc_upper_curr + kc_lower_curr) / 2.0
+-                        prev_close = float(prev_bar['close'])
+-                        prev_open = float(prev_bar['open'])
+-                        prev_high = float(prev_bar['high'])
+-                        prev_low = float(prev_bar['low'])
+-                        
+-                        # 多單二次起爆
+-                        if ma3_curr > ma15_curr and close_p > kc_middle_curr:
+-                            pullback_supported = prev_close >= ma15_curr and close_p >= ma15_curr
+-                            strong_green_body = (close_p > open_p) and (body >= 0.8 * atr)
+-                            break_prev_high = close_p > prev_high
+-                            ma3_rebound = ma3_curr > ma3_prev
+-                            if pullback_supported and strong_green_body and break_prev_high and ma3_rebound:
+-                                is_reentry_long = True
+-                                
+-                        # 空單二次起爆
+-                        if ma3_curr < ma15_curr and close_p < kc_middle_curr:
+-                            pullback_rejected = prev_close <= ma15_curr and close_p <= ma15_curr
+-                            strong_red_body = (close_p < open_p) and (body >= 0.8 * atr)
+-                            break_prev_low = close_p < prev_low
+-                            ma3_downturn = ma3_curr < ma3_prev
+-                            if pullback_rejected and strong_red_body and break_prev_low and ma3_downturn:
+-                                is_reentry_short = True
+-
+-                        # 1. 開多單總電閘 (LONG)
+-                        if side.upper() == 'BUY':
+-                            if is_reentry_long:
+-                                self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER LONG)，白名單放行！", "INFO")
+-                            else:
+-                                if close_p <= open_p:
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陰線嚴禁開多！")
+-                                if ma3_curr <= ma15_curr:
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) <= MA15 ({ma15_curr:.6f})，處於空頭死叉排列中，100% 嚴禁開多！")
+-                                if ma3_curr <= ma3_prev:
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向下，天花板嚴禁追多！")
+-                                if close_p < kc_upper_curr and body < (0.6 * atr):
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 0.6 ATR，小碎步禁止開多！")
+-                                
+-                                is_channel_expanding = kc_upper_curr > kc_upper_prev
+-                                
+-                                is_two_bar_breakout = (
+-                                    prev_close > prev_open and
+-                                    close_p > open_p and
+-                                    prev_close > kc_upper_prev and
+-                                    close_p > kc_upper_curr and
+-                                    close_p > prev_close and
+-                                    body >= (0.8 * atr)
+-                                )
+-                                if not (is_channel_expanding or is_two_bar_breakout):
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體破軌確認且通道未擴張，拒絕送單！")
+-                                    
+-                        # 2. 開空單總電閘 (SHORT)
+-                        elif side.upper() == 'SELL':
+-                            if is_reentry_short:
+-                                self.log(f"[MASTER_BREAKER] {symbol} 滿足強勢單邊回踩二次起爆 (RE-ENTER SHORT)，白名單放行！", "INFO")
+-                            else:
+-                                if close_p >= open_p:
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 陽線嚴禁開空！")
+-                                if ma3_curr >= ma15_curr:
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 ({ma3_curr:.6f}) >= MA15 ({ma15_curr:.6f})，處於多頭金叉排列中，100% 嚴禁開空！")
+-                                if ma3_curr >= ma3_prev:
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} MA3 走平或向上，地板嚴禁追空！")
+-                                if close_p > kc_lower_curr and body < (0.6 * atr):
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} KC 軌道內部實體未達 0.6 ATR，小碎步禁止開空！")
+-                                
+-                                is_channel_expanding = kc_lower_curr < kc_lower_prev
+-                                
+-                                is_two_bar_breakout = (
+-                                    prev_close < prev_open and
+-                                    close_p < open_p and
+-                                    prev_close < kc_lower_prev and
+-                                    close_p < kc_lower_curr and
+-                                    close_p < prev_close and
+-                                    body >= (0.8 * atr)
+-                                )
+-                                if not (is_channel_expanding or is_two_bar_breakout):
+-                                    raise RuntimeError(f"[MASTER_BREAKER] {symbol} 未滿足兩根實體跌破確認且通道未擴張，拒絕送單！")
+-                except RuntimeError:
+-                    raise
+-                except Exception as e:
+-                    self.log(f"[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: {str(e)}", "ERROR")
+-                    raise RuntimeError(f"[MASTER_BREAKER_CRASH] 總電閘代碼崩潰: {str(e)}")
+-            
+-            self.log(f"[GUARD_PASS] {symbol} {side} 通過所有總電閘審核，正式送單！", "INFO")
+-            return await self._raw_create_order(symbol, order_type, side, amount, price, params)
+-            
++            from core.services.entry_firewall import validate_account_entry
++            params = dict(params or {})
++            context = params.pop('_entry_context', None)
++            is_reduce = (params.get('reduceOnly') in (True, 'true', 'TRUE')
++                         or params.get('closePosition') in (True, 'true', 'TRUE'))
++            if not is_reduce:
++                if side not in ('buy', 'sell'):
++                    raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
++                await validate_account_entry(
++                    self, symbol, 'LONG' if side == 'buy' else 'SHORT', context)
++            # Internal strategy metadata must never reach Binance parameters.
++            self.log(f'[ORDER_SUBMIT] symbol={symbol} type={order_type} side={side} qty={amount}', 'INFO')
++            try:
++                result = await self._raw_create_order(symbol, order_type, side, amount, price, params)
++            except Exception as exc:
++                self.log(f'[ORDER_REJECT] symbol={symbol} {type(exc).__name__}: {exc}', 'ERROR')
++                raise
++            self.log(f'[ORDER_ACK] symbol={symbol} id={result.get("id")} status={result.get("status")}', 'INFO')
++            return result
++
+         self.exchange.create_order = _master_breaker_create_order
+         # ==================================================
+         self.balance = 0.0
+@@ -1793,48 +1659,15 @@
+                           *, entry_context=None):
+         """Single create-order boundary; only reduce-only exits bypass entry checks."""
+         from core.services.entry_firewall import validate_account_entry
+-        from core.services.strategies.unified_entry_strategy import confirmed
+         params = dict(params or {})
+-        if params.get('reduceOnly') is not True:
++        is_reduce = (params.get('reduceOnly') in (True, 'true', 'TRUE')
++                     or params.get('closePosition') in (True, 'true', 'TRUE'))
++        if not is_reduce:
+             if side not in ('buy', 'sell'):
+-                raise ValueError('[FORBIDDEN_ENTRY] 無效下單方向')
+-            
+-            # --- [HARD CIRCUIT BREAKER] ---
+-            provider = getattr(self, 'entry_frame_provider', None)
+-            if provider:
+-                try:
+-                    frame = await provider(symbol)
+-                    closed = confirmed(frame)
+-                    if closed is not None and len(closed) >= 2:
+-                        last_bar = closed.iloc[-1]
+-                        prev_bar = closed.iloc[-2]
+-                        atr = float(last_bar.atr)
+-                        opening = float(last_bar.open)
+-                        close_price = float(last_bar.close)
+-                        
+-                        if 'MA3' in last_bar:
+-                            ma3 = float(last_bar.MA3)
+-                            prev_ma3 = float(prev_bar.MA3)
+-                        else:
+-                            close_col = closed['close']
+-                            ma3 = float(close_col.iloc[-3:].mean())
+-                            prev_ma3 = float(close_col.iloc[-4:-1].mean())
+-                            
+-                        if side == 'buy':
+-                            if not ((close_price - opening) >= 0.6 * atr):
+-                                print(f"[BYPASS_LEAK_BLOCKED] 熔斷攔截: 買多不符合 MA3 > prev_MA3 ({ma3:.5f} > {prev_ma3:.5f}) 或實體 >= 0.6 ATR ({(close_price - opening):.5f} >= {1.2*atr:.5f})")
+-                                raise Exception("[BYPASS_LEAK_BLOCKED] 熔斷攔截: 買多不符合 MA3 > prev_MA3 且實體 >= 0.6 ATR")
+-                        elif side == 'sell':
+-                            if not ((opening - close_price) >= 0.6 * atr):
+-                                print(f"[BYPASS_LEAK_BLOCKED] 熔斷攔截: 賣空不符合 MA3 < prev_MA3 ({ma3:.5f} < {prev_ma3:.5f}) 或實體 >= 0.6 ATR ({(opening - close_price):.5f} >= {1.2*atr:.5f})")
+-                                raise Exception("[BYPASS_LEAK_BLOCKED] 熔斷攔截: 賣空不符合 MA3 < prev_MA3 且實體 >= 0.6 ATR")
+-                except Exception as e:
+-                    if "[BYPASS_LEAK_BLOCKED]" in str(e):
+-                        raise
+-            # -----------------------------
+-            
++                raise ValueError('[FORBIDDEN_ENTRY] Invalid order side')
+             await validate_account_entry(
+                 self, symbol, 'LONG' if side == 'buy' else 'SHORT', entry_context)
++            params['_entry_context'] = dict(entry_context or {})
+         return await self.exchange.create_order(symbol, order_type, side, qty, price, params)
+ 
+     async def _emergency_flatten(self, symbol: str, side: str, qty: float) -> None:
+@@ -1928,8 +1761,12 @@
+         order_side = "buy" if side == "LONG" else "sell"
+         close_side = "sell" if side == "LONG" else "buy"
+         from core.services.order_sizing import calculate_order_qty, raw_order_qty
+-        raw_qty = float(raw_order_qty(amount_usdt, leverage, price))
+-        qty = calculate_order_qty(self.exchange, symbol, amount_usdt, leverage, price)
++        try:
++            raw_qty = float(raw_order_qty(amount_usdt, leverage, price))
++            qty = calculate_order_qty(self.exchange, symbol, amount_usdt, leverage, price)
++        except Exception as exc:
++            self.log(f'[ORDER_SIZE_REJECT] symbol={symbol} margin={amount_usdt} leverage={leverage} price={price} {type(exc).__name__}: {exc}', 'ERROR')
++            raise
+         notional = amount_usdt * leverage
+         self.log(
+             f"🧮 [資金換算] {symbol} | 本金保證金={amount_usdt:.4f}U, 槓桿={leverage}x, "
+--- a/core/services/entry_firewall.py
++++ b/core/services/entry_firewall.py
+@@ -30,22 +30,22 @@
+     prev_lower = float(prev_bar.kc_lower)
+ 
+     if side == 'SHORT':
+-        if lower >= prev_lower:
++        if not is_ignition and lower >= prev_lower:
+             raise ValueError(f'[FATAL_REJECT] KC 下軌走平或收窄 ({lower:.6f} >= {prev_lower:.6f})，無向下擴張動能嚴禁開空！')
+         if close >= opening:
+             raise ValueError(f'[FATAL_REJECT] 陽線嚴禁開空！Close:{close} >= Open:{opening}')
+         if close > lower and (opening - close) < 0.6 * atr:
+-            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 1.2 ATR: {1.2*atr:.8f}')
++            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 0.6 ATR: {0.6*atr:.8f}')
+         distance_from_middle = abs(close - middle)
+         if not is_ignition and distance_from_middle > 2.2 * atr:
+             raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限超賣嚴禁地板追空！')
+     else:
+-        if upper <= prev_upper:
++        if not is_ignition and upper <= prev_upper:
+             raise ValueError(f'[FATAL_REJECT] KC 上軌走平或收窄 ({upper:.6f} <= {prev_upper:.6f})，無向上擴張動能嚴禁開多！')
+         if close <= opening:
+             raise ValueError(f'[FATAL_REJECT] 陰線嚴禁開多！Close:{close} <= Open:{opening}')
+         if close < upper and (close - opening) < 0.6 * atr:
+-            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 1.2 ATR: {1.2*atr:.8f}')
++            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 0.6 ATR: {0.6*atr:.8f}')
+         distance_from_middle = abs(close - middle)
+         if not is_ignition and distance_from_middle > 2.2 * atr:
+             raise ValueError(f'[FATAL_REJECT] 拒絕追多：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限超買嚴禁天花板追多！')
+@@ -59,7 +59,7 @@
+ 
+     ok, actual, decision = evaluate_closed_entry(frame, side)
+     if not ok or actual != code:
+-        raise ValueError('[FORBIDDEN_ENTRY] 最新行情不符合指定 A–E 規則')
++        raise ValueError(f'[FORBIDDEN_ENTRY] 最新行情不符合指定訊號 expected={code} actual={actual}')
+     return decision
+ 
+ 
+@@ -81,14 +81,6 @@
+     except Exception as exc:
+         raise ValueError("[FORBIDDEN_ENTRY] 無法取得最新行情") from exc
+         
+-    expected_bar_id = context.get('channel_confirmation_bar_id')
+-    if expected_bar_id and 'timestamp' in frame.columns:
+-        # 若指定了確認 K 棒，截取對齊至該時間戳（含該確認棒及可能的下一根未收線 live bar）
+-        ts = frame['timestamp'].astype(float)
+-        matched_mask = ts <= float(expected_bar_id) + 60000.0
+-        if matched_mask.any():
+-            frame = frame.loc[matched_mask].copy()
+-
+     decision = validate_entry_frame(frame, side, code)
+     stamp = float(decision['confirmation_bar_id'])
+     age = time.time() * 1000 - (stamp + 60000)
+--- a/core/services/strategies/unified_entry_strategy.py
++++ b/core/services/strategies/unified_entry_strategy.py
+@@ -36,7 +36,7 @@
+     if "明確反向趨勢" in ck_status:
+         return False, "BLOCKED_CK_REVERSE_TREND"
+ 
+-    if bypass_low_vol:
++    if bypass_low_vol or rule in ('IGNITION', 'TREND_BREAKOUT'):
+         return True, "BYPASS_CHANNEL_EXPANDING"
+ 
+     # 【單邊張口放行】：強趨勢下豁免 (Upper - Lower) 全通道連續擴張限制
+@@ -155,7 +155,15 @@
+     sign = 1 if side == 'LONG' else -1
+ 
+     # ── 基礎數值 ─────────────────────────────────────────────────
+-    ck = ck_direction(frame)
++    # The caller may provide either closed-only rows or a live tail. Always
++    # derive entry CK from the same last two completed rows.
++    previous = closed.iloc[-2]
++    current = closed.iloc[-1]
++    ck = None
++    if current.kc_middle > previous.kc_middle and current.kc_upper >= previous.kc_upper:
++        ck = 'LONG'
++    elif current.kc_middle < previous.kc_middle and current.kc_lower <= previous.kc_lower:
++        ck = 'SHORT'
+     ck_opposing = 'SHORT' if side == 'LONG' else 'LONG'
+     if ck == side:
+         ck_status = '連續同向'
+@@ -191,11 +199,14 @@
+         ma_aligned = float(c.ma3) > float(c.ma15)
+         body = float(c.close) - float(c.open)
+         upper_wick = float(c.high) - float(c.close)
+-        is_full_body = body >= 0.55 * atr and upper_wick < body * 0.8
++        is_full_body = at_least(body, 0.55 * atr) and upper_wick < body * 0.8
+         is_outside = float(c.close) > float(c.kc_upper)
+         
+         if ma_aligned and is_full_body and is_outside:
+             rule = 'IGNITION'
++        elif (ma_aligned and is_outside and len(closed) >= 6
++              and c_close > float(closed['high'].iloc[-6:-1].max())):
++            rule = 'TREND_BREAKOUT'
+         else:
+             # 模式 B：慢牛沿軌推進 (TREND_CRAWLING)
+             # 1. 連續 3 根 ma3 > ma15 且 ma15 > kc_middle
+@@ -210,11 +221,11 @@
+             crawling_outside = float(c.close) > float(c.kc_upper) and float(c1.close) > float(c1.kc_upper)
+             
+             # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
+-            fast_crawling = is_outside and body >= 0.55 * atr and float(c.ma3) > float(c.ma15)
++            fast_crawling = is_outside and at_least(body, 0.55 * atr) and float(c.ma3) > float(c.ma15)
+             
+             if (resonance and ma15_rising and crawling_outside) or fast_crawling:
+                 rule = 'TREND_CRAWLING'
+-            elif ma_aligned and is_outside:
++            elif ma_aligned and is_outside and len(closed) >= 6:
+                 recent_high = float(closed['high'].iloc[-6:-1].max())
+                 if float(c.close) > recent_high:
+                     rule = 'TREND_BREAKOUT'
+@@ -223,11 +234,14 @@
+         ma_aligned = float(c.ma3) < float(c.ma15)
+         body = float(c.open) - float(c.close)
+         lower_wick = float(c.close) - float(c.low)
+-        is_full_body = body >= 0.55 * atr and lower_wick < body * 0.8
++        is_full_body = at_least(body, 0.55 * atr) and lower_wick < body * 0.8
+         is_outside = float(c.close) < float(c.kc_lower)
+         
+         if ma_aligned and is_full_body and is_outside:
+             rule = 'IGNITION'
++        elif (ma_aligned and is_outside and len(closed) >= 6
++              and c_close < float(closed['low'].iloc[-6:-1].min())):
++            rule = 'TREND_BREAKOUT'
+         else:
+             # 模式 B：慢熊沿軌推進 (TREND_CRAWLING)
+             # 1. 連續 3 根 ma3 < ma15 且 ma15 < kc_middle
+@@ -242,15 +256,18 @@
+             crawling_outside = float(c.close) < float(c.kc_lower) and float(c1.close) < float(c1.kc_lower)
+             
+             # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
+-            fast_crawling = is_outside and body >= 0.55 * atr and float(c.ma3) < float(c.ma15)
++            fast_crawling = is_outside and at_least(body, 0.55 * atr) and float(c.ma3) < float(c.ma15)
+             
+             if (resonance and ma15_falling and crawling_outside) or fast_crawling:
+                 rule = 'TREND_CRAWLING'
+-            elif ma_aligned and is_outside:
++            elif ma_aligned and is_outside and len(closed) >= 6:
+                 recent_low = float(closed['low'].iloc[-6:-1].min())
+                 if float(c.close) < recent_low:
+                     rule = 'TREND_BREAKOUT'
+             
++    if sign * (c_close - c_open) <= 0:
++        return wait('BLOCKED_OPPOSITE_CLOSED_BODY')
++
+     if rule is None:
+         return wait('WAIT_NEW_A_TO_E_TRIGGER')
+ 
+--- a/services/api.py
++++ b/services/api.py
+@@ -320,19 +320,31 @@
+ 
+ def map_block_reason(reason):
+     if not reason or reason == "NONE": return "NONE"
++    if reason == "BLOCKED_OPPOSITE_CLOSED_BODY":
++        return "上一根已收線 K 棒方向不符；即時破軌尚未收線確認"
++    if reason == "FILLED":
++        return "已成功開倉"
+     if reason.startswith("CLOSED_"):
+-        return "信號已觸發 (等待市價執行或遭風控攔截)"
++        return "已收線訊號成立，尚無下單結果"
+     if "CHANNEL_NOT_EXPANDING" in reason or "LOW_VOLATILITY" in reason or "RAIL_NOT" in reason:
+         return "通道未連續張嘴或寬度不足"
+     if "WAIT_NEW" in reason or "SMALL" in reason:
+         return "等待實體放大 / 未達起爆形態"
+     if "MA3" in reason or "DIVERGING" in reason:
+         return "MA3/MA15 未順向排列或斜率不對"
+-    if "CK" in reason:
++    if reason.startswith(("BLOCKED_CK_", "WAIT_CK_", "CK_")):
+         return "CK 狀態尚未連續同向"
+     if "BTC" in reason or "DUMPING" in reason or "PUMPING" in reason:
+         return "BTC 熔斷保護中"
+     return reason
++
++def latest_entry_diagnostic(cache, symbol, side):
++    signal = cache.get((symbol, side, 'CLOSED_SIGNAL'))
++    execution = cache.get((symbol, side, 'EXECUTION'))
++    if execution and signal and execution[0] == signal[0] and str(signal[1]).startswith('CLOSED_'):
++        return execution
++    return signal
++
+ 
+ def get_chart_metrics():
+     metrics = {}
+@@ -359,12 +371,12 @@
+                 gate_cache = getattr(engine, "_entry_gate_diagnostics", {})
+                 if close > kc_upper:
+                     breakout_status = "LONG_BROKEN"
+-                    reason_data = gate_cache.get((symbol, "LONG", "CLOSED_SIGNAL"))
++                    reason_data = latest_entry_diagnostic(gate_cache, symbol, "LONG")
+                     if reason_data:
+                         block_reason = map_block_reason(reason_data[1])
+                 elif close < kc_lower:
+                     breakout_status = "SHORT_BROKEN"
+-                    reason_data = gate_cache.get((symbol, "SHORT", "CLOSED_SIGNAL"))
++                    reason_data = latest_entry_diagnostic(gate_cache, symbol, "SHORT")
+                     if reason_data:
+                         block_reason = map_block_reason(reason_data[1])
+                 
+--- /dev/null
++++ b/tests/test_entry_e2e_20260928.py
+@@ -0,0 +1,208 @@
++"""Regression coverage for signal -> firewall -> account -> market boundary."""
++import asyncio
++import time
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pandas as pd
++import pytest
++
++from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
++from core.services.entry_firewall import validate_account_entry, validate_entry_frame
++
++
++def candles(side='LONG', body=.2):
++    stamp = int(time.time() // 60) * 60000 - 60000
++    rows = [dict(timestamp=stamp-(5-i)*60000, open=100., close=100.1,
++                 high=100.3, low=99.8, ma3=100.2, ma15=100., atr=1.,
++                 kc_upper=100.4, kc_middle=100., kc_lower=99.6,
++                 is_closed=True) for i in range(6)]
++    rows[-1].update(open=100.7-body, close=100.7, high=100.72,
++                    low=100.68-body, ma3=100.4)
++    f=pd.DataFrame(rows)
++    if side=='SHORT':
++        original=f.copy()
++        for a,b in [('open','open'),('close','close'),('high','low'),('low','high'),
++                    ('ma3','ma3'),('ma15','ma15'),('kc_upper','kc_lower'),
++                    ('kc_lower','kc_upper'),('kc_middle','kc_middle')]:
++            f[a]=200-original[b]
++    f.attrs['timeframe_ms']=60000
++    return f
++
++
++def context(f, side):
++    return dict(entry_mode='CHANNEL_SWING', entry_signal_code=evaluate_closed_entry(f,side)[1],
++                channel_confirmation_bar_id=float(f.iloc[-1].timestamp), market_mode='CHOPPY')
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++@pytest.mark.parametrize('body,rule',[(.2,'TREND_BREAKOUT'),(.55,'IGNITION'),(.59,'IGNITION')])
++def test_small_breakout_and_ignition_pass_flat_narrow_channel(side,body,rule):
++    f=candles(side,body)
++    ok,code,d=evaluate_closed_entry(f,side)
++    assert ok and code==f'CLOSED_{rule}_{side}'
++    assert validate_entry_frame(f,side,code)==d
++    account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f),last_closed_at={})
++    assert asyncio.run(validate_account_entry(account,'TEST',side,context(f,side)))==d
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_tick_does_not_overwrite_closed_signal(side):
++    f=candles(side)
++    expected=evaluate_closed_entry(f,side)
++    live=f.iloc[-1].copy();live['timestamp']+=60000;live['is_closed']=False
++    f=pd.concat([f,pd.DataFrame([live])],ignore_index=True)
++    for price in [1.,199.,100.]:
++        f.loc[6,['close','ma3','kc_middle']]=price
++        assert evaluate_closed_entry(f,side)==expected
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_breakout_requires_five_previous_bars(side):
++    assert not evaluate_closed_entry(candles(side).iloc[-5:],side)[0]
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++@pytest.mark.parametrize('body',[.2,.55])
++def test_real_exchange_wrapper_reaches_market_without_extra_body_gate(monkeypatch,side,body):
++    from core.testnet_account import BinanceTestnetAccount
++    monkeypatch.setattr(BinanceTestnetAccount,'_load_state',lambda self:None)
++    monkeypatch.setattr(BinanceTestnetAccount,'save_state',lambda self, **kwargs:None)
++    raw=AsyncMock(return_value={'id':'test-order','status':'closed'})
++    account=BinanceTestnetAccount(SimpleNamespace(create_order=raw))
++    f=candles(side,body)
++    account.entry_frame_provider=AsyncMock(return_value=f)
++    account.last_closed_at={}
++    asyncio.run(account._send_order('TEST','market','buy' if side=='LONG' else 'sell',1,
++                                   entry_context=context(f,side)))
++    raw.assert_awaited_once()
++    assert '_entry_context' not in raw.call_args.args[-1]
++    assert any('[ORDER_ACK]' in item['text'] for item in account.logs)
++    raw.reset_mock()
++    with pytest.raises(ValueError,match='FORBIDDEN_ENTRY'):
++        asyncio.run(account.exchange.create_order('TEST','market','buy',1))
++    raw.assert_not_awaited()
++
++
++@pytest.mark.parametrize('fault',['cooldown','stale','changed'])
++def test_account_rejects_with_concrete_reason(fault):
++    f=candles();ctx=context(f,'LONG')
++    account=SimpleNamespace(entry_frame_provider=AsyncMock(return_value=f),last_closed_at={})
++    if fault=='cooldown':account.last_closed_at['TEST']=time.time()
++    if fault=='stale':f['timestamp']-=300000;ctx['channel_confirmation_bar_id']-=300000
++    if fault=='changed':ctx['channel_confirmation_bar_id']-=60000
++    with pytest.raises(ValueError,match='FORBIDDEN_ENTRY'):
++        asyncio.run(validate_account_entry(account,'TEST','LONG',ctx))
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++@pytest.mark.parametrize('body',[.2,.55])
++def test_paper_account_actual_fill(monkeypatch,side,body):
++    from core.paper_account import PaperAccount
++    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
++    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
++    account=PaperAccount();account.balance=100.
++    f=candles(side,body);account.entry_frame_provider=AsyncMock(return_value=f)
++    ctx=context(f,side)
++    opened=asyncio.run(account.open_position('TEST',side,float(f.iloc[-1].close),10.,
++        98. if side=='LONG' else 102.,0.,ctx['entry_signal_code'],atr=1.,leverage=2,entry_context=ctx))
++    assert opened and account.positions['TEST']['side']==side
++    assert account.trades[-1]['action']=='OPEN_'+side
++
++
++def test_exchange_reject_is_not_silent(monkeypatch):
++    from core.testnet_account import BinanceTestnetAccount
++    monkeypatch.setattr(BinanceTestnetAccount,'_load_state',lambda self:None)
++    monkeypatch.setattr(BinanceTestnetAccount,'save_state',lambda self, **kwargs:None)
++    raw=AsyncMock(side_effect=RuntimeError('exchange -1013 invalid quantity'))
++    account=BinanceTestnetAccount(SimpleNamespace(create_order=raw))
++    f=candles();account.entry_frame_provider=AsyncMock(return_value=f)
++    with pytest.raises(RuntimeError,match='-1013'):
++        asyncio.run(account._send_order('TEST','market','buy',1,entry_context=context(f,'LONG')))
++    assert any('[ORDER_REJECT]' in item['text'] and '-1013' in item['text'] for item in account.logs)
++
++
++@pytest.mark.parametrize('side',['LONG','SHORT'])
++def test_runner_through_engine_to_paper_fill_and_dedup(monkeypatch,side):
++    from core.engine import TradingEngine
++    from core.paper_account import PaperAccount
++    from core.services.symbol_runner import process_single_symbol_runner
++    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
++    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
++    account=PaperAccount();account.balance=100.
++    engine=object.__new__(TradingEngine)
++    engine.account=account
++    symbol='1000PEPE/USDT'
++    f=candles(side)
++    engine.tickers={symbol:float(f.iloc[-1].close)}
++    engine.fetch_klines=AsyncMock(return_value=f)
++    engine.strategy=SimpleNamespace(compute_indicators=lambda frame:frame)
++    engine.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
++    engine._execution_price_is_safe=AsyncMock(return_value=True)
++    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
++    assert account.positions[symbol]['side']==side
++    assert engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1]=='FILLED'
++    assert len(account.trades)==1
++    account.positions.clear()  # persisted fill still forbids replay of the same candle
++    asyncio.run(process_single_symbol_runner(engine,symbol,time.time(),None,False,exit_frame=f))
++    assert len(account.trades)==1
++    assert 'already filled' in engine._entry_gate_diagnostics[(symbol,side,'EXECUTION')][1]
++
++
++@pytest.mark.parametrize('fault',['slots','daily','balance','quote','cooldown','api_error'])
++def test_engine_exposes_real_block_instead_of_signal_only(monkeypatch,fault):
++    from core.engine import TradingEngine
++    from core.paper_account import PaperAccount
++    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
++    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
++    account=PaperAccount();account.balance=100.
++    engine=object.__new__(TradingEngine);engine.account=account
++    symbol='1000PEPE/USDT';f=candles()
++    engine.tickers={symbol:float(f.iloc[-1].close)}
++    engine.fetch_klines=AsyncMock(return_value=f)
++    engine.strategy=SimpleNamespace(compute_indicators=lambda frame:frame)
++    engine.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
++    engine._execution_price_is_safe=AsyncMock(return_value=fault!='quote')
++    if fault=='slots':
++        import core.engine as module
++        monkeypatch.setattr(module,'MAX_SLOTS',1)
++        account.positions['OTHER']={}
++    if fault=='daily':account.daily_loss_limit_hit=lambda:(True,10.)
++    if fault=='balance':account.balance=0.
++    if fault=='cooldown':account.last_closed_at[symbol]=time.time()
++    if fault=='api_error':account.open_position=AsyncMock(side_effect=RuntimeError('exchange -2010 rejection'))
++    code=evaluate_closed_entry(f,'LONG')[1]
++    assert not asyncio.run(engine._execute_confirmed_channel_break(symbol,f,100.7,'LONG',v8_reason=code))
++    reason=engine._entry_gate_diagnostics[(symbol,'LONG','EXECUTION')][1]
++    expected={'slots':'MAX_SLOTS','daily':'daily loss','balance':'INSUFFICIENT_MARGIN',
++              'quote':'execution_price','cooldown':'冷卻','api_error':'-2010'}
++    assert expected[fault] in reason
++    assert symbol not in account.positions
++
++
++def test_ui_selects_execution_only_for_same_signal_bar():
++    import ast
++    from pathlib import Path
++    module=ast.parse(Path('services/api.py').read_text())
++    function=next(n for n in module.body if isinstance(n,ast.FunctionDef) and n.name=='latest_entry_diagnostic')
++    namespace={}
++    exec(compile(ast.Module(body=[function],type_ignores=[]),'diagnostic','exec'),namespace)
++    choose=namespace['latest_entry_diagnostic']
++    cache={('TEST','LONG','CLOSED_SIGNAL'):(1,'CLOSED_IGNITION_LONG'),
++           ('TEST','LONG','EXECUTION'):(1,'ORDER_REJECT')}
++    assert choose(cache,'TEST','LONG')==(1,'ORDER_REJECT')
++    cache[('TEST','LONG','CLOSED_SIGNAL')]=(2,'WAIT_NEW')
++    assert choose(cache,'TEST','LONG')==(2,'WAIT_NEW')
++
++
++def test_blocked_word_is_not_misclassified_as_ck():
++    import ast
++    from pathlib import Path
++    module=ast.parse(Path('services/api.py').read_text())
++    function=next(n for n in module.body if isinstance(n,ast.FunctionDef) and n.name=='map_block_reason')
++    namespace={}
++    exec(compile(ast.Module(body=[function],type_ignores=[]),'reason_map','exec'),namespace)
++    translate=namespace['map_block_reason']
++    assert 'CK' not in translate('BLOCKED_OPPOSITE_CLOSED_BODY')
++    assert translate('BLOCKED_INSUFFICIENT_MARGIN')=='BLOCKED_INSUFFICIENT_MARGIN'
++    assert 'BTC' in translate('BLOCKED_BTC_DUMPING_FORBID_LONG')

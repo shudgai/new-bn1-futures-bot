@@ -1,0 +1,56 @@
+--- before/dual_track_exit_service.py
++++ after/dual_track_exit_service.py
+@@ -8,6 +8,7 @@
+ DUAL_TRACK_STATE_KEYS = [
+     'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
+     'atr_tp', 'atr_protection_version', 'swing_breakeven_armed', 'swing_peak_profit_atr',
++    'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
+ ]
+ 
+ 
+@@ -22,10 +23,36 @@
+     position['swing_peak_profit_atr'] = peak
+     if peak >= 1.2 or math.isclose(peak, 1.2, rel_tol=1e-12):
+         position['swing_breakeven_armed'] = True
++    if position['side'] == 'LONG' and peak > 1.5:
++        position['swing_trailing_armed'] = True
+     stop = float(position.get('stop_loss') or position.get('sl') or entry-sign*SL_INIT_MULT*atr)
+     if position.get('swing_breakeven_armed'):
+         stop = max(stop, entry) if sign == 1 else min(stop, entry)
+     position.update(stop_loss=stop, sl=stop, atr_sl=stop)
++
++
++def trailing_long_exit(position, closed):
++    """Monotone prior-two lows; evaluate each subsequent closed bar once.
++
++    Keep this close-only line separate from the quote-enforced hard/BE stop.
++    First observation establishes a baseline, never replays an old exit.
++    """
++    current = closed.iloc[-1]
++    bar = float(current.timestamp)
++    last = position.get('swing_trailing_last_bar')
++    if last is not None and bar <= float(last):
++        return None
++    position['swing_trailing_last_bar'] = bar
++    prior = closed.iloc[-3:-1]
++    opened_ms = float(position.get('open_timestamp') or 0)*1000
++    if not (prior.timestamp.astype(float) >= opened_ms).all():
++        return None
++    candidate = float(prior.low.astype(float).min())
++    line = max(float(position.get('swing_trailing_line') or candidate), candidate)
++    position['swing_trailing_line'] = line
++    if last is not None and float(current.close) < line:
++        return 'EXIT_TWO_BAR_LOW_TRAILING_CLOSED'
++    return None
+ 
+ 
+ def evaluate_trend_exit_and_take_profit(position, candles, indicators):
+@@ -91,6 +118,8 @@
+                 if sign*(stop_quote-position['stop_loss']) <= 0:
+                     reason = ('EXIT_BREAKEVEN' if sign*(position['stop_loss']-entry) >= 0
+                               else 'EXIT_INITIAL_ATR_HARD_STOP')
++                elif position['side'] == 'LONG' and position.get('swing_trailing_armed'):
++                    reason = trailing_long_exit(position, closed)
+                 else:
+                     result = evaluate_trend_exit_and_take_profit(position,
+                         [{'close':float(c1.close)}, {'close':float(c.close)}],

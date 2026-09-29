@@ -1,0 +1,2447 @@
+[
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:05:00+00:00",
+    "timestamp": 1790633100000.0,
+    "open": 0.0041311,
+    "high": 0.0041311,
+    "low": 0.0041171,
+    "close": 0.0041185,
+    "ma3": 0.0041275,
+    "ma15": 0.004138773333333333,
+    "atr": 1.0389999999999878e-05,
+    "kc_upper": 0.0041509750229617145,
+    "kc_middle": 0.004140585022961715,
+    "kc_lower": 0.004130195022961715,
+    "previous5_low": 0.0041088,
+    "previous5_high": 0.0041448,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_IGNITION_SHORT",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 1.0389999999999878e-05,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790633100000.0,
+        "close_price": 0.0041185
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:06:00+00:00",
+    "timestamp": 1790633160000.0,
+    "open": 0.0041186,
+    "high": 0.0041208,
+    "low": 0.0041095,
+    "close": 0.0041141,
+    "ma3": 0.0041212333333333325,
+    "ma15": 0.004136793333333334,
+    "atr": 1.1159999999999815e-05,
+    "kc_upper": 0.004149222639830569,
+    "kc_middle": 0.004138062639830569,
+    "kc_lower": 0.00412690263983057,
+    "previous5_low": 0.0041088,
+    "previous5_high": 0.0041443,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.40)",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.40)"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:07:00+00:00",
+    "timestamp": 1790633220000.0,
+    "open": 0.0041142,
+    "high": 0.004119,
+    "low": 0.0041013,
+    "close": 0.0041114,
+    "ma3": 0.004114666666666667,
+    "ma15": 0.004134073333333333,
+    "atr": 1.2419999999999793e-05,
+    "kc_upper": 0.004147943340793485,
+    "kc_middle": 0.004135523340793485,
+    "kc_lower": 0.004123103340793485,
+    "previous5_low": 0.0041088,
+    "previous5_high": 0.0041443,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.16)",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.16)"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:08:00+00:00",
+    "timestamp": 1790633280000.0,
+    "open": 0.0041116,
+    "high": 0.0041292,
+    "low": 0.0041113,
+    "close": 0.0041291,
+    "ma3": 0.0041182,
+    "ma15": 0.0041333333333333335,
+    "atr": 1.389999999999985e-05,
+    "kc_upper": 0.004148811594053937,
+    "kc_middle": 0.004134911594053937,
+    "kc_lower": 0.004121011594053937,
+    "previous5_low": 0.0041013,
+    "previous5_high": 0.0041443,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:09:00+00:00",
+    "timestamp": 1790633340000.0,
+    "open": 0.0041291,
+    "high": 0.0041303,
+    "low": 0.0041207,
+    "close": 0.0041236,
+    "ma3": 0.004121366666666667,
+    "ma15": 0.004132326666666667,
+    "atr": 1.4209999999999916e-05,
+    "kc_upper": 0.004148044299382581,
+    "kc_middle": 0.0041338342993825815,
+    "kc_lower": 0.004119624299382582,
+    "previous5_low": 0.0041013,
+    "previous5_high": 0.0041396,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:10:00+00:00",
+    "timestamp": 1790633400000.0,
+    "open": 0.0041237,
+    "high": 0.004126,
+    "low": 0.0041182,
+    "close": 0.0041218,
+    "ma3": 0.004124833333333334,
+    "ma15": 0.00413092,
+    "atr": 1.3810000000000037e-05,
+    "kc_upper": 0.0041464981756580725,
+    "kc_middle": 0.004132688175658072,
+    "kc_lower": 0.004118878175658072,
+    "previous5_low": 0.0041013,
+    "previous5_high": 0.0041311,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:11:00+00:00",
+    "timestamp": 1790633460000.0,
+    "open": 0.0041217,
+    "high": 0.0041219,
+    "low": 0.0041142,
+    "close": 0.0041205,
+    "ma3": 0.004121966666666667,
+    "ma15": 0.004129186666666667,
+    "atr": 1.385000000000006e-05,
+    "kc_upper": 0.0041453773970197135,
+    "kc_middle": 0.004131527397019713,
+    "kc_lower": 0.004117677397019713,
+    "previous5_low": 0.0041013,
+    "previous5_high": 0.0041303,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:12:00+00:00",
+    "timestamp": 1790633520000.0,
+    "open": 0.0041206,
+    "high": 0.0041248,
+    "low": 0.0041203,
+    "close": 0.0041227,
+    "ma3": 0.004121666666666667,
+    "ma15": 0.004127613333333334,
+    "atr": 1.1840000000000027e-05,
+    "kc_upper": 0.004142526692535821,
+    "kc_middle": 0.004130686692535821,
+    "kc_lower": 0.004118846692535821,
+    "previous5_low": 0.0041013,
+    "previous5_high": 0.0041303,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:13:00+00:00",
+    "timestamp": 1790633580000.0,
+    "open": 0.0041227,
+    "high": 0.004127,
+    "low": 0.0041225,
+    "close": 0.0041261,
+    "ma3": 0.0041231,
+    "ma15": 0.004126113333333333,
+    "atr": 1.0589999999999992e-05,
+    "kc_upper": 0.0041408398646736976,
+    "kc_middle": 0.004130249864673698,
+    "kc_lower": 0.0041196598646736984,
+    "previous5_low": 0.0041113,
+    "previous5_high": 0.0041303,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:14:00+00:00",
+    "timestamp": 1790633640000.0,
+    "open": 0.0041261,
+    "high": 0.0041267,
+    "low": 0.004121,
+    "close": 0.0041215,
+    "ma3": 0.004123433333333333,
+    "ma15": 0.0041247,
+    "atr": 1.0069999999999958e-05,
+    "kc_upper": 0.004139486544223655,
+    "kc_middle": 0.004129416544223655,
+    "kc_lower": 0.004119346544223655,
+    "previous5_low": 0.0041142,
+    "previous5_high": 0.0041303,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:15:00+00:00",
+    "timestamp": 1790633700000.0,
+    "open": 0.0041214,
+    "high": 0.0041229,
+    "low": 0.0041178,
+    "close": 0.0041185,
+    "ma3": 0.004122033333333334,
+    "ma15": 0.00412372,
+    "atr": 9.179999999999953e-06,
+    "kc_upper": 0.004137556873348572,
+    "kc_middle": 0.004128376873348572,
+    "kc_lower": 0.004119196873348572,
+    "previous5_low": 0.0041142,
+    "previous5_high": 0.004127,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:16:00+00:00",
+    "timestamp": 1790633760000.0,
+    "open": 0.0041186,
+    "high": 0.004126,
+    "low": 0.0041186,
+    "close": 0.0041231,
+    "ma3": 0.004121033333333334,
+    "ma15": 0.00412304,
+    "atr": 8.800000000000041e-06,
+    "kc_upper": 0.004136674313982488,
+    "kc_middle": 0.004127874313982489,
+    "kc_lower": 0.004119074313982489,
+    "previous5_low": 0.0041142,
+    "previous5_high": 0.004127,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:17:00+00:00",
+    "timestamp": 1790633820000.0,
+    "open": 0.0041229,
+    "high": 0.0041332,
+    "low": 0.0041229,
+    "close": 0.0041331,
+    "ma3": 0.0041249,
+    "ma15": 0.0041232,
+    "atr": 8.060000000000099e-06,
+    "kc_upper": 0.004136431998363317,
+    "kc_middle": 0.004128371998363317,
+    "kc_lower": 0.004120311998363317,
+    "previous5_low": 0.0041178,
+    "previous5_high": 0.004127,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:18:00+00:00",
+    "timestamp": 1790633880000.0,
+    "open": 0.0041331,
+    "high": 0.0041352,
+    "low": 0.0041295,
+    "close": 0.0041301,
+    "ma3": 0.004128766666666666,
+    "ma15": 0.004123013333333333,
+    "atr": 6.840000000000058e-06,
+    "kc_upper": 0.0041353765699327525,
+    "kc_middle": 0.004128536569932752,
+    "kc_lower": 0.004121696569932752,
+    "previous5_low": 0.0041178,
+    "previous5_high": 0.0041332,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:19:00+00:00",
+    "timestamp": 1790633940000.0,
+    "open": 0.0041301,
+    "high": 0.0041364,
+    "low": 0.0041287,
+    "close": 0.0041364,
+    "ma3": 0.0041332,
+    "ma15": 0.004123366666666667,
+    "atr": 6.650000000000058e-06,
+    "kc_upper": 0.004135935468021177,
+    "kc_middle": 0.004129285468021176,
+    "kc_lower": 0.004122635468021176,
+    "previous5_low": 0.0041178,
+    "previous5_high": 0.0041352,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": true,
+    "LONG": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_LONG",
+      "decision": {
+        "action": "ENTER",
+        "side": "LONG",
+        "reason": "CLOSED_IGNITION_LONG",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 6.650000000000058e-06,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790633940000.0,
+        "close_price": 0.0041364
+      },
+      "firewall": "PASS"
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:20:00+00:00",
+    "timestamp": 1790634000000.0,
+    "open": 0.0041363,
+    "high": 0.0041363,
+    "low": 0.0041251,
+    "close": 0.0041314,
+    "ma3": 0.004132633333333333,
+    "ma15": 0.004124226666666666,
+    "atr": 7.000000000000062e-06,
+    "kc_upper": 0.004136486852013335,
+    "kc_middle": 0.004129486852013335,
+    "kc_lower": 0.004122486852013335,
+    "previous5_low": 0.0041178,
+    "previous5_high": 0.0041364,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:21:00+00:00",
+    "timestamp": 1790634060000.0,
+    "open": 0.0041314,
+    "high": 0.0041346,
+    "low": 0.0041291,
+    "close": 0.0041346,
+    "ma3": 0.004134133333333334,
+    "ma15": 0.0041255933333333335,
+    "atr": 6.780000000000067e-06,
+    "kc_upper": 0.004136753818476604,
+    "kc_middle": 0.0041299738184766045,
+    "kc_lower": 0.004123193818476605,
+    "previous5_low": 0.0041186,
+    "previous5_high": 0.0041364,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:22:00+00:00",
+    "timestamp": 1790634120000.0,
+    "open": 0.0041346,
+    "high": 0.0041346,
+    "low": 0.0041266,
+    "close": 0.0041284,
+    "ma3": 0.0041314666666666675,
+    "ma15": 0.004126726666666667,
+    "atr": 7.130000000000157e-06,
+    "kc_upper": 0.004136953930992786,
+    "kc_middle": 0.004129823930992786,
+    "kc_lower": 0.004122693930992786,
+    "previous5_low": 0.0041229,
+    "previous5_high": 0.0041364,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:23:00+00:00",
+    "timestamp": 1790634180000.0,
+    "open": 0.0041283,
+    "high": 0.0041284,
+    "low": 0.0041237,
+    "close": 0.0041248,
+    "ma3": 0.004129266666666667,
+    "ma15": 0.00412644,
+    "atr": 7.150000000000212e-06,
+    "kc_upper": 0.004136495461377561,
+    "kc_middle": 0.004129345461377561,
+    "kc_lower": 0.004122195461377561,
+    "previous5_low": 0.0041251,
+    "previous5_high": 0.0041364,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:24:00+00:00",
+    "timestamp": 1790634240000.0,
+    "open": 0.0041247,
+    "high": 0.0041281,
+    "low": 0.0041233,
+    "close": 0.004125,
+    "ma3": 0.004126066666666667,
+    "ma15": 0.004126533333333333,
+    "atr": 7.0600000000002255e-06,
+    "kc_upper": 0.004135991607886148,
+    "kc_middle": 0.004128931607886147,
+    "kc_lower": 0.004121871607886147,
+    "previous5_low": 0.0041237,
+    "previous5_high": 0.0041364,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:25:00+00:00",
+    "timestamp": 1790634300000.0,
+    "open": 0.0041251,
+    "high": 0.0041272,
+    "low": 0.0041231,
+    "close": 0.0041264,
+    "ma3": 0.0041253999999999996,
+    "ma15": 0.0041268400000000005,
+    "atr": 6.960000000000213e-06,
+    "kc_upper": 0.0041356505023570495,
+    "kc_middle": 0.004128690502357049,
+    "kc_lower": 0.004121730502357049,
+    "previous5_low": 0.0041233,
+    "previous5_high": 0.0041363,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:26:00+00:00",
+    "timestamp": 1790634360000.0,
+    "open": 0.0041264,
+    "high": 0.0041327,
+    "low": 0.0041263,
+    "close": 0.0041323,
+    "ma3": 0.0041279,
+    "ma15": 0.004127626666666667,
+    "atr": 6.850000000000085e-06,
+    "kc_upper": 0.004135884264030385,
+    "kc_middle": 0.0041290342640303845,
+    "kc_lower": 0.0041221842640303845,
+    "previous5_low": 0.0041231,
+    "previous5_high": 0.0041346,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:27:00+00:00",
+    "timestamp": 1790634420000.0,
+    "open": 0.0041322,
+    "high": 0.0041332,
+    "low": 0.0041301,
+    "close": 0.0041327,
+    "ma3": 0.0041304666666666665,
+    "ma15": 0.004128293333333334,
+    "atr": 6.130000000000024e-06,
+    "kc_upper": 0.0041355133817339365,
+    "kc_middle": 0.0041293833817339365,
+    "kc_lower": 0.0041232533817339365,
+    "previous5_low": 0.0041231,
+    "previous5_high": 0.0041346,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:28:00+00:00",
+    "timestamp": 1790634480000.0,
+    "open": 0.0041327,
+    "high": 0.0041327,
+    "low": 0.0041296,
+    "close": 0.0041298,
+    "ma3": 0.0041316,
+    "ma15": 0.00412854,
+    "atr": 5.870000000000007e-06,
+    "kc_upper": 0.004135293059668518,
+    "kc_middle": 0.0041294230596685185,
+    "kc_lower": 0.004123553059668519,
+    "previous5_low": 0.0041231,
+    "previous5_high": 0.0041332,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:29:00+00:00",
+    "timestamp": 1790634540000.0,
+    "open": 0.0041298,
+    "high": 0.0041298,
+    "low": 0.0041246,
+    "close": 0.0041261,
+    "ma3": 0.0041295333333333335,
+    "ma15": 0.004128846666666667,
+    "atr": 5.620000000000017e-06,
+    "kc_upper": 0.004134726577791743,
+    "kc_middle": 0.004129106577791743,
+    "kc_lower": 0.004123486577791742,
+    "previous5_low": 0.0041231,
+    "previous5_high": 0.0041332,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:30:00+00:00",
+    "timestamp": 1790634600000.0,
+    "open": 0.004126,
+    "high": 0.00413,
+    "low": 0.004125,
+    "close": 0.0041273,
+    "ma3": 0.004127733333333334,
+    "ma15": 0.004129433333333333,
+    "atr": 4.989999999999942e-06,
+    "kc_upper": 0.004133924522777399,
+    "kc_middle": 0.004128934522777399,
+    "kc_lower": 0.0041239445227773995,
+    "previous5_low": 0.0041231,
+    "previous5_high": 0.0041332,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:31:00+00:00",
+    "timestamp": 1790634660000.0,
+    "open": 0.0041273,
+    "high": 0.0041277,
+    "low": 0.0041255,
+    "close": 0.0041271,
+    "ma3": 0.004126833333333334,
+    "ma15": 0.0041297,
+    "atr": 4.659999999999907e-06,
+    "kc_upper": 0.004133419806332938,
+    "kc_middle": 0.004128759806332938,
+    "kc_lower": 0.004124099806332938,
+    "previous5_low": 0.0041246,
+    "previous5_high": 0.0041332,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:32:00+00:00",
+    "timestamp": 1790634720000.0,
+    "open": 0.0041271,
+    "high": 0.004135,
+    "low": 0.0041248,
+    "close": 0.0041349,
+    "ma3": 0.004129766666666667,
+    "ma15": 0.00412982,
+    "atr": 4.879999999999902e-06,
+    "kc_upper": 0.004134224586675012,
+    "kc_middle": 0.0041293445866750125,
+    "kc_lower": 0.004124464586675013,
+    "previous5_low": 0.0041246,
+    "previous5_high": 0.0041332,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:33:00+00:00",
+    "timestamp": 1790634780000.0,
+    "open": 0.0041348,
+    "high": 0.0041376,
+    "low": 0.0041333,
+    "close": 0.0041352,
+    "ma3": 0.0041324000000000005,
+    "ma15": 0.00413016,
+    "atr": 4.839999999999879e-06,
+    "kc_upper": 0.00413474224508378,
+    "kc_middle": 0.00412990224508378,
+    "kc_lower": 0.00412506224508378,
+    "previous5_low": 0.0041246,
+    "previous5_high": 0.004135,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": true,
+    "LONG": {
+      "ok": false,
+      "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.09)",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.09)"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:34:00+00:00",
+    "timestamp": 1790634840000.0,
+    "open": 0.0041352,
+    "high": 0.0041362,
+    "low": 0.0041299,
+    "close": 0.0041329,
+    "ma3": 0.004134333333333334,
+    "ma15": 0.004129926666666667,
+    "atr": 4.989999999999856e-06,
+    "kc_upper": 0.004135177745541461,
+    "kc_middle": 0.0041301877455414615,
+    "kc_lower": 0.004125197745541462,
+    "previous5_low": 0.0041246,
+    "previous5_high": 0.0041376,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:35:00+00:00",
+    "timestamp": 1790634900000.0,
+    "open": 0.0041329,
+    "high": 0.0041467,
+    "low": 0.0041328,
+    "close": 0.0041452,
+    "ma3": 0.0041377666666666665,
+    "ma15": 0.004130846666666667,
+    "atr": 5.969999999999847e-06,
+    "kc_upper": 0.0041375874840584095,
+    "kc_middle": 0.004131617484058409,
+    "kc_lower": 0.004125647484058409,
+    "previous5_low": 0.0041248,
+    "previous5_high": 0.0041376,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": true,
+    "LONG": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_LONG",
+      "decision": {
+        "action": "ENTER",
+        "side": "LONG",
+        "reason": "CLOSED_IGNITION_LONG",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 5.969999999999847e-06,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790634900000.0,
+        "close_price": 0.0041452
+      },
+      "firewall": "PASS"
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "1000PEPE/USDT",
+    "bar_utc": "2026-09-28T22:36:00+00:00",
+    "timestamp": 1790634960000.0,
+    "open": 0.0041451,
+    "high": 0.0041545,
+    "low": 0.004144,
+    "close": 0.0041545,
+    "ma3": 0.0041442,
+    "ma15": 0.004132173333333333,
+    "atr": 6.379999999999927e-06,
+    "kc_upper": 0.0041401767713064004,
+    "kc_middle": 0.0041337967713064,
+    "kc_lower": 0.0041274167713064,
+    "previous5_low": 0.0041248,
+    "previous5_high": 0.0041467,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": true,
+    "LONG": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_LONG",
+      "decision": {
+        "action": "ENTER",
+        "side": "LONG",
+        "reason": "CLOSED_IGNITION_LONG",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 6.379999999999927e-06,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790634960000.0,
+        "close_price": 0.0041545
+      },
+      "firewall": "PASS"
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:05:00+00:00",
+    "timestamp": 1790633100000.0,
+    "open": 0.07214,
+    "high": 0.07224,
+    "low": 0.07192,
+    "close": 0.07192,
+    "ma3": 0.07209,
+    "ma15": 0.07248,
+    "atr": 0.0006429999999999991,
+    "kc_upper": 0.07259424253917596,
+    "kc_middle": 0.07195124253917595,
+    "kc_lower": 0.07130824253917595,
+    "previous5_low": 0.07201,
+    "previous5_high": 0.07346,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:06:00+00:00",
+    "timestamp": 1790633160000.0,
+    "open": 0.07197,
+    "high": 0.07198,
+    "low": 0.07159,
+    "close": 0.07182,
+    "ma3": 0.07196666666666666,
+    "ma15": 0.07254200000000001,
+    "atr": 0.0005929999999999991,
+    "kc_upper": 0.07253174324982022,
+    "kc_middle": 0.07193874324982022,
+    "kc_lower": 0.07134574324982022,
+    "previous5_low": 0.07192,
+    "previous5_high": 0.07326,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:07:00+00:00",
+    "timestamp": 1790633220000.0,
+    "open": 0.07183,
+    "high": 0.07191,
+    "low": 0.07148,
+    "close": 0.07159,
+    "ma3": 0.07177666666666667,
+    "ma15": 0.07254133333333335,
+    "atr": 0.0006069999999999993,
+    "kc_upper": 0.07251252960722664,
+    "kc_middle": 0.07190552960722664,
+    "kc_lower": 0.07129852960722664,
+    "previous5_low": 0.07159,
+    "previous5_high": 0.07295,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:08:00+00:00",
+    "timestamp": 1790633280000.0,
+    "open": 0.0716,
+    "high": 0.07172,
+    "low": 0.0714,
+    "close": 0.07154,
+    "ma3": 0.07165,
+    "ma15": 0.07245266666666667,
+    "atr": 0.00058,
+    "kc_upper": 0.07245071726347962,
+    "kc_middle": 0.07187071726347963,
+    "kc_lower": 0.07129071726347963,
+    "previous5_low": 0.07148,
+    "previous5_high": 0.07261,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:09:00+00:00",
+    "timestamp": 1790633340000.0,
+    "open": 0.07154,
+    "high": 0.07163,
+    "low": 0.0713,
+    "close": 0.07144,
+    "ma3": 0.07152333333333334,
+    "ma15": 0.07238333333333334,
+    "atr": 0.0005290000000000003,
+    "kc_upper": 0.07235869657167485,
+    "kc_middle": 0.07182969657167484,
+    "kc_lower": 0.07130069657167484,
+    "previous5_low": 0.0714,
+    "previous5_high": 0.07226,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:10:00+00:00",
+    "timestamp": 1790633400000.0,
+    "open": 0.07142,
+    "high": 0.0717,
+    "low": 0.07122,
+    "close": 0.07156,
+    "ma3": 0.07151333333333333,
+    "ma15": 0.07232466666666666,
+    "atr": 0.0004559999999999995,
+    "kc_upper": 0.0722600111839635,
+    "kc_middle": 0.0718040111839635,
+    "kc_lower": 0.0713480111839635,
+    "previous5_low": 0.0713,
+    "previous5_high": 0.07224,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:11:00+00:00",
+    "timestamp": 1790633460000.0,
+    "open": 0.07155,
+    "high": 0.07155,
+    "low": 0.07131,
+    "close": 0.07131,
+    "ma3": 0.07143666666666666,
+    "ma15": 0.07220066666666666,
+    "atr": 0.0004209999999999992,
+    "kc_upper": 0.07217796249982134,
+    "kc_middle": 0.07175696249982133,
+    "kc_lower": 0.07133596249982133,
+    "previous5_low": 0.07122,
+    "previous5_high": 0.07198,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_IGNITION_SHORT",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 0.0004209999999999992,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790633460000.0,
+        "close_price": 0.07131
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:12:00+00:00",
+    "timestamp": 1790633520000.0,
+    "open": 0.07133,
+    "high": 0.07139,
+    "low": 0.07099,
+    "close": 0.07101,
+    "ma3": 0.07129333333333333,
+    "ma15": 0.07205466666666666,
+    "atr": 0.00036799999999999886,
+    "kc_upper": 0.07205382321472896,
+    "kc_middle": 0.07168582321472897,
+    "kc_lower": 0.07131782321472897,
+    "previous5_low": 0.07122,
+    "previous5_high": 0.07191,
+    "short_breakout_predicate": true,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_IGNITION_SHORT",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 0.00036799999999999886,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790633520000.0,
+        "close_price": 0.07101
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:13:00+00:00",
+    "timestamp": 1790633580000.0,
+    "open": 0.07101,
+    "high": 0.07104,
+    "low": 0.07081,
+    "close": 0.07088,
+    "ma3": 0.07106666666666667,
+    "ma15": 0.07189066666666667,
+    "atr": 0.00033100000000000073,
+    "kc_upper": 0.07194007814621144,
+    "kc_middle": 0.07160907814621144,
+    "kc_lower": 0.07127807814621144,
+    "previous5_low": 0.07099,
+    "previous5_high": 0.07172,
+    "short_breakout_predicate": true,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_TREND_BREAKOUT_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_TREND_BREAKOUT_SHORT",
+        "rule": "TREND_BREAKOUT",
+        "entry_type": "TREND_BREAKOUT",
+        "entry_atr": 0.00033100000000000073,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790633580000.0,
+        "close_price": 0.07088
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:14:00+00:00",
+    "timestamp": 1790633640000.0,
+    "open": 0.07086,
+    "high": 0.07087,
+    "low": 0.0707,
+    "close": 0.07075,
+    "ma3": 0.07088,
+    "ma15": 0.07177066666666668,
+    "atr": 0.00033299999999999996,
+    "kc_upper": 0.07186026117981599,
+    "kc_middle": 0.07152726117981599,
+    "kc_lower": 0.07119426117981599,
+    "previous5_low": 0.07081,
+    "previous5_high": 0.0717,
+    "short_breakout_predicate": true,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_TREND_BREAKOUT_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_TREND_BREAKOUT_SHORT",
+        "rule": "TREND_BREAKOUT",
+        "entry_type": "TREND_BREAKOUT",
+        "entry_atr": 0.00033299999999999996,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790633640000.0,
+        "close_price": 0.07075
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:15:00+00:00",
+    "timestamp": 1790633700000.0,
+    "open": 0.07072,
+    "high": 0.07086,
+    "low": 0.07061,
+    "close": 0.07065,
+    "ma3": 0.07076,
+    "ma15": 0.07159533333333333,
+    "atr": 0.0003259999999999999,
+    "kc_upper": 0.07176971249622563,
+    "kc_middle": 0.07144371249622562,
+    "kc_lower": 0.07111771249622562,
+    "previous5_low": 0.0707,
+    "previous5_high": 0.0717,
+    "short_breakout_predicate": true,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.28)",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "PIN_BAR_DETECTED (長影線插針防護, ratio=0.28)"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:16:00+00:00",
+    "timestamp": 1790633760000.0,
+    "open": 0.07065,
+    "high": 0.07075,
+    "low": 0.07044,
+    "close": 0.07071,
+    "ma3": 0.07070333333333333,
+    "ma15": 0.07144933333333334,
+    "atr": 0.00031799999999999884,
+    "kc_upper": 0.0716918351155879,
+    "kc_middle": 0.0713738351155879,
+    "kc_lower": 0.0710558351155879,
+    "previous5_low": 0.07061,
+    "previous5_high": 0.07155,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:17:00+00:00",
+    "timestamp": 1790633820000.0,
+    "open": 0.07071,
+    "high": 0.07098,
+    "low": 0.07062,
+    "close": 0.07095,
+    "ma3": 0.07077,
+    "ma15": 0.07136533333333334,
+    "atr": 0.0003109999999999988,
+    "kc_upper": 0.07164446986655151,
+    "kc_middle": 0.07133346986655151,
+    "kc_lower": 0.0710224698665515,
+    "previous5_low": 0.07044,
+    "previous5_high": 0.07139,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:18:00+00:00",
+    "timestamp": 1790633880000.0,
+    "open": 0.07096,
+    "high": 0.0715,
+    "low": 0.07092,
+    "close": 0.0715,
+    "ma3": 0.07105333333333334,
+    "ma15": 0.07131933333333333,
+    "atr": 0.00033699999999999843,
+    "kc_upper": 0.07168632987876798,
+    "kc_middle": 0.07134932987876798,
+    "kc_lower": 0.07101232987876797,
+    "previous5_low": 0.07044,
+    "previous5_high": 0.07104,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:19:00+00:00",
+    "timestamp": 1790633940000.0,
+    "open": 0.07148,
+    "high": 0.07155,
+    "low": 0.07119,
+    "close": 0.07124,
+    "ma3": 0.07123,
+    "ma15": 0.071258,
+    "atr": 0.0003399999999999986,
+    "kc_upper": 0.0716789175092719,
+    "kc_middle": 0.0713389175092719,
+    "kc_lower": 0.07099891750927191,
+    "previous5_low": 0.07044,
+    "previous5_high": 0.0715,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:20:00+00:00",
+    "timestamp": 1790634000000.0,
+    "open": 0.07124,
+    "high": 0.07128,
+    "low": 0.07092,
+    "close": 0.07092,
+    "ma3": 0.07121999999999999,
+    "ma15": 0.07119133333333334,
+    "atr": 0.00032799999999999914,
+    "kc_upper": 0.07162702060376137,
+    "kc_middle": 0.07129902060376138,
+    "kc_lower": 0.07097102060376138,
+    "previous5_low": 0.07044,
+    "previous5_high": 0.07155,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:21:00+00:00",
+    "timestamp": 1790634060000.0,
+    "open": 0.07093,
+    "high": 0.07132,
+    "low": 0.07093,
+    "close": 0.07111,
+    "ma3": 0.07109,
+    "ma15": 0.07114400000000001,
+    "atr": 0.00034299999999999885,
+    "kc_upper": 0.07162401864131916,
+    "kc_middle": 0.07128101864131917,
+    "kc_lower": 0.07093801864131917,
+    "previous5_low": 0.07044,
+    "previous5_high": 0.07155,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:22:00+00:00",
+    "timestamp": 1790634120000.0,
+    "open": 0.0711,
+    "high": 0.07151,
+    "low": 0.07108,
+    "close": 0.07131,
+    "ma3": 0.07111333333333332,
+    "ma15": 0.07112533333333333,
+    "atr": 0.0003459999999999991,
+    "kc_upper": 0.07162977877071734,
+    "kc_middle": 0.07128377877071734,
+    "kc_lower": 0.07093777877071734,
+    "previous5_low": 0.07062,
+    "previous5_high": 0.07155,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:23:00+00:00",
+    "timestamp": 1790634180000.0,
+    "open": 0.0713,
+    "high": 0.0713,
+    "low": 0.07114,
+    "close": 0.07119,
+    "ma3": 0.07120333333333334,
+    "ma15": 0.071102,
+    "atr": 0.0003399999999999986,
+    "kc_upper": 0.07161484745926523,
+    "kc_middle": 0.07127484745926524,
+    "kc_lower": 0.07093484745926525,
+    "previous5_low": 0.07092,
+    "previous5_high": 0.07155,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:24:00+00:00",
+    "timestamp": 1790634240000.0,
+    "open": 0.07119,
+    "high": 0.07131,
+    "low": 0.07101,
+    "close": 0.07122,
+    "ma3": 0.07124000000000001,
+    "ma15": 0.07108733333333332,
+    "atr": 0.00035199999999999815,
+    "kc_upper": 0.07162162389180579,
+    "kc_middle": 0.0712696238918058,
+    "kc_lower": 0.07091762389180581,
+    "previous5_low": 0.07092,
+    "previous5_high": 0.07155,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:25:00+00:00",
+    "timestamp": 1790634300000.0,
+    "open": 0.07122,
+    "high": 0.07122,
+    "low": 0.07089,
+    "close": 0.07111,
+    "ma3": 0.07117333333333334,
+    "ma15": 0.07105733333333333,
+    "atr": 0.0003599999999999992,
+    "kc_upper": 0.07161442161648533,
+    "kc_middle": 0.07125442161648533,
+    "kc_lower": 0.07089442161648533,
+    "previous5_low": 0.07092,
+    "previous5_high": 0.07151,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:26:00+00:00",
+    "timestamp": 1790634360000.0,
+    "open": 0.07109,
+    "high": 0.07112,
+    "low": 0.07079,
+    "close": 0.07079,
+    "ma3": 0.07104,
+    "ma15": 0.07102266666666666,
+    "atr": 0.0003619999999999998,
+    "kc_upper": 0.07157219098676956,
+    "kc_middle": 0.07121019098676956,
+    "kc_lower": 0.07084819098676956,
+    "previous5_low": 0.07089,
+    "previous5_high": 0.07151,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:27:00+00:00",
+    "timestamp": 1790634420000.0,
+    "open": 0.07079,
+    "high": 0.07099,
+    "low": 0.07073,
+    "close": 0.0709,
+    "ma3": 0.07093333333333333,
+    "ma15": 0.07101533333333333,
+    "atr": 0.00035199999999999956,
+    "kc_upper": 0.07153264898771594,
+    "kc_middle": 0.07118064898771594,
+    "kc_lower": 0.07082864898771593,
+    "previous5_low": 0.07079,
+    "previous5_high": 0.07151,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:28:00+00:00",
+    "timestamp": 1790634480000.0,
+    "open": 0.07089,
+    "high": 0.07094,
+    "low": 0.07082,
+    "close": 0.07088,
+    "ma3": 0.07085666666666667,
+    "ma15": 0.07101533333333333,
+    "atr": 0.0003060000000000007,
+    "kc_upper": 0.0714580157507458,
+    "kc_middle": 0.0711520157507458,
+    "kc_lower": 0.0708460157507458,
+    "previous5_low": 0.07073,
+    "previous5_high": 0.07131,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:29:00+00:00",
+    "timestamp": 1790634540000.0,
+    "open": 0.07087,
+    "high": 0.07087,
+    "low": 0.07073,
+    "close": 0.07073,
+    "ma3": 0.07083666666666667,
+    "ma15": 0.071014,
+    "atr": 0.00028500000000000053,
+    "kc_upper": 0.07139682377475315,
+    "kc_middle": 0.07111182377475316,
+    "kc_lower": 0.07082682377475316,
+    "previous5_low": 0.07073,
+    "previous5_high": 0.07131,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:30:00+00:00",
+    "timestamp": 1790634600000.0,
+    "open": 0.07074,
+    "high": 0.07084,
+    "low": 0.07063,
+    "close": 0.07075,
+    "ma3": 0.07078666666666666,
+    "ma15": 0.07102066666666666,
+    "atr": 0.0002700000000000008,
+    "kc_upper": 0.07134736436857478,
+    "kc_middle": 0.07107736436857477,
+    "kc_lower": 0.07080736436857477,
+    "previous5_low": 0.07073,
+    "previous5_high": 0.07122,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:31:00+00:00",
+    "timestamp": 1790634660000.0,
+    "open": 0.07075,
+    "high": 0.07079,
+    "low": 0.07064,
+    "close": 0.07077,
+    "ma3": 0.07075,
+    "ma15": 0.07102466666666667,
+    "atr": 0.00024500000000000216,
+    "kc_upper": 0.07129309157125399,
+    "kc_middle": 0.071048091571254,
+    "kc_lower": 0.070803091571254,
+    "previous5_low": 0.07063,
+    "previous5_high": 0.07112,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:32:00+00:00",
+    "timestamp": 1790634720000.0,
+    "open": 0.07078,
+    "high": 0.07099,
+    "low": 0.07074,
+    "close": 0.07098,
+    "ma3": 0.07083333333333333,
+    "ma15": 0.07102666666666665,
+    "atr": 0.0002270000000000022,
+    "kc_upper": 0.0712686066596836,
+    "kc_middle": 0.07104160665968359,
+    "kc_lower": 0.07081460665968359,
+    "previous5_low": 0.07063,
+    "previous5_high": 0.07099,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:33:00+00:00",
+    "timestamp": 1790634780000.0,
+    "open": 0.07094,
+    "high": 0.07094,
+    "low": 0.07052,
+    "close": 0.07065,
+    "ma3": 0.0708,
+    "ma15": 0.07097,
+    "atr": 0.00025600000000000205,
+    "kc_upper": 0.07126031078672788,
+    "kc_middle": 0.07100431078672788,
+    "kc_lower": 0.07074831078672787,
+    "previous5_low": 0.07063,
+    "previous5_high": 0.07099,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_IGNITION_SHORT",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 0.00025600000000000205,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790634780000.0,
+        "close_price": 0.07065
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:34:00+00:00",
+    "timestamp": 1790634840000.0,
+    "open": 0.07065,
+    "high": 0.07067,
+    "low": 0.07032,
+    "close": 0.07043,
+    "ma3": 0.07068666666666668,
+    "ma15": 0.070916,
+    "atr": 0.0002610000000000029,
+    "kc_upper": 0.071210614521258,
+    "kc_middle": 0.070949614521258,
+    "kc_lower": 0.070688614521258,
+    "previous5_low": 0.07052,
+    "previous5_high": 0.07099,
+    "short_breakout_predicate": true,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_IGNITION_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_IGNITION_SHORT",
+        "rule": "IGNITION",
+        "entry_type": "IGNITION",
+        "entry_atr": 0.0002610000000000029,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790634840000.0,
+        "close_price": 0.07043
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:35:00+00:00",
+    "timestamp": 1790634900000.0,
+    "open": 0.07044,
+    "high": 0.07046,
+    "low": 0.07014,
+    "close": 0.07031,
+    "ma3": 0.07046333333333334,
+    "ma15": 0.07087533333333335,
+    "atr": 0.0002600000000000019,
+    "kc_upper": 0.07114869885344052,
+    "kc_middle": 0.07088869885344053,
+    "kc_lower": 0.07062869885344053,
+    "previous5_low": 0.07032,
+    "previous5_high": 0.07099,
+    "short_breakout_predicate": true,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    },
+    "SHORT": {
+      "ok": true,
+      "reason": "CLOSED_TREND_BREAKOUT_SHORT",
+      "decision": {
+        "action": "ENTER",
+        "side": "SHORT",
+        "reason": "CLOSED_TREND_BREAKOUT_SHORT",
+        "rule": "TREND_BREAKOUT",
+        "entry_type": "TREND_BREAKOUT",
+        "entry_atr": 0.0002600000000000019,
+        "is_breakout": true,
+        "confirmation_bar_id": 1790634900000.0,
+        "close_price": 0.07031
+      },
+      "firewall": "PASS"
+    }
+  },
+  {
+    "symbol": "龙虾/USDT",
+    "bar_utc": "2026-09-28T22:36:00+00:00",
+    "timestamp": 1790634960000.0,
+    "open": 0.07031,
+    "high": 0.07038,
+    "low": 0.07022,
+    "close": 0.07035,
+    "ma3": 0.07036333333333333,
+    "ma15": 0.07082466666666667,
+    "atr": 0.00024300000000000154,
+    "kc_upper": 0.07108039420100075,
+    "kc_middle": 0.07083739420100074,
+    "kc_lower": 0.07059439420100073,
+    "previous5_low": 0.07014,
+    "previous5_high": 0.07099,
+    "short_breakout_predicate": false,
+    "long_breakout_predicate": false,
+    "LONG": {
+      "ok": false,
+      "reason": "WAIT_NEW_A_TO_E_TRIGGER",
+      "decision": {
+        "action": "WAIT",
+        "side": "LONG",
+        "reason": "WAIT_NEW_A_TO_E_TRIGGER"
+      }
+    },
+    "SHORT": {
+      "ok": false,
+      "reason": "BLOCKED_OPPOSITE_CLOSED_BODY",
+      "decision": {
+        "action": "WAIT",
+        "side": "SHORT",
+        "reason": "BLOCKED_OPPOSITE_CLOSED_BODY"
+      }
+    }
+  }
+]

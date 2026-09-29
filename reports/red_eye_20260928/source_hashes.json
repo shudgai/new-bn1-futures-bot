@@ -1,0 +1,6 @@
+{
+  "core/engine.py": "144eb73be3a4266d1419abd8a9033aff145d770de9aeacbbd71ef13ecb69b792",
+  "core/services/candle_data.py": "59da7cf9d4d424efa006dfe41dc274b303c8032f747b2392639740c2ef3e8710",
+  "core/services/symbol_runner.py": "84599ca09f38a11e05c3fa4a0b9ad0d234b2128e5d11b9af0d0bc509dfb29be9",
+  "web/index.html": "b09328447324559bb551e017c03c07287e944bccce776005d18bbd177305a98c"
+}

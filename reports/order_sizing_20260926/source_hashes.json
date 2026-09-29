@@ -1,0 +1,7 @@
+{
+  "core/services/order_sizing.py": "7914cec4cd602c187ad6514798a41a0edca5e91ee261f1df5a7d73d6a0552a6e",
+  "core/engine.py": "4916db0ff9ceb0d0add7c0b9aef27528fe1f61bacde641923940a3bbe32e9740",
+  "core/paper_account.py": "8b8f7667f1678248dccdf04e3a465e1fe7e9bf083909ecbeea8277b74d71f8ee",
+  "core/testnet_account.py": "ae7e252c17a0b53156efde14f960386daa64422ca1872e1e170752343b09ac42",
+  "web/index.html": "4b7ba8721c29848bfa9eec1dac35634b4f2e2ea8fe7731807e20b5f0d9239b89"
+}

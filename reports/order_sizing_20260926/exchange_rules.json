@@ -1,0 +1,92 @@
+[
+  {
+    "sandbox": false,
+    "id": "1000PEPEUSDT",
+    "base": "1000PEPE",
+    "contractSize": 1.0,
+    "filters": [
+      {
+        "tickSize": "0.0000001",
+        "minPrice": "0.0000001",
+        "filterType": "PRICE_FILTER",
+        "maxPrice": "200"
+      },
+      {
+        "filterType": "LOT_SIZE",
+        "minQty": "1",
+        "maxQty": "800000000",
+        "stepSize": "1"
+      },
+      {
+        "minQty": "1",
+        "filterType": "MARKET_LOT_SIZE",
+        "maxQty": "100000000",
+        "stepSize": "1"
+      },
+      {
+        "limit": 200,
+        "filterType": "MAX_NUM_ORDERS"
+      },
+      {
+        "filterType": "MIN_NOTIONAL",
+        "notional": "5"
+      },
+      {
+        "multiplierUp": "1.1500",
+        "filterType": "PERCENT_PRICE",
+        "multiplierDown": "0.8500",
+        "multiplierDecimal": "4"
+      },
+      {
+        "filterType": "POSITION_RISK_CONTROL",
+        "positionControlSide": "NONE"
+      }
+    ],
+    "quantity_300usdt_at_0044": "68181"
+  },
+  {
+    "sandbox": true,
+    "id": "1000PEPEUSDT",
+    "base": "1000PEPE",
+    "contractSize": 1.0,
+    "filters": [
+      {
+        "maxPrice": "200",
+        "filterType": "PRICE_FILTER",
+        "tickSize": "0.0000001",
+        "minPrice": "0.0000001"
+      },
+      {
+        "minQty": "1",
+        "maxQty": "10000000",
+        "stepSize": "1",
+        "filterType": "LOT_SIZE"
+      },
+      {
+        "stepSize": "1",
+        "filterType": "MARKET_LOT_SIZE",
+        "minQty": "1",
+        "maxQty": "10000000"
+      },
+      {
+        "limit": 200,
+        "filterType": "MAX_NUM_ORDERS"
+      },
+      {
+        "notional": "5",
+        "filterType": "MIN_NOTIONAL"
+      },
+      {
+        "filterType": "PERCENT_PRICE",
+        "multiplierDown": "0.9500",
+        "multiplierUp": "1.0500",
+        "multiplierDecimal": "4"
+      },
+      {
+        "positionControlSide": "NONE",
+        "filterType": "POSITION_RISK_CONTROL"
+      }
+    ],
+    "quantity_300usdt_at_0044": "68181"
+  }
+]

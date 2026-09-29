@@ -1,0 +1,253 @@
+{
+  "is_running": true,
+  "paper_trading": true,
+  "available_balance": 149.97,
+  "positions": [],
+  "chart_metrics": {
+    "1000PEPE/USDT": {
+      "dist_to_upper": -1.563469198798302e-06,
+      "dist_to_upper_pct": -0.03779782416590035,
+      "dist_to_lower": 1.1203469198798298e-05,
+      "dist_to_lower_pct": 0.27085072040417507,
+      "min_body_atr": 2.6509999999999514e-06,
+      "breakout_status": "LONG_BROKEN",
+      "block_reason": "等待實體放大 / 未達起爆形態",
+      "kc_width_atr": 2.000000000000036
+    },
+    "龙虾/USDT": {
+      "dist_to_upper": 0.0004857393587613529,
+      "dist_to_upper_pct": 0.6863633725609055,
+      "dist_to_lower": -5.739358761344682e-06,
+      "dist_to_lower_pct": -0.00810987531629883,
+      "min_body_atr": 0.00013200000000000074,
+      "breakout_status": "SHORT_BROKEN",
+      "block_reason": "上一根已收線 K 棒方向不符；即時破軌尚未收線確認",
+      "kc_width_atr": 2.000000000000023
+    }
+  },
+  "logs": [
+    {
+      "time": "06:31:27",
+      "timestamp": 1790634687.8914053,
+      "text": "⏹️ 量化交易機器人已停止",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.1300755,
+      "text": "⚠️ [自動恢復] 偵測到機器人停止，正在重新啟動",
+      "level": "WARNING"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.1322162,
+      "text": "▶️ 紙上交易帳戶已啟動（純本地模擬，不連接真實交易所）",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.4494991,
+      "text": "✅ [幣種名單核對] MAINSTREAM_SYMBOLS 共 15 個幣種皆為真實有效的幣安永續合約",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.451751,
+      "text": "▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（2幣雙向交易）",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.4537919,
+      "text": "⏸️ [自動幣種輪替] 已停用，鎖定預設 2 個幣種交易",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.4558806,
+      "text": "✅ [自動恢復] 機器人已重新啟動",
+      "level": "SUCCESS"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.7571752,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634600000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.7655084,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634600000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.938811,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634600000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.947113,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634600000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:45",
+      "timestamp": 1790634705.9506161,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:01",
+      "timestamp": 1790634721.248506,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634660000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:01",
+      "timestamp": 1790634721.2590551,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634660000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:01",
+      "timestamp": 1790634721.4130697,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634660000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:01",
+      "timestamp": 1790634721.4244864,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634660000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:01",
+      "timestamp": 1790634721.4275804,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:16",
+      "timestamp": 1790634736.9225543,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:32",
+      "timestamp": 1790634752.5239623,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:38",
+      "timestamp": 1790634758.8990595,
+      "text": "⏹️ 量化交易機器人已停止",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.017841,
+      "text": "⚠️ [自動恢復] 偵測到機器人停止，正在重新啟動",
+      "level": "WARNING"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.020076,
+      "text": "▶️ 紙上交易帳戶已啟動（純本地模擬，不連接真實交易所）",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.3390126,
+      "text": "✅ [幣種名單核對] MAINSTREAM_SYMBOLS 共 15 個幣種皆為真實有效的幣安永續合約",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.341373,
+      "text": "▶️ 8006 機器人啟動【紙上模擬模式 PAPER TRADING】不連接真實交易所，純本地模擬（2幣雙向交易）",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.3434796,
+      "text": "⏸️ [自動幣種輪替] 已停用，鎖定預設 2 個幣種交易",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.3457155,
+      "text": "✅ [自動恢復] 機器人已重新啟動",
+      "level": "SUCCESS"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.701425,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634660000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.7092996,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634660000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.840603,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634660000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.8524249,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634660000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:42",
+      "timestamp": 1790634762.8550246,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:32:58",
+      "timestamp": 1790634778.7769127,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:33:01",
+      "timestamp": 1790634781.5248828,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634720000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:33:01",
+      "timestamp": 1790634781.5353894,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634720000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:33:01",
+      "timestamp": 1790634781.7016425,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634720000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:33:01",
+      "timestamp": 1790634781.7122455,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634720000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY",
+      "level": "INFO"
+    },
+    {
+      "time": "06:33:14",
+      "timestamp": 1790634794.5306673,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    }
+  ],
+  "captured_at_utc": "2026-09-28 22:33:25"
+}

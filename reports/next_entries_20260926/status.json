@@ -1,0 +1,54 @@
+{
+  "started_at": 1790399731.9407816,
+  "updated_at": 1790399944.3521109,
+  "state": "complete",
+  "engine_running": true,
+  "paper_trading": true,
+  "waiting_for": [],
+  "results": {
+    "龙虾/USDT": {
+      "event": "next_open",
+      "observed_at": 1790399878.6941893,
+      "paper_trading": true,
+      "trade": {
+        "id": 1790399874506,
+        "time": "09/26 13:17:54",
+        "symbol": "龙虾/USDT",
+        "action": "OPEN_SHORT",
+        "price": 0.11315868,
+        "qty": 3017.79841934,
+        "amount": 68.29801893842304,
+        "leverage": 5,
+        "reason": "Closed1M CLOSED_E_SHORT",
+        "channel_confirmation_bar_id": 1790399760000.0
+      },
+      "fill_notional": 341.4900856386008,
+      "margin_times_leverage": 341.49009469211524,
+      "notional_difference": -9.053514418155828e-06,
+      "balance_after": 136.43,
+      "available_after": 68.13
+    },
+    "1000PEPE/USDT": {
+      "event": "next_open",
+      "observed_at": 1790399944.351021,
+      "paper_trading": true,
+      "trade": {
+        "id": 1790399943445,
+        "time": "09/26 13:19:03",
+        "symbol": "1000PEPE/USDT",
+        "action": "OPEN_SHORT",
+        "price": 0.00446505,
+        "qty": 76099.17910387,
+        "amount": 67.95738043997704,
+        "leverage": 5,
+        "reason": "Closed1M CLOSED_B_SHORT",
+        "channel_confirmation_bar_id": 1790399880000.0
+      },
+      "fill_notional": 339.7866396577347,
+      "margin_times_leverage": 339.7869021998852,
+      "notional_difference": -0.0002625421504944825,
+      "balance_after": 136.26,
+      "available_after": 0.0
+    }
+  }
+}

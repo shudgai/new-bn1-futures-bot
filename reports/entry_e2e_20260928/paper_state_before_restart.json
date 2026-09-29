@@ -1,0 +1,1361 @@
+{
+  "balance": 149.9688123307399,
+  "realized_pnl": -0.031187669260111104,
+  "positions": {},
+  "position_meta": {},
+  "pending_limit_orders": {},
+  "trades": [
+    {
+      "id": 1790430121201,
+      "time": "09/26 21:42:01",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_LONG",
+      "side": "LONG",
+      "price": 0.00436426,
+      "qty": 6873.7397571,
+      "amount": 6.0,
+      "fee": 0.03,
+      "pnl": -0.0312,
+      "peak_pnl_pct": 0.0,
+      "realized_price_move_pct": -3.961e-05,
+      "profit_capture_ratio": null,
+      "status": "CLOSED",
+      "reason": "Closed1M MA3_PEAK_REVERSAL_FULL_CLOSE",
+      "channel_fading_ma3_turn": null,
+      "channel_reverse_wait_ck": null,
+      "channel_pivot_entry": null,
+      "channel_pivot_middle_reached": null,
+      "channel_pivot_middle_exit_pending": null,
+      "entry_kc_middle": null,
+      "channel_confirmation_bar_id": null,
+      "manual_entry": true,
+      "managed_by_bot": true,
+      "bot_last_managed_at": null,
+      "channel_favorable_rail_reached": false,
+      "btc_regime_at_entry": null,
+      "btc_direction_1h_at_entry": null,
+      "btc_score_penalty": null,
+      "btc_allocation_factor": null,
+      "btc_pre_penalty_score": null,
+      "raw_signal_score": null,
+      "btc_adjusted_score": null,
+      "history_adjusted_score": null,
+      "history_score_multiplier": null,
+      "pullback_confirmation_score": null,
+      "entry_mode": "CHANNEL_SWING",
+      "is_contrarian_bottom_buy": null,
+      "initial_sl": 0.0042662464,
+      "initial_risk": 9.819000000000001e-05,
+      "entry_atr": 6.546e-05,
+      "entry_snapshot": null,
+      "atr_sl": 0.0043649334,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.0042662464,
+        "confirmed_stop": 0.0042662464,
+        "highest_price": 0.0043644363999999995,
+        "lowest_price": 0.0043644363999999995,
+        "confirmed_high": 0.0043644363999999995,
+        "confirmed_low": 0.0043644363999999995,
+        "atr": 6.546e-05,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      },
+      "ratchet_floor": null,
+      "channel_peak_abnormal": null,
+      "signal_candle_low": null,
+      "signal_candle_high": null,
+      "channel_turn_low": null,
+      "channel_turn_high": null,
+      "touch_price": null,
+      "reclaim_confirmed": null,
+      "reclaim_wait_sec": null,
+      "profit_profile": null,
+      "profit_room_pct": null,
+      "bounce_capture_ratio": null,
+      "bounce_target_pct": null,
+      "structured_net_rr": null,
+      "high_readiness_low_room": null,
+      "low_room_allocation_factor": null,
+      "dca_stage": null,
+      "dca_base_price": null,
+      "dca_original_amount": null,
+      "eligibility_note": null,
+      "wave_regime": "RANGE",
+      "market_mode": "RANGE",
+      "entry_market_mode": null,
+      "channel_entry_profile": null,
+      "channel_entry_profile_basis": null,
+      "profit_lock_usdt_v2": null,
+      "channel_live_ma3_exit_pending": null,
+      "channel_live_ma3_favorable_bar": null,
+      "channel_live_ma3_turn_exit_pending": null,
+      "channel_ma3_turn_observed_bar": null
+    },
+    {
+      "id": 1790429713617,
+      "time": "09/26 21:35:13",
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "side": "LONG",
+      "price": 0.00436444,
+      "qty": 6873.7397571,
+      "amount": 6.0,
+      "fee": 0.015,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "手動開倉_LONG",
+      "sl": 0.0042662464,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "wave_regime": "RANGE",
+      "market_mode": "RANGE",
+      "manual_entry": true,
+      "managed_by_bot": true,
+      "channel_favorable_rail_reached": false,
+      "entry_atr": 6.546e-05,
+      "atr_sl": 0.0042662464,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.0042662464,
+      "initial_risk": 9.819000000000001e-05,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.0042662464,
+        "confirmed_stop": 0.0042662464,
+        "highest_price": 0.0043644363999999995,
+        "lowest_price": 0.0043644363999999995,
+        "confirmed_high": 0.0043644363999999995,
+        "confirmed_low": 0.0043644363999999995,
+        "atr": 6.546e-05,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      }
+    }
+  ],
+  "logs": [
+    {
+      "time": "06:13:01",
+      "timestamp": 1790633581.1125371,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633520000.0 reason=CLOSED_IGNITION_SHORT",
+      "level": "INFO"
+    },
+    {
+      "time": "06:13:01",
+      "timestamp": 1790633581.88107,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:01",
+      "timestamp": 1790633581.8845248,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:13:04",
+      "timestamp": 1790633584.1075265,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:06",
+      "timestamp": 1790633586.289329,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:08",
+      "timestamp": 1790633588.4949114,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:10",
+      "timestamp": 1790633590.737329,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:12",
+      "timestamp": 1790633592.9580476,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:15",
+      "timestamp": 1790633595.3768296,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:17",
+      "timestamp": 1790633597.5957258,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:17",
+      "timestamp": 1790633597.5991259,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:13:19",
+      "timestamp": 1790633599.9664507,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:22",
+      "timestamp": 1790633602.216424,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:24",
+      "timestamp": 1790633604.4501288,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:26",
+      "timestamp": 1790633606.644226,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:28",
+      "timestamp": 1790633608.9167614,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:31",
+      "timestamp": 1790633611.1447985,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:33",
+      "timestamp": 1790633613.3783014,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:33",
+      "timestamp": 1790633613.3816667,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:13:35",
+      "timestamp": 1790633615.7976725,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:38",
+      "timestamp": 1790633618.0039206,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:40",
+      "timestamp": 1790633620.2252152,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:42",
+      "timestamp": 1790633622.469321,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:44",
+      "timestamp": 1790633624.689541,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:46",
+      "timestamp": 1790633626.8289745,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:49",
+      "timestamp": 1790633629.056647,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:49",
+      "timestamp": 1790633629.0601554,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:13:51",
+      "timestamp": 1790633631.497755,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:53",
+      "timestamp": 1790633633.7209682,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:55",
+      "timestamp": 1790633635.9369264,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:13:58",
+      "timestamp": 1790633638.1473095,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:14:00",
+      "timestamp": 1790633640.4731474,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:14:01",
+      "timestamp": 1790633641.7570531,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633580000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:01",
+      "timestamp": 1790633641.767871,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633580000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:01",
+      "timestamp": 1790633641.931713,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633580000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:01",
+      "timestamp": 1790633641.942318,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633580000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:03",
+      "timestamp": 1790633643.3542006,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:18",
+      "timestamp": 1790633658.8352752,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:34",
+      "timestamp": 1790633674.3138459,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:14:49",
+      "timestamp": 1790633689.8071806,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:00",
+      "timestamp": 1790633700.9284654,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633640000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:00",
+      "timestamp": 1790633700.9392524,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633640000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:01",
+      "timestamp": 1790633701.1224434,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633640000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:01",
+      "timestamp": 1790633701.1332147,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633640000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:05",
+      "timestamp": 1790633705.4044147,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:21",
+      "timestamp": 1790633721.0611746,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:36",
+      "timestamp": 1790633736.6424725,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:15:52",
+      "timestamp": 1790633752.1416306,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:00",
+      "timestamp": 1790633760.3916028,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633700000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:00",
+      "timestamp": 1790633760.4025729,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633700000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:00",
+      "timestamp": 1790633760.5712645,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633700000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:00",
+      "timestamp": 1790633760.5815291,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633700000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:07",
+      "timestamp": 1790633767.6212943,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:23",
+      "timestamp": 1790633783.1110616,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:38",
+      "timestamp": 1790633798.5990539,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:16:54",
+      "timestamp": 1790633814.1807222,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:00",
+      "timestamp": 1790633820.9941611,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:01",
+      "timestamp": 1790633821.0056186,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:01",
+      "timestamp": 1790633821.165323,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:01",
+      "timestamp": 1790633821.1766558,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633760000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:09",
+      "timestamp": 1790633829.874588,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:25",
+      "timestamp": 1790633845.4323232,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:41",
+      "timestamp": 1790633861.307057,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:17:56",
+      "timestamp": 1790633876.9622571,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:01",
+      "timestamp": 1790633881.026918,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633820000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:01",
+      "timestamp": 1790633881.0382082,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633820000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:01",
+      "timestamp": 1790633881.2076128,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633820000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:01",
+      "timestamp": 1790633881.2183077,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633820000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:12",
+      "timestamp": 1790633892.565784,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:28",
+      "timestamp": 1790633908.276071,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:43",
+      "timestamp": 1790633923.9769318,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:18:59",
+      "timestamp": 1790633939.7022746,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:00",
+      "timestamp": 1790633940.9477842,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633880000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:00",
+      "timestamp": 1790633940.9587057,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633880000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:01",
+      "timestamp": 1790633941.1180122,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633880000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:01",
+      "timestamp": 1790633941.128937,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633880000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:15",
+      "timestamp": 1790633955.4030514,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:30",
+      "timestamp": 1790633970.9569886,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:19:46",
+      "timestamp": 1790633986.4605923,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:00",
+      "timestamp": 1790634000.4135733,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790633940000.0 reason=CLOSED_IGNITION_LONG",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:00",
+      "timestamp": 1790634000.4226577,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790633940000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:00",
+      "timestamp": 1790634000.587883,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790633940000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:00",
+      "timestamp": 1790634000.5963304,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790633940000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:01",
+      "timestamp": 1790634001.2496638,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:03",
+      "timestamp": 1790634003.3548405,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:03",
+      "timestamp": 1790634003.3630188,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:05",
+      "timestamp": 1790634005.451213,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:07",
+      "timestamp": 1790634007.5130599,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:09",
+      "timestamp": 1790634009.6067019,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:11",
+      "timestamp": 1790634011.7158494,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:13",
+      "timestamp": 1790634013.8447804,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:15",
+      "timestamp": 1790634015.9493954,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:18",
+      "timestamp": 1790634018.045005,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:20",
+      "timestamp": 1790634020.1405883,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:20",
+      "timestamp": 1790634020.1442404,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:22",
+      "timestamp": 1790634022.2388785,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:24",
+      "timestamp": 1790634024.3484375,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:26",
+      "timestamp": 1790634026.4405453,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:28",
+      "timestamp": 1790634028.5416014,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:30",
+      "timestamp": 1790634030.633379,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:32",
+      "timestamp": 1790634032.7414014,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:34",
+      "timestamp": 1790634034.8596542,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:36",
+      "timestamp": 1790634036.9800076,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:36",
+      "timestamp": 1790634036.983397,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:39",
+      "timestamp": 1790634039.0697396,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:41",
+      "timestamp": 1790634041.1927867,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:43",
+      "timestamp": 1790634043.2933972,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:45",
+      "timestamp": 1790634045.7191055,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:47",
+      "timestamp": 1790634047.868453,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:49",
+      "timestamp": 1790634049.9917738,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:52",
+      "timestamp": 1790634052.0723803,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:52",
+      "timestamp": 1790634052.0758338,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:20:54",
+      "timestamp": 1790634054.1893237,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:56",
+      "timestamp": 1790634056.2885256,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:20:58",
+      "timestamp": 1790634058.4140809,
+      "text": "[MASTER_BREAKER_CRASH] 總電閘驗證過程發生異常: name 'kc_upper_curr' is not defined",
+      "level": "ERROR"
+    },
+    {
+      "time": "06:21:00",
+      "timestamp": 1790634060.3161075,
+      "text": "⚠️ 幣種掃描例外: [FATAL_REJECT] 陰線嚴禁開多！Close:0.0041314 <= Open:0.0041363",
+      "level": "WARNING"
+    },
+    {
+      "time": "06:21:01",
+      "timestamp": 1790634061.5973027,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634000000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:01",
+      "timestamp": 1790634061.6080165,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634000000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:01",
+      "timestamp": 1790634061.7646697,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634000000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:01",
+      "timestamp": 1790634061.7757213,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634000000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:07",
+      "timestamp": 1790634067.4780593,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:23",
+      "timestamp": 1790634083.229741,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:38",
+      "timestamp": 1790634098.9363804,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:21:54",
+      "timestamp": 1790634114.621964,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:01",
+      "timestamp": 1790634121.588858,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634060000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:01",
+      "timestamp": 1790634121.5993888,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634060000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:01",
+      "timestamp": 1790634121.7550209,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634060000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:01",
+      "timestamp": 1790634121.7652514,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634060000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:10",
+      "timestamp": 1790634130.2462108,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:25",
+      "timestamp": 1790634145.7716253,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:41",
+      "timestamp": 1790634161.2707324,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:22:56",
+      "timestamp": 1790634176.7859404,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:00",
+      "timestamp": 1790634180.8281581,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634120000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:00",
+      "timestamp": 1790634180.8384125,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634120000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:00",
+      "timestamp": 1790634180.9919498,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634120000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:01",
+      "timestamp": 1790634181.0027044,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634120000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:12",
+      "timestamp": 1790634192.2637997,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:27",
+      "timestamp": 1790634207.8653054,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:43",
+      "timestamp": 1790634223.4166448,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:23:58",
+      "timestamp": 1790634238.901014,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:01",
+      "timestamp": 1790634241.5386107,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634180000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:01",
+      "timestamp": 1790634241.5473564,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634180000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:01",
+      "timestamp": 1790634241.7110565,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634180000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:01",
+      "timestamp": 1790634241.7193353,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634180000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:14",
+      "timestamp": 1790634254.4385867,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:29",
+      "timestamp": 1790634269.906453,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:24:45",
+      "timestamp": 1790634285.4340749,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:01",
+      "timestamp": 1790634301.1479883,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634240000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:01",
+      "timestamp": 1790634301.1590157,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634240000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:01",
+      "timestamp": 1790634301.2643576,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634240000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:01",
+      "timestamp": 1790634301.2752934,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634240000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:01",
+      "timestamp": 1790634301.2784188,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:16",
+      "timestamp": 1790634316.897027,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:32",
+      "timestamp": 1790634332.4245038,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:25:47",
+      "timestamp": 1790634347.9662817,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:00",
+      "timestamp": 1790634360.4748871,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634300000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:00",
+      "timestamp": 1790634360.4859638,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634300000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:00",
+      "timestamp": 1790634360.651056,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634300000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:00",
+      "timestamp": 1790634360.6622412,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634300000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:03",
+      "timestamp": 1790634363.4682467,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:18",
+      "timestamp": 1790634378.9527876,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:34",
+      "timestamp": 1790634394.4768548,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:26:50",
+      "timestamp": 1790634410.4102821,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:01",
+      "timestamp": 1790634421.7041366,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634360000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:01",
+      "timestamp": 1790634421.7149591,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634360000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:01",
+      "timestamp": 1790634421.8982897,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634360000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:01",
+      "timestamp": 1790634421.909035,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634360000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:06",
+      "timestamp": 1790634426.160286,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:21",
+      "timestamp": 1790634441.9015408,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:37",
+      "timestamp": 1790634457.6016335,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:27:53",
+      "timestamp": 1790634473.3798096,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:00",
+      "timestamp": 1790634480.3488503,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634420000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:00",
+      "timestamp": 1790634480.3603873,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634420000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:00",
+      "timestamp": 1790634480.5107698,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634420000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:00",
+      "timestamp": 1790634480.52165,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634420000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:09",
+      "timestamp": 1790634489.081554,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:24",
+      "timestamp": 1790634504.8105075,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:40",
+      "timestamp": 1790634520.4009418,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:28:56",
+      "timestamp": 1790634536.0768695,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:01",
+      "timestamp": 1790634541.6302047,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634480000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:01",
+      "timestamp": 1790634541.640856,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634480000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:01",
+      "timestamp": 1790634541.8171804,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634480000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:01",
+      "timestamp": 1790634541.8287766,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634480000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:11",
+      "timestamp": 1790634551.8738914,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:27",
+      "timestamp": 1790634567.5588577,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:43",
+      "timestamp": 1790634583.3075202,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:58",
+      "timestamp": 1790634598.9835885,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:01",
+      "timestamp": 1790634601.8174345,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634540000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:01",
+      "timestamp": 1790634601.8283486,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634540000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:01",
+      "timestamp": 1790634601.9973855,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634540000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:02",
+      "timestamp": 1790634602.008375,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634540000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:14",
+      "timestamp": 1790634614.7950468,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:30",
+      "timestamp": 1790634630.419794,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:30:45",
+      "timestamp": 1790634645.9938164,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:01",
+      "timestamp": 1790634661.637281,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790634600000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:01",
+      "timestamp": 1790634661.6476362,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790634600000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:01",
+      "timestamp": 1790634661.8023827,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790634600000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:01",
+      "timestamp": 1790634661.813351,
+      "text": "ENTRY_GATE stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790634600000.0 reason=WAIT_NEW_A_TO_E_TRIGGER",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:01",
+      "timestamp": 1790634661.8168817,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:31:17",
+      "timestamp": 1790634677.5499504,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    }
+  ],
+  "takeover_shadow_events": [],
+  "last_closed_at": {
+    "1000PEPE/USDT": 1790430121.2012372
+  },
+  "channel_profit_reentries": {},
+  "daily_date": "2026-09-29",
+  "daily_start_balance": 149.9688123307399,
+  "daily_start_realized_pnl": -0.031187669260111104,
+  "daily_halt_logged": false,
+  "pullback_outcome_stats": {},
+  "entry_filter_stats": {},
+  "entry_filter_last": {},
+  "shadow_parameter_stats": {},
+  "shadow_parameter_last": {},
+  "accounting_version": 2
+}

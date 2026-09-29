@@ -1,0 +1,1 @@
+The first exchange-wrapper test mocked state loading but missed save_state. Its logs wrote data/testnet_account.json (inactive testnet mode). Subsequent tests mock both. The fixture-only artifact was moved here. Previous contents, if any, were not captured and cannot be reconstructed. Active paper_account.json was not written by test fixtures.

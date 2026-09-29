@@ -1,0 +1,7 @@
+{
+  "http_status": 200,
+  "is_running": true,
+  "paper_trading": true,
+  "service": "MainPID=1630432\nActiveState=active",
+  "source_hashes_match": true
+}

@@ -1,0 +1,1650 @@
+{
+  "balance": 150.8303822727038,
+  "realized_pnl": 0.8303822727037723,
+  "positions": {},
+  "position_meta": {},
+  "pending_limit_orders": {},
+  "trades": [
+    {
+      "id": 1790635741801,
+      "time": "09/29 06:49:01",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_LONG",
+      "side": "LONG",
+      "price": 0.00416708,
+      "qty": 90004.53480156,
+      "amount": 74.61041910220104,
+      "fee": 0.3741,
+      "pnl": 1.6302,
+      "peak_pnl_pct": 0.0,
+      "realized_price_move_pct": 0.00537269,
+      "profit_capture_ratio": null,
+      "status": "CLOSED",
+      "reason": "Closed1M MA3_PEAK_REVERSAL_FULL_CLOSE",
+      "channel_fading_ma3_turn": null,
+      "channel_reverse_wait_ck": null,
+      "channel_pivot_entry": null,
+      "channel_pivot_middle_reached": null,
+      "channel_pivot_middle_exit_pending": null,
+      "entry_kc_middle": null,
+      "channel_confirmation_bar_id": 1790634900000.0,
+      "manual_entry": null,
+      "managed_by_bot": null,
+      "bot_last_managed_at": null,
+      "channel_favorable_rail_reached": null,
+      "btc_regime_at_entry": null,
+      "btc_direction_1h_at_entry": null,
+      "btc_score_penalty": null,
+      "btc_allocation_factor": null,
+      "btc_pre_penalty_score": null,
+      "raw_signal_score": null,
+      "btc_adjusted_score": null,
+      "history_adjusted_score": null,
+      "history_score_multiplier": null,
+      "pullback_confirmation_score": null,
+      "entry_mode": "CHANNEL_SWING",
+      "is_contrarian_bottom_buy": null,
+      "initial_sl": 0.00413585944,
+      "initial_risk": 8.954999999999727e-06,
+      "entry_atr": 5.969999999999847e-06,
+      "entry_snapshot": {
+        "signal_code": "CLOSED_IGNITION_LONG",
+        "closed_bar": 1790634900000.0,
+        "closed_price": 0.0041467,
+        "quote_price": 0.0041444
+      },
+      "atr_sl": 0.00414560244,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.00413585944,
+        "confirmed_stop": 0.00413585944,
+        "highest_price": 0.00414481444,
+        "lowest_price": 0.00414481444,
+        "confirmed_high": 0.00414481444,
+        "confirmed_low": 0.00414481444,
+        "atr": 5.969999999999847e-06,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      },
+      "ratchet_floor": null,
+      "channel_peak_abnormal": null,
+      "signal_candle_low": null,
+      "signal_candle_high": null,
+      "channel_turn_low": null,
+      "channel_turn_high": null,
+      "touch_price": null,
+      "reclaim_confirmed": null,
+      "reclaim_wait_sec": null,
+      "profit_profile": "TREND_EXTENSION",
+      "profit_room_pct": null,
+      "bounce_capture_ratio": null,
+      "bounce_target_pct": null,
+      "structured_net_rr": null,
+      "high_readiness_low_room": null,
+      "low_room_allocation_factor": null,
+      "dca_stage": null,
+      "dca_base_price": null,
+      "dca_original_amount": null,
+      "eligibility_note": null,
+      "wave_regime": "TREND",
+      "market_mode": null,
+      "entry_market_mode": null,
+      "channel_entry_profile": null,
+      "channel_entry_profile_basis": null,
+      "profit_lock_usdt_v2": null,
+      "channel_live_ma3_exit_pending": null,
+      "channel_live_ma3_favorable_bar": null,
+      "channel_live_ma3_turn_exit_pending": null,
+      "channel_ma3_turn_observed_bar": null
+    },
+    {
+      "id": 1790635081730,
+      "time": "09/29 06:38:01",
+      "symbol": "龙虾/USDT",
+      "action": "CLOSE_SHORT",
+      "side": "SHORT",
+      "price": 0.07069707,
+      "qty": 5308.7855979,
+      "amount": 74.98440616536995,
+      "fee": 0.3751,
+      "pnl": -0.7687,
+      "peak_pnl_pct": 0.0,
+      "realized_price_move_pct": -0.00104969,
+      "profit_capture_ratio": null,
+      "status": "CLOSED",
+      "reason": "Closed1M MA3_BOTTOM_REVERSAL_FULL_CLOSE",
+      "channel_fading_ma3_turn": null,
+      "channel_reverse_wait_ck": null,
+      "channel_pivot_entry": null,
+      "channel_pivot_middle_reached": null,
+      "channel_pivot_middle_exit_pending": null,
+      "entry_kc_middle": null,
+      "channel_confirmation_bar_id": 1790634780000.0,
+      "manual_entry": null,
+      "managed_by_bot": null,
+      "bot_last_managed_at": null,
+      "channel_favorable_rail_reached": null,
+      "btc_regime_at_entry": null,
+      "btc_direction_1h_at_entry": null,
+      "btc_score_penalty": null,
+      "btc_allocation_factor": null,
+      "btc_pre_penalty_score": null,
+      "raw_signal_score": null,
+      "btc_adjusted_score": null,
+      "history_adjusted_score": null,
+      "history_score_multiplier": null,
+      "pullback_confirmation_score": null,
+      "entry_mode": "CHANNEL_SWING",
+      "is_contrarian_bottom_buy": null,
+      "initial_sl": 0.071006937,
+      "initial_risk": 0.00038400000000000305,
+      "entry_atr": 0.00025600000000000205,
+      "entry_snapshot": {
+        "signal_code": "CLOSED_IGNITION_SHORT",
+        "closed_bar": 1790634780000.0,
+        "closed_price": 0.07056,
+        "quote_price": 0.07063
+      },
+      "atr_sl": 0.070596937,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.071006937,
+        "confirmed_stop": 0.071006937,
+        "highest_price": 0.070622937,
+        "lowest_price": 0.070622937,
+        "confirmed_high": 0.070622937,
+        "confirmed_low": 0.070622937,
+        "atr": 0.00025600000000000205,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      },
+      "ratchet_floor": null,
+      "channel_peak_abnormal": null,
+      "signal_candle_low": null,
+      "signal_candle_high": null,
+      "channel_turn_low": null,
+      "channel_turn_high": null,
+      "touch_price": null,
+      "reclaim_confirmed": null,
+      "reclaim_wait_sec": null,
+      "profit_profile": "TREND_EXTENSION",
+      "profit_room_pct": null,
+      "bounce_capture_ratio": null,
+      "bounce_target_pct": null,
+      "structured_net_rr": null,
+      "high_readiness_low_room": null,
+      "low_room_allocation_factor": null,
+      "dca_stage": null,
+      "dca_base_price": null,
+      "dca_original_amount": null,
+      "eligibility_note": null,
+      "wave_regime": "TREND",
+      "market_mode": null,
+      "entry_market_mode": null,
+      "channel_entry_profile": null,
+      "channel_entry_profile_basis": null,
+      "profit_lock_usdt_v2": null,
+      "channel_live_ma3_exit_pending": null,
+      "channel_live_ma3_favorable_bar": null,
+      "channel_live_ma3_turn_exit_pending": null,
+      "channel_ma3_turn_observed_bar": null
+    },
+    {
+      "id": 1790634961676,
+      "time": "09/29 06:36:01",
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "side": "LONG",
+      "price": 0.00414481,
+      "qty": 90004.53480156,
+      "amount": 74.61041910220104,
+      "fee": 0.1865,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "Closed1M CLOSED_IGNITION_LONG",
+      "sl": 0.00413585944,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1790634900000.0,
+      "entry_atr": 5.969999999999847e-06,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "CLOSED_IGNITION_LONG",
+        "closed_bar": 1790634900000.0,
+        "closed_price": 0.0041467,
+        "quote_price": 0.0041444
+      },
+      "atr_sl": 0.00413585944,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.00413585944,
+      "initial_risk": 8.954999999999771e-06,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.00413585944,
+        "confirmed_stop": 0.00413585944,
+        "highest_price": 0.00414481444,
+        "lowest_price": 0.00414481444,
+        "confirmed_high": 0.00414481444,
+        "confirmed_low": 0.00414481444,
+        "atr": 5.969999999999847e-06,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      }
+    },
+    {
+      "id": 1790634842217,
+      "time": "09/29 06:34:02",
+      "symbol": "龙虾/USDT",
+      "action": "OPEN_SHORT",
+      "side": "SHORT",
+      "price": 0.07062294,
+      "qty": 5308.7855979,
+      "amount": 74.98440616536995,
+      "fee": 0.1875,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "Closed1M CLOSED_IGNITION_SHORT",
+      "sl": 0.071006937,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "channel_confirmation_bar_id": 1790634780000.0,
+      "entry_atr": 0.00025600000000000205,
+      "profit_profile": "TREND_EXTENSION",
+      "wave_regime": "TREND",
+      "entry_snapshot": {
+        "signal_code": "CLOSED_IGNITION_SHORT",
+        "closed_bar": 1790634780000.0,
+        "closed_price": 0.07056,
+        "quote_price": 0.07063
+      },
+      "atr_sl": 0.071006937,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.071006937,
+      "initial_risk": 0.00038400000000000305,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.071006937,
+        "confirmed_stop": 0.071006937,
+        "highest_price": 0.070622937,
+        "lowest_price": 0.070622937,
+        "confirmed_high": 0.070622937,
+        "confirmed_low": 0.070622937,
+        "atr": 0.00025600000000000205,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      }
+    },
+    {
+      "id": 1790430121201,
+      "time": "09/26 21:42:01",
+      "symbol": "1000PEPE/USDT",
+      "action": "CLOSE_LONG",
+      "side": "LONG",
+      "price": 0.00436426,
+      "qty": 6873.7397571,
+      "amount": 6.0,
+      "fee": 0.03,
+      "pnl": -0.0312,
+      "peak_pnl_pct": 0.0,
+      "realized_price_move_pct": -3.961e-05,
+      "profit_capture_ratio": null,
+      "status": "CLOSED",
+      "reason": "Closed1M MA3_PEAK_REVERSAL_FULL_CLOSE",
+      "channel_fading_ma3_turn": null,
+      "channel_reverse_wait_ck": null,
+      "channel_pivot_entry": null,
+      "channel_pivot_middle_reached": null,
+      "channel_pivot_middle_exit_pending": null,
+      "entry_kc_middle": null,
+      "channel_confirmation_bar_id": null,
+      "manual_entry": true,
+      "managed_by_bot": true,
+      "bot_last_managed_at": null,
+      "channel_favorable_rail_reached": false,
+      "btc_regime_at_entry": null,
+      "btc_direction_1h_at_entry": null,
+      "btc_score_penalty": null,
+      "btc_allocation_factor": null,
+      "btc_pre_penalty_score": null,
+      "raw_signal_score": null,
+      "btc_adjusted_score": null,
+      "history_adjusted_score": null,
+      "history_score_multiplier": null,
+      "pullback_confirmation_score": null,
+      "entry_mode": "CHANNEL_SWING",
+      "is_contrarian_bottom_buy": null,
+      "initial_sl": 0.0042662464,
+      "initial_risk": 9.819000000000001e-05,
+      "entry_atr": 6.546e-05,
+      "entry_snapshot": null,
+      "atr_sl": 0.0043649334,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.0042662464,
+        "confirmed_stop": 0.0042662464,
+        "highest_price": 0.0043644363999999995,
+        "lowest_price": 0.0043644363999999995,
+        "confirmed_high": 0.0043644363999999995,
+        "confirmed_low": 0.0043644363999999995,
+        "atr": 6.546e-05,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      },
+      "ratchet_floor": null,
+      "channel_peak_abnormal": null,
+      "signal_candle_low": null,
+      "signal_candle_high": null,
+      "channel_turn_low": null,
+      "channel_turn_high": null,
+      "touch_price": null,
+      "reclaim_confirmed": null,
+      "reclaim_wait_sec": null,
+      "profit_profile": null,
+      "profit_room_pct": null,
+      "bounce_capture_ratio": null,
+      "bounce_target_pct": null,
+      "structured_net_rr": null,
+      "high_readiness_low_room": null,
+      "low_room_allocation_factor": null,
+      "dca_stage": null,
+      "dca_base_price": null,
+      "dca_original_amount": null,
+      "eligibility_note": null,
+      "wave_regime": "RANGE",
+      "market_mode": "RANGE",
+      "entry_market_mode": null,
+      "channel_entry_profile": null,
+      "channel_entry_profile_basis": null,
+      "profit_lock_usdt_v2": null,
+      "channel_live_ma3_exit_pending": null,
+      "channel_live_ma3_favorable_bar": null,
+      "channel_live_ma3_turn_exit_pending": null,
+      "channel_ma3_turn_observed_bar": null
+    },
+    {
+      "id": 1790429713617,
+      "time": "09/26 21:35:13",
+      "symbol": "1000PEPE/USDT",
+      "action": "OPEN_LONG",
+      "side": "LONG",
+      "price": 0.00436444,
+      "qty": 6873.7397571,
+      "amount": 6.0,
+      "fee": 0.015,
+      "pnl": 0.0,
+      "status": "OPEN",
+      "leverage": 5,
+      "signal_score": 100,
+      "reason": "手動開倉_LONG",
+      "sl": 0.0042662464,
+      "tp": 0.0,
+      "projected_net_rr": null,
+      "profit_room_pct": 0.0,
+      "entry_mode": "CHANNEL_SWING",
+      "wave_regime": "RANGE",
+      "market_mode": "RANGE",
+      "manual_entry": true,
+      "managed_by_bot": true,
+      "channel_favorable_rail_reached": false,
+      "entry_atr": 6.546e-05,
+      "atr_sl": 0.0042662464,
+      "atr_tp": 0.0,
+      "atr_protection_version": 2,
+      "initial_sl": 0.0042662464,
+      "initial_risk": 9.819000000000001e-05,
+      "chandelier_state": {
+        "policy": "chandelier_1m_v2",
+        "stop": 0.0042662464,
+        "confirmed_stop": 0.0042662464,
+        "highest_price": 0.0043644363999999995,
+        "lowest_price": 0.0043644363999999995,
+        "confirmed_high": 0.0043644363999999995,
+        "confirmed_low": 0.0043644363999999995,
+        "atr": 6.546e-05,
+        "last_closed_bar": -1,
+        "quote_bars": {},
+        "pending": false
+      }
+    }
+  ],
+  "logs": [
+    {
+      "time": "06:51:46",
+      "timestamp": 1790635906.8056393,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:46",
+      "timestamp": 1790635906.9677455,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:48",
+      "timestamp": 1790635908.2623777,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:48",
+      "timestamp": 1790635908.4654784,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:48",
+      "timestamp": 1790635908.5810447,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:48",
+      "timestamp": 1790635908.7380679,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:50",
+      "timestamp": 1790635910.028159,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:50",
+      "timestamp": 1790635910.2250807,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:50",
+      "timestamp": 1790635910.3401296,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:50",
+      "timestamp": 1790635910.524207,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:51",
+      "timestamp": 1790635911.8301241,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:52",
+      "timestamp": 1790635912.0275295,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:52",
+      "timestamp": 1790635912.1337912,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:52",
+      "timestamp": 1790635912.2919981,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:53",
+      "timestamp": 1790635913.5987294,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:53",
+      "timestamp": 1790635913.793835,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:53",
+      "timestamp": 1790635913.8999782,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:54",
+      "timestamp": 1790635914.082128,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:55",
+      "timestamp": 1790635915.377567,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:55",
+      "timestamp": 1790635915.6184204,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:55",
+      "timestamp": 1790635915.7250686,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:55",
+      "timestamp": 1790635915.8967414,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:57",
+      "timestamp": 1790635917.1971393,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:57",
+      "timestamp": 1790635917.402392,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:57",
+      "timestamp": 1790635917.5110576,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:57",
+      "timestamp": 1790635917.6808977,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:58",
+      "timestamp": 1790635918.9716284,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:59",
+      "timestamp": 1790635919.165559,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:59",
+      "timestamp": 1790635919.2714636,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:59",
+      "timestamp": 1790635919.4385927,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635800000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:51:59",
+      "timestamp": 1790635919.4491577,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:00",
+      "timestamp": 1790635920.9863746,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=CLOSED_IGNITION_LONG snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635560000.0, 'open': 0.0041707, 'high': 0.0041728, 'low': 0.0041692, 'close': 0.004172, 'ma3': 0.0041701, 'ma15': 0.0041571333333333335, 'atr': 5.24999999999996e-06, 'kc_upper': 0.004159703871287019, 'kc_middle': 0.004154453871287019, 'kc_lower': 0.004149203871287019}, {'timestamp': 1790635620000.0, 'open': 0.0041721, 'high': 0.0041721, 'low': 0.0041656, 'close': 0.0041683, 'ma3': 0.004170333333333334, 'ma15': 0.00415936, 'atr': 4.989999999999856e-06, 'kc_upper': 0.004160762550212064, 'kc_middle': 0.0041557725502120646, 'kc_lower': 0.004150782550212065}, {'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402572821, 'kc_middle': 0.004156870402572821, 'kc_lower': 0.00415193040257282}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411851599, 'kc_middle': 0.004157949411851599, 'kc_lower': 0.004153309411851599}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.004164185658341923, 'kc_middle': 0.004159325658341923, 'kc_lower': 0.004154465658341923}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041752, 'low': 0.0041715, 'close': 0.004175, 'ma3': 0.004171866666666667, 'ma15': 0.004167033333333334, 'atr': 4.70999999999987e-06, 'kc_upper': 0.004165528452785549, 'kc_middle': 0.004160818452785549, 'kc_lower': 0.004156108452785549}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041745}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:01",
+      "timestamp": 1790635921.001956,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790635860000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635560000.0, 'open': 0.0041707, 'high': 0.0041728, 'low': 0.0041692, 'close': 0.004172, 'ma3': 0.0041701, 'ma15': 0.0041571333333333335, 'atr': 5.24999999999996e-06, 'kc_upper': 0.004159703871287019, 'kc_middle': 0.004154453871287019, 'kc_lower': 0.004149203871287019}, {'timestamp': 1790635620000.0, 'open': 0.0041721, 'high': 0.0041721, 'low': 0.0041656, 'close': 0.0041683, 'ma3': 0.004170333333333334, 'ma15': 0.00415936, 'atr': 4.989999999999856e-06, 'kc_upper': 0.004160762550212064, 'kc_middle': 0.0041557725502120646, 'kc_lower': 0.004150782550212065}, {'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402572821, 'kc_middle': 0.004156870402572821, 'kc_lower': 0.00415193040257282}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411851599, 'kc_middle': 0.004157949411851599, 'kc_lower': 0.004153309411851599}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.004164185658341923, 'kc_middle': 0.004159325658341923, 'kc_lower': 0.004154465658341923}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041752, 'low': 0.0041715, 'close': 0.004175, 'ma3': 0.004171866666666667, 'ma15': 0.004167033333333334, 'atr': 4.70999999999987e-06, 'kc_upper': 0.004165528452785549, 'kc_middle': 0.004160818452785549, 'kc_lower': 0.004156108452785549}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041745}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:01",
+      "timestamp": 1790635921.0137265,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:01",
+      "timestamp": 1790635921.1687171,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790635860000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635560000.0, 'open': 0.07086, 'high': 0.07108, 'low': 0.07072, 'close': 0.0709, 'ma3': 0.07087666666666666, 'ma15': 0.07068333333333335, 'atr': 0.0003060000000000035, 'kc_upper': 0.07110879403501191, 'kc_middle': 0.07080279403501191, 'kc_lower': 0.07049679403501191}, {'timestamp': 1790635620000.0, 'open': 0.0709, 'high': 0.07107, 'low': 0.07084, 'close': 0.07103, 'ma3': 0.07092666666666667, 'ma15': 0.07068666666666666, 'atr': 0.00028100000000000206, 'kc_upper': 0.07110543269834411, 'kc_middle': 0.07082443269834411, 'kc_lower': 0.07054343269834411}, {'timestamp': 1790635680000.0, 'open': 0.07103, 'high': 0.07106, 'low': 0.07061, 'close': 0.07073, 'ma3': 0.07088666666666667, 'ma15': 0.070692, 'atr': 0.0002960000000000004, 'kc_upper': 0.07111143910802563, 'kc_middle': 0.07081543910802562, 'kc_lower': 0.07051943910802562}, {'timestamp': 1790635740000.0, 'open': 0.07073, 'high': 0.07076, 'low': 0.07048, 'close': 0.07056, 'ma3': 0.07077333333333333, 'ma15': 0.07070066666666668, 'atr': 0.0003019999999999995, 'kc_upper': 0.07109311157392795, 'kc_middle': 0.07079111157392795, 'kc_lower': 0.07048911157392795}, {'timestamp': 1790635800000.0, 'open': 0.07059, 'high': 0.07064, 'low': 0.07038, 'close': 0.07042, 'ma3': 0.07057000000000001, 'ma15': 0.07070800000000001, 'atr': 0.00031999999999999943, 'kc_upper': 0.07107576761450624, 'kc_middle': 0.07075576761450623, 'kc_lower': 0.07043576761450623}, {'timestamp': 1790635860000.0, 'open': 0.07043, 'high': 0.07049, 'low': 0.0703, 'close': 0.07038, 'ma3': 0.07045333333333333, 'ma15': 0.07071000000000001, 'atr': 0.0003049999999999997, 'kc_upper': 0.0710249802226485, 'kc_middle': 0.0707199802226485, 'kc_lower': 0.0704149802226485}], 'previous5_low': 0.07038, 'previous5_high': 0.07108}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:01",
+      "timestamp": 1790635921.1845827,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790635860000.0 reason=WAIT_NEW_A_TO_E_TRIGGER snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635560000.0, 'open': 0.07086, 'high': 0.07108, 'low': 0.07072, 'close': 0.0709, 'ma3': 0.07087666666666666, 'ma15': 0.07068333333333335, 'atr': 0.0003060000000000035, 'kc_upper': 0.07110879403501191, 'kc_middle': 0.07080279403501191, 'kc_lower': 0.07049679403501191}, {'timestamp': 1790635620000.0, 'open': 0.0709, 'high': 0.07107, 'low': 0.07084, 'close': 0.07103, 'ma3': 0.07092666666666667, 'ma15': 0.07068666666666666, 'atr': 0.00028100000000000206, 'kc_upper': 0.07110543269834411, 'kc_middle': 0.07082443269834411, 'kc_lower': 0.07054343269834411}, {'timestamp': 1790635680000.0, 'open': 0.07103, 'high': 0.07106, 'low': 0.07061, 'close': 0.07073, 'ma3': 0.07088666666666667, 'ma15': 0.070692, 'atr': 0.0002960000000000004, 'kc_upper': 0.07111143910802563, 'kc_middle': 0.07081543910802562, 'kc_lower': 0.07051943910802562}, {'timestamp': 1790635740000.0, 'open': 0.07073, 'high': 0.07076, 'low': 0.07048, 'close': 0.07056, 'ma3': 0.07077333333333333, 'ma15': 0.07070066666666668, 'atr': 0.0003019999999999995, 'kc_upper': 0.07109311157392795, 'kc_middle': 0.07079111157392795, 'kc_lower': 0.07048911157392795}, {'timestamp': 1790635800000.0, 'open': 0.07059, 'high': 0.07064, 'low': 0.07038, 'close': 0.07042, 'ma3': 0.07057000000000001, 'ma15': 0.07070800000000001, 'atr': 0.00031999999999999943, 'kc_upper': 0.07107576761450624, 'kc_middle': 0.07075576761450623, 'kc_lower': 0.07043576761450623}, {'timestamp': 1790635860000.0, 'open': 0.07043, 'high': 0.07049, 'low': 0.0703, 'close': 0.07038, 'ma3': 0.07045333333333333, 'ma15': 0.07071000000000001, 'atr': 0.0003049999999999997, 'kc_upper': 0.0710249802226485, 'kc_middle': 0.0707199802226485, 'kc_lower': 0.0704149802226485}], 'previous5_low': 0.07038, 'previous5_high': 0.07108}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:01",
+      "timestamp": 1790635921.3465283,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:02",
+      "timestamp": 1790635922.621607,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:02",
+      "timestamp": 1790635922.925793,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:04",
+      "timestamp": 1790635924.2400434,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:04",
+      "timestamp": 1790635924.5266075,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:05",
+      "timestamp": 1790635925.86425,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:06",
+      "timestamp": 1790635926.1720088,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:07",
+      "timestamp": 1790635927.4829552,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:07",
+      "timestamp": 1790635927.791667,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:09",
+      "timestamp": 1790635929.1852467,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:09",
+      "timestamp": 1790635929.4611855,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:10",
+      "timestamp": 1790635930.7284248,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:11",
+      "timestamp": 1790635931.0620427,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:12",
+      "timestamp": 1790635932.3196523,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:12",
+      "timestamp": 1790635932.6083202,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:13",
+      "timestamp": 1790635933.9214356,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:14",
+      "timestamp": 1790635934.209774,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:15",
+      "timestamp": 1790635935.5228214,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:15",
+      "timestamp": 1790635935.807864,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:15",
+      "timestamp": 1790635935.8261893,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:17",
+      "timestamp": 1790635937.1273856,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:17",
+      "timestamp": 1790635937.4229937,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:18",
+      "timestamp": 1790635938.734826,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:19",
+      "timestamp": 1790635939.0331132,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:20",
+      "timestamp": 1790635940.3947206,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:20",
+      "timestamp": 1790635940.6709526,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:21",
+      "timestamp": 1790635941.9626672,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:22",
+      "timestamp": 1790635942.2449167,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:23",
+      "timestamp": 1790635943.5632193,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:23",
+      "timestamp": 1790635943.8497791,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:25",
+      "timestamp": 1790635945.1938312,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:25",
+      "timestamp": 1790635945.4830377,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:26",
+      "timestamp": 1790635946.7972214,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:27",
+      "timestamp": 1790635947.105739,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:28",
+      "timestamp": 1790635948.4119017,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:28",
+      "timestamp": 1790635948.7075953,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:30",
+      "timestamp": 1790635950.0028436,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:30",
+      "timestamp": 1790635950.621758,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:31",
+      "timestamp": 1790635951.9401052,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:32",
+      "timestamp": 1790635952.232813,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:32",
+      "timestamp": 1790635952.2430809,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:33",
+      "timestamp": 1790635953.6899028,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:33",
+      "timestamp": 1790635953.9874563,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:35",
+      "timestamp": 1790635955.2948282,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:35",
+      "timestamp": 1790635955.5902739,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:36",
+      "timestamp": 1790635956.894565,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:37",
+      "timestamp": 1790635957.1922407,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:38",
+      "timestamp": 1790635958.4977365,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:38",
+      "timestamp": 1790635958.7842402,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:40",
+      "timestamp": 1790635960.4008687,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:40",
+      "timestamp": 1790635960.7098958,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:42",
+      "timestamp": 1790635962.0175207,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:42",
+      "timestamp": 1790635962.302463,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:43",
+      "timestamp": 1790635963.6190305,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:43",
+      "timestamp": 1790635963.9066489,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:45",
+      "timestamp": 1790635965.2279205,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:45",
+      "timestamp": 1790635965.5247915,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:46",
+      "timestamp": 1790635966.846051,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:47",
+      "timestamp": 1790635967.1385772,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:48",
+      "timestamp": 1790635968.4489362,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:48",
+      "timestamp": 1790635968.7509089,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:48",
+      "timestamp": 1790635968.768405,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:50",
+      "timestamp": 1790635970.0799508,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:50",
+      "timestamp": 1790635970.3671868,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:51",
+      "timestamp": 1790635971.6322575,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:51",
+      "timestamp": 1790635971.912556,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:53",
+      "timestamp": 1790635973.2182279,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:53",
+      "timestamp": 1790635973.5152066,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:54",
+      "timestamp": 1790635974.8364465,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:55",
+      "timestamp": 1790635975.1189568,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:56",
+      "timestamp": 1790635976.4257872,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:56",
+      "timestamp": 1790635976.7190554,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:58",
+      "timestamp": 1790635978.0156589,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:58",
+      "timestamp": 1790635978.2989073,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:59",
+      "timestamp": 1790635979.6072948,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:52:59",
+      "timestamp": 1790635979.8975818,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=1000PEPE/USDT side=LONG bar=1790635860000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:01",
+      "timestamp": 1790635981.1911705,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790635920000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635620000.0, 'open': 0.0041721, 'high': 0.0041721, 'low': 0.0041656, 'close': 0.0041683, 'ma3': 0.004170333333333334, 'ma15': 0.00415936, 'atr': 4.989999999999856e-06, 'kc_upper': 0.004160762550177627, 'kc_middle': 0.004155772550177627, 'kc_lower': 0.004150782550177627}, {'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.0041618104025416625, 'kc_middle': 0.004156870402541662, 'kc_lower': 0.004151930402541662}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411823409, 'kc_middle': 0.004157949411823409, 'kc_lower': 0.004153309411823409}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.004164185658316418, 'kc_middle': 0.004159325658316418, 'kc_lower': 0.004154465658316418}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.00416566511942914, 'kc_middle': 0.00416088511942914, 'kc_lower': 0.0041561051194291395}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041722, 'ma3': 0.004173433333333334, 'ma15': 0.004167726666666666, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004166892727102555, 'kc_middle': 0.004161962727102555, 'kc_lower': 0.004157032727102555}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041759}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:01",
+      "timestamp": 1790635981.2069032,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790635920000.0 reason=WAIT_NEW_A_TO_E_TRIGGER snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635620000.0, 'open': 0.0041721, 'high': 0.0041721, 'low': 0.0041656, 'close': 0.0041683, 'ma3': 0.004170333333333334, 'ma15': 0.00415936, 'atr': 4.989999999999856e-06, 'kc_upper': 0.004160762550177627, 'kc_middle': 0.004155772550177627, 'kc_lower': 0.004150782550177627}, {'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.0041618104025416625, 'kc_middle': 0.004156870402541662, 'kc_lower': 0.004151930402541662}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411823409, 'kc_middle': 0.004157949411823409, 'kc_lower': 0.004153309411823409}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.004164185658316418, 'kc_middle': 0.004159325658316418, 'kc_lower': 0.004154465658316418}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.00416566511942914, 'kc_middle': 0.00416088511942914, 'kc_lower': 0.0041561051194291395}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041722, 'ma3': 0.004173433333333334, 'ma15': 0.004167726666666666, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004166892727102555, 'kc_middle': 0.004161962727102555, 'kc_lower': 0.004157032727102555}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041759}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:01",
+      "timestamp": 1790635981.3584638,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790635920000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635620000.0, 'open': 0.0709, 'high': 0.07107, 'low': 0.07084, 'close': 0.07103, 'ma3': 0.07092666666666667, 'ma15': 0.07068666666666666, 'atr': 0.00028100000000000206, 'kc_upper': 0.07110543269834411, 'kc_middle': 0.07082443269834411, 'kc_lower': 0.07054343269834411}, {'timestamp': 1790635680000.0, 'open': 0.07103, 'high': 0.07106, 'low': 0.07061, 'close': 0.07073, 'ma3': 0.07088666666666667, 'ma15': 0.07069199999999999, 'atr': 0.0002960000000000004, 'kc_upper': 0.07111143910802563, 'kc_middle': 0.07081543910802562, 'kc_lower': 0.07051943910802562}, {'timestamp': 1790635740000.0, 'open': 0.07073, 'high': 0.07076, 'low': 0.07048, 'close': 0.07056, 'ma3': 0.07077333333333333, 'ma15': 0.07070066666666668, 'atr': 0.0003019999999999995, 'kc_upper': 0.07109311157392795, 'kc_middle': 0.07079111157392795, 'kc_lower': 0.07048911157392795}, {'timestamp': 1790635800000.0, 'open': 0.07059, 'high': 0.07064, 'low': 0.07038, 'close': 0.07042, 'ma3': 0.07057000000000001, 'ma15': 0.070708, 'atr': 0.00031999999999999943, 'kc_upper': 0.07107576761450624, 'kc_middle': 0.07075576761450623, 'kc_lower': 0.07043576761450623}, {'timestamp': 1790635860000.0, 'open': 0.07043, 'high': 0.07049, 'low': 0.0703, 'close': 0.07039, 'ma3': 0.07045666666666665, 'ma15': 0.07071066666666666, 'atr': 0.0003049999999999997, 'kc_upper': 0.07102593260360088, 'kc_middle': 0.07072093260360088, 'kc_lower': 0.07041593260360088}, {'timestamp': 1790635920000.0, 'open': 0.0704, 'high': 0.07041, 'low': 0.0703, 'close': 0.07037, 'ma3': 0.07039333333333332, 'ma15': 0.07068733333333332, 'atr': 0.0002569999999999989, 'kc_upper': 0.07094451045087698, 'kc_middle': 0.07068751045087698, 'kc_lower': 0.07043051045087699}], 'previous5_low': 0.0703, 'previous5_high': 0.07107}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:01",
+      "timestamp": 1790635981.3742132,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790635920000.0 reason=WAIT_NEW_A_TO_E_TRIGGER snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635620000.0, 'open': 0.0709, 'high': 0.07107, 'low': 0.07084, 'close': 0.07103, 'ma3': 0.07092666666666667, 'ma15': 0.07068666666666666, 'atr': 0.00028100000000000206, 'kc_upper': 0.07110543269834411, 'kc_middle': 0.07082443269834411, 'kc_lower': 0.07054343269834411}, {'timestamp': 1790635680000.0, 'open': 0.07103, 'high': 0.07106, 'low': 0.07061, 'close': 0.07073, 'ma3': 0.07088666666666667, 'ma15': 0.07069199999999999, 'atr': 0.0002960000000000004, 'kc_upper': 0.07111143910802563, 'kc_middle': 0.07081543910802562, 'kc_lower': 0.07051943910802562}, {'timestamp': 1790635740000.0, 'open': 0.07073, 'high': 0.07076, 'low': 0.07048, 'close': 0.07056, 'ma3': 0.07077333333333333, 'ma15': 0.07070066666666668, 'atr': 0.0003019999999999995, 'kc_upper': 0.07109311157392795, 'kc_middle': 0.07079111157392795, 'kc_lower': 0.07048911157392795}, {'timestamp': 1790635800000.0, 'open': 0.07059, 'high': 0.07064, 'low': 0.07038, 'close': 0.07042, 'ma3': 0.07057000000000001, 'ma15': 0.070708, 'atr': 0.00031999999999999943, 'kc_upper': 0.07107576761450624, 'kc_middle': 0.07075576761450623, 'kc_lower': 0.07043576761450623}, {'timestamp': 1790635860000.0, 'open': 0.07043, 'high': 0.07049, 'low': 0.0703, 'close': 0.07039, 'ma3': 0.07045666666666665, 'ma15': 0.07071066666666666, 'atr': 0.0003049999999999997, 'kc_upper': 0.07102593260360088, 'kc_middle': 0.07072093260360088, 'kc_lower': 0.07041593260360088}, {'timestamp': 1790635920000.0, 'open': 0.0704, 'high': 0.07041, 'low': 0.0703, 'close': 0.07037, 'ma3': 0.07039333333333332, 'ma15': 0.07068733333333332, 'atr': 0.0002569999999999989, 'kc_upper': 0.07094451045087698, 'kc_middle': 0.07068751045087698, 'kc_lower': 0.07043051045087699}], 'previous5_low': 0.0703, 'previous5_high': 0.07107}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:04",
+      "timestamp": 1790635984.2412398,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:19",
+      "timestamp": 1790635999.9732678,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:35",
+      "timestamp": 1790636015.685872,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:53:51",
+      "timestamp": 1790636031.439087,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:01",
+      "timestamp": 1790636041.2514331,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790635980000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402539992, 'kc_middle': 0.004156870402539992, 'kc_lower': 0.004151930402539992}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411821897, 'kc_middle': 0.004157949411821897, 'kc_lower': 0.004153309411821897}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.00416418565831505, 'kc_middle': 0.00415932565831505, 'kc_lower': 0.0041544656583150505}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.004165665119427903, 'kc_middle': 0.004160885119427903, 'kc_lower': 0.004156105119427903}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041723, 'ma3': 0.004173466666666667, 'ma15': 0.004167733333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.00416690225091096, 'kc_middle': 0.0041619722509109594, 'kc_lower': 0.004157042250910959}, {'timestamp': 1790635980000.0, 'open': 0.0041724, 'high': 0.0041728, 'low': 0.0041696, 'close': 0.0041723, 'ma3': 0.004173433333333334, 'ma15': 0.004168353333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004167885846062297, 'kc_middle': 0.004162955846062297, 'kc_lower': 0.004158025846062297}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041762}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:01",
+      "timestamp": 1790636041.266588,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790635980000.0 reason=WAIT_NEW_A_TO_E_TRIGGER snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402539992, 'kc_middle': 0.004156870402539992, 'kc_lower': 0.004151930402539992}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411821897, 'kc_middle': 0.004157949411821897, 'kc_lower': 0.004153309411821897}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.00416418565831505, 'kc_middle': 0.00415932565831505, 'kc_lower': 0.0041544656583150505}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.004165665119427903, 'kc_middle': 0.004160885119427903, 'kc_lower': 0.004156105119427903}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041723, 'ma3': 0.004173466666666667, 'ma15': 0.004167733333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.00416690225091096, 'kc_middle': 0.0041619722509109594, 'kc_lower': 0.004157042250910959}, {'timestamp': 1790635980000.0, 'open': 0.0041724, 'high': 0.0041728, 'low': 0.0041696, 'close': 0.0041723, 'ma3': 0.004173433333333334, 'ma15': 0.004168353333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004167885846062297, 'kc_middle': 0.004162955846062297, 'kc_lower': 0.004158025846062297}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041762}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:01",
+      "timestamp": 1790636041.4183958,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=LONG bar=1790635980000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.07103, 'high': 0.07106, 'low': 0.07061, 'close': 0.07073, 'ma3': 0.07088666666666667, 'ma15': 0.07069199999999999, 'atr': 0.0002960000000000004, 'kc_upper': 0.07111143910769127, 'kc_middle': 0.07081543910769127, 'kc_lower': 0.07051943910769126}, {'timestamp': 1790635740000.0, 'open': 0.07073, 'high': 0.07076, 'low': 0.07048, 'close': 0.07056, 'ma3': 0.07077333333333333, 'ma15': 0.07070066666666666, 'atr': 0.0003019999999999995, 'kc_upper': 0.07109311157362544, 'kc_middle': 0.07079111157362544, 'kc_lower': 0.07048911157362545}, {'timestamp': 1790635800000.0, 'open': 0.07059, 'high': 0.07064, 'low': 0.07038, 'close': 0.07042, 'ma3': 0.07057000000000001, 'ma15': 0.070708, 'atr': 0.00031999999999999943, 'kc_upper': 0.07107576761423254, 'kc_middle': 0.07075576761423254, 'kc_lower': 0.07043576761423254}, {'timestamp': 1790635860000.0, 'open': 0.07043, 'high': 0.07049, 'low': 0.0703, 'close': 0.07039, 'ma3': 0.07045666666666665, 'ma15': 0.07071066666666666, 'atr': 0.0003049999999999997, 'kc_upper': 0.07102593260335326, 'kc_middle': 0.07072093260335326, 'kc_lower': 0.07041593260335326}, {'timestamp': 1790635920000.0, 'open': 0.0704, 'high': 0.07041, 'low': 0.0703, 'close': 0.07038, 'ma3': 0.07039666666666666, 'ma15': 0.070688, 'atr': 0.0002569999999999989, 'kc_upper': 0.07094546283160531, 'kc_middle': 0.07068846283160532, 'kc_lower': 0.07043146283160533}, {'timestamp': 1790635980000.0, 'open': 0.07038, 'high': 0.0704, 'low': 0.070196, 'close': 0.07025, 'ma3': 0.07034, 'ma15': 0.07065666666666666, 'atr': 0.0002583999999999989, 'kc_upper': 0.07090510446669052, 'kc_middle': 0.07064670446669052, 'kc_lower': 0.07038830446669053}], 'previous5_low': 0.0703, 'previous5_high': 0.07106}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:01",
+      "timestamp": 1790636041.434564,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=CLOSED_TREND_BREAKOUT_SHORT snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.07103, 'high': 0.07106, 'low': 0.07061, 'close': 0.07073, 'ma3': 0.07088666666666667, 'ma15': 0.07069199999999999, 'atr': 0.0002960000000000004, 'kc_upper': 0.07111143910769127, 'kc_middle': 0.07081543910769127, 'kc_lower': 0.07051943910769126}, {'timestamp': 1790635740000.0, 'open': 0.07073, 'high': 0.07076, 'low': 0.07048, 'close': 0.07056, 'ma3': 0.07077333333333333, 'ma15': 0.07070066666666666, 'atr': 0.0003019999999999995, 'kc_upper': 0.07109311157362544, 'kc_middle': 0.07079111157362544, 'kc_lower': 0.07048911157362545}, {'timestamp': 1790635800000.0, 'open': 0.07059, 'high': 0.07064, 'low': 0.07038, 'close': 0.07042, 'ma3': 0.07057000000000001, 'ma15': 0.070708, 'atr': 0.00031999999999999943, 'kc_upper': 0.07107576761423254, 'kc_middle': 0.07075576761423254, 'kc_lower': 0.07043576761423254}, {'timestamp': 1790635860000.0, 'open': 0.07043, 'high': 0.07049, 'low': 0.0703, 'close': 0.07039, 'ma3': 0.07045666666666665, 'ma15': 0.07071066666666666, 'atr': 0.0003049999999999997, 'kc_upper': 0.07102593260335326, 'kc_middle': 0.07072093260335326, 'kc_lower': 0.07041593260335326}, {'timestamp': 1790635920000.0, 'open': 0.0704, 'high': 0.07041, 'low': 0.0703, 'close': 0.07038, 'ma3': 0.07039666666666666, 'ma15': 0.070688, 'atr': 0.0002569999999999989, 'kc_upper': 0.07094546283160531, 'kc_middle': 0.07068846283160532, 'kc_lower': 0.07043146283160533}, {'timestamp': 1790635980000.0, 'open': 0.07038, 'high': 0.0704, 'low': 0.070196, 'close': 0.07025, 'ma3': 0.07034, 'ma15': 0.07065666666666666, 'atr': 0.0002583999999999989, 'kc_upper': 0.07090510446669052, 'kc_middle': 0.07064670446669052, 'kc_lower': 0.07038830446669053}], 'previous5_low': 0.0703, 'previous5_high': 0.07106}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:01",
+      "timestamp": 1790636041.4458983,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:01",
+      "timestamp": 1790636041.6763995,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:02",
+      "timestamp": 1790636042.9645677,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790635980000.0 reason=PIN_BAR_DETECTED (長影線插針防護, ratio=0.13) snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402539992, 'kc_middle': 0.004156870402539992, 'kc_lower': 0.004151930402539992}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411821897, 'kc_middle': 0.004157949411821897, 'kc_lower': 0.004153309411821897}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.00416418565831505, 'kc_middle': 0.00415932565831505, 'kc_lower': 0.0041544656583150505}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.004165665119427903, 'kc_middle': 0.004160885119427903, 'kc_lower': 0.004156105119427903}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041723, 'ma3': 0.004173466666666667, 'ma15': 0.004167733333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.00416690225091096, 'kc_middle': 0.0041619722509109594, 'kc_lower': 0.004157042250910959}, {'timestamp': 1790635980000.0, 'open': 0.0041724, 'high': 0.0041728, 'low': 0.0041696, 'close': 0.0041728, 'ma3': 0.0041736, 'ma15': 0.004168386666666667, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004167933465109916, 'kc_middle': 0.004163003465109916, 'kc_lower': 0.004158073465109916}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041762}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:02",
+      "timestamp": 1790636042.98013,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790635980000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 200, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402539992, 'kc_middle': 0.004156870402539992, 'kc_lower': 0.004151930402539992}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411821897, 'kc_middle': 0.004157949411821897, 'kc_lower': 0.004153309411821897}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.00416418565831505, 'kc_middle': 0.00415932565831505, 'kc_lower': 0.0041544656583150505}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.004165665119427903, 'kc_middle': 0.004160885119427903, 'kc_lower': 0.004156105119427903}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041723, 'ma3': 0.004173466666666667, 'ma15': 0.004167733333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.00416690225091096, 'kc_middle': 0.0041619722509109594, 'kc_lower': 0.004157042250910959}, {'timestamp': 1790635980000.0, 'open': 0.0041724, 'high': 0.0041728, 'low': 0.0041696, 'close': 0.0041728, 'ma3': 0.0041736, 'ma15': 0.004168386666666667, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004167933465109916, 'kc_middle': 0.004163003465109916, 'kc_lower': 0.004158073465109916}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041762}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:03",
+      "timestamp": 1790636043.185875,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:03",
+      "timestamp": 1790636043.4170632,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:04",
+      "timestamp": 1790636044.7221258,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=LONG bar=1790635980000.0 reason=BLOCKED_OPPOSITE_CLOSED_BODY snapshot={'closed_count': 199, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402516711, 'kc_middle': 0.004156870402516711, 'kc_lower': 0.004151930402516711}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411800833, 'kc_middle': 0.004157949411800833, 'kc_lower': 0.004153309411800833}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.0041641856582959914, 'kc_middle': 0.004159325658295992, 'kc_lower': 0.004154465658295992}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.004165665119410659, 'kc_middle': 0.004160885119410659, 'kc_lower': 0.004156105119410659}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041723, 'ma3': 0.004173466666666667, 'ma15': 0.004167733333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004166902250895358, 'kc_middle': 0.004161972250895358, 'kc_lower': 0.004157042250895358}, {'timestamp': 1790635980000.0, 'open': 0.0041724, 'high': 0.0041728, 'low': 0.0041696, 'close': 0.0041723, 'ma3': 0.004173433333333334, 'ma15': 0.004168353333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004167885846048182, 'kc_middle': 0.0041629558460481815, 'kc_lower': 0.004158025846048181}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041762}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:04",
+      "timestamp": 1790636044.73734,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/services/symbol_runner.py:73 stage=CLOSED_SIGNAL symbol=1000PEPE/USDT side=SHORT bar=1790635980000.0 reason=WAIT_NEW_A_TO_E_TRIGGER snapshot={'closed_count': 199, 'is_closed': True, 'candles': [{'timestamp': 1790635680000.0, 'open': 0.0041682, 'high': 0.0041682, 'low': 0.0041637, 'close': 0.0041673, 'ma3': 0.0041692000000000005, 'ma15': 0.0041615, 'atr': 4.939999999999805e-06, 'kc_upper': 0.004161810402516711, 'kc_middle': 0.004156870402516711, 'kc_lower': 0.004151930402516711}, {'timestamp': 1790635740000.0, 'open': 0.0041673, 'high': 0.004171, 'low': 0.0041665, 'close': 0.0041682, 'ma3': 0.004167933333333333, 'ma15': 0.0041638533333333335, 'atr': 4.639999999999852e-06, 'kc_upper': 0.004162589411800833, 'kc_middle': 0.004157949411800833, 'kc_lower': 0.004153309411800833}, {'timestamp': 1790635800000.0, 'open': 0.0041679, 'high': 0.0041745, 'low': 0.0041656, 'close': 0.0041724, 'ma3': 0.0041693, 'ma15': 0.0041656666666666665, 'atr': 4.859999999999847e-06, 'kc_upper': 0.0041641856582959914, 'kc_middle': 0.004159325658295992, 'kc_lower': 0.004154465658295992}, {'timestamp': 1790635860000.0, 'open': 0.0041723, 'high': 0.0041759, 'low': 0.0041715, 'close': 0.0041757, 'ma3': 0.004172100000000001, 'ma15': 0.00416708, 'atr': 4.779999999999888e-06, 'kc_upper': 0.004165665119410659, 'kc_middle': 0.004160885119410659, 'kc_lower': 0.004156105119410659}, {'timestamp': 1790635920000.0, 'open': 0.0041756, 'high': 0.0041762, 'low': 0.0041713, 'close': 0.0041723, 'ma3': 0.004173466666666667, 'ma15': 0.004167733333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004166902250895358, 'kc_middle': 0.004161972250895358, 'kc_lower': 0.004157042250895358}, {'timestamp': 1790635980000.0, 'open': 0.0041724, 'high': 0.0041728, 'low': 0.0041696, 'close': 0.0041723, 'ma3': 0.004173433333333334, 'ma15': 0.004168353333333334, 'atr': 4.929999999999865e-06, 'kc_upper': 0.004167885846048182, 'kc_middle': 0.0041629558460481815, 'kc_lower': 0.004158025846048181}], 'previous5_low': 0.0041637, 'previous5_high': 0.0041762}",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:04",
+      "timestamp": 1790636044.927913,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:05",
+      "timestamp": 1790636045.1613133,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:06",
+      "timestamp": 1790636046.6655452,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:06",
+      "timestamp": 1790636046.8954957,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:06",
+      "timestamp": 1790636046.900367,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:08",
+      "timestamp": 1790636048.388153,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:08",
+      "timestamp": 1790636048.6180694,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:10",
+      "timestamp": 1790636050.1379647,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:10",
+      "timestamp": 1790636050.370775,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:11",
+      "timestamp": 1790636051.8023324,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:12",
+      "timestamp": 1790636052.0392053,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:13",
+      "timestamp": 1790636053.5045786,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:13",
+      "timestamp": 1790636053.7335784,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:15",
+      "timestamp": 1790636055.207212,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:15",
+      "timestamp": 1790636055.43828,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:16",
+      "timestamp": 1790636056.948812,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:17",
+      "timestamp": 1790636057.1789877,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:18",
+      "timestamp": 1790636058.6678119,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:18",
+      "timestamp": 1790636058.8977094,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:20",
+      "timestamp": 1790636060.3671317,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:20",
+      "timestamp": 1790636060.5939922,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:22",
+      "timestamp": 1790636062.09339,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:22",
+      "timestamp": 1790636062.3230596,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:22",
+      "timestamp": 1790636062.3334258,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:23",
+      "timestamp": 1790636063.8402696,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:24",
+      "timestamp": 1790636064.064838,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:25",
+      "timestamp": 1790636065.5510902,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:25",
+      "timestamp": 1790636065.768426,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:27",
+      "timestamp": 1790636067.2635984,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:27",
+      "timestamp": 1790636067.4890497,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:28",
+      "timestamp": 1790636068.9888992,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:29",
+      "timestamp": 1790636069.2205105,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:30",
+      "timestamp": 1790636070.6211011,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:30",
+      "timestamp": 1790636070.846921,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:32",
+      "timestamp": 1790636072.3405852,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:32",
+      "timestamp": 1790636072.57311,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:34",
+      "timestamp": 1790636074.0565894,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:34",
+      "timestamp": 1790636074.2877245,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:35",
+      "timestamp": 1790636075.7692924,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:35",
+      "timestamp": 1790636075.9972079,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:37",
+      "timestamp": 1790636077.4832883,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:37",
+      "timestamp": 1790636077.7160983,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:37",
+      "timestamp": 1790636077.7206323,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:39",
+      "timestamp": 1790636079.2263618,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:39",
+      "timestamp": 1790636079.453397,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:40",
+      "timestamp": 1790636080.8672912,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:41",
+      "timestamp": 1790636081.09848,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:42",
+      "timestamp": 1790636082.5754404,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:42",
+      "timestamp": 1790636082.8134692,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:44",
+      "timestamp": 1790636084.3019414,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:44",
+      "timestamp": 1790636084.5288773,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:46",
+      "timestamp": 1790636086.0256577,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:46",
+      "timestamp": 1790636086.2574368,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:47",
+      "timestamp": 1790636087.7371967,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:47",
+      "timestamp": 1790636087.9649901,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:49",
+      "timestamp": 1790636089.4522963,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:49",
+      "timestamp": 1790636089.68207,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:51",
+      "timestamp": 1790636091.087589,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:51",
+      "timestamp": 1790636091.313152,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:52",
+      "timestamp": 1790636092.7980258,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:53",
+      "timestamp": 1790636093.0200365,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:53",
+      "timestamp": 1790636093.0246413,
+      "text": "👀 [空槽觀察] 目前牌面尚無可開倉；保留現有幣種繼續觀察，不因空槽排除整批幣種",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:54",
+      "timestamp": 1790636094.5145693,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:54",
+      "timestamp": 1790636094.745811,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:56",
+      "timestamp": 1790636096.2605653,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:56",
+      "timestamp": 1790636096.4921315,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:57",
+      "timestamp": 1790636097.9895782,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1689 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=VALIDATING",
+      "level": "INFO"
+    },
+    {
+      "time": "06:54:58",
+      "timestamp": 1790636098.239201,
+      "text": "ENTRY_GATE source=/home/shudgai999/project/new bn/core/engine.py:1693 stage=EXECUTION symbol=龙虾/USDT side=SHORT bar=1790635980000.0 reason=ImportError: cannot import name 'assess_market_regime' from 'core.services.exits.profit_protection_service' (/home/shudgai999/project/new bn/core/services/exits/profit_protection_service.py)",
+      "level": "INFO"
+    }
+  ],
+  "takeover_shadow_events": [],
+  "last_closed_at": {
+    "1000PEPE/USDT": 1790635741.8012853,
+    "龙虾/USDT": 1790635081.7307522
+  },
+  "channel_profit_reentries": {},
+  "daily_date": "2026-09-29",
+  "daily_start_balance": 149.9688123307399,
+  "daily_start_realized_pnl": -0.031187669260111104,
+  "daily_halt_logged": false,
+  "pullback_outcome_stats": {},
+  "entry_filter_stats": {},
+  "entry_filter_last": {},
+  "shadow_parameter_stats": {},
+  "shadow_parameter_last": {},
+  "accounting_version": 2
+}

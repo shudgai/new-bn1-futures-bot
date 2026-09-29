@@ -1,0 +1,237 @@
+--- before/core/services/strategies/unified_entry_strategy.py
++++ after/core/services/strategies/unified_entry_strategy.py
+@@ -19,7 +19,8 @@
+     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
+     [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
+     [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")] +
+-    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
++    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")] +
++    [f"CLOSED_PEAK_TROUGH_CROSS_{side}" for side in ("LONG", "SHORT")]
+ )
+ 
+ def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
+@@ -165,6 +166,52 @@
+     return None
+ 
+ 
++def peak_trough_cross(closed, side):
++    """Eight preceding closed bars establish the touch and structural stop."""
++    if len(closed) < 9:
++        return None
++    try:
++        rows = closed.iloc[-9:]
++        keys = ['timestamp', 'open', 'high', 'low', 'close', 'kc_upper', 'kc_middle', 'kc_lower']
++        v = rows[keys].astype(float)
++        if not all(math.isfinite(x) and x > 0 for x in v.to_numpy().flat):
++            return None
++        if not v.timestamp.diff().iloc[1:].eq(60000).all():
++            return None
++        if not ((v.low <= v[['open', 'close']].min(axis=1)) &
++                (v.high >= v[['open', 'close']].max(axis=1)) &
++                (v.kc_lower < v.kc_middle) & (v.kc_middle < v.kc_upper)).all():
++            return None
++        history = rows.iloc[:-1]
++        previous, current = rows.iloc[-2], rows.iloc[-1]
++        sign = 1 if side == 'LONG' else -1
++        previous_gap = sign * (float(previous.ma3)-float(previous.ma15))
++        current_gap = sign * (float(current.ma3)-float(current.ma15))
++        span = float(current.high)-float(current.low)
++        body = sign * (float(current.close)-float(current.open))
++        if not (previous_gap <= 0 < current_gap and body > 0 and span > 0
++                and at_least(body/span, .4)):
++            return None
++        if side == 'LONG':
++            touched = (history.low <= history.kc_lower).any()
++            room = current.close <= current.kc_upper
++            stop = float(history.low.min())
++        else:
++            touched = (history.high >= history.kc_upper).any()
++            room = current.close >= current.kc_lower
++            stop = float(history.high.max())
++        if not touched or not room or sign*(float(current.close)-stop) <= 0:
++            return None
++        code = f'CLOSED_PEAK_TROUGH_CROSS_{side}'
++        return dict(action='ENTER', side=side, reason=code, rule='PEAK_TROUGH_CROSS',
++                    entry_type='PEAK_TROUGH_CROSS', entry_atr=float(current.atr),
++                    is_breakout=False, confirmation_bar_id=float(current.timestamp),
++                    close_price=float(current.close), initial_sl=stop,
++                    peak_trough_lookback=8)
++    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
++        return None
++
++
+ def had_close(account, symbol):
+     return any(t.get('symbol') == symbol and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
+                for t in getattr(account, 'trades', []))
+@@ -179,6 +226,10 @@
+     closed = confirmed(frame)
+     if closed is None:
+         return wait('WAIT_VALID_CLOSED_1M_DATA')
++
++    early = peak_trough_cross(closed, side)
++    if early is not None:
++        return True, early['reason'], early
+ 
+     if side == 'LONG':
+         problem = long_entry_trend_problem(closed)
+--- before/core/services/entry_firewall.py
++++ after/core/services/entry_firewall.py
+@@ -13,6 +13,11 @@
+     closed = confirmed(frame)
+     if closed is None:
+         raise ValueError('[FORBIDDEN_ENTRY] 缺少有效已收線行情')
++    if code == f'CLOSED_PEAK_TROUGH_CROSS_{side}':
++        ok, actual, decision = evaluate_closed_entry(frame, side)
++        if not ok or actual != code:
++            raise ValueError(f'[FORBIDDEN_ENTRY] 峰谷交叉已失效 actual={actual}')
++        return decision
+     if side == 'LONG':
+         problem = long_entry_trend_problem(closed)
+         if problem:
+--- before/core/services/exits/entry_atr_protection.py
++++ after/core/services/exits/entry_atr_protection.py
+@@ -11,9 +11,9 @@
+         return False
+ 
+ 
+-def initialize_atr_protection(position, entry_price, side, atr):
++def initialize_atr_protection(position, entry_price, side, atr, initial_stop=None):
+     from core.services.exit_service import initialize_chandelier
+-    initialize_chandelier(position, entry_price, side, atr)
++    initialize_chandelier(position, entry_price, side, atr, initial_stop=initial_stop)
+ 
+ 
+ def atr_exit_reason(position, price, frame=None):
+--- before/core/services/exit_service.py
++++ after/core/services/exit_service.py
+@@ -18,16 +18,16 @@
+         return False
+ 
+ 
+-def initialize_chandelier(position, entry_price, side, atr):
++def initialize_chandelier(position, entry_price, side, atr, initial_stop=None):
+     if side not in ("LONG", "SHORT") or not all(valid(v) for v in (entry_price, atr)):
+         raise ValueError("Invalid chandelier inputs")
+     entry_price, atr = float(entry_price), float(atr)
+     sign = 1 if side == "LONG" else -1
+-    stop = entry_price - sign * 1.5 * atr
+-    if not valid(stop):
++    stop = float(initial_stop) if initial_stop is not None else entry_price - sign * 1.5 * atr
++    if not valid(stop) or sign * (entry_price-stop) <= 0:
+         raise ValueError("Invalid chandelier stop")
+     position.update(entry_atr=atr, atr_sl=stop, atr_tp=0., atr_protection_version=2,
+-                    sl=stop, tp=0., initial_sl=stop, initial_risk=1.5*atr)
++                    sl=stop, tp=0., initial_sl=stop, initial_risk=abs(entry_price-stop))
+     position["chandelier_state"] = dict(
+         policy=POLICY, stop=stop, confirmed_stop=stop, highest_price=entry_price,
+         lowest_price=entry_price, confirmed_high=entry_price, confirmed_low=entry_price,
+--- before/core/paper_account.py
++++ after/core/paper_account.py
+@@ -494,7 +494,8 @@
+             return False
+ 
+         from core.services.entry_firewall import validate_account_entry
+-        await validate_account_entry(self, symbol, side, entry_context)
++        entry_decision = await validate_account_entry(self, symbol, side, entry_context)
++        structural_stop = entry_decision.get('initial_sl')
+         if entry_context is None:
+             entry_context = {}
+ 
+@@ -538,7 +539,7 @@
+                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
+                 return False
+             try:
+-                initialize_atr_protection({}, price, side, atr)
++                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
+             except (ValueError, TypeError):
+                 return False
+             tp = 0.0
+@@ -659,7 +660,7 @@
+                 **entry_context,
+             }
+             if entry_mode == "CHANNEL_SWING":
+-                initialize_atr_protection(pos, execution_price, side, atr)
++                initialize_atr_protection(pos, execution_price, side, atr, initial_stop=structural_stop)
+                 entry_context.update({key: pos[key] for key in
+                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
+                                        "initial_sl", "initial_risk", "chandelier_state")})
+--- before/core/testnet_account.py
++++ after/core/testnet_account.py
+@@ -1715,7 +1715,8 @@
+                 return False
+ 
+         from core.services.entry_firewall import validate_account_entry
+-        await validate_account_entry(self, symbol, side, entry_context)
++        entry_decision = await validate_account_entry(self, symbol, side, entry_context)
++        structural_stop = entry_decision.get('initial_sl')
+ 
+         # 最後一道防線：不管呼叫端邏輯有沒有正確擋住，訊號分數低於
+         # MIN_OPEN_SIGNAL_SCORE 一律拒絕下單。手動下單（signal_score 為
+@@ -1742,7 +1743,7 @@
+                 self.log(f"ENTRY_GATE {symbol} WAIT_INVALID_ENTRY_ATR", "WARNING")
+                 return False
+             try:
+-                initialize_atr_protection({}, price, side, atr)
++                initialize_atr_protection({}, price, side, atr, initial_stop=structural_stop)
+             except (ValueError, TypeError):
+                 return False
+             tp = 0.0
+@@ -1801,7 +1802,7 @@
+         return await self._finalize_new_position(
+             symbol, side, execution_price, qty, price, sl, tp, reason, atr,
+             leverage, signal_score, close_side, entry_order.get("id"), amount_usdt,
+-            entry_context=entry_context,
++            entry_context=entry_context, structural_stop=structural_stop,
+         )
+ 
+     async def _prepare_leverage(self, symbol: str, leverage: int) -> None:
+@@ -1833,6 +1834,7 @@
+         entry_order_id,
+         amount_usdt: float,
+         entry_context: dict = None,
++        structural_stop: float = None,
+     ) -> bool:
+         """開倉單成交後的收尾：建立SL/TP保護單、寫入meta、記錄交易。
+         market（open_position）與 limit（place_limit_entry 成交後）兩條
+@@ -1841,6 +1843,12 @@
+         再套用到實際成交價上，讓成交價比預期更好時，止損止盈距離維持
+         原本規劃的寬度，不會因為成交價落差而跟著偏移。"""
+         try:
++            if structural_stop is not None:
++                sign = 1 if side == 'LONG' else -1
++                if sign * (execution_price-structural_stop) <= 0:
++                    await self._emergency_flatten(symbol, side, qty)
++                    self.log('PEAK_TROUGH_STOP_CROSSED_AT_FILL', 'WARNING')
++                    return False
+             entry_context = {
+                 key: value for key, value in dict(entry_context or {}).items()
+                 if key in ENTRY_CONTEXT_KEYS
+@@ -1899,7 +1907,7 @@
+                 entry_context["initial_risk"] = abs(execution_price - sl_price)
+             if is_channel_swing:
+                 anchored = {}
+-                initialize_atr_protection(anchored, execution_price, side, atr)
++                initialize_atr_protection(anchored, execution_price, side, atr, initial_stop=structural_stop)
+                 sl_price, tp_price = anchored['sl'], anchored['tp']
+             atr_value = atr if atr > 0 else execution_price * 0.015
+             try:
+@@ -1942,7 +1950,7 @@
+                 **entry_context,
+             }
+             if is_channel_swing:
+-                initialize_atr_protection(meta, execution_price, side, atr)
++                initialize_atr_protection(meta, execution_price, side, atr, initial_stop=structural_stop)
+                 sl_price, tp_price = meta["sl"], meta["tp"]
+                 entry_context.update({key: meta[key] for key in
+                                       ("entry_atr", "atr_sl", "atr_tp", "atr_protection_version",
+--- before/core/engine.py
++++ after/core/engine.py
+@@ -1803,7 +1803,7 @@
+             log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
+             log_count = len(getattr(self.account, 'logs', []))
+             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+-                amount_usdt=amount,sl=price-sign*1.5*atr,tp=0.,reason='Closed1M '+final['reason'],
++                amount_usdt=amount,sl=final.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Closed1M '+final['reason'],
+                 atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
+         if not opened:
+             recent = getattr(self.account, 'logs', [])[log_count:]

@@ -1,0 +1,202 @@
+--- a/core/engine.py
++++ b/core/engine.py
+@@ -1771,15 +1771,40 @@
+ 
+         atr = final['entry_atr']
+         sign = 1 if side == 'LONG' else -1
++        from core.services.candle_data import entry_frame_evidence
+         context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=final['reason'],
+                        channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
+                        wave_regime='TREND',entry_snapshot=dict(signal_code=final['reason'],
+-                       closed_bar=bar,closed_price=final['close_price'],quote_price=price))
+-        log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
+-        log_count = len(getattr(self.account, 'logs', []))
+-        opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+-            amount_usdt=amount,sl=price-sign*1.5*atr,tp=0.,reason='Closed1M '+final['reason'],
+-            atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
++                       closed_bar=bar,closed_price=final['close_price'],quote_price=price,
++                       evidence=entry_frame_evidence(snapshot['frame'])))
++        submit_lock = getattr(self, '_account_entry_submit_lock', None)
++        if submit_lock is None:
++            submit_lock = self._account_entry_submit_lock = asyncio.Lock()
++        async with submit_lock:
++            if MAX_SLOTS > 0 and len(self.account.positions) + len(self.account.pending_limit_orders) >= MAX_SLOTS:
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_MAX_SLOTS_AT_SUBMIT', bar)
++                return False
++            if symbol in self.account.positions or symbol in self.account.pending_limit_orders:
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_EXISTING_ORDER_AT_SUBMIT', bar)
++                return False
++            if daily and daily()[0]:
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS_AT_SUBMIT', bar)
++                return False
++            amount = self._half_wallet_entry_margin(float(self.account.get_wallet_balance()),
++                float(self.account.get_available_balance()), leverage)
++            if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN_AT_SUBMIT', bar)
++                return False
++            price = float(getattr(self, 'tickers', {}).get(symbol) or snapshot['price'])
++            if not math.isfinite(price) or price <= 0:
++                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
++                return False
++            context['entry_snapshot']['quote_price'] = price
++            log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
++            log_count = len(getattr(self.account, 'logs', []))
++            opened = await self.account.open_position(symbol=symbol,side=side,price=price,
++                amount_usdt=amount,sl=price-sign*1.5*atr,tp=0.,reason='Closed1M '+final['reason'],
++                atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
+         if not opened:
+             recent = getattr(self.account, 'logs', [])[log_count:]
+             detail = next((item.get('text', '') for item in reversed(recent) if item.get('level') in ('ERROR', 'WARNING', 'DANGER')), 'ACCOUNT_REJECTED')
+--- a/core/services/candle_data.py
++++ b/core/services/candle_data.py
+@@ -1,6 +1,7 @@
+ """Explicit candle finality at the market-data snapshot boundary."""
+ 
+ import re
++import sys
+ 
+ import numpy as np
+ import pandas as pd
+@@ -56,7 +57,9 @@
+     if cache.get(key) == fingerprint:
+         return
+     cache[key] = fingerprint
+-    text = f"ENTRY_GATE stage={stage} symbol={symbol} side={side} bar={bar_id} reason={reason}"
++    caller = sys._getframe(1)
++    source = f"{caller.f_code.co_filename}:{caller.f_lineno}"
++    text = f"ENTRY_GATE source={source} stage={stage} symbol={symbol} side={side} bar={bar_id} reason={reason}"
+     if details:
+         text += " " + " ".join(f"{key}={value}" for key, value in details.items())
+     engine.account.log(text, "INFO")
+@@ -76,3 +79,17 @@
+     except (TypeError, ValueError):
+         return "WAIT_INVALID_MARKET_DATA"
+     return None
++
++
++def entry_frame_evidence(frame):
++    """Serializable, closed-only evidence; never advances strategy state."""
++    closed = closed_entry_candles(frame)
++    if closed.empty:
++        return {'closed_count': 0}
++    keys = ('timestamp', 'open', 'high', 'low', 'close', 'ma3', 'ma15',
++            'atr', 'kc_upper', 'kc_middle', 'kc_lower')
++    rows = [{key: float(row[key]) for key in keys if key in row}
++            for _, row in closed.tail(6).iterrows()]
++    return {'closed_count': len(closed), 'is_closed': True, 'candles': rows,
++            'previous5_low': float(closed['low'].iloc[-6:-1].min()) if len(closed) >= 6 else None,
++            'previous5_high': float(closed['high'].iloc[-6:-1].max()) if len(closed) >= 6 else None}
+--- a/core/services/symbol_runner.py
++++ b/core/services/symbol_runner.py
+@@ -3,7 +3,7 @@
+ import math
+ from core.services.strategies.unified_entry_strategy import confirmed, evaluate_closed_entry, had_close
+ from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, DUAL_TRACK_STATE_KEYS
+-from core.services.candle_data import log_entry_gate
++from core.services.candle_data import log_entry_gate, entry_frame_evidence
+ 
+ 
+ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, daily_halt,
+@@ -70,7 +70,7 @@
+             continue
+             
+         ok, reason, decision = evaluate_closed_entry(frame,side,after_close=had_close(engine.account,symbol))
+-        log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',reason,float(closed.iloc[-1].timestamp))
++        log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',reason,float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+         if ok:
+             candidates.append(decision)
+     if candidates:
+--- a/web/index.html
++++ b/web/index.html
+@@ -580,7 +580,7 @@
+                             <span>{{ symbol }}</span>
+                             <span v-if="bot.chart_metrics && bot.chart_metrics[symbol]"
+                                   :style="{ color: bot.chart_metrics[symbol].kc_width_atr < 3 ? '#5c4033' : ((chartModal.states[symbol] || {}).ckTrend === 'bull' ? '#006400' : ((chartModal.states[symbol] || {}).ckTrend === 'bear' ? '#8b0000' : '#5c4033')) }">
+-                                {{ bot.chart_metrics[symbol].kc_width_atr < 3 ? '猴市' : ((chartModal.states[symbol] || {}).ckTrend === 'bull' ? '牛市' : ((chartModal.states[symbol] || {}).ckTrend === 'bear' ? '熊市' : '猴市')) }}
++                                通道寬度 {{ bot.chart_metrics[symbol].kc_width_atr.toFixed(2) }} ATR
+                             </span>
+                             <span class="market-mode-badge" :class="'market-mode-' + ((chartModal.states[symbol] || {}).ckTrend || 'wait')" title="最近三根已收線 CK 中軌方向；即時 K 不參與">
+                                 {{ { bull: '↑ CK 向上', bear: '↓ CK 向下', range: 'CK 尚未連續同向', wait: 'CK 待更新' }[(chartModal.states[symbol] || {}).ckTrend || 'wait'] }}
+--- /dev/null
++++ b/tests/test_red_eye_entry_pressure.py
+@@ -0,0 +1,80 @@
++"""Concurrency and input evidence tests without live state/network."""
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++import pytest
++from test_entry_e2e_20260928 import candles
++from core.engine import TradingEngine
++from core.paper_account import PaperAccount
++from core.services.strategies.unified_entry_strategy import evaluate_closed_entry
++
++
++def engine_fixture(monkeypatch):
++    monkeypatch.setattr(PaperAccount,'load_state',lambda self:None)
++    monkeypatch.setattr(PaperAccount,'save_state',lambda self:None)
++    account=PaperAccount();account.balance=100.
++    engine=object.__new__(TradingEngine);engine.account=account
++    f=candles()
++    engine.tickers={'1000PEPE/USDT':100.7,'龙虾/USDT':100.7}
++    engine.fetch_klines=AsyncMock(return_value=f)
++    engine.strategy=SimpleNamespace(compute_indicators=lambda f:f)
++    engine.symbol_rotation=SimpleNamespace(get_dynamic_leverage=lambda *args:2)
++    engine._execution_price_is_safe=AsyncMock(return_value=True)
++    return engine,f
++
++
++@pytest.mark.parametrize('parallel',[2,50])
++def test_same_candle_concurrent_requests_fill_once(monkeypatch,parallel):
++    engine,f=engine_fixture(monkeypatch)
++    async def run():
++        return await asyncio.gather(*(engine._execute_confirmed_channel_break(
++            '1000PEPE/USDT',f,100.7,'LONG',v8_reason=evaluate_closed_entry(f,'LONG')[1]) for _ in range(parallel)))
++    assert sum(asyncio.run(run()))==1
++    assert len(engine.account.trades)==1
++
++
++def test_two_symbols_cannot_race_past_single_slot(monkeypatch):
++    import core.engine as module
++    monkeypatch.setattr(module,'MAX_SLOTS',1)
++    engine,f=engine_fixture(monkeypatch)
++    # Isolate slot enforcement from the independent fee/balance veto.
++    async def delayed(*args,**kwargs):
++        await asyncio.sleep(.01)
++        engine.account.positions[kwargs['symbol']]={'side':kwargs['side'], 'margin':kwargs['amount_usdt']}
++        return True
++    engine.account.open_position=delayed
++    async def run():
++        return await asyncio.gather(*(engine._execute_confirmed_channel_break(
++            symbol,f,100.7,'LONG',v8_reason=evaluate_closed_entry(f,'LONG')[1])
++            for symbol in engine.tickers))
++    assert sum(asyncio.run(run()))==1
++    assert len(engine.account.positions)==1
++
++
++def test_snapshot_evidence_excludes_forming_candle():
++    import json
++    import pandas as pd
++    from core.services.candle_data import entry_frame_evidence
++    f=candles()
++    expected=entry_frame_evidence(f)
++    live=f.iloc[-1].copy();live['timestamp']+=60000;live['is_closed']=False;live['close']=9999.
++    f=pd.concat([f,pd.DataFrame([live])],ignore_index=True)
++    assert entry_frame_evidence(f)==expected
++    assert len(expected['candles'])==6
++    assert json.loads(json.dumps(expected))==expected
++
++
++def test_account_failure_releases_submit_lock_for_other_symbol(monkeypatch):
++    engine,f=engine_fixture(monkeypatch)
++    original=engine.account.open_position
++    async def maybe_fail(*args,**kwargs):
++        if kwargs['symbol']=='1000PEPE/USDT':raise RuntimeError('injected broker failure')
++        return await original(*args,**kwargs)
++    engine.account.open_position=maybe_fail
++    async def run():
++        code=evaluate_closed_entry(f,'LONG')[1]
++        results=await asyncio.gather(*(engine._execute_confirmed_channel_break(symbol,f,100.7,'LONG',v8_reason=code)
++                                      for symbol in engine.tickers))
++        assert not engine._account_entry_submit_lock.locked()
++        return results
++    assert asyncio.run(run())==[False,True]

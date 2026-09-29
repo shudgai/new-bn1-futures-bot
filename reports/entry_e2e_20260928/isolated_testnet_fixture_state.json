@@ -1,0 +1,39 @@
+{
+  "environment": "binance_usdm_legacy_testnet",
+  "realized_pnl": 0.0,
+  "trades": [],
+  "logs": [
+    {
+      "time": "06:29:05",
+      "timestamp": 1790634545.9306965,
+      "text": "[ORDER_SUBMIT] symbol=TEST type=market side=buy qty=1",
+      "level": "INFO"
+    },
+    {
+      "time": "06:29:05",
+      "timestamp": 1790634545.931151,
+      "text": "[ORDER_REJECT] symbol=TEST RuntimeError: exchange -1013 invalid quantity",
+      "level": "ERROR"
+    }
+  ],
+  "position_meta": {},
+  "channel_profit_reentries": {},
+  "daily_date": null,
+  "daily_start_balance": 0.0,
+  "daily_start_realized_pnl": 0.0,
+  "daily_halt_logged": false,
+  "last_closed_at": {},
+  "pullback_outcome_stats": {},
+  "entry_filter_stats": {
+    "evaluations": 0,
+    "outcomes": {},
+    "components": {},
+    "adjustments": {}
+  },
+  "entry_filter_last": {},
+  "shadow_parameter_stats": {
+    "evaluations": 0,
+    "profiles": {}
+  },
+  "shadow_parameter_last": {}
+}

@@ -1,0 +1,72 @@
+--- before/core/services/strategies/unified_entry_strategy.py
++++ after/core/services/strategies/unified_entry_strategy.py
+@@ -136,6 +136,35 @@
+     return None
+ 
+ 
++def long_entry_trend_problem(closed):
++    """Require a closed upper-rail break and sustained reversal evidence.
++
++    MA15: two positive changes; price: two closes strictly above their
++    midlines; CK: two positive changes of all three rails. Any one confirms.
++    This gate applies to every LONG rule, including ignition exemptions.
++    """
++    try:
++        rows = closed.iloc[-3:]
++        keys = ['close', 'ma15', 'kc_upper', 'kc_middle', 'kc_lower']
++        if len(rows) != 3:
++            return 'BLOCKED_LONG_INVALID_TREND_DATA'
++        values = rows[keys].astype(float)
++        if not all(math.isfinite(v) and v > 0 for v in values.to_numpy().flat):
++            return 'BLOCKED_LONG_INVALID_TREND_DATA'
++        if not (values.kc_lower.lt(values.kc_middle) & values.kc_middle.lt(values.kc_upper)).all():
++            return 'BLOCKED_LONG_INVALID_TREND_DATA'
++        if values.close.iloc[-1] <= values.kc_upper.iloc[-1]:
++            return 'BLOCKED_LONG_CLOSE_NOT_ABOVE_UPPER'
++        ma15_up = bool(values.ma15.diff().iloc[1:].gt(0).all())
++        two_above_middle = bool(values.close.iloc[-2:].gt(values.kc_middle.iloc[-2:]).all())
++        ck_up = bool(values[['kc_upper', 'kc_middle', 'kc_lower']].diff().iloc[1:].gt(0).to_numpy().all())
++        if not (ma15_up or two_above_middle or ck_up):
++            return 'BLOCKED_LONG_REVERSAL_UNCONFIRMED'
++    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
++        return 'BLOCKED_LONG_INVALID_TREND_DATA'
++    return None
++
++
+ def had_close(account, symbol):
+     return any(t.get('symbol') == symbol and t.get('action') in ('CLOSE_LONG', 'CLOSE_SHORT')
+                for t in getattr(account, 'trades', []))
+@@ -150,6 +179,11 @@
+     closed = confirmed(frame)
+     if closed is None:
+         return wait('WAIT_VALID_CLOSED_1M_DATA')
++
++    if side == 'LONG':
++        problem = long_entry_trend_problem(closed)
++        if problem:
++            return wait(problem)
+ 
+     c0, c1, c = (closed.iloc[i] for i in (-3, -2, -1))
+     sign = 1 if side == 'LONG' else -1
+--- before/core/services/entry_firewall.py
++++ after/core/services/entry_firewall.py
+@@ -3,7 +3,7 @@
+ import time
+ 
+ from core.services.strategies.unified_entry_strategy import (
+-    RULE_CODES, confirmed, evaluate_closed_entry, ma3_entry_problem,
++    RULE_CODES, confirmed, evaluate_closed_entry, ma3_entry_problem, long_entry_trend_problem,
+ )
+ 
+ 
+@@ -13,6 +13,10 @@
+     closed = confirmed(frame)
+     if closed is None:
+         raise ValueError('[FORBIDDEN_ENTRY] 缺少有效已收線行情')
++    if side == 'LONG':
++        problem = long_entry_trend_problem(closed)
++        if problem:
++            raise ValueError('[FORBIDDEN_ENTRY] ' + problem)
+     # 點火起爆信號由 KC 外軌擴張與大實體動能保證方向，豁免滯後的 MA3 斜率檢驗
+     is_ignition = 'IGNITION' in str(code).upper() or 'TREND_BREAKOUT' in str(code).upper()
+     if not is_ignition:

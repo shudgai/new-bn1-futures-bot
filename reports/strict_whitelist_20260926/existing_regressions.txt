@@ -1,0 +1,372 @@
+..FFFFFFFF....FF..........FF........FF......FFFFFFFFFF............FF.... [ 70%]
+....FFFFFFFFFFFF..........FFFF                                           [100%]
+=================================== FAILURES ===================================
+________________ test_active_signal_contract[price_guard-LONG] _________________
+tests/test_entry_cleanup_regression.py:43: in test_active_signal_contract
+    assert 'BLOCKED_MA3_PRICE' in result['reason']
+E   AssertionError: assert 'BLOCKED_MA3_PRICE' in 'WAIT_NEW_A_TO_E_TRIGGER'
+________________ test_active_signal_contract[price_guard-SHORT] ________________
+tests/test_entry_cleanup_regression.py:43: in test_active_signal_contract
+    assert 'BLOCKED_MA3_PRICE' in result['reason']
+E   AssertionError: assert 'BLOCKED_MA3_PRICE' in 'WAIT_NEW_A_TO_E_TRIGGER'
+________________ test_active_signal_contract[continuation-LONG] ________________
+tests/test_entry_cleanup_regression.py:45: in test_active_signal_contract
+    assert allowed and result['action']=='ENTER'
+E   assert (False)
+_______________ test_active_signal_contract[continuation-SHORT] ________________
+tests/test_entry_cleanup_regression.py:40: in test_active_signal_contract
+    assert result['reason'] == 'BLOCKED_LATE_SHORT_NEAR_MIDDLE'
+E   AssertionError: assert 'WAIT_VALID_CLOSED_1M_DATA' == 'BLOCKED_LATE...T_NEAR_MIDDLE'
+E     
+E     - BLOCKED_LATE_SHORT_NEAR_MIDDLE
+E     + WAIT_VALID_CLOSED_1M_DATA
+______________________ test_all_rules_and_flat_kc[A-LONG] ______________________
+tests/test_final_closed_policy.py:48: in test_all_rules_and_flat_kc
+    assert ok and code==f'CLOSED_{rule}_{side}'
+E   assert (False)
+_____________________ test_all_rules_and_flat_kc[A-SHORT] ______________________
+tests/test_final_closed_policy.py:48: in test_all_rules_and_flat_kc
+    assert ok and code==f'CLOSED_{rule}_{side}'
+E   assert (False)
+______________________ test_all_rules_and_flat_kc[B-LONG] ______________________
+tests/test_final_closed_policy.py:48: in test_all_rules_and_flat_kc
+    assert ok and code==f'CLOSED_{rule}_{side}'
+E   assert (False)
+_____________________ test_all_rules_and_flat_kc[B-SHORT] ______________________
+tests/test_final_closed_policy.py:48: in test_all_rules_and_flat_kc
+    assert ok and code==f'CLOSED_{rule}_{side}'
+E   assert (False)
+______________________ test_all_rules_and_flat_kc[E-LONG] ______________________
+tests/test_final_closed_policy.py:48: in test_all_rules_and_flat_kc
+    assert ok and code==f'CLOSED_{rule}_{side}'
+E   assert (False)
+_____________________ test_all_rules_and_flat_kc[E-SHORT] ______________________
+tests/test_final_closed_policy.py:48: in test_all_rules_and_flat_kc
+    assert ok and code==f'CLOSED_{rule}_{side}'
+E   assert (False)
+______ test_A_can_use_second_previous_opposite_and_strict_threshold[LONG] ______
+tests/test_final_closed_policy.py:77: in test_A_can_use_second_previous_opposite_and_strict_threshold
+    assert evaluate_closed_entry(f,side)[1]==f'CLOSED_A_{side}'
+E   AssertionError: assert 'WAIT_NEW_A_TO_E_TRIGGER' == 'CLOSED_A_LONG'
+E     
+E     - CLOSED_A_LONG
+E     + WAIT_NEW_A_TO_E_TRIGGER
+_____ test_A_can_use_second_previous_opposite_and_strict_threshold[SHORT] ______
+tests/test_final_closed_policy.py:77: in test_A_can_use_second_previous_opposite_and_strict_threshold
+    assert evaluate_closed_entry(f,side)[1]==f'CLOSED_A_{side}'
+E   AssertionError: assert 'WAIT_NEW_A_TO_E_TRIGGER' == 'CLOSED_A_SHORT'
+E     
+E     - CLOSED_A_SHORT
+E     + WAIT_NEW_A_TO_E_TRIGGER
+_________ test_C_requires_cross_instant_and_D_requires_c0_inside[LONG] _________
+tests/test_final_closed_policy.py:100: in test_C_requires_cross_instant_and_D_requires_c0_inside
+    assert not evaluate_closed_entry(f,side,after_close=True)[0]
+E   assert not True
+________ test_C_requires_cross_instant_and_D_requires_c0_inside[SHORT] _________
+tests/test_final_closed_policy.py:100: in test_C_requires_cross_instant_and_D_requires_c0_inside
+    assert not evaluate_closed_entry(f,side,after_close=True)[0]
+E   assert not True
+___________________ test_real_account_order_boundary[A-LONG] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+E   assert False
+__________________ test_real_account_order_boundary[A-SHORT] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+E   assert False
+___________________ test_real_account_order_boundary[B-LONG] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+E   assert False
+__________________ test_real_account_order_boundary[B-SHORT] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+E   assert False
+___________________ test_real_account_order_boundary[C-LONG] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+core/engine.py:1847: in _execute_confirmed_channel_break
+    return await self._place_structured_entry(symbol,signal,price)
+core/engine.py:1678: in _place_structured_entry
+    return await self._place_structured_entry_locked(symbol,signal,live_price)
+core/engine.py:1733: in _place_structured_entry_locked
+    validate_entry_frame(snapshot['frame'], side, final['reason'])
+core/services/entry_firewall.py:29: in validate_entry_frame
+    raise ValueError(f'[FORBIDDEN_ENTRY] KC 上軌內禁止開多：Close={close}, Upper={upper}')
+E   ValueError: [FORBIDDEN_ENTRY] KC 上軌內禁止開多：Close=100.6, Upper=102.0
+__________________ test_real_account_order_boundary[C-SHORT] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+core/engine.py:1847: in _execute_confirmed_channel_break
+    return await self._place_structured_entry(symbol,signal,price)
+core/engine.py:1678: in _place_structured_entry
+    return await self._place_structured_entry_locked(symbol,signal,live_price)
+core/engine.py:1733: in _place_structured_entry_locked
+    validate_entry_frame(snapshot['frame'], side, final['reason'])
+core/services/entry_firewall.py:24: in validate_entry_frame
+    raise ValueError(f'[FORBIDDEN_ENTRY] KC 下軌內禁止開空：Close={close}, Lower={lower}')
+E   ValueError: [FORBIDDEN_ENTRY] KC 下軌內禁止開空：Close=99.4, Lower=98.0
+___________________ test_real_account_order_boundary[D-LONG] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+core/engine.py:1847: in _execute_confirmed_channel_break
+    return await self._place_structured_entry(symbol,signal,price)
+core/engine.py:1678: in _place_structured_entry
+    return await self._place_structured_entry_locked(symbol,signal,live_price)
+core/engine.py:1742: in _place_structured_entry_locked
+    opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+core/testnet_account.py:1686: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:52: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 已收線訊號過期或來自未來')
+E   ValueError: [FORBIDDEN_ENTRY] 已收線訊號過期或來自未來
+__________________ test_real_account_order_boundary[D-SHORT] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+core/engine.py:1847: in _execute_confirmed_channel_break
+    return await self._place_structured_entry(symbol,signal,price)
+core/engine.py:1678: in _place_structured_entry
+    return await self._place_structured_entry_locked(symbol,signal,live_price)
+core/engine.py:1742: in _place_structured_entry_locked
+    opened = await self.account.open_position(symbol=symbol,side=side,price=price,
+core/testnet_account.py:1686: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:52: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 已收線訊號過期或來自未來')
+E   ValueError: [FORBIDDEN_ENTRY] 已收線訊號過期或來自未來
+___________________ test_real_account_order_boundary[E-LONG] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+E   assert False
+__________________ test_real_account_order_boundary[E-SHORT] ___________________
+tests/test_final_closed_policy.py:178: in test_real_account_order_boundary
+    asyncio.run(run())
+/usr/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/usr/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/usr/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+tests/test_final_closed_policy.py:172: in run
+    assert await engine._execute_confirmed_channel_break('DOGE/USDT',f,100.,side,v8_reason=f'CLOSED_{rule}_{side}')
+E   assert False
+_________________ test_touch_live_retreat_and_extension[LONG] __________________
+tests/test_kc_atr_firewall.py:44: in test_touch_live_retreat_and_extension
+    assert strict_kc_entry_gate(frame, rail + sign*4.1, side).startswith('OVEREXTENDED')
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_________________ test_touch_live_retreat_and_extension[SHORT] _________________
+tests/test_kc_atr_firewall.py:44: in test_touch_live_retreat_and_extension
+    assert strict_kc_entry_gate(frame, rail + sign*4.1, side).startswith('OVEREXTENDED')
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_ test_fixed_exit_and_retry_survive_restart_without_frame[atr_sl-EXIT_STOP_LOSS-LONG] _
+tests/test_kc_atr_firewall.py:63: in test_fixed_exit_and_retry_survive_restart_without_frame
+    assert ProfitProtectionExitStrategy().evaluate_exit(p, None, p[field]).startswith(reason)
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_ test_fixed_exit_and_retry_survive_restart_without_frame[atr_sl-EXIT_STOP_LOSS-SHORT] _
+tests/test_kc_atr_firewall.py:63: in test_fixed_exit_and_retry_survive_restart_without_frame
+    assert ProfitProtectionExitStrategy().evaluate_exit(p, None, p[field]).startswith(reason)
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_ test_fixed_exit_and_retry_survive_restart_without_frame[atr_tp-EXIT_TAKE_PROFIT-LONG] _
+tests/test_kc_atr_firewall.py:63: in test_fixed_exit_and_retry_survive_restart_without_frame
+    assert ProfitProtectionExitStrategy().evaluate_exit(p, None, p[field]).startswith(reason)
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_ test_fixed_exit_and_retry_survive_restart_without_frame[atr_tp-EXIT_TAKE_PROFIT-SHORT] _
+tests/test_kc_atr_firewall.py:63: in test_fixed_exit_and_retry_survive_restart_without_frame
+    assert ProfitProtectionExitStrategy().evaluate_exit(p, None, p[field]).startswith(reason)
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+______ test_fill_initializes_persists_and_restores_protection[LONG-paper] ______
+tests/test_kc_atr_firewall.py:89: in test_fill_initializes_persists_and_restores_protection
+    assert await account.open_position('DOGE/USDT', side, 100., 10., 0., 0., 'TEST', atr=2., leverage=1,
+core/paper_account.py:497: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+_____ test_fill_initializes_persists_and_restores_protection[LONG-testnet] _____
+tests/test_kc_atr_firewall.py:89: in test_fill_initializes_persists_and_restores_protection
+    assert await account.open_position('DOGE/USDT', side, 100., 10., 0., 0., 'TEST', atr=2., leverage=1,
+core/testnet_account.py:1686: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+_____ test_fill_initializes_persists_and_restores_protection[SHORT-paper] ______
+tests/test_kc_atr_firewall.py:89: in test_fill_initializes_persists_and_restores_protection
+    assert await account.open_position('DOGE/USDT', side, 100., 10., 0., 0., 'TEST', atr=2., leverage=1,
+core/paper_account.py:497: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+____ test_fill_initializes_persists_and_restores_protection[SHORT-testnet] _____
+tests/test_kc_atr_firewall.py:89: in test_fill_initializes_persists_and_restores_protection
+    assert await account.open_position('DOGE/USDT', side, 100., 10., 0., 0., 'TEST', atr=2., leverage=1,
+core/testnet_account.py:1686: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+___________________ test_no_paper_fill_without_valid_atr[0] ____________________
+tests/test_kc_atr_firewall.py:120: in test_no_paper_fill_without_valid_atr
+    assert not await account.open_position('DOGE/USDT', 'LONG', 100., 10., 0., 0., 'TEST', atr=atr,
+core/paper_account.py:497: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+__________________ test_no_paper_fill_without_valid_atr[nan] ___________________
+tests/test_kc_atr_firewall.py:120: in test_no_paper_fill_without_valid_atr
+    assert not await account.open_position('DOGE/USDT', 'LONG', 100., 10., 0., 0., 'TEST', atr=atr,
+core/paper_account.py:497: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+__________________ test_no_paper_fill_without_valid_atr[inf] ___________________
+tests/test_kc_atr_firewall.py:120: in test_no_paper_fill_without_valid_atr
+    assert not await account.open_position('DOGE/USDT', 'LONG', 100., 10., 0., 0., 'TEST', atr=atr,
+core/paper_account.py:497: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+___________________ test_no_paper_fill_without_valid_atr[-1] ___________________
+tests/test_kc_atr_firewall.py:120: in test_no_paper_fill_without_valid_atr
+    assert not await account.open_position('DOGE/USDT', 'LONG', 100., 10., 0., 0., 'TEST', atr=atr,
+core/paper_account.py:497: in open_position
+    await validate_account_entry(self, symbol, side, entry_context)
+core/services/entry_firewall.py:40: in validate_account_entry
+    raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
+E   ValueError: [FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單
+_________ test_outer_ma3_turn_blocks_even_when_price_is_outside[LONG] __________
+tests/test_kc_atr_firewall.py:181: in test_outer_ma3_turn_blocks_even_when_price_is_outside
+    assert strict_kc_entry_gate(f,118. if side=='LONG' else 82.,side).startswith('OVEREXTENDED')
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_________ test_outer_ma3_turn_blocks_even_when_price_is_outside[SHORT] _________
+tests/test_kc_atr_firewall.py:181: in test_outer_ma3_turn_blocks_even_when_price_is_outside
+    assert strict_kc_entry_gate(f,118. if side=='LONG' else 82.,side).startswith('OVEREXTENDED')
+E   AttributeError: 'NoneType' object has no attribute 'startswith'
+_ test_post_close_pullback_requires_fresh_observation_and_outer_reclaim[LONG] __
+tests/test_kc_atr_firewall.py:192: in test_post_close_pullback_requires_fresh_observation_and_outer_reclaim
+    assert not check(100+sign*13,0)[0]
+E   assert not True
+_ test_post_close_pullback_requires_fresh_observation_and_outer_reclaim[SHORT] _
+tests/test_kc_atr_firewall.py:192: in test_post_close_pullback_requires_fresh_observation_and_outer_reclaim
+    assert not check(100+sign*13,0)[0]
+E   assert not True
+=========================== short test summary info ============================
+FAILED tests/test_entry_cleanup_regression.py::test_active_signal_contract[price_guard-LONG]
+FAILED tests/test_entry_cleanup_regression.py::test_active_signal_contract[price_guard-SHORT]
+FAILED tests/test_entry_cleanup_regression.py::test_active_signal_contract[continuation-LONG]
+FAILED tests/test_entry_cleanup_regression.py::test_active_signal_contract[continuation-SHORT]
+FAILED tests/test_final_closed_policy.py::test_all_rules_and_flat_kc[A-LONG]
+FAILED tests/test_final_closed_policy.py::test_all_rules_and_flat_kc[A-SHORT]
+FAILED tests/test_final_closed_policy.py::test_all_rules_and_flat_kc[B-LONG]
+FAILED tests/test_final_closed_policy.py::test_all_rules_and_flat_kc[B-SHORT]
+FAILED tests/test_final_closed_policy.py::test_all_rules_and_flat_kc[E-LONG]
+FAILED tests/test_final_closed_policy.py::test_all_rules_and_flat_kc[E-SHORT]
+FAILED tests/test_final_closed_policy.py::test_A_can_use_second_previous_opposite_and_strict_threshold[LONG]
+FAILED tests/test_final_closed_policy.py::test_A_can_use_second_previous_opposite_and_strict_threshold[SHORT]
+FAILED tests/test_final_closed_policy.py::test_C_requires_cross_instant_and_D_requires_c0_inside[LONG]
+FAILED tests/test_final_closed_policy.py::test_C_requires_cross_instant_and_D_requires_c0_inside[SHORT]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[A-LONG]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[A-SHORT]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[B-LONG]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[B-SHORT]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[C-LONG]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[C-SHORT]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[D-LONG]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[D-SHORT]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[E-LONG]
+FAILED tests/test_final_closed_policy.py::test_real_account_order_boundary[E-SHORT]
+FAILED tests/test_kc_atr_firewall.py::test_touch_live_retreat_and_extension[LONG]
+FAILED tests/test_kc_atr_firewall.py::test_touch_live_retreat_and_extension[SHORT]
+FAILED tests/test_kc_atr_firewall.py::test_fixed_exit_and_retry_survive_restart_without_frame[atr_sl-EXIT_STOP_LOSS-LONG]
+FAILED tests/test_kc_atr_firewall.py::test_fixed_exit_and_retry_survive_restart_without_frame[atr_sl-EXIT_STOP_LOSS-SHORT]
+FAILED tests/test_kc_atr_firewall.py::test_fixed_exit_and_retry_survive_restart_without_frame[atr_tp-EXIT_TAKE_PROFIT-LONG]
+FAILED tests/test_kc_atr_firewall.py::test_fixed_exit_and_retry_survive_restart_without_frame[atr_tp-EXIT_TAKE_PROFIT-SHORT]
+FAILED tests/test_kc_atr_firewall.py::test_fill_initializes_persists_and_restores_protection[LONG-paper]
+FAILED tests/test_kc_atr_firewall.py::test_fill_initializes_persists_and_restores_protection[LONG-testnet]
+FAILED tests/test_kc_atr_firewall.py::test_fill_initializes_persists_and_restores_protection[SHORT-paper]
+FAILED tests/test_kc_atr_firewall.py::test_fill_initializes_persists_and_restores_protection[SHORT-testnet]
+FAILED tests/test_kc_atr_firewall.py::test_no_paper_fill_without_valid_atr[0]
+FAILED tests/test_kc_atr_firewall.py::test_no_paper_fill_without_valid_atr[nan]
+FAILED tests/test_kc_atr_firewall.py::test_no_paper_fill_without_valid_atr[inf]
+FAILED tests/test_kc_atr_firewall.py::test_no_paper_fill_without_valid_atr[-1]
+FAILED tests/test_kc_atr_firewall.py::test_outer_ma3_turn_blocks_even_when_price_is_outside[LONG]
+FAILED tests/test_kc_atr_firewall.py::test_outer_ma3_turn_blocks_even_when_price_is_outside[SHORT]
+FAILED tests/test_kc_atr_firewall.py::test_post_close_pullback_requires_fresh_observation_and_outer_reclaim[LONG]
+FAILED tests/test_kc_atr_firewall.py::test_post_close_pullback_requires_fresh_observation_and_outer_reclaim[SHORT]
+42 failed, 60 passed in 4.01s
