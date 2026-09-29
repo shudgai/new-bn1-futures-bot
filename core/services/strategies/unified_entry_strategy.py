@@ -179,11 +179,6 @@ def had_close(account, symbol):
 def evaluate_closed_entry(frame, side, *, after_close=False):
     wait = lambda reason: (False, reason, dict(action='WAIT', side=side, reason=reason))
     
-    # 物理收盤校驗：非收盤 K 棒，0.1秒都不准偷跑
-    if not frame.empty and 'is_closed' in frame:
-        last_k = frame.iloc[-1]
-        if not bool(last_k.get('is_closed', False)) and not bool(last_k.get('x', False)):
-            return wait("REJECT_UNCLOSED_BAR (盤中未收線偷跑，物理鎖攔截)")
 
     closed = confirmed(frame)
     if closed is None or closed.empty:

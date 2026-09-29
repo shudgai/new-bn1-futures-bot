@@ -1,8 +1,8 @@
 """One close-only strategy lifecycle, serialized by the engine's symbol lock."""
 import copy
 import math
-from core.services.strategies.unified_entry_strategy import confirmed, evaluate_closed_entry, had_close
-from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, DUAL_TRACK_STATE_KEYS
+from core.services.strategies.unified_entry_strategy import confirmed
+from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
 from core.services.candle_data import log_entry_gate, entry_frame_evidence
 
 
@@ -28,19 +28,22 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     preferred = None
     if position:
         engine._take_over_manual_position(symbol,position)
-        meta = engine.account.position_meta.setdefault(symbol,{})
-        for key in DUAL_TRACK_STATE_KEYS:
-            if key not in position and key in meta:
-                position[key] = copy.deepcopy(meta[key])
-        reason = DualTrackExitStrategy().evaluate_exit(position,frame,current_price=quote)
-        observed = {k:copy.deepcopy(position[k]) for k in DUAL_TRACK_STATE_KEYS if k in position}
-        if any(meta.get(k) != v for k,v in observed.items()):
-            meta.update(observed)
-            engine.account.save_state()
-        if not reason:
+        
+        # 1. 盤中極端熔斷評估 (每一秒都驗證)
+        btc_status = {"is_crashing": btc_1m_turn == "SHORT"} # simplified mapping
+        exit_reason = PureTrendStrategyV2().check_intra_bar_emergency_exit(position, quote, frame.iloc[-1].to_dict(), btc_status)
+        
+        # 2. 收盤平倉評估 (只在收線確定時)
+        if exit_reason is None and len(closed) >= 2:
+            last_closed_bar = closed.iloc[-1].to_dict()
+            prev_closed_bar = closed.iloc[-2].to_dict()
+            # We must pass the closed bars to evaluate
+            exit_reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, last_closed_bar, prev_closed_bar)
+            
+        if not exit_reason:
             return [], []
+            
         old_side = position['side']
-
         # ── 全倉平倉 ─────────────────        # ── 全倉平倉（第三階段各種出場訊號）─────────────────
         filled = await engine.account.close_position(symbol, quote, 'Closed1M ' + reason, is_manual=True)
         if not filled or symbol in engine.account.positions:
@@ -69,10 +72,21 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             log_entry_gate(engine, symbol, side, 'CLOSED_SIGNAL', reason, float(closed.iloc[-1].timestamp))
             continue
             
-        ok, reason, decision = evaluate_closed_entry(frame,side,after_close=had_close(engine.account,symbol))
-        log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',reason,float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
-        if ok:
-            candidates.append(decision)
+        if len(closed) >= 3:
+            bar_curr = closed.iloc[-1].to_dict()
+            bar_prev1 = closed.iloc[-2].to_dict()
+            bar_prev2 = closed.iloc[-3].to_dict()
+            decision = PureTrendStrategyV2().evaluate_entry(symbol, bar_curr, bar_prev1, bar_prev2)
+            if decision and decision['side'] == side:
+                decision['rule'] = decision['type']
+                decision['confirmation_bar_id'] = bar_curr['timestamp']
+                log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',decision['reason'],float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+                candidates.append(decision)
+            else:
+                log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',"WAIT_PURE_TREND_V2",float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+        else:
+            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',"NOT_ENOUGH_BARS",float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+
     if candidates:
         decision = min(candidates,key=lambda d:d['rule'])
         await engine._execute_confirmed_channel_break(symbol,frame,quote,decision['side'],

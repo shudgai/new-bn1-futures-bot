@@ -1,15 +1,16 @@
-import re
+with open("core/services/strategies/unified_entry_strategy.py", "r") as f:
+    lines = f.readlines()
 
-with open('core/services/strategies/unified_entry_strategy.py', 'r') as f:
-    content = f.read()
+new_lines = []
+skip = False
+for line in lines:
+    if "物理收盤校驗：非收盤 K 棒，0.1秒都不准偷跑" in line:
+        skip = True
+    if skip and "return wait" in line and "REJECT_UNCLOSED_BAR" in line:
+        skip = False
+        continue
+    if not skip:
+        new_lines.append(line)
 
-# Change signature
-content = content.replace(
-    'def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str]:',
-    'def check_streamlined_entry_signal(df, side: str, live_price: float, **kwargs) -> tuple[bool, str, dict]:'
-)
-
-# Update return values to return an empty dict by default if false
-content = re.sub(r'return False, (.*)', r'return False, \1, {}', content)
-
-# But wait, there are places with True. Let's find all returns.
+with open("core/services/strategies/unified_entry_strategy.py", "w") as f:
+    f.writelines(new_lines)

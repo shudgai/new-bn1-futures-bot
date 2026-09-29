@@ -1700,9 +1700,9 @@ class TradingEngine:
             return opened
 
     async def _place_structured_entry_locked(self, symbol, signal, live_price, channel_snapshot=None):
-        from core.services.strategies.unified_entry_strategy import RULE_CODES, evaluate_closed_entry, had_close
-        if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'
-                or signal.get('signal_code') not in RULE_CODES):
+        
+        if (symbol not in DEFAULT_SYMBOLS or signal.get('entry_mode') != 'CHANNEL_SWING'):
+
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
         side = signal.get('side')
