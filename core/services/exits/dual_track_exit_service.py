@@ -68,7 +68,8 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     if not position.get('has_broken_outer_band'):
         opened_ts = position.get('open_timestamp')
         if opened_ts:
-            trade_candles = closed[closed['timestamp'].astype(float) >= float(opened_ts) * 1000]
+            # Include the entry candle itself (-60000)
+            trade_candles = closed[closed['timestamp'].astype(float) >= float(opened_ts) * 1000 - 60000]
             if sign == 1 and (trade_candles['high'].astype(float) > trade_candles['kc_upper'].astype(float)).any():
                 position['has_broken_outer_band'] = True
             elif sign == -1 and (trade_candles['low'].astype(float) < trade_candles['kc_lower'].astype(float)).any():
@@ -93,30 +94,30 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             is_doji = c_body_len <= 0.25 * atr
             
             opened_ts = float(position.get('open_timestamp') or 0)
-            trade_candles = closed[closed['timestamp'].astype(float) >= opened_ts * 1000]
+            trade_candles = closed[closed['timestamp'].astype(float) >= opened_ts * 1000 - 60000]
             
             if sign == -1:  # 空單
                 long_lower_wick = (min(close, c_open) - c_low) > c_body_len * 2
                 is_engulfing = (close > c_open) and (c_body_len >= c1_body_len or (close - c_open) >= 1.0 * atr)
                 is_stalled = is_doji or long_lower_wick or is_engulfing
-                ma3_turned = ma3_curr > ma3_prev
+                ma3_turned_stalled = (ma3_curr > ma3_prev) and (close > c_open or long_lower_wick)
                 
                 min_low_overall = float(trade_candles['low'].min()) if not trade_candles.empty else c_low
                 not_new_low = (c_low > min_low_overall and float(c1.low) > min_low_overall)
                 
-                if is_stalled or ma3_turned or not_new_low:
+                if is_stalled or ma3_turned_stalled or not_new_low:
                     reason = 'EXIT_SHORT_OUTER_BAND_EXHAUSTION'
                     
             elif sign == 1:  # 多單
                 long_upper_wick = (c_high - max(close, c_open)) > c_body_len * 2
                 is_engulfing = (close < c_open) and (c_body_len >= c1_body_len or (c_open - close) >= 1.0 * atr)
                 is_stalled = is_doji or long_upper_wick or is_engulfing
-                ma3_turned = ma3_curr < ma3_prev
+                ma3_turned_stalled = (ma3_curr < ma3_prev) and (close < c_open or long_upper_wick)
                 
                 max_high_overall = float(trade_candles['high'].max()) if not trade_candles.empty else c_high
                 not_new_high = (c_high < max_high_overall and float(c1.high) < max_high_overall)
                 
-                if is_stalled or ma3_turned or not_new_high:
+                if is_stalled or ma3_turned_stalled or not_new_high:
                     reason = 'EXIT_LONG_OUTER_BAND_EXHAUSTION'
 
     if not reason:
