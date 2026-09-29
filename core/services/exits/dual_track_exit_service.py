@@ -83,14 +83,12 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             ma3_prev = float(c1.ma3)
             
             if sign == -1:  # 空單
-                # 條件 3：收盤價站回下軌之內 (close > kc_lower)
-                # 條件 4：MA3 拐頭向上 (ma3_curr > ma3_prev)
-                if close > float(c.kc_lower) and ma3_curr > ma3_prev:
+                # 條件 3：MA3 拐頭向上 (ma3_curr > ma3_prev)
+                if ma3_curr > ma3_prev:
                     reason = 'EXIT_SHORT_OUTER_BAND_MA3_TURN'
             elif sign == 1:  # 多單
-                # 條件 3：收盤價跌回上軌之內 (close < kc_upper)
-                # 條件 4：MA3 拐頭向下 (ma3_curr < ma3_prev)
-                if close < float(c.kc_upper) and ma3_curr < ma3_prev:
+                # 條件 3：MA3 拐頭向下 (ma3_curr < ma3_prev)
+                if ma3_curr < ma3_prev:
                     reason = 'EXIT_LONG_OUTER_BAND_MA3_TURN'
 
     if not reason:
