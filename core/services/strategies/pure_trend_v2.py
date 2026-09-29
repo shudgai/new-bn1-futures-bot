@@ -16,6 +16,41 @@ class PureTrendStrategyV2:
     def __init__(self):
         pass
 
+    def verify_profitable_expectation(self, side: str, entry_price: float, bar_curr: Dict[str, Any], atr: float) -> bool:
+        """Estimate net reward/risk; this does not change the actual exit policy."""
+        try:
+            entry_price, atr = float(entry_price), float(atr)
+            kc_upper = float(bar_curr['kc_upper'])
+            kc_lower = float(bar_curr['kc_lower'])
+            ma15 = float(bar_curr['ma15'])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            logger.info('🚫 [預估虧損攔截] 盈虧估算資料無效')
+            return False
+        if (side not in ('LONG', 'SHORT') or
+                not all(math.isfinite(v) and v > 0 for v in
+                        (entry_price, atr, kc_upper, kc_lower, ma15)) or
+                kc_lower >= kc_upper):
+            logger.info('🚫 [預估虧損攔截] 方向、價格、ATR 或通道資料無效')
+            return False
+        fee_and_slippage_cost = entry_price * 0.003
+        if side == 'LONG':
+            stop_price = max(kc_upper - 0.2 * atr, ma15)
+            distance = entry_price - stop_price
+        else:
+            stop_price = min(kc_lower + 0.2 * atr, ma15)
+            distance = stop_price - entry_price
+        risk = max(distance, fee_and_slippage_cost) + fee_and_slippage_cost
+        # Algebraically equal to target minus entry; avoids low-price cancellation.
+        reward = 1.5 * atr - fee_and_slippage_cost
+        if not all(math.isfinite(v) for v in (risk, reward)) or risk <= 0:
+            return False
+        ratio = reward / risk
+        if reward <= 0 or ratio < 1.2:
+            logger.info('🚫 [預估虧損攔截] %s 預期空間不足 (Reward=%.12g, Risk=%.12g, R:R=%.6f)，放棄開倉！',
+                        side, reward, risk, ratio)
+            return False
+        return True
+
     # =================================================================
     # 一、 開倉主入口（只在 1M 收線確定時評估）
     # =================================================================
@@ -55,6 +90,8 @@ class PureTrendStrategyV2:
         # 多單開倉判定 (LONG ENTRY)
         # -------------------------------------------------------------
         if c_close > kc_mid:  # 物理禁區：中軌上方才考慮開多
+            if not self.verify_profitable_expectation('LONG', c_close, bar_curr, bar_curr.get('atr')):
+                return None
             p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_kc_upper) and (p2_body >= 0.5 * p2_atr)
             p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_kc_upper)
 
@@ -87,6 +124,8 @@ class PureTrendStrategyV2:
         # 空單開倉判定 (SHORT ENTRY)
         # -------------------------------------------------------------
         if c_close < kc_mid:  # 物理禁區：中軌下方才考慮開空
+            if not self.verify_profitable_expectation('SHORT', c_close, bar_curr, bar_curr.get('atr')):
+                return None
             p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_kc_lower) and (p2_body >= 0.5 * p2_atr)
             p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_kc_lower)
 
@@ -266,6 +305,8 @@ class PureTrendStrategyV2:
         # 多單：前雙陽破上軌，第三根只要「穩在 KC 上軌外側」直接開多！
         # -------------------------------------------------------------
         if c_price > kc_mid:
+            if not self.verify_profitable_expectation('LONG', c_price, current_bar, bar_prev1.get('atr')):
+                return None
             p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_upper) and (p2_body >= 0.5 * p2_atr)
             p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_upper)
 
@@ -284,6 +325,8 @@ class PureTrendStrategyV2:
         # 空單：前雙陰破下軌，第三根只要「穩在 KC 下軌外側」直接開空！
         # -------------------------------------------------------------
         if c_price < kc_mid:
+            if not self.verify_profitable_expectation('SHORT', c_price, current_bar, bar_prev1.get('atr')):
+                return None
             p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_lower) and (p2_body >= 0.5 * p2_atr)
             p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_lower)
 
@@ -348,6 +391,8 @@ def evaluate_v2_frame(frame, price=None, code=None):
         return None
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
+        return None
+    if not strategy.verify_profitable_expectation(decision['side'], quote, row, atr):
         return None
     return dict(decision, type=code or decision['type'], entry_atr=atr,
                 confirmation_bar_id=float(row['timestamp'] if intrabar else closed.iloc[-1]['timestamp']),
