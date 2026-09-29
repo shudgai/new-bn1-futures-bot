@@ -15,12 +15,13 @@ from core.interfaces.entry_interface import IEntryStrategy
 from core.services.candle_data import closed_entry_candles
 from core.services.strategies.outer_strategy import ck_direction
 
+# 合法入場信號：只保留外軌起爆 (IGNITION) 與兩根破軌確認 (TREND_BREAKOUT)
 RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
     [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")] +
     [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
 )
+# TREND_CRAWLING 已永久停用，嚴禁恢復。
 
 def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
     kc_upper = indicators['kc_upper']
@@ -324,28 +325,8 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         elif (ma_aligned and is_outside and len(closed) >= 6
               and c_close > float(closed['high'].iloc[-6:-1].max())):
             rule = 'TREND_BREAKOUT'
-        else:
-            # 模式 B：慢牛沿軌推進 (TREND_CRAWLING)
-            # 1. 連續 3 根 ma3 > ma15 且 ma15 > kc_middle
-            resonance = (
-                float(c0.ma3) > float(c0.ma15) and float(c0.ma15) > float(c0.kc_middle) and
-                float(c1.ma3) > float(c1.ma15) and float(c1.ma15) > float(c1.kc_middle) and
-                float(c.ma3) > float(c.ma15) and float(c.ma15) > float(c.kc_middle)
-            )
-            # 2. ma15 斜率連續向上
-            ma15_rising = float(c.ma15) > float(c1.ma15) and float(c1.ma15) > float(c0.ma15)
-            # 3. 連續 2 根收盤價高於 KC 上軌
-            crawling_outside = float(c.close) > float(c.kc_upper) and float(c1.close) > float(c1.kc_upper)
-            
-            # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
-            fast_crawling = is_outside and at_least(body, 0.55 * atr) and float(c.ma3) > float(c.ma15)
-            
-            if (resonance and ma15_rising and crawling_outside) or fast_crawling:
-                rule = 'TREND_CRAWLING'
-            elif ma_aligned and is_outside and len(closed) >= 6:
-                recent_high = float(closed['high'].iloc[-6:-1].max())
-                if float(c.close) > recent_high:
-                    rule = 'TREND_BREAKOUT'
+        # TREND_CRAWLING 已永久停用
+
                 
     else:
         ma_aligned = float(c.ma3) < float(c.ma15)
@@ -359,34 +340,21 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         elif (ma_aligned and is_outside and len(closed) >= 6
               and c_close < float(closed['low'].iloc[-6:-1].min())):
             rule = 'TREND_BREAKOUT'
-        else:
-            # 模式 B：慢熊沿軌推進 (TREND_CRAWLING)
-            # 1. 連續 3 根 ma3 < ma15 且 ma15 < kc_middle
-            resonance = (
-                float(c0.ma3) < float(c0.ma15) and float(c0.ma15) < float(c0.kc_middle) and
-                float(c1.ma3) < float(c1.ma15) and float(c1.ma15) < float(c1.kc_middle) and
-                float(c.ma3) < float(c.ma15) and float(c.ma15) < float(c.kc_middle)
-            )
-            # 2. ma15 斜率連續向下
-            ma15_falling = float(c.ma15) < float(c1.ma15) and float(c1.ma15) < float(c0.ma15)
-            # 3. 連續 2 根收盤價低於 KC 下軌
-            crawling_outside = float(c.close) < float(c.kc_lower) and float(c1.close) < float(c1.kc_lower)
-            
-            # 加速啟動：當根在外軌，實體 >= 0.55 ATR 且均線發散
-            fast_crawling = is_outside and at_least(body, 0.55 * atr) and float(c.ma3) < float(c.ma15)
-            
-            if (resonance and ma15_falling and crawling_outside) or fast_crawling:
-                rule = 'TREND_CRAWLING'
-            elif ma_aligned and is_outside and len(closed) >= 6:
-                recent_low = float(closed['low'].iloc[-6:-1].min())
-                if float(c.close) < recent_low:
-                    rule = 'TREND_BREAKOUT'
+        # TREND_CRAWLING 已永久停用
+
             
     if sign * (c_close - c_open) <= 0:
         return wait('BLOCKED_OPPOSITE_CLOSED_BODY')
 
     if rule is None:
-        return wait('WAIT_NEW_A_TO_E_TRIGGER')
+        return wait('WAIT_NEW_IGNITION_OR_BREAKOUT_TRIGGER')
+
+    # ══════════════════════════════════════════════════════════
+    # 終極守門員：嚴禁 TREND_CRAWLING 或任何未授權策略出門
+    # 唯一合法入口：IGNITION（外軌起爆）與 TREND_BREAKOUT（兩根破軌確認）
+    # ══════════════════════════════════════════════════════════
+    if rule not in ('IGNITION', 'TREND_BREAKOUT'):
+        return wait(f'BLOCKED_ILLEGAL_RULE_{rule}_ONLY_IGNITION_BREAKOUT_ALLOWED')
 
     # IGNITION / TREND_BREAKOUT 信號保證動能，豁免滯後 MA3 斜率
     if rule not in ('IGNITION', 'TREND_BREAKOUT'):

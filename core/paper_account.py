@@ -500,11 +500,25 @@ class PaperAccount:
                 c_close = current_bar['close']
                 kc_upper = current_bar['kc_upper']
                 kc_lower = current_bar['kc_lower']
-                if "1000PEPE" in symbol or "PEPE" in symbol or "龙虾" in symbol:
-                    if side == "LONG" and c_close <= kc_upper:
-                        raise RuntimeError(f"🚨 [物理硬攔截生效] 違規開多！close({c_close}) <= kc_upper({kc_upper})，強制拒單！")
-                    if side == "SHORT" and c_close >= kc_lower:
-                        raise RuntimeError(f"🚨 [物理硬攔截生效] 違規開空！close({c_close}) >= kc_lower({kc_lower})，強制拒單！")
+                kc_middle = current_bar.get('kc_middle', (kc_upper + kc_lower) / 2)
+                # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
+                if side == 'LONG' and c_close <= kc_upper:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破上軌，強制拒單！close({c_close}) <= kc_upper({kc_upper}) 嚴禁場內開多！", 'CRITICAL')
+                    return False
+                if side == 'SHORT' and c_close >= kc_lower:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破下軌，強制拒單！close({c_close}) >= kc_lower({kc_lower}) 嚴禁場內開空！", 'CRITICAL')
+                    return False
+                if side == 'SHORT' and c_close >= kc_middle:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！close({c_close}) >= kc_middle({kc_middle})", 'CRITICAL')
+                    return False
+                if len(snapshot['candles']) >= 2:
+                    prev_bar = snapshot['candles'][-2]
+                    ck_up = (current_bar['kc_middle'] > prev_bar['kc_middle']
+                             and current_bar['kc_upper'] >= prev_bar['kc_upper'])
+                    if side == 'SHORT' and ck_up:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↑CK 向上趨勢，嚴禁逆勢開空！", 'CRITICAL')
+                        return False
+
 
         from core.services.entry_firewall import validate_account_entry
         entry_decision = await validate_account_entry(self, symbol, side, entry_context)
