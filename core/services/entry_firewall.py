@@ -40,11 +40,19 @@ class EntryFirewall:
         prev_ma15 = float(c1.ma15)
         
         if side == 'LONG':
+            if close <= float(c.open):
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_CANDLE_IS_RED: 嚴禁在紅 K 棒開多 (close {close} <= open {c.open})')
+            if close <= upper:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_CLOSE_BELOW_KC_UPPER: 收盤沒過上軌絕對不開多 (close {close} <= upper {upper})')
             if close <= middle:
                 raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_PRICE_BELOW_KC_MID: 多單收盤價 {close} 未高於中軌 {middle}')
             if middle < prev_middle or ma15 < prev_ma15:
                 raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_AGAINST_TREND: 嚴禁在空頭趨勢(中軌或MA15向下)時摸底做多')
         elif side == 'SHORT':
+            if close >= float(c.open):
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_CANDLE_IS_GREEN: 嚴禁在綠 K 棒開空 (close {close} >= open {c.open})')
+            if close >= lower:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_CLOSE_ABOVE_KC_LOWER: 收盤沒跌破下軌絕對不開空 (close {close} >= lower {lower})')
             if close >= middle:
                 raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_ABOVE_MIDLINE: 當根 K 棒收盤價 {close} 大於等於中軌 {middle}，強制阻斷！')
             if middle > prev_middle or ma15 > prev_ma15:
