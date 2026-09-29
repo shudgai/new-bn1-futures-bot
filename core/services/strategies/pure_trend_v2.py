@@ -152,7 +152,12 @@ class PureTrendStrategyV2:
     # =================================================================
     # 三、 收盤平倉三部曲（若盤中無極端熔斷，抱到收線；滿足任一標準也必須平倉！）
     # =================================================================
-    def evaluate_bar_closed_exit(self, position: Dict[str, Any], bar_curr: Dict[str, Any], bar_prev: Dict[str, Any]) -> Optional[str]:
+    def evaluate_bar_closed_exit(self, position: Dict[str, Any], closed: Any) -> Optional[str]:
+        if closed is None or len(closed) < 3:
+            return None
+
+        bar_curr = closed.iloc[-1].to_dict()
+        bar_prev = closed.iloc[-2].to_dict()
         side = position['side']
         unrealized_pnl = float(position.get('unrealized_pnl', 0.0))
 
@@ -166,7 +171,7 @@ class PureTrendStrategyV2:
         kc_upper = float(bar_curr['kc_upper'])
         kc_lower = float(bar_curr['kc_lower'])
         ma3 = float(bar_curr['ma3'])
-        prev_ma3 = float(bar_curr.get('prev_ma3', ma3))
+        prev_ma3 = float(bar_curr.get('prev_ma3', float(bar_prev.get('ma3', ma3))))
         ma15 = float(bar_curr['ma15'])
         atr = float(bar_curr.get('atr', 0.0001))
 
@@ -174,20 +179,39 @@ class PureTrendStrategyV2:
         upper_wick = c_high - max(c_open, c_close)
         lower_wick = min(c_open, c_close) - c_low
 
+        # 尋找最近的真實峰頂/谷底 (左右各一根確認)
+        def find_swing_low():
+            lows = closed['low'].values
+            for i in range(len(lows)-2, 0, -1):
+                if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
+                    return float(lows[i])
+            return None
+            
+        def find_swing_high():
+            highs = closed['high'].values
+            for i in range(len(highs)-2, 0, -1):
+                if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
+                    return float(highs[i])
+            return None
+
         # -------------------------------------------------------------
         # 多單常規平倉 (LONG EXIT)
         # -------------------------------------------------------------
         if side == 'LONG':
-            # 平倉 1：外軌 MA3 轉向 + 連續 2 根收紅陰線
+            recent_swing_low = find_swing_low()
+            # 如果找不到谷底，或是已經跌破谷底，才允許平倉
+            broke_swing_low = (recent_swing_low is None) or (c_close < recent_swing_low)
+
+            # 平倉 1：外軌 MA3 轉向 + 連續 2 根收紅陰線 + 跌破谷底
             if ma3 > kc_upper and ma3 < prev_ma3:
-                if p_close < p_open and c_close < c_open:
+                if p_close < p_open and c_close < c_open and broke_swing_low:
                     return 'EXIT_1_OUTSIDE_MA3_TURN_DOWN_2_RED'
 
-            # 平倉 2：MA3 回到通道內 + 收盤跌破 MA15 生命線
-            if ma3 <= kc_upper and c_close < ma15:
+            # 平倉 2：MA3 回到通道內 + 收盤跌破 MA15 生命線 + 跌破谷底
+            if ma3 <= kc_upper and c_close < ma15 and broke_swing_low:
                 return 'EXIT_2_INSIDE_BREAK_MA15'
 
-            # 平倉 3：脫離成本區後的實質賣壓（浮盈充足時，出現 >= 2.0 倍超長上影或實體大陰線吞沒）
+            # 平倉 3：脫離成本區後的實質賣壓
             if unrealized_pnl >= 2.0 or (c_close - kc_upper) >= 1.2 * atr:
                 if upper_wick >= 2.0 * curr_body:
                     return 'EXIT_3_EXTREME_PIN_BAR_SELL'
@@ -198,16 +222,20 @@ class PureTrendStrategyV2:
         # 空單常規平倉 (SHORT EXIT)
         # -------------------------------------------------------------
         if side == 'SHORT':
-            # 平倉 1：外軌 MA3 轉向 + 連續 2 根收綠陽線
+            recent_swing_high = find_swing_high()
+            # 如果找不到峰頂，或是已經突破峰頂，才允許平倉
+            broke_swing_high = (recent_swing_high is None) or (c_close > recent_swing_high)
+
+            # 平倉 1：外軌 MA3 轉向 + 連續 2 根收綠陽線 + 突破峰頂
             if ma3 < kc_lower and ma3 > prev_ma3:
-                if p_close > p_open and c_close > c_open:
+                if p_close > p_open and c_close > c_open and broke_swing_high:
                     return 'EXIT_1_OUTSIDE_MA3_TURN_UP_2_GREEN'
 
-            # 平倉 2：MA3 回到通道內 + 收盤突破 MA15 生命線
-            if ma3 >= kc_lower and c_close > ma15:
+            # 平倉 2：MA3 回到通道內 + 收盤突破 MA15 生命線 + 突破峰頂
+            if ma3 >= kc_lower and c_close > ma15 and broke_swing_high:
                 return 'EXIT_2_INSIDE_BREAK_MA15'
 
-            # 平倉 3：脫離成本區後的實質買盤承接（浮盈充足時，出現 >= 2.0 倍超長下影或實體大陽線反包）
+            # 平倉 3：脫離成本區後的實質買盤承接
             if unrealized_pnl >= 2.0 or (kc_lower - c_close) >= 1.2 * atr:
                 if lower_wick >= 2.0 * curr_body:
                     return 'EXIT_3_EXTREME_PIN_BAR_BUY'

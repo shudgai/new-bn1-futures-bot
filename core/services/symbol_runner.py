@@ -35,17 +35,15 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         
         # 2. 收盤平倉評估 (只在收線確定時)
         if exit_reason is None and len(closed) >= 2:
-            last_closed_bar = closed.iloc[-1].to_dict()
-            prev_closed_bar = closed.iloc[-2].to_dict()
             # We must pass the closed bars to evaluate
-            exit_reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, last_closed_bar, prev_closed_bar)
+            exit_reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, closed)
             
         if not exit_reason:
             return [], []
             
         old_side = position['side']
         # ── 全倉平倉 ─────────────────        # ── 全倉平倉（第三階段各種出場訊號）─────────────────
-        filled = await engine.account.close_position(symbol, quote, 'Closed1M ' + reason, is_manual=True)
+        filled = await engine.account.close_position(symbol, quote, 'Closed1M ' + exit_reason, is_manual=True)
         if not filled or symbol in engine.account.positions:
             return [], []  # pending state is persisted and retried
         engine.account.position_meta.pop(symbol, None)
