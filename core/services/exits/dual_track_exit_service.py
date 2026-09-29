@@ -63,6 +63,27 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
                     if close < min_prev_low_open and c_open >= float(prev_2['close'].max()):
                         reason = 'EXIT_LONG_ABNORMAL_BEAR_CLOSED'
 
+    # 狀態追蹤：記錄是否曾衝出外軌 (破軌加速段)
+    if not position.get('has_broken_outer_band'):
+        if sign == 1 and c_high > float(c.kc_upper):
+            position['has_broken_outer_band'] = True
+        elif sign == -1 and c_low < float(c.kc_lower):
+            position['has_broken_outer_band'] = True
+            
+    has_broken_outer = position.get('has_broken_outer_band', False)
+
+    # 外軌 MA3 動能耗盡平倉 (Outer Band Exhaustion Exit)
+    if not reason and has_broken_outer and len(closed) >= 2:
+        ma3_curr = float(c.ma3)
+        ma3_prev = float(c1.ma3)
+        
+        if sign == -1:  # 空單加速段出場
+            if close > float(c.kc_lower) and ma3_curr > ma3_prev:
+                reason = 'EXIT_SHORT_OUTER_BAND_MA3_TURN'
+        elif sign == 1:  # 多單加速段出場
+            if close < float(c.kc_upper) and ma3_curr < ma3_prev:
+                reason = 'EXIT_LONG_OUTER_BAND_MA3_TURN'
+
     # MA3 峰谷轉向出場 (Peak/Trough Reversal)
     # 用於強勢波段中，提早鎖定利潤，不需死等跌破/突破 KC 中軌
     if not reason and len(closed) >= 3:
@@ -142,4 +163,5 @@ class DualTrackExitStrategy(IExitStrategy):
 
     def handle_post_exit_cleanup(self, position, exit_reason):
         position.pop('closed_exit_state', None)
+        position.pop('has_broken_outer_band', None)
         position['cooldown_mode'] = 'NONE'
