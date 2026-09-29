@@ -1150,6 +1150,12 @@ class TradingEngine:
             quoted_at = float(quote_ms) / 1000 if quote_ms is not None else time.time()
             if not math.isfinite(quoted_at) or not 0 <= time.time() - quoted_at <= 5:
                 return
+            # Hard stops do not wait for candle fetches or the symbol scan lock.
+            if await enforce_hard_stop(self.account, symbol, price):
+                return
+            from core.services.exits.entry_atr_protection import enforce_atr_protection
+            if await enforce_atr_protection(self.account, symbol, price):
+                return
             locks = getattr(self, "_channel_symbol_locks", None)
             if locks is None:
                 locks = self._channel_symbol_locks = {}
@@ -1231,6 +1237,8 @@ class TradingEngine:
                             crash_up = pump_pct >= BTC_FLASH_CRASH_PUMP_PCT
                             if cooldown_ok and (crash_down or crash_up):
                                 self._btc_flash_crash_last_triggered_at = now
+                                if crash_down:
+                                    self._btc_swing_crash_until = now + MARKET_CRASH_ENTRY_COOLDOWN_SEC
                                 close_side = "LONG" if crash_down else "SHORT"
                                 side_label = "多" if close_side == "LONG" else "空"
                                 event_label = "急跌" if crash_down else "急拉"
@@ -1256,8 +1264,6 @@ class TradingEngine:
                                         sym, "全市場熔斷，取消等待開倉掛單",
                                     ))
                                 for sym in positions_to_close:
-                                    if str(self.account.positions.get(sym, {}).get("entry_mode", "")).upper() == "CHANNEL_SWING":
-                                        continue
                                     close_price = float(
                                         self.tickers.get(sym)
                                         or self.tickers.get(f"{sym}:USDT")

@@ -3,7 +3,7 @@ import math
 from core.interfaces.exit_interface import IExitStrategy
 from core.services.strategies.unified_entry_strategy import confirmed
 
-POLICY = 'closed_1m_ma15_structure_v1'
+POLICY = 'closed_1m_confirmed_swing_v2'
 SL_INIT_MULT = 1.5
 DUAL_TRACK_STATE_KEYS = [
     'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
@@ -14,105 +14,11 @@ DUAL_TRACK_STATE_KEYS = [
 
 
 def evaluate_trend_exit_and_take_profit(position, closed, atr):
-    """Three-tier exit: P1=instant engulf, P2=outer-band bleed, P3=MA15/KC-mid break."""
-    sign = 1 if position['side'] == 'LONG' else -1
-
-    c  = closed.iloc[-1]
-    c1 = closed.iloc[-2]
-
-    close  = float(c.close)
-    c_open = float(c.open)
-    c_high = float(c.high)
-    c_low  = float(c.low)
-    kc_mid      = float(c.kc_middle)
-    prev_kc_mid = float(c1.kc_middle)
-
-    # =======================================================
-    # 【多單 (LONG) 出場標準】高位賣壓
-    # =======================================================
-    if sign == 1:
-        unrealized_pnl = float(position.get('unrealized_pnl', 0.0))
-        entry_price = float(position.get('entry_price', 0.0))
-        roi = sign * (close - entry_price) / entry_price if entry_price > 0 else 0
-
-        # 一、 前提條件：必須「漲很高」（未達高位嚴禁觸發賣壓平倉）
-        is_high_level = (unrealized_pnl >= 2.5 or roi >= 0.012) and \
-                        ((close - float(c.kc_upper) >= 0.8 * atr) or (close - float(c.ma15) >= 1.5 * atr))
-
-        if is_high_level:
-            # 二、 觸發條件：高位出現「實質巨額賣壓」
-            # 1. 【高位巨長上影墓碑線】
-            upper_wick = c_high - max(c_open, close)
-            body = abs(close - c_open)
-            if upper_wick >= 1.5 * body and close < (c_high + c_low) / 2.0:
-                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_HIGH_PIN_BAR_PRESSURE')
-            
-            # 2. 【高位大陰線反包】
-            if close < c_open and body >= 0.8 * atr:
-                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_HIGH_BEARISH_ENGULFING')
-                
-            # 3. 【高位 MA3 拐頭向下 + 連續 2 根陰線】
-            if len(closed) >= 2:
-                ma3_curr = float(c.ma3)
-                ma3_prev = float(c1.ma3)
-                two_bear = (float(c.close) < float(c.open)) and (float(c1.close) < float(c1.open))
-                if ma3_curr < ma3_prev and two_bear:
-                    return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_HIGH_MA3_HOOK_DOWN')
-
-        # 2. 當根收盤【跌破 MA15】（生命線防守，無論高低位）
-        ma15 = float(c.get('ma15', c.get('ma3', close))) if hasattr(c, 'get') else float(getattr(c, 'ma15', getattr(c, 'ma3', close)))
-        if close < ma15:
-            return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_BELOW_MA15_LIFELINE')
-
-    # =======================================================
-    # 【空單 (SHORT) 出場標準】防範「買盤反撲」
-    # =======================================================
-    elif sign == -1:
-        # 0. 【外軌十字星 / 反向 K 棒即刻止盈】(第一防線)
-        if c_low < float(c.kc_lower):
-            candle_body = abs(close - c_open)
-            candle_len = c_high - c_low
-            lower_wick = min(close, c_open) - c_low
-            
-            # 必須是綠色陽線 或 下影線極長(>=2倍實體且佔全K棒50%以上)
-            is_green = (close > c_open)
-            is_extreme_lower_wick = (lower_wick >= 2.0 * candle_body) and (candle_len > 0 and lower_wick / candle_len >= 0.5)
-            is_valid_reverse = is_green or is_extreme_lower_wick
-            
-            if is_valid_reverse:
-                ma3_curr = float(c.ma3)
-                ma3_prev = float(c1.ma3)
-                ma3_up = (ma3_curr >= ma3_prev)
-                
-                if ma3_up:
-                    return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_EXHAUSTION_GREEN_DOJI')
-
-        # 1. 當根收盤出現【大實體陽線】（c_close > c_open 且 實體 >= 0.8 ATR）
-        if close > c_open and abs(close - c_open) >= 0.8 * atr:
-            ma3_curr = float(c.ma3)
-            ma3_prev = float(c1.ma3)
-            # 豁免：如果 MA3 依然陡峭向下，且價格仍在軌道外，不提前恐慌平倉
-            if (ma3_curr < ma3_prev) and (close < float(c.kc_lower)):
-                pass
-            else:
-                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_BUYING_PRESSURE_BIG_BULL')
-            
-        # 2. 當根收盤【漲破 MA15】（c_close > ma15）
-        ma15 = float(c.get('ma15', c.get('ma3', close))) if hasattr(c, 'get') else float(getattr(c, 'ma15', getattr(c, 'ma3', close)))
-        if close > ma15:
-            return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_ABOVE_MA15_LIFELINE')
-            
-        # 3. 外軌滯跌：MA3 轉平/上翹 且 連續 3 根陽線
-        if len(closed) >= 3:
-            ma3_curr = float(c.ma3)
-            ma3_prev = float(c1.ma3)
-            last3 = closed.iloc[-3:]
-            three_bull = all(float(r.close) > float(r.open) for _, r in last3.iterrows())
-            if ma3_curr >= ma3_prev and three_bull:
-                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_MA3_UP_3_BULL')
-
-    # 其餘情況一律抱緊讓利潤奔跑！
-    return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')
+    """Compatibility entry point for the single confirmed-swing policy."""
+    from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
+    reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, closed)
+    return dict(should_exit=bool(reason), action='FULL_CLOSE' if reason else 'HOLD',
+                reason=reason or 'TREND_RUNNING')
 
 
 
@@ -123,70 +29,32 @@ class DualTrackExitStrategy(IExitStrategy):
                         stop_loss=entry_price-sign*SL_INIT_MULT*atr, tp=0.)
 
     def evaluate_exit(self, position, frame=None, current_price=None, **kwargs):
+        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
         if position.get('side') not in ('LONG', 'SHORT'):
             return None
+        state = position.get('closed_exit_state') or {}
+        valid_reasons = {'EXIT_INITIAL_ATR_HARD_STOP', 'EXIT_SWING_LOW_BREAK_CLOSED',
+                         'EXIT_SWING_HIGH_BREAK_CLOSED', 'EMERGENCY_BTC_CRASH',
+                         'EMERGENCY_FLASH_CRASH_LONG', 'EMERGENCY_FLASH_SURGE_SHORT',
+                         'EMERGENCY_GIANT_REVERSE_CANDLE'}
+        if state.get('pending') and state.get('reason') in valid_reasons and (
+                state.get('policy') == POLICY or state.get('reason') == 'EXIT_INITIAL_ATR_HARD_STOP'):
+            return state['reason']
+        if state and state.get('policy') != POLICY:
+            position['closed_exit_state'] = dict(policy=POLICY, pending=False)
+        reason = None
         try:
-            entry = float(position['entry_price'])
-            opened = float(position.get('open_timestamp') or 0)*1000
-            if not math.isfinite(entry) or entry <= 0 or not math.isfinite(opened):
-                return None
-            closed = confirmed(frame)
-            atr = float(position.get('entry_atr') or
-                        (closed.iloc[-2].atr if closed is not None else 0.))
-            if not math.isfinite(atr) or atr <= 0:
-                return None
-            position['entry_atr'] = atr
             sign = 1 if position['side'] == 'LONG' else -1
-
-            state = position.get('closed_exit_state') or {}
-            if state.get('policy') == POLICY and state.get('reason') == 'EXIT_MA3_MA15_CROSS_CLOSED':
-                position['closed_exit_state'] = dict(policy=POLICY, pending=False)
-                state = position['closed_exit_state']
-            if state.get('policy') == POLICY and state.get('pending'):
-                return state['reason']
-
-            reason = None
-            stop_loss = float(position.get('stop_loss') or position.get('sl') or entry-sign*SL_INIT_MULT*atr)
-            
-            # Account quote updates must enforce protection
+            entry = float(position['entry_price'])
+            atr = float(position.get('entry_atr') or 0.)
+            stored_stop = position.get('stop_loss') or position.get('sl')
+            stop = float(stored_stop or (entry-sign*SL_INIT_MULT*atr if math.isfinite(atr) and atr > 0 else float('nan')))
             if current_price is not None:
                 quote = float(current_price)
-                if math.isfinite(quote) and quote > 0:
-                    if sign*(quote-stop_loss) <= 0:
-                        reason = 'EXIT_INITIAL_ATR_HARD_STOP'
-                    else:
-                        current_pnl_usdt = float(position.get('unrealized_pnl') or 0.0)
-                        peak_pnl = float(position.get('peak_pnl_usdt') or 0.0)
-                        if current_pnl_usdt > peak_pnl:
-                            position['peak_pnl_usdt'] = current_pnl_usdt
-                            peak_pnl = current_pnl_usdt
-                            
-                        entry_price = float(position['entry_price'])
-                        current_profit_diff = sign * (quote - entry_price)
-                        peak_profit_diff = float(position.get('peak_profit_diff') or 0.0)
-                        if current_profit_diff > peak_profit_diff:
-                            position['peak_profit_diff'] = current_profit_diff
-                            peak_profit_diff = current_profit_diff
-                            
-                        # 如果最高浮盈超過 10U 或是 1.0 ATR，強制啟用 20% 浮盈回撤保護 (保住80%)
-                        if peak_pnl >= 10.0 and current_pnl_usdt <= peak_pnl * 0.80:
-                            reason = 'INTRA_BAR_PEAK_DRAWDOWN_LOCK'
-                        elif peak_profit_diff >= 1.0 * atr and current_profit_diff <= peak_profit_diff * 0.80:
-                            reason = 'INTRA_BAR_PEAK_DRAWDOWN_LOCK'
-            
-            if reason is None and closed is not None:
-                c1, c = closed.iloc[-2], closed.iloc[-1]
-                if (float(c.timestamp)+60000 <= opened
-                        or float(c.timestamp) <= float(position.get('channel_confirmation_bar_id') or -1)):
-                    return None
-                
-                if sign*(float(c.close)-stop_loss) <= 0:
+                if all(math.isfinite(v) and v > 0 for v in (quote, stop)) and sign*(quote-stop) <= 0:
                     reason = 'EXIT_INITIAL_ATR_HARD_STOP'
-                else:
-                    # 「一股不賣」吃滿波段：關閉所有短線疲態與軌跡出場，只由 KC 中軌實體貫穿作為唯一出場依據
-                    result = evaluate_trend_exit_and_take_profit(position, closed, atr)
-                    reason = result['reason'] if result['should_exit'] else None
-                    
+            if reason is None and frame is not None:
+                reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, frame)
             if reason:
                 position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
             return reason

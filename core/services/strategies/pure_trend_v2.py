@@ -10,7 +10,7 @@ class PureTrendStrategyV2:
     1. 開倉：前兩根已收線同色站外，第三根不分顏色站外；反向實體不超過第二根50%。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
     3. 盤中熔斷：一股都不賣，但遭遇大瀑布、反向巨型異常K、BTC熔斷時，盤中0.1秒秒平！
-    4. 收盤平倉：若無極端熔斷，持倉抱到收線；若滿足「平倉1/平倉2/平倉3」任一標準，收盤立即平倉！
+    4. 常規平倉：只在1M收線嚴格突破最近已確認峰谷時全平；無峰谷續抱。
     5. 未觸發平倉前，嚴格抱牢波段，一股都不賣！
     """
     def __init__(self):
@@ -126,96 +126,35 @@ class PureTrendStrategyV2:
     # 三、 收盤平倉三部曲（若盤中無極端熔斷，抱到收線；滿足任一標準也必須平倉！）
     # =================================================================
     def evaluate_bar_closed_exit(self, position: Dict[str, Any], closed: Any) -> Optional[str]:
-        if closed is None or len(closed) < 3:
+        from core.services.candle_data import closed_entry_candles
+        if closed is None or 'is_closed' not in closed:
             return None
-
-        bar_curr = closed.iloc[-1].to_dict()
-        bar_prev = closed.iloc[-2].to_dict()
-        side = position['side']
-        unrealized_pnl = float(position.get('unrealized_pnl', 0.0))
-
-        c_open = float(bar_curr['open'])
-        c_close = float(bar_curr['close'])
-        c_high = float(bar_curr['high'])
-        c_low = float(bar_curr['low'])
-        p_open = float(bar_prev['open'])
-        p_close = float(bar_prev['close'])
-
-        kc_upper = float(bar_curr['kc_upper'])
-        kc_lower = float(bar_curr['kc_lower'])
-        ma3 = float(bar_curr['ma3'])
-        prev_ma3 = float(bar_curr.get('prev_ma3', float(bar_prev.get('ma3', ma3))))
-        ma15 = float(bar_curr['ma15'])
-        atr = float(bar_curr.get('atr', 0.0001))
-
-        curr_body = abs(c_close - c_open)
-        upper_wick = c_high - max(c_open, c_close)
-        lower_wick = min(c_open, c_close) - c_low
-
-        # 尋找最近的真實峰頂/谷底 (左右各一根確認)
-        def find_swing_low():
-            lows = closed['low'].values
-            for i in range(len(lows)-2, 0, -1):
-                if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
-                    return float(lows[i])
+        closed = closed_entry_candles(closed)
+        if len(closed) < 4 or position.get('side') not in ('LONG', 'SHORT'):
             return None
-            
-        def find_swing_high():
-            highs = closed['high'].values
-            for i in range(len(highs)-2, 0, -1):
-                if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
-                    return float(highs[i])
+        try:
+            rows = closed[['timestamp','high','low','close']].astype(float)
+            if not all(math.isfinite(v) and v > 0 for v in rows.to_numpy().flat):
+                return None
+            if not (rows.timestamp.diff().dropna() == 60000).all():
+                return None
+            if not ((rows.low <= rows.close) & (rows.close <= rows.high)).all():
+                return None
+            current = rows.iloc[-1]
+            opened = float(position.get('open_timestamp') or 0) * 1000
+            if not math.isfinite(opened) or current.timestamp < opened:
+                return None
+            # The pivot and its right-hand confirmation precede the break bar.
+            key = 'low' if position['side'] == 'LONG' else 'high'
+            values = rows[key].tolist()
+            for i in range(len(values)-3, 0, -1):
+                pivot = values[i]
+                found = (pivot < values[i-1] and pivot < values[i+1]) if key == 'low' else (pivot > values[i-1] and pivot > values[i+1])
+                if found:
+                    broken = current.close < pivot if key == 'low' else current.close > pivot
+                    return ('EXIT_SWING_LOW_BREAK_CLOSED' if key == 'low' else 'EXIT_SWING_HIGH_BREAK_CLOSED') if broken else None
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
-
-        # -------------------------------------------------------------
-        # 多單常規平倉 (LONG EXIT)
-        # -------------------------------------------------------------
-        if side == 'LONG':
-            recent_swing_low = find_swing_low()
-            # 如果找不到谷底，或是已經跌破谷底，才允許平倉
-            broke_swing_low = (recent_swing_low is None) or (c_close < recent_swing_low)
-
-            # 平倉 1：外軌 MA3 轉向 + 連續 2 根收紅陰線 + 跌破谷底
-            if ma3 > kc_upper and ma3 < prev_ma3:
-                if p_close < p_open and c_close < c_open and broke_swing_low:
-                    return 'EXIT_1_OUTSIDE_MA3_TURN_DOWN_2_RED'
-
-            # 平倉 2：MA3 回到通道內 + 收盤跌破 MA15 生命線 + 跌破谷底
-            if ma3 <= kc_upper and c_close < ma15 and broke_swing_low:
-                return 'EXIT_2_INSIDE_BREAK_MA15'
-
-            # 平倉 3：脫離成本區後的實質賣壓
-            if unrealized_pnl >= 2.0 or (c_close - kc_upper) >= 1.2 * atr:
-                if upper_wick >= 2.0 * curr_body:
-                    return 'EXIT_3_EXTREME_PIN_BAR_SELL'
-                if c_close < c_open and curr_body >= 0.8 * atr:
-                    return 'EXIT_3_ENGULFING_BEAR_SELL'
-
-        # -------------------------------------------------------------
-        # 空單常規平倉 (SHORT EXIT)
-        # -------------------------------------------------------------
-        if side == 'SHORT':
-            recent_swing_high = find_swing_high()
-            # 如果找不到峰頂，或是已經突破峰頂，才允許平倉
-            broke_swing_high = (recent_swing_high is None) or (c_close > recent_swing_high)
-
-            # 平倉 1：外軌 MA3 轉向 + 連續 2 根收綠陽線 + 突破峰頂
-            if ma3 < kc_lower and ma3 > prev_ma3:
-                if p_close > p_open and c_close > c_open and broke_swing_high:
-                    return 'EXIT_1_OUTSIDE_MA3_TURN_UP_2_GREEN'
-
-            # 平倉 2：MA3 回到通道內 + 收盤突破 MA15 生命線 + 突破峰頂
-            if ma3 >= kc_lower and c_close > ma15 and broke_swing_high:
-                return 'EXIT_2_INSIDE_BREAK_MA15'
-
-            # 平倉 3：脫離成本區後的實質買盤承接
-            if unrealized_pnl >= 2.0 or (kc_lower - c_close) >= 1.2 * atr:
-                if lower_wick >= 2.0 * curr_body:
-                    return 'EXIT_3_EXTREME_PIN_BAR_BUY'
-                if c_close > c_open and curr_body >= 0.8 * atr:
-                    return 'EXIT_3_ENGULFING_BULL_BUY'
-
-        # 若未命中三種平倉：【繼續一股都不賣，嚴格抱單讓利潤奔跑】！
         return None
 
     def evaluate_third_bar_open_entry(self, symbol: str, current_bar: Dict[str, Any], bar_prev1: Dict[str, Any], bar_prev2: Dict[str, Any]) -> Optional[Dict[str, Any]]:

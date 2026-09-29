@@ -29,15 +29,27 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
     if position:
         engine._take_over_manual_position(symbol,position)
         
-        # 1. 盤中極端熔斷評估 (每一秒都驗證)
-        btc_status = {"is_crashing": btc_1m_turn == "SHORT"} # simplified mapping
-        exit_reason = PureTrendStrategyV2().check_intra_bar_emergency_exit(position, quote, frame.iloc[-1].to_dict(), btc_status)
-        
-        # 2. 收盤平倉評估 (只在收線確定時)
-        if exit_reason is None and len(closed) >= 2:
-            # We must pass the closed bars to evaluate
-            exit_reason = PureTrendStrategyV2().evaluate_bar_closed_exit(position, closed)
-            
+        from core.services.exits.hard_stop_service import enforce_hard_stop
+        from core.services.exits.dual_track_exit_service import DualTrackExitStrategy, POLICY
+        if await enforce_hard_stop(engine.account, symbol, quote):
+            return [], []
+        # Shared adapter enforces hard stops and retries valid persisted exits.
+        adapter = DualTrackExitStrategy()
+        exit_reason = adapter.evaluate_exit(position, current_price=quote)
+        if exit_reason is None:
+            snapshot = frame.iloc[-1].to_dict()
+            snapshot['atr'] = float(closed.iloc[-1]['atr'])
+            btc_status = {'is_crashing': now_time < getattr(engine, '_btc_swing_crash_until', 0.)}
+            exit_reason = PureTrendStrategyV2().check_intra_bar_emergency_exit(position, quote, snapshot, btc_status)
+        if exit_reason is None:
+            exit_reason = adapter.evaluate_exit(position, closed, current_price=quote)
+        if exit_reason:
+            position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=exit_reason)
+        state = position.get('closed_exit_state')
+        if state is not None and engine.account.position_meta.setdefault(symbol, {}).get('closed_exit_state') != state:
+            engine.account.position_meta[symbol]['closed_exit_state'] = copy.deepcopy(state)
+            engine.account.save_state()
+
         if not exit_reason:
             return [], []
             
