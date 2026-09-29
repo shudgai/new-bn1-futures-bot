@@ -1846,6 +1846,7 @@ class TradingEngine:
                 return False
             
             from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+            # Revalidate the live entry contract, without expected-profit or reward/risk vetoes.
             if evaluate_v2_frame(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol) is None:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_V2_QUOTE_CHANGED', bar)
                 return False

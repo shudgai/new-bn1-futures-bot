@@ -39,7 +39,7 @@ def test_exact_two_bar_cooldown_for_all_entries(side,bars,allowed,standard):
         assert asyncio.run(validate_account_entry(a,SYMBOL,side,ctx))['type']==d['type']
 
 
-@pytest.mark.parametrize('fault',['no_fill','failed_close','other_symbol','consumed','inside','ma','retreat','pnl'])
+@pytest.mark.parametrize('fault',['no_fill','failed_close','other_symbol','consumed','inside','ma','retreat'])
 def test_continuation_denials(fault):
     f,a=setup()
     if fault=='no_fill':a.trades=[]
@@ -49,7 +49,6 @@ def test_continuation_denials(fault):
     if fault=='inside':f.loc[f.index[-1],'close']=101.
     if fault=='ma':f.loc[f.index[-1],'ma3']=99.
     if fault=='retreat':f.loc[f.index[-1],'close']=101.7
-    if fault=='pnl':f['atr']=.01
     assert evaluate_v2_frame(f,account=a,symbol=SYMBOL) is None
 
 

@@ -15,7 +15,6 @@ class PureTrendStrategyV2:
     """
     def __init__(self):
         self.cooldown_tracker = {}
-        self.pnl_rejection = None
 
     def record_exit(self, symbol: str, side: str, current_bar_index: int):
         self.cooldown_tracker[symbol] = dict(exit_bar_index=int(current_bar_index), side=side)
@@ -65,52 +64,9 @@ class PureTrendStrategyV2:
         return dict(side=side, type='SECOND_BAR_OUTSIDE_' + side, price=price,
                     reason='第1根已收線同向實體站外，第2根盤中站外且均線同向即開倉')
 
-    def verify_profitable_expectation(self, side: str, entry_price: float, bar_curr: Dict[str, Any], atr: float) -> bool:
-        """Estimate net reward/risk; this does not change the actual exit policy."""
-        self.pnl_rejection = None
-        try:
-            entry_price, atr = float(entry_price), float(atr)
-            kc_upper = float(bar_curr['kc_upper'])
-            kc_lower = float(bar_curr['kc_lower'])
-            ma15 = float(bar_curr['ma15'])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            logger.info('🚫 [預估虧損攔截] 盈虧估算資料無效')
-            return False
-        if (side not in ('LONG', 'SHORT') or
-                not all(math.isfinite(v) and v > 0 for v in
-                        (entry_price, atr, kc_upper, kc_lower, ma15)) or
-                kc_lower >= kc_upper):
-            logger.info('🚫 [預估虧損攔截] 方向、價格、ATR 或通道資料無效')
-            return False
-        fee_and_slippage_cost = entry_price * 0.003
-        if side == 'LONG':
-            stop_price = max(kc_upper - 0.2 * atr, ma15)
-            distance = entry_price - stop_price
-        else:
-            stop_price = min(kc_lower + 0.2 * atr, ma15)
-            distance = stop_price - entry_price
-        risk = max(distance, fee_and_slippage_cost) + fee_and_slippage_cost
-        # Algebraically equal to target minus entry; avoids low-price cancellation.
-        reward = 1.5 * atr - fee_and_slippage_cost
-        if not all(math.isfinite(v) for v in (risk, reward)) or risk <= 0:
-            return False
-        ratio = reward / risk
-        if reward <= 0 or ratio < 1.2:
-            self.pnl_rejection = dict(reason='BLOCKED_EXPECTED_NET_REWARD' if reward <= 0 else 'BLOCKED_REWARD_RISK',
-                                      side=side, reward=reward, risk=risk, reward_risk=ratio,
-                                      cost=fee_and_slippage_cost, atr=atr, price=entry_price)
-            logger.info('🚫 [預估虧損攔截] %s 預期空間不足 (Reward=%.12g, Risk=%.12g, R:R=%.6f)，放棄開倉！',
-                        side, reward, risk, ratio)
-            return False
-        return True
-
     def evaluate_entry(self, symbol, bar_curr, bar_prev1, bar_prev2=None):
         """Compatibility entry point; all callers use the second-bar rule."""
-        decision = self.evaluate_second_bar_outside_entry(symbol, bar_curr, bar_prev1)
-        if decision and self.verify_profitable_expectation(
-                decision['side'], decision['price'], bar_curr, bar_prev1.get('atr')):
-            return decision
-        return None
+        return self.evaluate_second_bar_outside_entry(symbol, bar_curr, bar_prev1)
 
     # =================================================================
     # 二、 盤中即時極端熔斷（每一秒檢查，不看收盤，立刻秒平逃命）
@@ -207,7 +163,7 @@ def successful_exit_ticket(account, symbol):
     return dict(exit_bar_index=int(stamp // 60000), side=latest['action'][6:])
 
 
-def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', diagnostics=None):
+def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
     """Recompute V2 at every boundary; return a complete execution contract."""
     from core.services.strategies.unified_entry_strategy import confirmed
     closed = confirmed(frame)
@@ -247,10 +203,6 @@ def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol='', 
         return None
     atr = float(closed.iloc[-1]['atr'])
     if not math.isfinite(atr) or atr <= 0:
-        return None
-    if not strategy.verify_profitable_expectation(decision['side'], quote, row, atr):
-        if diagnostics is not None and strategy.pnl_rejection:
-            diagnostics.update(strategy.pnl_rejection)
         return None
     return dict(decision, type=code or decision['type'], price=quote, entry_atr=atr,
                 confirmation_bar_id=stamp, breakout_bar_id=float(previous['timestamp']),

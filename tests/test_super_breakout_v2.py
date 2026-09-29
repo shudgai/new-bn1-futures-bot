@@ -26,15 +26,17 @@ def test_second_close_super_and_account_boundary(side):
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
-@pytest.mark.parametrize('fault',['not_large','unclosed','inside','cooldown','cost'])
+@pytest.mark.parametrize('fault',['not_large','unclosed','inside','cooldown'])
 def test_super_does_not_bypass_required_gates(side,fault):
     f=super_frame(side);a=SimpleNamespace(trades=[])
     if fault=='not_large':f.loc[f.index[-2],'atr']=1.
     if fault=='unclosed':f.loc[f.index[-1],'is_closed']=False
     if fault=='inside':f.loc[f.index[-1],'close']=100.
     if fault=='cooldown':a.trades=[dict(symbol='TEST',action='CLOSE_'+side,id=float(f.iloc[-1].timestamp))]
-    if fault=='cost':f.loc[f.index[-1],'atr']=.01
-    assert evaluate_v2_frame(f,account=a,symbol='TEST') is None
+    assert evaluate_v2_frame(f, code='SUPER_BREAKOUT_' + side, account=a, symbol='TEST') is None
+    if fault == 'unclosed':
+        # The old code stays disabled, but this is a valid live second-bar setup.
+        assert evaluate_v2_frame(f, account=a, symbol='TEST')['type'] == 'SECOND_BAR_OUTSIDE_' + side
 
 
 @pytest.mark.parametrize('side',['LONG','SHORT'])
@@ -46,16 +48,15 @@ def test_body_crosses_both_bands_without_two_atr(side):
     assert evaluate_v2_frame(f) is None
 
 
-def test_pepe_logged_cost_exceeds_target_and_is_exposed():
+def test_pepe_small_atr_no_longer_blocks_entry():
     f=second_frame('LONG')
     # Scale prices to PEPE magnitude; explicitly set logged ATR.
     for col in ('open','close','high','low','kc_upper','kc_lower','kc_middle','ma3','ma15','atr'):
         f[col]*=.000042
     f.loc[f.index[-2],'atr']=.00000446
-    info={}
-    assert evaluate_v2_frame(f,diagnostics=info) is None
-    assert info['reason']=='BLOCKED_EXPECTED_NET_REWARD'
-    assert info['reward']<0 and info['cost']>1.5*info['atr']
+    decision = evaluate_v2_frame(f)
+    assert decision['type'] == 'SECOND_BAR_OUTSIDE_LONG'
+    assert decision['entry_atr'] == .00000446
 
 
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
@@ -79,12 +80,8 @@ def test_super_returns_revalidated_quote_without_changing_closed_price(side):
     assert float(f.iloc[-1]['close']) == closed_price
 
 
-def test_pnl_rejection_does_not_survive_a_later_successful_check():
-    from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
-
-    strategy = PureTrendStrategyV2()
-    row = super_frame('LONG').iloc[-1].to_dict()
-    assert not strategy.verify_profitable_expectation('LONG', row['close'], row, .01)
-    assert strategy.pnl_rejection
-    assert strategy.verify_profitable_expectation('LONG', row['close'], row, 1.)
-    assert strategy.pnl_rejection is None
+def test_quote_recovery_has_no_stale_profit_rejection():
+    f = second_frame('LONG')
+    f.loc[f.index[-2], 'atr'] = .01
+    assert evaluate_v2_frame(f, 100.) is None
+    assert evaluate_v2_frame(f, float(f.iloc[-1].close))['type'] == 'SECOND_BAR_OUTSIDE_LONG'

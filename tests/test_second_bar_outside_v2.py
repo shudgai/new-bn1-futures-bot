@@ -50,7 +50,7 @@ def test_adverse_body_fifty_percent_boundary(side, fraction, allowed):
 @pytest.mark.parametrize('side', ['LONG', 'SHORT'])
 @pytest.mark.parametrize('fault', ['first_live', 'first_doji', 'first_opposite', 'wick_only',
     'first_touch', 'second_touch', 'inside', 'ma_equal', 'ma_opposite', 'ma_nan',
-    'closed_second', 'gap', 'duplicate', 'invalid_flag', 'invalid_channel', 'cost'])
+    'closed_second', 'gap', 'duplicate', 'invalid_flag', 'invalid_channel', 'invalid_atr'])
 def test_invalid_confirmation_and_live_conditions(side, fault):
     f = second_frame(side)
     edge = 'kc_upper' if side == 'LONG' else 'kc_lower'
@@ -71,7 +71,7 @@ def test_invalid_confirmation_and_live_conditions(side, fault):
         f['is_closed'] = f['is_closed'].astype(object)
         f.loc[f.index[-1], 'is_closed'] = 'false'
     if fault == 'invalid_channel': f.loc[f.index[-1], 'kc_lower'] = 102.
-    if fault == 'cost': f.loc[f.index[-2], 'atr'] = .01
+    if fault == 'invalid_atr': f.loc[f.index[-2], 'atr'] = 0.
     assert evaluate_v2_frame(f) is None
 
 
@@ -227,3 +227,27 @@ def test_boundary_updates_quote_before_computing_indicators(monkeypatch):
     result = asyncio.run(engine._entry_boundary_frame(SYMBOL))
     assert result.iloc[-1].ma3 == pytest.approx(f['close'].iloc[-3:-1].sum() / 3 + 102.5 / 3)
     assert f.equals(saved)
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+@pytest.mark.parametrize('atr', [.01, 1., 10.])
+def test_entry_and_paper_submit_ignore_profit_estimates(monkeypatch, side, atr):
+    engine, _ = engine_fixture(monkeypatch)
+    f = second_frame(side)
+    f.loc[f.index[-2], 'atr'] = atr
+    engine.fetch_klines = AsyncMock(return_value=f)
+    engine.tickers[SYMBOL] = float(f.iloc[-1].close)
+    decision = evaluate_v2_frame(f)
+    assert decision['type'] == 'SECOND_BAR_OUTSIDE_' + side
+    assert decision['entry_atr'] == atr
+    assert asyncio.run(engine._execute_confirmed_channel_break(
+        SYMBOL, f, float(f.iloc[-1].close), side))
+    assert engine.account.positions[SYMBOL]['side'] == side
+    assert len(engine.account.trades) == 1
+
+
+@pytest.mark.parametrize('side', ['LONG', 'SHORT'])
+def test_large_favorable_quote_not_blocked_by_old_reward_risk(side):
+    f = second_frame(side)
+    quote = 103. if side == 'LONG' else 97.
+    assert evaluate_v2_frame(f, quote)['price'] == quote
