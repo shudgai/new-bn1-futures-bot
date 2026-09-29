@@ -1614,16 +1614,42 @@ class TradingEngine:
 
 
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
-        from core.services.strategies.unified_entry_strategy import evaluate_closed_entry, had_close
+        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
+        from core.services.strategies.unified_entry_strategy import confirmed
+        
         # 若指定了 candidate_bar_id，需先 keep_live=True 獲取最新 K 棒，避免因幣安 API 延遲導致確認 K 棒被誤當作 live 而剔除
         frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
         if frame is None or frame.empty:
             return None
         frame = self.strategy.compute_indicators(frame.copy())
         
-        ok, _, decision = evaluate_closed_entry(frame, side, after_close=had_close(self.account, symbol))
-        if not ok:
+        closed = confirmed(frame)
+        if closed is None or len(closed) < 3:
             return None
+            
+        decision = None
+        # 1. 盤中即時判定
+        if not frame.iloc[-1].get('is_closed', False):
+            intra_curr = frame.iloc[-1].to_dict()
+            intra_curr['close'] = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+            intra_prev1 = closed.iloc[-1].to_dict()
+            intra_prev2 = closed.iloc[-2].to_dict()
+            decision = PureTrendStrategyV2().evaluate_third_bar_open_entry(symbol, intra_curr, intra_prev1, intra_prev2)
+            
+        # 2. 如果盤中沒有觸發，則檢查最新收盤的 K 棒
+        if not decision:
+            bar_curr = closed.iloc[-1].to_dict()
+            bar_prev1 = closed.iloc[-2].to_dict()
+            bar_prev2 = closed.iloc[-3].to_dict()
+            decision = PureTrendStrategyV2().evaluate_entry(symbol, bar_curr, bar_prev1, bar_prev2)
+            
+        if not decision or decision['side'] != side:
+            return None
+            
+        confirmation_bar_id = frame.iloc[-1].to_dict()['timestamp'] if 'INTRA' in decision['type'] or 'RIDING' in decision['type'] else closed.iloc[-1].to_dict()['timestamp']
+        decision['confirmation_bar_id'] = confirmation_bar_id
+        decision['reason'] = decision['reason']
+        
         if candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id:
             return None
 
