@@ -19,8 +19,7 @@ RULE_CODES = frozenset(
     [f"CLOSED_{rule}_{side}" for rule in "ABCDEF" for side in ("LONG", "SHORT")] +
     [f"CLOSED_IGNITION_{side}" for side in ("LONG", "SHORT")] +
     [f"CLOSED_TREND_CRAWLING_{side}" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")] +
-    [f"CLOSED_PEAK_TROUGH_CROSS_{side}" for side in ("LONG", "SHORT")]
+    [f"CLOSED_TREND_BREAKOUT_{side}" for side in ("LONG", "SHORT")]
 )
 
 def validate_channel_expansion(indicators: dict, side: str, rule: str, bypass_low_vol: bool = False) -> tuple[bool, str]:
@@ -267,9 +266,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         if not (kc_mid_falling and ma15_falling and close_below_mid and bearish_aligned):
             return wait('BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE')
 
-    early = peak_trough_cross(closed, side)
-    if early is not None:
-        return True, early['reason'], early
+    # Peak trough cross is completely removed
 
     c0, c1, c = (closed.iloc[i] for i in (-3, -2, -1))
     sign = 1 if side == 'LONG' else -1

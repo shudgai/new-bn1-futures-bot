@@ -1823,6 +1823,10 @@ class TradingEngine:
                 if c_close >= c_lower:
                     log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！當前收盤價 {c_close} >= KC下軌 {c_lower}，直接攔截不送單！', bar)
                     return False
+                c_mid = float(snapshot['kc_middle'])
+                if c_close >= c_mid:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 違規開空！價格 {c_close} 位於 KC中軌 {c_mid} 上方，嚴禁開空！', bar)
+                    return False
             # 物理校驗四：嚴禁在阻力線前追多 (距離前高阻力 <= 0.25%) 以及強制雙同色實體校驗
             try:
                 from core.services.candle_data import closed_entry_candles
@@ -1847,6 +1851,11 @@ class TradingEngine:
                     elif side == 'SHORT':
                         if c_body >= 0 or c1_body >= 0:
                             log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！最近兩根K棒非雙紅實體 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
+                            return False
+                        
+                        ck_up = float(c.kc_middle) > float(c1.kc_middle) and float(c.kc_upper) >= float(c1.kc_upper)
+                        if ck_up:
+                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 當前大週期 ↑CK 向上，嚴禁逆勢開空！信號強制丟棄！', bar)
                             return False
             except Exception as e:
                 pass
