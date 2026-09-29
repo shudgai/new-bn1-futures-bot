@@ -460,7 +460,7 @@ VOLUME_RECOVERY_THRESHOLD = float(os.getenv("VOLUME_RECOVERY_THRESHOLD", "1.2"))
 # --- 三階段階梯移動停利 / 移動保本配置 ---
 # ENABLE_TRAILING_STOP: 是否開啟三階段移動停利機制
 # 關閉整體移動停利/移動止損機制，僅保留手動平倉行為
-ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "false").lower() == "true" # 2026-09-08 User turned off trailing stop
+ENABLE_TRAILING_STOP = False
 # 觸發門檻改用每筆進場 ATR：2.0 ATR 保本、3.5 ATR 轉 runner 並鎖住
 # 1.5 ATR、5 ATR 啟動追蹤。避免正常回踩過早補保本掃掉剛起跑的部位。
 TRAILING_TIER1_TRIGGER_ATR_MULT = float(os.getenv("TRAILING_TIER1_TRIGGER_ATR_MULT", "1.0"))
@@ -471,7 +471,7 @@ TRAILING_TIER2_LOCK_ATR_MULT = float(os.getenv("TRAILING_TIER2_LOCK_ATR_MULT", "
 TRAILING_BREAK_EVEN_EXTRA_PCT = float(os.getenv("TRAILING_BREAK_EVEN_EXTRA_PCT", "0.0001"))
 TRAILING_TIER3_CALLBACK_RATIO = float(os.getenv("TRAILING_TIER3_CALLBACK_RATIO", "0.30"))
 
-USE_NATIVE_TRAILING_STOP = os.getenv("USE_NATIVE_TRAILING_STOP", "false").lower() == "true"
+USE_NATIVE_TRAILING_STOP = False
 # CallbackRate 動態計算：callbackRate = atr_pct * 100 * NATIVE_TRAILING_ATR_RATE_FACTOR
 # 例：ATR% = 1.0% → callbackRate = 1.0 * 100 * 0.015 * 10 ≈ 1.5%
 # 實際公式：max(MIN, min(MAX, round(atr_pct * 100 * FACTOR, 1)))
@@ -497,9 +497,7 @@ NATIVE_TRAILING_TIER3_CALLBACK_MAX = float(os.getenv("NATIVE_TRAILING_TIER3_CALL
 PROFIT_ALERT_GIVEBACK_RATIO = float(os.getenv("PROFIT_ALERT_GIVEBACK_RATIO", "0.2"))
 # 峰值回吐原本會直接平倉，會和正式 trailing 競爭並截短贏單；預設只保留
 # trailing。需要做舊策略對照時才顯式開啟。
-ENABLE_PROFIT_GIVEBACK_EXIT = os.getenv(
-    "ENABLE_PROFIT_GIVEBACK_EXIT", "false"
-).lower() == "true"
+ENABLE_PROFIT_GIVEBACK_EXIT = False
 # 小於0.5%的歷史峰值不啟動「回吐後反彈平倉」，避免剛蓋過手續費就把
 # 部位關掉；平倉當下另要求至少保留0.10%無槓桿淨空間。
 PROFIT_ALERT_MIN_PEAK_PCT = float(os.getenv("PROFIT_ALERT_MIN_PEAK_PCT", "0.005"))
@@ -895,7 +893,7 @@ CLOSE_SLIPPAGE_WARN_PCT = float(os.getenv("CLOSE_SLIPPAGE_WARN_PCT", "0.0005"))
 
 # 階梯式移動停利：峰值達 0.35% 後，至少鎖住 0.25% 價格利潤；
 # 峰值繼續擴大時保留至少 70%，保護線只往有利方向移動。
-ENABLE_PROFIT_BANK = os.getenv("ENABLE_PROFIT_BANK", "false").lower() == "true"
+ENABLE_PROFIT_BANK = False
 PROFIT_BANK_TRIGGER_PCT = max(
     float(os.getenv("PROFIT_BANK_TRIGGER_PCT", "0.0035")),
     NET_PROFIT_GUARANTEE_BUFFER + SLIPPAGE_PCT,
@@ -942,7 +940,7 @@ PROFIT_BANK_LOCK_PCT = min(
 # 與百分比制 PROFIT_BANK 並存，兩套都啟用時各自獨立計算，止損取
 # 「更有利」的那個值（只往有利方向移動，永不放寬）。
 # ---------------------------------------------------------------------------
-ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "false").lower() == "true"
+ENABLE_PROFIT_LOCK_USDT = False
 PROFIT_LOCK_FEE_MULTIPLIER = max(0.0, float(os.getenv("PROFIT_LOCK_FEE_MULTIPLIER", "2.0")))
 PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "1.0")))
 PROFIT_LOCK_TREND_LADDER_STEP_USDT = max(
