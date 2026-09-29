@@ -1811,33 +1811,47 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT] SIGNAL_OVERRIDE_BUG: side=SHORT but reason={final["reason"]}', bar)
                 return False
 
-            c_close = final['close_price']
-            c_upper = float(snapshot['kc_upper'])
-            c_lower = float(snapshot['kc_lower'])
-            
-            # 嚴格依照畫面標準物理熔斷
-            diff_pct_long = (c_upper - price) / c_upper * 100
-            diff_pct_short = (price - c_lower) / c_lower * 100
-            
-            if side == 'LONG':
-                if price <= c_upper:
-                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開多！Price: {price}, KC_Upper: {c_upper}, 還差: +{diff_pct_long:.2f}%', bar)
-                    return False
-            elif side == 'SHORT':
-                if price >= c_lower:
-                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開空！Price: {price}, KC_Lower: {c_lower}, 還差: +{diff_pct_short:.2f}%', bar)
-                    return False
-                c_mid = float(snapshot['kc_middle'])
-                if price >= c_mid:
-                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 違規開空！價格 {price} 位於 KC中軌 {c_mid} 上方，嚴禁開空！', bar)
-                    return False
-            # 物理校驗四：嚴禁在阻力線前追多 (距離前高阻力 <= 0.25%) 以及強制雙同色實體校驗
             try:
                 from core.services.candle_data import closed_entry_candles
                 df_1m = closed_entry_candles(self.symbol_data[symbol]['1m'])
-                if df_1m is not None and len(df_1m) >= 2:
-                    c = df_1m.iloc[-1]
-                    c1 = df_1m.iloc[-2]
+                if df_1m is None or len(df_1m) < 2:
+                    return False
+                c = df_1m.iloc[-1]
+                c1 = df_1m.iloc[-2]
+                
+                # 安全取得 kc 指標 (相容大寫小寫與 Series/dict)
+                def get_field(obj, *keys, default=0.0):
+                    for k in keys:
+                        if hasattr(obj, 'get'):
+                            val = obj.get(k)
+                            if val is not None:
+                                return float(val)
+                        elif hasattr(obj, k):
+                            return float(getattr(obj, k))
+                    return default
+
+                kc_middle = get_field(c, 'kc_middle', 'KC_MIDDLE', 'middle', default=float(c.close))
+                c_upper = get_field(c, 'kc_upper', 'KC_UPPER', 'upper', default=kc_middle * 1.01)
+                c_lower = get_field(c, 'kc_lower', 'KC_LOWER', 'lower', default=kc_middle * 0.99)
+                c_mid = kc_middle
+                
+                # 嚴格依照畫面標準物理熔斷
+                diff_pct_long = (c_upper - price) / c_upper * 100
+                diff_pct_short = (price - c_lower) / c_lower * 100
+                
+                if side == 'LONG':
+                    if price <= c_upper:
+                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開多！Price: {price}, KC_Upper: {c_upper}, 還差: +{diff_pct_long:.2f}%', bar)
+                        return False
+                elif side == 'SHORT':
+                    if price >= c_lower:
+                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開空！Price: {price}, KC_Lower: {c_lower}, 還差: +{diff_pct_short:.2f}%', bar)
+                        return False
+                    if price >= c_mid:
+                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 違規開空！價格 {price} 位於 KC中軌 {c_mid} 上方，嚴禁開空！', bar)
+                        return False
+
+                # 物理校驗四：強制雙同色實體校驗
                     c_body = float(c.close) - float(c.open)
                     c1_body = float(c1.close) - float(c1.open)
                     
