@@ -137,8 +137,8 @@ MIN_HOLD_SEC_FOR_STRATEGY_EXIT = 0 if IS_TESTING else float(os.getenv("MIN_HOLD_
 # 獲利後的移動保本／移動停利不受此開關影響。
 # 如果啟用了全局的 DISABLE_STOP_LOSS，此處會強制停用。
 ENABLE_EXCHANGE_INITIAL_STOP_LOSS = os.getenv(
-    "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", "false"
-).lower() == "true" and not DISABLE_STOP_LOSS
+    "ENABLE_EXCHANGE_INITIAL_STOP_LOSS", "true"
+) == "true" and not DISABLE_STOP_LOSS
 # 最大可接受虧損百分比：只有虧損超過此值才會觸發停損平倉
 # 例如 -0.02 表示允許虧損最多 2%，超過 2% 虧損才會平倉；-0.05 表示允許虧損最多 5%
 # 設為負值時代表最大允許虧損；設為 0 時，碰到本地 SL 觀察線就平倉。
