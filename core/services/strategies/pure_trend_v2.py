@@ -212,3 +212,63 @@ class PureTrendStrategyV2:
 
         # 若未命中三種平倉：【繼續一股都不賣，嚴格抱單讓利潤奔跑】！
         return None
+
+    def evaluate_third_bar_intra_entry(self, symbol: str, current_bar: Dict[str, Any], bar_prev1: Dict[str, Any], bar_prev2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        前兩根 (Bar 1, Bar 2) 必須是已經【完全收盤】的破軌實體棒。
+        當前根 (Bar 3) 處於【盤中即時狀態 (kline['x'] 可以為 False)】：
+        只要盤中確認同色 (多單現價>開盤價，空單現價<開盤價) 且在軌道外，立刻開倉！
+        """
+        # 確保前兩根是已收盤且數據齊全
+        p1_open = float(bar_prev1['open'])
+        p1_close = float(bar_prev1['close'])
+        p1_upper = float(bar_prev1['kc_upper'])
+        p1_lower = float(bar_prev1['kc_lower'])
+
+        p2_open = float(bar_prev2['open'])
+        p2_close = float(bar_prev2['close'])
+        p2_upper = float(bar_prev2['kc_upper'])
+        p2_lower = float(bar_prev2['kc_lower'])
+
+        # 當前第三根即時盤中數值
+        c_open = float(current_bar['open'])
+        c_price = float(current_bar['close'])  # 即時 Tick 現價
+        kc_upper = float(current_bar['kc_upper'])
+        kc_lower = float(current_bar['kc_lower'])
+        kc_mid = float(current_bar['kc_middle'])
+
+        # -------------------------------------------------------------
+        # 多單判定 (LONG)：前兩根收陽破上軌，第三根盤中只要是陽線立刻開多
+        # -------------------------------------------------------------
+        if c_price > kc_mid:
+            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_upper)
+            p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_upper)
+
+            if p2_is_green_break and p1_is_green_break:
+                # 第三根盤中：現價大於開盤價 (即時綠陽) 且 在上軌外側
+                if c_price > c_open and c_price > kc_upper:
+                    return {
+                        'side': 'LONG',
+                        'type': 'THIRD_BAR_INTRA_LONG',
+                        'price': c_price,
+                        'reason': '前雙陽破上軌確立，第三根盤中綠陽即刻開多'
+                    }
+
+        # -------------------------------------------------------------
+        # 空單判定 (SHORT)：前兩根收陰破下軌，第三根盤中只要是陰線立刻開空
+        # -------------------------------------------------------------
+        if c_price < kc_mid:
+            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_lower)
+            p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_lower)
+
+            if p2_is_red_break and p1_is_red_break:
+                # 第三根盤中：現價小於開盤價 (即時紅陰) 且 在下軌外側
+                if c_price < c_open and c_price < kc_lower:
+                    return {
+                        'side': 'SHORT',
+                        'type': 'THIRD_BAR_INTRA_SHORT',
+                        'price': c_price,
+                        'reason': '前雙陰破下軌確立，第三根盤中紅陰即刻開空'
+                    }
+
+        return None

@@ -72,23 +72,35 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
             log_entry_gate(engine, symbol, side, 'CLOSED_SIGNAL', reason, float(closed.iloc[-1].timestamp))
             continue
             
-        if len(closed) >= 3:
+        decision = None
+        
+        # 1. 盤中即時判定 (針對當前未收盤的 K 棒)
+        if len(closed) >= 2 and not frame.iloc[-1].get('is_closed', False):
+            intra_curr = frame.iloc[-1].to_dict()
+            intra_curr['close'] = quote  # 使用最新 Tick 價格
+            intra_prev1 = closed.iloc[-1].to_dict()
+            intra_prev2 = closed.iloc[-2].to_dict()
+            decision = PureTrendStrategyV2().evaluate_third_bar_intra_entry(symbol, intra_curr, intra_prev1, intra_prev2)
+
+        # 2. 如果盤中沒有觸發，則檢查最新收盤的 K 棒 (針對剛收盤的 K 棒)
+        if not decision and len(closed) >= 3:
             bar_curr = closed.iloc[-1].to_dict()
             bar_prev1 = closed.iloc[-2].to_dict()
             bar_prev2 = closed.iloc[-3].to_dict()
             decision = PureTrendStrategyV2().evaluate_entry(symbol, bar_curr, bar_prev1, bar_prev2)
-            if decision and decision['side'] == side:
-                decision['rule'] = decision['type']
-                decision['confirmation_bar_id'] = bar_curr['timestamp']
-                log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',decision['reason'],float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
-                candidates.append(decision)
-            else:
-                log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',"WAIT_PURE_TREND_V2",float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+            
+        if decision and decision['side'] == side:
+            decision['rule'] = decision['type']
+            # 用當前處理的 timestamp，盤中即時開倉可能用 frame.iloc[-1]，收盤用 closed.iloc[-1]
+            decision['confirmation_bar_id'] = frame.iloc[-1].to_dict()['timestamp'] if 'INTRA' in decision['type'] else closed.iloc[-1].to_dict()['timestamp']
+            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',decision['reason'],float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+            candidates.append(decision)
         else:
-            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',"NOT_ENOUGH_BARS",float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
+            log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',"WAIT_PURE_TREND_V2",float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
 
     if candidates:
         decision = min(candidates,key=lambda d:d['rule'])
         await engine._execute_confirmed_channel_break(symbol,frame,quote,decision['side'],
-                                                      daily_halt,v8_reason=decision['reason'])
+                                                      daily_halt,v8_reason=decision['reason'],
+                                                      candidate_bar_id=decision['confirmation_bar_id'])
     return [], []
