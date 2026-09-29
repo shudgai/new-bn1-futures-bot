@@ -81,9 +81,10 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
         entry_price = float(position['entry_price'])
         unrealized_profit = sign * (close - entry_price)
         unrealized_profit_pct = unrealized_profit / entry_price
+        unrealized_pnl_usdt = float(position.get('unrealized_pnl') or 0.0)
         
-        # 條件 2：當前未實現利潤 >= 1.0 * ATR 或 百分比 >= 3%
-        if unrealized_profit >= 1.0 * atr or unrealized_profit_pct >= 0.03:
+        # 條件 2：當前未實現利潤 >= 1.0 * ATR 或 百分比 >= 3% 或 USDT >= 10
+        if unrealized_profit >= 1.0 * atr or unrealized_profit_pct >= 0.03 or unrealized_pnl_usdt >= 10.0:
             ma3_curr = float(c.ma3)
             ma3_prev = float(c1.ma3)
             
@@ -96,7 +97,7 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             
             if sign == -1:  # 空單
                 long_lower_wick = (min(close, c_open) - c_low) > c_body_len * 2
-                is_engulfing = (close > c_open) and (c_body_len > 0.8 * c1_body_len or c_body_len >= 1.0 * atr)
+                is_engulfing = (close > c_open) and (c_body_len >= c1_body_len or (close - c_open) >= 1.0 * atr)
                 is_stalled = is_doji or long_lower_wick or is_engulfing
                 ma3_turned = ma3_curr > ma3_prev
                 
@@ -108,7 +109,7 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
                     
             elif sign == 1:  # 多單
                 long_upper_wick = (c_high - max(close, c_open)) > c_body_len * 2
-                is_engulfing = (close < c_open) and (c_body_len > 0.8 * c1_body_len or c_body_len >= 1.0 * atr)
+                is_engulfing = (close < c_open) and (c_body_len >= c1_body_len or (c_open - close) >= 1.0 * atr)
                 is_stalled = is_doji or long_upper_wick or is_engulfing
                 ma3_turned = ma3_curr < ma3_prev
                 
@@ -158,8 +159,19 @@ class DualTrackExitStrategy(IExitStrategy):
             # Account quote updates must enforce protection
             if current_price is not None:
                 quote = float(current_price)
-                if math.isfinite(quote) and quote > 0 and sign*(quote-stop_loss) <= 0:
-                    reason = 'EXIT_INITIAL_ATR_HARD_STOP'
+                if math.isfinite(quote) and quote > 0:
+                    if sign*(quote-stop_loss) <= 0:
+                        reason = 'EXIT_INITIAL_ATR_HARD_STOP'
+                    else:
+                        current_pnl_usdt = float(position.get('unrealized_pnl') or 0.0)
+                        peak_pnl = float(position.get('peak_pnl_usdt') or 0.0)
+                        if current_pnl_usdt > peak_pnl:
+                            position['peak_pnl_usdt'] = current_pnl_usdt
+                            peak_pnl = current_pnl_usdt
+                            
+                        # 如果最高浮盈超過 20U，強制啟用 20% 浮盈回撤保護 (保住80%)
+                        if peak_pnl >= 20.0 and current_pnl_usdt <= peak_pnl * 0.80:
+                            reason = 'EXIT_PEAK_PROFIT_TRAILING_STOP'
             
             if reason is None and closed is not None:
                 c1, c = closed.iloc[-2], closed.iloc[-1]
