@@ -28,51 +28,41 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     prev_kc_mid = float(c1.kc_middle)
 
     # =======================================================
-    # 【多單 (LONG) 出場標準】防範「賣壓」
+    # 【多單 (LONG) 出場標準】高位賣壓
     # =======================================================
     if sign == 1:
-        # 0. 【外軌十字星 / 反向 K 棒即刻止盈】(第一防線)
-        if c_high > float(c.kc_upper):
-            candle_body = abs(close - c_open)
-            candle_len = c_high - c_low
-            upper_wick = c_high - max(close, c_open)
+        unrealized_pnl = float(position.get('unrealized_pnl', 0.0))
+        entry_price = float(position.get('entry_price', 0.0))
+        roi = sign * (close - entry_price) / entry_price if entry_price > 0 else 0
+
+        # 一、 前提條件：必須「漲很高」（未達高位嚴禁觸發賣壓平倉）
+        is_high_level = (unrealized_pnl >= 2.5 or roi >= 0.012) and \
+                        ((close - float(c.kc_upper) >= 0.8 * atr) or (close - float(c.ma15) >= 1.5 * atr))
+
+        if is_high_level:
+            # 二、 觸發條件：高位出現「實質巨額賣壓」
+            # 1. 【高位巨長上影墓碑線】
+            upper_wick = c_high - max(c_open, close)
+            body = abs(close - c_open)
+            if upper_wick >= 1.5 * body and close < (c_high + c_low) / 2.0:
+                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_HIGH_PIN_BAR_PRESSURE')
             
-            # 必須是紅色陰線 或 上影線極長(>=2倍實體且佔全K棒50%以上)
-            is_red = (close < c_open)
-            is_extreme_upper_wick = (upper_wick >= 2.0 * candle_body) and (candle_len > 0 and upper_wick / candle_len >= 0.5)
-            is_valid_reverse = is_red or is_extreme_upper_wick
-            
-            if is_valid_reverse:
+            # 2. 【高位大陰線反包】
+            if close < c_open and body >= 0.8 * atr:
+                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_HIGH_BEARISH_ENGULFING')
+                
+            # 3. 【高位 MA3 拐頭向下 + 連續 2 根陰線】
+            if len(closed) >= 2:
                 ma3_curr = float(c.ma3)
                 ma3_prev = float(c1.ma3)
-                ma3_down = (ma3_curr <= ma3_prev)
-                
-                if ma3_down:
-                    return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_EXHAUSTION_RED_DOJI')
+                two_bear = (float(c.close) < float(c.open)) and (float(c1.close) < float(c1.open))
+                if ma3_curr < ma3_prev and two_bear:
+                    return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_HIGH_MA3_HOOK_DOWN')
 
-        # 1. 當根收盤出現【大實體陰線】（c_close < c_open 且 實體 >= 0.8 ATR）
-        if close < c_open and abs(close - c_open) >= 0.8 * atr:
-            ma3_curr = float(c.ma3)
-            ma3_prev = float(c1.ma3)
-            # 豁免：如果 MA3 依然陡峭向上，且價格仍在軌道外，不提前恐慌平倉
-            if (ma3_curr > ma3_prev) and (close > float(c.kc_upper)):
-                pass
-            else:
-                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_SELLING_PRESSURE_BIG_BEAR')
-            
-        # 2. 當根收盤【跌破 MA15】（c_close < ma15）
+        # 2. 當根收盤【跌破 MA15】（生命線防守，無論高低位）
         ma15 = float(c.get('ma15', c.get('ma3', close))) if hasattr(c, 'get') else float(getattr(c, 'ma15', getattr(c, 'ma3', close)))
         if close < ma15:
             return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_BELOW_MA15_LIFELINE')
-            
-        # 3. 外軌滯漲：MA3 轉平/下彎 且 連續 3 根陰線
-        if len(closed) >= 3:
-            ma3_curr = float(c.ma3)
-            ma3_prev = float(c1.ma3)
-            last3 = closed.iloc[-3:]
-            three_bear = all(float(r.close) < float(r.open) for _, r in last3.iterrows())
-            if ma3_curr <= ma3_prev and three_bear:
-                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_MA3_DOWN_3_BEAR')
 
     # =======================================================
     # 【空單 (SHORT) 出場標準】防範「買盤反撲」
