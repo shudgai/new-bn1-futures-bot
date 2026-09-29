@@ -12,49 +12,6 @@ DUAL_TRACK_STATE_KEYS = [
 ]
 
 
-def observe_breakeven(position, price, atr):
-    """Observe actual quotes only; never infer pre-entry peaks from wicks."""
-    entry = float(position['entry_price'])
-    sign = 1 if position['side'] == 'LONG' else -1
-    if not all(math.isfinite(v) and v > 0 for v in (entry, price, atr)):
-        return
-    profit_atr = sign * (price - entry) / atr
-    peak = max(float(position.get('swing_peak_profit_atr', 0.)), profit_atr, 0.)
-    position['swing_peak_profit_atr'] = peak
-    if peak > 1.8:
-        position['swing_trailing_armed'] = True
-    stop = float(position.get('stop_loss') or position.get('sl') or entry-sign*SL_INIT_MULT*atr)
-    # 「一股不賣」吃滿波段：停用所有保本 (Breakeven) 提早平倉邏輯，讓防守線永遠保持在 1.5 ATR
-    # 不再將止損線上移至開倉價
-    position.update(stop_loss=stop, sl=stop, atr_sl=stop)
-
-
-def trailing_structure_exit(position, closed):
-    """Monotone prior-two lows; evaluate each subsequent closed bar once.
-
-    Keep this close-only line separate from the quote-enforced hard/BE stop.
-    First observation establishes a baseline, never replays an old exit.
-    """
-    current = closed.iloc[-1]
-    bar = float(current.timestamp)
-    last = position.get('swing_trailing_last_bar')
-    if last is not None and bar <= float(last):
-        return None
-    position['swing_trailing_last_bar'] = bar
-    prior = closed.iloc[-3:-1]
-    opened_ms = float(position.get('open_timestamp') or 0)*1000
-    if not (prior.timestamp.astype(float) >= opened_ms).all():
-        return None
-    is_long = position['side'] == 'LONG'
-    candidate = float(prior.low.astype(float).min() if is_long else prior.high.astype(float).max())
-    line = (max if is_long else min)(float(position.get('swing_trailing_line') or candidate), candidate)
-    position['swing_trailing_line'] = line
-    crossed = float(current.close) < line if is_long else float(current.close) > line
-    if last is not None and crossed:
-        return 'EXIT_TWO_BAR_LOW_TRAILING_CLOSED' if is_long else 'EXIT_TWO_BAR_HIGH_TRAILING_CLOSED'
-    return None
-
-
 def evaluate_trend_exit_and_take_profit(position, candles, indicators):
     """Exit only on a structural break through KC Middle or middle slope turning opposite; ignore MA3/MA15."""
     sign = 1 if position['side'] == 'LONG' else -1
@@ -93,43 +50,38 @@ class DualTrackExitStrategy(IExitStrategy):
                 return None
             position['entry_atr'] = atr
             sign = 1 if position['side'] == 'LONG' else -1
-            # Account quote updates must enforce protection without a candle
-            # snapshot, including on the entry/confirmation candle.
-            if current_price is not None:
-                quote = float(current_price)
-                if not math.isfinite(quote) or quote <= 0:
-                    return None
-                observe_breakeven(position, quote, atr)
-            else:
-                quote = None
+
             state = position.get('closed_exit_state') or {}
             if state.get('policy') == POLICY and state.get('reason') == 'EXIT_MA3_MA15_CROSS_CLOSED':
-                # Retire the removed crossover exit in both position and metadata.
                 position['closed_exit_state'] = dict(policy=POLICY, pending=False)
                 state = position['closed_exit_state']
             if state.get('policy') == POLICY and state.get('pending'):
                 return state['reason']
+
             reason = None
-            if quote is not None and sign*(quote-position['stop_loss']) <= 0:
-                reason = ('EXIT_BREAKEVEN' if sign*(position['stop_loss']-entry) >= 0
-                          else 'EXIT_INITIAL_ATR_HARD_STOP')
+            stop_loss = float(position.get('stop_loss') or position.get('sl') or entry-sign*SL_INIT_MULT*atr)
+            
+            # Account quote updates must enforce protection
+            if current_price is not None:
+                quote = float(current_price)
+                if math.isfinite(quote) and quote > 0 and sign*(quote-stop_loss) <= 0:
+                    reason = 'EXIT_INITIAL_ATR_HARD_STOP'
+            
             if reason is None and closed is not None:
                 c1, c = closed.iloc[-2], closed.iloc[-1]
                 if (float(c.timestamp)+60000 <= opened
                         or float(c.timestamp) <= float(position.get('channel_confirmation_bar_id') or -1)):
                     return None
-                observe_breakeven(position, float(c.close), atr)
-                position.update(tp=0., atr_tp=0.)
-                stop_quote = quote if quote is not None else float(c.close)
-                if sign*(stop_quote-position['stop_loss']) <= 0:
-                    reason = ('EXIT_BREAKEVEN' if sign*(position['stop_loss']-entry) >= 0
-                              else 'EXIT_INITIAL_ATR_HARD_STOP')
+                
+                if sign*(float(c.close)-stop_loss) <= 0:
+                    reason = 'EXIT_INITIAL_ATR_HARD_STOP'
                 else:
                     # 「一股不賣」吃滿波段：關閉所有短線疲態與軌跡出場，只由 KC 中軌實體貫穿作為唯一出場依據
                     result = evaluate_trend_exit_and_take_profit(position,
                         [{'close':float(c1.close)}, {'close':float(c.close)}],
                         {'ma3':[float(c1.ma3),float(c.ma3)], 'kc_middle':[float(c1.kc_middle),float(c.kc_middle)]})
                     reason = result['reason'] if result['should_exit'] else None
+                    
             if reason:
                 position['closed_exit_state'] = dict(policy=POLICY, pending=True, reason=reason)
             return reason
