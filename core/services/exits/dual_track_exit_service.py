@@ -21,13 +21,11 @@ def observe_breakeven(position, price, atr):
     profit_atr = sign * (price - entry) / atr
     peak = max(float(position.get('swing_peak_profit_atr', 0.)), profit_atr, 0.)
     position['swing_peak_profit_atr'] = peak
-    if peak >= 1.2 or math.isclose(peak, 1.2, rel_tol=1e-12):
-        position['swing_breakeven_armed'] = True
     if peak > 1.8:
         position['swing_trailing_armed'] = True
     stop = float(position.get('stop_loss') or position.get('sl') or entry-sign*SL_INIT_MULT*atr)
-    if position.get('swing_breakeven_armed'):
-        stop = max(stop, entry) if sign == 1 else min(stop, entry)
+    # 「一股不賣」吃滿波段：停用所有保本 (Breakeven) 提早平倉邏輯，讓防守線永遠保持在 1.5 ATR
+    # 不再將止損線上移至開倉價
     position.update(stop_loss=stop, sl=stop, atr_sl=stop)
 
 

@@ -38,6 +38,22 @@ def validate_entry_frame(frame, side, code):
     prev_upper = float(prev_bar.kc_upper)
     prev_lower = float(prev_bar.kc_lower)
 
+    # ── 【緊急修復】嚴禁未破軌開倉與通道內無效開單校驗 ──
+    is_breakout_up = close > upper
+    is_breakout_down = close < lower
+    
+    if side == 'LONG' and not is_breakout_up:
+        last_8 = closed.iloc[-8:] if len(closed) >= 8 else closed
+        touched_lower = (last_8['low'].astype(float) <= last_8['kc_lower'].astype(float)).any()
+        if not (touched_lower and close > middle):
+            raise ValueError(f'[FATAL_REJECT] BLOCKED_INSIDE_CHANNEL_NO_BREAKOUT: K 棒未破 KC 上軌，且無觸及下軌的底座支撐！')
+
+    if side == 'SHORT' and not is_breakout_down:
+        last_8 = closed.iloc[-8:] if len(closed) >= 8 else closed
+        touched_upper = (last_8['high'].astype(float) >= last_8['kc_upper'].astype(float)).any()
+        if not (touched_upper and close < middle):
+            raise ValueError(f'[FATAL_REJECT] BLOCKED_INSIDE_CHANNEL_NO_BREAKOUT: K 棒未破 KC 下軌，且無觸及上軌的頂部壓力！')
+
     from core.services.exits.profit_protection_service import assess_market_regime
     regime = assess_market_regime(closed, side, None)
     if not is_ignition and regime == 'CHOPPY':
@@ -68,8 +84,17 @@ def validate_entry_frame(frame, side, code):
         prev_middle = float(closed.iloc[-2].kc_middle)
         if side == 'LONG' and middle <= prev_middle:
             raise ValueError('[FATAL_REJECT] 金叉開多，但 KC 中軌向下！嚴禁逆勢開多！')
-        if side == 'SHORT' and middle >= prev_middle:
-            raise ValueError('[FATAL_REJECT] 死叉開空，但 KC 中軌向上！嚴禁逆勢開空！')
+        if side == 'SHORT':
+            c = closed.iloc[-1]
+            c1 = closed.iloc[-2]
+            if float(c.kc_middle) >= float(c1.kc_middle):
+                raise ValueError('[FATAL_REJECT] 死叉開空，但 KC 中軌向上！嚴禁逆勢開空！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
+            if float(c.ma15) >= float(c1.ma15):
+                raise ValueError('[FATAL_REJECT] 死叉開空，但 MA15 均線未向下！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
+            if float(c.close) >= float(c.kc_middle):
+                raise ValueError('[FATAL_REJECT] 死叉開空，但收盤價在中軌之上！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
+            if not (float(c.ma3) < float(c.ma15) and float(c.ma15) <= float(c.kc_middle)):
+                raise ValueError('[FATAL_REJECT] 死叉開空，但未形成空頭排列 (MA3 < MA15 <= KC 中軌)！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
 
     ok, actual, decision = evaluate_closed_entry(frame, side)
     if not ok or actual != code:
