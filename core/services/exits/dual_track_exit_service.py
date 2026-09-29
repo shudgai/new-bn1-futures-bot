@@ -170,9 +170,18 @@ class DualTrackExitStrategy(IExitStrategy):
                             position['peak_pnl_usdt'] = current_pnl_usdt
                             peak_pnl = current_pnl_usdt
                             
-                        # 如果最高浮盈超過 20U，強制啟用 20% 浮盈回撤保護 (保住80%)
-                        if peak_pnl >= 20.0 and current_pnl_usdt <= peak_pnl * 0.80:
-                            reason = 'EXIT_PEAK_PROFIT_TRAILING_STOP'
+                        entry_price = float(position['entry_price'])
+                        current_profit_diff = sign * (quote - entry_price)
+                        peak_profit_diff = float(position.get('peak_profit_diff') or 0.0)
+                        if current_profit_diff > peak_profit_diff:
+                            position['peak_profit_diff'] = current_profit_diff
+                            peak_profit_diff = current_profit_diff
+                            
+                        # 如果最高浮盈超過 10U 或是 1.0 ATR，強制啟用 20% 浮盈回撤保護 (保住80%)
+                        if peak_pnl >= 10.0 and current_pnl_usdt <= peak_pnl * 0.80:
+                            reason = 'INTRA_BAR_PEAK_DRAWDOWN_LOCK'
+                        elif peak_profit_diff >= 1.0 * atr and current_profit_diff <= peak_profit_diff * 0.80:
+                            reason = 'INTRA_BAR_PEAK_DRAWDOWN_LOCK'
             
             if reason is None and closed is not None:
                 c1, c = closed.iloc[-2], closed.iloc[-1]
