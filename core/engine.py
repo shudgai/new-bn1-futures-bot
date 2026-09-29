@@ -1811,22 +1811,18 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT] SIGNAL_OVERRIDE_BUG: side=SHORT but reason={final["reason"]}', bar)
                 return False
 
-            # 物理校驗一與二：起爆單 (IGNITION) 收盤價實體與 KC 外軌的幾何位置硬校驗
-            is_ignition = 'IGNITION' in final['reason'] or 'BREAKOUT' in final['reason']
             c_close = final['close_price']
             c_upper = float(snapshot['kc_upper'])
             c_lower = float(snapshot['kc_lower'])
             
-            if is_ignition:
-                if side == 'LONG':
-                    if c_close <= c_upper:
-                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT_LONG_CLOSE_NOT_ABOVE_UPPER] 違規開多！收盤價 {c_close} 未嚴格大於 KC上軌 {c_upper}', bar)
-                        return False
-                elif side == 'SHORT':
-                    if c_close >= c_lower:
-                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT_SHORT_CLOSE_NOT_BELOW_LOWER] 違規開空！收盤價 {c_close} 未嚴格小於 KC下軌 {c_lower}', bar)
-                        return False
-                        
+            if side == 'LONG':
+                if c_close <= c_upper:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開多！當前收盤價 {c_close} <= KC上軌 {c_upper}，直接攔截不送單！', bar)
+                    return False
+            elif side == 'SHORT':
+                if c_close >= c_lower:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！當前收盤價 {c_close} >= KC下軌 {c_lower}，直接攔截不送單！', bar)
+                    return False
             # 物理校驗四：嚴禁在阻力線前追多 (距離前高阻力 <= 0.25%)
             if side == 'LONG':
                 try:
