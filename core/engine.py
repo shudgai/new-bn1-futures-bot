@@ -1799,6 +1799,34 @@ class TradingEngine:
             if not math.isfinite(price) or price <= 0:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
+            
+            # =================================================================
+            # 終極實體物理防線 (The Ultimate Physical Barrier)
+            # =================================================================
+            # 物理校驗三：排查多空變數被全域覆寫（Global Variable Pollution）
+            if side == 'LONG' and 'SHORT' in final['reason']:
+                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT] SIGNAL_OVERRIDE_BUG: side=LONG but reason={final["reason"]}', bar)
+                return False
+            if side == 'SHORT' and 'LONG' in final['reason']:
+                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT] SIGNAL_OVERRIDE_BUG: side=SHORT but reason={final["reason"]}', bar)
+                return False
+
+            # 物理校驗一與二：起爆單 (IGNITION) 收盤價實體與 KC 外軌的幾何位置硬校驗
+            is_ignition = 'IGNITION' in final['reason'] or 'BREAKOUT' in final['reason']
+            if is_ignition:
+                c_close = final['close_price']
+                c_upper = float(snapshot['kc_upper'])
+                c_lower = float(snapshot['kc_lower'])
+                if side == 'LONG':
+                    if c_close <= c_upper:
+                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT_LONG_CLOSE_NOT_ABOVE_UPPER] {c_close} <= {c_upper}', bar)
+                        return False
+                elif side == 'SHORT':
+                    if c_close >= c_lower:
+                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT_SHORT_CLOSE_NOT_BELOW_LOWER] {c_close} >= {c_lower}', bar)
+                        return False
+            # =================================================================
+
             context['entry_snapshot']['quote_price'] = price
             log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
             log_count = len(getattr(self.account, 'logs', []))
