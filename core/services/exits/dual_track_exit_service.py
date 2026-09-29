@@ -9,6 +9,7 @@ DUAL_TRACK_STATE_KEYS = [
     'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
     'atr_tp', 'atr_protection_version', 'swing_breakeven_armed', 'swing_peak_profit_atr',
     'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
+    'has_broken_outer_band',
 ]
 
 
@@ -65,10 +66,13 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
 
     # 狀態追蹤：記錄是否曾衝出外軌 (破軌加速段)
     if not position.get('has_broken_outer_band'):
-        if sign == 1 and c_high > float(c.kc_upper):
-            position['has_broken_outer_band'] = True
-        elif sign == -1 and c_low < float(c.kc_lower):
-            position['has_broken_outer_band'] = True
+        opened_ts = position.get('open_timestamp')
+        if opened_ts:
+            trade_candles = closed[closed['timestamp'].astype(float) >= float(opened_ts) * 1000]
+            if sign == 1 and (trade_candles['high'].astype(float) > trade_candles['kc_upper'].astype(float)).any():
+                position['has_broken_outer_band'] = True
+            elif sign == -1 and (trade_candles['low'].astype(float) < trade_candles['kc_lower'].astype(float)).any():
+                position['has_broken_outer_band'] = True
             
     has_broken_outer = position.get('has_broken_outer_band', False)
 
@@ -76,19 +80,22 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     if not reason and has_broken_outer and len(closed) >= 2:
         entry_price = float(position['entry_price'])
         unrealized_profit = sign * (close - entry_price)
+        unrealized_profit_pct = unrealized_profit / entry_price
         
-        # 條件 2：當前未實現利潤 >= 1.0 * ATR
-        if unrealized_profit >= 1.0 * atr:
+        # 條件 2：當前未實現利潤 >= 1.0 * ATR 或 百分比 >= 3%
+        if unrealized_profit >= 1.0 * atr or unrealized_profit_pct >= 0.03:
             ma3_curr = float(c.ma3)
             ma3_prev = float(c1.ma3)
             
             if sign == -1:  # 空單
-                # 條件 3：MA3 拐頭向上 (ma3_curr > ma3_prev)
-                if ma3_curr > ma3_prev:
+                # 條件 3：收盤價站回下軌之內 (close > kc_lower)
+                # 條件 4：MA3 拐頭向上 (ma3_curr > ma3_prev)
+                if close > float(c.kc_lower) and ma3_curr > ma3_prev:
                     reason = 'EXIT_SHORT_OUTER_BAND_MA3_TURN'
             elif sign == 1:  # 多單
-                # 條件 3：MA3 拐頭向下 (ma3_curr < ma3_prev)
-                if ma3_curr < ma3_prev:
+                # 條件 3：收盤價跌回上軌之內 (close < kc_upper)
+                # 條件 4：MA3 拐頭向下 (ma3_curr < ma3_prev)
+                if close < float(c.kc_upper) and ma3_curr < ma3_prev:
                     reason = 'EXIT_LONG_OUTER_BAND_MA3_TURN'
 
     if not reason:
