@@ -92,7 +92,7 @@ async def process_single_symbol_runner(engine, symbol, now_time, btc_1m_turn, da
         if decision and decision['side'] == side:
             decision['rule'] = decision['type']
             # 用當前處理的 timestamp，盤中即時開倉可能用 frame.iloc[-1]，收盤用 closed.iloc[-1]
-            decision['confirmation_bar_id'] = frame.iloc[-1].to_dict()['timestamp'] if 'INTRA' in decision['type'] else closed.iloc[-1].to_dict()['timestamp']
+            decision['confirmation_bar_id'] = frame.iloc[-1].to_dict()['timestamp'] if 'INTRA' in decision['type'] or 'RIDING' in decision['type'] else closed.iloc[-1].to_dict()['timestamp']
             log_entry_gate(engine,symbol,side,'CLOSED_SIGNAL',decision['reason'],float(closed.iloc[-1].timestamp), snapshot=entry_frame_evidence(frame))
             candidates.append(decision)
         else:

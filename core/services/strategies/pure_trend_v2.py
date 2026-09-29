@@ -57,18 +57,20 @@ class PureTrendStrategyV2:
 
             # 【A. 破軌雙同色開多：前兩根陽線破軌，第三根收盤確認開多】
             if p2_is_green_break and p1_is_green_break:
+                three_bar_valid = True
                 # 第三根收紅陰線：徹底作廢，嚴禁開倉！
                 if c_close <= c_open:
                     logger.info(f"{symbol} 破軌第三根收紅K陰線，起爆作廢！")
-                    return None
-                if c_close <= kc_upper:
+                    three_bar_valid = False
+                elif c_close <= kc_upper:
                     logger.info(f"{symbol} 破軌第三根跌回上軌內，作廢開多！")
-                    return None
-                if upper_wick > 1.5 * curr_body:
+                    three_bar_valid = False
+                elif upper_wick > 1.5 * curr_body:
                     logger.info(f"{symbol} 破軌第三根上影線過長，防墓碑針，作廢開多！")
-                    return None
+                    three_bar_valid = False
 
-                return {'side': 'LONG', 'type': 'THREE_BAR_BREAKOUT_LONG', 'price': c_close, 'reason': '雙陽破上軌，第三根收陽確認開多'}
+                if three_bar_valid:
+                    return {'side': 'LONG', 'type': 'THREE_BAR_BREAKOUT_LONG', 'price': c_close, 'reason': '雙陽破上軌，第三根收陽確認開多'}
 
             # 【B. 延續開多 (CONTINUATION_LONG)】
             # 條件：收盤確立、收在 KC 上軌外側、當根為陽線、MA3 順勢向上
@@ -91,18 +93,20 @@ class PureTrendStrategyV2:
 
             # 【A. 破軌雙同色開空：前兩根陰線破軌，第三根收盤確認開空】
             if p2_is_red_break and p1_is_red_break:
+                three_bar_valid = True
                 # 第三根收綠陽線：徹底作廢，嚴禁開倉！
                 if c_close >= c_open:
                     logger.info(f"{symbol} 破軌第三根收綠K陽線，起爆作廢！")
-                    return None
-                if c_close >= kc_lower:
+                    three_bar_valid = False
+                elif c_close >= kc_lower:
                     logger.info(f"{symbol} 破軌第三根彈回下軌內，作廢開空！")
-                    return None
-                if lower_wick > 1.5 * curr_body:
+                    three_bar_valid = False
+                elif lower_wick > 1.5 * curr_body:
                     logger.info(f"{symbol} 破軌第三根下影線過長，防插針反彈，作廢開空！")
-                    return None
+                    three_bar_valid = False
 
-                return {'side': 'SHORT', 'type': 'THREE_BAR_BREAKOUT_SHORT', 'price': c_close, 'reason': '雙陰破下軌，第三根收陰確認開空'}
+                if three_bar_valid:
+                    return {'side': 'SHORT', 'type': 'THREE_BAR_BREAKOUT_SHORT', 'price': c_close, 'reason': '雙陰破下軌，第三根收陰確認開空'}
 
             # 【B. 延續開空 (CONTINUATION_SHORT)】
             # 條件：收盤確立、收在 KC 下軌外側、當根為陰線、MA3 順勢向下
