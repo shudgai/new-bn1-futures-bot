@@ -356,31 +356,30 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if not passed:
         return wait(reason)
 
-    # 【長影線插針防護 (Pin Bar Rejection Filter)】
-    if rule in ('TREND_CRAWLING', 'TREND_BREAKOUT'):
-        # 1. 當根 K 棒防護：明顯下影線/上影線 (> 1.5倍實體)
-        if side == 'SHORT':
-            lower_wick = float(c.close) - float(c.low)
-            if lower_wick > 1.5 * candle_body:
-                return wait(f"PIN_BAR_DETECTED (當根長下影線誘空, wick={lower_wick:.5f} > 1.5*body={1.5*candle_body:.5f})")
-        else:
-            upper_wick = float(c.high) - float(c.close)
-            if upper_wick > 1.5 * candle_body:
-                return wait(f"PIN_BAR_DETECTED (當根長上影線誘多, wick={upper_wick:.5f} > 1.5*body={1.5*candle_body:.5f})")
-                
-        # 2. 前根 K 棒防護：已在外側插出長影線
+    # 【長影線插針防護 (Pin Bar Rejection Filter)】- 適用於所有入場 (包含 IGNITION)
+    candle_len = float(c.high) - float(c.low)
+    
+    if side == 'SHORT':
+        lower_wick = min(float(c.close), float(c.open)) - float(c.low)
+        if lower_wick > candle_body or (candle_len > 0 and lower_wick / candle_len > 0.4):
+            return wait(f"PIN_BAR_DETECTED (當根下探回升滯跌，嚴禁追空, wick={lower_wick:.5f}, body={candle_body:.5f})")
+            
         prev_body = abs(float(c1.close) - float(c1.open))
-        if side == 'SHORT':
-            prev_lower_wick = min(float(c1.close), float(c1.open)) - float(c1.low)
-            if float(c1.low) < float(c1.kc_lower) and prev_lower_wick > 1.5 * prev_body:
-                return wait("PREV_PIN_BAR_REJECTION (前根K棒已在下軌外插出長下影線，嚴禁追空)")
-        else:
-            prev_upper_wick = float(c1.high) - max(float(c1.close), float(c1.open))
-            if float(c1.high) > float(c1.kc_upper) and prev_upper_wick > 1.5 * prev_body:
-                return wait("PREV_PIN_BAR_REJECTION (前根K棒已在上軌外插出長上影線，嚴禁追多)")
-                
-        if body_ratio < 0.4:
-            return wait(f"PIN_BAR_DETECTED (實體佔比過小, ratio={body_ratio:.2f})")
+        prev_lower_wick = min(float(c1.close), float(c1.open)) - float(c1.low)
+        if float(c1.low) < float(c1.kc_lower) and prev_lower_wick > 1.5 * prev_body:
+            return wait("PREV_PIN_BAR_REJECTION (前根K棒已在下軌外插出長下影線，嚴禁追空)")
+    else:
+        upper_wick = float(c.high) - max(float(c.close), float(c.open))
+        if upper_wick > candle_body or (candle_len > 0 and upper_wick / candle_len > 0.4):
+            return wait(f"PIN_BAR_DETECTED (當根衝高回落滯漲，嚴禁追多, wick={upper_wick:.5f}, body={candle_body:.5f})")
+            
+        prev_body = abs(float(c1.close) - float(c1.open))
+        prev_upper_wick = float(c1.high) - max(float(c1.close), float(c1.open))
+        if float(c1.high) > float(c1.kc_upper) and prev_upper_wick > 1.5 * prev_body:
+            return wait("PREV_PIN_BAR_REJECTION (前根K棒已在上軌外插出長上影線，嚴禁追多)")
+            
+    if body_ratio < 0.4:
+        return wait(f"PIN_BAR_DETECTED (實體佔比過小, ratio={body_ratio:.2f})")
 
     code = f'CLOSED_{rule}_{side}'
     return True, code, dict(
