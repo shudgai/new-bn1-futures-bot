@@ -1723,22 +1723,27 @@ class BinanceTestnetAccount:
                 kc_lower = current_bar['kc_lower']
                 kc_middle = current_bar.get('kc_middle', (kc_upper + kc_lower) / 2)
                 # ━━━━━━━ 全幣種物理硬防線：不可繞過 ━━━━━━━
-                if side == 'LONG' and c_close <= kc_upper:
-                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破上軌強制拒單！close({c_close}) <= kc_upper({kc_upper})", 'CRITICAL')
-                    return False
-                if side == 'SHORT' and c_close >= kc_lower:
-                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破下軌強制拒單！close({c_close}) >= kc_lower({kc_lower})", 'CRITICAL')
-                    return False
-                if side == 'SHORT' and c_close >= kc_middle:
-                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！close({c_close}) >= kc_middle({kc_middle})", 'CRITICAL')
-                    return False
+                if side == 'LONG' and price <= kc_upper:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破上軌強制拒單！執行價({price}) <= 上軌({kc_upper})", 'CRITICAL')
+                    raise RuntimeError(f"嚴禁通道內開多！執行價({price}) <= 上軌({kc_upper})")
+                if side == 'SHORT' and price >= kc_lower:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 場內未破下軌強制拒單！執行價({price}) >= 下軌({kc_lower})", 'CRITICAL')
+                    raise RuntimeError(f"嚴禁通道內開空！執行價({price}) >= 下軌({kc_lower})")
+                if side == 'SHORT' and price >= kc_middle:
+                    self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] 中軌上方嚴禁開空！執行價({price}) >= 中軌({kc_middle})", 'CRITICAL')
+                    raise RuntimeError(f"中軌上方嚴禁開空！執行價({price}) >= 中軌({kc_middle})")
                 if len(snapshot['candles']) >= 2:
                     prev_bar = snapshot['candles'][-2]
                     ck_up = (current_bar['kc_middle'] > prev_bar['kc_middle']
                              and current_bar['kc_upper'] >= prev_bar['kc_upper'])
                     if side == 'SHORT' and ck_up:
                         self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↑CK 向上趨勢，嚴禁逆勢開空！", 'CRITICAL')
-                        return False
+                        raise RuntimeError("大週期向上嚴禁開空！")
+                    ck_down = (current_bar['kc_middle'] < prev_bar['kc_middle']
+                               and current_bar['kc_lower'] <= prev_bar['kc_lower'])
+                    if side == 'LONG' and ck_down:
+                        self.log(f"🛑 [ABSOLUTE_PHYSICAL_BLOCK] ↓CK 向下趨勢，嚴禁逆勢開多！", 'CRITICAL')
+                        raise RuntimeError("大週期向下嚴禁開多！")
 
 
         from core.services.entry_firewall import validate_account_entry
