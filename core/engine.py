@@ -2007,7 +2007,7 @@ class TradingEngine:
             return False
             
         candidate_bar_id = candidate_bar_id or closed.iloc[-1]['timestamp']
-        reason = v8_reason or \"PURE_TREND_V2\"
+        reason = v8_reason or "PURE_TREND_V2"
         
         signal = dict(side=side,score=100,entry_mode='CHANNEL_SWING',action='ENTER_MARKET',
                       signal_code=reason,candidate_bar_id=candidate_bar_id,
