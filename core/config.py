@@ -895,7 +895,7 @@ CLOSE_SLIPPAGE_WARN_PCT = float(os.getenv("CLOSE_SLIPPAGE_WARN_PCT", "0.0005"))
 
 # 階梯式移動停利：峰值達 0.35% 後，至少鎖住 0.25% 價格利潤；
 # 峰值繼續擴大時保留至少 70%，保護線只往有利方向移動。
-ENABLE_PROFIT_BANK = os.getenv("ENABLE_PROFIT_BANK", "true").lower() == "true"
+ENABLE_PROFIT_BANK = os.getenv("ENABLE_PROFIT_BANK", "false").lower() == "true"
 PROFIT_BANK_TRIGGER_PCT = max(
     float(os.getenv("PROFIT_BANK_TRIGGER_PCT", "0.0035")),
     NET_PROFIT_GUARANTEE_BUFFER + SLIPPAGE_PCT,
@@ -942,7 +942,7 @@ PROFIT_BANK_LOCK_PCT = min(
 # 與百分比制 PROFIT_BANK 並存，兩套都啟用時各自獨立計算，止損取
 # 「更有利」的那個值（只往有利方向移動，永不放寬）。
 # ---------------------------------------------------------------------------
-ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "true").lower() == "true"
+ENABLE_PROFIT_LOCK_USDT = os.getenv("ENABLE_PROFIT_LOCK_USDT", "false").lower() == "true"
 PROFIT_LOCK_FEE_MULTIPLIER = max(0.0, float(os.getenv("PROFIT_LOCK_FEE_MULTIPLIER", "2.0")))
 PROFIT_LOCK_LADDER_STEP_USDT = max(0.01, float(os.getenv("PROFIT_LOCK_LADDER_STEP_USDT", "1.0")))
 PROFIT_LOCK_TREND_LADDER_STEP_USDT = max(

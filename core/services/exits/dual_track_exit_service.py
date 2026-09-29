@@ -121,11 +121,7 @@ class DualTrackExitStrategy(IExitStrategy):
                     reason = ('EXIT_BREAKEVEN' if sign*(position['stop_loss']-entry) >= 0
                               else 'EXIT_INITIAL_ATR_HARD_STOP')
                 else:
-                    from core.services.exit_service import exhaustion_exit_reason
-                    reason = exhaustion_exit_reason(position, closed, stop_quote)
-                if reason is None and position.get('swing_trailing_armed'):
-                    reason = trailing_structure_exit(position, closed)
-                elif reason is None:
+                    # 「一股不賣」吃滿波段：關閉所有短線疲態與軌跡出場，只由 KC 中軌實體貫穿作為唯一出場依據
                     result = evaluate_trend_exit_and_take_profit(position,
                         [{'close':float(c1.close)}, {'close':float(c.close)}],
                         {'ma3':[float(c1.ma3),float(c.ma3)], 'kc_middle':[float(c1.kc_middle),float(c.kc_middle)]})
