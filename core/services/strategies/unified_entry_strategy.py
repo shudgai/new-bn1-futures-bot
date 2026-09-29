@@ -213,21 +213,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         if not (c_middle < c1_middle and float(c.kc_lower) <= float(c1.kc_lower)):
             return wait('BLOCKED_CK_NOT_ALIGNED_SHORT')
 
-    # 通道寬度雑訊門溻〔豁免：實際站上外軌者一律豁免，壓縮起爆是大行情前兆〕
-    c_upper = float(c.kc_upper)
-    c_lower = float(c.kc_lower)
-    c_middle = float(c.kc_middle)
-    channel_width_pct = (c_upper - c_lower) / c_middle
-    c_is_outside = (side == 'LONG' and float(c.close) > c_upper) or (side == 'SHORT' and float(c.close) < c_lower)
-    if channel_width_pct < 0.005 and not c_is_outside:
-        return wait('BLOCKED_CHANNEL_BANDWIDTH_TOO_NARROW')
-
-    # 貼近支撐位禁止做空
-    if side == 'SHORT':
-        recent_10_low = float(closed['low'].iloc[-10:].min()) if len(closed) >= 10 else float(closed['low'].min())
-        distance_to_support = (float(c.close) - recent_10_low) / recent_10_low
-        if distance_to_support < 0.003:
-            return wait('BLOCKED_SHORT_NEAR_SUPPORT')
+    # (已依照妖幣鐵律刪除：通道寬度門檻與支撐位門檻)
 
     # 兩根同色實體要求 (Two consecutive same-colored candles with at least 20% body)
     c1 = closed.iloc[-2]

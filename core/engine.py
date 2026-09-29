@@ -1846,11 +1846,8 @@ class TradingEngine:
                             log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開多！最近兩根K棒非雙綠實體 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
                             return False
                             
-                        last_30 = df_1m.iloc[-30:]
-                        resistance_level = float(last_30['high'].max())
-                        if (resistance_level - c_close) / c_close <= 0.0025:
-                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT_NEAR_RESISTANCE] 貼近天花板阻力線！拒絕開多！(dist={((resistance_level - c_close) / c_close)*100:.2f}%)', bar)
-                            return False
+                            
+                        # (依妖幣鐵律刪除：前高阻力攔截)
                             
                     elif side == 'SHORT':
                         if c_body >= 0 or c1_body >= 0:
