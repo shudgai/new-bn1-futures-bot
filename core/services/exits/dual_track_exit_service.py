@@ -34,19 +34,20 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
         # 0. 【外軌十字星 / 反向 K 棒即刻止盈】(第一防線)
         if c_high > float(c.kc_upper):
             candle_body = abs(close - c_open)
+            candle_len = c_high - c_low
             upper_wick = c_high - max(close, c_open)
-            is_red_or_doji = (close < c_open) or (upper_wick >= 1.5 * candle_body)
             
-            if is_red_or_doji:
+            # 必須是紅色陰線 或 上影線極長(>=2倍實體且佔全K棒50%以上)
+            is_red = (close < c_open)
+            is_extreme_upper_wick = (upper_wick >= 2.0 * candle_body) and (candle_len > 0 and upper_wick / candle_len >= 0.5)
+            is_valid_reverse = is_red or is_extreme_upper_wick
+            
+            if is_valid_reverse:
                 ma3_curr = float(c.ma3)
                 ma3_prev = float(c1.ma3)
-                ma3_down = ma3_curr <= ma3_prev
+                ma3_down = (ma3_curr <= ma3_prev)
                 
-                prev_body = abs(float(c1.close) - float(c1.open))
-                prev_upper_wick = float(c1.high) - max(float(c1.close), float(c1.open))
-                prev_is_red_or_doji = (float(c1.close) < float(c1.open)) or (prev_upper_wick >= 1.5 * prev_body)
-                
-                if ma3_down or prev_is_red_or_doji:
+                if ma3_down:
                     return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_EXHAUSTION_RED_DOJI')
 
         # 1. 當根收盤出現【大實體陰線】（c_close < c_open 且 實體 >= 0.8 ATR）
@@ -74,19 +75,20 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
         # 0. 【外軌十字星 / 反向 K 棒即刻止盈】(第一防線)
         if c_low < float(c.kc_lower):
             candle_body = abs(close - c_open)
+            candle_len = c_high - c_low
             lower_wick = min(close, c_open) - c_low
-            is_green_or_doji = (close > c_open) or (lower_wick >= 1.5 * candle_body)
             
-            if is_green_or_doji:
+            # 必須是綠色陽線 或 下影線極長(>=2倍實體且佔全K棒50%以上)
+            is_green = (close > c_open)
+            is_extreme_lower_wick = (lower_wick >= 2.0 * candle_body) and (candle_len > 0 and lower_wick / candle_len >= 0.5)
+            is_valid_reverse = is_green or is_extreme_lower_wick
+            
+            if is_valid_reverse:
                 ma3_curr = float(c.ma3)
                 ma3_prev = float(c1.ma3)
-                ma3_up = ma3_curr >= ma3_prev
+                ma3_up = (ma3_curr >= ma3_prev)
                 
-                prev_body = abs(float(c1.close) - float(c1.open))
-                prev_lower_wick = min(float(c1.close), float(c1.open)) - float(c1.low)
-                prev_is_green_or_doji = (float(c1.close) > float(c1.open)) or (prev_lower_wick >= 1.5 * prev_body)
-                
-                if ma3_up or prev_is_green_or_doji:
+                if ma3_up:
                     return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_EXHAUSTION_GREEN_DOJI')
 
         # 1. 當根收盤出現【大實體陽線】（c_close > c_open 且 實體 >= 0.8 ATR）
