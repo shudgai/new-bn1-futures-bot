@@ -88,6 +88,7 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             ma3_prev = float(c1.ma3)
             
             c_body_len = abs(close - c_open)
+            c1_body_len = abs(float(c1.close) - float(c1.open))
             is_doji = c_body_len <= 0.25 * atr
             
             opened_ts = float(position.get('open_timestamp') or 0)
@@ -95,7 +96,8 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             
             if sign == -1:  # 空單
                 long_lower_wick = (min(close, c_open) - c_low) > c_body_len * 2
-                is_stalled = is_doji or long_lower_wick
+                is_engulfing = (close > c_open) and (c_body_len > 0.8 * c1_body_len or c_body_len >= 1.0 * atr)
+                is_stalled = is_doji or long_lower_wick or is_engulfing
                 ma3_turned = ma3_curr > ma3_prev
                 
                 min_low_overall = float(trade_candles['low'].min()) if not trade_candles.empty else c_low
@@ -106,7 +108,8 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
                     
             elif sign == 1:  # 多單
                 long_upper_wick = (c_high - max(close, c_open)) > c_body_len * 2
-                is_stalled = is_doji or long_upper_wick
+                is_engulfing = (close < c_open) and (c_body_len > 0.8 * c1_body_len or c_body_len >= 1.0 * atr)
+                is_stalled = is_doji or long_upper_wick or is_engulfing
                 ma3_turned = ma3_curr < ma3_prev
                 
                 max_high_overall = float(trade_candles['high'].max()) if not trade_candles.empty else c_high
