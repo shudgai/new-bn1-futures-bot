@@ -9,7 +9,7 @@ DUAL_TRACK_STATE_KEYS = [
     'closed_exit_state', 'sl', 'tp', 'stop_loss', 'entry_atr', 'atr_sl',
     'atr_tp', 'atr_protection_version', 'swing_breakeven_armed', 'swing_peak_profit_atr',
     'swing_trailing_armed', 'swing_trailing_line', 'swing_trailing_last_bar',
-    'has_broken_outer_band',
+    'has_broken_outer_band', 'peak_pnl_usdt', 'peak_profit_diff',
 ]
 
 
@@ -119,6 +119,58 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
                 
                 if is_stalled or ma3_turned_stalled or not_new_high:
                     reason = 'EXIT_LONG_OUTER_BAND_EXHAUSTION'
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 冷水煮青蛙防禦：高位連續小碎步陰跌/陽推 (CONSECUTIVE_BLEED_EXIT)
+    # 前提：曾衝出外軌 且 有足夠浮盈（避免低位雜訊誤平）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if not reason and has_broken_outer and len(closed) >= 5:
+        entry_price_b = float(position['entry_price'])
+        unrealized_b = sign * (close - entry_price_b)
+        unrealized_usdt_b = float(position.get('unrealized_pnl') or 0.0)
+        has_profit = unrealized_b >= 1.0 * atr or unrealized_usdt_b >= 8.0
+
+        if has_profit:
+            last3 = closed.iloc[-3:]
+            c2, c1b, cb = last3.iloc[0], last3.iloc[1], last3.iloc[2]
+
+            if sign == 1:  # 多單：偵測連續小陰線磨損
+                # 條件 1：連續 3 根均為陰線且每根 close < 該根 ma3
+                three_bear = all(
+                    float(r.close) < float(r.open) and float(r.close) < float(r.ma3)
+                    for _, r in last3.iterrows()
+                )
+                # 條件 2：收盤價連續走低
+                descending_close = (
+                    float(cb.close) < float(c1b.close) < float(c2.close)
+                )
+                # 條件 3：在外軌高位，MA3 連續 2 根走平/下彎 且最新 close < ma3
+                ma3_flat_down = (
+                    float(cb.ma3) <= float(c1b.ma3)
+                    and float(c1b.ma3) <= float(c2.ma3)
+                    and float(cb.close) < float(cb.ma3)
+                )
+                if three_bear or descending_close or ma3_flat_down:
+                    reason = 'CONSECUTIVE_BLEED_EXIT_LONG'
+
+            elif sign == -1:  # 空單：偵測連續小陽線緩推
+                # 條件 1：連續 3 根均為陽線且每根 close > 該根 ma3
+                three_bull = all(
+                    float(r.close) > float(r.open) and float(r.close) > float(r.ma3)
+                    for _, r in last3.iterrows()
+                )
+                # 條件 2：收盤價連續走高
+                ascending_close = (
+                    float(cb.close) > float(c1b.close) > float(c2.close)
+                )
+                # 條件 3：MA3 連續 2 根走平/上彎 且最新 close > ma3
+                ma3_flat_up = (
+                    float(cb.ma3) >= float(c1b.ma3)
+                    and float(c1b.ma3) >= float(c2.ma3)
+                    and float(cb.close) > float(cb.ma3)
+                )
+                if three_bull or ascending_close or ma3_flat_up:
+                    reason = 'CONSECUTIVE_BLEED_EXIT_SHORT'
 
     if not reason:
         return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')

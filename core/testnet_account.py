@@ -1714,6 +1714,19 @@ class BinanceTestnetAccount:
             ):
                 return False
 
+        if entry_context and 'snapshot' in entry_context:
+            snapshot = entry_context['snapshot']
+            if 'candles' in snapshot and len(snapshot['candles']) > 0:
+                current_bar = snapshot['candles'][-1]
+                c_close = current_bar['close']
+                kc_upper = current_bar['kc_upper']
+                kc_lower = current_bar['kc_lower']
+                if "1000PEPE" in symbol or "PEPE" in symbol or "龙虾" in symbol:
+                    if side == "LONG" and c_close <= kc_upper:
+                        raise RuntimeError(f"🚨 [物理硬攔截生效] 違規開多！close({c_close}) <= kc_upper({kc_upper})，強制拒單！")
+                    if side == "SHORT" and c_close >= kc_lower:
+                        raise RuntimeError(f"🚨 [物理硬攔截生效] 違規開空！close({c_close}) >= kc_lower({kc_lower})，強制拒單！")
+
         from core.services.entry_firewall import validate_account_entry
         entry_decision = await validate_account_entry(self, symbol, side, entry_context)
         structural_stop = entry_decision.get('initial_sl')
