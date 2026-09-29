@@ -53,55 +53,5 @@ def chandelier_exit_reason(position, price, frame=None, *, now_ms=None):
 
 
 def exhaustion_exit_reason(position, closed, price):
-    """Post-entry closed-bar exhaustion; eight-bar local extreme, symmetric.
-
-    Require 1.2 entry ATR profit at both confirmation close and latest quote.
-    Pin: a new outer-rail extreme and rejection wick >= 1.5 body.
-    Reversal: adverse close outside the rail through the prior favorable
-    body's midpoint; the prior bar must have extended outside that rail.
-    """
-    try:
-        side = position['side']
-        if side not in ('LONG', 'SHORT') or closed is None or len(closed) < 2:
-            return None
-        sign = 1 if side == 'LONG' else -1
-        entry, atr = float(position['entry_price']), float(position['entry_atr'])
-        opened = float(position.get('open_timestamp') or 0)*1000
-        rows = closed[closed.timestamp.astype(float) >= opened].tail(9)
-        if len(rows) < 2:
-            return None
-        values = rows[['open', 'high', 'low', 'close', 'kc_upper', 'kc_lower']].astype(float)
-        if not all(valid(v) for v in [entry, atr, price] + list(values.to_numpy().flat)):
-            return None
-        if not ((values.low <= values[['open', 'close']].min(axis=1)) &
-                (values.high >= values[['open', 'close']].max(axis=1)) &
-                (values.kc_lower < values.kc_upper)).all():
-            return None
-        current, previous = rows.iloc[-1], rows.iloc[-2]
-        if min(sign*(float(current.close)-entry), sign*(price-entry))/atr < 1.2 - 1e-12:
-            return None
-        body = abs(float(current.close)-float(current.open))
-        if side == 'LONG':
-            extreme = float(current.high)
-            new_extreme = extreme > float(rows.high.iloc[:-1].max())
-            outside = extreme > float(current.kc_upper)
-            wick = extreme-max(float(current.open),float(current.close))
-            reversal_zone = (float(current.close) > float(current.kc_upper)
-                             and float(previous.high) > float(previous.kc_upper))
-        else:
-            extreme = float(current.low)
-            new_extreme = extreme < float(rows.low.iloc[:-1].min())
-            outside = extreme < float(current.kc_lower)
-            wick = min(float(current.open),float(current.close))-extreme
-            reversal_zone = (float(current.close) < float(current.kc_lower)
-                             and float(previous.low) < float(previous.kc_lower))
-        if new_extreme and outside and wick > 0 and wick >= 1.5*body:
-            return 'EXIT_EXHAUSTION_PIN_CLOSED'
-        midpoint = (float(previous.open)+float(previous.close))/2
-        if (reversal_zone and sign*(float(previous.close)-float(previous.open)) > 0
-                and sign*(float(current.close)-float(current.open)) < 0
-                and sign*(float(current.close)-midpoint) < 0):
-            return 'EXIT_EXHAUSTION_REVERSAL_CLOSED'
-    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
-        return None
+    # User requested to completely remove exhaustion exit
     return None
