@@ -32,9 +32,23 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
     price_broken = sign * (close - kc_mid) < 0
     trend_reversed = sign * (kc_mid - prev_kc_mid) < 0
 
-    reason = None
-    if price_broken or trend_reversed:
-        reason = 'EXIT_KC_MIDDLE_DEFENSE_CLOSED'
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # P1【最高優先級】跌破 MA15 生命線：獨立觸發，不等任何計數器
+    # 多單：close < ma15 → 趨勢防線潰敗，當根收線第 0 秒立即平倉
+    # 空單：close > ma15 → 空頭結構瓦解，當根收線第 0 秒立即平倉
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ma15 = float(c.get('ma15', c.get('ma3', close))) if hasattr(c, 'get') else float(getattr(c, 'ma15', getattr(c, 'ma3', close)))
+    if sign == 1 and close < ma15:
+        reason = 'EXIT_LONG_BELOW_MA15_LIFELINE'
+    elif sign == -1 and close > ma15:
+        reason = 'EXIT_SHORT_ABOVE_MA15_LIFELINE'
+
+    # P2: KC 中軌防守（MA15 未破時才評估）
+    if not reason:
+        price_broken = sign * (close - kc_mid) < 0
+        trend_reversed = sign * (kc_mid - prev_kc_mid) < 0
+        if price_broken or trend_reversed:
+            reason = 'EXIT_KC_MIDDLE_DEFENSE_CLOSED'
     
     # 極端異常 K 線緊急出場 (Abnormal Engulfing / V-Reversal)
     if not reason and len(closed) >= 3:
