@@ -52,7 +52,13 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
 
         # 1. 當根收盤出現【大實體陰線】（c_close < c_open 且 實體 >= 0.8 ATR）
         if close < c_open and abs(close - c_open) >= 0.8 * atr:
-            return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_SELLING_PRESSURE_BIG_BEAR')
+            ma3_curr = float(c.ma3)
+            ma3_prev = float(c1.ma3)
+            # 豁免：如果 MA3 依然陡峭向上，且價格仍在軌道外，不提前恐慌平倉
+            if (ma3_curr > ma3_prev) and (close > float(c.kc_upper)):
+                pass
+            else:
+                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_LONG_SELLING_PRESSURE_BIG_BEAR')
             
         # 2. 當根收盤【跌破 MA15】（c_close < ma15）
         ma15 = float(c.get('ma15', c.get('ma3', close))) if hasattr(c, 'get') else float(getattr(c, 'ma15', getattr(c, 'ma3', close)))
@@ -93,7 +99,13 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
 
         # 1. 當根收盤出現【大實體陽線】（c_close > c_open 且 實體 >= 0.8 ATR）
         if close > c_open and abs(close - c_open) >= 0.8 * atr:
-            return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_BUYING_PRESSURE_BIG_BULL')
+            ma3_curr = float(c.ma3)
+            ma3_prev = float(c1.ma3)
+            # 豁免：如果 MA3 依然陡峭向下，且價格仍在軌道外，不提前恐慌平倉
+            if (ma3_curr < ma3_prev) and (close < float(c.kc_lower)):
+                pass
+            else:
+                return dict(should_exit=True, action='FULL_CLOSE', reason='EXIT_SHORT_BUYING_PRESSURE_BIG_BULL')
             
         # 2. 當根收盤【漲破 MA15】（c_close > ma15）
         ma15 = float(c.get('ma15', c.get('ma3', close))) if hasattr(c, 'get') else float(getattr(c, 'ma15', getattr(c, 'ma3', close)))

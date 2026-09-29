@@ -196,14 +196,14 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     bar_open = float(c.open)
     if side == 'LONG':
         if bar_close <= bar_open:
-            return wait("REJECT_LONG: 收盤為紅K或十字星，嚴禁開多！")
+            return wait("REJECT_LONG_CANDLE_IS_RED")  # 收紅 K 絕對禁止開多
         if bar_close <= float(c.kc_upper):
-            return wait("REJECT_LONG: 收盤未站上 KC 上軌，嚴禁開多！")
+            return wait("REJECT_LONG_CLOSE_INSIDE_KC") # 沒實質站上外軌絕對禁止開多
     elif side == 'SHORT':
         if bar_close >= bar_open:
-            return wait("REJECT_SHORT: 收盤為綠K或十字星，嚴禁開空！")
+            return wait("REJECT_SHORT_CANDLE_IS_GREEN")  # 收綠 K 絕對禁止開空
         if bar_close >= float(c.kc_lower):
-            return wait("REJECT_SHORT: 收盤未跌破 KC 下軌，嚴禁開空！")
+            return wait("REJECT_SHORT_CLOSE_INSIDE_KC") # 沒實質跌破外軌絕對禁止開空
     if side not in ('LONG', 'SHORT'):
         return wait('INVALID_SIDE')
 
