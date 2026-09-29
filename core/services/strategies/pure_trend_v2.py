@@ -14,7 +14,35 @@ class PureTrendStrategyV2:
     5. 未觸發平倉前，嚴格抱牢波段，一股都不賣！
     """
     def __init__(self):
-        pass
+        self.cooldown_tracker = {}
+
+    def record_exit(self, symbol: str, side: str, current_bar_index: int):
+        self.cooldown_tracker[symbol] = dict(exit_bar_index=int(current_bar_index), side=side)
+
+    def evaluate_continuation_entry(self, symbol, current_bar_index, bar_curr, bar_prev):
+        ticket = self.cooldown_tracker.get(symbol)
+        if not ticket or current_bar_index - ticket['exit_bar_index'] < 2:
+            return None
+        try:
+            price, mid, upper, lower, ma3, ma15 = (float(bar_curr[k]) for k in
+                ('close','kc_middle','kc_upper','kc_lower','ma3','ma15'))
+            previous = float(bar_prev['close'])
+            if not all(math.isfinite(v) and v > 0 for v in (price,mid,upper,lower,ma3,ma15,previous)):
+                return None
+            if not lower < mid < upper or not bar_prev.get('is_closed', False):
+                return None
+            side = None
+            if price > upper and price > mid and ma3 > ma15 and price >= previous:
+                side = 'LONG'
+            elif price < lower and price < mid and ma3 < ma15 and price <= previous:
+                side = 'SHORT'
+            atr = bar_curr.get('atr') if bar_curr.get('is_closed', False) else bar_prev.get('atr')
+            if side and self.verify_profitable_expectation(side,price,bar_curr,atr):
+                return dict(side=side,type='CONTINUATION_RE_ENTRY_'+side,price=price,
+                            reason='平倉冷卻2根後，軌外強勢延續開倉')
+        except (KeyError,TypeError,ValueError,OverflowError):
+            return None
+        return None
 
     def verify_profitable_expectation(self, side: str, entry_price: float, bar_curr: Dict[str, Any], atr: float) -> bool:
         """Estimate net reward/risk; this does not change the actual exit policy."""
@@ -163,12 +191,34 @@ class PureTrendStrategyV2:
 
 V2_ENTRY_CODES = frozenset(
     f"{rule}_{side}"
-    for rule in ("THIRD_BAR_CONFIRMED",)
+    for rule in ("THIRD_BAR_CONFIRMED", "CONTINUATION_RE_ENTRY")
     for side in ("LONG", "SHORT")
 )
 
 
-def evaluate_v2_frame(frame, price=None, code=None):
+def successful_exit_ticket(account, symbol):
+    """Rebuild one-use re-entry permission from persisted successful fills."""
+    if account is None:
+        return None
+    events = []
+    for trade in getattr(account, 'trades', []):
+        if trade.get('symbol') != symbol or trade.get('action') not in ('OPEN_LONG','OPEN_SHORT','CLOSE_LONG','CLOSE_SHORT'):
+            continue
+        try:
+            stamp = float(trade.get('id'))
+            if math.isfinite(stamp) and stamp > 0:
+                events.append((stamp, trade))
+        except (TypeError,ValueError):
+            continue
+    if not events:
+        return None
+    stamp, latest = max(events, key=lambda item:(item[0], item[1]['action'].startswith('OPEN_')))
+    if not latest['action'].startswith('CLOSE_'):
+        return None
+    return dict(exit_bar_index=int(stamp // 60000), side=latest['action'][6:])
+
+
+def evaluate_v2_frame(frame, price=None, code=None, *, account=None, symbol=''):
     """Recompute V2 at every boundary; return a complete execution contract."""
     from core.services.strategies.unified_entry_strategy import confirmed
     closed = confirmed(frame)
@@ -187,6 +237,12 @@ def evaluate_v2_frame(frame, price=None, code=None):
     if live and float(row['timestamp']) != float(closed.iloc[-1]['timestamp']) + 60000:
         return None
     strategy = PureTrendStrategyV2()
+    ticket = successful_exit_ticket(account, symbol)
+    bar_index = int(float(row['timestamp']) // 60000)
+    if ticket:
+        strategy.record_exit(symbol, ticket['side'], ticket['exit_bar_index'])
+        if bar_index - ticket['exit_bar_index'] < 2:
+            return None
     if code is not None and code not in V2_ENTRY_CODES:
         return None
     # Never fall back to a previous closed signal when a live third bar fails.
@@ -195,7 +251,9 @@ def evaluate_v2_frame(frame, price=None, code=None):
         prev1, prev2 = closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict()
     else:
         prev1, prev2 = closed.iloc[-2].to_dict(), closed.iloc[-3].to_dict()
-    decision = strategy.evaluate_entry('', row, prev1, prev2)
+    decision = strategy.evaluate_entry(symbol, row, prev1, prev2)
+    if decision is None:
+        decision = strategy.evaluate_continuation_entry(symbol, bar_index, row, prev1)
     intrabar = live
     if not decision or (code is not None and decision['type'] != code):
         return None

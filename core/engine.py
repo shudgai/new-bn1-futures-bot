@@ -1623,7 +1623,7 @@ class TradingEngine:
         if frame is None or frame.empty:
             return None
         price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
-        decision = evaluate_v2_frame(frame, price, kwargs.get('code'))
+        decision = evaluate_v2_frame(frame, price, kwargs.get('code'), account=self.account, symbol=symbol)
         if not decision or decision['side'] != side:
             return None
         if candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id:
@@ -1799,7 +1799,7 @@ class TradingEngine:
                 return False
             
             from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
-            if evaluate_v2_frame(snapshot['frame'], price, decision['type']) is None:
+            if evaluate_v2_frame(snapshot['frame'], price, decision['type'], account=self.account, symbol=symbol) is None:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_V2_QUOTE_CHANGED', bar)
                 return False
 

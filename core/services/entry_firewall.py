@@ -163,7 +163,12 @@ async def validate_account_entry(account, symbol, side, context):
     except Exception as exc:
         raise ValueError("[FORBIDDEN_ENTRY] 無法取得最新行情") from exc
         
-    decision = validate_entry_frame(frame, side, code)
+    if code in V2_ENTRY_CODES:
+        decision = evaluate_v2_frame(frame, code=code, account=account, symbol=symbol)
+        if decision is None or decision['side'] != side:
+            raise ValueError('[FORBIDDEN_ENTRY] V2 冷卻、延續票據或最新行情不符')
+    else:
+        decision = validate_entry_frame(frame, side, code)
     stamp = float(decision['confirmation_bar_id'])
     age = time.time() * 1000 - (stamp if decision.get('intrabar') else stamp + 60000)
     if not math.isfinite(age) or not 0 <= age <= (60000 if decision.get('intrabar') else 90000):
@@ -171,6 +176,6 @@ async def validate_account_entry(account, symbol, side, context):
     if context.get('channel_confirmation_bar_id') != stamp:
         raise ValueError('[FORBIDDEN_ENTRY] 下單確認 K 已改變')
     last_close = getattr(account, 'last_closed_at', {}).get(symbol)
-    if last_close and stamp <= float(last_close) * 1000 + 60000:
+    if code not in V2_ENTRY_CODES and last_close and stamp <= float(last_close) * 1000 + 60000:
         raise ValueError('[FORBIDDEN_ENTRY] 剛觸發平倉，強制冷卻 2 根 K 棒！嚴禁追單！')
     return decision
