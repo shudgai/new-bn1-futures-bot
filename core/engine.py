@@ -1608,9 +1608,7 @@ class TradingEngine:
         return state.get('ready', False)
 
     def _channel_intrabar_ready(self, symbol, frame, price, side, **kwargs):
-        from core.services.strategies.unified_entry_strategy import evaluate_closed_entry, had_close
-        return symbol not in self.account.positions and evaluate_closed_entry(
-            frame, side, after_close=had_close(self.account,symbol))[0]
+        return symbol not in self.account.positions
 
 
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
@@ -1792,10 +1790,9 @@ class TradingEngine:
         if not math.isfinite(amount) or amount < MIN_TRADE_USDT:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INSUFFICIENT_MARGIN', bar, amount=amount, available=available)
             return False
-        # Final physical gate: same completed bar, same side and exact A-E reason.
-        valid, failure, final = evaluate_closed_entry(snapshot['frame'],side,after_close=had_close(self.account,symbol))
-        if not valid or final['reason'] != signal['signal_code'] or symbol in self.account.positions:
-            log_entry_gate(self,symbol,side,'EXECUTION',failure,bar)
+        # Final physical gate: ensure we don't hold a position already.
+        if symbol in self.account.positions:
+            log_entry_gate(self,symbol,side,'EXECUTION','Already in position',bar)
             return False
         if daily and daily()[0]:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_DAILY_LOSS', bar)
