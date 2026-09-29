@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger("PureTrendV2_Meme")
@@ -298,3 +299,56 @@ class PureTrendStrategyV2:
                     }
 
         return None
+
+
+V2_ENTRY_CODES = frozenset(
+    f"{rule}_{side}"
+    for rule in ("THIRD_BAR_TRACK_RIDING", "THIRD_BAR_INTRA", "THREE_BAR_BREAKOUT", "CONTINUATION")
+    for side in ("LONG", "SHORT")
+)
+
+
+def evaluate_v2_frame(frame, price=None, code=None):
+    """Recompute V2 at every boundary; return a complete execution contract."""
+    from core.services.strategies.unified_entry_strategy import confirmed
+    closed = confirmed(frame)
+    if closed is None:
+        return None
+    live = not bool(frame.iloc[-1].get('is_closed', False))
+    row = frame.iloc[-1].to_dict()
+    quote = float(price if price is not None else row['close'])
+    if not math.isfinite(quote) or quote <= 0:
+        return None
+    for key in ('open', 'close', 'kc_upper', 'kc_middle', 'kc_lower'):
+        if not math.isfinite(float(row[key])) or float(row[key]) <= 0:
+            return None
+    if not float(row['kc_lower']) < float(row['kc_middle']) < float(row['kc_upper']):
+        return None
+    if live and float(row['timestamp']) != float(closed.iloc[-1]['timestamp']) + 60000:
+        return None
+    strategy = PureTrendStrategyV2()
+    decision = None
+    intrabar = False
+    # A specified closed signal must not silently switch to a live signal.
+    want_live = code is None or code.startswith('THIRD_BAR_')
+    if live and want_live:
+        row['close'] = quote
+        decision = strategy.evaluate_third_bar_open_entry('', row, closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict())
+        intrabar = decision is not None
+    if not decision and (code is None or not code.startswith('THIRD_BAR_')):
+        decision = strategy.evaluate_entry('', closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict(), closed.iloc[-3].to_dict())
+    if not decision:
+        return None
+    expected = code.replace('THIRD_BAR_INTRA_', 'THIRD_BAR_TRACK_RIDING_') if code else None
+    if expected is not None and decision['type'] != expected:
+        return None
+    if decision['side'] == 'LONG' and quote <= float(row['kc_upper']):
+        return None
+    if decision['side'] == 'SHORT' and quote >= float(row['kc_lower']):
+        return None
+    atr = float(closed.iloc[-1]['atr'])
+    if not math.isfinite(atr) or atr <= 0:
+        return None
+    return dict(decision, type=code or decision['type'], entry_atr=atr,
+                confirmation_bar_id=float(row['timestamp'] if intrabar else closed.iloc[-1]['timestamp']),
+                close_price=float(closed.iloc[-1]['close']), intrabar=intrabar)

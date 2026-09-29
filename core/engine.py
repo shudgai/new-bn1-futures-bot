@@ -1612,51 +1612,18 @@ class TradingEngine:
 
 
     async def _fresh_channel_entry_snapshot(self, symbol, side, candidate_bar_id=None, **kwargs):
-        from core.services.strategies.pure_trend_v2 import PureTrendStrategyV2
-        from core.services.strategies.unified_entry_strategy import confirmed
-        
-        # 若指定了 candidate_bar_id，需先 keep_live=True 獲取最新 K 棒，避免因幣安 API 延遲導致確認 K 棒被誤當作 live 而剔除
-        frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
+        from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+        frame = await self._entry_boundary_frame(symbol)
         if frame is None or frame.empty:
             return None
-        frame = self.strategy.compute_indicators(frame.copy())
-        
-        closed = confirmed(frame)
-        if closed is None or len(closed) < 3:
-            return None
-            
-        decision = None
-        # 1. 盤中即時判定
-        if not frame.iloc[-1].get('is_closed', False):
-            intra_curr = frame.iloc[-1].to_dict()
-            intra_curr['close'] = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
-            intra_prev1 = closed.iloc[-1].to_dict()
-            intra_prev2 = closed.iloc[-2].to_dict()
-            decision = PureTrendStrategyV2().evaluate_third_bar_open_entry(symbol, intra_curr, intra_prev1, intra_prev2)
-            
-        # 2. 如果盤中沒有觸發，則檢查最新收盤的 K 棒
-        if not decision:
-            bar_curr = closed.iloc[-1].to_dict()
-            bar_prev1 = closed.iloc[-2].to_dict()
-            bar_prev2 = closed.iloc[-3].to_dict()
-            decision = PureTrendStrategyV2().evaluate_entry(symbol, bar_curr, bar_prev1, bar_prev2)
-            
+        price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+        decision = evaluate_v2_frame(frame, price, kwargs.get('code'))
         if not decision or decision['side'] != side:
             return None
-            
-        confirmation_bar_id = frame.iloc[-1].to_dict()['timestamp'] if 'INTRA' in decision['type'] or 'RIDING' in decision['type'] else closed.iloc[-1].to_dict()['timestamp']
-        decision['confirmation_bar_id'] = confirmation_bar_id
-        decision['reason'] = decision['reason']
-        
         if candidate_bar_id is not None and decision['confirmation_bar_id'] != candidate_bar_id:
             return None
-
-        price = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
-        if not math.isfinite(price) or price <= 0:
-            return None
-        row = closed_entry_candles(frame).iloc[-1]
-        return dict(frame=frame, price=price, signal_code=decision['reason'], decision=decision,
-                    kc_upper=float(row.kc_upper), kc_lower=float(row.kc_lower))
+        return dict(frame=frame, price=price, decision=decision,
+                    signal_code=decision['type'])
 
 
     def _channel_candle_entry_blocked(self, symbol, now=None):
@@ -1702,7 +1669,10 @@ class TradingEngine:
         frame = await self.fetch_klines(symbol, timeframe='1m', limit=200, keep_live=True)
         if frame is None or frame.empty:
             return None
-        return self.strategy.compute_indicators(frame.copy())
+        frame = self.strategy.compute_indicators(frame.copy())
+        if not bool(frame.iloc[-1].get('is_closed', False)):
+            frame.loc[frame.index[-1], 'close'] = float(getattr(self, 'tickers', {}).get(symbol) or frame.iloc[-1]['close'])
+        return frame
 
     async def _place_structured_entry(self, symbol, signal, live_price, channel_snapshot=None):
         locks = getattr(self,'_channel_entry_locks',None)
@@ -1731,23 +1701,6 @@ class TradingEngine:
             return False
         side = signal.get('side')
         
-        # [終極總閘門] 在任何條件之前，直接抓取實時最新一根【已收盤】的 K 棒，進行嚴格的紅綠 K 物理阻斷！
-        latest_klines = await self.fetch_klines(symbol, timeframe='1m', limit=2, keep_live=False)
-        if latest_klines is not None and not latest_klines.empty:
-            latest_kline = latest_klines.iloc[-1]
-            c_open = float(latest_kline['open'])
-            c_close = float(latest_kline['close'])
-            
-            # 開多總閘門：若最新收盤 K 棒不是實體陽線，嚴格拒絕下單！
-            if side == 'LONG' and c_close <= c_open:
-                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [總閘門拒絕] LONG 開多被拒：最新K棒收陰 (close={c_close} <= open={c_open})', signal.get('candidate_bar_id'))
-                return False
-                
-            # 開空總閘門：若最新收盤 K 棒不是實體陰線，嚴格拒絕下單！
-            if side == 'SHORT' and c_close >= c_open:
-                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [總閘門拒絕] SHORT 開空被拒：最新K棒收陽 (close={c_close} >= open={c_open})', signal.get('candidate_bar_id'))
-                return False
-
         if side not in ('LONG','SHORT') or symbol in self.account.positions:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', signal.get('candidate_bar_id'))
             return False
@@ -1765,12 +1718,12 @@ class TradingEngine:
         if not await self._execution_price_is_safe(symbol,side):
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 6 failed: _execution_price_is_safe returned False', signal.get('candidate_bar_id'))
             return False
-        snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'))
+        snapshot = await self._fresh_channel_entry_snapshot(symbol,side,signal.get('candidate_bar_id'), code=signal.get('signal_code'))
         if snapshot is None:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} snapshot is None (二次快照校驗失敗)', signal.get('candidate_bar_id'))
             return False
         decision = snapshot['decision']
-        if decision['reason'] != signal['signal_code']:
+        if decision['type'] != signal['signal_code']:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} reason mismatch: {decision["reason"]} vs {signal["signal_code"]}', signal.get('candidate_bar_id'))
             return False
         bar = decision['confirmation_bar_id']
@@ -1802,21 +1755,15 @@ class TradingEngine:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
 
-        from core.services.entry_firewall import EntryFirewall
-        try:
-            EntryFirewall.verify_can_open(snapshot['frame'], side, final['reason'])
-        except ValueError as e:
-            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', signal.get('candidate_bar_id'))
-            return False
         self.account.entry_frame_provider = self._entry_boundary_frame
 
-        atr = final['entry_atr']
+        atr = decision['entry_atr']
         sign = 1 if side == 'LONG' else -1
         from core.services.candle_data import entry_frame_evidence
-        context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=final['reason'],
+        context = dict(entry_mode='CHANNEL_SWING',entry_signal_code=decision['type'],
                        channel_confirmation_bar_id=bar,entry_atr=atr,profit_profile='TREND_EXTENSION',
-                       wave_regime='TREND',entry_snapshot=dict(signal_code=final['reason'],
-                       closed_bar=bar,closed_price=final['close_price'],quote_price=price,
+                       wave_regime='TREND',entry_snapshot=dict(signal_code=decision['type'],
+                       closed_bar=bar,closed_price=decision['close_price'],quote_price=price,
                        evidence=entry_frame_evidence(snapshot['frame'])))
         submit_lock = getattr(self, '_account_entry_submit_lock', None)
         if submit_lock is None:
@@ -1841,87 +1788,16 @@ class TradingEngine:
                 log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE_AT_SUBMIT', bar)
                 return False
             
-            # =================================================================
-            # 終極實體物理防線 (The Ultimate Physical Barrier)
-            # =================================================================
-            # 物理校驗三：排查多空變數被全域覆寫（Global Variable Pollution）
-            if side == 'LONG' and 'SHORT' in final['reason']:
-                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT] SIGNAL_OVERRIDE_BUG: side=LONG but reason={final["reason"]}', bar)
+            from core.services.strategies.pure_trend_v2 import evaluate_v2_frame
+            if evaluate_v2_frame(snapshot['frame'], price, decision['type']) is None:
+                log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_V2_QUOTE_CHANGED', bar)
                 return False
-            if side == 'SHORT' and 'LONG' in final['reason']:
-                log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [FATAL_REJECT] SIGNAL_OVERRIDE_BUG: side=SHORT but reason={final["reason"]}', bar)
-                return False
-
-            try:
-                from core.services.candle_data import closed_entry_candles
-                df_1m = closed_entry_candles(self.symbol_data[symbol]['1m'])
-                if df_1m is None or len(df_1m) < 2:
-                    return False
-                c = df_1m.iloc[-1]
-                c1 = df_1m.iloc[-2]
-                
-                # 安全取得 kc 指標 (相容大寫小寫與 Series/dict)
-                def get_field(obj, *keys, default=0.0):
-                    for k in keys:
-                        if hasattr(obj, 'get'):
-                            val = obj.get(k)
-                            if val is not None:
-                                return float(val)
-                        elif hasattr(obj, k):
-                            return float(getattr(obj, k))
-                    return default
-
-                kc_middle = get_field(c, 'kc_middle', 'KC_MIDDLE', 'middle', default=float(c.close))
-                c_upper = get_field(c, 'kc_upper', 'KC_UPPER', 'upper', default=kc_middle * 1.01)
-                c_lower = get_field(c, 'kc_lower', 'KC_LOWER', 'lower', default=kc_middle * 0.99)
-                c_mid = kc_middle
-                
-                # 嚴格依照畫面標準物理熔斷
-                diff_pct_long = (c_upper - price) / c_upper * 100
-                diff_pct_short = (price - c_lower) / c_lower * 100
-                
-                if side == 'LONG':
-                    if price <= c_upper:
-                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開多！Price: {price}, KC_Upper: {c_upper}, 還差: +{diff_pct_long:.2f}%', bar)
-                        return False
-                elif side == 'SHORT':
-                    if price >= c_lower:
-                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開空！Price: {price}, KC_Lower: {c_lower}, 還差: +{diff_pct_short:.2f}%', bar)
-                        return False
-                    if price >= c_mid:
-                        log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 違規開空！價格 {price} 位於 KC中軌 {c_mid} 上方，嚴禁開空！', bar)
-                        return False
-
-                # 物理校驗四：強制雙同色實體校驗
-                    c_body = float(c.close) - float(c.open)
-                    c1_body = float(c1.close) - float(c1.open)
-                    
-                    if side == 'LONG':
-                        if (c_body <= 0 or c1_body <= 0) and 'IGNITION' not in final['reason']:
-                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開多！最近兩根K棒非雙綠實體且非起爆 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
-                            return False
-                            
-                            
-                        # (依妖幣鐵律刪除：前高阻力攔截)
-                            
-                    elif side == 'SHORT':
-                        if (c_body >= 0 or c1_body >= 0) and 'IGNITION' not in final['reason']:
-                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！最近兩根K棒非雙紅實體且非起爆 (c1={c1_body:.6f}, c={c_body:.6f})', bar)
-                            return False
-                        
-                        ck_up = float(c.kc_middle) > float(c1.kc_middle) and float(c.kc_upper) >= float(c1.kc_upper)
-                        if ck_up:
-                            log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 當前大週期 ↑CK 向上，嚴禁逆勢開空！信號強制丟棄！', bar)
-                            return False
-            except Exception as e:
-                pass
-            # =================================================================
 
             context['entry_snapshot']['quote_price'] = price
-            log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=final['reason'], margin=amount, leverage=leverage)
+            log_entry_gate(self, symbol, side, 'EXECUTION', 'ACCOUNT_SUBMIT', bar, code=decision['type'], margin=amount, leverage=leverage)
             log_count = len(getattr(self.account, 'logs', []))
             opened = await self.account.open_position(symbol=symbol,side=side,price=price,
-                amount_usdt=amount,sl=final.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Closed1M '+final['reason'],
+                amount_usdt=amount,sl=decision.get('initial_sl', price-sign*1.5*atr),tp=0.,reason='Closed1M '+decision['type'],
                 atr=atr,leverage=leverage,signal_score=int(signal.get('score') or 100),entry_context=context)
         if not opened:
             recent = getattr(self.account, 'logs', [])[log_count:]

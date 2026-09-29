@@ -7,6 +7,9 @@ from core.services.strategies.unified_entry_strategy import (
 )
 
 
+from core.services.strategies.pure_trend_v2 import V2_ENTRY_CODES, evaluate_v2_frame
+
+
 class EntryFirewall:
     @classmethod
     def verify_can_open(cls, frame, side, code):
@@ -14,6 +17,12 @@ class EntryFirewall:
         【架構級重大重構：建立開倉底層的「單一閘門（Single Hard-Gate）」】
         所有開倉行為必須經過此唯一入口，實施一票否決。
         """
+        if code in V2_ENTRY_CODES:
+            decision = evaluate_v2_frame(frame, code=code)
+            if decision is None or decision['side'] != side:
+                raise ValueError('[FORBIDDEN_ENTRY] 最新行情不符合 V2 訊號')
+            return decision
+
         if side not in ('LONG', 'SHORT') or code not in RULE_CODES:
             raise ValueError('[FORBIDDEN_ENTRY] 非法開倉方向或白名單訊號')
             
@@ -144,7 +153,7 @@ async def validate_account_entry(account, symbol, side, context):
         return {'action': 'ENTER', 'side': side, 'reason': 'MANUAL_TEST'}
         
     code = context.get('entry_signal_code')
-    if code not in RULE_CODES:
+    if code not in RULE_CODES and code not in V2_ENTRY_CODES:
         raise ValueError('[FORBIDDEN_ENTRY] 缺少 A–E 白名單訊號，禁止送單')
     provider = getattr(account, 'entry_frame_provider', None)
     if not callable(provider):
@@ -156,8 +165,8 @@ async def validate_account_entry(account, symbol, side, context):
         
     decision = validate_entry_frame(frame, side, code)
     stamp = float(decision['confirmation_bar_id'])
-    age = time.time() * 1000 - (stamp + 60000)
-    if not math.isfinite(age) or not 0 <= age <= 90000:
+    age = time.time() * 1000 - (stamp if decision.get('intrabar') else stamp + 60000)
+    if not math.isfinite(age) or not 0 <= age <= (60000 if decision.get('intrabar') else 90000):
         raise ValueError('[FORBIDDEN_ENTRY] 已收線訊號過期或來自未來')
     if context.get('channel_confirmation_bar_id') != stamp:
         raise ValueError('[FORBIDDEN_ENTRY] 下單確認 K 已改變')
