@@ -76,8 +76,8 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             
     has_broken_outer = position.get('has_broken_outer_band', False)
 
-    # 外軌加速 MA3 動能平倉 (僅限曾破外軌且已大幅獲利)
-    if not reason and has_broken_outer and len(closed) >= 2:
+    # 外軌末端補跌/加速噴發之十字星與 MA3 衰竭即時收割 (Exhaustion Mode)
+    if not reason and has_broken_outer and len(closed) >= 3:
         entry_price = float(position['entry_price'])
         unrealized_profit = sign * (close - entry_price)
         unrealized_profit_pct = unrealized_profit / entry_price
@@ -87,16 +87,33 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
             ma3_curr = float(c.ma3)
             ma3_prev = float(c1.ma3)
             
+            c_body_len = abs(close - c_open)
+            is_doji = c_body_len <= 0.25 * atr
+            
+            opened_ts = float(position.get('open_timestamp') or 0)
+            trade_candles = closed[closed['timestamp'].astype(float) >= opened_ts * 1000]
+            
             if sign == -1:  # 空單
-                # 條件 3：收盤價站回下軌之內 (close > kc_lower)
-                # 條件 4：MA3 拐頭向上 (ma3_curr > ma3_prev)
-                if close > float(c.kc_lower) and ma3_curr > ma3_prev:
-                    reason = 'EXIT_SHORT_OUTER_BAND_MA3_TURN'
+                long_lower_wick = (min(close, c_open) - c_low) > c_body_len * 2
+                is_stalled = is_doji or long_lower_wick
+                ma3_turned = ma3_curr > ma3_prev
+                
+                min_low_overall = float(trade_candles['low'].min()) if not trade_candles.empty else c_low
+                not_new_low = (c_low > min_low_overall and float(c1.low) > min_low_overall)
+                
+                if is_stalled or ma3_turned or not_new_low:
+                    reason = 'EXIT_SHORT_OUTER_BAND_EXHAUSTION'
+                    
             elif sign == 1:  # 多單
-                # 條件 3：收盤價跌回上軌之內 (close < kc_upper)
-                # 條件 4：MA3 拐頭向下 (ma3_curr < ma3_prev)
-                if close < float(c.kc_upper) and ma3_curr < ma3_prev:
-                    reason = 'EXIT_LONG_OUTER_BAND_MA3_TURN'
+                long_upper_wick = (c_high - max(close, c_open)) > c_body_len * 2
+                is_stalled = is_doji or long_upper_wick
+                ma3_turned = ma3_curr < ma3_prev
+                
+                max_high_overall = float(trade_candles['high'].max()) if not trade_candles.empty else c_high
+                not_new_high = (c_high < max_high_overall and float(c1.high) < max_high_overall)
+                
+                if is_stalled or ma3_turned or not_new_high:
+                    reason = 'EXIT_LONG_OUTER_BAND_EXHAUSTION'
 
     if not reason:
         return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')
