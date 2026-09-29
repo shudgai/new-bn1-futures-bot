@@ -1699,8 +1699,12 @@ class TradingEngine:
 
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 1 failed: mode={signal.get("entry_mode")} code={signal.get("signal_code")}', signal.get('candidate_bar_id'))
             return False
+        from core.services.strategies.pure_trend_v2 import V2_ENTRY_CODES
+        if signal.get('signal_code') not in V2_ENTRY_CODES:
+            log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', 'BLOCKED_OBSOLETE_ENTRY_SIGNAL', signal.get('candidate_bar_id'))
+            return False
         side = signal.get('side')
-        
+
         if side not in ('LONG','SHORT') or symbol in self.account.positions:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} early check 2 failed: side={side} in_pos={symbol in self.account.positions}', signal.get('candidate_bar_id'))
             return False

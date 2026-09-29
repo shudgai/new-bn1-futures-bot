@@ -19,7 +19,7 @@ def candles(side='LONG', live=True):
             for i in range(6)]
     rows[-3].update(open=100.8, close=101.5, high=101.6, low=100.7)
     rows[-2].update(open=101.5, close=101.8, high=101.9, low=101.4)
-    rows[-1].update(open=102., close=101.8, high=102.1, low=101.7, is_closed=not live)
+    rows[-1].update(open=101.9, close=101.8, high=102.1, low=101.7, is_closed=not live)
     if not live:
         for row in rows: row['timestamp'] -= 60000
     f = pd.DataFrame(rows)
@@ -96,16 +96,11 @@ def test_exchange_boundary_sends_v2_order(monkeypatch, side):
 
 
 @pytest.mark.parametrize('side', ['LONG','SHORT'])
-def test_intra_alias_and_continuation(side):
+def test_obsolete_entry_codes_rejected(side):
     f = candles(side)
-    assert validate_entry_frame(f,side,'THIRD_BAR_INTRA_'+side)
-    f = candles(side,False)
-    f.loc[f.index[-3], 'open'] = 101.4 if side=='LONG' else 98.6
-    idx=f.index[-1]
-    f.loc[idx, 'open'] = 101.2 if side=='LONG' else 98.8
-    f.loc[idx, 'low' if side=='LONG' else 'high'] = 101.1 if side=='LONG' else 98.9
-    f.loc[idx, 'ma3'] = 101.5 if side=='LONG' else 98.5
-    assert validate_entry_frame(f,side,'CONTINUATION_'+side)
+    for prefix in ('THIRD_BAR_INTRA_', 'THIRD_BAR_TRACK_RIDING_', 'THREE_BAR_BREAKOUT_', 'CONTINUATION_'):
+        with pytest.raises(ValueError):
+            validate_entry_frame(f,side,prefix+side)
 
 
 @pytest.mark.parametrize('fault', ['slots','daily','balance','quote','changed','exchange_error'])

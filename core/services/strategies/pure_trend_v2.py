@@ -7,7 +7,7 @@ logger = logging.getLogger("PureTrendV2_Meme")
 class PureTrendStrategyV2:
     """
     妖幣純淨趨勢追蹤引擎：
-    1. 開倉：破軌前兩根同色確立，第三根收盤同色才開倉（第三根若反向則作廢，絕對不開倉）。
+    1. 開倉：前兩根已收線同色站外，第三根不分顏色站外；反向實體不超過第二根50%。
     2. 物理禁區：KC 中軌上方嚴禁開空！KC 中軌下方嚴禁開多！
     3. 盤中熔斷：一股都不賣，但遭遇大瀑布、反向巨型異常K、BTC熔斷時，盤中0.1秒秒平！
     4. 收盤平倉：若無極端熔斷，持倉抱到收線；若滿足「平倉1/平倉2/平倉3」任一標準，收盤立即平倉！
@@ -51,110 +51,49 @@ class PureTrendStrategyV2:
             return False
         return True
 
-    # =================================================================
-    # 一、 開倉主入口（只在 1M 收線確定時評估）
-    # =================================================================
     def evaluate_entry(self, symbol: str, bar_curr: Dict[str, Any], bar_prev1: Dict[str, Any], bar_prev2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        # 1. 物理收線校驗：未收盤絕不開倉
-        if not bar_curr.get('x', False) and not bar_curr.get('is_closed', False):
+        """Two closed same-color outside bars, then the third bar only."""
+        import numpy as np
+        for bar in (bar_prev2, bar_prev1):
+            flag = bar.get('is_closed', bar.get('x', False))
+            if not isinstance(flag, (bool, np.bool_)) or not flag:
+                return None
+        try:
+            p2_open, p2_close = float(bar_prev2['open']), float(bar_prev2['close'])
+            p1_open, p1_close = float(bar_prev1['open']), float(bar_prev1['close'])
+            c_open, price = float(bar_curr['open']), float(bar_curr['close'])
+            upper, lower, mid = (float(bar_curr[k]) for k in ('kc_upper','kc_lower','kc_middle'))
+            values = (p2_open,p2_close,p1_open,p1_close,c_open,price,upper,lower,mid,
+                      float(bar_prev2['kc_upper']),float(bar_prev2['kc_lower']),
+                      float(bar_prev1['kc_upper']),float(bar_prev1['kc_lower']))
+            if not all(math.isfinite(v) and v > 0 for v in values) or not lower < mid < upper:
+                return None
+            stamps = [float(bar['timestamp']) for bar in (bar_prev2,bar_prev1,bar_curr)]
+            if not all(math.isfinite(v) for v in stamps) or stamps[1]-stamps[0] != 60000 or stamps[2]-stamps[1] != 60000:
+                return None
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
-
-        c_open = float(bar_curr['open'])
-        c_close = float(bar_curr['close'])
-        c_high = float(bar_curr['high'])
-        c_low = float(bar_curr['low'])
-        kc_upper = float(bar_curr['kc_upper'])
-        kc_lower = float(bar_curr['kc_lower'])
-        kc_mid = float(bar_curr['kc_middle'])
-        ma3 = float(bar_curr['ma3'])
-        prev_ma3 = float(bar_curr.get('prev_ma3', ma3))
-        ma15 = float(bar_curr['ma15'])
-
-        p1_open = float(bar_prev1['open'])
-        p1_close = float(bar_prev1['close'])
-        p1_kc_upper = float(bar_prev1['kc_upper'])
-        p1_kc_lower = float(bar_prev1['kc_lower'])
-
-        p2_open = float(bar_prev2['open'])
-        p2_close = float(bar_prev2['close'])
-        p2_kc_upper = float(bar_prev2['kc_upper'])
-        p2_kc_lower = float(bar_prev2['kc_lower'])
-        p2_atr = float(bar_prev2.get('atr', 0.0001))
-        p2_body = abs(p2_close - p2_open)
-
-        curr_body = abs(c_close - c_open)
-        upper_wick = c_high - max(c_open, c_close)
-        lower_wick = min(c_open, c_close) - c_low
-
-        # -------------------------------------------------------------
-        # 多單開倉判定 (LONG ENTRY)
-        # -------------------------------------------------------------
-        if c_close > kc_mid:  # 物理禁區：中軌上方才考慮開多
-            if not self.verify_profitable_expectation('LONG', c_close, bar_curr, bar_curr.get('atr')):
-                return None
-            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_kc_upper) and (p2_body >= 0.5 * p2_atr)
-            p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_kc_upper)
-
-            # 【A. 破軌雙同色開多：前兩根陽線破軌，第三根收盤確認開多】
-            if p2_is_green_break and p1_is_green_break:
-                three_bar_valid = True
-                if c_close <= kc_upper:
-                    logger.info(f"{symbol} 破軌第三根跌回上軌內，作廢開多！")
-                    three_bar_valid = False
-                elif upper_wick > 1.5 * curr_body:
-                    logger.info(f"{symbol} 破軌第三根上影線過長，防墓碑針，作廢開多！")
-                    three_bar_valid = False
-
-                if three_bar_valid:
-                    return {'side': 'LONG', 'type': 'THREE_BAR_BREAKOUT_LONG', 'price': c_close, 'reason': '雙陽破上軌，第三根收陽確認開多'}
-
-            # 【B. 延續開多 (CONTINUATION_LONG)】
-            # 條件：收盤確立、收在 KC 上軌外側、當根為陽線、MA3 順勢向上
-            if c_close > kc_upper:
-                if c_close > c_open:  # 當根收陽
-                    if ma3 > ma15 and upper_wick <= 1.2 * curr_body:
-                        return {
-                            'side': 'LONG',
-                            'type': 'CONTINUATION_LONG',
-                            'price': c_close,
-                            'reason': '上軌外順勢暴漲，陽線延續開多'
-                        }
-
-        # -------------------------------------------------------------
-        # 空單開倉判定 (SHORT ENTRY)
-        # -------------------------------------------------------------
-        if c_close < kc_mid:  # 物理禁區：中軌下方才考慮開空
-            if not self.verify_profitable_expectation('SHORT', c_close, bar_curr, bar_curr.get('atr')):
-                return None
-            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_kc_lower) and (p2_body >= 0.5 * p2_atr)
-            p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_kc_lower)
-
-            # 【A. 破軌雙同色開空：前兩根陰線破軌，第三根收盤確認開空】
-            if p2_is_red_break and p1_is_red_break:
-                three_bar_valid = True
-                if c_close >= kc_lower:
-                    logger.info(f"{symbol} 破軌第三根彈回下軌內，作廢開空！")
-                    three_bar_valid = False
-                elif lower_wick > 1.5 * curr_body:
-                    logger.info(f"{symbol} 破軌第三根下影線過長，防插針反彈，作廢開空！")
-                    three_bar_valid = False
-
-                if three_bar_valid:
-                    return {'side': 'SHORT', 'type': 'THREE_BAR_BREAKOUT_SHORT', 'price': c_close, 'reason': '雙陰破下軌，第三根收陰確認開空'}
-
-            # 【B. 延續開空 (CONTINUATION_SHORT)】
-            # 條件：收盤確立、收在 KC 下軌外側、當根為陰線、MA3 順勢向下
-            if c_close < kc_lower:
-                if c_close < c_open:  # 當根收陰
-                    if ma3 < ma15 and lower_wick <= 1.2 * curr_body:
-                        return {
-                            'side': 'SHORT',
-                            'type': 'CONTINUATION_SHORT',
-                            'price': c_close,
-                            'reason': '下軌外順勢暴跌，陰線延續開空'
-                        }
-
-        return None
+        side = None
+        if (price > upper and price > mid and
+                p2_close > p2_open and p2_close > float(bar_prev2['kc_upper']) and
+                p1_close > p1_open and p1_close > float(bar_prev1['kc_upper'])):
+            side = 'LONG'
+            adverse_body = c_open - price
+        elif (price < lower and price < mid and
+                p2_close < p2_open and p2_close < float(bar_prev2['kc_lower']) and
+                p1_close < p1_open and p1_close < float(bar_prev1['kc_lower'])):
+            side = 'SHORT'
+            adverse_body = price - c_open
+        if side is None:
+            return None
+        if adverse_body > 0.5 * abs(p1_close-p1_open):
+            logger.info('%s 第3根反向實體超過第2根實體50%%，放棄%s', symbol, side)
+            return None
+        atr = bar_curr.get('atr') if bar_curr.get('is_closed', bar_curr.get('x',False)) else bar_prev1.get('atr')
+        if not self.verify_profitable_expectation(side, price, bar_curr, atr):
+            return None
+        return dict(side=side, type='THIRD_BAR_CONFIRMED_'+side, price=price,
+                    reason='第1根破軌+第2根同色站外+第3根不分顏色站外開倉')
 
     # =================================================================
     # 二、 盤中即時極端熔斷（每一秒檢查，不看收盤，立刻秒平逃命）
@@ -280,73 +219,12 @@ class PureTrendStrategyV2:
         return None
 
     def evaluate_third_bar_open_entry(self, symbol: str, current_bar: Dict[str, Any], bar_prev1: Dict[str, Any], bar_prev2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        # 前兩根收盤數據
-        p1_open = float(bar_prev1['open'])
-        p1_close = float(bar_prev1['close'])
-        p1_upper = float(bar_prev1['kc_upper'])
-        p1_lower = float(bar_prev1['kc_lower'])
-        p1_body = abs(p1_close - p1_open)
-
-        p2_open = float(bar_prev2['open'])
-        p2_close = float(bar_prev2['close'])
-        p2_upper = float(bar_prev2['kc_upper'])
-        p2_lower = float(bar_prev2['kc_lower'])
-        p2_atr = float(bar_prev2.get('atr', 0.0001))
-        p2_body = abs(p2_close - p2_open)
-
-        # 當前第三根數值
-        c_open = float(current_bar['open'])
-        c_price = float(current_bar['close'])  # 即時價格
-        kc_upper = float(current_bar['kc_upper'])
-        kc_lower = float(current_bar['kc_lower'])
-        kc_mid = float(current_bar['kc_middle'])
-
-        # -------------------------------------------------------------
-        # 多單：前雙陽破上軌，第三根只要「穩在 KC 上軌外側」直接開多！
-        # -------------------------------------------------------------
-        if c_price > kc_mid:
-            if not self.verify_profitable_expectation('LONG', c_price, current_bar, bar_prev1.get('atr')):
-                return None
-            p2_is_green_break = (p2_close > p2_open) and (p2_close > p2_upper) and (p2_body >= 0.5 * p2_atr)
-            p1_is_green_break = (p1_close > p1_open) and (p1_close > p1_upper)
-
-            if p2_is_green_break and p1_is_green_break:
-                # 條件 1：現價依然穩穩站在 KC 上軌外側
-                if c_price > kc_upper:
-                    # 通過：不問顏色，立刻市價開多！
-                    return {
-                        'side': 'LONG',
-                        'type': 'THIRD_BAR_TRACK_RIDING_LONG',
-                        'price': c_price,
-                        'reason': '前雙陽破上軌確立，第三根穩站上軌外側不問顏色直接開多'
-                    }
-
-        # -------------------------------------------------------------
-        # 空單：前雙陰破下軌，第三根只要「穩在 KC 下軌外側」直接開空！
-        # -------------------------------------------------------------
-        if c_price < kc_mid:
-            if not self.verify_profitable_expectation('SHORT', c_price, current_bar, bar_prev1.get('atr')):
-                return None
-            p2_is_red_break = (p2_close < p2_open) and (p2_close < p2_lower) and (p2_body >= 0.5 * p2_atr)
-            p1_is_red_break = (p1_close < p1_open) and (p1_close < p1_lower)
-
-            if p2_is_red_break and p1_is_red_break:
-                # 條件 1：現價依然穩穩站在 KC 下軌外側
-                if c_price < kc_lower:
-                    # 通過：不問顏色，立刻市價開空！
-                    return {
-                        'side': 'SHORT',
-                        'type': 'THIRD_BAR_TRACK_RIDING_SHORT',
-                        'price': c_price,
-                        'reason': '前雙陰破下軌確立，第三根穩站下軌外側不問顏色直接開空'
-                    }
-
-        return None
+        return self.evaluate_entry(symbol, current_bar, bar_prev1, bar_prev2)
 
 
 V2_ENTRY_CODES = frozenset(
     f"{rule}_{side}"
-    for rule in ("THIRD_BAR_TRACK_RIDING", "THIRD_BAR_INTRA", "THREE_BAR_BREAKOUT", "CONTINUATION")
+    for rule in ("THIRD_BAR_CONFIRMED",)
     for side in ("LONG", "SHORT")
 )
 
@@ -370,20 +248,17 @@ def evaluate_v2_frame(frame, price=None, code=None):
     if live and float(row['timestamp']) != float(closed.iloc[-1]['timestamp']) + 60000:
         return None
     strategy = PureTrendStrategyV2()
-    decision = None
-    intrabar = False
-    # A specified closed signal must not silently switch to a live signal.
-    want_live = code is None or code.startswith('THIRD_BAR_')
-    if live and want_live:
-        row['close'] = quote
-        decision = strategy.evaluate_third_bar_open_entry('', row, closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict())
-        intrabar = decision is not None
-    if not decision and (code is None or not code.startswith('THIRD_BAR_')):
-        decision = strategy.evaluate_entry('', closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict(), closed.iloc[-3].to_dict())
-    if not decision:
+    if code is not None and code not in V2_ENTRY_CODES:
         return None
-    expected = code.replace('THIRD_BAR_INTRA_', 'THIRD_BAR_TRACK_RIDING_') if code else None
-    if expected is not None and decision['type'] != expected:
+    # Never fall back to a previous closed signal when a live third bar fails.
+    row['close'] = quote
+    if live:
+        prev1, prev2 = closed.iloc[-1].to_dict(), closed.iloc[-2].to_dict()
+    else:
+        prev1, prev2 = closed.iloc[-2].to_dict(), closed.iloc[-3].to_dict()
+    decision = strategy.evaluate_entry('', row, prev1, prev2)
+    intrabar = live
+    if not decision or (code is not None and decision['type'] != code):
         return None
     if decision['side'] == 'LONG' and quote <= float(row['kc_upper']):
         return None
