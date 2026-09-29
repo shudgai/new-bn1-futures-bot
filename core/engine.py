@@ -1815,17 +1815,21 @@ class TradingEngine:
             c_upper = float(snapshot['kc_upper'])
             c_lower = float(snapshot['kc_lower'])
             
+            # 嚴格依照畫面標準物理熔斷
+            diff_pct_long = (c_upper - price) / c_upper * 100
+            diff_pct_short = (price - c_lower) / c_lower * 100
+            
             if side == 'LONG':
-                if c_close <= c_upper:
-                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開多！當前收盤價 {c_close} <= KC上軌 {c_upper}，直接攔截不送單！', bar)
+                if price <= c_upper:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開多！Price: {price}, KC_Upper: {c_upper}, 還差: +{diff_pct_long:.2f}%', bar)
                     return False
             elif side == 'SHORT':
-                if c_close >= c_lower:
-                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理熔斷拒單] 違規開空！當前收盤價 {c_close} >= KC下軌 {c_lower}，直接攔截不送單！', bar)
+                if price >= c_lower:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [絕對攔截] 通道內禁止開空！Price: {price}, KC_Lower: {c_lower}, 還差: +{diff_pct_short:.2f}%', bar)
                     return False
                 c_mid = float(snapshot['kc_middle'])
-                if c_close >= c_mid:
-                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 違規開空！價格 {c_close} 位於 KC中軌 {c_mid} 上方，嚴禁開空！', bar)
+                if price >= c_mid:
+                    log_entry_gate(self, symbol, side, 'EXECUTION', f'🛑 [物理攔截] 違規開空！價格 {price} 位於 KC中軌 {c_mid} 上方，嚴禁開空！', bar)
                     return False
             # 物理校驗四：嚴禁在阻力線前追多 (距離前高阻力 <= 0.25%) 以及強制雙同色實體校驗
             try:
