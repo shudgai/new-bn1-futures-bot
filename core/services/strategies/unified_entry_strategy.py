@@ -252,6 +252,14 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
         if c_middle > c1_middle or c_ma15 > c1_ma15:
             return wait('BLOCKED_SHORT_AGAINST_TREND')
 
+    # CK 趨勢嚴格同向要求 (Global CK Alignment Block)
+    if side == 'LONG':
+        if not (c_middle > c1_middle and float(c.kc_upper) >= float(c1.kc_upper)):
+            return wait('BLOCKED_CK_NOT_ALIGNED_LONG')
+    elif side == 'SHORT':
+        if not (c_middle < c1_middle and float(c.kc_lower) <= float(c1.kc_lower)):
+            return wait('BLOCKED_CK_NOT_ALIGNED_SHORT')
+
     # 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
     c_upper = float(c.kc_upper)
     c_lower = float(c.kc_lower)
