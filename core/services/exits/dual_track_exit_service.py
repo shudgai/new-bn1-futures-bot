@@ -63,6 +63,21 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
                     if close < min_prev_low_open and c_open >= float(prev_2['close'].max()):
                         reason = 'EXIT_LONG_ABNORMAL_BEAR_CLOSED'
 
+    # MA3 峰谷轉向出場 (Peak/Trough Reversal)
+    # 用於強勢波段中，提早鎖定利潤，不需死等跌破/突破 KC 中軌
+    if not reason and len(closed) >= 3:
+        c2 = closed.iloc[-3]
+        ma3_curr = float(c.ma3)
+        ma3_prev = float(c1.ma3)
+        ma3_prev2 = float(c2.ma3)
+        
+        if sign == 1:
+            if ma3_prev > ma3_prev2 and ma3_curr < ma3_prev:
+                reason = 'EXIT_MA3_PEAK_REVERSAL_CLOSED'
+        elif sign == -1:
+            if ma3_prev < ma3_prev2 and ma3_curr > ma3_prev:
+                reason = 'EXIT_MA3_TROUGH_REVERSAL_CLOSED'
+
     if not reason:
         return dict(should_exit=False, action='HOLD', reason='TREND_RUNNING')
     return dict(should_exit=True, action='FULL_CLOSE', reason=reason)
