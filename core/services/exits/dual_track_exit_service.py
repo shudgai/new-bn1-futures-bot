@@ -85,22 +85,30 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
 
         # ── 外軌耗竭：MA3 走平/轉向 + 滯漲形態 ───────────────────────
         if sign == 1:
+            is_super_trend   = (ma3_curr > float(c.kc_upper)) and (ma3_curr > ma3_prev)
             long_upper_wick  = (c_high - max(close, c_open)) > c_body_len * 2
-            is_engulfing_ex  = (close < c_open) and (c_body_len >= c1_body_len or (c_open - close) >= 1.0 * atr)
-            is_stalled       = is_doji or long_upper_wick or is_engulfing_ex
+            is_engulfing_ex  = (close < c_open) and (c_body_len >= 0.8 * atr)
+            is_stalled       = is_doji or long_upper_wick
             ma3_stalled      = (ma3_curr < ma3_prev) and (close < c_open or long_upper_wick)
             max_high         = float(trade_candles2['high'].max()) if not trade_candles2.empty else c_high
             not_new_high     = (c_high < max_high and float(c1.high) < max_high)
-            if is_stalled or ma3_stalled or not_new_high:
+            
+            if is_engulfing_ex:
+                reason = 'EXIT_LONG_REVERSE_ENGULFING_0.8ATR'
+            elif not is_super_trend and (is_stalled or ma3_stalled or not_new_high):
                 reason = 'EXIT_LONG_OUTER_BAND_EXHAUSTION'
         elif sign == -1:
+            is_super_trend   = (ma3_curr < float(c.kc_lower)) and (ma3_curr < ma3_prev)
             long_lower_wick  = (min(close, c_open) - c_low) > c_body_len * 2
-            is_engulfing_ex  = (close > c_open) and (c_body_len >= c1_body_len or (close - c_open) >= 1.0 * atr)
-            is_stalled       = is_doji or long_lower_wick or is_engulfing_ex
+            is_engulfing_ex  = (close > c_open) and (c_body_len >= 0.8 * atr)
+            is_stalled       = is_doji or long_lower_wick
             ma3_stalled      = (ma3_curr > ma3_prev) and (close > c_open or long_lower_wick)
             min_low          = float(trade_candles2['low'].min()) if not trade_candles2.empty else c_low
             not_new_low      = (c_low > min_low and float(c1.low) > min_low)
-            if is_stalled or ma3_stalled or not_new_low:
+            
+            if is_engulfing_ex:
+                reason = 'EXIT_SHORT_REVERSE_ENGULFING_0.8ATR'
+            elif not is_super_trend and (is_stalled or ma3_stalled or not_new_low):
                 reason = 'EXIT_SHORT_OUTER_BAND_EXHAUSTION'
 
     # ── 連續小碎步出血 (需 >= 5 根歷史) ──────────────────────────────
@@ -109,16 +117,18 @@ def evaluate_trend_exit_and_take_profit(position, closed, atr):
         c2, c1b, cb = last3.iloc[0], last3.iloc[1], last3.iloc[2]
 
         if sign == 1:
+            is_super_trend = (float(cb.ma3) > float(cb.kc_upper)) and (float(cb.ma3) > float(c1b.ma3))
             three_bear       = all(float(r.close) < float(r.open) and float(r.close) < float(r.ma3) for _, r in last3.iterrows())
             descending_close = float(cb.close) < float(c1b.close) < float(c2.close)
             ma3_flat_down    = (float(cb.ma3) <= float(c1b.ma3) and float(c1b.ma3) <= float(c2.ma3) and float(cb.close) < float(cb.ma3))
-            if three_bear or descending_close or ma3_flat_down:
+            if not is_super_trend and (three_bear or descending_close or ma3_flat_down):
                 reason = 'CONSECUTIVE_BLEED_EXIT_LONG'
         elif sign == -1:
+            is_super_trend = (float(cb.ma3) < float(cb.kc_lower)) and (float(cb.ma3) < float(c1b.ma3))
             three_bull       = all(float(r.close) > float(r.open) and float(r.close) > float(r.ma3) for _, r in last3.iterrows())
             ascending_close  = float(cb.close) > float(c1b.close) > float(c2.close)
             ma3_flat_up      = (float(cb.ma3) >= float(c1b.ma3) and float(c1b.ma3) >= float(c2.ma3) and float(cb.close) > float(cb.ma3))
-            if three_bull or ascending_close or ma3_flat_up:
+            if not is_super_trend and (three_bull or ascending_close or ma3_flat_up):
                 reason = 'CONSECUTIVE_BLEED_EXIT_SHORT'
 
     # ══════════════════════════════════════════════════════════════════
