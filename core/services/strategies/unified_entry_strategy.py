@@ -167,55 +167,8 @@ def long_entry_trend_problem(closed):
 
 
 def peak_trough_cross(closed, side):
-    """Eight preceding closed bars establish the touch and structural stop."""
-    if len(closed) < 9:
-        return None
-    try:
-        rows = closed.iloc[-9:]
-        keys = ['timestamp', 'open', 'high', 'low', 'close', 'kc_upper', 'kc_middle', 'kc_lower']
-        v = rows[keys].astype(float)
-        if not all(math.isfinite(x) and x > 0 for x in v.to_numpy().flat):
-            return None
-        if not v.timestamp.diff().iloc[1:].eq(60000).all():
-            return None
-        if not ((v.low <= v[['open', 'close']].min(axis=1)) &
-                (v.high >= v[['open', 'close']].max(axis=1)) &
-                (v.kc_lower < v.kc_middle) & (v.kc_middle < v.kc_upper)).all():
-            return None
-        history = rows.iloc[:-1]
-        previous, current = rows.iloc[-2], rows.iloc[-1]
-        sign = 1 if side == 'LONG' else -1
-        previous_gap = sign * (float(previous.ma3)-float(previous.ma15))
-        current_gap = sign * (float(current.ma3)-float(current.ma15))
-        span = float(current.high)-float(current.low)
-        body = sign * (float(current.close)-float(current.open))
-        if not (previous_gap <= 0 < current_gap and body > 0 and span > 0
-                and at_least(body/span, .4)):
-            return None
-        if side == 'LONG':
-            upper_wick = float(current.high) - max(float(current.open), float(current.close))
-            if span > 0 and (upper_wick / span > 0.35 or float(current.close) < float(current.low) + span * 0.5):
-                return None
-            touched = (history.low <= history.kc_lower).any()
-            room = current.close <= current.kc_upper
-            stop = float(history.low.min())
-        else:
-            lower_wick = min(float(current.open), float(current.close)) - float(current.low)
-            if span > 0 and (lower_wick / span > 0.35 or float(current.close) > float(current.low) + span * 0.5):
-                return None
-            touched = (history.high >= history.kc_upper).any()
-            room = current.close >= current.kc_lower
-            stop = float(history.high.max())
-        if not touched or not room or sign*(float(current.close)-stop) <= 0:
-            return None
-        code = f'CLOSED_PEAK_TROUGH_CROSS_{side}'
-        return dict(action='ENTER', side=side, reason=code, rule='PEAK_TROUGH_CROSS',
-                    entry_type='PEAK_TROUGH_CROSS', entry_atr=float(current.atr),
-                    is_breakout=False, confirmation_bar_id=float(current.timestamp),
-                    close_price=float(current.close), initial_sl=stop,
-                    peak_trough_lookback=8)
-    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
-        return None
+    # Completely disabled PEAK_TROUGH_CROSS logic to prevent counter-trend tops/bottoms
+    return None
 
 
 def had_close(account, symbol):

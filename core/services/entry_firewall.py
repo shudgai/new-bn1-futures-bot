@@ -46,9 +46,11 @@ class EntryFirewall:
                 raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_AGAINST_TREND: 嚴禁在空頭趨勢(中軌或MA15向下)時摸底做多')
         elif side == 'SHORT':
             if close >= middle:
-                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_PRICE_ABOVE_KC_MID: 空單收盤價 {close} 未低於中軌 {middle}')
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_ABOVE_MIDLINE: 當根 K 棒收盤價 {close} 大於等於中軌 {middle}，強制阻斷！')
             if middle > prev_middle or ma15 > prev_ma15:
-                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_AGAINST_TREND: 嚴禁在多頭趨勢(中軌或MA15向上)時摸頂做空')
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_AGAINST_TREND: 嚴禁在多頭趨勢(中軌或MA15向上)時摸頂做空！')
+            if close > middle + (upper - middle) * 0.5:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_NEAR_UPPER_BAND: 收盤價 {close} 處於強勢多頭區間(近上軌)，嚴禁開空！')
         
         # 0.1 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
         channel_width_pct = (upper - lower) / middle
