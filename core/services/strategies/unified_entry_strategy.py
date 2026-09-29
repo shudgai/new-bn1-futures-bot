@@ -214,11 +214,15 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
             return wait('BLOCKED_CK_NOT_ALIGNED_SHORT')
 
     # 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
+    # 豁免：IGNITION（外軌起爆）波動率壓縮正是大行情的前兆，絕不攔截
     c_upper = float(c.kc_upper)
     c_lower = float(c.kc_lower)
     c_middle = float(c.kc_middle)
     channel_width_pct = (c_upper - c_lower) / c_middle
-    if channel_width_pct < 0.005:
+    candle_body_now = abs(float(c.close) - float(c.open))
+    c_is_outside = (side == 'LONG' and float(c.close) > c_upper) or (side == 'SHORT' and float(c.close) < c_lower)
+    ignition_bypass = c_is_outside and candle_body_now >= 1.0 * float(c.atr)
+    if channel_width_pct < 0.005 and not ignition_bypass:
         return wait('BLOCKED_CHANNEL_BANDWIDTH_TOO_NARROW')
 
     # 貼近支撐位禁止做空

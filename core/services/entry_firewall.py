@@ -53,8 +53,12 @@ class EntryFirewall:
                 raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_NEAR_UPPER_BAND: 收盤價 {close} 處於強勢多頭區間(近上軌)，嚴禁開空！')
         
         # 0.1 通道寬度 (Bandwidth / 波動率空間) 硬性門檻
+        # 豁免：IGNITION/BREAKOUT 外軌起爆時波動率壓縮是大行情前兆，嚴禁攔截
         channel_width_pct = (upper - lower) / middle
-        if channel_width_pct < 0.005:
+        atr_now = float(c.atr)
+        candle_body_fw = abs(close - float(c.open))
+        ignition_fw_bypass = is_ignition and (is_breakout_up or is_breakout_down) and candle_body_fw >= 1.0 * atr_now
+        if channel_width_pct < 0.005 and not ignition_fw_bypass:
             raise ValueError(f'[FATAL_REJECT] BLOCKED_CHANNEL_BANDWIDTH_TOO_NARROW: 通道寬度 {channel_width_pct*100:.2f}% < 0.5%，死水盤禁止開倉！')
 
         # 1. 焊死硬性前置開倉條件 (徹底移除 Bypass)
