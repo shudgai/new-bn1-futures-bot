@@ -511,7 +511,7 @@ class BinanceTestnetAccount:
                 "sl": float(meta.get("sl") or 0.0),
                 "tp": float(meta.get("tp") or 0.0),
                 "atr": float(meta.get("atr") or entry_price * 0.015),
-                "open_timestamp": float(meta.get("open_timestamp") or now),
+                "open_timestamp": float(meta.get("open_timestamp") or (float(row.get("updateTime", now * 1000)) / 1000.0)),
                 "open_time": meta.get("open_time") or get_taipei_now_str(),
                 "reason": meta.get("reason") or "Binance Testnet existing position",
                 "signal_score": meta.get("signal_score"),

@@ -2077,6 +2077,7 @@ class TradingEngine:
             entry_mode == "MANUAL"
             or "手動開倉" in reason
             or "MANUAL" in reason.upper()
+            or "EXISTING" in reason.upper()
             or position.get("manual_entry") is True
         )
         if not is_manual:
