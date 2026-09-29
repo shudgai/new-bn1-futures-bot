@@ -78,11 +78,50 @@ class EntryFirewall:
                 if not (touched_upper and close < middle and middle_falling):
                     raise ValueError(f'[FATAL_REJECT] REJECTED_INSIDE_CHANNEL_WITHOUT_TOUCH: 交叉空單必須前8根觸碰上軌，且當前價格低中軌且中軌向下')
 
-            # 貼近支撐位禁止做空 (檢查前10根的最低點)
+            # 舊版貼近支撐位禁止做空 (保留相容)
             recent_10_low = float(closed['low'].iloc[-10:].min()) if len(closed) >= 10 else float(closed['low'].min())
             distance_to_support = (close - recent_10_low) / recent_10_low
             if distance_to_support < 0.003:
                 raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_NEAR_SUPPORT: 距離近期支撐 {recent_10_low} 僅 {distance_to_support*100:.2f}% < 0.3%，禁止空在強支撐上！')
+
+        # =======================================================
+        # 1.5 趨勢末端衰竭與支撐/阻力過濾 (Anti-Exhaustion Filters)
+        # =======================================================
+        slope = (middle - prev_middle) / prev_middle
+        
+        if side == 'SHORT':
+            if slope > -0.00015:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_FLAT_SLOPE: 中軌斜率 {slope:.6f} 不足 -0.00015，處於走平或末端盤整，禁止追空！')
+        elif side == 'LONG':
+            if slope < 0.00015:
+                raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_FLAT_SLOPE: 中軌斜率 {slope:.6f} 不足 0.00015，處於走平或末端盤整，禁止追多！')
+
+        if len(closed) >= 30:
+            last_30 = closed.iloc[-30:]
+            if side == 'SHORT':
+                support_30 = float(last_30['low'].min())
+                dist_to_support = (close - support_30) / support_30
+                if dist_to_support <= 0.0025:
+                    raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_TOO_CLOSE_TO_SUPPORT: 距離30根前低支撐 {support_30} 僅 {dist_to_support*100:.2f}% <= 0.25%，嚴禁在雙底或支撐位追空！')
+                
+                total_drop = float(last_30['high'].max()) - close
+                if total_drop > 3 * float(c.atr):
+                    avg_body_30 = abs(last_30['close'].astype(float) - last_30['open'].astype(float)).mean()
+                    last_3_bodies = abs(closed.iloc[-3:]['close'].astype(float) - closed.iloc[-3:]['open'].astype(float))
+                    if (last_3_bodies < 0.5 * avg_body_30).all():
+                        raise ValueError(f'[FATAL_REJECT] BLOCKED_SHORT_EXHAUSTED: 累計跌幅 {total_drop:.4f} > 3ATR 且近期實體縮小，動能枯竭禁止追空！')
+            elif side == 'LONG':
+                resist_30 = float(last_30['high'].max())
+                dist_to_resist = (resist_30 - close) / close
+                if dist_to_resist <= 0.0025:
+                    raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_TOO_CLOSE_TO_RESISTANCE: 距離30根前高阻力 {resist_30} 僅 {dist_to_resist*100:.2f}% <= 0.25%，嚴禁在雙頂或阻力位追多！')
+                
+                total_rise = close - float(last_30['low'].min())
+                if total_rise > 3 * float(c.atr):
+                    avg_body_30 = abs(last_30['close'].astype(float) - last_30['open'].astype(float)).mean()
+                    last_3_bodies = abs(closed.iloc[-3:]['close'].astype(float) - closed.iloc[-3:]['open'].astype(float))
+                    if (last_3_bodies < 0.5 * avg_body_30).all():
+                        raise ValueError(f'[FATAL_REJECT] BLOCKED_LONG_EXHAUSTED: 累計漲幅 {total_rise:.4f} > 3ATR 且近期實體縮小，動能枯竭禁止追多！')
 
 
         # 2. 基本形態驗證 (維持原邏輯)
