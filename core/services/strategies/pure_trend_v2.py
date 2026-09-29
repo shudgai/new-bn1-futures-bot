@@ -71,10 +71,16 @@ class PureTrendStrategyV2:
                 return {'side': 'LONG', 'type': 'THREE_BAR_BREAKOUT_LONG', 'price': c_close, 'reason': '雙陽破上軌，第三根收陽確認開多'}
 
             # 【B. 延續開多 (CONTINUATION_LONG)】
-            if c_close > kc_upper and p1_close > p1_kc_upper:
-                if ma3 > ma15 and ma3 > prev_ma3 and c_close > c_open:
-                    if upper_wick <= 1.0 * curr_body:
-                        return {'side': 'LONG', 'type': 'CONTINUATION_LONG', 'price': c_close, 'reason': '順勢MA3多頭，陽線延續開多'}
+            # 條件：收盤確立、收在 KC 上軌外側、當根為陽線、MA3 順勢向上
+            if c_close > kc_upper:
+                if c_close > c_open:  # 當根收陽
+                    if ma3 > ma15 and upper_wick <= 1.2 * curr_body:
+                        return {
+                            'side': 'LONG',
+                            'type': 'CONTINUATION_LONG',
+                            'price': c_close,
+                            'reason': '上軌外順勢暴漲，陽線延續開多'
+                        }
 
         # -------------------------------------------------------------
         # 空單開倉判定 (SHORT ENTRY)
@@ -99,10 +105,16 @@ class PureTrendStrategyV2:
                 return {'side': 'SHORT', 'type': 'THREE_BAR_BREAKOUT_SHORT', 'price': c_close, 'reason': '雙陰破下軌，第三根收陰確認開空'}
 
             # 【B. 延續開空 (CONTINUATION_SHORT)】
-            if c_close < kc_lower and p1_close < p1_kc_lower:
-                if ma3 < ma15 and ma3 < prev_ma3 and c_close < c_open:
-                    if lower_wick <= 1.0 * curr_body:
-                        return {'side': 'SHORT', 'type': 'CONTINUATION_SHORT', 'price': c_close, 'reason': '順勢MA3空頭，陰線延續開空'}
+            # 條件：收盤確立、收在 KC 下軌外側、當根為陰線、MA3 順勢向下
+            if c_close < kc_lower:
+                if c_close < c_open:  # 當根收陰
+                    if ma3 < ma15 and lower_wick <= 1.2 * curr_body:
+                        return {
+                            'side': 'SHORT',
+                            'type': 'CONTINUATION_SHORT',
+                            'price': c_close,
+                            'reason': '下軌外順勢暴跌，陰線延續開空'
+                        }
 
         return None
 
