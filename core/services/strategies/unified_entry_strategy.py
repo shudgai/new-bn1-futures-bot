@@ -385,21 +385,21 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     
     if side == 'SHORT':
         lower_wick = min(float(c.close), float(c.open)) - float(c.low)
-        if lower_wick > candle_body or (candle_len > 0 and lower_wick / candle_len > 0.4):
+        if lower_wick > 0.8 * candle_body or (candle_len > 0 and lower_wick / candle_len > 0.4):
             return wait(f"PIN_BAR_DETECTED (當根下探回升滯跌，嚴禁追空, wick={lower_wick:.5f}, body={candle_body:.5f})")
             
         prev_body = abs(float(c1.close) - float(c1.open))
         prev_lower_wick = min(float(c1.close), float(c1.open)) - float(c1.low)
-        if float(c1.low) < float(c1.kc_lower) and prev_lower_wick > 1.5 * prev_body:
+        if float(c1.low) < float(c1.kc_lower) and prev_lower_wick > 0.8 * prev_body:
             return wait("PREV_PIN_BAR_REJECTION (前根K棒已在下軌外插出長下影線，嚴禁追空)")
     else:
         upper_wick = float(c.high) - max(float(c.close), float(c.open))
-        if upper_wick > candle_body or (candle_len > 0 and upper_wick / candle_len > 0.4):
+        if upper_wick > 0.8 * candle_body or (candle_len > 0 and upper_wick / candle_len > 0.4):
             return wait(f"PIN_BAR_DETECTED (當根衝高回落滯漲，嚴禁追多, wick={upper_wick:.5f}, body={candle_body:.5f})")
             
         prev_body = abs(float(c1.close) - float(c1.open))
         prev_upper_wick = float(c1.high) - max(float(c1.close), float(c1.open))
-        if float(c1.high) > float(c1.kc_upper) and prev_upper_wick > 1.5 * prev_body:
+        if float(c1.high) > float(c1.kc_upper) and prev_upper_wick > 0.8 * prev_body:
             return wait("PREV_PIN_BAR_REJECTION (前根K棒已在上軌外插出長上影線，嚴禁追多)")
             
     if body_ratio < 0.4:
