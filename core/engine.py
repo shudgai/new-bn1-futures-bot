@@ -1761,9 +1761,9 @@ class TradingEngine:
             log_entry_gate(self, symbol, side, 'EXECUTION', 'BLOCKED_INVALID_QUOTE', bar)
             return False
 
-        from core.services.entry_firewall import validate_entry_frame
+        from core.services.entry_firewall import EntryFirewall
         try:
-            validate_entry_frame(snapshot['frame'], side, final['reason'])
+            EntryFirewall.verify_can_open(snapshot['frame'], side, final['reason'])
         except ValueError as e:
             log_entry_gate(self, symbol, signal.get('side'), 'EXECUTION', f'🛑 [ENTRY_GATE_FAIL] {symbol} {str(e)}', signal.get('candidate_bar_id'))
             return False

@@ -7,100 +7,77 @@ from core.services.strategies.unified_entry_strategy import (
 )
 
 
-def validate_entry_frame(frame, side, code):
-    if side not in ('LONG', 'SHORT') or code not in RULE_CODES:
-        raise ValueError('[FORBIDDEN_ENTRY] 非法開倉方向或白名單訊號')
-    closed = confirmed(frame)
-    if closed is None:
-        raise ValueError('[FORBIDDEN_ENTRY] 缺少有效已收線行情')
-    if code == f'CLOSED_PEAK_TROUGH_CROSS_{side}':
+class EntryFirewall:
+    @classmethod
+    def verify_can_open(cls, frame, side, code):
+        """
+        【架構級重大重構：建立開倉底層的「單一閘門（Single Hard-Gate）」】
+        所有開倉行為必須經過此唯一入口，實施一票否決。
+        """
+        if side not in ('LONG', 'SHORT') or code not in RULE_CODES:
+            raise ValueError('[FORBIDDEN_ENTRY] 非法開倉方向或白名單訊號')
+            
+        closed = confirmed(frame)
+        if closed is None or len(closed) < 8:
+            raise ValueError('[FORBIDDEN_ENTRY] 缺少有效已收線行情或K棒數量不足')
+
+        c = closed.iloc[-1]
+        c1 = closed.iloc[-2]
+        
+        close = float(c.close)
+        upper = float(c.kc_upper)
+        lower = float(c.kc_lower)
+        middle = float(c.kc_middle)
+        prev_middle = float(c1.kc_middle)
+        
+        is_breakout_up = close > upper
+        is_breakout_down = close < lower
+        
+        is_ignition = 'IGNITION' in str(code).upper() or 'BREAKOUT' in str(code).upper()
+        
+        # 1. 焊死硬性前置開倉條件 (徹底移除 Bypass)
+        if side == 'LONG':
+            if is_ignition:
+                if not is_breakout_up:
+                    raise ValueError(f'[FATAL_REJECT] REJECTED_NO_BREAKOUT: 破軌多單未破上軌 (close {close} <= upper {upper})')
+            else:
+                last_8 = closed.iloc[-8:]
+                touched_lower = (last_8['low'].astype(float) <= last_8['kc_lower'].astype(float)).any()
+                middle_rising = middle > prev_middle
+                if not (touched_lower and close > middle and middle_rising):
+                    raise ValueError(f'[FATAL_REJECT] REJECTED_INSIDE_CHANNEL_WITHOUT_TOUCH: 交叉多單必須前8根觸碰下軌，且當前價格高中軌且中軌向上')
+                    
+        elif side == 'SHORT':
+            if is_ignition:
+                if not is_breakout_down:
+                    raise ValueError(f'[FATAL_REJECT] REJECTED_NO_BREAKOUT: 破軌空單未破下軌 (close {close} >= lower {lower})')
+            else:
+                last_8 = closed.iloc[-8:]
+                touched_upper = (last_8['high'].astype(float) >= last_8['kc_upper'].astype(float)).any()
+                middle_falling = middle < prev_middle
+                if not (touched_upper and close < middle and middle_falling):
+                    raise ValueError(f'[FATAL_REJECT] REJECTED_INSIDE_CHANNEL_WITHOUT_TOUCH: 交叉空單必須前8根觸碰上軌，且當前價格低中軌且中軌向下')
+
+        # 2. 基本形態驗證 (維持原邏輯)
+        if side == 'LONG':
+            problem = long_entry_trend_problem(closed)
+            if problem:
+                raise ValueError('[FORBIDDEN_ENTRY] ' + problem)
+        
+        if not is_ignition:
+            problem = ma3_entry_problem(closed, side)
+            if problem:
+                raise ValueError('[FORBIDDEN_ENTRY] MA3 斜率或排列禁止開倉：' + problem)
+                
+        # 3. 再經底層策略驗證
         ok, actual, decision = evaluate_closed_entry(frame, side)
         if not ok or actual != code:
-            raise ValueError(f'[FORBIDDEN_ENTRY] 峰谷交叉已失效 actual={actual}')
+            raise ValueError(f'[FORBIDDEN_ENTRY] 最新行情不符合指定訊號 expected={code} actual={actual}')
+            
         return decision
-    if side == 'LONG':
-        problem = long_entry_trend_problem(closed)
-        if problem:
-            raise ValueError('[FORBIDDEN_ENTRY] ' + problem)
-    # 點火起爆信號由 KC 外軌擴張與大實體動能保證方向，豁免滯後的 MA3 斜率檢驗
-    is_ignition = 'IGNITION' in str(code).upper() or 'TREND_BREAKOUT' in str(code).upper()
-    if not is_ignition:
-        problem = ma3_entry_problem(closed, side)
-        if problem:
-            raise ValueError('[FORBIDDEN_ENTRY] MA3 斜率或排列禁止開倉：' + problem)
-    last_bar = closed.iloc[-1]
-    opening, close = float(last_bar.open), float(last_bar.close)
-    atr = float(last_bar.atr)
-    middle = float(last_bar.kc_middle)
-    upper = float(last_bar.kc_upper)
-    lower = float(last_bar.kc_lower)
-    prev_bar = closed.iloc[-2]
-    prev_upper = float(prev_bar.kc_upper)
-    prev_lower = float(prev_bar.kc_lower)
 
-    # ── 【緊急修復】嚴禁未破軌開倉與通道內無效開單校驗 ──
-    is_breakout_up = close > upper
-    is_breakout_down = close < lower
-    
-    if side == 'LONG' and not is_breakout_up:
-        last_8 = closed.iloc[-8:] if len(closed) >= 8 else closed
-        touched_lower = (last_8['low'].astype(float) <= last_8['kc_lower'].astype(float)).any()
-        if not (touched_lower and close > middle):
-            raise ValueError(f'[FATAL_REJECT] BLOCKED_INSIDE_CHANNEL_NO_BREAKOUT: K 棒未破 KC 上軌，且無觸及下軌的底座支撐！')
-
-    if side == 'SHORT' and not is_breakout_down:
-        last_8 = closed.iloc[-8:] if len(closed) >= 8 else closed
-        touched_upper = (last_8['high'].astype(float) >= last_8['kc_upper'].astype(float)).any()
-        if not (touched_upper and close < middle):
-            raise ValueError(f'[FATAL_REJECT] BLOCKED_INSIDE_CHANNEL_NO_BREAKOUT: K 棒未破 KC 下軌，且無觸及上軌的頂部壓力！')
-
-    from core.services.exits.profit_protection_service import assess_market_regime
-    regime = assess_market_regime(closed, side, None)
-    if not is_ignition and regime == 'CHOPPY':
-        raise ValueError(f'[FATAL_REJECT] 當前為 CHOPPY 猴市震盪區間，拒絕任何破底/破軌追單！')
-
-    if side == 'SHORT':
-        if not is_ignition and lower >= prev_lower:
-            raise ValueError(f'[FATAL_REJECT] KC 下軌走平或收窄 ({lower:.6f} >= {prev_lower:.6f})，無向下擴張動能嚴禁開空！')
-        if close >= opening:
-            raise ValueError(f'[FATAL_REJECT] 陽線嚴禁開空！Close:{close} >= Open:{opening}')
-        if close > lower and (opening - close) < 0.6 * atr:
-            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開空！實體: {(opening - close):.8f} < 0.6 ATR: {0.6*atr:.8f}')
-        distance_from_middle = abs(close - middle)
-        if not is_ignition and distance_from_middle > 2.2 * atr:
-            raise ValueError(f'[FATAL_REJECT] 拒絕追空：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追空！')
-    else:
-        if not is_ignition and upper <= prev_upper:
-            raise ValueError(f'[FATAL_REJECT] KC 上軌走平或收窄 ({upper:.6f} <= {prev_upper:.6f})，無向上擴張動能嚴禁開多！')
-        if close <= opening:
-            raise ValueError(f'[FATAL_REJECT] 陰線嚴禁開多！Close:{close} <= Open:{opening}')
-        if close < upper and (close - opening) < 0.6 * atr:
-            raise ValueError(f'[FATAL_REJECT] 軌道內小碎步橫盤禁開多！實體: {(close - opening):.8f} < 0.6 ATR: {0.6*atr:.8f}')
-        distance_from_middle = abs(close - middle)
-        if not is_ignition and distance_from_middle > 2.2 * atr:
-            raise ValueError(f'[FATAL_REJECT] 拒絕追多：價格距離 KC 中軌達 {distance_from_middle:.5f} (> 2.2 ATR)，極限乖離低勝率，嚴禁追多！')
-
-    if 'CLOSED_C' in code:
-        prev_middle = float(closed.iloc[-2].kc_middle)
-        if side == 'LONG' and middle <= prev_middle:
-            raise ValueError('[FATAL_REJECT] 金叉開多，但 KC 中軌向下！嚴禁逆勢開多！')
-        if side == 'SHORT':
-            c = closed.iloc[-1]
-            c1 = closed.iloc[-2]
-            if float(c.kc_middle) >= float(c1.kc_middle):
-                raise ValueError('[FATAL_REJECT] 死叉開空，但 KC 中軌向上！嚴禁逆勢開空！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
-            if float(c.ma15) >= float(c1.ma15):
-                raise ValueError('[FATAL_REJECT] 死叉開空，但 MA15 均線未向下！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
-            if float(c.close) >= float(c.kc_middle):
-                raise ValueError('[FATAL_REJECT] 死叉開空，但收盤價在中軌之上！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
-            if not (float(c.ma3) < float(c.ma15) and float(c.ma15) <= float(c.kc_middle)):
-                raise ValueError('[FATAL_REJECT] 死叉開空，但未形成空頭排列 (MA3 < MA15 <= KC 中軌)！(BLOCKED_SHORT_NOT_ALL_DOWNWARD_RESONANCE)')
-
-    ok, actual, decision = evaluate_closed_entry(frame, side)
-    if not ok or actual != code:
-        raise ValueError(f'[FORBIDDEN_ENTRY] 最新行情不符合指定訊號 expected={code} actual={actual}')
-    return decision
-
+def validate_entry_frame(frame, side, code):
+    return EntryFirewall.verify_can_open(frame, side, code)
 
 async def validate_account_entry(account, symbol, side, context):
     context = context if isinstance(context, dict) else {}

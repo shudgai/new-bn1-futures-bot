@@ -256,26 +256,7 @@ def evaluate_closed_entry(frame, side, *, after_close=False):
     if c1_ratio < 0.20 or c_ratio < 0.20:
         return wait("BLOCKED_BODY_RATIO_UNDER_20_PCT")
 
-    # ── 【緊急修復】嚴禁未破軌開倉與通道內無效開單校驗 ──
-    c_close = float(c.close)
-    c_upper = float(c.kc_upper)
-    c_lower = float(c.kc_lower)
-    c_middle = float(c.kc_middle)
-    
-    is_breakout_up = c_close > c_upper
-    is_breakout_down = c_close < c_lower
-    
-    if side == 'LONG' and not is_breakout_up:
-        last_8 = closed.iloc[-8:] if len(closed) >= 8 else closed
-        touched_lower = (last_8['low'].astype(float) <= last_8['kc_lower'].astype(float)).any()
-        if not (touched_lower and c_close > c_middle):
-            return wait('BLOCKED_INSIDE_CHANNEL_NO_BREAKOUT')
 
-    if side == 'SHORT' and not is_breakout_down:
-        last_8 = closed.iloc[-8:] if len(closed) >= 8 else closed
-        touched_upper = (last_8['high'].astype(float) >= last_8['kc_upper'].astype(float)).any()
-        if not (touched_upper and c_close < c_middle):
-            return wait('BLOCKED_INSIDE_CHANNEL_NO_BREAKOUT')
 
     early = peak_trough_cross(closed, side)
     if early is not None:
