@@ -178,11 +178,35 @@ def had_close(account, symbol):
 
 def evaluate_closed_entry(frame, side, *, after_close=False):
     wait = lambda reason: (False, reason, dict(action='WAIT', side=side, reason=reason))
+    
+    # 物理收盤校驗：非收盤 K 棒，0.1秒都不准偷跑
+    if not frame.empty and 'is_closed' in frame:
+        last_k = frame.iloc[-1]
+        if not bool(last_k.get('is_closed', False)) and not bool(last_k.get('x', False)):
+            return wait("REJECT_UNCLOSED_BAR (盤中未收線偷跑，物理鎖攔截)")
 
+    closed = confirmed(frame)
+    if closed is None or closed.empty:
+        return wait("NOT_READY")
+        
+    c = closed.iloc[-1]
+    
+    # 嚴格校驗已收線 K 棒的真實顏色與實體 (絕對防範由綠翻紅)
+    bar_close = float(c.close)
+    bar_open = float(c.open)
+    if side == 'LONG':
+        if bar_close <= bar_open:
+            return wait("REJECT_LONG: 收盤為紅K或十字星，嚴禁開多！")
+        if bar_close <= float(c.kc_upper):
+            return wait("REJECT_LONG: 收盤未站上 KC 上軌，嚴禁開多！")
+    elif side == 'SHORT':
+        if bar_close >= bar_open:
+            return wait("REJECT_SHORT: 收盤為綠K或十字星，嚴禁開空！")
+        if bar_close >= float(c.kc_lower):
+            return wait("REJECT_SHORT: 收盤未跌破 KC 下軌，嚴禁開空！")
     if side not in ('LONG', 'SHORT'):
         return wait('INVALID_SIDE')
 
-    closed = confirmed(frame)
     if closed is None:
         return wait('WAIT_VALID_CLOSED_1M_DATA')
 
