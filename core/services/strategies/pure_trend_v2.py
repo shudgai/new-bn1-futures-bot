@@ -232,17 +232,11 @@ class PureTrendStrategyV2:
         is_prev_doji = (prev_body < 0.20 * prev_range) or (prev_body < 0.5 * atr) if prev_range > 0 else True
         is_curr_doji = (body_curr < 0.20 * curr_range) or (body_curr < 0.5 * atr) if curr_range > 0 else True
         
-        # 雙棒推進：第 1 根實質收在軌道外，第 2 根開盤與現價依然在軌道外，且必須是實體陽線，且不能是十字星
-        bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open) and not is_prev_doji
-        # 確保當下也是實體陽線 (current_price > curr_open) 並過濾十字星
-        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (curr_open > kc_upper_curr) and (current_price > curr_open) and not is_curr_doji
+        # 放寬雙棒推進：第 1 根實體突破 KC 上軌，第 2 根維持收陽且破軌
+        bar1_long_valid = (prev_close > kc_upper_prev) and (prev_close > prev_open)
+        bar2_breaks_prev_high = (current_price > kc_upper_curr) and (current_price > curr_open)
         
-        # 3. 動能檢驗：實體需達標且當前棒不能是極長上影十字星
-        upper_wick_curr = float(bar_curr['high']) - max(curr_open, current_price)
-        long_momentum_valid = (body_curr >= min_body_threshold)
-        long_wick_valid = (body_curr == 0) or (upper_wick_curr <= body_curr * 1.5)
-
-        two_bar_long = bar1_long_valid and bar2_breaks_prev_high and long_momentum_valid and long_wick_valid
+        two_bar_long = bar1_long_valid and bar2_breaks_prev_high
         
         # 【趨勢過濾】做多必須 CK 向上
         long_trend_valid = ck_is_up
@@ -254,15 +248,11 @@ class PureTrendStrategyV2:
         # -------------------------------------------------------------
         # 4. 強勢突破與趨勢延續例外規則 (Trend Continuation & Override)
         # -------------------------------------------------------------
-        # 多單延續條件：價格持續在軌外 + 均線多頭排列
-        is_ma_bullish = (ma3 > ma15)
+        # 優化強勢延續開倉：價格持續在上軌外與 MA5/MA3 上方，無須嚴格實體門檻
         continuation_long = (
             (current_price > kc_upper_curr) and
             (prev_close > kc_upper_prev) and
-            is_ma_bullish and
-            (body_curr >= 0.3 * atr) and
-            (current_price > curr_open) and
-            not is_curr_doji
+            (current_price > ma3)
         )
         # 強勢單棒突破 (Override)：實體超過 1.2 ATR 且突破軌道
         massive_breakout_long = (
